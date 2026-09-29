@@ -187,26 +187,44 @@ An Adapter SHALL preserve every distinct native selectable value as an Adapter-o
 - **THEN** the default Ref remains stable while the resolved Model label is refreshed from native readback
 
 ### Requirement: Delegation 使用公共 Harness Catalog 验证显式配置
-当 `delegate start` 显式指定外部 Harness Model 或 Thinking 时，Host SHALL 使用目标 `HarnessAdapter.inspect()` 返回的公共 Catalog 和 capabilities 验证请求，并 SHALL 由 Adapter `open()` 执行最终原生校验。
+当 `delegate start` 显式指定外部 Harness Model 或 Thinking 时，Host SHALL 使用目标 `HarnessAdapter.inspect()` 返回的公共 Catalog 和 capabilities 验证请求，接受 Catalog ID 或条目声明的 `nativeId`，并 SHALL 由 Adapter `open()` 执行最终原生校验。
 
-#### Scenario: 显式 Model 存在
-- **WHEN** 调用方指定 Catalog 中存在的 opaque Model Ref
-- **THEN** Host SHALL 将该 Model Ref 传给目标 Adapter 的 Create Session 输入
+#### Scenario: 显式 Model 通过 ID 或 nativeId 解析
+- **WHEN** 调用方指定 Catalog 中存在的 opaque Model Ref ID 或其声明的 `nativeId`
+- **THEN** Host SHALL 解析该选择器为对应的 `HarnessModelRef` 并传给目标 Adapter 的 Create Session 输入
 
 #### Scenario: 显式 Model 不存在
-- **WHEN** 调用方指定的 Model Ref 不属于目标 Harness 当前 Catalog
+- **WHEN** 调用方指定的 Model 选择器既不匹配 Ref ID 也不匹配任何 Model 的 `nativeId`
 - **THEN** 创建 SHALL 以结构化参数错误失败
-- **AND** 错误详情 SHALL 提供目标 Harness 和可用 Model Ref
+- **AND** 错误详情 SHALL 提供目标 Harness 和可用 Model 选择器列表（存在 `nativeId` 时优先提供 `nativeId`，否则提供 `ref.id`）
 - **AND** MUST NOT 发布子 Thread 或 Delegation 成功结果
 
-#### Scenario: 显式 Thinking 受所选 Model 支持
-- **WHEN** 调用方指定 Thinking Option 且该 Option 被显式 Model 或目标默认 Model 支持
-- **THEN** Host SHALL 将该 Thinking Option 传给 Adapter 的 Create Session 输入
+#### Scenario: 显式 Thinking 通过 ID 或 nativeId 解析
+- **WHEN** 调用方指定 Thinking Option ID 或其声明的 `nativeId`，且该 Option 被显式 Model 或目标默认 Model 支持
+- **THEN** Host SHALL 解析该选择器为对应的 `HarnessThinkingOptionId` 并传给 Adapter 的 Create Session 输入
+
+#### Scenario: 显式 Thinking 不存在或不受支持
+- **WHEN** 调用方指定的 Thinking 选择器不属于所选 Model 支持的任何 Option ID 或 nativeId
+- **THEN** 创建 SHALL 以结构化参数错误失败
+- **AND** 错误详情 SHALL 提供可用 Thinking 选择器列表
+- **AND** MUST NOT 发布子 Thread 或 Delegation 成功结果
 
 #### Scenario: Thinking 能力不受支持
 - **WHEN** 调用方对不支持 Thinking 选择的 Harness 指定 `--thinking`
 - **THEN** 创建 SHALL 以结构化参数错误失败
 - **AND** MUST NOT 静默忽略该选项
+
+### Requirement: Catalog 条目声明 nativeId 并保证无冲突
+`HarnessModel` 与 `HarnessThinkingOption` SHALL 支持可选非空 `nativeId`，用于表达 Harness 自身使用的原生选择器。当 `ref.id` 或 `id` 采用编码表示时由 Adapter 提供。同一个 Catalog 内的 Model MUST NOT 出现重复的 `nativeId`，且 Model 的 `nativeId` MUST NOT 与其它 Model 的 `ref.id` 冲突；Thinking 选项集合同样 MUST NOT 出现重复的 `nativeId`，且其 `nativeId` MUST NOT 与其它 Thinking 选项的 `id` 冲突。
+
+#### Scenario: 编码格式的 Model 与 Thinking 提供 nativeId
+- **WHEN** Adapter 将原生模型标识或推理配置编码为 opaque ID
+- **THEN** 条目 SHALL 提供 `nativeId` 表达原生标识（如 `provider/model` 或 `key=value`）
+- **AND** `harness inspect` 紧凑输出 SHALL 显示该 `nativeId`
+
+#### Scenario: 拒绝冲突或重复的 nativeId
+- **WHEN** Catalog 出现重复的 Model 或 Thinking `nativeId`，或 `nativeId` 与其它条目的 `ref.id` / `id` 冲突
+- **THEN** Catalog Schema 校验 SHALL 拒绝该值并报告结构化校验错误
 
 ### Requirement: 省略配置时保持 Harness 默认选择
 当调用方未显式指定 Model 或 Thinking 时，Host MUST NOT 从 Catalog 人为填充该配置，目标 Harness SHALL 继续使用自身当前或默认选择。

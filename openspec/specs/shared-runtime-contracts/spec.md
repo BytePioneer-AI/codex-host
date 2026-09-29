@@ -160,11 +160,19 @@ Shared Contracts 的本次公共导出 MUST 只包含 Gate A/C 已证实或正�
 - **THEN**公共导出 MUST NOT 包含 `CreateThreadIntent`、完整 Bridge、Host Operation/Event/Interaction、Mapping Store Record、Pi RPC 或 Codex Method 专属 Schema
 
 ### Requirement: Shared Model Catalog contracts remain browser-safe and strict
-Shared Contracts SHALL export browser-safe types and Runtime Schemas for opaque Harness Model Refs, normalized Model entries, Model Catalogs, inspection results, structural Model-selection capability, effective selectable Model state, and an optional bounded `resolvedModelLabel` observed from the owning Harness runtime. `resolvedModelLabel` SHALL be display-only and SHALL NOT be accepted as a Model Ref, transport carrier, Provider identity, or setter input. V1 objects SHALL reject undeclared fields at the first formal control-boundary parse.
+Shared Contracts SHALL export browser-safe, strict Runtime Schemas and types for opaque Model Refs, normalized Model/Thinking entries with an optional native selector, Catalogs and inspection results, and the effective selectable Model state. `resolvedModelLabel` SHALL be display-only and SHALL NOT be accepted as a Model Ref, transport carrier, Provider identity, or setter input. V1 objects SHALL reject undeclared fields at the first formal control-boundary parse.
 
 #### Scenario: Renderer validates a ready inspection
-- **WHEN** Renderer receives a ready inspection containing valid opaque Refs, labels, a default Ref, optional resolved Model labels, and Model-selection capability
+- **WHEN** Renderer receives a ready inspection containing valid opaque Refs, labels, optional nativeIds, a default Ref, optional resolved Model labels, and Model-selection capability
 - **THEN** the public Runtime Schema accepts the complete value without importing Node.js, Electron, a Harness SDK, or another codexhost package
+
+#### Scenario: Catalog with conflicting native selector is rejected
+- **WHEN** a Model Catalog contains duplicate native selectors or one that collides with another entry's ID
+- **THEN** validation SHALL reject the value with a structural error
+
+#### Scenario: Native selector is bounded independently of its label
+- **WHEN** a Model or Thinking native selector is non-empty and within the opaque Ref length bound, while its label is short
+- **THEN** validation SHALL accept the entry
 
 #### Scenario: Renderer validates actual Session Model state
 - **WHEN** an owning Adapter publishes one selectable effective Model Ref plus a non-empty bounded runtime-resolved Model label

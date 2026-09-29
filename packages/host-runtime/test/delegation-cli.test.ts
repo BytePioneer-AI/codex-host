@@ -214,8 +214,8 @@ describe("delegation CLI", () => {
       cwd: "/workspace/project",
       parentThreadId: "parent-1",
       requestId: "request-1",
-      model: { id: "model-ref" },
-      thinkingOptionId: "high",
+      model: "model-ref",
+      thinking: "high",
     });
     expect(JSON.parse(outputText(output))).toEqual({ threadId: "child-1" });
   });
@@ -242,7 +242,7 @@ describe("delegation CLI", () => {
     });
     expect(body).not.toHaveProperty("cwd");
     expect(body).not.toHaveProperty("model");
-    expect(body).not.toHaveProperty("thinkingOptionId");
+    expect(body).not.toHaveProperty("thinking");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -852,5 +852,76 @@ describe("delegation CLI", () => {
       }),
     ).toBe(1);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("includes nativeId in compact inspect output when present", async () => {
+    const fetchImpl = successfulFetch({
+      harnessId: "opencode",
+      inspection: {
+        status: "ready",
+        catalog: {
+          models: [
+            {
+              ref: { id: "encoded-model" },
+              nativeId: "provider/model",
+              label: "Provider / Model",
+              supportedThinkingOptionIds: ["ocv.high"],
+            },
+          ],
+          defaultModel: { id: "encoded-model" },
+          thinkingOptions: [{ id: "ocv.high", nativeId: "high", label: "High" }],
+        },
+        capabilities: {
+          configuration: {
+            selectModel: true,
+            selectThinkingOption: true,
+            selectPermissionMode: false,
+          },
+        },
+      },
+    });
+    const output = new PassThrough();
+    expect(
+      await runDelegationCli({
+        arguments: ["harness", "inspect", "opencode", "--format", "compact"],
+        environment: {
+          [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+          [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+        },
+        output,
+        fetchImpl,
+      }),
+    ).toBe(0);
+    const parsed = JSON.parse(outputText(output));
+    expect(parsed.models).toEqual([
+      {
+        id: "encoded-model",
+        nativeId: "provider/model",
+        label: "Provider / Model",
+        thinking: ["ocv.high"],
+      },
+    ]);
+    expect(parsed.thinkingOptions).toEqual([
+      {
+        id: "ocv.high",
+        nativeId: "high",
+        label: "High",
+      },
+    ]);
+  });
+
+  it("delegate start help documents readable model and thinking selectors", async () => {
+    const output = new PassThrough();
+    expect(
+      await runDelegationCli({
+        arguments: ["delegate", "start", "--help"],
+        environment: {},
+        output,
+      }),
+    ).toBe(0);
+    const text = outputText(output);
+    expect(text).toContain("[--model <model>]");
+    expect(text).toContain("[--thinking <thinking>]");
+    expect(text).toContain("nativeId");
   });
 });

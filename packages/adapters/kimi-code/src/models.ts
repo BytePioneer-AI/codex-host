@@ -169,6 +169,11 @@ export interface AcpConfigOption {
   options?: AcpConfigOptionChoice[];
 }
 
+/** The native alias is optional selection metadata; omit it when it collides with an opaque Ref. */
+function nativeIdForAlias(alias: string, refIds: ReadonlySet<string>): { nativeId?: string } {
+  return refIds.has(alias) ? {} : { nativeId: alias };
+}
+
 export function buildModelCatalogFromConfig(
   config: KimiNativeConfig,
   thinkingOptionsList?: HarnessThinkingOption[],
@@ -179,10 +184,12 @@ export function buildModelCatalogFromConfig(
   const thinkingIds = thinkingOptions.map((opt) => opt.id);
   const rawModels =
     config.models.length > 0 ? config.models : [{ alias: config.defaultModel ?? "default" }];
+  const refIds = new Set(rawModels.map((m) => encodeKimiModelRef(m.alias).id));
   const models: HarnessModel[] = rawModels.map((m) => {
     const label = m.model ? `${m.alias} (${m.model})` : m.alias;
     return harnessModelSchema.parse({
       ref: encodeKimiModelRef(m.alias),
+      ...nativeIdForAlias(m.alias, refIds),
       label: label.slice(0, 256),
       ...(m.model ? { resolvedModelLabel: m.model.slice(0, 256) } : {}),
       ...(thinkingOptionsList && m.alias === config.defaultModel
@@ -306,20 +313,23 @@ export function buildModelCatalogFromAcp(
   const models: HarnessModel[] = [];
 
   if (modelOptions?.options && Array.isArray(modelOptions.options)) {
-    for (const opt of modelOptions.options) {
-      if (typeof opt.value === "string" && opt.value.trim().length > 0) {
-        const alias = opt.value;
-        const displayName = opt.name || alias;
-        models.push(
-          harnessModelSchema.parse({
-            ref: encodeKimiModelRef(alias),
-            label: displayName.slice(0, 256),
-            ...(alias === modelOptions.currentValue
-              ? { supportedThinkingOptionIds: thinkingIds }
-              : {}),
-          }),
-        );
-      }
+    const options = modelOptions.options.filter(
+      (opt) => typeof opt.value === "string" && opt.value.trim().length > 0,
+    );
+    const refIds = new Set(options.map((opt) => encodeKimiModelRef(opt.value).id));
+    for (const opt of options) {
+      const alias = opt.value;
+      const displayName = opt.name || alias;
+      models.push(
+        harnessModelSchema.parse({
+          ref: encodeKimiModelRef(alias),
+          ...nativeIdForAlias(alias, refIds),
+          label: displayName.slice(0, 256),
+          ...(alias === modelOptions.currentValue
+            ? { supportedThinkingOptionIds: thinkingIds }
+            : {}),
+        }),
+      );
     }
   }
 

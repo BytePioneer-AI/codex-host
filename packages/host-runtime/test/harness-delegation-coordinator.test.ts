@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -523,8 +524,8 @@ describe("HarnessDelegationCoordinator", () => {
         task: "review auth",
         cwd: "/synthetic",
         parentThreadId: "parent-thread",
-        model,
-        thinkingOptionId,
+        model: model.id,
+        thinking: thinkingOptionId,
       });
       expect(adapter.openInputs[0]).toMatchObject({ model, thinkingOptionId });
       expect(result.configuration?.requested).toEqual({ model, thinkingOptionId });
@@ -557,8 +558,8 @@ describe("HarnessDelegationCoordinator", () => {
         task: "fixture task",
         cwd: "/synthetic",
         parentThreadId: "parent-thread",
-        model,
-        thinkingOptionId,
+        model: model.id,
+        thinking: thinkingOptionId,
       });
       expect(result.configuration).toMatchObject({
         requested: { model, thinkingOptionId },
@@ -609,6 +610,108 @@ describe("HarnessDelegationCoordinator", () => {
       expect(implicitRetry.threadId).toBe(implicit.threadId);
       expect(different.threadId).not.toBe(implicit.threadId);
       expect(value.adapter.sessions).toHaveLength(3);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("retries a native selector with its opaque equivalent without reading the catalog again", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"), nativeSelectionCatalog());
+    const value = await fixture(adapter);
+    const inspect = vi.spyOn(adapter, "inspect");
+    try {
+      const native = await value.coordinator.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "equivalent-selectors",
+        model: "provider/model-a",
+        thinking: "reasoning=high",
+      });
+      expect(inspect).toHaveBeenCalledTimes(1);
+      inspect.mockRejectedValue(new Error("Catalog is unavailable"));
+      const opaque = await value.coordinator.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "equivalent-selectors",
+        model: "encoded-model",
+        thinking: "encoded-thinking",
+      });
+      expect(opaque.threadId).toBe(native.threadId);
+      expect(adapter.sessions).toHaveLength(1);
+      expect(inspect).toHaveBeenCalledTimes(1);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("collapses equivalent native and opaque selectors into one implicit delegation", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"), nativeSelectionCatalog());
+    const value = await fixture(adapter);
+    try {
+      const native = await value.coordinator.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        model: "provider/model-a",
+        thinking: "reasoning=high",
+      });
+      const opaque = await value.coordinator.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        model: "encoded-model",
+        thinking: "encoded-thinking",
+      });
+      expect(opaque.threadId).toBe(native.threadId);
+      expect(adapter.sessions).toHaveLength(1);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("retries a delegation stored with the pre-selector digest", async () => {
+    const value = await fixture();
+    try {
+      const task = "legacy task";
+      const modelId = "encoded-model";
+      const thinkingOptionId = "encoded-thinking";
+      const taskDigest = createHash("sha256")
+        .update(
+          JSON.stringify({
+            task,
+            cwd: path.resolve("/synthetic"),
+            modelId,
+            thinkingOptionId,
+          }),
+        )
+        .digest("hex");
+      await value.repository.createDelegation({
+        delegationId: hostThreadIdSchema.parse("legacy-delegation"),
+        parentHostThreadId: hostThreadIdSchema.parse("parent-thread"),
+        childHostThreadId: hostThreadIdSchema.parse("legacy-child"),
+        sourceHarnessId: harnessIdSchema.parse("pi"),
+        targetHarnessId: harnessIdSchema.parse("pi"),
+        status: "running",
+        requestId: "legacy-request",
+        taskDigest,
+      });
+      const retry = await value.coordinator.start({
+        harnessId: "pi",
+        task,
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "legacy-request",
+        model: modelId,
+        thinking: thinkingOptionId,
+      });
+      expect(retry.threadId).toBe("legacy-child");
+      expect(value.adapter.sessions).toHaveLength(0);
     } finally {
       await value.close();
     }

@@ -34,6 +34,8 @@ import {
   remoteUnixListenerUrl,
 } from "./remote-app-server.js";
 import { remoteOfficialAppServerSocketPath } from "./remote-official-app-server.js";
+import { startConsoleControlServer } from "./console-control-server.js";
+import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
@@ -128,6 +130,30 @@ async function prepareDelegationRuntime(input: {
   }
 }
 
+/**
+ * Exposes the Desktop-facing Host to the local console while it runs. Only the
+ * Launcher-started local Host does; the channel is best effort.
+ */
+async function runWithConsoleControl(
+  host: AppServerHost,
+  enabled: boolean,
+  environment: NodeJS.ProcessEnv,
+): Promise<number> {
+  const control = enabled
+    ? await startConsoleControlServer({ target: host, environment }).catch((error: unknown) => {
+        process.stderr.write(
+          `codexhost Host Runtime: console channel unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        return undefined;
+      })
+    : undefined;
+  try {
+    return await host.run();
+  } finally {
+    await control?.close().catch(() => undefined);
+  }
+}
+
 export async function runHostRuntime(input: {
   arguments: string[];
   environment: NodeJS.ProcessEnv;
@@ -144,6 +170,19 @@ export async function runHostRuntime(input: {
           environment: input.environment,
         })
       : undefined);
+  // Only a Launcher-started local Host can open the console on this machine.
+  // The development entry does not pass its URL; the Launcher still exports the path.
+  const consoleHostRuntimePath = hostRuntimePath ?? input.environment.CODEXHOST_HOST_RUNTIME_PATH;
+  const consoleEntry =
+    consoleHostRuntimePath &&
+    path.isAbsolute(consoleHostRuntimePath) &&
+    input.environment.CODEXHOST_LAUNCHER_EXECUTABLE &&
+    input.environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1"
+      ? consoleEntrypoint(consoleHostRuntimePath)
+      : null;
+  const consoleOpener = consoleEntry
+    ? createHostConsoleOpener({ entrypoint: consoleEntry, environment: input.environment })
+    : undefined;
 
   if (!isRemoteUnixListenerInvocation(input.arguments)) {
     const remoteControlPlan = createRemoteControlAppServerPlan({
@@ -167,7 +206,7 @@ export async function runHostRuntime(input: {
         };
         if (!remoteControlPlan) {
           try {
-            return await new AppServerHost({
+            const host = new AppServerHost({
               stockCodexPath,
               arguments: input.arguments,
               defaultAgent,
@@ -176,7 +215,13 @@ export async function runHostRuntime(input: {
               ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
               onDelegationApi,
               ...(updateCoordinator ? { updateCoordinator } : {}),
-            }).run();
+              ...(consoleOpener ? { consoleOpener } : {}),
+            });
+            return await runWithConsoleControl(
+              host,
+              consoleOpener !== undefined,
+              delegationEnvironment,
+            );
           } finally {
             await official.close();
           }
@@ -194,6 +239,7 @@ export async function runHostRuntime(input: {
             mappingStore,
             closeMappingStoreOnExit: false,
             ...(updateCoordinator ? { updateCoordinator } : {}),
+            ...(consoleOpener ? { consoleOpener } : {}),
           };
           const host = new AppServerHost({
             ...common,
@@ -216,7 +262,11 @@ export async function runHostRuntime(input: {
           await listener.listen();
           await publishRemoteControlAppServerDescriptor(remoteControlPlan);
           // Official failure/replacement must never close this listener or external Harnesses.
-          return await host.run();
+          return await runWithConsoleControl(
+            host,
+            consoleOpener !== undefined,
+            delegationEnvironment,
+          );
         } finally {
           try {
             await listener?.close();

@@ -1,3 +1,10 @@
+import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
+import {
+  isConsoleHostMethod,
+  CONSOLE_OPEN_METHOD,
+  consoleOpenParamsSchema,
+  consoleOpenResultSchema,
+} from "@codexhost/shared-contracts";
 import {
   DELEGATION_MENTION_PATH_PREFIX,
   IDLE_RELEASE_SETTINGS_METHOD,
@@ -10,6 +17,13 @@ import {
   credentialImportsParamsSchema,
 } from "@codexhost/shared-contracts";
 import { handleCredentialImports } from "./credential-imports.js";
+import { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
+import {
+  HARNESS_DISPLAY_GET_METHOD,
+  HARNESS_DISPLAY_SET_METHOD,
+  harnessDisplayGetSchema,
+  harnessDisplaySetSchema,
+} from "@codexhost/shared-contracts";
 import {
   rewriteDelegationMentionInput,
   rewriteDelegationMentionText,
@@ -133,7 +147,6 @@ import {
 } from "./delegation-types.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
-import { HarnessLaunchSettingsStore } from "./harness-launch-settings.js";
 import {
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
@@ -178,6 +191,11 @@ import {
   OfficialRuntimeScope,
 } from "./codex-runtime/official-runtime-scope.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
+import type { HostConsoleOpener } from "./console-opener.js";
+
+const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
+
+export type ConsoleHostReply = { result: JsonValue } | { error: { code: number; message: string } };
 
 const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
 const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
@@ -265,6 +283,8 @@ export interface AppServerHostOptions {
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
+  /** Present only on the local Host started by the Launcher. */
+  consoleOpener?: HostConsoleOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
 }
 
@@ -515,13 +535,18 @@ function turnProjectionGate(): TurnProjectionGate {
 class OrderedWriter {
   #tail = Promise.resolve();
 
-  constructor(private readonly stream: Writable) {}
+  constructor(
+    private readonly stream: Writable,
+    /** Returns true for a message it consumed instead of the stream. */
+    private readonly intercept: (value: JsonValue) => boolean = () => false,
+  ) {}
 
   frame(frame: Buffer<ArrayBufferLike>): Promise<void> {
     return this.#enqueue(() => writeFrame(this.stream, frame));
   }
 
   json(value: JsonValue): Promise<void> {
+    if (this.intercept(value)) return Promise.resolve();
     return this.#enqueue(() => writeJsonFrame(this.stream, value));
   }
 
@@ -579,6 +604,10 @@ export class AppServerHost {
   #officialServerRequests = new Map<JsonRpcId, JsonRpcId>();
   #nextOfficialServerRequestId = 0;
   #writer: OrderedWriter;
+  /** Console requests share Desktop handling; their replies return to the console. */
+  readonly #consoleRequestPrefix = `codexhost-console:${randomUUID()}:`;
+  readonly #consoleReplies = new Map<string, (message: JsonValue) => void>();
+  #nextConsoleRequest = 0;
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
@@ -596,7 +625,9 @@ export class AppServerHost {
       diagnosticOutput: process.stderr,
       ...options,
     };
-    this.#writer = new OrderedWriter(this.#options.desktopOutput);
+    this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) =>
+      this.#takeConsoleReply(value),
+    );
     const environment = this.#options.environment ?? process.env;
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
@@ -935,6 +966,67 @@ export class AppServerHost {
     this.#signalActiveWorkChanged();
   }
 
+  #takeConsoleReply(value: JsonValue): boolean {
+    if (!isRecord(value) || typeof value.id !== "string") return false;
+    const reply = this.#consoleReplies.get(value.id);
+    if (!reply) return false;
+    this.#consoleReplies.delete(value.id);
+    reply(value);
+    return true;
+  }
+
+  /**
+   * Runs one console request through the same handling as Codex Desktop's
+   * settings requests. Only {@link CONSOLE_HOST_METHODS} are accepted.
+   */
+  async handleConsoleRequest(
+    method: string,
+    params: unknown,
+    timeoutMs = CONSOLE_REQUEST_TIMEOUT_MS,
+  ): Promise<ConsoleHostReply> {
+    if (!isConsoleHostMethod(method)) {
+      return { error: { code: -32601, message: `${method} is not available to the console` } };
+    }
+    if (this.#closeRequested || this.#desktopInputEnded) {
+      return { error: { code: -32090, message: "Codex Desktop is closing" } };
+    }
+    const parsed = jsonRpcRequestSchema.safeParse({
+      id: `${this.#consoleRequestPrefix}${++this.#nextConsoleRequest}`,
+      method,
+      params: params ?? {},
+    });
+    if (!parsed.success) return { error: { code: -32602, message: "Invalid console request" } };
+    const request = parsed.data;
+    const id = String(request.id);
+    let timer: NodeJS.Timeout | undefined;
+    const reply = new Promise<JsonValue>((resolve) => {
+      this.#consoleReplies.set(id, resolve);
+      timer = setTimeout(
+        () => resolve({ id, error: { code: -32093, message: "The Host did not answer in time" } }),
+        timeoutMs,
+      );
+    });
+    this.#dispatchDesktopRequest(() =>
+      this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+    );
+    try {
+      const message = await reply;
+      if (isRecord(message) && "result" in message) {
+        return { result: (message.result ?? null) as JsonValue };
+      }
+      const error = isRecord(message) && isRecord(message.error) ? message.error : undefined;
+      return {
+        error: {
+          code: typeof error?.code === "number" ? error.code : -32603,
+          message: typeof error?.message === "string" ? error.message : "Host request failed",
+        },
+      };
+    } finally {
+      clearTimeout(timer);
+      this.#consoleReplies.delete(id);
+    }
+  }
+
   async #forwardDesktop(): Promise<void> {
     for await (const frame of readLfFrames(this.#options.desktopInput)) {
       const parsed = parseJsonFrame(frame);
@@ -993,6 +1085,33 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    if (
+      request.method === HARNESS_DISPLAY_GET_METHOD ||
+      request.method === HARNESS_DISPLAY_SET_METHOD
+    ) {
+      const parsed = (
+        request.method === HARNESS_DISPLAY_SET_METHOD
+          ? harnessDisplaySetSchema
+          : harnessDisplayGetSchema
+      ).safeParse(request.params ?? {});
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid Harness display settings"));
+        return;
+      }
+      try {
+        const store = new HarnessDisplaySettingsStore(this.#options.environment ?? process.env);
+        const result =
+          request.method === HARNESS_DISPLAY_SET_METHOD
+            ? await store.set(harnessDisplaySetSchema.parse(parsed.data))
+            : await store.get();
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch {
+        await this.#writer.json(
+          rpcError(request, -32000, "Could not save or read Harness display settings"),
+        );
+      }
+      return;
+    }
     if (request.method === LOADED_SESSIONS_METHOD) {
       await this.#writer.json(
         rpcEnvelope(request, { result: this.#externalRuntime.idleRelease.list() }),
@@ -1015,6 +1134,10 @@ export class AppServerHost {
       request.method === "codexhost/update/status"
     ) {
       this.#dispatchDesktopRequest(() => this.#handleUpdateRequest(request));
+      return;
+    }
+    if (request.method === CONSOLE_OPEN_METHOD) {
+      this.#dispatchDesktopRequest(() => this.#handleConsoleOpen(request));
       return;
     }
     if (
@@ -2430,6 +2553,26 @@ export class AppServerHost {
       method: archived ? "thread/archived" : "thread/unarchived",
       params: { threadId: record.hostThreadId },
     });
+  }
+
+  async #handleConsoleOpen(request: JsonRpcRequest): Promise<void> {
+    if (!consoleOpenParamsSchema.safeParse(request.params ?? {}).success) {
+      await this.#writer.json(rpcError(request, -32602, "Console params must be empty"));
+      return;
+    }
+    const opener = this.#options.consoleOpener;
+    if (!opener) {
+      await this.#writer.json(
+        rpcError(request, -32090, "The codexhost console is available on the local Host only"),
+      );
+      return;
+    }
+    try {
+      const result = consoleOpenResultSchema.parse(await opener.open());
+      await this.#writer.json(rpcEnvelope(request, { result }));
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32092, errorMessage(error).slice(0, 500)));
+    }
   }
 
   async #handleUpdateRequest(request: JsonRpcRequest): Promise<void> {

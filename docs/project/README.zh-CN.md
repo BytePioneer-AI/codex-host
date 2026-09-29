@@ -66,6 +66,10 @@ codexhost
 <details>
 <summary>安装问题排查</summary>
 
+**codexhost 启动失败，或 Codex 打开了但没有 codexhost 功能**
+
+运行 `codexhost console`（Windows：开始菜单 →“codexhost console”），打开本地控制台 `http://127.0.0.1:26339/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新 codexhost。控制台随 codexhost 一起启动：安装包启动时自动在浏览器打开，终端启动时会输出访问地址。
+
 **macOS：首次打开提示「应用无法验证」**
 
 ```bash

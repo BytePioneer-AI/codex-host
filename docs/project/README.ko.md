@@ -36,6 +36,19 @@
 
 </div>
 
+## 후원
+
+<details open>
+<summary>클릭하여 접기</summary>
+
+<table>
+<tr>
+<td width="180"><a href="https://aixlau.me/register?aff=HOST"><img src="../imgs/sponsors/xinglian-ai.png" alt="Xinglian AI" width="160"></a></td>
+<td>이 프로젝트를 후원해 주신 <b>星链AI (Xinglian AI)</b>에 감사드립니다! Xinglian AI는 Codex, CodexHost 등 AI 코딩 도구를 위한 안정적이고 효율적인 API 중계 서비스를 제공하며, 주요 AI 모델에 빠르게 연결할 수 있습니다: 안정적인 회선 · 빠른 응답 · 다중 모델 호환 · 바로 사용 가능. API 설정과 전환 비용을 줄여 코딩에 더 집중할 수 있습니다. <a href="https://aixlau.me/register?aff=HOST">지금 체험하기 →</a></td>
+</tr>
+</table>
+</details>
+
 <a name="support"></a>
 <details>
 <summary><strong>☕ CodexHost의 지속적인 개발을 응원하고 싶으시다면 커피 한 잔 사 주세요</strong></summary>

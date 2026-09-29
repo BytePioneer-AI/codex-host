@@ -37,6 +37,19 @@ But **Codex** isn't the only great **Agent Harness** — **Claude Code** and **P
 
 </div>
 
+## Sponsors
+
+<details open>
+<summary>Click to collapse</summary>
+
+<table>
+<tr>
+<td width="180"><a href="https://aixlau.me/register?aff=HOST"><img src="docs/imgs/sponsors/xinglian-ai.png" alt="Xinglian AI" width="160"></a></td>
+<td>Thanks to <b>星链AI (Xinglian AI)</b> for sponsoring this project! Xinglian AI provides a stable, efficient API relay service for AI coding tools such as Codex and CodexHost, with quick access to mainstream AI models: stable routes · fast responses · multi-model compatibility · ready to use out of the box. It cuts the cost of configuring and switching APIs, so you can focus on coding. <a href="https://aixlau.me/register?aff=HOST">Try it now →</a></td>
+</tr>
+</table>
+</details>
+
 <a name="support"></a>
 <details>
 <summary><strong>☕ If you'd like to support CodexHost's ongoing development, feel free to buy me a coffee</strong></summary>

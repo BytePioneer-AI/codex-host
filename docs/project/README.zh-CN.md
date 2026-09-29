@@ -36,6 +36,19 @@
 
 </div>
 
+## 赞助
+
+<details open>
+<summary>点击收起</summary>
+
+<table>
+<tr>
+<td width="180"><a href="https://aixlau.me/register?aff=HOST"><img src="../imgs/sponsors/xinglian-ai.png" alt="星链AI" width="160"></a></td>
+<td>感谢 <b>星链AI</b> 赞助本项目！星链AI 为 Codex、CodexHost 等 AI Coding 工具提供稳定、高效的 API 中转服务，支持主流 AI 模型快速接入：稳定线路 · 快速响应 · 多模型兼容 · 即开即用，减少 API 配置与切换成本，让你更专注于 Coding。<a href="https://aixlau.me/register?aff=HOST">点击立即体验 →</a></td>
+</tr>
+</table>
+</details>
+
 <a name="support"></a>
 <details>
 <summary><strong>☕ 如果愿意支持 CodexHost 的持续开发，欢迎请我喝杯咖啡</strong></summary>

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
-
-import { compactDelegationOutput } from "../src/delegation-cli-output.js";
-import type { DelegationControlApi, DelegationControlError } from "../src/delegation-types.js";
+import type { DelegationControlApi } from "../src/delegation-types.js";
 import {
   createFixture,
   method,
+  readJsonLine,
+  requiredMessageId,
   startPiThread,
   startExternalThread,
   startPiTurn,
@@ -14,12 +14,7 @@ import {
 } from "./app-server-host-fixture.js";
 
 type Fixture = ReturnType<typeof createFixture>;
-
-/** A fixture that also exposes the Host's delegation API once it is ready. */
-function questionFixture(): {
-  fixture: Fixture;
-  ready(): Promise<DelegationControlApi>;
-} {
+function questionFixture() {
   let api: DelegationControlApi | undefined;
   const fixture = createFixture({
     onDelegationApi: (value) => {
@@ -36,143 +31,110 @@ function questionFixture(): {
     },
   };
 }
-
-async function pendingQuestionId(api: DelegationControlApi, threadId: string): Promise<string> {
-  let id: string | undefined;
-  await vi.waitFor(async () => {
-    id = (await api.read({ threadId, view: "result" })).pendingQuestions?.[0]?.interactionId;
-    expect(id).toBeTypeOf("string");
-  });
+async function pendingId(api: DelegationControlApi, threadId: string): Promise<string> {
+  const id = (await api.read({ threadId, view: "result" })).pendingQuestions?.[0]?.interactionId;
   if (!id) throw new Error("Question was not exposed by read");
   return id;
 }
-
-/** Frames the fake native process received, parsed per line. */
-function officialRequests(fixture: Fixture): JsonObject[] {
-  const requests: JsonObject[] = [];
-  fixture.official.stdin.setEncoding("utf8");
-  fixture.official.stdin.on("data", (chunk: string) => {
-    for (const line of chunk.split("\n")) {
-      if (line.trim()) requests.push(JSON.parse(line) as JsonObject);
-    }
+async function nativeRead(api: DelegationControlApi, fixture: Fixture, threadId: string) {
+  const reading = api.read({ threadId, view: "result" });
+  const read = await readJsonLine(fixture.official.stdin);
+  expect(read.method).toBe("thread/read");
+  writeRequest(fixture.official.stdout, {
+    id: requiredMessageId(read),
+    result: {
+      thread: {
+        id: threadId,
+        status: { type: "active" },
+        turns: [{ id: "native-turn", status: "inProgress", items: [] }],
+      },
+    },
   });
-  return requests;
+  return reading;
 }
-
-function emitOfficial(fixture: Fixture, value: JsonObject): void {
-  fixture.official.stdout.write(`${JSON.stringify(value)}\n`);
-}
-
-function officialQuestion(nativeId: number, threadId: string, turnId: string): JsonObject {
-  return {
+async function nativeQuestion(
+  fixture: Fixture,
+  nativeId: number,
+  threadId: string,
+  turnId: string,
+) {
+  const params = {
+    threadId,
+    turnId,
+    itemId: `item-${nativeId}`,
+    isBlocking: true,
+    questions: [
+      {
+        id: "decision",
+        header: "Choose",
+        question: "Continue?",
+        isOther: false,
+        isSecret: false,
+        options: [{ label: "Continue", description: "Keep going" }],
+      },
+    ],
+    nativeExtension: { preserve: true },
+  };
+  writeRequest(fixture.official.stdout, {
     id: nativeId,
     method: "item/tool/requestUserInput",
-    params: {
-      threadId,
-      turnId,
-      itemId: `item-${nativeId}`,
-      isBlocking: true,
-      questions: [
-        {
-          id: "decision",
-          header: "Decision",
-          question: `Continue in ${turnId}?`,
-          isOther: false,
-          isSecret: false,
-          options: [
-            { label: "Continue", description: "Keep going" },
-            { label: "Stop", description: "" },
-          ],
-        },
-      ],
-    },
-  };
-}
-
-/**
- * Emits one native Question and returns the request ID the Desktop client saw,
- * which is also the interaction ID `thread read` reports.
- */
-async function emitOfficialQuestion(
-  fixture: Fixture,
-  input: { nativeId: number; threadId: string; turnId: string },
-  api: DelegationControlApi,
-  readThread: (threadId: string) => Promise<void>,
-): Promise<{ requestId: string; interactionId: string }> {
-  emitOfficial(fixture, officialQuestion(input.nativeId, input.threadId, input.turnId));
-  const request = await fixture.collector.waitFor(
-    (message) =>
-      method(message, "item/tool/requestUserInput") &&
-      (message.params as JsonObject).turnId === input.turnId,
-  );
-  if (typeof request.id !== "string") {
-    throw new Error("Native Question was not forwarded with a Host request ID");
-  }
-  const reading = api.read({ threadId: input.threadId, view: "result" });
-  await readThread(input.threadId);
-  const question = (await reading).pendingQuestions?.find(({ turnId }) => turnId === input.turnId);
-  if (!question) throw new Error("Native Question was not exposed by read");
-  return { requestId: request.id, interactionId: question.interactionId };
-}
-
-/** Answers every `thread/read` the delegation API asks the native process for. */
-function officialThreadReader(fixture: Fixture, requests: JsonObject[]) {
-  const answered = new Set<unknown>();
-  const pending = (): JsonObject | undefined =>
-    requests.find(
-      (request) =>
-        request.method === "thread/read" &&
-        typeof (request.params as JsonObject | undefined)?.threadId === "string" &&
-        !answered.has(request.id),
-    );
-  return async (threadId: string): Promise<void> => {
-    await vi.waitFor(() => {
-      expect(
-        requests.some(
-          (request) =>
-            request.method === "thread/read" &&
-            (request.params as JsonObject | undefined)?.threadId === threadId &&
-            !answered.has(request.id),
-        ),
-      ).toBe(true);
-    });
-    const read = pending();
-    if (!read || read.id === undefined) throw new Error("Native read request has no ID");
-    answered.add(read.id);
-    emitOfficial(fixture, {
-      id: read.id,
-      result: {
-        thread: {
-          id: threadId,
-          status: { type: "active" },
-          turns: [{ id: "official-turn", status: "inProgress", items: [] }],
-        },
-      },
-    });
-  };
-}
-
-async function waitForRequest(
-  requests: JsonObject[],
-  predicate: (request: JsonObject) => boolean,
-): Promise<JsonObject> {
-  await vi.waitFor(() => {
-    expect(requests.some(predicate)).toBe(true);
+    params,
   });
-  const request = requests.find(predicate);
-  if (!request) throw new Error("Expected official request was not sent");
-  return request;
+  const request = await fixture.collector.waitFor(
+    (m) =>
+      method(m, "item/tool/requestUserInput") && (m.params as JsonObject).itemId === params.itemId,
+  );
+  return { request, params };
 }
+const reply = { answers: { decision: { answers: ["Continue"] } } };
 
-function resolvedRequests(fixture: Fixture): JsonObject[] {
-  return fixture.collector.messages.filter((message) => method(message, "serverRequest/resolved"));
-}
+describe("Delegation uses the existing Question request and reply", () => {
+  it("exposes the same external request and uses the existing label-to-value reply mapping", async () => {
+    const { fixture, ready } = questionFixture();
+    try {
+      const api = await ready();
+      const threadId = await startPiThread(fixture);
+      await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Missing Session");
+      const nativeId = session.askQuestion({
+        id: "decision",
+        type: "choice",
+        prompt: "Continue?",
+        options: [{ value: "continue-value", label: "Continue" }],
+        multiple: false,
+        allowOther: false,
+        optional: false,
+      });
+      const request = await fixture.collector.waitFor((m) =>
+        method(m, "item/tool/requestUserInput"),
+      );
+      const snapshot = await api.read({ threadId, view: "result" });
+      const pending = snapshot.pendingQuestions?.[0];
+      if (!pending) throw new Error("Missing Question");
+      expect(pending.request).toEqual(request.params);
+      await expect(
+        api.answer({ threadId, interactionId: pending.interactionId, result: reply }),
+      ).resolves.toMatchObject({ threadId });
+      expect(session.interactionResponses).toMatchObject([
+        {
+          interactionId: nativeId,
+          response: { type: "question", answers: { decision: ["continue-value"] } },
+        },
+      ]);
+      await expect(
+        fixture.collector.waitFor((m) => method(m, "serverRequest/resolved")),
+      ).resolves.toMatchObject({ params: { threadId, requestId: request.id } });
+      await expect(
+        api.answer({ threadId, interactionId: pending.interactionId, result: reply }),
+      ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 
-const nextTick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
-
-describe("AppServerHost pending Questions", () => {
   it.each(["answer", "close"] as const)(
-    "scopes %s to its Thread when interaction IDs collide",
+    "scopes %s when two Sessions reuse an interaction ID",
     async (operation) => {
       const { fixture, ready } = questionFixture();
       try {
@@ -182,7 +144,7 @@ describe("AppServerHost pending Questions", () => {
         const secondThread = await startExternalThread(fixture, "codexhost/pi-native", 3);
         await startPiTurn(fixture, secondThread, 4);
         const [first, second] = fixture.adapter.sessions;
-        if (!first || !second) throw new Error("Fake Pi Sessions were not opened");
+        if (!first || !second) throw new Error("Missing Sessions");
         const question = {
           id: "value",
           type: "text" as const,
@@ -191,631 +153,178 @@ describe("AppServerHost pending Questions", () => {
           optional: false,
           secret: false,
         };
-        const nativeInteractionId = first.askQuestion(question);
-        expect(second.askQuestion(question)).toBe(nativeInteractionId);
+        const localId = first.askQuestion(question);
+        expect(second.askQuestion(question)).toBe(localId);
         for (const threadId of [firstThread, secondThread]) {
           await fixture.collector.waitFor(
-            (message) =>
-              method(message, "item/tool/requestUserInput") &&
-              (message.params as JsonObject).threadId === threadId,
+            (m) =>
+              method(m, "item/tool/requestUserInput") &&
+              (m.params as JsonObject).threadId === threadId,
           );
         }
-        const firstId = await pendingQuestionId(api, firstThread);
-        const secondId = await pendingQuestionId(api, secondThread);
+        const firstId = await pendingId(api, firstThread);
+        const secondId = await pendingId(api, secondThread);
         expect(secondId).not.toBe(firstId);
+        await expect(
+          api.answer({ threadId: secondThread, interactionId: firstId, result: reply }),
+        ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
         if (operation === "answer") {
-          await expect(
-            api.answer({
-              threadId: secondThread,
-              interactionId: secondId,
-              answers: { value: ["second"] },
-            }),
-          ).resolves.toMatchObject({ threadId: secondThread });
-          expect(second.interactionResponses).toHaveLength(1);
-        } else {
-          second.expireQuestion(nativeInteractionId);
-        }
-        await vi.waitFor(async () => {
+          await api.answer({
+            threadId: secondThread,
+            interactionId: secondId,
+            result: { answers: { value: { answers: ["second"] } } },
+          });
+        } else second.expireQuestion(localId);
+        await vi.waitFor(async () =>
           expect(
             (await api.read({ threadId: secondThread, view: "result" })).pendingQuestions,
-          ).toEqual([]);
-        });
-        expect(first.interactionResponses).toEqual([]);
+          ).toEqual([]),
+        );
         expect(
           (await api.read({ threadId: firstThread, view: "result" })).pendingQuestions,
         ).toMatchObject([{ interactionId: firstId }]);
-        await expect(
-          api.answer({
-            threadId: firstThread,
-            interactionId: firstId,
-            answers: { value: ["first"] },
-          }),
-        ).resolves.toMatchObject({ threadId: firstThread });
-        expect(first.interactionResponses).toHaveLength(1);
+        expect(first.interactionResponses).toEqual([]);
       } finally {
         await stopFixture(fixture);
       }
     },
   );
 
-  it("answers a pending external Question once through the delegation API", async () => {
+  it("settles only one external reply when Desktop and the delegator answer together", async () => {
     const { fixture, ready } = questionFixture();
     try {
       const api = await ready();
       const threadId = await startPiThread(fixture);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
       await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Missing Session");
       session.askQuestion({
         id: "decision",
         type: "choice",
         prompt: "Continue?",
-        options: [
-          { value: "continue", label: "Continue" },
-          { value: "stop", label: "Stop" },
-        ],
+        options: [{ value: "continue", label: "Continue" }],
         multiple: false,
         allowOther: false,
         optional: false,
       });
-      const interactionId = await pendingQuestionId(api, threadId);
-      const request = await fixture.collector.waitFor((message) =>
-        method(message, "item/tool/requestUserInput"),
+      const request = await fixture.collector.waitFor((m) =>
+        method(m, "item/tool/requestUserInput"),
       );
-      if (typeof request.id !== "number") throw new Error("Question request has no numeric ID");
+      const interactionId = await pendingId(api, threadId);
+      const answering = api.answer({ threadId, interactionId, result: reply }).catch((error) => {
+        expect(error).toMatchObject({ code: "QUESTION_NOT_PENDING" });
+      });
+      writeRequest(fixture.desktopInput, { id: requiredMessageId(request), result: reply });
+      await answering;
+      await vi.waitFor(() => expect(session.interactionResponses).toHaveLength(1));
+      expect((await api.read({ threadId, view: "result" })).pendingQuestions).toEqual([]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 
-      const snapshot = await api.read({ threadId, view: "result" });
-      expect(snapshot.pendingQuestions).toEqual([
-        {
-          interactionId,
-          turnId: expect.any(String),
-          questions: [
-            {
-              id: "decision",
-              type: "choice",
-              prompt: "Continue?",
-              options: [
-                { value: "continue", label: "Continue" },
-                { value: "stop", label: "Stop" },
-              ],
-              multiple: false,
-              allowOther: false,
-              optional: false,
+  it.each(["delegation", "desktop", "race"] as const)(
+    "passes native request/reply data unchanged through %s",
+    async (entry) => {
+      const { fixture, ready } = questionFixture();
+      try {
+        const api = await ready();
+        const threadId = "native-thread";
+        const { request, params } = await nativeQuestion(fixture, 7, threadId, "native-turn");
+        const snapshot = await nativeRead(api, fixture, threadId);
+        const interactionId = snapshot.pendingQuestions?.[0]?.interactionId;
+        if (!interactionId) throw new Error("Missing native Question");
+        expect(snapshot.pendingQuestions?.[0]?.request).toEqual(params);
+        const result = { ...reply, nativeExtension: ["preserved"] };
+        let delegationWon = entry === "delegation";
+        if (entry === "race") {
+          const answering = api.answer({ threadId, interactionId, result }).then(
+            () => true,
+            (error) => {
+              expect(error).toMatchObject({ code: "QUESTION_NOT_PENDING" });
+              return false;
             },
-          ],
-        },
-      ]);
-      expect(compactDelegationOutput("thread read", snapshot)).toMatchObject({
-        status: "running",
-        pendingQuestions: [{ interactionId, questions: [{ id: "decision" }] }],
-      });
-
-      await expect(
-        api.answer({ threadId, interactionId, answers: { decision: ["continue"] } }),
-      ).resolves.toMatchObject({
-        threadId,
-        interactionId,
-        harnessId: "pi",
-        status: "running",
-      });
-      await vi.waitFor(() => {
-        expect(session.interactionResponses.at(-1)).toMatchObject({
-          response: { type: "question", answers: { decision: ["continue"] } },
+          );
+          writeRequest(fixture.desktopInput, { id: requiredMessageId(request), result });
+          delegationWon = await answering;
+        } else if (entry === "delegation") await api.answer({ threadId, interactionId, result });
+        else writeRequest(fixture.desktopInput, { id: requiredMessageId(request), result });
+        expect(await readJsonLine(fixture.official.stdin)).toEqual({ id: 7, result });
+        await expect(api.answer({ threadId, interactionId, result })).rejects.toMatchObject({
+          code: "QUESTION_NOT_PENDING",
         });
-      });
-      // Answering from the CLI closes the same Question in Desktop.
-      await expect(
-        fixture.collector.waitFor((message) => method(message, "serverRequest/resolved")),
-      ).resolves.toMatchObject({ params: { threadId, requestId: request.id } });
-      await expect(api.read({ threadId, view: "result" })).resolves.toMatchObject({
-        pendingQuestions: [],
-      });
-      await expect(
-        api.answer({ threadId, interactionId, answers: { decision: ["continue"] } }),
-      ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
-
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("keeps an invalid answer from consuming the Question", async () => {
-    const { fixture, ready } = questionFixture();
-    try {
-      const api = await ready();
-      const threadId = await startPiThread(fixture);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      await startPiTurn(fixture, threadId);
-      session.askQuestion({
-        id: "decision",
-        type: "choice",
-        prompt: "Continue?",
-        options: [{ value: "continue", label: "Continue" }],
-        multiple: false,
-        allowOther: false,
-        optional: false,
-      });
-      const interactionId = await pendingQuestionId(api, threadId);
-      await fixture.collector.waitFor((message) => method(message, "item/tool/requestUserInput"));
-
-      for (const answers of [
-        { decision: ["undeclared"] },
-        { decision: [] },
-        { missing: ["continue"] },
-        { decision: "continue" as unknown as string[] },
-      ]) {
-        await expect(api.answer({ threadId, interactionId, answers })).rejects.toMatchObject({
-          code: "INVALID_ARGUMENT",
+        const closedBefore = fixture.collector.messages.filter((m) =>
+          method(m, "serverRequest/resolved"),
+        ).length;
+        expect(closedBefore).toBe(delegationWon ? 1 : 0);
+        writeRequest(fixture.official.stdout, {
+          method: "serverRequest/resolved",
+          params: { threadId, requestId: 7 },
         });
+        writeRequest(fixture.desktopInput, { id: requiredMessageId(request), result: {} });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(
+          fixture.collector.messages.filter((m) => method(m, "serverRequest/resolved")),
+        ).toHaveLength(closedBefore);
+        expect(fixture.official.stdin.read()).toBeNull();
+      } finally {
+        await stopFixture(fixture);
       }
-      await expect(
-        api.answer({ threadId, interactionId: "unknown", answers: {} }),
-      ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
-      await expect(
-        api.answer({
-          threadId: "another-thread",
-          interactionId,
-          answers: { decision: ["continue"] },
-        }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-      expect(session.interactionResponses).toHaveLength(0);
-      await expect(api.read({ threadId, view: "result" })).resolves.toMatchObject({
-        pendingQuestions: [expect.objectContaining({ interactionId })],
-      });
+    },
+  );
 
-      await expect(
-        api.answer({ threadId, interactionId, answers: { decision: ["continue"] } }),
-      ).resolves.toMatchObject({ status: "running" });
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("accepts skipping an optional Question and rejects skipping a required one", async () => {
+  it("keeps native Desktop error and unrecognised answer payloads on their original path", async () => {
     const { fixture, ready } = questionFixture();
     try {
-      const api = await ready();
-      const threadId = await startPiThread(fixture);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      await startPiTurn(fixture, threadId);
-      session.askQuestion({
-        id: "note",
-        type: "text",
-        prompt: "Note",
-        multiline: false,
-        secret: false,
-        optional: true,
-      });
-      const optionalId = await pendingQuestionId(api, threadId);
-      await fixture.collector.waitFor((message) => method(message, "item/tool/requestUserInput"));
-      // Every Question may be skipped when none of them is required.
-      await expect(
-        api.answer({ threadId, interactionId: optionalId, answers: {} }),
-      ).resolves.toMatchObject({ interactionId: optionalId, status: "running" });
-      await vi.waitFor(() => {
-        expect(session.interactionResponses.at(-1)).toMatchObject({
-          response: { type: "question", answers: {} },
-        });
-      });
-
-      session.askQuestion({
-        id: "value",
-        type: "text",
-        prompt: "Value",
-        multiline: false,
-        secret: false,
-        optional: false,
-      });
-      const requiredId = await pendingQuestionId(api, threadId);
-      await vi.waitFor(async () => {
-        expect((await api.read({ threadId, view: "result" })).pendingQuestions).toEqual([
-          expect.objectContaining({ interactionId: requiredId }),
-        ]);
-      });
-      await expect(
-        api.answer({ threadId, interactionId: requiredId, answers: { value: [] } }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-      expect(session.interactionResponses).toHaveLength(1);
-      await expect(api.read({ threadId, view: "result" })).resolves.toMatchObject({
-        pendingQuestions: [expect.objectContaining({ interactionId: requiredId })],
-      });
-
-      await expect(
-        api.answer({ threadId, interactionId: requiredId, answers: { value: ["typed"] } }),
-      ).resolves.toMatchObject({ status: "running" });
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("settles only one of two concurrent answers to the same Question", async () => {
-    const { fixture, ready } = questionFixture();
-    try {
-      const api = await ready();
-      const threadId = await startPiThread(fixture);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      await startPiTurn(fixture, threadId);
-      session.askQuestion({
-        id: "decision",
-        type: "choice",
-        prompt: "Continue?",
-        options: [{ value: "continue", label: "Continue" }],
-        multiple: false,
-        allowOther: false,
-        optional: false,
-      });
-      const interactionId = await pendingQuestionId(api, threadId);
-      const request = await fixture.collector.waitFor((message) =>
-        method(message, "item/tool/requestUserInput"),
-      );
-      if (typeof request.id !== "number") throw new Error("Question request has no numeric ID");
-
-      // Both entries answer in the same tick, without waiting for either.
-      const answered = api
-        .answer({ threadId, interactionId, answers: { decision: ["continue"] } })
-        .then(
-          () => "answered" as const,
-          (error: DelegationControlError) => error,
+      await ready();
+      for (const [index, replyBody] of [
+        { result: { answers: { nativeFutureShape: "untouched" } } },
+        { error: { code: -32800, message: "cancelled" } },
+      ].entries()) {
+        const nativeId = index + 10;
+        const { request } = await nativeQuestion(
+          fixture,
+          nativeId,
+          "native-thread",
+          `turn-${index}`,
         );
-      writeRequest(fixture.desktopInput, {
-        id: request.id,
-        result: { answers: { decision: { answers: ["Continue"] } } },
-      });
-
-      const outcome = await answered;
-      if (outcome !== "answered") expect(outcome).toMatchObject({ code: "QUESTION_NOT_PENDING" });
-      await vi.waitFor(() => {
-        expect(session.interactionResponses).toHaveLength(1);
-      });
-      await expect(api.read({ threadId, view: "result" })).resolves.toMatchObject({
-        pendingQuestions: [],
-      });
-
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+        writeRequest(fixture.desktopInput, { id: requiredMessageId(request), ...replyBody });
+        expect(await readJsonLine(fixture.official.stdin)).toEqual({ id: nativeId, ...replyBody });
+      }
     } finally {
       await stopFixture(fixture);
     }
   });
 
-  it("rejects an answer for a Question the Harness closed or expired", async () => {
+  it("retires only the native Question belonging to the ended Turn", async () => {
     const { fixture, ready } = questionFixture();
     try {
       const api = await ready();
-      const threadId = await startPiThread(fixture);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      await startPiTurn(fixture, threadId);
-      const nativeInteractionId = session.askQuestion({
-        id: "value",
-        type: "text",
-        prompt: "Value",
-        multiline: false,
-        secret: false,
-        optional: false,
-      });
-      const interactionId = await pendingQuestionId(api, threadId);
-      const request = await fixture.collector.waitFor((message) =>
-        method(message, "item/tool/requestUserInput"),
-      );
-      if (typeof request.id !== "number") throw new Error("Question request has no numeric ID");
-
-      session.expireQuestion(nativeInteractionId);
-      await expect(
-        fixture.collector.waitFor(
-          (message) =>
-            method(message, "serverRequest/resolved") &&
-            (message.params as JsonObject).requestId === request.id,
-        ),
-      ).resolves.toMatchObject({ params: { threadId, requestId: request.id } });
-      await expect(
-        api.answer({ threadId, interactionId, answers: { value: ["late"] } }),
-      ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
-      await expect(api.read({ threadId, view: "result" })).resolves.toMatchObject({
-        pendingQuestions: [],
-      });
-
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("retires the Turn's Questions when that Turn ends", async () => {
-    const { fixture, ready } = questionFixture();
-    try {
-      const api = await ready();
-      const threadId = await startPiThread(fixture);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      await startPiTurn(fixture, threadId);
-      session.askQuestion({
-        id: "value",
-        type: "text",
-        prompt: "Value",
-        multiline: false,
-        secret: false,
-        optional: false,
-      });
-      const interactionId = await pendingQuestionId(api, threadId);
-      await fixture.collector.waitFor((message) => method(message, "item/tool/requestUserInput"));
-
-      session.failTurn({ code: "nativeFailure", message: "process exited", retryable: false });
-      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-      await expect(api.read({ threadId, view: "result" })).resolves.toMatchObject({
-        pendingQuestions: [],
-      });
-      await expect(
-        api.answer({ threadId, interactionId, answers: { value: ["late"] } }),
-      ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("answers a native Question, closes it once, and drops the later native resolution", async () => {
-    const { fixture, ready } = questionFixture();
-    const requests = officialRequests(fixture);
-    const readThread = officialThreadReader(fixture, requests);
-    try {
-      const api = await ready();
-      const threadId = "official-thread";
-      const { requestId, interactionId } = await emitOfficialQuestion(
-        fixture,
-        {
-          nativeId: 7,
-          threadId,
-          turnId: "official-turn",
-        },
-        api,
-        readThread,
-      );
-
-      const reading = api.read({ threadId, view: "result" });
-      await readThread(threadId);
-      await expect(reading).resolves.toMatchObject({
-        status: "running",
-        pendingQuestions: [
-          {
-            interactionId,
-            turnId: "official-turn",
-            questions: [
-              {
-                id: "decision",
-                type: "choice",
-                prompt: "Continue in official-turn?",
-                options: [
-                  { value: "Continue", label: "Continue", description: "Keep going" },
-                  { value: "Stop", label: "Stop" },
-                ],
-                allowOther: false,
-                optional: false,
-              },
-            ],
-          },
-        ],
-      });
-
-      await expect(
-        api.answer({ threadId, interactionId, answers: { decision: ["Continue"] } }),
-      ).resolves.toMatchObject({ threadId, interactionId, harnessId: "codex", status: "running" });
-      // The answer reaches the native request with its own ID and answer shape.
-      await waitForRequest(requests, (request) => request.id === 7);
-      expect(requests.find((request) => request.id === 7)).toEqual({
-        id: 7,
-        result: { answers: { decision: { answers: ["Continue"] } } },
-      });
-      expect(resolvedRequests(fixture)).toEqual([
-        expect.objectContaining({ params: { threadId, requestId } }),
-      ]);
-
-      // The resolution that follows the answer cannot be named by an ID the
-      // Desktop saw, so it is dropped: exactly one close, no native ID leak.
-      emitOfficial(fixture, {
-        method: "serverRequest/resolved",
-        params: { threadId, requestId: 7 },
-      });
-      await nextTick();
-      expect(resolvedRequests(fixture)).toHaveLength(1);
-      expect(JSON.stringify(fixture.collector.messages)).not.toContain('"requestId":7');
-
-      // The retired reply route no longer accepts a late Desktop reply.
-      writeRequest(fixture.desktopInput, {
-        id: requestId,
-        result: { answers: { decision: { answers: ["Stop"] } } },
-      });
-      await nextTick();
-      expect(requests.filter((request) => request.id === 7)).toHaveLength(1);
-
-      await expect(
-        api.answer({ threadId, interactionId, answers: { decision: ["Continue"] } }),
-      ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("retires only the ended Turn's native Questions and keeps other replies forwarding", async () => {
-    const { fixture, ready } = questionFixture();
-    const requests = officialRequests(fixture);
-    const readThread = officialThreadReader(fixture, requests);
-    try {
-      const api = await ready();
-      const threadId = "official-thread";
-      const firstTurn = await emitOfficialQuestion(
-        fixture,
-        {
-          nativeId: 11,
-          threadId,
-          turnId: "turn-one",
-        },
-        api,
-        readThread,
-      );
-      const secondTurn = await emitOfficialQuestion(
-        fixture,
-        {
-          nativeId: 12,
-          threadId,
-          turnId: "turn-two",
-        },
-        api,
-        readThread,
-      );
-
-      // A server request that is not a Question keeps the ordinary reply path.
-      emitOfficial(fixture, {
-        id: 21,
-        method: "item/commandExecution/requestApproval",
-        params: { threadId, turnId: "turn-two" },
-      });
-      const approval = await fixture.collector.waitFor(
-        (message) =>
-          method(message, "item/commandExecution/requestApproval") &&
-          (message.params as JsonObject).threadId === threadId,
-      );
-      if (approval.id === undefined) throw new Error("Native approval request has no ID");
-      writeRequest(fixture.desktopInput, { id: approval.id, result: { decision: "approved" } });
-      await waitForRequest(requests, (request) => request.id === 21);
-      expect(requests.find((request) => request.id === 21)).toEqual({
-        id: 21,
-        result: { decision: "approved" },
-      });
-
-      emitOfficial(fixture, {
+      const threadId = "native-thread";
+      const first = await nativeQuestion(fixture, 11, threadId, "first-turn");
+      await nativeQuestion(fixture, 12, threadId, "second-turn");
+      const before = await nativeRead(api, fixture, threadId);
+      const oldId = before.pendingQuestions?.find((q) => q.turnId === "first-turn")?.interactionId;
+      if (!oldId) throw new Error("Missing first Question");
+      writeRequest(fixture.official.stdout, {
         method: "turn/completed",
-        params: { threadId, turn: { id: "turn-one", status: "completed" } },
+        params: { threadId, turn: { id: "first-turn", status: "completed" } },
       });
-      await vi.waitFor(() => {
-        expect(resolvedRequests(fixture)).toEqual([
-          expect.objectContaining({ params: { threadId, requestId: firstTurn.requestId } }),
-        ]);
-      });
-      // The other Turn's Question is untouched and still answerable.
-      const reading = api.read({ threadId, view: "result" });
-      await readThread(threadId);
-      await expect(reading).resolves.toMatchObject({
-        pendingQuestions: [expect.objectContaining({ interactionId: secondTurn.interactionId })],
-      });
-      await expect(
-        api.answer({
-          threadId,
-          interactionId: firstTurn.interactionId,
-          answers: { decision: ["Continue"] },
-        }),
-      ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
-      await expect(
-        api.answer({
-          threadId,
-          interactionId: secondTurn.interactionId,
-          answers: { decision: ["Continue"] },
-        }),
-      ).resolves.toMatchObject({ interactionId: secondTurn.interactionId, status: "running" });
-      await waitForRequest(requests, (request) => request.id === 12);
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("settles a Desktop answer to a native Question and rejects an invalid one", async () => {
-    const { fixture, ready } = questionFixture();
-    const requests = officialRequests(fixture);
-    const readThread = officialThreadReader(fixture, requests);
-    try {
-      const api = await ready();
-      const threadId = "official-thread";
-      const { requestId, interactionId } = await emitOfficialQuestion(
-        fixture,
-        {
-          nativeId: 9,
-          threadId,
-          turnId: "official-turn",
-        },
-        api,
-        readThread,
+      await fixture.collector.waitFor(
+        (m) =>
+          method(m, "serverRequest/resolved") &&
+          (m.params as JsonObject).requestId === first.request.id,
       );
-
-      // An undeclared option, an unknown Question ID, and a malformed answer
-      // shape are not delivered and do not consume the Question.
-      for (const answers of [
-        { decision: { answers: ["Undeclared"] } },
-        { missing: { answers: ["Continue"] } },
-        { decision: "not-an-answer-array" },
-      ]) {
-        writeRequest(fixture.desktopInput, { id: requestId, result: { answers } });
-        await nextTick();
-        expect(requests.some((request) => request.id === 9)).toBe(false);
-      }
-      const reading = api.read({ threadId, view: "result" });
-      await readThread(threadId);
-      await expect(reading).resolves.toMatchObject({
-        pendingQuestions: [expect.objectContaining({ interactionId })],
-      });
-
-      writeRequest(fixture.desktopInput, {
-        id: requestId,
-        result: { answers: { decision: { answers: ["Continue"] } } },
-      });
-      await waitForRequest(requests, (request) => request.id === 9);
-      expect(requests.find((request) => request.id === 9)).toEqual({
-        id: 9,
-        result: { answers: { decision: { answers: ["Continue"] } } },
-      });
+      const after = await nativeRead(api, fixture, threadId);
+      expect(after.pendingQuestions).toHaveLength(1);
+      expect(after.pendingQuestions?.[0]?.turnId).toBe("second-turn");
       await expect(
-        api.answer({ threadId, interactionId, answers: { decision: ["Continue"] } }),
+        api.answer({ threadId, interactionId: oldId, result: reply }),
       ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("settles only one of two concurrent answers to a native Question", async () => {
-    const { fixture, ready } = questionFixture();
-    const requests = officialRequests(fixture);
-    const readThread = officialThreadReader(fixture, requests);
-    try {
-      const api = await ready();
-      const threadId = "official-thread";
-      const { requestId, interactionId } = await emitOfficialQuestion(
-        fixture,
-        {
-          nativeId: 7,
-          threadId,
-          turnId: "official-turn",
-        },
-        api,
-        readThread,
-      );
-
-      const answered = api
-        .answer({ threadId, interactionId, answers: { decision: ["Continue"] } })
-        .then(
-          () => "answered" as const,
-          (error: DelegationControlError) => error,
-        );
-      writeRequest(fixture.desktopInput, {
-        id: requestId,
-        result: { answers: { decision: { answers: ["Continue"] } } },
-      });
-
-      const outcome = await answered;
-      if (outcome !== "answered") expect(outcome).toMatchObject({ code: "QUESTION_NOT_PENDING" });
-      await vi.waitFor(() => {
-        expect(requests.filter((request) => request.id === 7)).toHaveLength(1);
-      });
-      const reading = api.read({ threadId, view: "result" });
-      await readThread(threadId);
-      await expect(reading).resolves.toMatchObject({ pendingQuestions: [] });
+      const id = after.pendingQuestions?.[0]?.interactionId;
+      if (!id) throw new Error("Missing second Question");
+      await api.answer({ threadId, interactionId: id, result: reply });
+      expect(await readJsonLine(fixture.official.stdin)).toEqual({ id: 12, result: reply });
     } finally {
       await stopFixture(fixture);
     }

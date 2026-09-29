@@ -115,7 +115,7 @@ describe("delegation Skill installation", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain("pendingQuestions");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("thread answer <thread> --interaction <id>");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("--answers-file <file>");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("An invalid answer changes nothing");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("existing reply result");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("needsInput");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("alreadyNeedsInput");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("outside the task authorization");

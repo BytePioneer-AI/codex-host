@@ -323,7 +323,7 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 
 #### Scenario: 读取待回答的问题
 - **WHEN** Thread 正在等待回答一个由原生结构化请求报告的问题
-- **THEN** 快照 SHALL 在 `pendingQuestions` 中包含该请求的交互 ID、`turnId`、问题与已有的回答约束
+- **THEN** 快照 SHALL 在 `pendingQuestions` 中包含该请求的唯一交互 ID、`turnId`，以及 `request` 中未经重新解释的原有 Desktop 请求参数
 - **AND** 该 Thread 的 `status` SHALL 保持 `running`，MUST NOT 因提问记为完成或新建 `waiting` 状态
 - **AND** JSON 与 compact 输出 SHALL 都暴露该字段
 
@@ -476,7 +476,7 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接两种形
 - **AND** send/cancel MUST 仅由对应的显式命令触发
 
 ### Requirement: 委派侧可读取并回答待处理的问题请求
-系统 SHALL 提供 `codexhost thread answer <thread> --interaction <id> --answers-file <file>`，把答案交回产生该问题的原生结构化请求。Host SHALL 对每个待回答请求维护唯一状态，Desktop 与委派 CLI SHALL 消费同一份状态并共用结算逻辑。答案文件 SHALL 沿用问题 ID 到答案数组的结构。Host SHALL 按报告的回答约束校验答案；无效答案 MUST NOT 消耗请求，SHALL 以 `INVALID_ARGUMENT` 失败并保持请求待回答。首个被原生接受的答案 SHALL 结算该请求并让原 Turn 继续；同一问题的其余回答 SHALL 以 `QUESTION_NOT_PENDING` 失败。CLI 回答成功后 SHALL 同步关闭 Desktop 中的同一问题。请求被取消、过期、Turn 结束、原生自行解决或 Runtime 关闭后，旧交互 ID MUST NOT 再被接受。问题 MUST NOT 进入 `approval` 权限通道，也 MUST NOT 扩大任何权限策略。
+系统 SHALL 提供 `codexhost thread answer <thread> --interaction <id> --answers-file <file>`，把答复交给该问题的已有处理入口。Host SHALL 维护一份挂起请求，Desktop 与委派 CLI SHALL 共用请求身份与一次性结算。答案文件 SHALL 包含原有 `requestUserInput` 回复的 result 对象，例如 `{"answers":{"decision":{"answers":["Continue"]}}}`。新增委派层 MUST NOT 重新解释选项、必填或答案数量，MUST NOT 改变 Desktop 原有答复、取消或非法输入行为；这些语义 SHALL 由现有协议处理者负责。请求一旦交给答复处理者，其他回答 SHALL 被拒绝，发送失败或结果不明 MUST NOT 触发重复提交。CLI 提交后 SHALL 同步关闭 Desktop 中的同一问题。取消、过期、Turn 结束、原生自行解决或 Runtime 关闭后，旧凭证 MUST NOT 再被接受。问题 MUST NOT 进入 `approval` 通道，也 MUST NOT 改变权限策略。
 
 #### Scenario: 回答待处理的问题
 - **WHEN** 调用方对 `thread read` 报告的交互 ID 执行 `thread answer`，答案满足该请求的约束
@@ -484,10 +484,16 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接两种形
 - **AND** 原 Turn SHALL 继续执行，MUST NOT 被当作已成功完成
 - **AND** Desktop 中的同一问题 SHALL 被同步关闭
 
-#### Scenario: 无效答案
-- **WHEN** 答案包含未知问题 ID、缺少必答项、未声明的选项或数量不符
-- **THEN** 命令 SHALL 以 `INVALID_ARGUMENT` 失败
-- **AND** 该请求 SHALL 保持待回答，调用方 SHALL 能够改正后重答
+#### Scenario: 原有回复语义保持
+- **WHEN** 委派方提交解析成功的答复结果
+- **THEN** 该结果 SHALL 交给与 Desktop 相同的既有处理函数
+- **AND** 外部 Harness 的选项映射与非法输入取消行为 SHALL 沿用原解析器
+- **AND** 原生 Codex 的答复内容 SHALL 原样沿既有服务端请求映射转发
+- **AND** 新增委派层 MUST NOT 另行承诺统一的非法答案重试语义
+
+#### Scenario: 答案文件不是 JSON
+- **WHEN** CLI 无法解析答案文件
+- **THEN** CLI SHALL 返回 INVALID_ARGUMENT，MUST NOT 提交回复或消费请求
 
 #### Scenario: 并发回答只结算一次
 - **WHEN** Desktop 与委派 CLI 同时回答同一个问题
@@ -506,7 +512,7 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接两种形
 
 #### Scenario: 原生关闭通知落到同一请求
 - **WHEN** 原生 Codex 报告服务端请求已解决
-- **THEN** Host SHALL 清除对应待回答请求，并把关闭通知的请求标识改写为 Desktop 与 CLI 已知的标识
+- **THEN** Host SHALL 清除对应待回答请求，并把关闭通知的请求标识改写为 Desktop 已知的请求标识；CLI 的公开凭证 SHALL 同时失效
 - **AND** MUST NOT 用原生请求 ID 对照改写后的标识
 
 #### Scenario: 问题不是权限许可

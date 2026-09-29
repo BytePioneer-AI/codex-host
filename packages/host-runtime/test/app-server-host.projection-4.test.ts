@@ -846,10 +846,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("keeps a malformed Desktop answer pending and dismisses an explicit cancellation", async () => {
-    for (const malformed of [
+  it("cancels malformed and dismissed Desktop Question responses", async () => {
+    for (const result of [
       { answers: { decision: { answers: ["undeclared"] } } },
-      { answers: "not-an-object" },
+      { answers: {} },
     ]) {
       const fixture = createFixture();
       const threadId = await startPiThread(fixture);
@@ -869,50 +869,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         method(message, "item/tool/requestUserInput"),
       );
       if (typeof request.id !== "number") throw new Error("Question request has no numeric ID");
-      writeRequest(fixture.desktopInput, { id: request.id, result: malformed });
-      // An invalid answer is not delivered and does not consume the Question.
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(session.interactionResponses).toHaveLength(0);
-
-      writeRequest(fixture.desktopInput, {
-        id: request.id,
-        result: { answers: { decision: { answers: ["Known"] } } },
-      });
-      await vi.waitFor(() => {
-        expect(session.interactionResponses.at(-1)).toMatchObject({
-          response: { type: "question", answers: { decision: ["known"] } },
-        });
-      });
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-      await stopFixture(fixture);
-    }
-
-    for (const dismissal of [
-      // The public Question contract reads an empty answer set as a dismissal.
-      { result: { answers: {} } },
-      // An explicit error reply is the user closing the request.
-      { error: { code: -32800, message: "cancelled" } },
-    ]) {
-      const fixture = createFixture();
-      const threadId = await startPiThread(fixture);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      await startPiTurn(fixture, threadId);
-      session.askQuestion({
-        id: "decision",
-        type: "choice",
-        prompt: "Choose",
-        options: [{ value: "known", label: "Known" }],
-        multiple: false,
-        allowOther: false,
-        optional: false,
-      });
-      const request = await fixture.collector.waitFor((message) =>
-        method(message, "item/tool/requestUserInput"),
-      );
-      if (typeof request.id !== "number") throw new Error("Question request has no numeric ID");
-      writeRequest(fixture.desktopInput, { id: request.id, ...dismissal });
+      writeRequest(fixture.desktopInput, { id: request.id, result });
       await fixture.collector.waitFor((message) => method(message, "item/completed"));
       expect(session.interactionResponses.at(-1)).toMatchObject({
         response: { type: "question", answers: {}, cancelled: true },

@@ -124,17 +124,9 @@ describe("DelegationWatchService", () => {
     const question: DelegationPendingQuestion = {
       interactionId: "interaction-1",
       turnId: "turn-child",
-      questions: [
-        {
-          id: "decision",
-          type: "choice",
-          prompt: "Continue?",
-          options: [{ value: "continue", label: "Continue" }],
-          multiple: false,
-          allowOther: false,
-          optional: false,
-        },
-      ],
+      request: {
+        questions: [{ id: "decision", question: "Continue?", options: [{ label: "Continue" }] }],
+      },
     };
     const fake = runtime(
       { child: { status: "running" }, parent: { status: "running" } },
@@ -167,7 +159,15 @@ describe("DelegationWatchService", () => {
     expect(fake.sent).toEqual([]);
 
     // The Question arrives while the watch is already registered.
-    pending.child = [{ interactionId: "interaction-1", turnId: "turn-child", questions: [] }];
+    pending.child = [
+      {
+        interactionId: "interaction-1",
+        turnId: "turn-child",
+        request: {
+          questions: [{ id: "decision", question: "Continue?", options: [{ label: "Continue" }] }],
+        },
+      },
+    ];
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
     expect(fake.sent[0]?.message).toContain("request interaction-1, Turn turn-child");

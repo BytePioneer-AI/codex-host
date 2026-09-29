@@ -22,7 +22,7 @@ cancelled=true (compact: cancelRequested=true) means the cancellation request wa
   "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
 Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
 The default result view reports the latest Turn's status and result.
-pendingQuestions lists the Question requests this Thread is waiting for, with the interaction ID, Turn, prompts, options, and answer constraints; an empty list means none. No watch is needed to read or answer them.
+pendingQuestions lists the Question requests this Thread is waiting for, with the interaction ID, Turn, and unchanged Desktop request parameters in request; an empty list means none. No watch is needed to read or answer them.
 The messages view pages visible user/Agent messages, oldest first. Default limit 25, maximum 100; --cursor and --limit require --view messages.
 hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.
 Compact messages output contains only the message page and status; compact result output includes the latest nonempty progress while running.
@@ -33,10 +33,10 @@ A pending Question returns immediately with timedOut=false and the Question in p
 Message pagination uses --view messages, default limit 25, maximum 100. hasMore is for current pages; nextCursor also supports future incremental reads.`,
   "thread answer": `codexhost thread answer <thread> --interaction <id> --answers-file <file> [--format json|compact]
 Answer one pending Question request reported by thread read in pendingQuestions, and let the original Turn continue.
---interaction is the request's interactionId. --answers-file is a JSON object mapping each Question ID to an array of answer values, for example {"decision":["continue"],"note":["free text"]}.
-Use the values reported by the request's options; free-text, allowOther, and option-less Questions take text. Missing required answers, unknown Question IDs, undeclared choices, and wrong answer counts are rejected as INVALID_ARGUMENT and leave the request pending.
+--interaction is the opaque interactionId reported by read. --answers-file contains the existing reply result, for example {"answers":{"decision":{"answers":["Continue"]}}}.
+Read pendingQuestions[].request for the original prompts and option labels. Reply interpretation, cancellation, and invalid-input behavior belong to the existing handler, just as for Desktop. Do not assume a rejected reply can be retried; read the Thread again.
 QUESTION_NOT_PENDING means the interaction ID is unknown, already answered by the user or another caller, cancelled, expired, or from a finished Turn or retired Runtime.
-A valid answer is delivered to the native request, and the same Question closes in Desktop. The receipt means the answer was accepted, not that the delegated work succeeded: read or wait for the outcome.`,
+The reply is submitted to the existing request handler, and the same Question closes in Desktop. The receipt means the answer was accepted, not that the delegated work succeeded: read or wait for the outcome.`,
   "thread watch": `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>] [--format json|compact]
 Ask the Host to notify one Thread, once, when the watched Thread stops or waits for an answer. Returns immediately; no waiting or polling by the caller is needed, and the caller may end its Turn.
 --notify defaults to the calling Thread when it is identified (CODEXHOST_THREAD_ID, or CODEX_THREAD_ID in native Codex); otherwise it is required. delegate start reports the caller as its parent.

@@ -79,6 +79,7 @@ export function modelCatalog(settings: NativeSettings) {
     models: available.map((model) => ({
       ref: encodeModel(model.ref),
       label: model.label,
+      nativeId: `${model.ref.providerId}/${model.ref.modelId}`,
       supportedThinkingOptionIds: model.reasoning?.enabled
         ? model.reasoning.levels.map((level) => level.value)
         : [],

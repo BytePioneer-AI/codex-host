@@ -108,7 +108,7 @@ export class ZcodeSession implements HarnessSession {
       "active";
     this.#state = sessionState(snapshot, transport.locator);
     this.initialState = structuredClone(this.#state);
-    this.initialUsage = contextUsage(snapshot);
+    this.initialUsage = contextUsage(snapshot, nativeCatalog);
     this.#lastSeq = typeof snapshot.runtime.eventSeq === "number" ? snapshot.runtime.eventSeq : 0;
     transport.onFault = (error) => this.#fault(error);
   }
@@ -220,7 +220,7 @@ export class ZcodeSession implements HarnessSession {
       const usage = record(
         await this.transport.request("getTaskTokenUsage", { sessionId: this.sessionId }),
       );
-      const fields: HostUsage = { ...(contextUsage(snapshot) ?? {}) };
+      const fields: HostUsage = { ...(contextUsage(snapshot, this.nativeCatalog) ?? {}) };
       for (const [source, target] of [
         ["inputTokens", "inputTokens"],
         ["outputTokens", "outputTokens"],

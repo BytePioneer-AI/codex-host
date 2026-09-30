@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { hostInteractionIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { contextUsage } from "../src/models.js";
 import { ZcodeSession } from "../src/session.js";
-import { snapshotSchema } from "../src/protocol.js";
+import { settingsSchema, snapshotSchema } from "../src/protocol.js";
 import type { CliTransport } from "../src/transport.js";
 
 const SESSION_ID = "native-session";
@@ -139,5 +140,47 @@ describe("ZCode Session lifecycle", () => {
     state.nativeResults[1]?.resolve({ status: "accepted" });
     expect(await retry).toMatchObject({ ok: true });
     expect(state.resolutions).toHaveLength(2);
+  });
+});
+
+describe("ZCode context usage", () => {
+  const current = { providerId: "deepseek", modelId: "deepseek-flash" };
+  const catalog = (contextWindow?: number) =>
+    settingsSchema.parse({
+      model: {
+        current,
+        available: [
+          {
+            ref: { providerId: "other", modelId: "deepseek-flash" },
+            label: "other",
+            contextWindow: 64_000,
+          },
+          { ref: current, label: "deepseek-flash", ...(contextWindow ? { contextWindow } : {}) },
+        ],
+      },
+      thoughtLevel: { enabled: false, available: [] },
+      mode: { current: "build" },
+    });
+  const session = (projectionWindow: number) =>
+    snapshotSchema.parse({
+      ...snapshot,
+      settings: { ...snapshot.settings, model: { current, available: [] } },
+      projection: { status: "idle", contextUsed: 1_200, contextWindow: projectionWindow },
+    });
+
+  it("reports the selected Model's catalog window instead of the stale session projection", () => {
+    expect(contextUsage(session(200_000), catalog(1_000_000))).toEqual({
+      contextUsedTokens: 1_200,
+      contextWindowTokens: 1_000_000,
+    });
+  });
+  it("uses the session projection when the catalog has no window for the selected Model", () => {
+    expect(contextUsage(session(200_000), catalog())).toEqual({
+      contextUsedTokens: 1_200,
+      contextWindowTokens: 200_000,
+    });
+  });
+  it("reports nothing when neither source has a window", () => {
+    expect(contextUsage(session(0), catalog())).toBeNull();
   });
 });

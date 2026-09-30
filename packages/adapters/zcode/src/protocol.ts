@@ -14,6 +14,7 @@ export const modelSchema = z
     label: z.string(),
     providerLabel: z.string().optional(),
     disabledReason: z.string().optional(),
+    contextWindow: z.number().int().positive().optional(),
     reasoning: z
       .object({
         enabled: z.boolean().optional(),

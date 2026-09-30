@@ -139,11 +139,22 @@ export function sessionState(snapshot: NativeSnapshot, locator?: JsonObject): Ha
     effectivePermissionModeId: harnessPermissionModeIdSchema.parse(settings.mode.current),
   };
 }
-export function contextUsage(snapshot: NativeSnapshot): HostUsage | null {
-  return snapshot.projection.contextWindow > 0
+/**
+ * The session projection keeps the CLI's initial 200000 window and never follows the selected
+ * Model, and `session/read` copies that value over the current Model entry. The full catalog
+ * carries the window ZCode resolved for each Model, which is what Desktop shows.
+ */
+export function contextUsage(snapshot: NativeSnapshot, catalog: NativeSettings): HostUsage | null {
+  const current = snapshot.settings.model.current;
+  const window =
+    catalog.model.available.find(
+      (model) =>
+        model.ref.providerId === current?.providerId && model.ref.modelId === current.modelId,
+    )?.contextWindow ?? snapshot.projection.contextWindow;
+  return window > 0
     ? parseHostUsage({
         contextUsedTokens: snapshot.projection.contextUsed,
-        contextWindowTokens: snapshot.projection.contextWindow,
+        contextWindowTokens: window,
       })
     : null;
 }

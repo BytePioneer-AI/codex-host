@@ -3945,7 +3945,9 @@ describe("DeepSeek Harness Modern Session", () => {
         text: "retired ghost\n\n[生成尝试已取消 / Generation attempt cancelled]",
       },
       { type: "agentMessage", text: "ghost\n\n[生成尝试已取消 / Generation attempt cancelled]" },
-      { type: "agentMessage", text: "done" },
+      { type: "agentMessage", text: "done", phase: null },
+      // The Host marks the reply that ends the succeeded Turn as its final answer.
+      { type: "agentMessage", text: "done", phase: "final_answer" },
     ]);
     expect(emitted.filter(({ type }) => type === "item.completed")).toEqual([
       expect.objectContaining({

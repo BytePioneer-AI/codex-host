@@ -643,7 +643,7 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
-  it("advertises alias Fast during model inspection, switches without reselecting Model, and restores the saved Fast ref", async () => {
+  it.each([false, true])("supports alias Fast (uncached cwd: %s)", async (liveSelection) => {
     const home = await mkdtemp(path.join(os.tmpdir(), "pi-fast-adapter-"));
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
     await mkdir(path.join(home, ".codex"));
@@ -693,9 +693,21 @@ describe("Pi HarnessAdapter Session", () => {
       ).toBeUndefined();
       await adapter.inspect({ cwd: home });
       expect(transports).toHaveLength(1);
-      const opened = await adapter.open({ kind: "create", cwd: home, model: fast });
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: liveSelection ? path.join(home, "uninspected-project") : home,
+        model: liveSelection ? base : fast,
+      });
       if (!opened.ok) throw new Error("Create failed");
       const session = opened.value;
+      await session.readSnapshot();
+      if (liveSelection) {
+        expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
+          ok: true,
+        });
+      }
+      // Capability checks must reuse the running Session, not spawn an inspection process.
+      expect(transports).toHaveLength(2);
       const snapshot = await session.readSnapshot();
       expect(snapshot).toMatchObject({ ok: true, value: { state: { effectiveModel: fast } } });
       const live = transports[1];
@@ -708,6 +720,35 @@ describe("Pi HarnessAdapter Session", () => {
       });
       expect(live.selectFastMode).toHaveBeenLastCalledWith(false);
       live.selectFastMode.mockClear();
+      if (liveSelection) {
+        live.supportsFastMode.mockResolvedValueOnce(false);
+        expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
+          ok: false,
+        });
+        // A different workspace need not expose the Model advertised by the picker's catalog.
+        live.getAvailableModels.mockResolvedValueOnce([]);
+        expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
+          ok: false,
+        });
+        expect(live.selectFastMode).not.toHaveBeenCalled();
+
+        let finishInspection!: () => void;
+        live.getAvailableModels.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishInspection = () => resolve([]);
+            }),
+        );
+        const selecting = session.execute({ type: "model.select", model: fast });
+        await vi.waitFor(() => expect(finishInspection).toBeDefined());
+        expect(await session.execute({ type: "model.select", model: base })).toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+        finishInspection();
+        expect(await selecting).toMatchObject({ ok: false });
+        expect(transports).toHaveLength(2);
+      }
       live.getAvailableThinkingLevels.mockRejectedValueOnce(new Error("Thinking discovery failed"));
       expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
         ok: false,

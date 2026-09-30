@@ -543,7 +543,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutStarCallout: "⭐ If this project helps you, please give us a Star! ⭐",
   aboutRepository: "Open-source repository",
   aboutConsole:
-    "The codexhost console runs outside Codex Desktop. It shows startup diagnostics and logs, and can update codexhost even when Codex cannot start.",
+    "The codexhost console runs outside Codex Desktop. It shows startup diagnostics and logs, and can check for codexhost updates and provide manual update guidance even when Codex cannot start.",
   aboutConsoleOpen: "Open console",
   aboutConsoleOpening: "Opening…",
   aboutConsoleFailed: "The console could not be opened",
@@ -820,7 +820,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutStarCallout: "⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐",
   aboutRepository: "开源仓库",
   aboutConsole:
-    "codexhost 控制台独立于 Codex Desktop 运行，可以查看启动诊断和日志；即使 Codex 无法启动，也能在控制台更新 codexhost。",
+    "codexhost 控制台独立于 Codex Desktop 运行，可以查看启动诊断和日志；即使 Codex 无法启动，也能在控制台检查 codexhost 更新并查看手动更新指引。",
   aboutConsoleOpen: "打开控制台",
   aboutConsoleOpening: "正在打开…",
   aboutConsoleFailed: "控制台打开失败",

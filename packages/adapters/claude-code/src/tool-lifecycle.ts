@@ -110,8 +110,8 @@ export class ClaudeToolLifecycle {
   start(turnId: HostTurnId, event: Extract<ClaudeTurnEvent, { type: "tool.started" }>): void {
     if (this.#tools.has(event.callId)) throw new Error("Claude Code Tool started more than once");
     // Tool Items share the Turn's transcript identity; the ordinal counts this
-    // lifecycle's Items in order of appearance so a later history projection
-    // addresses the same Renderer Item.
+    // lifecycle's Items in order of appearance, matching the toolOrdinal in
+    // claude-history.ts mapClaudeSnapshot so history addresses the same Renderer Item.
     const itemId = claudeTranscriptItemId(this.#nativeTurnKey, "tool", (this.#toolOrdinal += 1));
     const command = event.toolName === "Bash" ? stringField(event.arguments, "command") : undefined;
     const item: HostCommandExecutionItem | HostToolExecutionItem = command

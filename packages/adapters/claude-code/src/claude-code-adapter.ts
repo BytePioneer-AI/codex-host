@@ -10,6 +10,7 @@ import {
 import {
   HarnessOutputChannel,
   parseHostUsage,
+  sanitizeDiagnosticTail,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
@@ -444,9 +445,12 @@ function claudePermissionModeSelectionFailure(
       };
     }
   }
+  // Native wording can change independently of the SDK. Preserve the reason
+  // even when none of the known messages above matches.
+  const detail = sanitizeDiagnosticTail(error instanceof Error ? error.message : String(error));
   return {
     code: "nativeFailure",
-    message: "Claude Code rejected the Permission Mode selection",
+    message: `Claude Code rejected the Permission Mode selection${detail ? `: ${detail}` : ""}`,
     retryable: true,
   };
 }
@@ -1060,21 +1064,30 @@ class ClaudeHarnessSession implements HarnessSession {
   async stopBackgroundWork(): Promise<HarnessResult<void>> {
     const transport = this.#transport;
     if (!transport) return { ok: true, value: undefined };
-    try {
-      await Promise.all(
-        this.#backgroundCommands.taskIds().map((taskId) => transport.stopBackgroundTask(taskId)),
-      );
-      return { ok: true, value: undefined };
-    } catch (error) {
+    const taskIds = this.#backgroundCommands.taskIds();
+    const results = await Promise.allSettled(
+      taskIds.map(async (taskId) => transport.stopBackgroundTask(taskId)),
+    );
+    const failures = results.flatMap((result, index) =>
+      result.status === "rejected"
+        ? [
+            `${taskIds[index]}: ${sanitizeDiagnosticTail(
+              result.reason instanceof Error ? result.reason.message : String(result.reason),
+            )}`,
+          ]
+        : [],
+    );
+    if (failures.length > 0) {
       return {
         ok: false,
         error: {
           code: "nativeFailure",
-          message: error instanceof Error ? error.message : String(error),
+          message: `Claude Code could not stop background tasks: ${failures.join("; ")}`,
           retryable: true,
         },
       };
     }
+    return { ok: true, value: undefined };
   }
 
   refreshUsage(): Promise<void> {

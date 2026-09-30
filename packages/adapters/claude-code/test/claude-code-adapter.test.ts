@@ -1683,6 +1683,66 @@ describe("Claude Code HarnessAdapter", () => {
     }
   });
 
+  it("waits for every background stop request and reports all failures", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    let finishSlow = () => {};
+    const slow = new Promise<void>((resolve) => {
+      finishSlow = resolve;
+    });
+    try {
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("stop-background-commands"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      for (const taskId of ["failed-first", "slow-success", "failed-last"]) {
+        transport.event({
+          type: "tool.started",
+          callId: taskId,
+          toolName: "Bash",
+          arguments: { command: "sleep 3" },
+        });
+        await nextEvent(iterator);
+        transport.event({
+          type: "tool.completed",
+          callId: taskId,
+          toolName: "Bash",
+          outputText: `Command running in background with ID: ${taskId}.`,
+          isError: false,
+          backgroundTaskId: taskId,
+        });
+        expect(await nextEvent(iterator)).toMatchObject({ type: "item.detached" });
+      }
+      const stop = vi.spyOn(transport, "stopBackgroundTask").mockImplementation(async (taskId) => {
+        if (taskId === "slow-success") return slow;
+        throw new Error(taskId === "failed-first" ? "first refusal" : "last refusal");
+      });
+      const finished = vi.fn();
+      const stopping = session.stopBackgroundWork?.();
+      if (!stopping) throw new Error("Missing background stop support");
+      void stopping.then(finished);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stop).toHaveBeenCalledTimes(3);
+      expect(finished).not.toHaveBeenCalled();
+      finishSlow();
+      const result = await stopping;
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "nativeFailure", retryable: true },
+      });
+      if (result.ok) throw new Error("Expected aggregated stop failure");
+      expect(result.error.message).toContain("failed-first: first refusal");
+      expect(result.error.message).toContain("failed-last: last refusal");
+      expect(result.error.message).not.toContain("slow-success");
+    } finally {
+      finishSlow();
+      await adapter.close();
+    }
+  });
+
   it.each([false, true])("waits for transcript persistence (timeout: %s)", async (timeout) => {
     const { adapter, transports, history, dependencies } = fixture();
     const session = await openSession(adapter);
@@ -3865,11 +3925,23 @@ describe("Claude Code HarnessAdapter", () => {
       ok: false,
       error: {
         code: "nativeFailure",
-        message: "Claude Code rejected the Permission Mode selection",
+        message: "Claude Code rejected the Permission Mode selection: connection closed",
         retryable: true,
       },
     });
     expect(transports[0]?.permissionMode).toBe("default");
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(
+      new Error("new policy refusal api_key=secret-value"),
+    );
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        message:
+          "Claude Code rejected the Permission Mode selection: new policy refusal api_key=[redacted]",
+      },
+    });
     transports[0]?.finish({ status: "succeeded" });
     await session.close();
   });

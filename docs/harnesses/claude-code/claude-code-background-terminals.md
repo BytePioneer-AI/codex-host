@@ -7,6 +7,7 @@ Claude 在 `run_in_background` 下启动 Bash 时，原生结果立即返回并�
 - Claude 的后台 Bash 产生一张命令卡片；其所在 Turn 正常结束，卡片保持 `inProgress`。
 - 运行中的输出尽力实时追加：原生只在给模型的结果文本里写出输出文件路径（"Output is being written to: …"），SDK 没有结构化字段或输出事件；取到路径就每秒读取新增内容，取不到就等结束时一次给出。
 - 任务结束时，卡片在原 Turn 上补发完成：成功、失败或已停止。最终输出读取原生 `task_notification` 结构化给出的输出文件，按适配器的工具输出上限截断；文件读不到时，卡片以 `Native output is unavailable.` 完成。
+- 输出文件尚未创建时继续轮询；其他打开或读取错误每个后台命令最多向 Host stderr 记录一次，诊断沿用公共脱敏规则，后续仍会重试。仅成功读取过的空文件才视为没有输出。
 
 ## 结算
 
@@ -14,7 +15,7 @@ Claude 在 `run_in_background` 下启动 Bash 时，原生结果立即返回并�
 - Session 在接收这一事件的唯一入口按 `callId` 分流：属于已登记的后台命令就完成该卡片，否则交给原有的 Subagent 处理。Subagent 逻辑不变。
 - 顺序：Transport 在自主 Turn 中缓存事件，若批次中还欠着同一 `callId` 的工具事件，结算就留在批次中（`canDeliverSettlementImmediately` 对 Subagent 创建事件已采用同一规则）。因此卡片登记总是先于它的结算。
 - 空闲释放与后台命令卡片无关：`hasBackgroundWork()` 直接反映 CLI 的原生活跃任务集合，任何原生后台任务都会阻止回收，因为关闭会话会停止它们。
-- Desktop 的"停止全部后台终端"（`thread/backgroundTerminals/clean`）并行停止各卡片对应的原生任务；每个停止请求与中断共用同一超时，超时作为停止失败返回（-32083）。
+- Desktop 的"停止全部后台终端"（`thread/backgroundTerminals/clean`）并行停止各卡片对应的原生任务，等待全部请求结束后汇总失败任务及原因；每个停止请求与中断共用同一超时，超时作为停止失败返回（-32083）。
 
 ## 各模块所有权
 

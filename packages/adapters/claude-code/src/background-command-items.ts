@@ -1,7 +1,11 @@
 import { open } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 
-import type { HostEvent, HostItemOutcome } from "@codexhost/harness-adapter";
+import {
+  sanitizeDiagnosticTail,
+  type HostEvent,
+  type HostItemOutcome,
+} from "@codexhost/harness-adapter";
 
 import type { ClaudeTurnEvent } from "./transport.js";
 import type { ClaudeDetachedCommand } from "./tool-lifecycle.js";
@@ -34,8 +38,9 @@ interface FollowedCommand {
   offset: number;
   decoder: StringDecoder;
   output: string;
-  /** The output file was opened at least once, so an empty output is real. */
+  /** A read succeeded at least once, so an empty output is real. */
   opened: boolean;
+  readErrorReported: boolean;
   truncated: boolean;
   timer: NodeJS.Timeout | null;
   reading: Promise<void>;
@@ -76,6 +81,7 @@ export class ClaudeBackgroundCommandItems {
       decoder: new StringDecoder("utf8"),
       output: "",
       opened: false,
+      readErrorReported: false,
       truncated: false,
       timer: null,
       reading: Promise.resolve(),
@@ -120,24 +126,41 @@ export class ClaudeBackgroundCommandItems {
     let handle;
     try {
       handle = await open(followed.outputFile, "r");
-    } catch {
+    } catch (error) {
+      // Native output files can appear after the background task is announced.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT")
+        this.#reportReadError(followed, error);
       return;
     }
-    followed.opened = true;
     try {
       const buffer = Buffer.alloc(READ_CHUNK_BYTES);
       for (;;) {
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, followed.offset);
+        followed.opened = true;
         if (bytesRead === 0) return;
         followed.offset += bytesRead;
         this.#append(followed, followed.decoder.write(buffer.subarray(0, bytesRead)));
         if (followed.truncated) return;
       }
-    } catch {
+    } catch (error) {
+      this.#reportReadError(followed, error);
       return;
     } finally {
       await handle.close().catch(() => undefined);
     }
+  }
+
+  #reportReadError(followed: FollowedCommand, error: unknown): void {
+    if (followed.readErrorReported) return;
+    followed.readErrorReported = true;
+    // Keep retrying, but one inaccessible file must not flood Host stderr.
+    console.warn(
+      sanitizeDiagnosticTail(
+        `Claude Code background output (${followed.command.taskId}) could not be read: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    );
   }
 
   #append(followed: FollowedCommand, text: string): void {

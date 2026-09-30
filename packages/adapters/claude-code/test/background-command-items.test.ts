@@ -1,4 +1,5 @@
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import type * as FsPromises from "node:fs/promises";
+import { appendFile, mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -8,11 +9,19 @@ import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts"
 
 import { ClaudeBackgroundCommandItems } from "../src/background-command-items.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
+
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = hostItemIdSchema.parse("bash-item-1");
 let directory: string | undefined;
 
 afterEach(async () => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.mocked(open).mockReset();
   if (directory) await rm(directory, { recursive: true, force: true });
   directory = undefined;
 });
@@ -113,11 +122,51 @@ describe("Claude background command Items", () => {
   });
 
   it("says so when no output file could be read", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { events, items } = follow(undefined);
     items.settle(notification("completed", path.join(tmpdir(), "claude-bg-missing", "x.output")));
     expect(await completion(events)).toMatchObject({
       snapshot: { item: { output: "Native output is unavailable." } },
     });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("reports an open failure once, redacts credentials and still retries", async () => {
+    const file = await outputFile();
+    await writeFile(file, "recovered\n");
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const denied = Object.assign(new Error("EACCES api_key=private-value"), { code: "EACCES" });
+    vi.mocked(open).mockRejectedValueOnce(denied).mockRejectedValueOnce(denied);
+    const { events, items } = follow(file);
+    try {
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("EACCES api_key=[redacted]"));
+      expect(events).toEqual([]);
+      items.settle(notification("completed", file));
+      expect(await completion(events)).toMatchObject({
+        snapshot: { item: { output: "recovered\n" }, outcome: { status: "succeeded" } },
+      });
+    } finally {
+      items.abandonAll("test ended");
+    }
+  });
+
+  it("reports a failed read and does not mistake it for successfully read empty output", async () => {
+    const file = await outputFile();
+    const handle = await open(file, "r");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(handle, "read").mockRejectedValueOnce(new Error("EIO reading output"));
+    const close = vi.spyOn(handle, "close");
+    vi.mocked(open).mockResolvedValueOnce(handle);
+    const { events, items } = follow(file);
+    items.settle(notification("completed", file));
+    expect(await completion(events)).toMatchObject({
+      snapshot: { item: { output: "Native output is unavailable." } },
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("EIO reading output"));
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("cancels commands whose native process is gone", () => {

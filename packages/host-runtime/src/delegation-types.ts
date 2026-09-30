@@ -12,6 +12,11 @@ export const DELEGATION_CLI_PATH_ENV = "CODEXHOST_CLI_PATH";
 /** Node for the Launcher's delegation CLI in npm installations; read only by the Launcher. */
 export const DELEGATION_CLI_NODE_PATH_ENV = "CODEXHOST_CLI_NODE_PATH";
 export const DELEGATION_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
+/**
+ * Native Codex shares one app-server across Threads, so the Host cannot set
+ * CODEXHOST_THREAD_ID per Thread; Codex exports the calling Thread here instead.
+ */
+export const NATIVE_CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID";
 /** Default watch expiry; callers adjust it with --timeout-ms. */
 export const DEFAULT_WATCH_TIMEOUT_MS = 29 * 60_000;
 

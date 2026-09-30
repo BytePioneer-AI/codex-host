@@ -4,6 +4,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CliTransport, type TransportOptions } from "../src/transport.js";
+import { resolveInstallation } from "../src/installation.js";
 import type { ZcodeVerifier } from "../src/verification/index.js";
 
 const SECRET = "fixture-only";
@@ -71,16 +72,23 @@ const builtin = {
   },
 };
 
-// The App's Electron runs the CLI with ELECTRON_RUN_AS_NODE=1; the current Node stands in for it.
+// The App's Electron Helper runs the CLI with ELECTRON_RUN_AS_NODE=1; the current Node stands in for it.
 const RUNTIME = process.platform === "win32" ? "ZCode.exe" : "ZCode";
 async function installRuntime(contents: string) {
-  await mkdir(path.join(contents, "MacOS"), { recursive: true });
+  const helperDir = path.join(
+    contents,
+    "Frameworks",
+    `${RUNTIME} Helper.app`,
+    "Contents",
+    "MacOS",
+  );
+  await mkdir(helperDir, { recursive: true });
   await writeFile(
     path.join(contents, "Info.plist"),
     `<plist><dict><key>CFBundleExecutable</key><string>${RUNTIME}</string>` +
       `<key>CFBundleShortVersionString</key><string>9.9.9</string></dict></plist>`,
   );
-  const runtime = path.join(contents, "MacOS", RUNTIME);
+  const runtime = path.join(helperDir, `${RUNTIME} Helper`);
   // Symlinks need privileges on Windows; a hard link or copy works on every CI platform.
   await (process.platform === "win32"
     ? link(process.execPath, runtime).catch(() => copyFile(process.execPath, runtime))
@@ -543,5 +551,28 @@ describe("ZCode installed CLI transport", () => {
       },
       { method: "session/create", params: { workspace, persistence: "deferred" } },
     ]);
+  });
+
+  it("resolves the Helper executable as the runtime and fails if missing", async () => {
+    const { root, options } = await fixture("reply({status:'ok'})");
+    const appPath = path.join(root, "ZCode.app");
+    const installation = await resolveInstallation(options().environment, appPath);
+    expect(installation.runtime).toBe(
+      path.join(
+        appPath,
+        "Contents",
+        "Frameworks",
+        `${RUNTIME} Helper.app`,
+        "Contents",
+        "MacOS",
+        `${RUNTIME} Helper`,
+      ),
+    );
+
+    // Remove the Helper executable -> should fail as notInstalled
+    await rm(installation.runtime);
+    await expect(resolveInstallation(options().environment, appPath)).rejects.toMatchObject({
+      code: "notInstalled",
+    });
   });
 });

@@ -7,7 +7,7 @@ export const DEFAULT_ZCODE_APP = "/Applications/ZCode.app";
 
 /** Files of an installed ZCode Desktop and the native data root its CLI uses. */
 export interface ZcodeInstallation {
-  /** The App's Electron executable; with ELECTRON_RUN_AS_NODE=1 it is ZCode's own Node runtime. */
+  /** The App's Electron Helper executable; with ELECTRON_RUN_AS_NODE=1 it is ZCode's own Node runtime. */
   runtime: string;
   /** CFBundleShortVersionString, reported to ZCode's client configuration service. */
   version: string;
@@ -54,7 +54,15 @@ export async function resolveInstallation(
   const executable = plistString(plist, "CFBundleExecutable");
   const version = plistString(plist, "CFBundleShortVersionString");
   if (!executable || !version || path.basename(executable) !== executable) throw missing();
-  const runtime = path.join(app, "Contents", "MacOS", executable);
+  const runtime = path.join(
+    app,
+    "Contents",
+    "Frameworks",
+    `${executable} Helper.app`,
+    "Contents",
+    "MacOS",
+    `${executable} Helper`,
+  );
   const resources = path.join(app, "Contents", "Resources");
   const cli = path.join(resources, "glm", "zcode.cjs");
   const builtinProviderConfig =

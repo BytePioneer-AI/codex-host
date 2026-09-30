@@ -135,7 +135,7 @@ Mapping Store SHALL provide an idempotent archive-state update for an existing E
 
 
 ### Requirement: Mapping Store patches Desktop organization metadata atomically
-Mapping Store SHALL provide one patch update for an External Host Thread's optional project assignment, Git metadata (`branch`, `originUrl`, `sha`), and Daybreak choice. Omitted fields SHALL remain unchanged and a cleared field SHALL be removed from the record. A changed patch SHALL use the same per-Thread serialization, strict validation, backup, atomic replacement, Revision, and in-memory index commit rules as other record updates. Records written before these fields existed SHALL remain valid. A Git origin URL MUST be stored without embedded credentials: the password and any non-ssh user name SHALL be removed before the write. The patch MAY be conditioned on the currently stored project assignment, in which case a mismatch SHALL leave the record unchanged.
+Mapping Store SHALL provide one patch update for an External Host Thread's optional project assignment, Git metadata (`branch`, `originUrl`, `sha`), and Daybreak choice. Omitted fields SHALL remain unchanged and a cleared field SHALL be removed from the record. A changed patch SHALL use the same per-Thread serialization, strict validation, backup, atomic replacement, Revision, and in-memory index commit rules as other record updates. Records written before these fields existed SHALL remain valid. The metadata SHALL be stored in a separate per-Thread metadata file rather than in the Thread record file, so that the record file keeps the shape accepted by releases without this metadata and a downgrade does not quarantine the Thread; metadata files of Threads that no longer exist SHALL be removed on startup, and an invalid metadata file SHALL be quarantined without blocking the Thread. A Git origin URL MUST be stored without embedded credentials: the password and any non-ssh user name SHALL be removed before the write, including when the value is not a parseable URL (for example a malformed port or scp-style remote), where any user information containing a password or preceding a non-ssh authority SHALL be removed. The patch MAY be conditioned on the currently stored project assignment, in which case a mismatch SHALL leave the record unchanged.
 
 #### Scenario: Metadata patch is applied and restarted
 - **WHEN** Host assigns a project, sets Git metadata, and later clears one Git field
@@ -146,6 +146,12 @@ Mapping Store SHALL provide one patch update for an External Host Thread's optio
 - **WHEN** a patch leaves every stored field at its current value
 - **THEN** Mapping Store SHALL return the current valid record as success
 - **AND** it SHALL NOT perform an unnecessary durable replacement or Revision increment
+
+#### Scenario: A release without metadata support loads patched records
+- **WHEN** metadata has been patched so that both the primary record and its backup were rewritten, and a release without metadata support starts on the same store
+- **THEN** both record files SHALL satisfy that release's strict record schema and the Thread SHALL load without quarantine
+- **AND** returning to a release with metadata support SHALL recover the metadata from the metadata file
+
 ### Requirement: Mapping Store updates the transport carrier atomically
 
 Mapping Store SHALL provide an idempotent transport-carrier update for an existing external Thread using the same strict validation, per-Thread serialization, backup, atomic replacement, Revision, and in-memory commit rules as other record updates.

@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   MappingStore,
   packageMetadata,
+  storedThreadCoreV1Schema,
   storedThreadRecordV1Schema,
   type MappingStoreError,
   type StoredThreadRecordV1,
@@ -744,6 +745,67 @@ describe("mapping-store package", () => {
     await second.close();
   });
 
+  it("keeps Thread record files readable by releases without Desktop metadata", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, {
+      projectId: "project-a",
+      daybreakEnabled: true,
+      gitInfo: { branch: "main" },
+    });
+    // A second write makes the backup a post-metadata copy too.
+    await first.updateMetadata(threadId, { gitInfo: { sha: "abc123" } });
+    await first.close();
+
+    // storedThreadCoreV1Schema is the strict record shape older releases accept.
+    for (const file of ["threads", "backups"].map((name) =>
+      path.join(directory, name, `${threadId}.json`),
+    )) {
+      const onDisk = JSON.parse(await readFile(file, "utf8"));
+      expect(storedThreadCoreV1Schema.safeParse(onDisk).success).toBe(true);
+    }
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toMatchObject({
+      projectId: "project-a",
+      daybreakEnabled: true,
+      gitInfo: { branch: "main", sha: "abc123" },
+    });
+    await second.removeThread(threadId);
+    await expect(readdir(path.join(directory, "thread-metadata"))).resolves.toEqual([]);
+    await second.close();
+  });
+
+  it("moves inline metadata out of the record and drops metadata of removed Threads", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.close();
+    const recordFile = path.join(directory, "threads", `${threadId}.json`);
+    const inline = { ...JSON.parse(await readFile(recordFile, "utf8")), projectId: "project-a" };
+    await writeFile(recordFile, `${JSON.stringify(inline)}\n`);
+    // Left behind when an older release removed its Thread.
+    await writeFile(
+      path.join(directory, "thread-metadata", "thread-gone.json"),
+      `${JSON.stringify({ formatVersion: 1, hostThreadId: "thread-gone", projectId: "p" })}\n`,
+    );
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toMatchObject({ projectId: "project-a" });
+    expect(
+      storedThreadCoreV1Schema.safeParse(JSON.parse(await readFile(recordFile, "utf8"))).success,
+    ).toBe(true);
+    await expect(readdir(path.join(directory, "thread-metadata"))).resolves.toEqual([
+      `${threadId}.json`,
+    ]);
+    await second.close();
+  });
+
   it("never persists credentials embedded in a Git origin URL", async () => {
     const store = new MappingStore({ directory: await temporaryStoreDirectory() });
     await store.initialize();
@@ -760,6 +822,20 @@ describe("mapping-store package", () => {
       "ssh://git@github.com/o/r.git",
     );
     await expect(origin("git@github.com:o/r.git")).resolves.toBe("git@github.com:o/r.git");
+    // Values the URL parser rejects must not bypass credential removal.
+    await expect(origin("https://user:tok@example.com:bad/r.git")).resolves.toBe(
+      "https://example.com:bad/r.git",
+    );
+    await expect(origin("https://ghp_secret@example.com:bad/r.git")).resolves.toBe(
+      "https://example.com:bad/r.git",
+    );
+    await expect(origin("ssh://git:tok@example.com:bad/r.git")).resolves.toBe(
+      "ssh://example.com:bad/r.git",
+    );
+    await expect(origin("ssh://git@example.com:bad/r.git")).resolves.toBe(
+      "ssh://git@example.com:bad/r.git",
+    );
+    await expect(origin("user:tok@example.com:o/r.git")).resolves.toBe("example.com:o/r.git");
     await store.close();
   });
 

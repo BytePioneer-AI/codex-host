@@ -5,6 +5,8 @@ export type { MappingStoreErrorCode, MappingStoreOptions } from "./mapping-store
 export {
   delegationStatusSchema,
   storedDelegationRecordV1Schema,
+  storedThreadCoreV1Schema,
+  storedThreadMetadataV1Schema,
   storedThreadRecordV1Schema,
   storedTurnMappingV1Schema,
 } from "./records.js";
@@ -18,6 +20,7 @@ export type {
   ReplaceReadySessionAfterLastTurnInput,
   ReplaceReadySessionInput,
   StoredDelegationRecordV1,
+  StoredThreadMetadataV1,
   StoredThreadRecordV1,
   StoredTurnMappingV1,
   ThreadMetadataPatch,

@@ -58,12 +58,12 @@ describe("delegation Skill installation", () => {
     await expect(readFile(destinations[0] ?? "", "utf8")).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
   });
 
-  it("updates the v4 Skill shipped in v0.4.0-v0.6.0", async () => {
+  it.each([
+    ["v4 Skill shipped in v0.4.0-v0.6.0", "codexhost-delegation-v4.md"],
+    ["v8 Skill that ran codexhost from PATH", "codexhost-delegation-v8.md"],
+  ])("updates the %s", async (_name, fixture) => {
     const root = await home();
-    const shipped = await readFile(
-      new URL("./fixtures/codexhost-delegation-v4.md", import.meta.url),
-      "utf8",
-    );
+    const shipped = await readFile(new URL(`./fixtures/${fixture}`, import.meta.url), "utf8");
     const destinations = paths(root);
     for (const destination of destinations) {
       await mkdir(path.dirname(destination), { recursive: true });
@@ -97,11 +97,15 @@ describe("delegation Skill installation", () => {
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 8");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 9");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("codexhost delegate --help");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain('"$CODEXHOST_CLI_PATH" delegate --help');
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("& $env:CODEXHOST_CLI_PATH delegate --help");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain('"%CODEXHOST_CLI_PATH%" delegate --help');
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("If CODEXHOST_CLI_PATH is unset, try");
+    expect(CODEXHOST_DELEGATION_SKILL).not.toContain("CODEXHOST_CLI_NODE_PATH");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("send a follow-up message");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel its current Turn");
     expect(CODEXHOST_DELEGATION_SKILL).not.toContain("--timeout-ms");

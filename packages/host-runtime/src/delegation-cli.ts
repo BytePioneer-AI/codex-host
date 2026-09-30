@@ -10,6 +10,7 @@ import {
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
+  NATIVE_CODEX_THREAD_ID_ENV,
   DelegationControlError,
   type DelegationControlErrorCode,
 } from "./delegation-types.js";
@@ -137,6 +138,13 @@ function writeJson(output: Writable, value: unknown): void {
   output.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/** The calling Thread: Host-provided for External Harnesses, Codex-provided for native Codex. */
+function callerThreadId(environment: NodeJS.ProcessEnv): string | undefined {
+  return (
+    environment[DELEGATION_THREAD_ID_ENV] || environment[NATIVE_CODEX_THREAD_ID_ENV] || undefined
+  );
+}
+
 export async function runDelegationCli(input: {
   arguments: string[];
   environment?: NodeJS.ProcessEnv;
@@ -236,8 +244,7 @@ export async function runDelegationCli(input: {
       const task = value(parsed, "--task");
       if (!harnessId || !task)
         throw new DelegationControlError("INVALID_ARGUMENT", "--harness and --task are required");
-      const parentThread =
-        value(parsed, "--parent-thread") ?? environment[DELEGATION_THREAD_ID_ENV];
+      const parentThread = value(parsed, "--parent-thread") ?? callerThreadId(environment);
       const watch = value(parsed, "--watch");
       if (watch !== undefined && watch !== "true" && watch !== "false")
         throw new DelegationControlError("INVALID_ARGUMENT", "--watch must be true or false");
@@ -384,7 +391,7 @@ export async function runDelegationCli(input: {
       const threadId = parsed.positionals[0];
       if (!threadId)
         throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
-      const notifyThread = value(parsed, "--notify") ?? environment[DELEGATION_THREAD_ID_ENV];
+      const notifyThread = value(parsed, "--notify") ?? callerThreadId(environment);
       if (!notifyThread)
         throw new DelegationControlError(
           "INVALID_ARGUMENT",

@@ -20,6 +20,7 @@ const cwdSchema = z.string().min(1).max(16_384);
 export const brokerEnvironmentSchema = z
   .object({
     CODEXHOST_CLI_PATH: z.string().max(16_384).optional(),
+    CODEXHOST_CLI_NODE_PATH: z.string().max(16_384).optional(),
     CODEXHOST_RUNTIME_ENDPOINT: z.string().max(16_384).optional(),
     CODEXHOST_RUNTIME_TOKEN: z.string().max(16_384).optional(),
     CODEXHOST_THREAD_ID: z.string().max(256).optional(),

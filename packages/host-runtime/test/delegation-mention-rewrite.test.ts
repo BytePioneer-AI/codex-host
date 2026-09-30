@@ -57,6 +57,8 @@ describe("delegation mention rewrite", () => {
     const text = rewriteDelegationMentionText(`${link} fix the test`);
     expect(text).toContain("@Claude Code fix the test");
     expect(text).toContain("codexhost-delegation");
+    expect(text).toContain("through the executable in CODEXHOST_CLI_PATH");
+    expect(text).not.toContain("`codexhost delegate");
     expect(rewriteDelegationMentionText("plain")).toBe("plain");
   });
 });

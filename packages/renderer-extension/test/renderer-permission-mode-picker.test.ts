@@ -12,6 +12,7 @@ import {
   isPermissionModeControlReady,
   rendererPermissionModeLabel,
   rendererPermissionModeMenuPlacement,
+  rendererPermissionModeSelectionFailed,
 } from "../src/renderer-permission-mode-picker.js";
 
 const catalog = harnessPermissionModeCatalogSchema.parse({
@@ -62,6 +63,41 @@ describe("Renderer Permission Mode picker presentation", () => {
     expect(isPermissionModeControlReady({ status: "selecting", catalog, selected })).toBe(false);
     expect(isPermissionModeControlReady({ status: "error", catalog, selected })).toBe(true);
     expect(isPermissionModeControlReady({ status: "error", error: "inspection failed" })).toBe(
+      false,
+    );
+  });
+
+  it("flags a rejected selection while keeping the previous confirmed mode usable", () => {
+    const selected = harnessPermissionModeIdSchema.parse("default");
+    const rejected = {
+      status: "error" as const,
+      catalog,
+      selected,
+      error: "Bypass permissions is unavailable",
+      selectionRejected: true,
+    };
+    expect(rendererPermissionModeSelectionFailed(rejected)).toBe(true);
+    expect(isPermissionModeControlReady(rejected)).toBe(true);
+    expect(rendererPermissionModeLabel(rejected)).toBe("Default");
+
+    expect(rendererPermissionModeSelectionFailed({ status: "ready", catalog, selected })).toBe(
+      false,
+    );
+    expect(rendererPermissionModeSelectionFailed({ status: "error", catalog, selected })).toBe(
+      false,
+    );
+    expect(
+      rendererPermissionModeSelectionFailed({ status: "error", error: "inspection failed" }),
+    ).toBe(false);
+    expect(
+      rendererPermissionModeSelectionFailed({
+        status: "error",
+        catalog,
+        selected,
+        error: "Model catalog refresh failed",
+      }),
+    ).toBe(false);
+    expect(rendererPermissionModeSelectionFailed({ ...rejected, selectionLocked: true })).toBe(
       false,
     );
   });

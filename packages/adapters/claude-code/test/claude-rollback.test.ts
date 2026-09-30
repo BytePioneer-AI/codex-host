@@ -60,6 +60,7 @@ async function fixture(turns = 1) {
   const transports: Array<ClaudeTurnTransport & { input: ClaudeTransportFactoryInput }> = [];
   const dependencies: ClaudeAdapterDependencies = {
     randomUUID,
+    bypassPermissionsAvailable: () => true,
     inspectInstallation: () => undefined,
     createInspector: () => ({
       inspect: async () => ({

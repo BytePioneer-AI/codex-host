@@ -8,6 +8,13 @@ import {
   runInstallationCommand,
 } from "./installation.js";
 
+function referencesNpmBin(shim: string, name: string, bin: string): boolean {
+  if (bin.includes("..")) return false;
+  const target = `node_modules/${name}/${bin.replace(/^\.\//, "")}`.toLowerCase();
+  const text = shim.replaceAll("\\", "/").toLowerCase();
+  return text.includes(`%dp0%/${target}"`) || text.includes(`%~dp0/${target}"`);
+}
+
 /** Match the CLI's real package, never a different npm prefix found by chance on PATH. */
 export async function npmInstallation(
   command: string,
@@ -25,11 +32,7 @@ export async function npmInstallation(
         .catch(() => null);
       const bins =
         typeof metadata?.bin === "string" ? [metadata.bin] : Object.values(metadata?.bin ?? {});
-      const bin = bins.find(
-        (entry) =>
-          !entry.includes("..") &&
-          shim.includes(`node_modules/${name}/${entry.replace(/^\.\//, "")}`),
-      );
+      const bin = bins.find((entry) => referencesNpmBin(shim, name, entry));
       if (bin) {
         selected = await realpath(path.join(directory, bin));
         break;
@@ -39,7 +42,14 @@ export async function npmInstallation(
   let directory = path.dirname(selected);
   for (let depth = 0; depth < 8; depth++) {
     const metadata = await readFile(path.join(directory, "package.json"), "utf8")
-      .then((text) => JSON.parse(text) as { name?: string; version?: string })
+      .then(
+        (text) =>
+          JSON.parse(text) as {
+            name?: string;
+            version?: string;
+            bin?: string | Record<string, string>;
+          },
+      )
       .catch(() => null);
     if (metadata?.name && packages.includes(metadata.name)) {
       const name = metadata.name;
@@ -58,7 +68,36 @@ export async function npmInstallation(
         { id: "npm", command: "npm", installRoots: { posix: [], windows: [] } },
         { environment: env },
       );
-      const canUpdate = modules === globalRoot && !!npm;
+      let globalInstall = modules === globalRoot;
+      if (process.platform === "win32") {
+        // Windows local/global modules have identical layouts. Require a prefix-level
+        // npm launcher pointing at this bin, and reject project-owned/ambiguous prefixes.
+        const project = (
+          await Promise.all(
+            ["package.json", "package-lock.json", "npm-shrinkwrap.json"].map((file) =>
+              readFile(path.join(prefix, file), "utf8").then(
+                () => true,
+                (error: NodeJS.ErrnoException) => error.code !== "ENOENT",
+              ),
+            ),
+          )
+        ).some(Boolean);
+        const bins =
+          typeof metadata.bin === "string"
+            ? { [name.split("/").at(-1) ?? name]: metadata.bin }
+            : (metadata.bin ?? {});
+        const launchers = await Promise.all(
+          Object.entries(bins).map(async ([bin, entry]) => {
+            if (path.basename(bin) !== bin || entry.includes("..")) return false;
+            const target = await realpath(path.join(directory, entry)).catch(() => "");
+            if (target.toLowerCase() !== selected.toLowerCase()) return false;
+            const shim = await readFile(path.join(prefix, `${bin}.cmd`), "utf8").catch(() => "");
+            return referencesNpmBin(shim, name, entry);
+          }),
+        );
+        globalInstall = globalInstall && !project && launchers.some(Boolean);
+      }
+      const canUpdate = globalInstall && !!npm;
       return {
         prefix,
         currentVersion,

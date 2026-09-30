@@ -11,6 +11,15 @@ import {
 } from "@codexhost/harness-discovery";
 import { resolveKiroExecutable } from "./command.js";
 
+// Query the same effective preferences and forced-policy flag as the native macOS updater.
+const KIRO_UPDATE_POLICY_QUERY = `
+ObjC.import("CoreFoundation");
+var key = $("update.baseUrl"), domain = $("dev.kiro.cli");
+var forced = Boolean($.CFPreferencesAppValueIsForced(key, domain));
+var value = ObjC.unwrap(ObjC.castRefToObject($.CFPreferencesCopyAppValue(key, domain)));
+JSON.stringify({forced: forced, value: typeof value === "string" ? value : null});
+`;
+
 export function createKiroInstallation(environment: NodeJS.ProcessEnv, command?: string) {
   let executable: string;
   let updateArgs: string[];
@@ -25,13 +34,29 @@ export function createKiroInstallation(environment: NodeJS.ProcessEnv, command?:
       let latestVersion: string;
       if (process.platform === "darwin") {
         // macOS has no --check. Read only metadata; never run update to probe it.
-        const policy = await runInstallationCommand(
-          "/usr/bin/defaults",
-          ["read", "dev.kiro.cli", "update.baseUrl"],
-          environment,
-        ).catch(() => "");
+        let policy: { forced?: unknown; value?: unknown };
+        try {
+          policy = JSON.parse(
+            await runInstallationCommand(
+              "/usr/bin/osascript",
+              ["-l", "JavaScript", "-e", KIRO_UPDATE_POLICY_QUERY],
+              environment,
+            ),
+          ) as typeof policy;
+          if (typeof policy?.forced !== "boolean") throw new Error("Invalid Kiro policy response");
+        } catch {
+          return {
+            currentVersion,
+            latestVersion: "Unknown",
+            updateAvailable: false,
+            canUpdate: false,
+            message:
+              "Could not determine Kiro's managed update policy. Use the native updater rather than checking a different release source.",
+          };
+        }
+        // Ordinary user preferences in this domain are not an enforced MDM policy.
         const base =
-          policy.trim() ||
+          (policy.forced && typeof policy.value === "string" ? policy.value.trim() : "") ||
           environment.KIRO_DESKTOP_RELEASE_URL ||
           "https://prod.download.cli.kiro.dev/stable";
         const url = new URL(`${base.replace(/\/$/, "")}/index.json`);

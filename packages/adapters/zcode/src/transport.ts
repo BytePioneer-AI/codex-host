@@ -19,7 +19,7 @@ const RUNTIME_PREFERENCES = {
 export interface TransportOptions {
   cwd: string;
   environment: NodeJS.ProcessEnv;
-  /** ZCode.app location saved as the plugin launch path. */
+  /** ZCode application location saved as the plugin launch path. */
   app?: string;
   timeoutMs?: number;
   /** The Host's shared verifier for this installation; the transport never closes it. */
@@ -50,7 +50,7 @@ export class CliTransport {
   #fault: Error | undefined;
   #closed = false;
   #closePromise: Promise<void> | undefined;
-  /** The version of the ZCode.app this process runs from. */
+  /** The version of the ZCode application this process runs from. */
   get appVersion() {
     return this.#installation.version;
   }

@@ -32,7 +32,7 @@ import { COMMAND_CATALOG } from "./commands.js";
 
 export interface ZcodeAdapterOptions {
   environment?: NodeJS.ProcessEnv;
-  /** ZCode.app location; defaults to CODEXHOST_ZCODE_APP or /Applications/ZCode.app. */
+  /** ZCode application location; defaults to CODEXHOST_ZCODE_APP or the platform default. */
   app?: string;
   timeoutMs?: number;
   openLocalPage?: (url: string) => Promise<HarnessLocalPage>;

@@ -72,39 +72,76 @@ const builtin = {
   },
 };
 
-// The App's Electron Helper runs the CLI with ELECTRON_RUN_AS_NODE=1; the current Node stands in for it.
-const RUNTIME = process.platform === "win32" ? "ZCode.exe" : "ZCode";
-async function installRuntime(contents: string) {
-  const helperDir = path.join(
-    contents,
-    "Frameworks",
-    `${RUNTIME} Helper.app`,
-    "Contents",
-    "MacOS",
-  );
-  await mkdir(helperDir, { recursive: true });
+function createFakeAsar(pkg: { productName: string; version: string }): Buffer {
+  const pkgContent = Buffer.from(JSON.stringify(pkg), "utf8");
+  const headerObj = {
+    files: {
+      "package.json": {
+        size: pkgContent.length,
+        offset: "0",
+      },
+    },
+  };
+  const jsonBuf = Buffer.from(JSON.stringify(headerObj), "utf8");
+  const jsonLen = jsonBuf.length;
+  const pad = (4 - (jsonLen % 4)) % 4;
+  const headerSize = 4 + 4 + jsonLen + pad;
+  const headerBuf = Buffer.alloc(16);
+  headerBuf.writeUInt32LE(4, 0);
+  headerBuf.writeUInt32LE(headerSize, 4);
+  headerBuf.writeUInt32LE(jsonLen + pad + 4, 8);
+  headerBuf.writeUInt32LE(jsonLen, 12);
+  const padBuf = Buffer.alloc(pad, 0);
+  return Buffer.concat([headerBuf, jsonBuf, padBuf, pkgContent]);
+}
+
+// The App's Electron executable runs the CLI with ELECTRON_RUN_AS_NODE=1; Node stands in for it.
+async function installRuntime(appDir: string, resourcesDir: string) {
+  await mkdir(resourcesDir, { recursive: true });
   await writeFile(
-    path.join(contents, "Info.plist"),
-    `<plist><dict><key>CFBundleExecutable</key><string>${RUNTIME}</string>` +
-      `<key>CFBundleShortVersionString</key><string>9.9.9</string></dict></plist>`,
+    path.join(resourcesDir, "app.asar"),
+    createFakeAsar({ productName: "ZCode", version: "9.9.9" }),
   );
-  const runtime = path.join(helperDir, `${RUNTIME} Helper`);
+  let runtime: string;
+  if (process.platform === "darwin") {
+    const helperDir = path.join(
+      appDir,
+      "Contents",
+      "Frameworks",
+      "ZCode Helper.app",
+      "Contents",
+      "MacOS",
+    );
+    await mkdir(helperDir, { recursive: true });
+    runtime = path.join(helperDir, "ZCode Helper");
+  } else if (process.platform === "win32") {
+    await mkdir(appDir, { recursive: true });
+    runtime = path.join(appDir, "ZCode.exe");
+  } else {
+    await mkdir(appDir, { recursive: true });
+    runtime = path.join(appDir, "zcode");
+  }
   // Symlinks need privileges on Windows; a hard link or copy works on every CI platform.
   await (process.platform === "win32"
     ? link(process.execPath, runtime).catch(() => copyFile(process.execPath, runtime))
     : symlink(process.execPath, runtime));
+  return runtime;
 }
 
 /**
- * A fake installed ZCode.app whose CLI records its launch, echoes the account revision and runs
+ * A fake installed ZCode app whose CLI records its launch, echoes the account revision and runs
  * `handler` for other requests. `ask(method, params)` sends a reverse request with a string id.
  */
 async function fixture(handler: string, credentials?: Record<string, string>) {
   const root = await mkdtemp(path.join(tmpdir(), "zcode-transport-"));
   roots.push(root);
-  const resources = path.join(root, "ZCode.app/Contents/Resources");
+  const appDir = path.join(root, process.platform === "darwin" ? "ZCode.app" : "ZCode");
+  const resources =
+    process.platform === "darwin"
+      ? path.join(appDir, "Contents", "Resources")
+      : path.join(appDir, "resources");
   await mkdir(path.join(resources, "glm"), { recursive: true });
-  await installRuntime(path.join(root, "ZCode.app/Contents"));
+  const runtime = await installRuntime(appDir, resources);
   await mkdir(path.join(resources, "config/provider"), { recursive: true });
   await mkdir(path.join(root, ".zcode/v2"), { recursive: true });
   await writeFile(
@@ -142,7 +179,7 @@ ${handler}}`,
       ZCODE_CREDENTIAL_SECRET: SECRET,
       FAKE_LOG: path.join(root, "log.jsonl"),
     },
-    app: path.join(root, "ZCode.app"),
+    app: appDir,
     verifier: () => {
       throw new Error("No verifier in this test");
     },
@@ -153,7 +190,7 @@ ${handler}}`,
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
-  return { root, options, log };
+  return { root, options, appDir, resources, runtime, log };
 }
 
 async function started(options: TransportOptions) {
@@ -171,7 +208,7 @@ describe("ZCode installed CLI transport", () => {
   });
 
   it("launches app-server in the workspace and publishes the Start Plan overlay first", async () => {
-    const { root, options, log } = await fixture("reply(null)", {
+    const { root, options, log, resources } = await fixture("reply(null)", {
       "oauth:active_provider": "zai",
       zcodejwttoken: JWT,
     });
@@ -180,8 +217,8 @@ describe("ZCode installed CLI transport", () => {
     );
     await transport.close();
     const builtinFile = path.join(
-      root,
-      "ZCode.app/Contents/Resources/config/provider/zcode-builtin.json",
+      resources,
+      "config/provider/zcode-builtin.json",
     );
     const [launch] = await log();
     expect(launch).toEqual({
@@ -553,25 +590,14 @@ describe("ZCode installed CLI transport", () => {
     ]);
   });
 
-  it("resolves the Helper executable as the runtime and fails if missing", async () => {
-    const { root, options } = await fixture("reply({status:'ok'})");
-    const appPath = path.join(root, "ZCode.app");
-    const installation = await resolveInstallation(options().environment, appPath);
-    expect(installation.runtime).toBe(
-      path.join(
-        appPath,
-        "Contents",
-        "Frameworks",
-        `${RUNTIME} Helper.app`,
-        "Contents",
-        "MacOS",
-        `${RUNTIME} Helper`,
-      ),
-    );
+  it("resolves the runtime executable and fails if missing", async () => {
+    const { options, appDir, runtime } = await fixture("reply({status:'ok'})");
+    const installation = await resolveInstallation(options().environment, appDir);
+    expect(installation.runtime).toBe(runtime);
 
-    // Remove the Helper executable -> should fail as notInstalled
+    // Remove the runtime executable -> should fail as notInstalled
     await rm(installation.runtime);
-    await expect(resolveInstallation(options().environment, appPath)).rejects.toMatchObject({
+    await expect(resolveInstallation(options().environment, appDir)).rejects.toMatchObject({
       code: "notInstalled",
     });
   });

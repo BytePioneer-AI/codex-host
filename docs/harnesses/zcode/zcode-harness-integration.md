@@ -8,13 +8,23 @@ Adapter 拥有每个 Session 的 CLI 进程、原 ZCode Services 在转发之外
 
 ## 安装
 
-安装 ZCode Desktop 并在其中登录 Start Plan 账号，然后在 codexhost 中重新检测。默认使用 `/Applications/ZCode.app`；可以在连接设置中保存应用位置（插件启动路径），或设置 `CODEXHOST_ZCODE_APP`，保存的路径优先。缺少 `Contents/Info.plist` 中的 `CFBundleExecutable`/`CFBundleShortVersionString`、对应的 Electron Helper 可执行文件（`Contents/Frameworks/<CFBundleExecutable> Helper.app/Contents/MacOS/<CFBundleExecutable> Helper`）、`Contents/Resources/glm/zcode.cjs` 或内置 Provider 配置时，检测结果为未安装。对 Host 的 Node 版本没有额外要求。
+安装 ZCode Desktop 并在其中登录 Start Plan 账号，然后在 codexhost 中重新检测。各平台默认安装位置如下：
+
+- macOS (`darwin`): `/Applications/ZCode.app`
+- Windows (`win32`): NSIS assisted installer 提供每用户安装路径 `%LOCALAPPDATA%\Programs\ZCode` 与每机器安装路径 `%ProgramFiles%\ZCode`，默认按此顺序检测
+- Linux (`linux`): deb/rpm/pacman 默认安装于 `/opt/ZCode`
+
+AppImage 格式因没有固定安装路径而不作自动检测；用户可自行解压 AppImage 并将解压目录保存在连接设置中作为应用路径使用。
+
+可以在连接设置中保存应用位置（插件启动路径），或设置 `CODEXHOST_ZCODE_APP`，保存的路径优先。Windows 和 Linux 的支持遵循 ZCode 的打包结构（Packaging Layout），但尚未在真实 Windows/Linux 机器上进行验证。
+
+检测统一从 `<resources>/app.asar` 的 `package.json` 中读取 `productName` 和 `version`。缺少 `app.asar`、对应的 CLI 运行时可执行文件（macOS 为 `<app>/Contents/Frameworks/<productName> Helper.app/Contents/MacOS/<productName> Helper`，Windows 为 `<dir>\<productName>.exe`，Linux 为小写连字符命名的 `<dir>/<linuxExecutableName>`，如 `zcode` 或 `zcode-preview`）、`<resources>/glm/zcode.cjs` 或内置 Provider 配置时，检测结果为未安装。对 Host 的 Node 版本没有额外要求。
 
 检测会建立一个 deferred 草稿会话读取模型目录后立即关闭；草稿在首条输入前不落库，检测不会留下会话，也不发送 Prompt。
 
 ## 进程与协议
 
-每个 Session 一个进程：`<App>/Contents/Frameworks/<CFBundleExecutable> Helper.app/Contents/MacOS/<CFBundleExecutable> Helper <App>/Contents/Resources/glm/zcode.cjs app-server --stdio --surface desktop`，cwd 为工作区，并设置 `ELECTRON_RUN_AS_NODE=1`。这与 ZCode Desktop 启动自带 CLI 的方式相同（开源 `zcodeAgentProcessManager.ts` 的 `resolveBundledWorkspaceZCodeAgentCommand`，Desktop Host 作为 utilityProcess 并在 spawn 时使用 `process.execPath` 即 Helper）：CLI 运行在 App 自带的 Electron Helper Node 上，属于后台 `UIElement` 进程，不会在 macOS Dock 栏产生独立应用图标，其插件中为 Electron 预编译的原生模块也因此可用。与 Desktop 一样，CLI 的工具子进程会继承 `ELECTRON_RUN_AS_NODE`。环境变量为 Thread 环境加上：
+每个 Session 一个进程：`<runtime> <resources>/glm/zcode.cjs app-server --stdio --surface desktop`，cwd 为工作区，并设置 `ELECTRON_RUN_AS_NODE=1`。其中 `<runtime>` 在 macOS 下为 Electron Helper 可执行文件，Windows 下为 `<productName>.exe`，Linux 下为 `<linuxExecutableName>`。这与 ZCode Desktop 启动自带 CLI 的方式相同（开源 `zcodeAgentProcessManager.ts` 的 `resolveBundledWorkspaceZCodeAgentCommand`，Desktop Host 作为 utilityProcess 并在 spawn 时使用 `process.execPath` 即 Helper / 主可执行文件）：CLI 运行在 App 自带的 Electron Node 运行时上，在 macOS 下属于后台 `UIElement` 进程不会在 Dock 栏产生独立应用图标，其插件中为 Electron 预编译的原生模块也因此可用。与 Desktop 一样，CLI 的工具子进程会继承 `ELECTRON_RUN_AS_NODE`。环境变量为 Thread 环境加上：
 
 - `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`：已装 App 的 `config/provider/zcode-builtin.json`（环境中已显式设置时沿用）。
 - `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`：`{ZCODE_DATA_BASE_DIR || HOME}/.zcode/v2/provider_config.json`（已显式设置时沿用）。

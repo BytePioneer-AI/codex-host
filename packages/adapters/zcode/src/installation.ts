@@ -3,12 +3,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { ZcodeError } from "./errors.js";
 
-export const DEFAULT_ZCODE_APP: Readonly<Record<"darwin" | "win32" | "linux", string>> =
-  Object.freeze({
-    darwin: "/Applications/ZCode.app",
-    win32: "%LOCALAPPDATA%\\Programs\\ZCode",
-    linux: "/opt/ZCode",
-  });
+const DEFAULT_DARWIN_APP = "/Applications/ZCode.app";
+const DEFAULT_LINUX_APP = "/opt/ZCode";
 
 /** Files of an installed ZCode Desktop and the native data root its CLI uses. */
 export interface ZcodeInstallation {
@@ -49,27 +45,21 @@ async function readPackageJsonFromAsar(
   try {
     handle = await open(asarPath, "r");
     const headerBuf = Buffer.alloc(16);
-    const { bytesRead: headerBytes } = await handle.read(headerBuf, 0, 16, 0);
-    if (headerBytes < 16) return undefined;
+    await handle.read(headerBuf, 0, 16, 0);
     const headerSize = headerBuf.readUInt32LE(4);
     const jsonLen = headerBuf.readUInt32LE(12);
-    if (jsonLen === 0 || jsonLen > headerSize) return undefined;
     const jsonBuf = Buffer.alloc(jsonLen);
-    const { bytesRead: jsonBytes } = await handle.read(jsonBuf, 0, jsonLen, 16);
-    if (jsonBytes < jsonLen) return undefined;
+    await handle.read(jsonBuf, 0, jsonLen, 16);
     const header = JSON.parse(jsonBuf.toString("utf8"));
-    const pkgEntry = header?.files?.["package.json"];
-    if (!pkgEntry || typeof pkgEntry.size !== "number" || pkgEntry.offset === undefined)
+    const pkg = header.files["package.json"];
+    const pkgBuf = Buffer.alloc(pkg.size);
+    await handle.read(pkgBuf, 0, pkg.size, 8 + headerSize + Number(pkg.offset));
+    const parsed = JSON.parse(pkgBuf.toString("utf8"));
+    if (typeof parsed?.productName !== "string" || typeof parsed?.version !== "string")
       return undefined;
-    const pkgBuf = Buffer.alloc(pkgEntry.size);
-    const contentOffset = 8 + headerSize + Number(pkgEntry.offset);
-    const { bytesRead: pkgBytes } = await handle.read(pkgBuf, 0, pkgEntry.size, contentOffset);
-    if (pkgBytes < pkgEntry.size) return undefined;
-    const pkg = JSON.parse(pkgBuf.toString("utf8"));
-    if (typeof pkg?.productName !== "string" || typeof pkg?.version !== "string") return undefined;
     return {
-      productName: pkg.productName.trim(),
-      version: pkg.version.trim(),
+      productName: parsed.productName.trim(),
+      version: parsed.version.trim(),
     };
   } catch {
     return undefined;
@@ -80,32 +70,18 @@ async function readPackageJsonFromAsar(
 
 async function resolveDefaultApp(
   environment: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform,
+  platform: "darwin" | "win32" | "linux",
 ): Promise<string> {
-  if (platform === "darwin") return DEFAULT_ZCODE_APP.darwin;
-  if (platform === "linux") return DEFAULT_ZCODE_APP.linux;
-  if (platform === "win32") {
-    const userPath = environment.LOCALAPPDATA
-      ? path.join(environment.LOCALAPPDATA, "Programs", "ZCode")
-      : undefined;
-    const machinePath = environment.ProgramFiles
-      ? path.join(environment.ProgramFiles, "ZCode")
-      : undefined;
-    if (userPath && (await isFile(path.join(userPath, "resources", "app.asar")))) {
-      return userPath;
-    }
-    if (machinePath && (await isFile(path.join(machinePath, "resources", "app.asar")))) {
-      return machinePath;
-    }
-    if (userPath && (await stat(userPath).then(() => true, () => false))) {
-      return userPath;
-    }
-    if (machinePath && (await stat(machinePath).then(() => true, () => false))) {
-      return machinePath;
-    }
-    return userPath || machinePath || DEFAULT_ZCODE_APP.win32;
+  if (platform === "darwin") return DEFAULT_DARWIN_APP;
+  if (platform === "linux") return DEFAULT_LINUX_APP;
+  const candidates = [
+    environment.LOCALAPPDATA && path.join(environment.LOCALAPPDATA, "Programs", "ZCode"),
+    environment.ProgramFiles && path.join(environment.ProgramFiles, "ZCode"),
+  ].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    if (await isFile(path.join(candidate, "resources", "app.asar"))) return candidate;
   }
-  throw new ZcodeError("notInstalled", `ZCode Desktop is not supported on ${platform}`);
+  return candidates[0] ?? "";
 }
 
 /**

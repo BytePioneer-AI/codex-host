@@ -200,6 +200,18 @@ describe("ZCode installation discovery", () => {
     expect(installation.version).toBe("3.14.1");
   });
 
+  it("names the first candidate when neither Windows install is found", async () => {
+    const localAppData = path.join(root, "localappdata");
+    const programFiles = path.join(root, "programfiles");
+    const expected = path.join(localAppData, "Programs", "ZCode");
+
+    const env = { LOCALAPPDATA: localAppData, ProgramFiles: programFiles, HOME: root };
+    await expect(resolveInstallation(env, undefined, "win32")).rejects.toMatchObject({
+      code: "notInstalled",
+      message: expect.stringContaining(`ZCode Desktop was not found at ${expected}`),
+    });
+  });
+
   it("rejects unsupported platforms with a clear not-installed error", async () => {
     await expect(resolveInstallation({}, undefined, "freebsd" as NodeJS.Platform)).rejects.toMatchObject({
       code: "notInstalled",

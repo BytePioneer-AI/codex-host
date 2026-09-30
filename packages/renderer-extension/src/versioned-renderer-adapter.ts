@@ -2,6 +2,7 @@ import { startAgentGroupSync } from "./agent-group-sync.js";
 import { getSharedAgentGroupPreferenceStore } from "./agent-group-preference.js";
 import {
   committedReactAncestors,
+  REACT_FIBER_WALK_LIMIT_EVENT,
   type RendererHostRoute,
   type RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
@@ -88,7 +89,8 @@ export interface RendererAdapterStatus {
     | "asset-import-failed"
     | "installation-failed"
     | "draft-prewarm-clear-failed"
-    | "draft-routing-policy-unavailable";
+    | "draft-routing-policy-unavailable"
+    | "react-fiber-walk-limit-exceeded";
   modelUpdates: number;
   hook: "request-bridge" | null;
 }
@@ -926,13 +928,25 @@ export function installCurrentRendererAdapter(): {
     () => (disposed ? null : clients.forHost("local")),
     { migrateLegacy: true },
   );
+  // Host discovery walks React fibers synchronously; a walk that hit its bound
+  // explains why no route was found, instead of a generic unavailable policy.
+  let fiberWalkLimited = false;
+  const onFiberWalkLimit = (): void => {
+    fiberWalkLimited = true;
+  };
+  window.addEventListener(REACT_FIBER_WALK_LIMIT_EVENT, onFiberWalkLimit);
   const currentRequestRoute = (): RendererHostRoute | null => {
+    fiberWalkLimited = false;
     const route = disposed ? null : (window.__codexhostHostRoutingV1?.forComposer() ?? null);
     usageSubscription.connect(clients.forRoute(route));
     idleReleaseSync.connect(disposed ? null : clients.forHost("local"));
     updateStatus(
       route ? "ready" : "installing",
-      route ? "ready" : "draft-routing-policy-unavailable",
+      route
+        ? "ready"
+        : fiberWalkLimited
+          ? "react-fiber-walk-limit-exceeded"
+          : "draft-routing-policy-unavailable",
       route ? "request-bridge" : null,
     );
     return route;
@@ -1104,6 +1118,7 @@ export function installCurrentRendererAdapter(): {
         "codexhost:draft-prewarm-policy-changed",
         handleRoutingPolicyChange,
       );
+      window.removeEventListener(REACT_FIBER_WALK_LIMIT_EVENT, onFiberWalkLimit);
       const cleanups = [
         ...[...selectedPolicies.values()].map((policy) => () => policy.select(null)),
         () => forkControl.dispose(),

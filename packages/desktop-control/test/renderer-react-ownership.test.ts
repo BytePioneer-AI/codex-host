@@ -1,9 +1,27 @@
-import { describe, expect, it } from "vitest";
-import { committedReactAncestors } from "../src/renderer-react-ownership.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  REACT_FIBER_WALK_LIMIT_EVENT,
+  committedReactAncestors,
+} from "../src/renderer-react-ownership.js";
 
 type Fiber = Record<string, unknown>;
 
+const LIMIT = 200_000;
+
+function captureLimitEvents(): Event[] {
+  const events: Event[] = [];
+  vi.stubGlobal("dispatchEvent", (event: Event) => {
+    events.push(event);
+    return true;
+  });
+  return events;
+}
+
 describe("committed React ownership", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("uses the committed parent path for a bailout child with stale return pointers", () => {
     const state: { current?: Fiber } = {};
     const oldRoot: Fiber = { stateNode: state };
@@ -67,7 +85,7 @@ describe("committed React ownership", () => {
   it("bounds parent traversal even without a cycle", () => {
     const first: Fiber = {};
     let node = first;
-    for (let depth = 1; depth < 20_010; depth += 1) {
+    for (let depth = 1; depth < 200_010; depth += 1) {
       const parent: Fiber = {};
       node.return = parent;
       node = parent;
@@ -84,8 +102,57 @@ describe("committed React ownership", () => {
     const first = { return: { stateNode: { current: { child } } } };
     expect(committedReactAncestors(first)).toEqual([]);
     let siblings: Fiber = {};
-    for (let i = 0; i < 20_010; i++) siblings = { sibling: siblings };
+    for (let i = 0; i < 200_010; i++) siblings = { sibling: siblings };
     first.return.stateNode.current.child = siblings;
     expect(committedReactAncestors(first)).toEqual([]);
+  });
+
+  it("finds a Composer committed after more than 20,000 fibers", () => {
+    const events = captureLimitEvents();
+    const first: Fiber = {};
+    const root: Fiber = {};
+    root.stateNode = { current: root };
+    first.return = root;
+    // The Composer is the last sibling, reached after every earlier sidebar item.
+    let sibling: Fiber = first;
+    for (let i = 0; i < 20_300; i++) sibling = { sibling };
+    root.child = sibling;
+    expect(committedReactAncestors(first)).toEqual([first, root]);
+    expect(events).toEqual([]);
+  });
+
+  it("announces an exhausted walk instead of failing silently", () => {
+    const events = captureLimitEvents();
+    const first: Fiber = {};
+    const root: Fiber = {};
+    root.stateNode = { current: root };
+    first.return = root;
+    let sibling: Fiber = first;
+    for (let i = 0; i < LIMIT + 10; i++) sibling = { sibling };
+    root.child = sibling;
+    expect(committedReactAncestors(first)).toEqual([]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe(REACT_FIBER_WALK_LIMIT_EVENT);
+    expect((events[0] as CustomEvent).detail).toEqual({ limit: LIMIT });
+  });
+
+  it("announces an exhausted parent walk but not malformed or missing trees", () => {
+    const events = captureLimitEvents();
+    const cyclic: Fiber = {};
+    cyclic.return = cyclic;
+    expect(committedReactAncestors(cyclic)).toEqual([]);
+    const detached: Fiber = { return: { stateNode: { current: { child: {} } } } };
+    expect(committedReactAncestors(detached)).toEqual([]);
+    expect(events).toEqual([]);
+
+    const first: Fiber = {};
+    let node = first;
+    for (let depth = 1; depth < LIMIT + 10; depth += 1) {
+      const parent: Fiber = {};
+      node.return = parent;
+      node = parent;
+    }
+    expect(committedReactAncestors(first)).toEqual([]);
+    expect(events.map((event) => event.type)).toEqual([REACT_FIBER_WALK_LIMIT_EVENT]);
   });
 });

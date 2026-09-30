@@ -1,9 +1,11 @@
 import type { JsonObject } from "@codexhost/protocol-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  completePiTurn,
   createFixture,
   requestId,
+  rollbackCapableAdapter,
   startPiThread,
   stopFixture,
   writeRequest,
@@ -156,6 +158,44 @@ describe("External Thread sections through AppServerHost", () => {
     expect(unarchived.result).toMatchObject({ thread: { id: threadId, ...pinned } });
     await stopFixture(fixture);
   });
+
+  it.each(["resume", "unarchive", "rollback", "read"])(
+    "keeps thread/%s available when section placement reads fail",
+    async (action) => {
+      const fixture = createFixture({
+        externalAdapters: new Map([["pi", rollbackCapableAdapter()]]),
+      });
+      try {
+        const threadId = await startPiThread(fixture);
+        await completePiTurn(fixture, threadId, 2);
+        serveOfficialSections(fixture, []);
+        await call(fixture, 130, "thread/section/move", { threadId, sectionId: PINNED });
+        if (action === "unarchive") await call(fixture, 131, "thread/archive", { threadId });
+        const placements = vi
+          .spyOn(fixture.mappingStore, "listSectionPlacements")
+          .mockRejectedValue(new Error("section storage unavailable"));
+        const response = await call(fixture, 132, `thread/${action}`, {
+          threadId,
+          ...(action === "rollback" ? { numTurns: 1 } : {}),
+        });
+        expect(response.result).toMatchObject({ thread: { id: threadId } });
+        expect(response).not.toHaveProperty("error");
+        expect(fixture.diagnosticOutput.read()?.toString()).toContain(
+          "External Thread section placement could not be read",
+        );
+        placements.mockRestore();
+        const recovered = await call(fixture, 133, "thread/read", { threadId, includeTurns: true });
+        expect(recovered.result).toMatchObject({
+          thread: { id: threadId, section: { id: PINNED } },
+        });
+        expect(((recovered.result as JsonObject).thread as JsonObject).turns).toHaveLength(
+          action === "rollback" ? 0 : 1,
+        );
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("returns the official error for a missing section", async () => {
     const fixture = createFixture();

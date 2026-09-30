@@ -2535,8 +2535,15 @@ export class AppServerHost {
   }
 
   async #externalSectionFields(threadId: string) {
-    const placements = await this.#repository.listSectionPlacements();
-    return threadSectionFields(placements.find((entry) => entry.hostThreadId === threadId));
+    try {
+      const placements = await this.#repository.listSectionPlacements();
+      return threadSectionFields(placements.find((entry) => entry.hostThreadId === threadId));
+    } catch {
+      // Optional presentation metadata must not suppress a completed operation's response.
+      // Preserve the projection and persisted placement so a later read can recover.
+      this.#diagnose("External Thread section placement could not be read");
+      return {};
+    }
   }
 
   /** Cached External Thread projections predate section moves; responses read the placement. */

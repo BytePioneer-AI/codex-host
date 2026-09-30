@@ -73,6 +73,7 @@ function forkButton(
     fiberTurnId?: string;
     forkSignature?: boolean;
     isProjectlessConversation?: boolean;
+    ownerDepth?: number;
     projectlessSignature?: boolean;
   } = {},
 ): HTMLButtonElement {
@@ -94,21 +95,26 @@ function forkButton(
       return null;
     },
   } as unknown as HTMLButtonElement;
+  const owner = {
+    memoizedProps: {
+      conversationId: fiberThreadId,
+      turnId: fiberTurnId,
+      hostId: "local",
+      onFork: vi.fn(),
+      ...(input.projectlessSignature === false
+        ? {}
+        : { isProjectlessConversation: input.isProjectlessConversation ?? false }),
+    },
+    return: null as unknown,
+  };
+  let parent: { memoizedProps: Record<string, unknown>; return: unknown } = owner;
+  for (let depth = 1; depth < (input.ownerDepth ?? 1); depth += 1) {
+    parent = { memoizedProps: {}, return: parent };
+  }
   const fiber = {
     memoizedProps:
       input.forkSignature === false ? { onClick: vi.fn() } : { "aria-busy": undefined },
-    return: {
-      memoizedProps: {
-        conversationId: fiberThreadId,
-        turnId: fiberTurnId,
-        hostId: "local",
-        onFork: vi.fn(),
-        ...(input.projectlessSignature === false
-          ? {}
-          : { isProjectlessConversation: input.isProjectlessConversation ?? false }),
-      },
-      return: null,
-    },
+    return: parent,
   };
   Object.defineProperty(button, "__reactFiber$test", { value: fiber });
   return button;
@@ -266,6 +272,14 @@ describe("Renderer external Thread Fork control", () => {
     expect(rendererForkTargetFromButton(forkButton({ fiberTurnId: "different-turn" }))).toBeNull();
     expect(rendererForkTargetFromButton(forkButton({ forkSignature: false }))).toBeNull();
     expect(rendererForkTargetFromButton(forkButton({ projectlessSignature: false }))).toBeNull();
+  });
+
+  it("resolves the deeper Fork ownership path used by current Desktop", () => {
+    expect(rendererForkTargetFromButton(forkButton({ ownerDepth: 26 }))).toMatchObject({
+      isProjectlessConversation: false,
+      threadId: "source-thread",
+      turnId: "source-turn",
+    });
   });
 
   it("intercepts a projectless external Fork and opens the derived Thread", async () => {

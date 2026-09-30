@@ -74,6 +74,7 @@ function forkButton(
     forkSignature?: boolean;
     isProjectlessConversation?: boolean;
     ownerDepth?: number;
+    intermediateCallback?: string;
     projectlessSignature?: boolean;
   } = {},
 ): HTMLButtonElement {
@@ -110,6 +111,13 @@ function forkButton(
   let parent: { memoizedProps: Record<string, unknown>; return: unknown } = owner;
   for (let depth = 1; depth < (input.ownerDepth ?? 1); depth += 1) {
     parent = { memoizedProps: {}, return: parent };
+  }
+  if (input.intermediateCallback) {
+    parent = {
+      type: () => null,
+      memoizedProps: { [input.intermediateCallback]: vi.fn() },
+      return: parent,
+    } as typeof parent;
   }
   const fiber = {
     memoizedProps:
@@ -280,6 +288,15 @@ describe("Renderer external Thread Fork control", () => {
       threadId: "source-thread",
       turnId: "source-turn",
     });
+  });
+
+  it("does not treat a sibling Copy button under the same action owner as Fork", () => {
+    // Current Desktop gives Copy the same aria-busy button primitive; it is
+    // distinguished by its own onCopy owner before the shared onFork owner.
+    expect(rendererForkTargetFromButton(forkButton({ intermediateCallback: "onCopy" }))).toBeNull();
+    expect(
+      rendererForkTargetFromButton(forkButton({ intermediateCallback: "onCopy", ownerDepth: 26 })),
+    ).toBeNull();
   });
 
   it("intercepts a projectless external Fork and opens the derived Thread", async () => {

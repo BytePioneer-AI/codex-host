@@ -53,23 +53,45 @@ export function runInstallationCommand(
 }
 
 export function installationVersion(value: unknown): string {
-  if (typeof value !== "string" || !/^v?\d+(?:\.\d+){1,3}(?:[-+][\w.-]+)?$/.test(value.trim()))
+  if (
+    typeof value !== "string" ||
+    !/^v?\d+(?:\.\d+){1,3}(?:-[\w.-]+)?(?:\+[\w.-]+)?$/.test(value.trim())
+  )
     throw new Error("Harness returned an invalid version");
   return value.trim().replace(/^v/, "");
 }
 
 export function versionFromOutput(output: string): string {
-  return installationVersion(output.match(/\b\d+(?:\.\d+){1,3}(?:[-+][\w.-]+)?\b/)?.[0]);
+  return installationVersion(output.match(/\b\d+(?:\.\d+){1,3}(?:-[\w.-]+)?(?:\+[\w.-]+)?\b/)?.[0]);
 }
 
-/** Stable releases only; a newer local build must not be downgraded. */
+/** Preserve release/prerelease ordering; build metadata does not select an update. */
 export function newerInstallationVersion(current: string, latest: string): boolean {
-  const a = installationVersion(current).split(/[.+-]/).slice(0, 3).map(Number);
-  const b = installationVersion(latest).split(/[.+-]/).slice(0, 3).map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (b[i] ?? 0) > (a[i] ?? 0);
+  const a = installationVersion(current).replace(/\+.*/, "");
+  const b = installationVersion(latest).replace(/\+.*/, "");
+  const coreA = a.replace(/-.*/, "").split(".").map(BigInt);
+  const coreB = b.replace(/-.*/, "").split(".").map(BigInt);
+  for (let i = 0; i < Math.max(coreA.length, coreB.length); i++) {
+    if ((coreA[i] ?? 0n) !== (coreB[i] ?? 0n)) return (coreB[i] ?? 0n) > (coreA[i] ?? 0n);
   }
-  return current.includes("-") && !latest.includes("-");
+  const preA = a.includes("-") ? a.slice(a.indexOf("-") + 1).split(".") : [];
+  const preB = b.includes("-") ? b.slice(b.indexOf("-") + 1).split(".") : [];
+  if (!preA.length || !preB.length) return !!preA.length && !preB.length;
+  for (let i = 0; i < Math.max(preA.length, preB.length); i++) {
+    const x = preA[i];
+    const y = preB[i];
+    if (x === y) continue;
+    if (x === undefined || y === undefined) return x === undefined;
+    const numericX = /^\d+$/.test(x);
+    const numericY = /^\d+$/.test(y);
+    if (numericX && numericY) {
+      if (BigInt(x) === BigInt(y)) continue;
+      return BigInt(y) > BigInt(x);
+    }
+    if (numericX !== numericY) return numericX;
+    return y > x;
+  }
+  return false;
 }
 
 /** Concurrent clicks share one update; checks cannot race its readback. */

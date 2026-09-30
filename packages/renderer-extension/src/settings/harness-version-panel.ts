@@ -59,9 +59,12 @@ export function createHarnessVersionPanel(
     check.disabled = busy || unsupported || signal.aborted;
     update.disabled = busy || signal.aborted || !state?.canUpdate || !state.updateAvailable;
     update.textContent =
-      state && !state.updateAvailable
+      state?.canUpdate && state.latestVersion !== "Unknown" && !state.updateAvailable
         ? messages.harnessVersionUpToDate
         : messages.harnessVersionUpdate;
+    note.textContent = state?.message
+      ? `${state.message} ${messages.harnessVersionNote}`
+      : messages.harnessVersionNote;
   };
   const run = async (action: "check" | "update"): Promise<void> => {
     if (busy || unsupported || signal.aborted) return;

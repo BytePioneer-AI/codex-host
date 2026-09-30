@@ -17,6 +17,7 @@ export interface RendererSettingsTriggerControl {
   root: HTMLElement;
   button: HTMLButtonElement;
   setUpdateAvailable(available: boolean): void;
+  setSelected(selected: boolean): void;
   dispose(): void;
 }
 
@@ -24,6 +25,7 @@ export interface RendererSettingsRailTriggerControl {
   readonly root: HTMLElement | null;
   refresh(): boolean;
   setUpdateAvailable(available: boolean): void;
+  setSelected(selected: boolean): void;
   dispose(): void;
 }
 
@@ -102,7 +104,6 @@ export function mountRendererSettingsTrigger(
   button.type = "button";
   button.disabled = !available;
   button.setAttribute("aria-label", messages.openSettings);
-  button.setAttribute("aria-haspopup", "dialog");
   button.style.position = "relative";
   button.style.display = "inline-flex";
   button.style.alignItems = "center";
@@ -143,14 +144,21 @@ export function mountRendererSettingsTrigger(
   };
   renderTitle();
 
+  let selected = false;
+  let hovered = false;
+  // Mirrors native rail destinations: selected and hovered share one treatment.
+  const renderEmphasis = (): void => {
+    const emphasized = selected || (hovered && !button.disabled);
+    button.style.background = emphasized ? RAIL_ICON_HOVER_BACKGROUND : "transparent";
+    button.style.color = emphasized ? RAIL_ICON_HOVER_COLOR : RAIL_ICON_COLOR;
+  };
   const onPointerEnter = (): void => {
-    if (button.disabled) return;
-    button.style.background = RAIL_ICON_HOVER_BACKGROUND;
-    button.style.color = RAIL_ICON_HOVER_COLOR;
+    hovered = true;
+    renderEmphasis();
   };
   const onPointerLeave = (): void => {
-    button.style.background = "transparent";
-    button.style.color = RAIL_ICON_COLOR;
+    hovered = false;
+    renderEmphasis();
   };
   const onClick = (event: MouseEvent): void => {
     event.stopPropagation();
@@ -172,6 +180,12 @@ export function mountRendererSettingsTrigger(
       updateBadge.style.display = next ? "block" : "none";
       renderTitle();
     },
+    setSelected(next) {
+      selected = next;
+      if (next) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+      renderEmphasis();
+    },
     dispose() {
       button.removeEventListener("pointerenter", onPointerEnter);
       button.removeEventListener("pointerleave", onPointerLeave);
@@ -190,6 +204,7 @@ export function installRendererSettingsRailTrigger(options: {
   const ownerDocument = options.ownerDocument ?? document;
   let trigger: RendererSettingsTriggerControl | null = null;
   let updateAvailable = false;
+  let selected = false;
   let disposed = false;
 
   const refresh = (): boolean => {
@@ -211,6 +226,7 @@ export function installRendererSettingsRailTrigger(options: {
         options.messages,
       );
       trigger.setUpdateAvailable(updateAvailable);
+      trigger.setSelected(selected);
     }
     if (
       trigger.root.parentElement !== insertionPoint.parent ||
@@ -230,6 +246,10 @@ export function installRendererSettingsRailTrigger(options: {
     setUpdateAvailable(available) {
       updateAvailable = available;
       trigger?.setUpdateAvailable(available);
+    },
+    setSelected(next) {
+      selected = next;
+      trigger?.setSelected(next);
     },
     dispose() {
       if (disposed) return;

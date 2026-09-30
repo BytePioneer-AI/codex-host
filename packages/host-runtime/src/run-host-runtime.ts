@@ -33,7 +33,10 @@ import {
   remoteAppServerSocketPath,
   remoteUnixListenerUrl,
 } from "./remote-app-server.js";
+import { watchRemoteListenerSupervisor } from "./remote-listener-supervisor.js";
 import { remoteOfficialAppServerSocketPath } from "./remote-official-app-server.js";
+import { startConsoleControlServer } from "./console-control-server.js";
+import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
@@ -128,6 +131,30 @@ async function prepareDelegationRuntime(input: {
   }
 }
 
+/**
+ * Exposes the Desktop-facing Host to the local console while it runs. Only the
+ * Launcher-started local Host does; the channel is best effort.
+ */
+async function runWithConsoleControl(
+  host: AppServerHost,
+  enabled: boolean,
+  environment: NodeJS.ProcessEnv,
+): Promise<number> {
+  const control = enabled
+    ? await startConsoleControlServer({ target: host, environment }).catch((error: unknown) => {
+        process.stderr.write(
+          `codexhost Host Runtime: console channel unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        return undefined;
+      })
+    : undefined;
+  try {
+    return await host.run();
+  } finally {
+    await control?.close().catch(() => undefined);
+  }
+}
+
 export async function runHostRuntime(input: {
   arguments: string[];
   environment: NodeJS.ProcessEnv;
@@ -144,6 +171,19 @@ export async function runHostRuntime(input: {
           environment: input.environment,
         })
       : undefined);
+  // Only a Launcher-started local Host can open the console on this machine.
+  // The development entry does not pass its URL; the Launcher still exports the path.
+  const consoleHostRuntimePath = hostRuntimePath ?? input.environment.CODEXHOST_HOST_RUNTIME_PATH;
+  const consoleEntry =
+    consoleHostRuntimePath &&
+    path.isAbsolute(consoleHostRuntimePath) &&
+    input.environment.CODEXHOST_LAUNCHER_EXECUTABLE &&
+    input.environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1"
+      ? consoleEntrypoint(consoleHostRuntimePath)
+      : null;
+  const consoleOpener = consoleEntry
+    ? createHostConsoleOpener({ entrypoint: consoleEntry, environment: input.environment })
+    : undefined;
 
   if (!isRemoteUnixListenerInvocation(input.arguments)) {
     const remoteControlPlan = createRemoteControlAppServerPlan({
@@ -167,7 +207,7 @@ export async function runHostRuntime(input: {
         };
         if (!remoteControlPlan) {
           try {
-            return await new AppServerHost({
+            const host = new AppServerHost({
               stockCodexPath,
               arguments: input.arguments,
               defaultAgent,
@@ -176,7 +216,13 @@ export async function runHostRuntime(input: {
               ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
               onDelegationApi,
               ...(updateCoordinator ? { updateCoordinator } : {}),
-            }).run();
+              ...(consoleOpener ? { consoleOpener } : {}),
+            });
+            return await runWithConsoleControl(
+              host,
+              consoleOpener !== undefined,
+              delegationEnvironment,
+            );
           } finally {
             await official.close();
           }
@@ -194,6 +240,7 @@ export async function runHostRuntime(input: {
             mappingStore,
             closeMappingStoreOnExit: false,
             ...(updateCoordinator ? { updateCoordinator } : {}),
+            ...(consoleOpener ? { consoleOpener } : {}),
           };
           const host = new AppServerHost({
             ...common,
@@ -216,7 +263,11 @@ export async function runHostRuntime(input: {
           await listener.listen();
           await publishRemoteControlAppServerDescriptor(remoteControlPlan);
           // Official failure/replacement must never close this listener or external Harnesses.
-          return await host.run();
+          return await runWithConsoleControl(
+            host,
+            consoleOpener !== undefined,
+            delegationEnvironment,
+          );
         } finally {
           try {
             await listener?.close();
@@ -247,6 +298,9 @@ export async function runHostRuntime(input: {
           delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
         ),
         diagnosticOutput: process.stderr,
+        // The listener outlives Desktop connections and Shim reuses it on
+        // reconnect, so a failed official generation must be replaced here.
+        recovery: {},
         createBackend: () =>
           createOwnedUnixBackend({
             stockCodexPath,
@@ -288,29 +342,42 @@ export async function runHostRuntime(input: {
         },
       });
 
-      let stopping = false;
-      const officialState: { unexpectedExit: Error | null } = { unexpectedExit: null };
       const stop = (): void => {
-        stopping = true;
         void listener.close();
       };
+      // Desktop's reconnect cleanup can kill the Shim supervisor and stock Codex
+      // while this retitled listener survives. An unsupervised listener must
+      // close normally and release its socket instead of lingering or crashing
+      // on its closed diagnostic pipes.
+      let supervisorLost = false;
+      const supervisor = watchRemoteListenerSupervisor({
+        onLost: (reason) => {
+          supervisorLost = true;
+          process.stderr.write(`codexhost: remote listener ${reason}; closing\n`);
+          stop();
+        },
+        // Shim always spawns this listener as its child, so an init parent at
+        // startup means the supervisor is already gone.
+        supervisorRequired: true,
+      });
       try {
         await prepareRemoteAppServerSocketDirectory(socketPath);
+        // Also covers a loss reported while the directory was being prepared.
+        if (supervisorLost) return 0;
+        // Native Codex failure never closes this listener: external Harness
+        // sessions stay alive while the Scope restarts the official generation.
         await officialRuntimeScope.start().catch(() => {
           officialRuntimeScope.gate.unavailable();
         });
+        if (supervisorLost) return 0;
         await listener.listen();
-        void officialRuntimeScope.failure().then((result) => {
-          if (!stopping) officialState.unexpectedExit = result;
-          // Keep remote external Harness sessions alive when only native Codex fails.
-        });
         process.title = MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE;
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
         await listener.closed;
-        return officialState.unexpectedExit ? 1 : 0;
+        return 0;
       } finally {
-        stopping = true;
+        supervisor.close();
         process.removeListener("SIGINT", stop);
         process.removeListener("SIGTERM", stop);
         try {

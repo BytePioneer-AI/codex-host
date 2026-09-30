@@ -6,6 +6,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`PRIVACY.md`](PRIVACY.md) | 公开隐私政策：项目独立性、本地存储、Harness 集成、凭据处理与数据删除。 |
 | [`project/README.zh-CN.md`](project/README.zh-CN.md) | 中文项目介绍、安装方式和功能概览；维护中文用户入口时阅读。根目录 `README.md` 为英文默认入口。 |
 | [`project/README.ko.md`](project/README.ko.md) | 韩文项目介绍、安装方式和功能概览；维护韩文用户入口时阅读。 |
 | [`project/领域术语表.md`](project/领域术语表.md) | Harness、Model、Provider、Account、Thread 等领域术语；命名产品和代码概念前阅读。 |
@@ -42,6 +43,7 @@
 | --- | --- |
 | [`harnesses/claude-code/claude-code-plan-mode.md`](harnesses/claude-code/claude-code-plan-mode.md) | Claude Code 规划模式、计划退出确认与权限状态边界；修改 Plan Mode 时阅读。 |
 | [`harnesses/claude-code/claude-code-edit-recovery.md`](harnesses/claude-code/claude-code-edit-recovery.md) | 最后一条消息编辑后的独立 Session、空历史保留和关闭语义；修改编辑恢复时阅读。 |
+| [`harnesses/claude-code/claude-code-background-terminals.md`](harnesses/claude-code/claude-code-background-terminals.md) | Claude 后台命令作为 Desktop 后台终端：原生通知结算、实时输出、历史叠加与所有权；修改后台命令时阅读。 |
 
 ### CodeBuddy、WorkBuddy 与 Cursor
 
@@ -114,6 +116,7 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`operations/host-runtime-log.md`](operations/host-runtime-log.md) | Host Runtime 日志文件的位置、内容与边界；排查 Runtime 崩溃或异常退出时阅读。 |
+| [`operations/codexhost-console.md`](operations/codexhost-console.md) | 本地控制台的打开方式、页面、与运行中 Host 的连接、端口、诊断文件、安全与更新边界；排查启动失败或 Codex 更新后功能缺失时阅读。 |
 | [`operations/repository-maintenance.md`](operations/repository-maintenance.md) | PR 标签、CI 评论和发布前检查自动化；修改仓库自动化时阅读。 |
 
 ## 待评估方案与问题调查
@@ -125,6 +128,7 @@
 | [`proposals/external-harness-idle-unload-proposal.md`](proposals/external-harness-idle-unload-proposal.md) | 外部 Harness 空闲释放与恢复方案、实现进展及验证边界；评估闲置资源回收时阅读。 |
 | [`proposals/Reasoning 实时预览与持久 Transcript 的后续方案.md`](proposals/Reasoning%20实时预览与持久%20Transcript%20的后续方案.md) | Reasoning 实时预览与持久留痕方案；规划 Reasoning 展示时阅读。 |
 | [`proposals/外部 Harness 回合文件变更汇总问题与后续方案.md`](proposals/外部%20Harness%20回合文件变更汇总问题与后续方案.md) | Turn 文件变更重复汇总问题、语义分层和候选方案；设计净 diff 时阅读。 |
+| [`proposals/独立 Web 控制台方案.md`](proposals/独立%20Web%20控制台方案.md) | 不依赖 Codex 启动的本地控制台：方案、第一阶段实现与后续阶段；扩展控制台时阅读。 |
 
 ## 历史归档
 

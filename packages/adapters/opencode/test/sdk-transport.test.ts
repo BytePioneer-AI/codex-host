@@ -105,6 +105,7 @@ describe("OpenCode SDK transport", () => {
         return child as unknown as ChildProcessWithoutNullStreams;
       },
       sleep: async () => undefined,
+      assignPort: async () => 4_000 + children.length + 1,
     };
     const connection = new OpenCodeServerConnection(
       {
@@ -118,7 +119,7 @@ describe("OpenCode SDK transport", () => {
     expect(spawnCalls).toHaveLength(1);
     expect(spawnCalls[0]).toMatchObject({
       command: process.execPath,
-      args: ["serve", "--hostname=127.0.0.1", "--port=0"],
+      args: ["serve", "--hostname=127.0.0.1", "--port=4001"],
       cwd: tmpdir(),
       env: {
         OPENCODE_SERVER_USERNAME: "codexhost",
@@ -226,6 +227,46 @@ describe("OpenCode SDK transport", () => {
     await expect(connection.client()).resolves.toBeDefined();
     expect(attempts).toBe(2);
     child.exitCode = 0;
+    await connection.close();
+  });
+
+  it("retries on a new loopback port when the native Server exits before binding", async () => {
+    const ports: number[] = [];
+    const children: FakeChild[] = [];
+    const dependencies: OpenCodeServerDependencies = {
+      createClient: () => clientWith(),
+      randomPassword: () => "synthetic-password",
+      assignPort: async () => 4_500 + ports.length + 1,
+      spawn: (_command, args) => {
+        ports.push(Number(args.at(-1)?.replace("--port=", "")));
+        const child = new FakeChild();
+        child.pid += children.length;
+        children.push(child);
+        if (children.length === 1) {
+          // The assigned port was claimed before the native bind.
+          child.exitCode = 1;
+          queueMicrotask(() => child.emit("exit", 1, null));
+        } else {
+          queueMicrotask(() =>
+            child.stdout.write("opencode server listening on http://127.0.0.1:4502\n"),
+          );
+        }
+        return child as unknown as ChildProcessWithoutNullStreams;
+      },
+      sleep: async () => undefined,
+    };
+    const connection = new OpenCodeServerConnection(
+      {
+        command: process.execPath,
+        environment: { PATH: process.env.PATH, USERPROFILE: tmpdir() },
+      },
+      dependencies,
+    );
+
+    await expect(connection.client("/workspace")).resolves.toBeDefined();
+    expect(ports).toEqual([4_501, 4_502]);
+    const second = children[1] as FakeChild;
+    second.exitCode = 0;
     await connection.close();
   });
 

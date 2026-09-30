@@ -1892,6 +1892,7 @@ export function installRendererBindingProbe(
         catalog,
         ...(previousPermissionModeId ? { selected: previousPermissionModeId } : {}),
         error: error instanceof Error ? error.message : String(error),
+        selectionRejected: true,
       };
     } finally {
       if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);

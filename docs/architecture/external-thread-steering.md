@@ -51,6 +51,15 @@ Codex Desktop **26.903.61454 / build 8378** 在功能开关及 app-server 版本
 
 该边界来自实际代码和运行中开关观察，不代表能确定功能开关何时启用，或断言此接口首次出现于该 Desktop 版本。
 
+### 手动压缩后的自动执行
+
+Codex Desktop **26.924.22138 / build 11645** 的本地队列在 `turnCompleted` 后自动执行下一条消息前，要求最近一个已完成 Turn 含有 `agentMessage`，或含有 `source: "manual"` 的 `contextCompaction`。这个 `source` 不取自 Item 字段：`item/started` 时，Desktop 用自身 `compactThread`（官方 `thread/compact/start`）之前调用的 `registerPendingManualContextCompaction(threadId)` 登记来判定，未登记即为 `"automatic"`。外部 Harness 的 `/compact` 经 `codexhost/thread/command/execute` 或 `turn/start` 进入 Host 命令 Turn，不经过该登记，而各 Adapter 的压缩 Turn 通常没有 Agent Message，因此压缩期间排队的消息不会自动执行（[#414](https://github.com/BytePioneer-AI/codex-host/issues/414)）。
+
+- Host 按命令目录中的 `invocation: "/compact"` 记录显式手动压缩 Turn，在其 `contextCompaction` 的 `item/started` 之前写出 `codexhost/thread/manual-compaction/started { threadId, turnId }`。其他命令 Turn 与普通 Turn 中的自动压缩均不发送该通知；记录在命令失败或 Turn 完成时清除。
+- Desktop Renderer 只把方法在其内置 app-server 通知表中的通知交给 Manager（以及 `addNotificationCallback`），`codexhost/*` 方法在这一步被丢弃；Electron 主进程则会把所有 Host 通知原样以 `{ type: "mcp-notification", hostId, method, params }` 投递到窗口 `message` 事件。因此 `renderer-manual-compaction.ts` 按 Host 连接（本机及 SSH）监听窗口 `message`，只接受本窗口（或无 source）的、`hostId` 与该连接一致的通知。仅对已加载、`modelProvider: "codexhost"` 的外部 Thread，且当前窗口不是 follower 时，调用该 Manager 的 `registerPendingManualContextCompaction(threadId)`。窗口消息按到达顺序逐条分发，该登记在紧接着的 `item/started` 被处理前完成并随即被消费；Item 属于同一个进行中的 Turn，登记产生的占位 Item 会被替换。
+- 不调用 `compactThread`，不改变压缩执行或 Harness 语义，也不为压缩 Turn 合成 Agent Message。Desktop 缺少该绑定时不安装，保留原有行为；Desktop 对这条未知通知本身不做处理。
+- 仅覆盖投影 `contextCompaction` 的命令 Turn。未投影压缩 Item 的 Harness（如 Kimi），以及只有 `commandExecution` 等无回复的非压缩命令 Turn，仍按 Desktop 规则不自动执行。
+
 ## 验证
 
 针对性测试：
@@ -61,6 +70,8 @@ Codex Desktop **26.903.61454 / build 8378** 在功能开关及 app-server 版本
 - `packages/renderer-extension/test/renderer-external-steering-rpc.test.ts`：类方法的 RPC 可访问性、模型／权限列表读取、官方与外部 steer、实例隔离、卸载和重复安装，以及卸载期间待定请求的清理。
 - `packages/renderer-extension/test/renderer-external-queue.test.ts`：经生产 Adapter 安装路径验证外部入队、已有暂停消息、队列清空后再次入队、同连接官方队列、Manager 隔离、元数据更新、旧版后端和卸载恢复。
 - `packages/renderer-extension/test/versioned-renderer-adapter.test.ts`：现有版本化绑定与清理回归。
+- `packages/host-runtime/test/app-server-host.manual-compaction.test.ts`：命令菜单与输入 `/compact` 两条路径在压缩 `item/started` 前恰好发送一次通知，普通 Turn 与非 `/compact` 命令 Turn 的自动压缩均不发送。
+- `packages/renderer-extension/test/renderer-manual-compaction.test.ts`：经窗口 `mcp-notification` 消息的外部 Thread 登记，follower、未加载／官方 Thread、其他 Host、其他 frame 与非法消息跳过，缺少 Desktop 绑定、卸载，以及按 Host 连接（含 SSH）安装。
 
 实现时还在 Node VM 中回放了上述 Desktop Bundle 的真实 `lun`（普通 start）、`GS`（占位写入）和 `Irn`（旧轮消息恢复）helper：legacy / canonical 历史各验证启动成功与启动失败，检查单条新输入、无旧轮 steer 恢复、失败输入保留。该回放仍模拟了准备器与传输，不是实际窗口或原生 Session 测试。
 

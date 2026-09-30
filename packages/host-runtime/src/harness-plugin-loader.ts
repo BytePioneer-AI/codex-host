@@ -1,5 +1,3 @@
-import { readdir, realpath } from "node:fs/promises";
-import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { HarnessAdapter, HarnessError } from "@codexhost/harness-adapter";
@@ -7,20 +5,18 @@ import type { HarnessPluginContext, HarnessPluginModule } from "@codexhost/harne
 import {
   HARNESS_PLUGIN_API_VERSION,
   HARNESS_PLUGIN_LIMIT,
-  HARNESS_PLUGIN_MANIFEST_MAX_BYTES,
   harnessPluginDescriptorSchema,
-  harnessPluginManifestSchema,
   type HarnessPluginDescriptor,
-  type HarnessPluginManifest,
 } from "@codexhost/shared-contracts";
 
-import { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 import {
+  discoverHarnessPlugins,
   pluginResourcePath,
-  readPluginConfiguration,
-  readPluginFile,
   readPluginIcon,
-} from "./plugin-files.js";
+  type InstalledHarnessPlugin,
+} from "@codexhost/harness-plugin-files";
+
+import { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 
 export type HarnessPluginDiagnosticCode =
   | "invalidRoot"
@@ -58,15 +54,7 @@ export interface LoadHarnessPluginsOptions {
   diagnose?: (diagnostic: HarnessPluginDiagnostic) => void;
 }
 
-interface Candidate {
-  root: string;
-  manifest: HarnessPluginManifest;
-  enabled: boolean;
-}
-
-function missingFile(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
+type Candidate = InstalledHarnessPlugin;
 
 function isAdapter(value: unknown): value is HarnessAdapter {
   if (!value || typeof value !== "object") return false;
@@ -194,59 +182,9 @@ export async function loadHarnessPlugins(
       /* Diagnostics cannot change loading. */
     }
   };
-  const candidates: Candidate[] = [];
-  const enabledIds = new Set<string>();
-  const roots = new Set<string>();
-  for (const configuredRoot of options.roots) {
-    if (!path.isAbsolute(configuredRoot)) {
-      diagnose({ code: "invalidRoot" });
-      continue;
-    }
-    let root: string;
-    try {
-      root = await realpath(configuredRoot);
-      if (roots.has(root)) continue;
-      roots.add(root);
-    } catch (error) {
-      if (!missingFile(error)) diagnose({ code: "invalidRoot" });
-      continue;
-    }
-    let enabled: Set<string>;
-    try {
-      enabled = new Set((await readPluginConfiguration(root)).enabled);
-    } catch (error) {
-      if (!missingFile(error)) diagnose({ code: "invalidConfiguration" });
-      continue;
-    }
-    for (const id of enabled) enabledIds.add(id);
-    try {
-      const directories = (await readdir(root, { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
-        .sort((a, b) => a.name.localeCompare(b.name));
-      if (directories.length > HARNESS_PLUGIN_LIMIT) {
-        diagnose({ code: "invalidRoot" });
-        continue;
-      }
-      for (const directory of directories) {
-        try {
-          const file = await pluginResourcePath(root, `${directory.name}/manifest.json`);
-          const pluginRoot = await realpath(path.join(root, directory.name));
-          // A manifest symlink into another plugin is not the owning plugin's manifest.
-          await pluginResourcePath(pluginRoot, "manifest.json");
-          const manifest = harnessPluginManifestSchema.parse(
-            JSON.parse(
-              (await readPluginFile(file, HARNESS_PLUGIN_MANIFEST_MAX_BYTES)).toString("utf8"),
-            ),
-          );
-          candidates.push({ root: pluginRoot, manifest, enabled: enabled.has(manifest.id) });
-        } catch {
-          diagnose({ code: "invalidManifest" });
-        }
-      }
-    } catch {
-      diagnose({ code: "invalidRoot" });
-    }
-  }
+  const { plugins: candidates, enabledIds } = await discoverHarnessPlugins(options.roots, (code) =>
+    diagnose({ code }),
+  );
   const counts = new Map<string, number>();
   for (const { manifest } of candidates)
     counts.set(manifest.id, (counts.get(manifest.id) ?? 0) + 1);

@@ -96,6 +96,9 @@ class FakeElement {
   removeEventListener(name: string): void {
     this.listeners.delete(name);
   }
+  removeAttribute(name: string): void {
+    this.attributes.delete(name);
+  }
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
   }
@@ -216,6 +219,38 @@ describe("Renderer settings navigation rail trigger", () => {
         control.root,
         replacement.more,
       ]);
+      control.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows the native selected treatment while the settings page is open", () => {
+    const shell = createFakeRail();
+    let current = shell.rail;
+    const document = stubRailDocument(() => current);
+    try {
+      const control = installRendererSettingsRailTrigger({
+        available: true,
+        onOpen: vi.fn(),
+        ownerDocument: document,
+      });
+      const button = () => control.root?.children[0] as unknown as FakeElement;
+
+      control.setSelected(true);
+      expect(button().attributes.get("aria-current")).toBe("page");
+      expect(button().style.background).toContain("--color-background-secondary-ghost-hover");
+      button().dispatch("pointerleave");
+      expect(button().style.background).toContain("--color-background-secondary-ghost-hover");
+
+      // A rail remount keeps the selection.
+      current = createFakeRail().rail;
+      expect(control.refresh()).toBe(true);
+      expect(button().attributes.get("aria-current")).toBe("page");
+
+      control.setSelected(false);
+      expect(button().attributes.has("aria-current")).toBe(false);
+      expect(button().style.background).toBe("transparent");
       control.dispose();
     } finally {
       vi.unstubAllGlobals();

@@ -1,5 +1,15 @@
 import { z } from "zod";
 export * from "./credential-imports.js";
+export * from "./harness-display-settings.js";
+export {
+  CONSOLE_HOST_METHODS,
+  CONSOLE_OPEN_METHOD,
+  isConsoleHostMethod,
+  type ConsoleHostMethod,
+  consoleOpenParamsSchema,
+  consoleOpenResultSchema,
+  type ConsoleOpenResult,
+} from "./console.js";
 import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 export {
   IDLE_RELEASE_SETTINGS_METHOD,
@@ -14,6 +24,11 @@ export {
   loadedSessionsSchema,
   type LoadedSession,
 } from "./loaded-sessions.js";
+export {
+  THREAD_MANUAL_COMPACTION_STARTED_METHOD,
+  threadManualCompactionStartedSchema,
+  type ThreadManualCompactionStarted,
+} from "./manual-compaction.js";
 
 export {
   harnessAccountSnapshotSchema,

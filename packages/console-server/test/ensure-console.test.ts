@@ -121,15 +121,18 @@ describe("ensureConsole installation identity", () => {
   it("waits for the requested identity when another console initially responds after spawn", async () => {
     spawnMock.mockImplementation(() => {
       instance = old;
-      setTimeout(() => {
-        instance = target;
-      }, 300);
       return { unref: vi.fn() };
     });
-    const startedAt = Date.now();
-    expect(await ensureResult()).toEqual({ value: { port }, error: null });
-    expect(Date.now() - startedAt).toBe(300);
+    const settled = vi.fn();
+    const result = ensureConsole(options).then(settled);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).not.toHaveBeenCalled();
     expect(spawnMock).toHaveBeenCalledOnce();
+
+    instance = target;
+    await vi.runAllTimersAsync();
+    await result;
+    expect(settled).toHaveBeenCalledExactlyOnceWith({ port });
     expect(shutdownMock).not.toHaveBeenCalled();
   });
 
@@ -139,9 +142,7 @@ describe("ensureConsole installation identity", () => {
       instance = target;
       return new Response(null, { status: 204 });
     });
-    const startedAt = Date.now();
     expect(await ensureResult()).toEqual({ value: { port }, error: null });
-    expect(Date.now() - startedAt).toBeLessThan(150);
     expect(shutdownMock).toHaveBeenCalledOnce();
     expect(spawnMock).not.toHaveBeenCalled();
   });
@@ -152,9 +153,8 @@ describe("ensureConsole installation identity", () => {
       instance = target;
       throw new Error("old instance already exited");
     });
-    const startedAt = Date.now();
     expect(await ensureResult()).toEqual({ value: { port }, error: null });
-    expect(Date.now() - startedAt).toBeLessThan(150);
+    expect(shutdownMock).toHaveBeenCalledOnce();
     expect(spawnMock).not.toHaveBeenCalled();
   });
 

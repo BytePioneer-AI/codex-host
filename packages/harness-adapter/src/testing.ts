@@ -40,6 +40,7 @@ import type {
   HostApprovalInteraction,
   HostCommand,
   HostCommandExecutionItem,
+  HostContextCompactionItem,
   HostEvent,
   HostFileChange,
   HostItem,
@@ -478,6 +479,15 @@ export class FakeHarnessSession implements HarnessSession {
       itemId: this.#nextItemId(),
       command,
       ...(cwd ? { cwd } : {}),
+    };
+    this.#startItem(item);
+    return item.itemId;
+  }
+
+  startContextCompaction(): HostItemId {
+    const item: HostContextCompactionItem = {
+      type: "contextCompaction",
+      itemId: this.#nextItemId(),
     };
     this.#startItem(item);
     return item.itemId;

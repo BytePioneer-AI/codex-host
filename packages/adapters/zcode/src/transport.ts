@@ -69,9 +69,12 @@ export class CliTransport {
     if (this.#child || this.#closed)
       throw new ZcodeError("invalidState", "ZCode transport already started or closed");
     const installation = await resolveInstallation(this.options.environment, this.options.app);
-    const account = await accountConfig(installation, this.options.environment);
+    const { params: accountParams, startPlan } = await accountConfig(
+      installation,
+      this.options.environment,
+    );
     this.#installation = installation;
-    this.#startPlan = Object.keys(account.providers).length > 0;
+    this.#startPlan = startPlan;
     // ZCode Desktop runs its Agent CLI on its own Electron build as Node; the CLI's native
     // plugin modules are built for that runtime. Its tool children inherit the variable, as there.
     const child = spawn(
@@ -131,8 +134,8 @@ export class CliTransport {
     });
     try {
       // app-server accepts account overlays only from its host; publish before any Session work.
-      const received = record(await this.#call("provider/updateAccountConfig", account));
-      if (received.receivedRevision !== account.revision)
+      const received = record(await this.#call("provider/updateAccountConfig", accountParams));
+      if (received.receivedRevision !== accountParams.revision)
         throw new ZcodeError("protocolError", "ZCode did not accept the account configuration");
     } catch (error) {
       await this.close();

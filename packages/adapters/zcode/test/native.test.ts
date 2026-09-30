@@ -451,7 +451,25 @@ describe.skipIf(!app)("ZCode installed CLI with isolated local Provider", () => 
 describe.skipIf(!app)("ZCode Start Plan with synthetic credentials and a local Provider", () => {
   const jwt = "synthetic-start-plan-jwt";
   const requests: IncomingHttpHeaders[] = [];
+  const receivedInputs: Array<{ model?: string; [key: string]: unknown }> = [];
   let root: string, adapter: ZcodeAdapter;
+  const balanceResponse: unknown = {
+    code: 0,
+    data: {
+      plans: [
+        {
+          plan_id: "zcode-v3-start-plan-trust-0930",
+          name: "Start Plan",
+          status: "active",
+        },
+      ],
+      balances: [
+        {
+          capabilities: ["model:glm-5.3-flash"],
+        },
+      ],
+    },
+  };
   const verify = vi.fn(async () => ({
     "X-Aliyun-Captcha-Verify-Param": "synthetic-proof",
     "X-Aliyun-Captcha-Verify-Region": "cn-shanghai",
@@ -462,8 +480,20 @@ describe.skipIf(!app)("ZCode Start Plan with synthetic credentials and a local P
   const server = createServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) body += String(chunk);
+    if (request.url?.startsWith("/api/v1/zcode-plan/billing/balance")) {
+      const mid = request.headers["x-device-mid"];
+      if (mid === "no-plan-device-mid") {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ code: 0, data: { plans: [], balances: [] } }));
+        return;
+      }
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(balanceResponse));
+      return;
+    }
     requests.push(request.headers);
     const input = JSON.parse(body);
+    receivedInputs.push(input);
     const message = {
       id: "fixture",
       type: "message",
@@ -525,6 +555,10 @@ describe.skipIf(!app)("ZCode Start Plan with synthetic credentials and a local P
       path.join(root, ".zcode/v2/credentials.json"),
       JSON.stringify({ "oauth:active_provider": encrypt("zai"), zcodejwttoken: encrypt(jwt) }),
     );
+    await writeFile(
+      path.join(root, ".zcode/v2/telemetry-state.json"),
+      JSON.stringify({ deviceMid: "fixture-native-mid" }),
+    );
     adapter = new ZcodeAdapter({
       app: required(app),
       timeoutMs: 15_000,
@@ -535,6 +569,7 @@ describe.skipIf(!app)("ZCode Start Plan with synthetic credentials and a local P
         ZCODE_DATA_BASE_DIR: root,
         ZCODE_CREDENTIAL_SECRET: "fixture-only",
         ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: builtinFile,
+        ZCODE_BASE_URL: `http://127.0.0.1:${address.port}`,
       },
     });
   });
@@ -580,6 +615,15 @@ describe.skipIf(!app)("ZCode Start Plan with synthetic credentials and a local P
     expect(JSON.stringify(output.values)).not.toContain(jwt);
     await session.close();
   }, 45_000);
+  it("lists only capability models for an entitled Start Plan account", async () => {
+    const inspected = await adapter.inspect({ cwd: root });
+    if (inspected.status !== "ready") throw new Error(JSON.stringify(inspected));
+    const startPlanModels = inspected.catalog.models.filter((m) =>
+      m.label.startsWith("Start Plan /"),
+    );
+    expect(startPlanModels.map((m) => m.label)).toEqual(["Start Plan / GLM-5.3-Flash"]);
+  });
+
   it("shares one Host verifier across Sessions and closes it only with the Adapter", async () => {
     const [first, second] = await Promise.all([
       adapter.open({ kind: "create", cwd: root }),
@@ -606,6 +650,230 @@ describe.skipIf(!app)("ZCode Start Plan with synthetic credentials and a local P
     expect(closeVerifier).not.toHaveBeenCalled();
     await adapter.close();
     expect(closeVerifier).toHaveBeenCalledOnce();
+  }, 45_000);
+
+  it("routes session created without model to custom provider when Start Plan is unentitled", async () => {
+    const address = server.address() as { port: number };
+    const noPlanRoot = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), "codexhost-zcode-no-plan-")),
+    );
+    try {
+      const encrypt = (value: string) => {
+        const iv = randomBytes(12);
+        const key = createHash("sha256").update("fixture-only").digest();
+        const cipher = createCipheriv("aes-256-gcm", key, iv);
+        const data = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+        return `enc:v1:${[iv, cipher.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")}`;
+      };
+      await mkdir(path.join(noPlanRoot, ".zcode/v2"), { recursive: true });
+      await writeFile(
+        path.join(noPlanRoot, ".zcode/v2/credentials.json"),
+        JSON.stringify({ "oauth:active_provider": encrypt("zai"), zcodejwttoken: encrypt(jwt) }),
+      );
+      await writeFile(
+        path.join(noPlanRoot, ".zcode/v2/telemetry-state.json"),
+        JSON.stringify({ deviceMid: "no-plan-device-mid" }),
+      );
+      await writeFile(
+        path.join(noPlanRoot, ".zcode/v2/provider_config.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          config: {
+            providerConfigRules: {
+              providerRules: [
+                {
+                  providerId: "personal-custom",
+                  providerName: "Custom Provider",
+                  enabled: true,
+                  config: {
+                    group: "standard-personal",
+                    access: { type: "api-key", apiKey: "test-only" },
+                    api: {
+                      type: "anthropic-messages",
+                      baseUrl: `http://127.0.0.1:${address.port}`,
+                    },
+                    personalModelIds: ["custom-model-alpha", "custom-model-beta"],
+                  },
+                },
+              ],
+            },
+            modelConfigRules: {
+              providerModelRules: [
+                {
+                  providerId: "personal-custom",
+                  modelId: "custom-model-alpha",
+                  config: { optionSpecs: { reasoningLevel: { values: ["disabled"], map: "{}" } } },
+                },
+                {
+                  providerId: "personal-custom",
+                  modelId: "custom-model-beta",
+                  config: { optionSpecs: { reasoningLevel: { values: ["disabled"], map: "{}" } } },
+                },
+              ],
+              manualProviderModelRules: [],
+            },
+          },
+        }),
+      );
+
+      const noPlanAdapter = new ZcodeAdapter({
+        app: required(app),
+        timeoutMs: 15_000,
+        createVerifier,
+        environment: {
+          PATH: process.env.PATH,
+          HOME: noPlanRoot,
+          ZCODE_DATA_BASE_DIR: noPlanRoot,
+          ZCODE_CREDENTIAL_SECRET: "fixture-only",
+          ZCODE_BASE_URL: `http://127.0.0.1:${address.port}`,
+        },
+      });
+
+      try {
+        const inspected = await noPlanAdapter.inspect({ cwd: noPlanRoot });
+        if (inspected.status !== "ready") throw new Error(JSON.stringify(inspected));
+        const startPlanModels = inspected.catalog.models.filter((m) =>
+          m.label.startsWith("Start Plan /"),
+        );
+        expect(startPlanModels).toEqual([]);
+        expect(inspected.catalog.models.map((m) => m.label)).toContain(
+          "Custom Provider / custom-model-alpha",
+        );
+
+        const opened = await noPlanAdapter.open({ kind: "create", cwd: noPlanRoot });
+        if (!opened.ok) throw new Error(JSON.stringify(opened.error));
+        const session = opened.value;
+        const output = observe(session);
+        expect(
+          (
+            await session.execute({
+              type: "turn.start",
+              turnId: hostTurnIdSchema.parse("no-plan-turn"),
+              input: [{ type: "text", text: "Reply without plan." }],
+            })
+          ).ok,
+        ).toBe(true);
+        await output.untilTerminal("no-plan-turn");
+        expect(receivedInputs.at(-1)?.model).toBe("custom-model-alpha");
+        await session.close();
+      } finally {
+        await noPlanAdapter.close();
+      }
+    } finally {
+      await rm(noPlanRoot, { recursive: true, force: true });
+    }
+  }, 45_000);
+
+  it("creates a session with a non-first model and uses it", async () => {
+    const address = server.address() as { port: number };
+    const customRoot = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), "codexhost-zcode-non-first-")),
+    );
+    try {
+      const encrypt = (value: string) => {
+        const iv = randomBytes(12);
+        const key = createHash("sha256").update("fixture-only").digest();
+        const cipher = createCipheriv("aes-256-gcm", key, iv);
+        const data = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+        return `enc:v1:${[iv, cipher.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")}`;
+      };
+      await mkdir(path.join(customRoot, ".zcode/v2"), { recursive: true });
+      await writeFile(
+        path.join(customRoot, ".zcode/v2/credentials.json"),
+        JSON.stringify({ "oauth:active_provider": encrypt("zai"), zcodejwttoken: encrypt(jwt) }),
+      );
+      await writeFile(
+        path.join(customRoot, ".zcode/v2/telemetry-state.json"),
+        JSON.stringify({ deviceMid: "no-plan-device-mid" }),
+      );
+      await writeFile(
+        path.join(customRoot, ".zcode/v2/provider_config.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          config: {
+            providerConfigRules: {
+              providerRules: [
+                {
+                  providerId: "personal-custom",
+                  providerName: "Custom Provider",
+                  enabled: true,
+                  config: {
+                    group: "standard-personal",
+                    access: { type: "api-key", apiKey: "test-only" },
+                    api: {
+                      type: "anthropic-messages",
+                      baseUrl: `http://127.0.0.1:${address.port}`,
+                    },
+                    personalModelIds: ["custom-model-alpha", "custom-model-beta"],
+                  },
+                },
+              ],
+            },
+            modelConfigRules: {
+              providerModelRules: [
+                {
+                  providerId: "personal-custom",
+                  modelId: "custom-model-alpha",
+                  config: { optionSpecs: { reasoningLevel: { values: ["disabled"], map: "{}" } } },
+                },
+                {
+                  providerId: "personal-custom",
+                  modelId: "custom-model-beta",
+                  config: { optionSpecs: { reasoningLevel: { values: ["disabled"], map: "{}" } } },
+                },
+              ],
+              manualProviderModelRules: [],
+            },
+          },
+        }),
+      );
+
+      const customAdapter = new ZcodeAdapter({
+        app: required(app),
+        timeoutMs: 15_000,
+        createVerifier,
+        environment: {
+          PATH: process.env.PATH,
+          HOME: customRoot,
+          ZCODE_DATA_BASE_DIR: customRoot,
+          ZCODE_CREDENTIAL_SECRET: "fixture-only",
+          ZCODE_BASE_URL: `http://127.0.0.1:${address.port}`,
+        },
+      });
+
+      try {
+        const inspected = await customAdapter.inspect({ cwd: customRoot });
+        if (inspected.status !== "ready") throw new Error(JSON.stringify(inspected));
+        const secondModel = required(
+          inspected.catalog.models.find((m) => m.label === "Custom Provider / custom-model-beta"),
+        );
+
+        const opened = await customAdapter.open({
+          kind: "create",
+          cwd: customRoot,
+          model: secondModel.ref,
+        });
+        if (!opened.ok) throw new Error(JSON.stringify(opened.error));
+        const session = opened.value;
+        const output = observe(session);
+        expect(
+          (
+            await session.execute({
+              type: "turn.start",
+              turnId: hostTurnIdSchema.parse("non-first-turn"),
+              input: [{ type: "text", text: "Reply with second model." }],
+            })
+          ).ok,
+        ).toBe(true);
+        await output.untilTerminal("non-first-turn");
+        expect(receivedInputs.at(-1)?.model).toBe("custom-model-beta");
+        await session.close();
+      } finally {
+        await customAdapter.close();
+      }
+    } finally {
+      await rm(customRoot, { recursive: true, force: true });
+    }
   }, 45_000);
 });
 

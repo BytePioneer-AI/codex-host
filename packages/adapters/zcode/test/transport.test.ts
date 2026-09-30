@@ -2,14 +2,32 @@ import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { copyFile, link, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CliTransport, type TransportOptions } from "../src/transport.js";
 import type { ZcodeVerifier } from "../src/verification/index.js";
 
 const SECRET = "fixture-only";
 const JWT = "synthetic.jwt.value";
 const roots: string[] = [];
+beforeEach(() => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    if (String(input).includes("/api/v1/zcode-plan/billing/balance")) {
+      return new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            plans: [{ plan_id: "zcode-v3-start-plan-trust", status: "active" }],
+            balances: [{ capabilities: ["model:glm-5.3-flash"] }],
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({}), { status: 404 });
+  });
+});
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -84,6 +102,10 @@ async function fixture(handler: string, credentials?: Record<string, string>) {
   await writeFile(
     path.join(resources, "config/provider/zcode-builtin.json"),
     JSON.stringify(builtin),
+  );
+  await writeFile(
+    path.join(root, ".zcode/v2/telemetry-state.json"),
+    JSON.stringify({ deviceMid: "fixture-device-mid" }),
   );
   if (credentials)
     await writeFile(
@@ -161,7 +183,7 @@ describe("ZCode installed CLI transport", () => {
       personal: path.join(root, ".zcode/v2/provider_config.json"),
       thread: "thread-1",
       params: {
-        revision: "codexhost:zai:30",
+        revision: expect.stringMatching(/^codexhost:zai:30:[a-f0-9]{16}$/u),
         basedOnZCodeBuiltinRevision: `zcode-builtin:30:${createHash("sha256").update(path.resolve(builtinFile)).digest("hex")}`,
         providers: {
           "account:zai-start-plan": {
@@ -181,7 +203,11 @@ describe("ZCode installed CLI transport", () => {
     const { options, log } = await fixture("reply(null)");
     await (await started(options())).close();
     expect((await log())[0]).toMatchObject({
-      params: { revision: "codexhost:signed-out:30", providers: {}, states: {} },
+      params: {
+        revision: expect.stringMatching(/^codexhost:signed-out:30:[a-f0-9]{16}$/u),
+        providers: {},
+        states: {},
+      },
     });
   });
 

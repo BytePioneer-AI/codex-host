@@ -213,7 +213,10 @@ mod tests {
     use codexhost_updater::UpdateHandoff;
     use std::fs;
     use std::path::Path;
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn accepts_a_live_relaunched_launcher_without_executable_path_matching() {
@@ -266,15 +269,18 @@ mod tests {
         const TOKEN: &str = "0123456789abcdef0123456789abcdef";
         let authorized = matches!(authorization, CleanupAuthorization::Current);
         let run_apply = matches!(authorization, CleanupAuthorization::MissingDuringApply);
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "codexhost-authorized-exit-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = loop {
+            let id = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "codexhost-authorized-exit-{}-{id}",
+                std::process::id()
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => break root,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("failed to create Launcher fixture: {error}"),
+            }
+        };
         let fixture_executable = if cfg!(target_os = "windows") {
             "ping"
         } else {
@@ -297,17 +303,45 @@ mod tests {
         let request_path = root.join("request-v1.json");
         let status_path = root.join("status-v1.json");
         let install_sentinel = root.join("installation-started");
+        let wait_executable = if cfg!(target_os = "windows") {
+            codexhost_platform::process_executable_path(launcher.id()).unwrap()
+        } else {
+            Path::new(fixture_executable).canonicalize().unwrap()
+        };
+        #[cfg(unix)]
+        {
+            // spawn can return before exec is visible to process inspection.
+            // Wait for the known fixture image before exercising the Updater's
+            // strict identity check, just as for an already-running Launcher.
+            let started = Instant::now();
+            loop {
+                let actual = codexhost_platform::process_executable_path(launcher.id())
+                    .ok()
+                    .and_then(|path| path.canonicalize().ok());
+                if actual.as_ref() == Some(&wait_executable) {
+                    break;
+                }
+                if launcher
+                    .try_wait()
+                    .expect("inspect Launcher fixture")
+                    .is_some()
+                    || started.elapsed() >= Duration::from_secs(15)
+                {
+                    let _ = launcher.kill();
+                    let _ = launcher.wait();
+                    let _ = fs::remove_dir_all(&root);
+                    panic!(
+                        "Launcher fixture did not exec {wait_executable:?}; observed {actual:?}"
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
         let request = UpdateRequest {
             schema_version: 1,
             version: "1.2.3".into(),
             wait_pid: launcher.id(),
-            // On Unix, spawn can return before the child completes exec. Use
-            // the known fixture executable instead of sampling that transition.
-            wait_executable: if cfg!(target_os = "windows") {
-                codexhost_platform::process_executable_path(launcher.id()).unwrap()
-            } else {
-                Path::new(fixture_executable).canonicalize().unwrap()
-            },
+            wait_executable,
             runtime_descriptor_path: root.join("runtime.json"),
             status_path: status_path.clone(),
             installation: Installation::Npm(NpmInstallation {

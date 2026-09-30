@@ -43,6 +43,8 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
@@ -293,6 +295,7 @@ export class KimiSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -305,6 +308,7 @@ export class KimiSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -319,6 +323,9 @@ export class KimiSession implements HarnessSession {
     switch (command.type) {
       case "turn.start":
         return this.#handleTurnStart(command);
+      case "turn.steer":
+        // `kimi acp` has no same-turn insert. SDK Session.steer() starts another turn when idle.
+        return err("unsupported", "Kimi ACP cannot steer an active Turn");
       case "turn.cancel":
         return this.#handleTurnCancel(command);
       case "interaction.respond":

@@ -12,7 +12,8 @@ import {
 
 // The common exclusions cover Hermes' unsuitable commands: model changes use
 // session/set_model so the Host sees confirmed configuration, reset would
-// invalidate Host history, and queue/steer need overlapping prompt streams.
+// invalidate Host history, and slash queue/steer stay out of the command catalog.
+// Gateway turn.steer calls session.steer directly.
 
 export function hermesCommandCatalog(commands: readonly AvailableCommand[]): HarnessCommandCatalog {
   const seen = new Set<string>();

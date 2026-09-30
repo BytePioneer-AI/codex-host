@@ -1,4 +1,4 @@
-import { threadOwnershipListResultSchema } from "@codexhost/shared-contracts";
+import { threadSteeringInspectResultSchema } from "@codexhost/shared-contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -130,9 +130,9 @@ async function preserveQueuedFollowUps(
 }
 
 /**
- * Use Desktop's normal start presentation BEFORE it creates an old-Turn steering Item.
- * Only this operation's outgoing start RPC becomes steer; Host owns stop/wait/start.
- * Official Threads retain the original steer implementation and response semantics.
+ * For a steer the Host delivers as a new Turn, use Desktop's normal start presentation BEFORE it
+ * creates an old-Turn steering Item. Only this operation's outgoing start RPC becomes steer; Host
+ * owns stop/wait/start. Official Threads and native same-Turn steering keep Desktop's own steer.
  */
 export function installRendererExternalSteering(target: unknown): (() => void) | null {
   if (!isManager(target)) return null;
@@ -218,15 +218,12 @@ export function installRendererExternalSteering(target: unknown): (() => void) |
     } catch {
       // Official steering must not depend on our additional presentation binding.
     }
-    const ownership = threadOwnershipListResultSchema.parse(
-      await originalSend.call(manager, "codexhost/thread/ownership/list", {
-        threadIds: [threadId],
-      }),
+    const { delivery } = threadSteeringInspectResultSchema.parse(
+      await originalSend.call(manager, "codexhost/thread/steering/inspect", { threadId }),
     );
-    const owner = ownership.threads.find((thread) => thread.threadId === threadId)?.owner;
-    if (!owner) throw new Error("Thread ownership could not be resolved for steering");
     if (disposed) throw new Error("External steering binding was disposed");
-    if (owner === "codex") return originalSteer.apply(manager, args);
+    // Native steering joins the running Turn, which is exactly Desktop's own steer presentation.
+    if (delivery !== "newTurn") return originalSteer.apply(manager, args);
     if (!host) throw new Error("Desktop turn submission binding is unavailable");
     const currentRole = manager.getStreamRole?.(threadId);
     if (isRecord(currentRole) && currentRole.role === "follower")

@@ -91,6 +91,66 @@ export interface DeepSeekModernProfile {
   readonly settlementUsage?: (data: Record<string, unknown>) => unknown;
 }
 
+const DEEPSEEK_STEER_MINIMUM = Object.freeze({
+  major: 0,
+  minor: 1,
+  patch: 2,
+  prerelease: ["alpha", "2"],
+});
+
+interface ParsedSemver {
+  major: number;
+  minor: number;
+  patch: number;
+  prerelease: string[];
+}
+
+function parseSemver(version: string): ParsedSemver | undefined {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(version);
+  if (!match?.[1] || !match[2] || !match[3]) return undefined;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] ? match[4].split(".") : [],
+  };
+}
+
+function compareSemverIdentifier(left: string, right: string): number {
+  const leftNumeric = /^\d+$/u.test(left);
+  const rightNumeric = /^\d+$/u.test(right);
+  if (leftNumeric && rightNumeric) return Number(left) - Number(right);
+  if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function compareSemver(left: ParsedSemver, right: ParsedSemver): number {
+  if (left.major !== right.major) return left.major - right.major;
+  if (left.minor !== right.minor) return left.minor - right.minor;
+  if (left.patch !== right.patch) return left.patch - right.patch;
+  if (left.prerelease.length === 0 && right.prerelease.length === 0) return 0;
+  if (left.prerelease.length === 0) return 1;
+  if (right.prerelease.length === 0) return -1;
+  const length = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftId = left.prerelease[index];
+    const rightId = right.prerelease[index];
+    if (leftId === undefined) return -1;
+    if (rightId === undefined) return 1;
+    const compared = compareSemverIdentifier(leftId, rightId);
+    if (compared !== 0) return compared;
+  }
+  return 0;
+}
+
+/** `session/prompt` `mode:"steer"` shipped in session-controller 0.1.2-alpha.2. */
+export function deepSeekNativeSteerSupported(version: string): boolean {
+  const parsed = parseSemver(version);
+  if (!parsed) return false;
+  return compareSemver(parsed, DEEPSEEK_STEER_MINIMUM) >= 0;
+}
+
 export function deepSeekModernProfile(version: DeepSeekModernVersion): DeepSeekModernProfile {
   // V4 is the forward-compatible profile family; history validation remains the compatibility gate.
   const base = /^0\.1\.2(?:-|\+|$)/u.test(version)

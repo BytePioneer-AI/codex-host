@@ -253,7 +253,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         status: "ready",
         catalog: catalog.catalog,
         ...(permissionModes ? { permissionModes } : {}),
-        capabilities: modernSessionCapabilities(permissionModes),
+        capabilities: modernSessionCapabilities(permissionModes, this.#profile.version),
         ...(this.webUi ? { webUi: { open: true as const } } : {}),
       };
     } catch (error) {

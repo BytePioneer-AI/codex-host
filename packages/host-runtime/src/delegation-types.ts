@@ -106,6 +106,8 @@ export interface DelegationStartResult {
 export interface ThreadSendInput {
   threadId: string;
   message: string;
+  /** Insert into a running Turn; an idle Thread still starts a new Turn. */
+  steer?: boolean;
 }
 
 export interface ThreadSendResult {

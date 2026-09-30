@@ -9,7 +9,7 @@ import {
   type CodeBuddyClient,
   type CodeBuddyClientFactory,
 } from "@codexhost/adapter-codebuddy";
-import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
+import { hostTurnIdSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import { WorkBuddyAdapter } from "../src/workbuddy-adapter.js";
 import { WORKBUDDY_RUNTIME_PROFILE } from "../src/common.js";
 
@@ -36,14 +36,16 @@ const configOptions = [
   },
 ];
 
-function fakeFactory(): CodeBuddyClientFactory {
+function fakeFactory(nativeVersion: string | null = null): CodeBuddyClientFactory {
   return () =>
     ({
+      nativeVersion,
       initialize: async () => ({ protocolVersion: 1 }),
       open: async (_cwd, sessionId) => ({
         sessionId: sessionId ?? "workbuddy-native",
         configOptions,
       }),
+      steer: async () => ({ steered: true }),
       configure: async (_sessionId, id, value) => ({
         configOptions: configOptions.map((option) => ({
           ...option,
@@ -58,6 +60,39 @@ function fakeFactory(): CodeBuddyClientFactory {
 }
 
 describe("WorkBuddy Adapter identity", () => {
+  it("declares steer only when the bundled CLI reports the acceptance receipt", async () => {
+    const older = new WorkBuddyAdapter({ clientFactory: fakeFactory("2.137.1") });
+    adapters.push(older);
+    const opened = await older.open({ kind: "create", cwd: process.cwd(), environment: {} });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(opened.value.capabilities.steer).toBeUndefined();
+    const turnId = hostTurnIdSchema.parse("workbuddy-older");
+    expect(
+      await opened.value.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "now" }],
+      }),
+    ).toMatchObject({ ok: false, error: { code: "unsupported" } });
+
+    const current = new WorkBuddyAdapter({ clientFactory: fakeFactory("2.143.1") });
+    adapters.push(current);
+    const ready = await current.open({ kind: "create", cwd: process.cwd(), environment: {} });
+    if (!ready.ok) throw new Error(ready.error.message);
+    expect(ready.value.capabilities.steer).toBe(true);
+    expect(
+      await ready.value.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("workbuddy-current"),
+        input: [{ type: "text", text: "now" }],
+      }),
+    ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+    expect(await current.inspect({ cwd: process.cwd() })).toMatchObject({
+      status: "ready",
+      capabilities: { steer: true },
+    });
+  });
+
   it("opens WorkBuddy Sessions with WorkBuddy native identity and honest history capabilities", async () => {
     const adapter = new WorkBuddyAdapter({ clientFactory: fakeFactory() });
     adapters.push(adapter);

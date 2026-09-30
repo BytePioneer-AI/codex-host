@@ -192,6 +192,8 @@ interface ActiveCompact {
   cancellationRequested: boolean;
 }
 
+export const GROK_INTERJECT_METHOD = "_x.ai/interject";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -822,6 +824,36 @@ export class GrokAcpTransport {
     }
     this.#initialize = initialize;
     return initialize;
+  }
+
+  async interject(text: string): Promise<"queued" | "rejected"> {
+    if (!this.#connection || !this.#sessionId) {
+      throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
+    }
+    try {
+      const raw = await withTimeout(
+        this.#connection.request(GROK_INTERJECT_METHOD, {
+          sessionId: this.#sessionId,
+          text,
+        }),
+        this.#options.commandTimeoutMs,
+        "Grok interject",
+      );
+      if (!isRecord(raw) || (raw.status !== "queued" && raw.status !== "rejected")) {
+        throw new GrokTransportError("protocolError", "Grok interject returned an invalid result");
+      }
+      return raw.status;
+    } catch (error) {
+      if (error instanceof GrokTransportError) throw error;
+      if (error instanceof RequestError && error.code === -32601) {
+        throw new GrokTransportError(
+          "protocolError",
+          `Grok ACP Method Not Found: ${GROK_INTERJECT_METHOD}`,
+          { cause: error },
+        );
+      }
+      throw new GrokTransportError("unavailable", "Grok interject failed", { cause: error });
+    }
   }
 
   async runTurn(

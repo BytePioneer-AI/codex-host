@@ -214,9 +214,16 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     const choice = await resolveGatewayModel(this.transport, modelId);
     // resolveGatewayModel validates the input; validate its parsed tokens too,
     // because config.set reparses this value as model-switch arguments.
+    // Native parse_model_flags_detailed uses Python str.split() (also U+001C-1F
+    // and U+0085) and rewrites Unicode dashes before these flag names anywhere.
     if (
       !choice.model ||
-      [choice.model, choice.provider].some((value) => /\s/u.test(value) || value.startsWith("-"))
+      [choice.model, choice.provider].some(
+        (value) =>
+          /[\s\u001c-\u001f\u0085]/u.test(value) ||
+          value.startsWith("-") ||
+          /[\u2012-\u2015](?:provider|reasoning|global|session|refresh|once)/u.test(value),
+      )
     )
       throw new Error("Invalid Hermes Model choice for gateway switching");
     const result = await this.transport.request("config.set", {

@@ -249,6 +249,15 @@ describe("Hermes gateway native interactions", () => {
     "provider\tname:model",
     "-provider:model",
     "openai:",
+    ...["\u001c", "\u001d", "\u001e", "\u001f", "\u0085"].flatMap((separator) => [
+      `openai:model${separator}--global`,
+      `provider${separator}--global:model`,
+    ]),
+    ...["\u2012", "\u2013", "\u2014", "\u2015"].flatMap((dash) => [
+      `openai:${dash}global`,
+      `${dash}global:model`,
+      `openai:model${dash}session`,
+    ]),
   ])("rejects unsafe parsed model-switch arguments from %j", async (modelId) => {
     const f = fixture();
     await expect(f.bridge.setModel(modelId)).rejects.toThrow("Invalid Hermes Model choice");

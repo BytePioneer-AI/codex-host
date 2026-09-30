@@ -10,6 +10,8 @@ Gateway 区分 runtime ID 与持久化 ID。Host 保存持久化根 ID；恢复�
 
 ## 提问、工具、Thinking 与 Usage
 
+Gateway 的 Model 切换会把选择重新解析为命令参数。Adapter 在发送前校验拆分后的 Model 与 Provider：拒绝参数前缀、Python `str.split()` 识别的空白，以及原生解析器会规范化为 flag 的 Unicode 破折号序列，避免把会话选择解释为全局配置操作。切换后仍需原生状态确认。
+
 Gateway 的 `clarify` 映射为 Host Question，支持单题、批量题、文本、单选和多选，保留原生选项与自填语义。Host 验证答案后回复原生请求；多选通过原生支持的 JSON 数组编码，选项中的逗号不会被拆开。`request.cancel` 的超时映射为 expired，取消/关闭后不回复迟到答案。审批保留原生 once、session、always、deny，分别映射单次、会话、永久和拒绝。
 
 模型目录探测在同一 Adapter 内合并并发读取，避免重复启动 Python。刷新超过 20 秒时，仅在已有成功读取的原生目录时继续使用该目录；后续成功刷新替换缓存。首次读取超时、解释器故障、返回格式错误仍报告失败。缓存仅在当前 Adapter 生命周期内有效，不写入用户配置。
@@ -52,6 +54,7 @@ Gateway 保留 `CODEXHOST_CLI_PATH`、`CODEXHOST_RUNTIME_ENDPOINT`、`CODEXHOST_
 
 - [正式程序化协议与 owner 约束](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/website/docs/developer-guide/programmatic-integration.md)
 - [Gateway Session 创建、恢复、压缩](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/tui_gateway/methods_session.py)、[实际配置设置](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/tui_gateway/methods_config_set.py)
+- [Model 切换参数的原生规范化与拆分](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/hermes_cli/model_switch.py#L474)
 - [工具生命周期及原生 diff](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/tui_gateway/tool_progress.py)、[diff 显示片段](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/agent/display.py)
 - [持久化数据库](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/hermes_state.py)、[导入导出](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/hermes_state_portability.py)
 - [ACP 命令](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/acp_adapter/commands.py)、[ACP 协议](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/acp_adapter/server.py)

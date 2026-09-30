@@ -82,13 +82,19 @@ function fakeHarnesses(): ConsoleHarnesses {
 }
 
 async function start(
-  options: { codexRunning?: boolean; launch?: () => void; host?: ConsoleHostClient } = {},
+  options: {
+    codexRunning?: boolean;
+    launch?: () => void;
+    host?: ConsoleHostClient;
+    buildId?: string;
+  } = {},
 ) {
   const updates = fakeUpdates();
   const onExit = vi.fn();
   running = await startConsoleServer({
     port: 0,
     version: "1.0.0",
+    ...(options.buildId !== undefined ? { buildId: options.buildId } : {}),
     installation: {
       appDirectory: "/opt/codexhost/app",
       distribution: null,
@@ -248,7 +254,46 @@ describe("console server", () => {
         })
       ).status,
     ).toBe(403);
-    await fetch(`${base}/api/shutdown`, { method: "POST", headers: CHANGE });
+    const identity: unknown = await (await fetch(`${base}/api/health`)).json();
+    const response = await fetch(`${base}/api/shutdown`, {
+      method: "POST",
+      headers: { ...CHANGE, "content-type": "application/json" },
+      body: JSON.stringify(identity),
+    });
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(onExit).toHaveBeenCalledOnce());
+  });
+
+  it.each([
+    ["PID", { pid: -1 }],
+    ["directory", { appDirectory: "/another/installation" }],
+    ["build", { buildId: "stale-build" }],
+    ["missing build", { buildId: undefined }],
+  ])("rejects a stale shutdown %s without stopping the replacement", async (_label, changes) => {
+    const { base, onExit } = await start({ buildId: "current-build" });
+    const identity = (await (await fetch(`${base}/api/health`)).json()) as Record<string, unknown>;
+    const response = await fetch(`${base}/api/shutdown`, {
+      method: "POST",
+      headers: { ...CHANGE, "content-type": "application/json" },
+      body: JSON.stringify({ ...identity, ...changes }),
+    });
+    expect(response.status).toBe(409);
+    expect((await fetch(`${base}/api/health`)).status).toBe(200);
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
+  it("requires a shutdown identity and accepts the matching current build", async () => {
+    const { base, onExit } = await start({ buildId: "current-build" });
+    const missing = await fetch(`${base}/api/shutdown`, { method: "POST", headers: CHANGE });
+    expect(missing.status).toBe(409);
+    expect(onExit).not.toHaveBeenCalled();
+    const identity: unknown = await (await fetch(`${base}/api/health`)).json();
+    const response = await fetch(`${base}/api/shutdown`, {
+      method: "POST",
+      headers: { ...CHANGE, "content-type": "application/json" },
+      body: JSON.stringify(identity),
+    });
+    expect(response.status).toBe(200);
     await vi.waitFor(() => expect(onExit).toHaveBeenCalledOnce());
   });
 

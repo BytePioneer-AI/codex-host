@@ -35,7 +35,7 @@ const old = { appDirectory: path.resolve("console-previous"), buildId: "old", pi
 type Instance = { appDirectory: string; buildId: string | null; pid: number };
 let instance: Instance | null;
 const fetchMock = vi.fn<typeof fetch>();
-const shutdownMock = vi.fn<() => Promise<Response>>();
+const shutdownMock = vi.fn<(identity: Instance) => Promise<Response>>();
 
 async function ensureResult() {
   const result = ensureConsole(options).then(
@@ -55,10 +55,12 @@ beforeEach(() => {
   });
   spawnMock.mockReset().mockReturnValue({ unref: vi.fn() });
   shutdownMock.mockReset().mockResolvedValue(new Response(null, { status: 204 }));
-  fetchMock.mockReset().mockImplementation(async (input) => {
+  fetchMock.mockReset().mockImplementation(async (input, init) => {
     const request = new URL(String(input));
     expect(request.origin).toBe(`http://127.0.0.1:${port}`);
-    if (request.pathname === "/api/shutdown") return await shutdownMock();
+    if (request.pathname === "/api/shutdown") {
+      return await shutdownMock(JSON.parse(String(init?.body)) as Instance);
+    }
     expect(request.pathname).toBe("/api/health");
     if (instance) return Response.json({ service: "codexhost-console", ...instance });
     throw Object.assign(new Error("mock port is free"), { code: "ECONNREFUSED" });
@@ -78,6 +80,35 @@ describe("ensureConsole installation identity", () => {
     expect(shutdownMock).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
   });
+
+  it("normalizes directory segments before reusing the same installation", async () => {
+    instance = { ...target, appDirectory: `${appDirectory}${path.sep}child${path.sep}..` };
+    expect(await ensureResult()).toEqual({ value: { port }, error: null });
+    expect(shutdownMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform !== "win32")(
+    "reuses a Windows installation with different path case and separators",
+    async () => {
+      instance = { ...target, appDirectory: appDirectory.toUpperCase().replaceAll("\\", "/") };
+      expect(await ensureResult()).toEqual({ value: { port }, error: null });
+      expect(shutdownMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps differently cased Unix directories distinct",
+    async () => {
+      instance = { ...target, appDirectory: appDirectory.toUpperCase() };
+      const result = await ensureResult();
+      expect(result.value).toBeNull();
+      expect(result.error).toBeInstanceOf(Error);
+      expect(shutdownMock).toHaveBeenCalledExactlyOnceWith(instance);
+      expect(spawnMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects an old instance when its shutdown request fails", async () => {
     instance = old;
@@ -145,6 +176,20 @@ describe("ensureConsole installation identity", () => {
     expect(await ensureResult()).toEqual({ value: { port }, error: null });
     expect(shutdownMock).toHaveBeenCalledOnce();
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves a matching replacement that rejects the old instance shutdown identity", async () => {
+    instance = old;
+    shutdownMock.mockImplementation(async (identity) => {
+      // The old port owner was replaced after the final probe, before POST arrived.
+      instance = target;
+      expect(identity).toEqual(old);
+      return new Response(null, { status: 409 });
+    });
+    expect(await ensureResult()).toEqual({ value: { port }, error: null });
+    expect(shutdownMock).toHaveBeenCalledExactlyOnceWith(old);
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(instance).toBe(target);
   });
 
   it("accepts a matching replacement even when the old shutdown request fails", async () => {

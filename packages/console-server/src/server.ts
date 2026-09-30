@@ -299,6 +299,14 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     }
 
     if (route === "POST /api/shutdown") {
+      if (
+        body.pid !== process.pid ||
+        body.appDirectory !== options.installation.appDirectory ||
+        body.buildId !== (options.buildId ?? null)
+      ) {
+        sendJson(response, 409, { error: "Console instance changed; probe again before shutdown" });
+        return;
+      }
       sendJson(response, 200, { ok: true });
       setImmediate(exit);
       return;

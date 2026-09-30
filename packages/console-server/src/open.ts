@@ -60,10 +60,18 @@ async function waitFor(
   return probe;
 }
 
-async function requestShutdown(port: number): Promise<void> {
+async function requestShutdown(
+  port: number,
+  identity: Extract<ConsoleProbe, { kind: "console" }>,
+): Promise<void> {
   const response = await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
     method: "POST",
-    headers: { [CONSOLE_REQUEST_HEADER]: "1" },
+    headers: { [CONSOLE_REQUEST_HEADER]: "1", "content-type": "application/json" },
+    body: JSON.stringify({
+      pid: identity.pid,
+      appDirectory: identity.appDirectory,
+      buildId: identity.buildId,
+    }),
     signal: AbortSignal.timeout(5_000),
   });
   if (!response.ok) throw new Error(`console shutdown failed: HTTP ${response.status}`);
@@ -112,6 +120,11 @@ function openWithLauncher(launcherExecutable: string, url: string): Promise<bool
   });
 }
 
+function appDirectoryKey(value: string): string {
+  const normalized = path.normalize(value);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 /**
  * Ensures the requested console installation and build answer on the configured
  * port, restarting a previous instance when needed. Returns the confirmed port.
@@ -125,15 +138,16 @@ export async function ensureConsole(
   let probe = await probeConsole(port);
   // Another installation, or this installation after an update, replaces the console.
   const ownBuildId = await consoleBuildId(options.entryPath);
+  const ownAppDirectory = appDirectoryKey(options.appDirectory);
   const matches = (next: ConsoleProbe): boolean =>
     next.kind === "console" &&
-    next.appDirectory === options.appDirectory &&
+    appDirectoryKey(next.appDirectory) === ownAppDirectory &&
     next.buildId === ownBuildId;
   if (probe.kind === "console" && !matches(probe)) {
     // A concurrent opener may have replaced the old instance while we read the build.
     probe = await probeConsole(port);
     if (probe.kind === "console" && !matches(probe)) {
-      await requestShutdown(port).catch(() => undefined);
+      await requestShutdown(port, probe).catch(() => undefined);
       probe = await waitFor(port, (next) => next.kind !== "console" || matches(next), 5_000);
     }
   }

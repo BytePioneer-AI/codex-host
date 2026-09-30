@@ -77,10 +77,17 @@ async function readCredential(
   return value ? decrypt(value, environment) : "";
 }
 
+// Start Plan entitlement, as ZCode Desktop decides it: the account's balance names the active plans
+// and, per balance, the Models the plan allows. An account without such a plan must not be offered
+// Start Plan Models: the CLI falls back to the first selectable Model when a Session has none, so
+// an unentitled Start Plan Model would be used and rejected by the server.
+
+/** ZCode's own endpoint override; Desktop gives `ZCODE_BASE_URL` the highest precedence. */
 export function resolveEndpointOrigin(environment: NodeJS.ProcessEnv): string {
   return environment.ZCODE_BASE_URL?.trim() || "https://zcode.z.ai";
 }
 
+/** The device id Desktop sends as `X-Device-Mid`; the balance endpoint answers 400 without it. */
 async function readDeviceMid(installation: ZcodeInstallation): Promise<string> {
   try {
     const file = path.join(installation.dataRoot, "telemetry-state.json");
@@ -123,14 +130,13 @@ const balanceResponseSchema = z.object({
 });
 type BalanceData = z.infer<typeof balanceResponseSchema>["data"];
 
+/**
+ * The Models of the account's active, unexpired Start Plans, named as the installed App's
+ * `builtinModelIds` spell them. Empty means the account is not entitled.
+ */
 function resolveStartPlanModels(data?: BalanceData, builtinModelIds?: string[]): string[] {
   if (!data?.plans || !data.balances) return [];
-  const nowSec =
-    typeof data.server_time === "number" &&
-    Number.isFinite(data.server_time) &&
-    data.server_time >= 0
-      ? data.server_time
-      : Date.now() / 1000;
+  const nowSec = data.server_time ?? Date.now() / 1000;
   const validPlans = data.plans.filter((plan) => {
     if (plan.status?.trim().toLowerCase() !== "active") return false;
     const id = plan.plan_id?.trim().toLowerCase();

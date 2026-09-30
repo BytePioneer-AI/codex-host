@@ -48,6 +48,8 @@ async function readPackageJsonFromAsar(
     await handle.read(headerBuf, 0, 16, 0);
     const headerSize = headerBuf.readUInt32LE(4);
     const jsonLen = headerBuf.readUInt32LE(12);
+    // A corrupt header must not size the allocation.
+    if (16 + jsonLen > (await handle.stat()).size) return undefined;
     const jsonBuf = Buffer.alloc(jsonLen);
     await handle.read(jsonBuf, 0, jsonLen, 16);
     const header = JSON.parse(jsonBuf.toString("utf8"));
@@ -111,8 +113,10 @@ export async function resolveInstallation(
       : path.join(targetApp, "resources");
 
   const pkg = await readPackageJsonFromAsar(path.join(resources, "app.asar"));
-  if (!pkg?.productName || !pkg?.version) throw missing();
+  if (!pkg?.productName || !pkg.version) throw missing();
 
+  // Desktop's host spawns the CLI with its own executable. On macOS that is the Helper, a
+  // background (LSUIElement) app; the main executable would show each CLI process in the Dock.
   let runtime: string;
   if (platform === "darwin") {
     runtime = path.join(

@@ -48,7 +48,10 @@ import {
   rendererHarnessMessages,
   rendererLiveCommandsPendingNotice,
 } from "./renderer-harness-localization.js";
-import { installReasoningTranscriptSoftWrap } from "./renderer-transcript-dom.js";
+import {
+  installReasoningTranscriptSoftWrap,
+  TRANSCRIPT_ITEM_SELECTOR,
+} from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
 import {
   createRendererCodexUsageGate,
@@ -663,6 +666,35 @@ export function applyComposerModelWrite(
   if (target?.[0] === "conversation") return true;
   if (!isComposerModelWriteAllowed(target)) return false;
   return write();
+}
+
+export function mutationMayAffectComposer(mutation: MutationRecord): boolean {
+  const target =
+    mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+  if (!target) return true;
+  // Identity changes are lifecycle events even after the marker is removed.
+  if (mutation.type === "attributes" && mutation.attributeName === "data-codex-composer-root")
+    return true;
+  // Text/IME and rich-text changes inside an editor do not change its owner.
+  if (mutation.type !== "attributes" && editorForElement(target)) return false;
+  if (target.closest(CODEX_COMPOSER_SELECTOR)) return true;
+  if (mutation.type === "characterData") return false;
+  if (
+    !target.closest(`${TRANSCRIPT_ITEM_SELECTOR}, [data-turn-key], [data-content-search-turn-key]`)
+  )
+    return true;
+  // A disclosure containing an inline Composer can change its visibility.
+  if (mutation.type === "attributes") return target.querySelector(CODEX_COMPOSER_SELECTOR) !== null;
+  // Transcript text and tool output do not replace the Composer. Still handle
+  // inline Composers added or removed with a transcript.
+  return (
+    mutation.type === "childList" &&
+    [...mutation.addedNodes, ...mutation.removedNodes].some(
+      (node) =>
+        node instanceof Element &&
+        (node.matches(CODEX_COMPOSER_SELECTOR) || node.querySelector(CODEX_COMPOSER_SELECTOR)),
+    )
+  );
 }
 
 function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
@@ -2596,7 +2628,7 @@ export function installRendererBindingProbe(
     refreshTargetsOnNextScan ||= refreshTargets;
     if (scanScheduled || disposed) return;
     scanScheduled = true;
-    queueMicrotask(scan);
+    requestAnimationFrame(scan);
   };
 
   const composerRootsWithin = (node: Node): Element[] => {
@@ -2739,13 +2771,7 @@ export function installRendererBindingProbe(
   };
 
   const mutationObserver = new MutationObserver((mutations) => {
-    // Typing, IME composition and rich-text edits inside an existing editor do
-    // not change its owner or our controls. Do not put global Host discovery on
-    // the input microtask path. Keep visibility attributes and changes outside
-    // editors, including replacement of the editor/Composer itself.
-    const relevant = mutations.filter(
-      (mutation) => mutation.type === "attributes" || mutationMayChangeComposerTarget(mutation),
-    );
+    const relevant = mutations.filter(mutationMayAffectComposer);
     if (relevant.length === 0) return;
     transferReplacedComposers(relevant);
     scheduleScan(relevant.some(mutationMayChangeComposerTarget));

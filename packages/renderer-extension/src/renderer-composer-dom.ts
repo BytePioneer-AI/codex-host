@@ -433,9 +433,11 @@ function captureNativeControl(element: HTMLElement | null): NativeControlState |
 
 function restoreNativeControl(state: NativeControlState | null | undefined): void {
   if (!state) return;
-  state.element.hidden = state.hidden;
-  if (state.ariaHidden === null) state.element.removeAttribute("aria-hidden");
-  else state.element.setAttribute("aria-hidden", state.ariaHidden);
+  if (state.element.hidden !== state.hidden) state.element.hidden = state.hidden;
+  if (state.element.getAttribute("aria-hidden") !== state.ariaHidden) {
+    if (state.ariaHidden === null) state.element.removeAttribute("aria-hidden");
+    else state.element.setAttribute("aria-hidden", state.ariaHidden);
+  }
 }
 
 function refreshNativeContextUsageControl(control: ComposerAgentControl): void {

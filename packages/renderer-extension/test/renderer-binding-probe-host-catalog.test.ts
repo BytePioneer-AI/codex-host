@@ -26,6 +26,7 @@ const testState = vi.hoisted(() => ({
   modelTarget: ["conversation", "thread-a"] as readonly unknown[],
   prewarmClears: 0,
   notifyMutations: null as null | ((records: MutationRecord[]) => void),
+  animationFrames: [] as FrameRequestCallback[],
 }));
 
 vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
@@ -162,6 +163,12 @@ function installFakeBrowser(): void {
   const listeners = new EventTarget();
   class FakeElement {
     readonly nodeType = 1;
+    closest(): Element | null {
+      return null;
+    }
+    querySelector(): Element | null {
+      return null;
+    }
   }
   const composer = Object.assign(new FakeElement(), {
     isConnected: true,
@@ -189,6 +196,7 @@ function installFakeBrowser(): void {
   testState.modelTarget = ["conversation", "thread-a"];
   testState.prewarmClears = 0;
   testState.notifyMutations = null;
+  testState.animationFrames = [];
   const window_ = {
     addEventListener: listeners.addEventListener.bind(listeners),
     removeEventListener: listeners.removeEventListener.bind(listeners),
@@ -212,6 +220,9 @@ function installFakeBrowser(): void {
   vi.stubGlobal("document", document_);
   vi.stubGlobal("Node", { ELEMENT_NODE: 1 });
   vi.stubGlobal("Element", FakeElement);
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+    testState.animationFrames.push(callback),
+  );
   vi.stubGlobal(
     "MutationObserver",
     class {
@@ -439,6 +450,9 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     const notify = testState.notifyMutations;
     assert(notify);
     const reconcile = vi.mocked(reconcileComposerNativeControls);
+    const flushFrame = () => {
+      for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+    };
     reconcile.mockClear();
     const text = { nodeType: 3, parentElement: testState.editor } as unknown as Text;
     const mutation = (type: MutationRecordType, target: Node) =>
@@ -450,16 +464,21 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       await Promise.resolve();
     }
     expect(reconcile).not.toHaveBeenCalled();
+    expect(testState.animationFrames).toHaveLength(0);
 
     notify([mutation("attributes", testState.editor)]);
+    notify([mutation("attributes", testState.editor)]);
     await Promise.resolve();
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(testState.animationFrames).toHaveLength(1);
+    flushFrame();
     expect(reconcile).toHaveBeenCalledTimes(1);
     reconcile.mockClear();
 
     // Replacement/removal happens on the editor's parent, outside its contents.
     const parent = Object.assign(Object.create(Element.prototype), { nodeType: 1 });
     notify([mutation("childList", parent)]);
-    await Promise.resolve();
+    flushFrame();
     expect(reconcile).toHaveBeenCalledTimes(1);
     reconcile.mockClear();
 
@@ -469,7 +488,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       mutation("childList", parent),
       mutation("childList", testState.editor),
     ]);
-    await Promise.resolve();
+    flushFrame();
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
 

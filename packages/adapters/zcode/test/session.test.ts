@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { hostInteractionIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
-import { cacheUsage, contextUsage } from "../src/models.js";
+import { sessionUsage } from "../src/models.js";
 import { ZcodeSession } from "../src/session.js";
 import { settingsSchema, snapshotSchema } from "../src/protocol.js";
 import type { CliTransport } from "../src/transport.js";
@@ -143,7 +143,7 @@ describe("ZCode Session lifecycle", () => {
   });
 });
 
-describe("ZCode context usage", () => {
+describe("ZCode Session usage", () => {
   const current = { providerId: "deepseek", modelId: "deepseek-flash" };
   const catalog = (contextWindow?: number) =>
     settingsSchema.parse({
@@ -161,54 +161,65 @@ describe("ZCode context usage", () => {
       thoughtLevel: { enabled: false, available: [] },
       mode: { current: "build" },
     });
-  const session = (projectionWindow: number) =>
+  const session = (projection: { contextUsed: number; contextWindow: number }, runtime = {}) =>
     snapshotSchema.parse({
       ...snapshot,
       settings: { ...snapshot.settings, model: { current, available: [] } },
-      projection: { status: "idle", contextUsed: 1_200, contextWindow: projectionWindow },
+      projection: { status: "idle", ...projection },
+      runtime,
     });
 
   it("reports the selected Model's catalog window instead of the stale session projection", () => {
-    expect(contextUsage(session(200_000), catalog(1_000_000))).toEqual({
-      contextUsedTokens: 1_200,
-      contextWindowTokens: 1_000_000,
-    });
-  });
-  it("uses the session projection when the catalog has no window for the selected Model", () => {
-    expect(contextUsage(session(200_000), catalog())).toEqual({
-      contextUsedTokens: 1_200,
-      contextWindowTokens: 200_000,
-    });
-  });
-  it("reports nothing when neither source has a window", () => {
-    expect(contextUsage(session(0), catalog())).toBeNull();
-  });
-});
-
-describe("ZCode cache usage", () => {
-  const withRuntime = (runtime: object) => snapshotSchema.parse({ ...snapshot, runtime });
-
-  it("reports the Session's cache totals and the latest request's hit rate", () => {
     expect(
-      cacheUsage(
-        withRuntime({
-          contextUsage: {
-            cache: { totalCacheReadTokens: 900, totalCacheWriteTokens: 60, latestHitRate: 0.9 },
+      sessionUsage(session({ contextUsed: 1_200, contextWindow: 200_000 }), catalog(1_000_000)),
+    ).toEqual({ contextUsedTokens: 1_200, contextWindowTokens: 1_000_000 });
+  });
+  it("uses the session projection window when the catalog has none for the selected Model", () => {
+    expect(
+      sessionUsage(session({ contextUsed: 1_200, contextWindow: 200_000 }), catalog()),
+    ).toEqual({ contextUsedTokens: 1_200, contextWindowTokens: 200_000 });
+  });
+  it("reports used tokens and cache from the runtime state, which survives resume", () => {
+    expect(
+      sessionUsage(
+        session(
+          { contextUsed: 0, contextWindow: 200_000 },
+          {
+            contextUsage: {
+              used: 17_000,
+              cache: { totalCacheReadTokens: 900, totalCacheWriteTokens: 60, latestHitRate: 0.9 },
+            },
           },
-        }),
+        ),
+        catalog(1_000_000),
       ),
-    ).toEqual({ cachedInputTokens: 900, cacheWriteInputTokens: 60, cacheHitRatePercent: 90 });
+    ).toEqual({
+      contextUsedTokens: 17_000,
+      contextWindowTokens: 1_000_000,
+      cachedInputTokens: 900,
+      cacheWriteInputTokens: 60,
+      cacheHitRatePercent: 90,
+    });
   });
   it("omits the hit rate until ZCode reports one", () => {
     expect(
-      cacheUsage(
-        withRuntime({
-          contextUsage: { cache: { totalCacheReadTokens: 0, totalCacheWriteTokens: 0 } },
-        }),
+      sessionUsage(
+        session(
+          { contextUsed: 0, contextWindow: 200_000 },
+          {
+            contextUsage: { used: 0, cache: { totalCacheReadTokens: 0, totalCacheWriteTokens: 0 } },
+          },
+        ),
+        catalog(),
       ),
-    ).toEqual({ cachedInputTokens: 0, cacheWriteInputTokens: 0 });
+    ).toEqual({
+      contextUsedTokens: 0,
+      contextWindowTokens: 200_000,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+    });
   });
-  it("reports nothing before the Session has cache state", () => {
-    expect(cacheUsage(withRuntime({}))).toEqual({});
+  it("reports nothing when the Session has neither a window nor runtime usage", () => {
+    expect(sessionUsage(session({ contextUsed: 0, contextWindow: 0 }), catalog())).toBeNull();
   });
 });

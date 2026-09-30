@@ -73,7 +73,7 @@ F008 的处理：本次验证失败（结果记 `error`，诊断带 `duplicate: 
 
 ## 能力与限制
 
-- 支持独立创建、多轮、取消后继续、可写恢复、只读历史、Model/Thinking/权限选择、工具输出、原生文件差异、Approval/Question 与 Usage。模型目录与推理档位（含默认档位）来自 CLI 的会话快照；显示名为 `Provider / Model`。Usage 的上下文窗口取完整模型目录中当前 Model 的 `contextWindow`：CLI 的会话投影（`projection.contextWindow`）固定为初始的 200000，不随所选 Model 更新，`session/read` 还会用它覆盖当前 Model 条目；目录没有给出窗口时才使用投影值。缓存读写 Token 与最近一次请求的缓存命中率取会话快照的 `runtime.contextUsage.cache`（Desktop 展示的同一来源）；`session/getTaskTokenUsage` 的两个缓存计数恒为 0，不使用。
+- 支持独立创建、多轮、取消后继续、可写恢复、只读历史、Model/Thinking/权限选择、工具输出、原生文件差异、Approval/Question 与 Usage。模型目录与推理档位（含默认档位）来自 CLI 的会话快照；显示名为 `Provider / Model`。Usage 的上下文窗口取完整模型目录中当前 Model 的 `contextWindow`：CLI 的会话投影（`projection.contextWindow`）固定为初始的 200000，不随所选 Model 更新，`session/read` 还会用它覆盖当前 Model 条目；目录没有给出窗口时才使用投影值。已用上下文、缓存读写 Token 与最近一次请求的缓存命中率取会话快照的 `runtime.contextUsage`（Desktop 展示的同一来源）：`projection.contextUsed` 在恢复会话后归零，要到下一轮结束才更新；`session/getTaskTokenUsage` 的两个缓存计数恒为 0。会话尚无请求时没有 `runtime.contextUsage`，已用量取投影值。
 - 不导入 Desktop 已有会话，不开放 Fork、修订上一条消息或子代理 Transcript。子代理状态与自主 Turn 按原生事件投影。
 - 空 V4 草稿由原生以 deferred 语义持有，首条发送才持久化；尚未发送的草稿关闭后不能恢复。
 - 官方 MCP 插件拿不到身份 Header；浏览器、Computer Use、Off-Peak、自动化和账号切换 UI 不提供。会话标题生成同样会请求 Header 并触发一次验证，结果不影响主轮。

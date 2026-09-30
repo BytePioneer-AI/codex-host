@@ -19,7 +19,7 @@ import {
   type NativeModel,
   type NativeSettings,
   type NativeSnapshot,
-  runtimeCacheSchema,
+  runtimeUsageSchema,
 } from "./protocol.js";
 import { ZcodeError } from "./errors.js";
 
@@ -140,34 +140,37 @@ export function sessionState(snapshot: NativeSnapshot, locator?: JsonObject): Ha
     effectivePermissionModeId: harnessPermissionModeIdSchema.parse(settings.mode.current),
   };
 }
-/** Provider cache totals and the latest request's hit rate, absent before the first request. */
-export function cacheUsage(snapshot: NativeSnapshot): HostUsage {
-  const cache = runtimeCacheSchema.safeParse(snapshot.runtime).data?.contextUsage.cache;
-  if (!cache) return {};
-  return {
-    cachedInputTokens: cache.totalCacheReadTokens,
-    cacheWriteInputTokens: cache.totalCacheWriteTokens,
-    ...(typeof cache.latestHitRate === "number"
-      ? { cacheHitRatePercent: cache.latestHitRate * 100 }
-      : {}),
-  };
-}
 /**
- * The session projection keeps the CLI's initial 200000 window and never follows the selected
- * Model, and `session/read` copies that value over the current Model entry. The full catalog
- * carries the window ZCode resolved for each Model, which is what Desktop shows.
+ * Context and cache usage of a Session. The window comes from the full Model catalog: the
+ * session projection keeps the CLI's initial 200000 and never follows the selected Model, and
+ * `session/read` copies that value over the current Model entry. Used tokens and cache counters
+ * come from `runtime.contextUsage`; a Session that has made no request yet has neither.
  */
-export function contextUsage(snapshot: NativeSnapshot, catalog: NativeSettings): HostUsage | null {
+export function sessionUsage(snapshot: NativeSnapshot, catalog: NativeSettings): HostUsage | null {
+  const runtime = runtimeUsageSchema.safeParse(snapshot.runtime).data?.contextUsage;
   const current = snapshot.settings.model.current;
   const window =
     catalog.model.available.find(
       (model) =>
         model.ref.providerId === current?.providerId && model.ref.modelId === current.modelId,
     )?.contextWindow ?? snapshot.projection.contextWindow;
-  return window > 0
-    ? parseHostUsage({
-        contextUsedTokens: snapshot.projection.contextUsed,
-        contextWindowTokens: window,
-      })
-    : null;
+  const cache = runtime?.cache;
+  const usage: HostUsage = {
+    ...(window > 0
+      ? {
+          contextUsedTokens: runtime?.used ?? snapshot.projection.contextUsed,
+          contextWindowTokens: window,
+        }
+      : {}),
+    ...(cache
+      ? {
+          cachedInputTokens: cache.totalCacheReadTokens,
+          cacheWriteInputTokens: cache.totalCacheWriteTokens,
+          ...(typeof cache.latestHitRate === "number"
+            ? { cacheHitRatePercent: cache.latestHitRate * 100 }
+            : {}),
+        }
+      : {}),
+  };
+  return Object.keys(usage).length > 0 ? parseHostUsage(usage) : null;
 }

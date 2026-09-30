@@ -119,16 +119,20 @@ export const eventSchema = z.object({
   payload: recordSchema.optional(),
 });
 /**
- * `runtime.contextUsage.cache` in a Session snapshot: the provider cache totals ZCode Desktop
- * shows. `session/getTaskTokenUsage` reports zero for both cache counters.
+ * `runtime.contextUsage` in a Session snapshot: the context and provider cache state ZCode
+ * Desktop shows. It survives resume, unlike `projection.contextUsed`, and carries the cache
+ * counters that `session/getTaskTokenUsage` reports as zero.
  */
-export const runtimeCacheSchema = z.object({
+export const runtimeUsageSchema = z.object({
   contextUsage: z.object({
-    cache: z.object({
-      totalCacheReadTokens: z.number().int().nonnegative(),
-      totalCacheWriteTokens: z.number().int().nonnegative(),
-      latestHitRate: z.number().min(0).max(1).nullish(),
-    }),
+    used: z.number().int().nonnegative(),
+    cache: z
+      .object({
+        totalCacheReadTokens: z.number().int().nonnegative(),
+        totalCacheWriteTokens: z.number().int().nonnegative(),
+        latestHitRate: z.number().min(0).max(1).nullish(),
+      })
+      .nullish(),
   }),
 });
 export type NativeSettings = z.infer<typeof settingsSchema>;

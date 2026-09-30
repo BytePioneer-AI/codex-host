@@ -34,6 +34,7 @@ import {
 import { managedDelegationSkillReference } from "./delegation-skill.js";
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import { NativeAccountObserver } from "./native-account-observer.js";
+import { nativeThreadSupportsReferences } from "./native-thread-reference-capability.js";
 import {
   HarnessAccountInspectionCache,
   listedHarnessAccounts,
@@ -2771,11 +2772,24 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
       return;
     }
+    const supportsThreadReferences =
+      resolution.kind === "official" &&
+      params.data.includeReferenceCapability === true &&
+      (await nativeThreadSupportsReferences({
+        codexHome: this.#officialRuntimeScope.permanentHome,
+        threadId: params.data.threadId,
+        readThread: () =>
+          this.#officialRuntime.request("thread/read", {
+            threadId: params.data.threadId,
+            includeTurns: false,
+          }),
+      }));
     const inspection = threadInspectionSchema.parse(
       resolution.kind === "official"
         ? {
             owner: "codex",
             locked: true,
+            ...(supportsThreadReferences ? { supportsThreadReferences: true } : {}),
           }
         : {
             owner: "external",

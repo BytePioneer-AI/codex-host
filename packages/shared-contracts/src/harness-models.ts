@@ -300,6 +300,7 @@ export type ThreadThinkingSelectParams = z.infer<typeof threadThinkingSelectPara
 export const threadInspectionParamsSchema = z
   .object({
     threadId: hostThreadIdSchema,
+    includeReferenceCapability: z.boolean().optional(),
   })
   .strict();
 
@@ -309,6 +310,7 @@ const codexThreadInspectionSchema = z
   .object({
     owner: z.literal("codex"),
     locked: z.literal(true),
+    supportsThreadReferences: z.literal(true).optional(),
   })
   .strict();
 

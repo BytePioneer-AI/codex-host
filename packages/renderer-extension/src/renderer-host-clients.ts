@@ -5,6 +5,7 @@ import type {
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
+import { restoreThreadReferenceCapability } from "./renderer-thread-reference-capability.js";
 import {
   installRendererManualCompaction,
   type RendererMessageTarget,
@@ -43,7 +44,7 @@ export function createRendererHostClients(
     if (cached?.route === route) return cached.client;
     retire(route.hostId);
     const target = route.manager;
-    const client = createRendererModelClient([
+    const nativeClient = createRendererModelClient([
       {
         sendRequest(method, params, options) {
           if (disposed || readRouting()?.forHost(route.hostId) !== route) {
@@ -58,7 +59,12 @@ export function createRendererHostClients(
           : {}),
       },
     ]);
-    if (!client) return null;
+    if (!nativeClient) return null;
+    const client = restoreThreadReferenceCapability(
+      nativeClient,
+      target,
+      () => !disposed && readRouting()?.forHost(route.hostId) === route,
+    );
     const cleanups: (() => void)[] = [];
     entries.set(route.hostId, { route, client, cleanups });
     try {

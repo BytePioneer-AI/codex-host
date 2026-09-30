@@ -118,6 +118,19 @@ export const eventSchema = z.object({
   type: z.string(),
   payload: recordSchema.optional(),
 });
+/**
+ * `runtime.contextUsage.cache` in a Session snapshot: the provider cache totals ZCode Desktop
+ * shows. `session/getTaskTokenUsage` reports zero for both cache counters.
+ */
+export const runtimeCacheSchema = z.object({
+  contextUsage: z.object({
+    cache: z.object({
+      totalCacheReadTokens: z.number().int().nonnegative(),
+      totalCacheWriteTokens: z.number().int().nonnegative(),
+      latestHitRate: z.number().min(0).max(1).nullish(),
+    }),
+  }),
+});
 export type NativeSettings = z.infer<typeof settingsSchema>;
 export type NativeSnapshot = z.infer<typeof snapshotSchema>;
 export type NativePart = z.infer<typeof partSchema>;

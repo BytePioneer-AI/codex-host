@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { hostInteractionIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
-import { contextUsage } from "../src/models.js";
+import { cacheUsage, contextUsage } from "../src/models.js";
 import { ZcodeSession } from "../src/session.js";
 import { settingsSchema, snapshotSchema } from "../src/protocol.js";
 import type { CliTransport } from "../src/transport.js";
@@ -182,5 +182,33 @@ describe("ZCode context usage", () => {
   });
   it("reports nothing when neither source has a window", () => {
     expect(contextUsage(session(0), catalog())).toBeNull();
+  });
+});
+
+describe("ZCode cache usage", () => {
+  const withRuntime = (runtime: object) => snapshotSchema.parse({ ...snapshot, runtime });
+
+  it("reports the Session's cache totals and the latest request's hit rate", () => {
+    expect(
+      cacheUsage(
+        withRuntime({
+          contextUsage: {
+            cache: { totalCacheReadTokens: 900, totalCacheWriteTokens: 60, latestHitRate: 0.9 },
+          },
+        }),
+      ),
+    ).toEqual({ cachedInputTokens: 900, cacheWriteInputTokens: 60, cacheHitRatePercent: 90 });
+  });
+  it("omits the hit rate until ZCode reports one", () => {
+    expect(
+      cacheUsage(
+        withRuntime({
+          contextUsage: { cache: { totalCacheReadTokens: 0, totalCacheWriteTokens: 0 } },
+        }),
+      ),
+    ).toEqual({ cachedInputTokens: 0, cacheWriteInputTokens: 0 });
+  });
+  it("reports nothing before the Session has cache state", () => {
+    expect(cacheUsage(withRuntime({}))).toEqual({});
   });
 });

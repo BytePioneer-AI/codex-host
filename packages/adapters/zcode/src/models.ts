@@ -19,6 +19,7 @@ import {
   type NativeModel,
   type NativeSettings,
   type NativeSnapshot,
+  runtimeCacheSchema,
 } from "./protocol.js";
 import { ZcodeError } from "./errors.js";
 
@@ -137,6 +138,18 @@ export function sessionState(snapshot: NativeSnapshot, locator?: JsonObject): Ha
       label: level.label,
     })),
     effectivePermissionModeId: harnessPermissionModeIdSchema.parse(settings.mode.current),
+  };
+}
+/** Provider cache totals and the latest request's hit rate, absent before the first request. */
+export function cacheUsage(snapshot: NativeSnapshot): HostUsage {
+  const cache = runtimeCacheSchema.safeParse(snapshot.runtime).data?.contextUsage.cache;
+  if (!cache) return {};
+  return {
+    cachedInputTokens: cache.totalCacheReadTokens,
+    cacheWriteInputTokens: cache.totalCacheWriteTokens,
+    ...(typeof cache.latestHitRate === "number"
+      ? { cacheHitRatePercent: cache.latestHitRate * 100 }
+      : {}),
   };
 }
 /**

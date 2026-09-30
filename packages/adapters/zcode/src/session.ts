@@ -38,6 +38,7 @@ import {
 } from "./protocol.js";
 import {
   ZCODE_ID,
+  cacheUsage,
   contextUsage,
   selectNativeModel,
   sessionState,
@@ -220,14 +221,15 @@ export class ZcodeSession implements HarnessSession {
       const usage = record(
         await this.transport.request("getTaskTokenUsage", { sessionId: this.sessionId }),
       );
-      const fields: HostUsage = { ...(contextUsage(snapshot, this.nativeCatalog) ?? {}) };
+      const fields: HostUsage = {
+        ...(contextUsage(snapshot, this.nativeCatalog) ?? {}),
+        ...cacheUsage(snapshot),
+      };
       for (const [source, target] of [
         ["inputTokens", "inputTokens"],
         ["outputTokens", "outputTokens"],
         ["totalTokens", "totalTokens"],
         ["reasoningTokens", "reasoningOutputTokens"],
-        ["cacheReadTokens", "cachedInputTokens"],
-        ["cacheCreationTokens", "cacheWriteInputTokens"],
       ] as const)
         if (typeof usage[source] === "number") fields[target] = usage[source];
       this.#emit({

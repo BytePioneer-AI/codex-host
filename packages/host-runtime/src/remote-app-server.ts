@@ -376,6 +376,7 @@ export function createRemoteAppServerWebSocketListener(input: {
   const sessionClosers = new Set<() => void>();
   let listening = false;
   let ownedSocketIdentity: UnixFileIdentity | null = null;
+  let listenAttempt: Promise<void> | null = null;
   let closing: Promise<void> | null = null;
   const closed = Promise.withResolvers<undefined>();
 
@@ -468,7 +469,11 @@ export function createRemoteAppServerWebSocketListener(input: {
   return {
     closed: closed.promise,
     async listen() {
+      if (closing) throw new Error("Remote app-server listener is closed");
       if (listening) return;
+      // Concurrent callers share one bind, so close() always waits for the
+      // attempt that can still bind the server.
+      if (listenAttempt) return listenAttempt;
       const bind = async (): Promise<void> => {
         await new Promise<void>((resolve, reject) => {
           const onError = (error: Error) => reject(error);
@@ -489,19 +494,32 @@ export function createRemoteAppServerWebSocketListener(input: {
           }
         }
       };
-      if (process.platform !== "win32") {
-        await prepareRemoteAppServerSocketDirectory(input.socketPath);
-        await withRemoteAppServerSocketInitializationLock(input.socketPath, async () => {
-          await removeStaleSocket(input.socketPath);
+      const attempt = (async () => {
+        if (process.platform !== "win32") {
+          await prepareRemoteAppServerSocketDirectory(input.socketPath);
+          await withRemoteAppServerSocketInitializationLock(input.socketPath, async () => {
+            await removeStaleSocket(input.socketPath);
+            await bind();
+          });
+        } else {
           await bind();
-        });
-      } else {
-        await bind();
+        }
+      })();
+      listenAttempt = attempt;
+      try {
+        await attempt;
+      } catch (error) {
+        // A failed attempt may be retried; a successful one stays for close().
+        if (listenAttempt === attempt) listenAttempt = null;
+        throw error;
       }
     },
     close() {
       if (closing) return closing;
       closing = (async () => {
+        // A listen() in flight may still bind. Let it settle so the bound server
+        // and its socket are released below instead of outliving close().
+        await listenAttempt?.catch(() => undefined);
         const closingSessions = [...sessions];
         for (const closeSession of sessionClosers) closeSession();
         for (const socket of webSockets.clients) socket.terminate();

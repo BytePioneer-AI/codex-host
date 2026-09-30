@@ -1,4 +1,4 @@
-import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   decodeOfficialThreadListPage,
   encodeHostThreadListCursor,
@@ -85,6 +85,7 @@ export async function aggregateThreadList(input: {
   query: DecodedThreadListRequest;
   records: readonly StoredThreadRecordV1[];
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
+  placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
   requestOfficialPage(params: JsonObject): Promise<OfficialThreadListPage>;
 }): Promise<AggregatedThreadListPage> {
   const { query } = input;
@@ -106,6 +107,7 @@ export async function aggregateThreadList(input: {
         records: input.records,
         query,
         runtimeFor: input.runtimeFor,
+        ...(input.placementOf ? { placementOf: input.placementOf } : {}),
         anchor: start.externalAnchor,
         limit: query.limit,
       });

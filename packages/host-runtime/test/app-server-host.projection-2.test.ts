@@ -16,7 +16,8 @@ import {
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
 } from "@codexhost/shared-contracts";
-import type { DelegationControlApi } from "../src/delegation-types.js";
+import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
+import { DelegationWatchService } from "../src/delegation-watch.js";
 import { type CodexAccountControl } from "../src/account/codex-account-control.js";
 
 import {
@@ -494,6 +495,155 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("reports a native Codex read failure as not found only when the Thread is missing", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    await fixture.ready;
+    if (!delegationApi) throw new Error("Delegation API was not registered");
+    await bindOfficialThread(fixture, "native-thread");
+    const answer = async (error: { code: number; message: string }) => {
+      const read = await readJsonLine(fixture.official.stdin);
+      expect(read).toMatchObject({ method: "thread/read", params: { threadId: "native-thread" } });
+      fixture.official.stdout.write(`${JSON.stringify({ id: read.id, error })}\n`);
+    };
+
+    const failing = delegationApi.read({ threadId: "native-thread", view: "result" });
+    await answer({ code: -32603, message: "internal error" });
+    await expect(failing).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+
+    const missing = delegationApi.read({ threadId: "native-thread", view: "result" });
+    await answer({ code: -32600, message: "no rollout found for thread id native-thread" });
+    await expect(missing).rejects.toMatchObject({ code: "THREAD_NOT_FOUND" });
+
+    const sending = delegationApi.send({ threadId: "native-thread", message: "notify" });
+    await answer({ code: -32603, message: "internal error" });
+    await expect(sending).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    await stopFixture(fixture);
+  });
+
+  it("marks a native Codex turn/start refusal as not started", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    await fixture.ready;
+    if (!delegationApi) throw new Error("Delegation API was not registered");
+    await bindOfficialThread(fixture, "native-thread");
+
+    const sending = delegationApi.send({ threadId: "native-thread", message: "notify" });
+    const read = await readJsonLine(fixture.official.stdin);
+    expect(read).toMatchObject({ method: "thread/read" });
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        id: read.id,
+        result: { thread: { id: "native-thread", status: { type: "idle" }, turns: [] } },
+      })}\n`,
+    );
+    const resume = await readJsonLine(fixture.official.stdin);
+    expect(resume).toMatchObject({
+      method: "thread/resume",
+      params: { threadId: "native-thread", excludeTurns: true },
+    });
+    fixture.official.stdout.write(
+      officialLine(resume.id, {
+        result: { thread: { id: "native-thread", status: { type: "idle" }, turns: [] } },
+      }),
+    );
+    const start = await readJsonLine(fixture.official.stdin);
+    expect(start).toMatchObject({ method: "turn/start" });
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: start.id, error: { code: -32600, message: "refused" } })}\n`,
+    );
+    await expect(sending).rejects.toMatchObject({
+      code: "DELEGATION_FAILED",
+      details: { notStarted: true },
+    });
+    await stopFixture(fixture);
+  });
+
+  it("does not resend a watch notification after an external start with an unknown outcome", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    let service: DelegationWatchService | undefined;
+    try {
+      await fixture.ready;
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      const api = delegationApi;
+      const starting = api.start({
+        harnessId: "pi",
+        task: "coordinate",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const notified = await starting;
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Delegated Session was not opened");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", notified.turnId),
+      );
+
+      // The watched Thread is synthetic; the notification goes through the real Host send.
+      let watchedStatus: "running" | "completed" = "running";
+      service = new DelegationWatchService(
+        {
+          read: async (input) =>
+            input.threadId === "watched"
+              ? ({
+                  threadId: "watched",
+                  harnessId: "pi",
+                  status: watchedStatus,
+                  turn: { turnId: "watched-turn", status: watchedStatus },
+                  progress: [],
+                  result: { availability: "pending" },
+                  nextCursor: null,
+                } as DelegationThreadSnapshot)
+              : api.read(input),
+          send: (input) => api.send(input),
+        },
+        { pollIntervalMs: 10 },
+      );
+      await service.watch({
+        threadId: "watched",
+        notifyThreadId: notified.threadId,
+        timeoutMs: 60_000,
+      });
+
+      // A broker timeout reaches the Host as a failed start, although the native
+      // Harness may already have accepted the Turn.
+      session.rejectNextTurn({
+        code: "unavailable",
+        message: "Aqua Harness broker session.execute timed out",
+        retryable: true,
+      });
+      const execute = vi.spyOn(session, "execute");
+      watchedStatus = "completed";
+      await vi.waitFor(async () =>
+        expect((await service?.watches())?.watches).toMatchObject([{ state: "undeliverable" }]),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute).toHaveBeenCalledWith(expect.objectContaining({ type: "turn.start" }));
+    } finally {
+      service?.close();
+      await stopFixture(fixture);
+    }
+  });
+
   it("lists native and external Threads through the delegation CLI list surface", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
@@ -773,6 +923,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(send).rejects.toMatchObject({
       code: "DELEGATION_FAILED",
       message: "resume rejected",
+      details: { notStarted: true },
     });
     await expectNoFurtherOfficialRequest(fixture.official.stdin);
     await stopFixture(fixture);

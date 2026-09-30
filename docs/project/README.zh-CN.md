@@ -36,6 +36,37 @@
 
 </div>
 
+## 赞助
+
+<details open>
+<summary>点击收起</summary>
+
+<table>
+<tr>
+<td width="180"><a href="https://aixlau.me/register?aff=HOST"><img src="../imgs/sponsors/xinglian-ai.png" alt="星链AI" width="160"></a></td>
+<td>感谢 <b>星链AI</b> 赞助本项目！星链AI 为 Codex、CodexHost 等 AI Coding 工具提供稳定、高效的 API 中转服务，支持主流 AI 模型快速接入：稳定线路 · 快速响应 · 多模型兼容 · 即开即用，减少 API 配置与切换成本，让你更专注于 Coding。<a href="https://aixlau.me/register?aff=HOST">点击立即体验 →</a></td>
+</tr>
+</table>
+</details>
+
+<a name="support"></a>
+<details>
+<summary><strong>☕ 如果愿意支持 CodexHost 的持续开发，欢迎请我喝杯咖啡</strong></summary>
+
+<p align="center">
+  <img src="../imgs/sponsor-wechat.png" width="200" alt="WeChat Pay" /><br />
+  <sub>微信扫码 · 金额不限，每一份支持都意义重大</sub>
+</p>
+
+CodexHost 是免费开源的项目。赞助将用于维持项目运行的实际成本：
+
+- 🛠️ **开发时间**：新功能、问题修复，以及审核社区提交的 PR
+- 🤖 **AI 订阅**：CodexHost 接入的各个 Harness 与 AI 服务的付费订阅，确保每个集成都能被实际测试并保持最新
+
+<p align="center">❤️ 感谢每一份支持 ❤️</p>
+
+</details>
+
 ## 界面预览
 
 无需切换应用，**Pi、Claude Code、Grok Build 等十余个 Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
@@ -65,6 +96,10 @@ codexhost
 
 <details>
 <summary>安装问题排查</summary>
+
+**codexhost 启动失败，或 Codex 打开了但没有 codexhost 功能**
+
+运行 `codexhost console`（Windows：开始菜单 →“codexhost console”），打开本地控制台 `http://127.0.0.1:26339/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新 codexhost。控制台随 codexhost 一起启动：安装包启动时自动在浏览器打开，终端启动时会输出访问地址。
 
 **macOS：首次打开提示「应用无法验证」**
 

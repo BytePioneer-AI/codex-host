@@ -44,12 +44,41 @@ export function committedReactAncestors(value: unknown): readonly Fiber[] {
   const current = fiber(rootState.current);
   if (!current) return [];
 
+  const alternate = fiber(first.alternate);
+  // Treat return pointers only as a candidate path. Verify every edge against
+  // the published tree's child/sibling links before accepting it. This avoids
+  // traversing unrelated transcript/sidebar subtrees in the common case, even
+  // when the DOM still points at the alternate. No result survives this call.
+  const path: Fiber[] = [current];
+  seen.clear();
+  seen.add(current);
+  for (let index = previous.length - 2; index >= 0; index -= 1) {
+    const expected = previous[index];
+    const expectedAlternate = fiber(expected?.alternate);
+    let child = fiber(path.at(-1)?.child);
+    let matched = false;
+    while (child && !seen.has(child) && seen.size < MAX_VISITED_FIBERS) {
+      seen.add(child);
+      if (child === expected || child === expectedAlternate) {
+        matched = true;
+        break;
+      }
+      child = fiber(child.sibling);
+    }
+    if (!matched || !child) break;
+    path.push(child);
+  }
+  if (path.length === previous.length && (path.at(-1) === first || path.at(-1) === alternate)) {
+    return path.reverse();
+  }
+
+  // Bailout/reparented children can have a stale parent path, not just stale
+  // node identities. Retain the bounded full search for that case.
   interface Entry {
     node: Fiber;
     parent: Entry | null;
   }
   const stack: Entry[] = [{ node: current, parent: null }];
-  const alternate = fiber(first.alternate);
   seen.clear();
   while (stack.length > 0 && seen.size < MAX_VISITED_FIBERS) {
     const entry = stack.pop();

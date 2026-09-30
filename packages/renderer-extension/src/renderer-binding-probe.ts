@@ -2739,8 +2739,16 @@ export function installRendererBindingProbe(
   };
 
   const mutationObserver = new MutationObserver((mutations) => {
-    transferReplacedComposers(mutations);
-    scheduleScan(mutations.some(mutationMayChangeComposerTarget));
+    // Typing, IME composition and rich-text edits inside an existing editor do
+    // not change its owner or our controls. Do not put global Host discovery on
+    // the input microtask path. Keep visibility attributes and changes outside
+    // editors, including replacement of the editor/Composer itself.
+    const relevant = mutations.filter(
+      (mutation) => mutation.type === "attributes" || mutationMayChangeComposerTarget(mutation),
+    );
+    if (relevant.length === 0) return;
+    transferReplacedComposers(relevant);
+    scheduleScan(relevant.some(mutationMayChangeComposerTarget));
   });
   const onHostRouteChange = (): void => {
     const hostId = activeModelHostId();

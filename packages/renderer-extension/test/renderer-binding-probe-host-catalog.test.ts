@@ -25,6 +25,7 @@ const testState = vi.hoisted(() => ({
   documentListeners: new Map<string, EventListener>(),
   modelTarget: ["conversation", "thread-a"] as readonly unknown[],
   prewarmClears: 0,
+  notifyMutations: null as null | ((records: MutationRecord[]) => void),
 }));
 
 vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
@@ -33,7 +34,8 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
     ...original,
     composerForEditor: () => testState.composer,
     composerForElement: () => testState.composer,
-    editorForElement: () => testState.editor,
+    editorForElement: (element: Element) =>
+      element === testState.editor || element === testState.composer ? testState.editor : null,
     eventElement: () => testState.composer,
     mountComposerAgentControl: (
       ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
@@ -158,13 +160,18 @@ function emptyInspection() {
 
 function installFakeBrowser(): void {
   const listeners = new EventTarget();
-  const composer = {
+  class FakeElement {
+    readonly nodeType = 1;
+  }
+  const composer = Object.assign(new FakeElement(), {
     isConnected: true,
     matches: (selector: string) => selector === "[data-codex-composer-root]",
     querySelectorAll: (selector: string) => (selector === "button" ? [testState.sendButton] : []),
     querySelector: (selector: string) => (selector.includes("textarea") ? testState.editor : null),
-  } as unknown as Element;
-  const editor = { closest: () => composer } as unknown as Element;
+  }) as unknown as Element;
+  const editor = Object.assign(new FakeElement(), {
+    closest: () => composer,
+  }) as unknown as Element;
   const sendButton = {
     type: "submit",
     disabled: false,
@@ -181,6 +188,7 @@ function installFakeBrowser(): void {
   testState.documentListeners.clear();
   testState.modelTarget = ["conversation", "thread-a"];
   testState.prewarmClears = 0;
+  testState.notifyMutations = null;
   const window_ = {
     addEventListener: listeners.addEventListener.bind(listeners),
     removeEventListener: listeners.removeEventListener.bind(listeners),
@@ -203,9 +211,16 @@ function installFakeBrowser(): void {
   vi.stubGlobal("window", window_);
   vi.stubGlobal("document", document_);
   vi.stubGlobal("Node", { ELEMENT_NODE: 1 });
+  vi.stubGlobal("Element", FakeElement);
   vi.stubGlobal(
     "MutationObserver",
     class {
+      constructor(callback: MutationCallback) {
+        testState.notifyMutations = (records) => callback(records, this);
+      }
+      takeRecords(): MutationRecord[] {
+        return [];
+      }
       observe(): void {}
       disconnect(): void {}
     },
@@ -414,6 +429,48 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(
       hosts?.find(({ hostId }) => hostId === "local")?.agents.find(({ agent }) => agent === "pi"),
     ).toMatchObject({ availability: "ready", error: null });
+  });
+
+  it("skips editor text/IME mutations but retains visibility and structural reconciliation", async () => {
+    installFakeBrowser();
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const { reconcileComposerNativeControls } = await import("../src/renderer-composer-dom.js");
+    installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    const notify = testState.notifyMutations;
+    assert(notify);
+    const reconcile = vi.mocked(reconcileComposerNativeControls);
+    reconcile.mockClear();
+    const text = { nodeType: 3, parentElement: testState.editor } as unknown as Text;
+    const mutation = (type: MutationRecordType, target: Node) =>
+      ({ type, target, addedNodes: [], removedNodes: [] }) as unknown as MutationRecord;
+
+    // Text replacement and rich-text paragraph edits are also childList changes.
+    for (let index = 0; index < 10; index += 1) {
+      notify([mutation("characterData", text), mutation("childList", testState.editor)]);
+      await Promise.resolve();
+    }
+    expect(reconcile).not.toHaveBeenCalled();
+
+    notify([mutation("attributes", testState.editor)]);
+    await Promise.resolve();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    reconcile.mockClear();
+
+    // Replacement/removal happens on the editor's parent, outside its contents.
+    const parent = Object.assign(Object.create(Element.prototype), { nodeType: 1 });
+    notify([mutation("childList", parent)]);
+    await Promise.resolve();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    reconcile.mockClear();
+
+    // Never drop a real structural change mixed into the same observer batch.
+    notify([
+      mutation("characterData", text),
+      mutation("childList", parent),
+      mutation("childList", testState.editor),
+    ]);
+    await Promise.resolve();
+    expect(reconcile).toHaveBeenCalledTimes(1);
   });
 
   it("does not rediscover the request route for unrelated sidebar rows", async () => {

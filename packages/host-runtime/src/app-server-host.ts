@@ -10,6 +10,7 @@ import {
   IDLE_RELEASE_SETTINGS_METHOD,
   restoreHarnessCommandMentions,
   LOADED_SESSIONS_METHOD,
+  THREAD_MANUAL_COMPACTION_STARTED_METHOD,
   idleReleaseSettingsSchema,
 } from "@codexhost/shared-contracts";
 import {
@@ -66,6 +67,7 @@ import {
   externalThreadForkParamsSchema,
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
+  type HarnessCommandDescriptor,
   harnessCommandsInspectParamsSchema,
   type HarnessId,
   harnessIdSchema,
@@ -103,6 +105,7 @@ import {
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type HostInteractionId,
+  type HostItemId,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
@@ -118,6 +121,7 @@ import {
   createProductionExternalThreadStore,
   ExternalThreadRepository,
   externalThreadValue,
+  threadSectionFields,
   type ExternalThreadStore,
 } from "./external-thread-repository.js";
 import {
@@ -215,6 +219,8 @@ import {
   officialThreadListPageFromResponse,
   OfficialThreadListError,
 } from "./thread-list-aggregator.js";
+import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
+import { externalThreadListEntries } from "./external-thread-list.js";
 import {
   CodexTurnProjector,
   decodeCreateRoute,
@@ -226,6 +232,7 @@ import {
   decodeThreadMetadataUpdateRequest,
   decodeThreadRevertRequest,
   decodeThreadRollbackRequest,
+  decodeThreadSectionMoveRequest,
   encodeJsonFrame,
   mapExternalThreadHarnessError,
   projectCodexRateLimitsToCredits,
@@ -245,6 +252,7 @@ import {
   type CodexQuestionProjection,
   type DecodedThreadForkRequest,
   type DecodedThreadListRequest,
+  type DecodedThreadSectionMoveRequest,
   type DecodedThreadRevertRequest,
   type DecodedThreadRollbackRequest,
   type ExternalThreadRpcError,
@@ -457,6 +465,7 @@ const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
   "thread/resume",
   "thread/revert",
   "thread/rollback",
+  "thread/section/move",
   "thread/turns/list",
   "thread/unarchive",
   "thread/unsubscribe",
@@ -600,6 +609,7 @@ export class AppServerHost {
   #routeObservationTracker = new RequestRouteObservationTracker();
   #officialServerRequests = new Map<JsonRpcId, JsonRpcId>();
   #nextOfficialServerRequestId = 0;
+  #sectionMoves: Promise<void> = Promise.resolve();
   #writer: OrderedWriter;
   /** Console requests share Desktop handling; their replies return to the console. */
   readonly #consoleRequestPrefix = `codexhost-console:${randomUUID()}:`;
@@ -608,6 +618,7 @@ export class AppServerHost {
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
+  #manualCompactionTurns = new WeakMap<ExternalThread, HostTurnId>();
   #closeRequested = false;
   readonly #pluginLoadAbort = new AbortController();
   #pluginLoading: Promise<void> | undefined;
@@ -729,6 +740,7 @@ export class AppServerHost {
         },
         canRelease: (thread) =>
           !this.#hasRunningSubagents(thread.id) &&
+          !thread.session.hasBackgroundWork?.() &&
           !this.#externalSteering.hasPending(thread.id) &&
           !this.#pendingExternalCommandRequests.has(thread.id) &&
           ![...this.#pendingDesktopApprovals.values()].some(
@@ -868,16 +880,8 @@ export class AppServerHost {
     void this.#waitForPlugins();
     if (this.#closeRequested) await this.#closeOfficialRuntime();
     try {
-      void this.#officialRuntime
-        .failure()
-        .then(async () => {
-          // A recovered/shared Scope may have outlived this one-shot failure.
-          if (this.#officialRuntimeScope.gate.phase !== "unavailable") return;
-          // Prove exit without terminally closing the Scope or detaching Desktop.
-          // Backend reconnection must be able to reuse this same native client.
-          await this.#officialRuntimeScope.owner.stop();
-        })
-        .catch((error: unknown) => this.#diagnose(error));
+      // The Scope proves official exit (and optionally restarts it); this native
+      // client stays attached so a replacement generation can reuse it.
       await this.#forwardDesktop();
       return 0;
     } catch (error) {
@@ -1367,11 +1371,34 @@ export class AppServerHost {
         await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
         return;
       }
-      if (!listRequest.supportsExternal) {
+      if (
+        !listRequest.supportsExternal ||
+        (listRequest.sortKey === "section_position" && typeof listRequest.sectionId !== "string")
+      ) {
         await this.#forwardOfficialRequest(request, frame);
         return;
       }
-      this.#dispatchDesktopRequest(() => this.#listThreads(request, listRequest));
+      this.#dispatchDesktopRequest(() =>
+        listRequest.sortKey === "section_position"
+          ? this.#listSectionThreads(request, frame, listRequest)
+          : this.#listThreads(request, listRequest),
+      );
+      return;
+    }
+    if (request.method === "thread/section/move") {
+      let move: DecodedThreadSectionMoveRequest;
+      try {
+        const decoded = decodeThreadSectionMoveRequest(request);
+        if (!decoded) throw new Error("Expected thread/section/move request");
+        move = decoded;
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        return;
+      }
+      // Moves read and rewrite one shared order, so they apply one at a time.
+      const task = this.#sectionMoves.then(() => this.#moveThreadSection(request, frame, move));
+      this.#sectionMoves = task.catch(() => undefined);
+      this.#dispatchDesktopRequest(() => task);
       return;
     }
     if (request.method === "thread/archive" || request.method === "thread/unarchive") {
@@ -1667,6 +1694,18 @@ export class AppServerHost {
         } else {
           await this.#deleteExternalThread(request, location);
         }
+        return;
+      }
+    }
+    if (
+      request.method === "thread/backgroundTerminals/clean" &&
+      isRecord(request.params) &&
+      typeof request.params.threadId === "string"
+    ) {
+      const location = await this.#locateExternalThread(request.params.threadId);
+      if (await this.#writeResolutionError(request, location)) return;
+      if (location.kind === "external") {
+        await this.#cleanExternalBackgroundTerminals(request, request.params.threadId);
         return;
       }
     }
@@ -2384,16 +2423,18 @@ export class AppServerHost {
     listRequest: DecodedThreadListRequest,
   ): Promise<void> {
     try {
-      const records = await this.#repository.list();
+      const [records, placements] = await Promise.all([
+        this.#repository.list(),
+        this.#repository.listSectionPlacements(),
+      ]);
+      const placementById = new Map(
+        placements.map((entry) => [entry.hostThreadId as string, entry]),
+      );
       const result = await aggregateThreadList({
         query: listRequest,
         records,
-        runtimeFor: (threadId) => {
-          const thread = this.#externalRuntime.get(threadId);
-          const subagentStatus = this.#subagentThreadStatuses.get(threadId);
-          if (subagentStatus) return { running: subagentStatus === "active" };
-          return thread ? { running: thread.running } : null;
-        },
+        runtimeFor: (threadId) => this.#listRuntimeState(threadId),
+        placementOf: (threadId) => placementById.get(threadId),
         requestOfficialPage: async (params) =>
           officialThreadListPageFromResponse(
             await this.#officialRuntime.request("thread/list", params),
@@ -2408,6 +2449,101 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32082, "Thread list aggregation failed"));
       this.#diagnose(error);
     }
+  }
+
+  #listRuntimeState(threadId: string): { running: boolean } | null {
+    const subagentStatus = this.#subagentThreadStatuses.get(threadId);
+    if (subagentStatus) return { running: subagentStatus === "active" };
+    const thread = this.#externalRuntime.get(threadId);
+    return thread ? { running: thread.running } : null;
+  }
+
+  /** `section_position` lists merge External section placements into the official order. */
+  async #listSectionThreads(
+    request: JsonRpcRequest,
+    frame: Buffer<ArrayBufferLike>,
+    query: DecodedThreadListRequest,
+  ): Promise<void> {
+    try {
+      const [records, placements] = await Promise.all([
+        this.#repository.list(),
+        this.#repository.listSectionPlacements(),
+      ]);
+      const placementById = new Map(
+        placements.map((entry) => [entry.hostThreadId as string, entry]),
+      );
+      const externalRows = new Map(
+        externalThreadListEntries({
+          records,
+          query,
+          runtimeFor: (threadId) => this.#listRuntimeState(threadId),
+          placementOf: (threadId) => placementById.get(threadId),
+        }).map((entry) => [String(entry.thread.id), entry.thread]),
+      );
+      const page = await listSectionThreads({
+        query,
+        placements,
+        externalRows,
+        requestOfficial: (method, params) => this.#requestOfficial(method, params),
+      });
+      if (!page) {
+        await this.#forwardOfficialRequest(request, frame);
+        return;
+      }
+      await this.#writer.json(rpcEnvelope(request, { result: page }));
+    } catch (error) {
+      if (error instanceof OfficialThreadListError) {
+        await this.#writer.json(rpcEnvelope(request, { error: error.rpcError }));
+        return;
+      }
+      await this.#writer.json(rpcError(request, -32082, "Thread list aggregation failed"));
+      this.#diagnose(error);
+    }
+  }
+
+  async #moveThreadSection(
+    request: JsonRpcRequest,
+    frame: Buffer<ArrayBufferLike>,
+    move: DecodedThreadSectionMoveRequest,
+  ): Promise<void> {
+    try {
+      const location = await this.#locateExternalThread(move.threadId);
+      if (await this.#writeResolutionError(request, location)) return;
+      const [records, placements] = await Promise.all([
+        this.#repository.list(),
+        this.#repository.listSectionPlacements(),
+      ]);
+      const outcome = await moveThreadSection({
+        move,
+        movingExternal: location.kind === "external",
+        externalThreadIds: new Set(records.map((record) => record.hostThreadId)),
+        placements,
+        requestOfficial: (method, params) => this.#requestOfficial(method, params),
+        savePlacements: (next) => this.#repository.replaceSectionPlacements(next),
+        now: new Date(),
+      });
+      if (outcome.kind === "moved" && outcome.persistError !== undefined)
+        this.#diagnose(outcome.persistError);
+      if (outcome.kind === "forward") await this.#forwardOfficialRequest(request, frame);
+      else if (outcome.kind === "error")
+        await this.#writer.json(rpcEnvelope(request, { error: outcome.error }));
+      else await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32081, "Thread section could not be moved"));
+      this.#diagnose(error);
+    }
+  }
+
+  async #externalSectionFields(threadId: string) {
+    const placements = await this.#repository.listSectionPlacements();
+    return threadSectionFields(placements.find((entry) => entry.hostThreadId === threadId));
+  }
+
+  /** Cached External Thread projections predate section moves; responses read the placement. */
+  async #withExternalSection(thread: JsonObject): Promise<JsonObject> {
+    return typeof thread.id === "string"
+      ? { ...thread, ...(await this.#externalSectionFields(thread.id)) }
+      : thread;
   }
 
   async #setExternalThreadArchived(
@@ -2452,7 +2588,9 @@ export class AppServerHost {
       };
     }
     await this.#writer.json(
-      rpcEnvelope(request, { result: archived ? {} : { thread: projected } }),
+      rpcEnvelope(request, {
+        result: archived ? {} : { thread: await this.#withExternalSection(projected) },
+      }),
     );
     await this.#writer.json({
       method: archived ? "thread/archived" : "thread/unarchived",
@@ -2881,7 +3019,7 @@ export class AppServerHost {
       try {
         const started = await this.#beginExternalCommand(
           thread,
-          params.commandId,
+          descriptor,
           params.arguments,
           params.turnId,
         );
@@ -2909,7 +3047,7 @@ export class AppServerHost {
 
   async #beginExternalCommand(
     thread: ExternalThread,
-    commandId: string,
+    descriptor: HarnessCommandDescriptor,
     arguments_: JsonObject | undefined,
     requestedTurnId?: HostTurnId,
   ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
@@ -2941,11 +3079,13 @@ export class AppServerHost {
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
     thread.ephemeralTurnIds.add(turnId);
+    if (descriptor.invocation === "/compact") this.#manualCompactionTurns.set(thread, turnId);
+    else this.#manualCompactionTurns.delete(thread);
 
     try {
       const result = await commands.execute({
         turnId,
-        commandId,
+        commandId: descriptor.id,
         ...(arguments_ ? { arguments: arguments_ } : {}),
       });
       if (!result.ok) throw new ExternalCommandError(-32073, result.error.message);
@@ -2956,6 +3096,7 @@ export class AppServerHost {
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
       thread.ephemeralTurnIds.delete(turnId);
+      this.#manualCompactionTurns.delete(thread);
       gate.resolve();
       this.#signalActiveWorkChanged();
       throw error;
@@ -3525,7 +3666,11 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, result.error.code, result.error.message));
       return;
     }
-    await this.#writer.json(rpcEnvelope(request, { result: threadRollbackResult(result.thread) }));
+    await this.#writer.json(
+      rpcEnvelope(request, {
+        result: threadRollbackResult(await this.#withExternalSection(result.thread)),
+      }),
+    );
   }
 
   async #setExternalThreadName(
@@ -3594,13 +3739,16 @@ export class AppServerHost {
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
   ): Promise<void> {
     try {
-      const thread = location.thread
-        ? { ...location.thread.thread, turns: [] }
-        : externalThreadValue({
-            record: location.record,
-            turns: [],
-            sessionId: await this.#repository.sessionTreeId(location.record),
-          });
+      const thread = {
+        ...(location.thread
+          ? { ...location.thread.thread, turns: [] }
+          : externalThreadValue({
+              record: location.record,
+              turns: [],
+              sessionId: await this.#repository.sessionTreeId(location.record),
+            })),
+        ...(await this.#externalSectionFields(location.record.hostThreadId)),
+      };
       await this.#writer.json(rpcEnvelope(request, { result: { thread } }));
       if (location.thread) await this.#replayExternalUsage(location.thread);
     } catch {
@@ -3634,6 +3782,7 @@ export class AppServerHost {
         result: {
           thread: {
             ...thread.thread,
+            ...(await this.#externalSectionFields(thread.record.hostThreadId)),
             turns: includeTurns ? this.#externalHistoryTurns(thread) : [],
           },
         },
@@ -3694,7 +3843,7 @@ export class AppServerHost {
     }
     const turns = this.#externalHistoryTurns(thread);
     const responseThread = {
-      ...thread.thread,
+      ...(await this.#withExternalSection(thread.thread)),
       turns: params.excludeTurns === true ? [] : turns,
     };
     const result = threadForkResult(responseThread, {
@@ -3752,9 +3901,36 @@ export class AppServerHost {
   }
 
   #externalHistoryTurns(thread: ExternalThread): JsonObject[] {
-    if (!thread.activeTurnId) return thread.turns;
+    const turns = this.#withOpenBackgroundCommands(thread, thread.turns);
+    if (!thread.activeTurnId) return turns;
     const active = thread.projectedTurns.get(thread.activeTurnId);
-    return active ? [...thread.turns, active.projector.pendingTurn()] : thread.turns;
+    return active ? [...turns, active.projector.pendingTurn()] : turns;
+  }
+
+  /**
+   * Background commands whose native task has not settled overlay their live
+   * wire state (`inProgress`, accumulated output) onto the served history Turn
+   * they detached from, replacing the historical Item or appending to the Turn.
+   */
+  #withOpenBackgroundCommands(thread: ExternalThread, turns: JsonObject[]): JsonObject[] {
+    return turns.map((turn) => {
+      const open = thread.projectedTurns
+        .get((turn as { id: HostTurnId }).id)
+        ?.projector.openDetachedWireItems();
+      if (!open || open.size === 0) return turn;
+      const remaining = new Map(open);
+      const items = (turn as { items: JsonObject[] }).items.map((item) => {
+        const id = (item as { id: HostItemId }).id;
+        const live = remaining.get(id);
+        if (!live) return item;
+        remaining.delete(id);
+        return live;
+      });
+      return {
+        ...turn,
+        items: [...items, ...remaining.values()],
+      };
+    });
   }
 
   #externalThreadBusy(thread: ExternalThread): boolean {
@@ -3904,7 +4080,7 @@ export class AppServerHost {
         this.#pendingExternalCommandRequests.delete(thread.id);
         return await this.#beginExternalTurn(thread, text);
       }
-      return await this.#beginExternalCommand(thread, command.commandId, command.arguments);
+      return await this.#beginExternalCommand(thread, command.descriptor, command.arguments);
     } catch (error) {
       if (error instanceof ExternalCommandError || error instanceof ExternalSteerError) throw error;
       this.#diagnose(error);
@@ -3969,6 +4145,38 @@ export class AppServerHost {
       this.#signalActiveWorkChanged();
       throw error;
     }
+  }
+
+  /**
+   * Desktop's "stop all background terminals". An unloaded Thread has no
+   * Session and therefore no background terminals; a loaded Harness that
+   * cannot stop them, or a failed stop, is an error rather than success.
+   */
+  async #cleanExternalBackgroundTerminals(
+    request: JsonRpcRequest,
+    threadId: string,
+  ): Promise<void> {
+    const thread = this.#externalRuntime.get(threadId);
+    if (!thread) {
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      return;
+    }
+    if (!thread.session.stopBackgroundWork) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32076,
+          "External Harness does not support stopping background terminals",
+        ),
+      );
+      return;
+    }
+    const result = await thread.session.stopBackgroundWork();
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, -32083, result.error.message));
+      return;
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: {} }));
   }
 
   async #interruptExternalTurn(
@@ -4233,6 +4441,7 @@ export class AppServerHost {
       const completedAt = Math.floor(Date.now() / 1000);
       if (ephemeralTurn) {
         thread.ephemeralTurnIds.delete(event.turnId);
+        this.#manualCompactionTurns.delete(thread);
       } else {
         thread.turns.push(result.completedTurn);
         thread.projectedTerminalTurnId = event.turnId;
@@ -4242,7 +4451,8 @@ export class AppServerHost {
       thread.historyHydrated = false;
       thread.running = false;
       thread.activeTurnId = null;
-      thread.projectedTurns.delete(event.turnId);
+      // Detached Items (native background commands) settle on this Turn later.
+      if (!projection.projector.hasOpenDetachedItems) thread.projectedTurns.delete(event.turnId);
       thread.responseGates.delete(event.turnId);
       this.#signalActiveWorkChanged();
       const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
@@ -4255,6 +4465,26 @@ export class AppServerHost {
               : "completed";
         await this.#repository.setDelegationStatus(delegation.delegationId, status);
       }
+    }
+    if (
+      event.type === "item.started" &&
+      event.item.type === "contextCompaction" &&
+      this.#manualCompactionTurns.get(thread) === event.turnId
+    ) {
+      // Only explicit /compact commands are manual; other commands can auto-compact.
+      // Desktop labels a compaction manual only
+      // through its own client registration, which must precede item/started.
+      await this.#writer.json({
+        method: THREAD_MANUAL_COMPACTION_STARTED_METHOD,
+        params: { threadId: thread.id, turnId: event.turnId },
+      });
+    }
+    if (
+      event.type === "item.completed" &&
+      projection.projector.completed &&
+      !projection.projector.hasOpenDetachedItems
+    ) {
+      thread.projectedTurns.delete(event.turnId);
     }
     for (const message of result.messages) await this.#writer.json(message);
     if (event.type === "turn.completed") {

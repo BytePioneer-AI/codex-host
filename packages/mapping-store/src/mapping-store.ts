@@ -31,6 +31,11 @@ import {
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "./records.js";
+import {
+  readSectionPlacementsFile,
+  writeSectionPlacementsFile,
+  type StoredSectionPlacementV1,
+} from "./section-placements.js";
 
 export type MappingStoreErrorCode =
   | "STORE_LOCKED"
@@ -218,6 +223,7 @@ export class MappingStore {
   readonly #lockPath: string;
   readonly #now: () => Date;
   readonly #quarantineDirectory: string;
+  readonly #sectionsDirectory: string;
   readonly #threadsDirectory: string;
   readonly #records = new Map<HostThreadId, StoredThreadRecordV1>();
   readonly #delegations = new Map<HostThreadId, StoredDelegationRecordV1>();
@@ -227,6 +233,7 @@ export class MappingStore {
   readonly #nativeSessions = new Map<string, HostThreadId>();
   readonly #hostTurns = new Map<HostTurnId, HostThreadId>();
   readonly #nativeTurns = new Map<string, HostTurnId>();
+  #sectionPlacements: StoredSectionPlacementV1[] = [];
   // ponytail: A Store-wide queue caps write concurrency at one; shard only if measured throughput requires it.
   #writeTail: Promise<void> = Promise.resolve();
   #initialized = false;
@@ -238,6 +245,7 @@ export class MappingStore {
     this.#delegationsDirectory = path.join(this.#directory, "delegations");
     this.#backupsDirectory = path.join(this.#directory, "backups");
     this.#quarantineDirectory = path.join(this.#directory, "quarantine");
+    this.#sectionsDirectory = path.join(this.#directory, "sections");
     this.#lockPath = path.join(this.#directory, "store.lock");
     this.#instanceId = options.instanceId ?? randomUUID();
     this.#now = options.now ?? (() => new Date());
@@ -251,6 +259,7 @@ export class MappingStore {
       mkdir(this.#delegationsDirectory, { recursive: true }),
       mkdir(this.#backupsDirectory, { recursive: true }),
       mkdir(this.#quarantineDirectory, { recursive: true }),
+      mkdir(this.#sectionsDirectory, { recursive: true }),
     ]);
     await this.#acquireLock();
     try {
@@ -304,6 +313,19 @@ export class MappingStore {
           );
           await rename(file, quarantine).catch(() => undefined);
         }
+      }
+      try {
+        this.#sectionPlacements = await readSectionPlacementsFile(this.#sectionPlacementsPath);
+      } catch {
+        // Placements are presentation state; losing them must not block Thread access.
+        await rename(
+          this.#sectionPlacementsPath,
+          path.join(
+            this.#quarantineDirectory,
+            `section-placements.json.${this.#now().getTime()}.invalid`,
+          ),
+        ).catch(() => undefined);
+        this.#sectionPlacements = [];
       }
       this.#rebuildIndexes();
       this.#initialized = true;
@@ -669,6 +691,58 @@ export class MappingStore {
     );
   }
 
+  /** Section placements of stored External Threads, in insertion order. */
+  async listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {
+    this.#requireInitialized();
+    // A removed Thread's placement still names its successor; Threads anchored to it
+    // follow that chain so they keep their position instead of falling to the end.
+    const removedSuccessors = new Map<string, string | null>(
+      this.#sectionPlacements
+        .filter((placement) => !this.#records.has(placement.hostThreadId))
+        .map((placement) => [placement.hostThreadId, placement.beforeThreadId]),
+    );
+    return this.#sectionPlacements
+      .filter((placement) => this.#records.has(placement.hostThreadId))
+      .map((placement) => {
+        const next = cloneRecord(placement);
+        const visited = new Set<string>();
+        while (next.beforeThreadId !== null && removedSuccessors.has(next.beforeThreadId)) {
+          if (visited.has(next.beforeThreadId)) {
+            next.beforeThreadId = null;
+            break;
+          }
+          visited.add(next.beforeThreadId);
+          next.beforeThreadId = removedSuccessors.get(next.beforeThreadId) ?? null;
+        }
+        return next;
+      });
+  }
+
+  /** Atomically replaces every section placement; placements of removed Threads are dropped. */
+  async replaceSectionPlacements(
+    placements: readonly StoredSectionPlacementV1[],
+  ): Promise<StoredSectionPlacementV1[]> {
+    this.#requireInitialized();
+    let result: StoredSectionPlacementV1[] = [];
+    await this.#enqueue(async () => {
+      const retained = placements.filter((placement) =>
+        this.#records.has(placement.hostThreadId as HostThreadId),
+      );
+      try {
+        this.#sectionPlacements = await writeSectionPlacementsFile(
+          this.#sectionPlacementsPath,
+          retained,
+        );
+      } catch (error) {
+        throw new MappingStoreError("IO_ERROR", "Section placements could not be persisted", {
+          cause: error,
+        });
+      }
+      result = this.#sectionPlacements.map((placement) => cloneRecord(placement));
+    });
+    return result;
+  }
+
   async removeProvisional(hostThreadId: HostThreadId): Promise<void> {
     this.#requireInitialized();
     await this.#enqueue(async () => {
@@ -852,9 +926,10 @@ export class MappingStore {
   }
 
   async #cleanupResidue(): Promise<void> {
-    const [threadNames, delegationNames, rootNames] = await Promise.all([
+    const [threadNames, delegationNames, sectionNames, rootNames] = await Promise.all([
       readdir(this.#threadsDirectory),
       readdir(this.#delegationsDirectory),
+      readdir(this.#sectionsDirectory),
       readdir(this.#directory),
     ]);
     await Promise.all([
@@ -864,6 +939,9 @@ export class MappingStore {
       ...delegationNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#delegationsDirectory, name), { force: true })),
+      ...sectionNames
+        .filter((name) => name.includes(".tmp-"))
+        .map((name) => rm(path.join(this.#sectionsDirectory, name), { force: true })),
       // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
       ...rootNames
         .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
@@ -979,6 +1057,10 @@ export class MappingStore {
 
   #delegationPath(delegationId: HostThreadId): string {
     return path.join(this.#delegationsDirectory, `${delegationId}.json`);
+  }
+
+  get #sectionPlacementsPath(): string {
+    return path.join(this.#sectionsDirectory, "placements.json");
   }
 
   #backupPath(hostThreadId: HostThreadId): string {

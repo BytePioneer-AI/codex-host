@@ -6,6 +6,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`PRIVACY.md`](PRIVACY.md) | 公开隐私政策：项目独立性、本地存储、Harness 集成、凭据处理与数据删除。 |
 | [`project/README.zh-CN.md`](project/README.zh-CN.md) | 中文项目介绍、安装方式和功能概览；维护中文用户入口时阅读。根目录 `README.md` 为英文默认入口。 |
 | [`project/README.ko.md`](project/README.ko.md) | 韩文项目介绍、安装方式和功能概览；维护韩文用户入口时阅读。 |
 | [`project/领域术语表.md`](project/领域术语表.md) | Harness、Model、Provider、Account、Thread 等领域术语；命名产品和代码概念前阅读。 |
@@ -42,6 +43,7 @@
 | --- | --- |
 | [`harnesses/claude-code/claude-code-plan-mode.md`](harnesses/claude-code/claude-code-plan-mode.md) | Claude Code 规划模式、计划退出确认与权限状态边界；修改 Plan Mode 时阅读。 |
 | [`harnesses/claude-code/claude-code-edit-recovery.md`](harnesses/claude-code/claude-code-edit-recovery.md) | 最后一条消息编辑后的独立 Session、空历史保留和关闭语义；修改编辑恢复时阅读。 |
+| [`harnesses/claude-code/claude-code-background-terminals.md`](harnesses/claude-code/claude-code-background-terminals.md) | Claude 后台命令作为 Desktop 后台终端：原生通知结算、实时输出、历史叠加与所有权；修改后台命令时阅读。 |
 
 ### CodeBuddy、WorkBuddy 与 Cursor
 

@@ -21,6 +21,8 @@ export type {
   StoredThreadRecordV1,
   StoredTurnMappingV1,
 } from "./records.js";
+export { storedSectionPlacementV1Schema } from "./section-placements.js";
+export type { StoredSectionPlacementV1, StoredThreadSection } from "./section-placements.js";
 
 export const packageMetadata = {
   name: "@codexhost/mapping-store",

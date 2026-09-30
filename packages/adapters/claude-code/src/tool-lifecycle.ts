@@ -10,6 +10,7 @@ import type {
 import type { HostItemId, HostTurnId, JsonValue } from "@codexhost/shared-contracts";
 
 import { projectClaudeFileChange } from "./file-change.js";
+import { claudeTranscriptItemId } from "./item-identity.js";
 import { isClaudeTaskTool, type ClaudeTaskTracker } from "./task-tracker.js";
 import type { ClaudeTurnEvent } from "./transport.js";
 
@@ -21,12 +22,27 @@ interface ActiveTool {
   elapsedMs: number;
 }
 
+/** A Bash Item that native Claude moved to the background; it outlives its Turn. */
+export interface ClaudeDetachedCommand {
+  turnId: HostTurnId;
+  /** The Bash `tool_use` id; the task's `task_notification` names it. */
+  callId: string;
+  taskId: string;
+  item: HostCommandExecutionItem;
+  startedAtMs: number;
+  /** Named only in the model-facing result text; used for live output. */
+  outputFile?: string;
+}
+
 export interface ClaudeToolLifecycleOptions {
   cwd: string;
   outputLimit: number;
   taskTracker: ClaudeTaskTracker;
+  /** The Turn's message/thinking Item key; Tool Items share it for history parity. */
+  nativeTurnKey: string;
   newItemId(): HostItemId;
   emit(event: HostEvent): void;
+  onDetached(command: ClaudeDetachedCommand): void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -70,16 +86,21 @@ export class ClaudeToolLifecycle {
   readonly #cwd: string;
   readonly #emit: (event: HostEvent) => void;
   readonly #newItemId: () => HostItemId;
+  readonly #onDetached: (command: ClaudeDetachedCommand) => void;
   readonly #outputLimit: number;
   readonly #taskTracker: ClaudeTaskTracker;
+  readonly #nativeTurnKey: string;
   readonly #tools = new Map<string, ActiveTool>();
+  #toolOrdinal = 0;
 
   constructor(options: ClaudeToolLifecycleOptions) {
     this.#cwd = options.cwd;
     this.#emit = options.emit;
     this.#newItemId = options.newItemId;
+    this.#onDetached = options.onDetached;
     this.#outputLimit = options.outputLimit;
     this.#taskTracker = options.taskTracker;
+    this.#nativeTurnKey = options.nativeTurnKey;
   }
 
   get size(): number {
@@ -88,17 +109,21 @@ export class ClaudeToolLifecycle {
 
   start(turnId: HostTurnId, event: Extract<ClaudeTurnEvent, { type: "tool.started" }>): void {
     if (this.#tools.has(event.callId)) throw new Error("Claude Code Tool started more than once");
+    // Tool Items share the Turn's transcript identity; the ordinal counts this
+    // lifecycle's Items in order of appearance so a later history projection
+    // addresses the same Renderer Item.
+    const itemId = claudeTranscriptItemId(this.#nativeTurnKey, "tool", (this.#toolOrdinal += 1));
     const command = event.toolName === "Bash" ? stringField(event.arguments, "command") : undefined;
     const item: HostCommandExecutionItem | HostToolExecutionItem = command
       ? {
           type: "commandExecution",
-          itemId: this.#newItemId(),
+          itemId,
           command,
           cwd: this.#cwd,
         }
       : {
           type: "toolExecution",
-          itemId: this.#newItemId(),
+          itemId,
           toolName: isClaudeTaskTool(event.toolName) ? "Todo" : event.toolName,
           arguments: isClaudeTaskTool(event.toolName) ? {} : event.arguments,
         };
@@ -128,6 +153,23 @@ export class ClaudeToolLifecycle {
       throw new Error("Claude Code Tool completion references an unknown Tool");
     }
     this.#tools.delete(event.callId);
+    if (
+      tool.item.type === "commandExecution" &&
+      event.backgroundTaskId &&
+      !event.isError &&
+      !cancellationRequested
+    ) {
+      this.#emit({ type: "item.detached", turnId, itemId: tool.item.itemId });
+      this.#onDetached({
+        turnId,
+        callId: event.callId,
+        taskId: event.backgroundTaskId,
+        item: tool.item,
+        startedAtMs: tool.startedAtMs,
+        ...(event.backgroundOutputFile ? { outputFile: event.backgroundOutputFile } : {}),
+      });
+      return;
+    }
     const output = boundedToolOutput(event.outputText, this.#outputLimit);
     const durationMs = Math.max(tool.elapsedMs, Date.now() - tool.startedAtMs, 0);
     if (tool.item.type === "commandExecution") {

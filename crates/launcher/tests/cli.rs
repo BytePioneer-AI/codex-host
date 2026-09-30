@@ -1,12 +1,27 @@
 use std::fs;
-use std::io::ErrorKind;
+use std::io;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn launcher_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_codexhost"))
+}
+
+/// Runs a binary this test just copied. On Linux a child forked by a parallel test can
+/// briefly inherit the copy's write descriptor, so exec fails with ETXTBSY until it exits.
+fn output_of_copied_binary(command: &mut Command) -> io::Result<Output> {
+    let mut attempt = 0;
+    loop {
+        match command.output() {
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy && attempt < 50 => {
+                attempt += 1;
+                thread::sleep(Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
 }
 
 #[test]
@@ -66,22 +81,12 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
     let installed = bin.join(source.file_name().expect("launcher file name"));
     fs::copy(&source, &installed).expect("copy installed launcher");
 
-    // Some Linux filesystems briefly report the freshly copied executable as busy.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let output = loop {
-        match Command::new(&installed)
+    let output = output_of_copied_binary(
+        Command::new(&installed)
             .args(["launch"])
-            .env("CODEXHOST_DATA_DIR", root.join("data"))
-            .output()
-        {
-            Err(error)
-                if error.kind() == ErrorKind::ExecutableFileBusy && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(20));
-            }
-            result => break result.expect("run installed launcher"),
-        }
-    };
+            .env("CODEXHOST_DATA_DIR", root.join("data")),
+    )
+    .expect("run installed launcher");
     fs::remove_dir_all(&root).expect("remove release layout");
 
     assert!(!output.status.success());
@@ -113,12 +118,13 @@ fn console_starts_before_missing_desktop_resources_are_rejected() {
     fs::write(&node, "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$CODEXHOST_DATA_DIR/calls\"\nif [ \"$2\" = open ]; then\n  echo 'codexhost console: http://127.0.0.1:26339/'\nfi\n")
         .expect("fake Node");
     fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).expect("make executable");
-    let output = Command::new(&installed)
-        .arg("launch")
-        .env("CODEXHOST_CONSOLE", "1")
-        .env("CODEXHOST_DATA_DIR", &root)
-        .output()
-        .expect("run launcher");
+    let output = output_of_copied_binary(
+        Command::new(&installed)
+            .arg("launch")
+            .env("CODEXHOST_CONSOLE", "1")
+            .env("CODEXHOST_DATA_DIR", &root),
+    )
+    .expect("run launcher");
     let calls = fs::read_to_string(root.join("calls")).unwrap_or_default();
     fs::remove_dir_all(&root).expect("remove fixture");
     assert!(!output.status.success());
@@ -144,10 +150,10 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     let installed = macos.join("codexhost");
     fs::copy(launcher_path(), &installed).expect("copy app launcher");
 
-    let output = Command::new(&installed)
-        .env("CODEXHOST_DATA_DIR", root.join("data"))
-        .output()
-        .expect("run Finder-style launcher");
+    let output = output_of_copied_binary(
+        Command::new(&installed).env("CODEXHOST_DATA_DIR", root.join("data")),
+    )
+    .expect("run Finder-style launcher");
     fs::remove_dir_all(&root).expect("remove app layout");
 
     assert!(!output.status.success());

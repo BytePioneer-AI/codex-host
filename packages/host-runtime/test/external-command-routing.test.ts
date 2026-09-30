@@ -86,6 +86,13 @@ describe("command resolution before the live catalog loads", () => {
   it("keeps resolving catalog commands", async () => {
     await expect(
       resolveExternalCommand(builtInsOnly, "/compact", { liveCatalogPending: () => true }),
-    ).resolves.toEqual({ commandId: "x.compact" });
+    ).resolves.toEqual({
+      descriptor: {
+        id: "x.compact",
+        invocation: "/compact",
+        label: "Compact",
+        argumentMode: "none",
+      },
+    });
   });
 });

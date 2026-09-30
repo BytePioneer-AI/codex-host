@@ -24,6 +24,11 @@ export {
   loadedSessionsSchema,
   type LoadedSession,
 } from "./loaded-sessions.js";
+export {
+  THREAD_MANUAL_COMPACTION_STARTED_METHOD,
+  threadManualCompactionStartedSchema,
+  type ThreadManualCompactionStarted,
+} from "./manual-compaction.js";
 
 export {
   harnessAccountSnapshotSchema,

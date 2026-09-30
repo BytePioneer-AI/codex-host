@@ -9,7 +9,6 @@ import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-a
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 import {
-  allowsDangerouslySkipPermissions,
   ClaudeSdkModelInspector,
   ClaudeSdkTransport,
   type ClaudeSdkTransportOptions,
@@ -90,6 +89,7 @@ function fixture(
   permissionMode: ClaudeSdkTransportOptions["permissionMode"] = "default",
   thinkingOptionId = harnessThinkingOptionIdSchema.parse("auto"),
   environment?: NodeJS.ProcessEnv,
+  allowDangerouslySkipPermissions = true,
 ) {
   const fakeQuery = new FakeQuery();
   let queryInput: QueryInput | undefined;
@@ -108,6 +108,7 @@ function fixture(
     openMode,
     permissionMode,
     thinkingOptionId,
+    allowDangerouslySkipPermissions,
     closeTimeoutMs: 100,
     onPermissionModeChanged,
     onFault,
@@ -1008,13 +1009,44 @@ describe("ClaudeSdkTransport Thinking control", () => {
 });
 
 describe("ClaudeSdkTransport root safety", () => {
-  it("does not enable dangerous permission skipping when running as root", () => {
-    expect(allowsDangerouslySkipPermissions(() => 0)).toBe(false);
+  it("omits the dangerous flag when the Session cannot use bypass permissions", async () => {
+    const value = fixture(
+      "resume",
+      "auto",
+      harnessThinkingOptionIdSchema.parse("auto"),
+      undefined,
+      false,
+    );
+
+    await value.transport.start();
+    expect(options(value).permissionMode).toBe("auto");
+    expect(options(value)).not.toHaveProperty("allowDangerouslySkipPermissions");
+    await value.transport.close();
   });
 
-  it("enables dangerous permission skipping for non-root and platforms without getuid", () => {
-    expect(allowsDangerouslySkipPermissions(() => 1000)).toBe(true);
-    expect(allowsDangerouslySkipPermissions(undefined)).toBe(true);
+  it("does not pass the dangerous flag unless the caller opts in", async () => {
+    const fakeQuery = new FakeQuery();
+    let queryInput: QueryInput | undefined;
+    const transport = new ClaudeSdkTransport({
+      command: process.execPath,
+      cwd: process.cwd(),
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      openMode: "create",
+      permissionMode: "default",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
+      closeTimeoutMs: 100,
+      onPermissionModeChanged: vi.fn(),
+      onFault: vi.fn(),
+      onPlanLimit: vi.fn(),
+      queryFactory: vi.fn((input) => {
+        queryInput = input;
+        return fakeQuery as unknown as Query;
+      }),
+    });
+
+    await transport.start();
+    expect(queryInput?.options).not.toHaveProperty("allowDangerouslySkipPermissions");
+    await transport.close();
   });
 });
 
@@ -2145,6 +2177,79 @@ function pushSettlement(
 }
 
 describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
+  it("keeps a background command settlement after the Tool result that detached it", async () => {
+    const value = fixture();
+    const turns: ClaudeAutonomousTurn[] = [];
+    const immediate: ClaudeTurnEvent[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
+    value.transport.setThreadEventHandler((event) => immediate.push(event));
+    await value.transport.start();
+    try {
+      value.fakeQuery.push({
+        type: "assistant",
+        uuid: "assistant-bash-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "message-bash-1",
+          content: [
+            {
+              type: "tool_use",
+              id: "bash-1",
+              name: "Bash",
+              input: { command: "sleep 1", run_in_background: true },
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      value.fakeQuery.push({
+        type: "user",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "bash-1",
+              content:
+                "Command running in background with ID: task-1. Output is being written to: /tmp/task-1.output.",
+              is_error: false,
+            },
+          ],
+        },
+        tool_use_result: { stdout: "", stderr: "", interrupted: false, backgroundTaskId: "task-1" },
+      } as unknown as SDKMessage);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-1",
+        tool_use_id: "bash-1",
+        status: "completed",
+        output_file: "/tmp/task-1.output",
+        summary: "Background command completed",
+      } as unknown as SDKMessage);
+      completeTurn(value.fakeQuery);
+      await vi.waitFor(() => expect(turns).toHaveLength(1));
+      expect(immediate).toEqual([]);
+      const events = turns[0]?.events ?? [];
+      const detached = events.findIndex(
+        (event) => event.type === "tool.completed" && event.callId === "bash-1",
+      );
+      expect(events[detached]).toMatchObject({
+        backgroundTaskId: "task-1",
+        backgroundOutputFile: "/tmp/task-1.output",
+      });
+      const settled = events.findIndex((event) => event.type === "subagent.settled");
+      expect(settled).toBeGreaterThan(detached);
+      expect(events[settled]).toMatchObject({
+        callId: "bash-1",
+        status: "completed",
+        outputFile: "/tmp/task-1.output",
+      });
+    } finally {
+      await value.transport.close();
+    }
+  });
+
   it.each(["unset", "cleared"])(
     "keeps settlements in the autonomous batch when the Thread handler is %s",
     async (handlerState) => {
@@ -2322,5 +2427,59 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
     }
     expect(turns).toEqual([]);
     expect(immediate).toEqual([expect.objectContaining({ nativeSubagentId: "existing-child" })]);
+  });
+});
+
+describe("ClaudeSdkTransport native background tasks", () => {
+  it("reports background tasks from the native live set", async () => {
+    const value = fixture();
+    await value.transport.start();
+    try {
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "bash-1", task_type: "local_bash", description: "sleep 5" }],
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(false));
+    } finally {
+      await value.transport.close();
+    }
+  });
+});
+
+describe("ClaudeSdkTransport background task stop", () => {
+  it("bounds a background task stop by the abort timeout", async () => {
+    const value = fixture();
+    value.fakeQuery.stopTask.mockImplementation(async () => new Promise(() => undefined));
+    const transport = new ClaudeSdkTransport({
+      command: process.execPath,
+      cwd: process.cwd(),
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      openMode: "create",
+      permissionMode: "default",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
+      closeTimeoutMs: 20,
+      abortTimeoutMs: 20,
+      onPermissionModeChanged: value.onPermissionModeChanged,
+      onFault: value.onFault,
+      onPlanLimit: value.onPlanLimit,
+      queryFactory: value.queryFactory,
+    });
+    await transport.start();
+    try {
+      await expect(transport.stopBackgroundTask("bash-1")).rejects.toThrow(
+        "Claude background task stop timed out",
+      );
+    } finally {
+      value.fakeQuery.stopTask.mockImplementation(async () => undefined);
+      await transport.close();
+    }
   });
 });

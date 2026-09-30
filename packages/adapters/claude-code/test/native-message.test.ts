@@ -684,6 +684,32 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 
+  it("extracts a background Bash task and its output file from the native result", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    turn.consume(toolUse("Bash", "bash-bg", { command: "npm run dev" }));
+    const outputText =
+      "Command running in background with ID: bash-9. " +
+      "Output is being written to: /workspace/.claude/task-abc.output. You will be notified.";
+    expect(
+      turn.consume(
+        toolResult("bash-bg", {
+          content: outputText,
+          nativeResult: { backgroundTaskId: "bash-9" },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "tool.completed",
+        callId: "bash-bg",
+        toolName: "Bash",
+        outputText,
+        isError: false,
+        backgroundTaskId: "bash-9",
+        backgroundOutputFile: "/workspace/.claude/task-abc.output",
+      },
+    ]);
+  });
+
   it("preserves structured Task results for task ID correlation", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

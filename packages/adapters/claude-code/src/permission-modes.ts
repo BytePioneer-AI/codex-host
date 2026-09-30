@@ -49,29 +49,65 @@ const claudePermissionModes = [
   },
 ] as const;
 
-function createPermissionModeCatalog(includeAuto: boolean): HarnessPermissionModeCatalog {
+function createPermissionModeCatalog(
+  includeAuto: boolean,
+  includeBypassPermissions: boolean,
+): HarnessPermissionModeCatalog {
   return harnessPermissionModeCatalogSchema.parse({
-    modes: includeAuto
-      ? claudePermissionModes
-      : claudePermissionModes.filter(({ id }) => id !== "auto"),
+    modes: claudePermissionModes.filter(
+      ({ id }) =>
+        (includeAuto || id !== "auto") && (includeBypassPermissions || id !== "bypassPermissions"),
+    ),
     defaultModeId: CLAUDE_DEFAULT_PERMISSION_MODE_ID,
   });
 }
 
-export const CLAUDE_PERMISSION_MODE_CATALOG = createPermissionModeCatalog(true);
-const CLAUDE_PERMISSION_MODE_CATALOG_WITHOUT_AUTO = createPermissionModeCatalog(false);
+export const CLAUDE_PERMISSION_MODE_CATALOG = createPermissionModeCatalog(true, true);
+const CLAUDE_PERMISSION_MODE_CATALOGS = {
+  auto: CLAUDE_PERMISSION_MODE_CATALOG,
+  autoWithoutBypass: createPermissionModeCatalog(true, false),
+  withoutAuto: createPermissionModeCatalog(false, true),
+  withoutAutoOrBypass: createPermissionModeCatalog(false, false),
+} as const;
 const autoModeModelInfoSchema = z.object({ supportsAutoMode: z.literal(true) });
 
 export function claudePermissionModeCatalogForModels(
   models: unknown,
+  bypassPermissionsAvailable = true,
 ): HarnessPermissionModeCatalog {
   const supportsAutoMode =
     Array.isArray(models) &&
     models.some((model) => autoModeModelInfoSchema.safeParse(model).success);
-  return supportsAutoMode
-    ? CLAUDE_PERMISSION_MODE_CATALOG
-    : CLAUDE_PERMISSION_MODE_CATALOG_WITHOUT_AUTO;
+  if (supportsAutoMode) {
+    return bypassPermissionsAvailable
+      ? CLAUDE_PERMISSION_MODE_CATALOGS.auto
+      : CLAUDE_PERMISSION_MODE_CATALOGS.autoWithoutBypass;
+  }
+  return bypassPermissionsAvailable
+    ? CLAUDE_PERMISSION_MODE_CATALOGS.withoutAuto
+    : CLAUDE_PERMISSION_MODE_CATALOGS.withoutAutoOrBypass;
 }
+
+/**
+ * Claude Code refuses `bypassPermissions` for root unless the process declares a deliberate
+ * sandbox. Mirror its native rule so root plus `IS_SANDBOX=1` keeps live bypass selection while
+ * plain root never receives the dangerous flag, which would make the native CLI exit at startup.
+ */
+export function claudeBypassPermissionsAvailable(
+  environment: NodeJS.ProcessEnv,
+  platform: { getuid?: () => number } = process,
+): boolean {
+  const uid = platform.getuid?.();
+  if (uid === undefined || uid !== 0) return true;
+  return environment.IS_SANDBOX === "1" || isNativeTruthyFlag(environment.CLAUDE_CODE_BUBBLEWRAP);
+}
+
+function isNativeTruthyFlag(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes(value?.trim().toLowerCase() ?? "");
+}
+
+export const CLAUDE_BYPASS_PERMISSIONS_UNAVAILABLE_MESSAGE =
+  "Bypass permissions is unavailable because Claude Code runs as root without a declared sandbox; set IS_SANDBOX=1 for the codexhost Host and restart it";
 
 export function decodeClaudePermissionModeId(
   permissionModeId: HarnessPermissionModeId,

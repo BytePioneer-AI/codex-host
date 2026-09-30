@@ -28,6 +28,7 @@ import {
   gatewayString,
   type GatewayRecord,
 } from "./gateway-transport.js";
+import { resolveGatewayModel } from "./gateway-configuration.js";
 import { HermesGatewayHistory } from "./gateway-history.js";
 
 export const hermesGatewayThinkingOptions: HarnessThinkingOption[] = [
@@ -207,11 +208,13 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     return optionId;
   }
   async setModel(modelId: string): Promise<void> {
-    if (/\s/u.test(modelId) || modelId.startsWith("-"))
-      throw new Error("Invalid Hermes Model identifier");
+    // Split the qualified choice exactly as session.create does. The gateway's
+    // switch path misparses `custom:<name>:<model>`, so the provider goes in
+    // its explicit flag and the confirmation below still compares the choice.
+    const choice = await resolveGatewayModel(this.transport, modelId);
     const result = await this.transport.request("config.set", {
       key: "model",
-      value: modelId,
+      value: choice.provider ? `${choice.model} --provider ${choice.provider}` : modelId,
       scope: "session",
       session_id: this.sessionId,
     });

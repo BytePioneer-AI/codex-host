@@ -48,7 +48,7 @@ import type {
   HostApprovalResponse,
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
-import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
+import { parseHostUsage, sanitizeDiagnosticTail, type HostUsage } from "@codexhost/harness-adapter";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
@@ -2538,10 +2538,12 @@ export class AppServerHost {
     try {
       const placements = await this.#repository.listSectionPlacements();
       return threadSectionFields(placements.find((entry) => entry.hostThreadId === threadId));
-    } catch {
+    } catch (error) {
       // Optional presentation metadata must not suppress a completed operation's response.
       // Preserve the projection and persisted placement so a later read can recover.
-      this.#diagnose("External Thread section placement could not be read");
+      this.#diagnose(
+        `External Thread section placement could not be read: ${sanitizeDiagnosticTail(errorMessage(error))}`,
+      );
       return {};
     }
   }

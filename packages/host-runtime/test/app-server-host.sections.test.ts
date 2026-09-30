@@ -173,17 +173,29 @@ describe("External Thread sections through AppServerHost", () => {
         if (action === "unarchive") await call(fixture, 131, "thread/archive", { threadId });
         const placements = vi
           .spyOn(fixture.mappingStore, "listSectionPlacements")
-          .mockRejectedValue(new Error("section storage unavailable"));
-        const response = await call(fixture, 132, `thread/${action}`, {
-          threadId,
-          ...(action === "rollback" ? { numTurns: 1 } : {}),
-        });
-        expect(response.result).toMatchObject({ thread: { id: threadId } });
-        expect(response).not.toHaveProperty("error");
-        expect(fixture.diagnosticOutput.read()?.toString()).toContain(
-          "External Thread section placement could not be read",
-        );
-        placements.mockRestore();
+          .mockRejectedValue(
+            new Error(
+              `${"x".repeat(9_000)} EACCES: section storage unavailable api_key=section-secret Authorization: Bearer section-token`,
+            ),
+          );
+        try {
+          const response = await call(fixture, 132, `thread/${action}`, {
+            threadId,
+            ...(action === "rollback" ? { numTurns: 1 } : {}),
+          });
+          expect(response.result).toMatchObject({ thread: { id: threadId } });
+          expect(response).not.toHaveProperty("error");
+          const diagnostic = fixture.diagnosticOutput.read()?.toString() ?? "";
+          expect(diagnostic).toContain("External Thread section placement could not be read");
+          expect(diagnostic).toContain("EACCES: section storage unavailable");
+          expect(diagnostic).toContain("[redacted]");
+          expect(diagnostic).not.toContain("section-secret");
+          expect(diagnostic).not.toContain("section-token");
+          expect(diagnostic.length).toBeLessThan(8_100);
+          expect(JSON.stringify(response)).not.toContain("section storage unavailable");
+        } finally {
+          placements.mockRestore();
+        }
         const recovered = await call(fixture, 133, "thread/read", { threadId, includeTurns: true });
         expect(recovered.result).toMatchObject({
           thread: { id: threadId, section: { id: PINNED } },

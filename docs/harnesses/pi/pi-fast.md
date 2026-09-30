@@ -2,7 +2,7 @@
 
 ## 交互
 
-Pi 当前 Model 支持 Fast 时，Composer 底部 Model 名称旁显示独立的闪电按钮。灰色描边表示关闭，点击后高亮实心表示开启，再点关闭；按钮支持键盘操作和 `aria-pressed`，提示 priority 可能增加额度消耗。点击不打开 Model 菜单，不改变 Thinking，也不增加 Model 菜单行或设置页。
+Pi 当前 Model 支持 Fast 时，Composer 底部 Model 名称左侧紧凑排列独立的闪电按钮。灰色描边表示关闭，点击后与 Model 文字同色的实心闪电表示开启（深色主题下为白色），再点关闭；按钮复用 Host 自有样式，悬停显示浅色底和手形光标，不依赖 Codex 私有 DOM 或类名；支持键盘操作和 `aria-pressed`。鼠标移入或键盘聚焦立即显示 Host 自有浮层，复用用量面板的圆角、边框、阴影和明暗主题样式，不再使用有系统延迟的 `title`。浮层文案通过 `aria-describedby` 同时作为无障碍说明，不维护第二套提示文本；标题明确显示“Fast 已关闭 · 点击开启”或“Fast 已开启 · 点击关闭”，正文说明“Codex Fast 模式：优先处理请求，可能增加额度消耗。”浮层挂载到页面顶层，避免工具栏裁剪；移到浮层内可继续阅读，离开后短暂延迟关闭，按 Escape、点击外部或控件隐藏、禁用、卸载时关闭。点击不打开 Model 菜单，不改变 Thinking，也不增加 Model 菜单行或设置页。
 
 新 Thread 默认关闭，包括恢复上一次新 Thread 的 Model/Thinking 偏好时。同一草稿按 Desktop 的草稿 ID 保留当前显式选择，Composer 重挂载不重新套用默认关闭，预建与发送使用该选择。Fork 的新 Pi 进程也默认关闭；Host 根据派生 Session 的实际 Model 引用更新持久化选择，重新打开时不意外继承来源 Thread 的 Fast。选择其他 Model 会关闭 Fast；切回支持的 Model 仍默认关闭。已存在 Thread 的显式选择通过现有 Model Ref 保存，恢复时只在原生当前 Model 相符且能力仍可确认时重新开启；能力不可用时恢复普通模式，不阻塞历史读取。
 

@@ -4,11 +4,34 @@ import { describe, expect, it } from "vitest";
 
 import {
   createRemoteOfficialAppServerPlan,
+  delegationCliEnvironment,
   hasLauncherManagedUpdateRuntime,
   MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE,
 } from "../src/run-host-runtime.js";
 
 describe("Host Runtime composition", () => {
+  it("keeps the native Launcher as the CLI and supplies npm's Node only when present", () => {
+    const launcher = path.resolve("/opt/codexhost/bin/codexhost");
+    const node = path.resolve("/usr/local/bin/node");
+
+    expect(delegationCliEnvironment({ CODEXHOST_LAUNCHER_EXECUTABLE: launcher })).toEqual({
+      CODEXHOST_CLI_PATH: launcher,
+    });
+    expect(
+      delegationCliEnvironment({
+        CODEXHOST_LAUNCHER_EXECUTABLE: launcher,
+        CODEXHOST_NPM_NODE_PATH: node,
+      }),
+    ).toEqual({ CODEXHOST_CLI_PATH: launcher, CODEXHOST_CLI_NODE_PATH: node });
+    expect(
+      delegationCliEnvironment({
+        CODEXHOST_LAUNCHER_EXECUTABLE: launcher,
+        CODEXHOST_NPM_NODE_PATH: "node",
+      }),
+    ).toEqual({ CODEXHOST_CLI_PATH: launcher });
+    expect(delegationCliEnvironment({})).toEqual({});
+  });
+
   it("keeps the managed listener outside the official Desktop bootstrap kill selector", () => {
     const officialDesktopBootstrapKillSelector = /codex.*desktop-ssh-websocket-v0\.sock/;
 

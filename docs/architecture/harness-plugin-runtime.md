@@ -115,6 +115,36 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 **修改需要重启 codexhost。** 已创建的 Adapter 与 Session 不热替换；`restartRequired` 比较当前持久化值与此 Host 构造时的值。仅刷新连接状态不会应用新路径。设置页填写应用安装目录，例如 `D:\program\WorkBuddy`，不要求用户定位 `.exe` 或脚本。WorkBuddy Adapter 定位 `WorkBuddy.exe` / `WorkBuddy AI.exe` / `WorkBuddyAI.exe` 及同目录内置脚本。目录布局不完整时检查失败，不借用其他安装的文件，也不回退到 PATH 或默认安装。底层保留原有文件入口覆盖兼容能力。注册表自动发现不在本功能范围内。
 
+## Harness CLI 版本与更新
+
+设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本、检查更新与更新按钮。选择详情时检查一次；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。未安装时仍显示原有安装指引。未支持此能力的插件、旧 Host 和 Broker 路径显示不可用并提供官方安装说明，不回退更新本机的另一份安装。
+
+可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message? }`。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
+
+当前支持：
+
+| Harness | 检查与更新 |
+| --- | --- |
+| Pi | `--version` 和 `pi.dev/api/latest-version`；执行原生 `pi update`。 |
+| Cursor CLI | 原生 `about --format json` / `update`，保留 Windows bundled Node 入口；macOS 受管远程 Broker 尚不转发该能力。 |
+| Qoder 海外版 / 中国版 | 原生 `--version`、`update --check` / `update`；两版分别解析自己的安装入口，中国版先确认 CLI 支持 `--check`，旧版只显示已安装版本及手动更新说明。 |
+| Grok | 原生 `update --check --json` / `update`；npm 安装保留原生更新路径及所需安装脚本允许项。 |
+| Kimi Code | 原生 `--version` 和区域 CDN 最新版本；仅识别的全局 npm 安装或带手动更新能力的原生二进制允许更新，其他安装使用原安装方式。 |
+| Antigravity CLI | 原生 `--version` 与按 OS/CPU 的官方更新清单；执行 `agy update`。 |
+| OMP | 原生 `update --check` / `update`，保留配置的 stable/canary 渠道；校验原生更新器在 PATH 中选择的目标与所选安装一致，Nix 和目标不一致的自定义入口保留手动更新。 |
+| OpenCode | `--version`；npm 安装查询原包版本并更新其准确 prefix，标准 `~/.opencode/bin/opencode` 原生安装查询官方 GitHub Release 并执行 `upgrade <version> --method curl`。其他包管理器、自定义安装和 Windows 原生安装只检查，不进入交互式安装回退。 |
+| Claude Code | `--version` 和官方 stable/latest 版本源；读取用户及本机文件型受管设置，使用原生 `claude update` 保留策略执行。识别的全局 npm 安装固定 npm prefix，标准原生 launcher 允许更新；版本限制、其他安装渠道及 macOS 受管远程 Broker 保留手动更新。 |
+| CodeBuddy | `--version`；识别的 npm 安装查询 `@tencent-ai/codebuddy-code`，只有全局安装允许在原 prefix 更新。原生安装只显示已安装版本，最新版本和更新交给原安装器；macOS 受管远程 Broker 尚不转发该能力。 |
+| Kiro CLI | 只通过 `--version` 显示当前版本；最新版本未知，不检查更新源、不执行更新。Kiro 的更新策略与发布源选择交给原生安装器，设置页提示使用原生更新器或安装方式。 |
+| DeepSeek Harness | 原生 `--version`，保留离线 npx 参数；识别的 npm 安装查询 `@deepseek-ai/dsh`，只有全局安装更新原 prefix。离线 npx、Python wheel、桌面载体及项目安装不创建或更新另一份全局安装。 |
+| Hermes | 原生 `--version`、`update --plan`、`update --check`；使用原生渠道判定和提交标识而非普通 SemVer 比较。仅可原地更新且能报告提交标识、支持非交互与 Gateway 重启延后的干净 Git 安装执行 `update --yes --no-gateway-restart`；桌面包、Docker、Nix 等仍由原生安装所有者更新。 |
+
+检查不发起 Model Turn、不安装任何内容。只有用户明确点击更新才调用原生安装器；并发更新合并为一次，检查不与更新后版本回读竞争，安装后版本未改变不报告成功。普通命令有 30 秒超时，更新命令最多 5 分钟，最新版本网络读取有 15 秒超时；失败后可重新检查。更新的是 Harness CLI，不是 Host 插件或 codexhost 自身，不降级较新安装，不主动重启已有 Session。关闭设置只停止页面更新，不取消已接受的原生更新；现有进程的升级行为遵循 Harness 本身。
+
+无法安全检查最新版本的安装返回 `latestVersion: "Unknown"` 和手动更新说明，而非假称与已安装版本一致；Connections 详情显示 Adapter 的说明，不将这种安装标为「已是最新」。npm 识别包含确实指向对应包入口的 Windows shim；版本比较区分预发布标识并忽略 build metadata，避免预发布间更新被漏判或发生降级。
+
+跨包路由、Adapter 的命令映射、安装渠道限制、并发与失败、连接详情的 Host 隔离及页面生命周期有聚焦测试。模拟测试不代表所有安装渠道、平台或真实升级已经通过验收。
+
 ## 加载与关闭行为
 
 加载器先校验所有可发现的 Manifest，再导入已启用模块：

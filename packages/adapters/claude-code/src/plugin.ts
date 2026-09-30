@@ -3,6 +3,7 @@ import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 
 import { ClaudeCodeAdapter, claudeCommandCatalog } from "./claude-code-adapter.js";
+import { createClaudeInstallation } from "./installation.js";
 
 import { withUserShellEnvironment } from "./user-shell-environment.js";
 
@@ -18,12 +19,15 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
       ...(context.brokerDescriptorPath ? { descriptorPath: context.brokerDescriptorPath } : {}),
     });
   }
-  return new ClaudeCodeAdapter({
-    ...(environment[CLAUDE_CODE_COMMAND_ENV]
-      ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
-      : {}),
-    environment,
-  });
+  return Object.assign(
+    new ClaudeCodeAdapter({
+      ...(environment[CLAUDE_CODE_COMMAND_ENV]
+        ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
+        : {}),
+      environment,
+    }),
+    { installation: createClaudeInstallation(environment, environment[CLAUDE_CODE_COMMAND_ENV]) },
+  );
 }
 
 export async function warmup(adapter: Pick<HarnessAdapter, "inspect">): Promise<void> {

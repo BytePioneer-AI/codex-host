@@ -12,12 +12,15 @@ import {
   type HarnessId,
 } from "@codexhost/shared-contracts";
 
+import { CLAUDE_SUBAGENT_TOOLS } from "./native-message.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 
 interface ClaudeHistoryMessage {
   type: "user" | "assistant";
   uuid: string;
   message: Record<string, unknown>;
+  /** A Subagent transcript record; live, its tools never reach the Tool lifecycle. */
+  nested: boolean;
   syntheticUser: boolean;
   interrupted: boolean;
 }
@@ -139,6 +142,7 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
       type: value.type,
       uuid: value.uuid,
       message: value.message,
+      nested: typeof value.parent_tool_use_id === "string" && value.parent_tool_use_id.length > 0,
       interrupted,
       syntheticUser:
         value.type === "user" &&
@@ -214,6 +218,9 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     );
     let agentMessageOrdinal = 0;
     let reasoningOrdinal = 0;
+    // Tool Items count only what live reaches the Tool lifecycle: root, non-Subagent
+    // blocks. Every such block consumes an ordinal so identities stay aligned.
+    let toolOrdinal = 0;
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: claudeCodeHarnessId,
@@ -322,6 +329,8 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
           ) {
             continue;
           }
+          const toolItem =
+            !message.nested && !CLAUDE_SUBAGENT_TOOLS.has(block.name) ? (toolOrdinal += 1) : null;
           const result = results.get(block.id);
           if (!result) continue;
           const output = toolResultOutput(result);
@@ -336,9 +345,10 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                 },
               }
             : { status: "succeeded" };
-          const itemId = hostItemIdSchema.parse(
-            `claude-item-v1-${message.uuid}-tool-${blockIndex}`,
-          );
+          const itemId =
+            toolItem !== null
+              ? claudeTranscriptItemId(user.uuid, "tool", toolItem)
+              : hostItemIdSchema.parse(`claude-item-v1-${message.uuid}-tool-${blockIndex}`);
           if (
             block.name === "Bash" &&
             isRecord(block.input) &&

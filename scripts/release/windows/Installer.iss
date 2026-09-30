@@ -29,6 +29,7 @@ Source: "{#PayloadRoot}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsub
 
 [Icons]
 Name: "{userprograms}\codexhost"; Filename: "{app}\bin\codexhost-start.exe"; WorkingDir: "{app}"
+Name: "{userprograms}\codexhost console"; Filename: "{app}\bin\codexhost-start.exe"; Parameters: "--console"; WorkingDir: "{app}"
 
 [Dirs]
 Name: "{app}"

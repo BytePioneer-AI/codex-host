@@ -1,4 +1,6 @@
 import path from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -46,6 +48,15 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }
   setIdleLive(live: boolean): void {
     this.idleLive = live;
+  }
+  readonly backgroundTaskIds = new Set<string>();
+  readonly stopBackgroundTaskCalls: string[] = [];
+  hasBackgroundTasks(): boolean {
+    return this.backgroundTaskIds.size > 0;
+  }
+  async stopBackgroundTask(taskId: string): Promise<void> {
+    this.stopBackgroundTaskCalls.push(taskId);
+    this.backgroundTaskIds.delete(taskId);
   }
   readonly abort = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
@@ -210,7 +221,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }
 }
 
-function fixture(options: ClaudeCodeAdapterOptions = {}) {
+function fixture(
+  options: ClaudeCodeAdapterOptions = {},
+  { bypassPermissionsAvailable = true }: { bypassPermissionsAvailable?: boolean } = {},
+) {
   const history: unknown[] = [];
   const transports: FakeClaudeTransport[] = [];
   const inspectors: Array<{
@@ -221,6 +235,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
   let uuid = 0;
   const dependencies: ClaudeAdapterDependencies = {
     randomUUID: () => `claude-id-${++uuid}`,
+    bypassPermissionsAvailable: vi.fn(() => bypassPermissionsAvailable),
     inspectInstallation,
     createInspector: vi.fn(() => {
       const inspector = {
@@ -362,6 +377,22 @@ describe("projectClaudePlanLimitToCredits", () => {
 });
 
 describe("Claude Code HarnessAdapter", () => {
+  it("reports background work while its native process has background tasks", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    expect(session.hasBackgroundWork?.()).toBe(false);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("background-work"));
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.backgroundTaskIds.add("bash-task");
+    expect(session.hasBackgroundWork?.()).toBe(true);
+    transport.backgroundTaskIds.delete("bash-task");
+    expect(session.hasBackgroundWork?.()).toBe(false);
+    await session.close();
+  });
+
   it("passes per-Session delegation environment to the SDK transport", async () => {
     const { adapter, dependencies } = fixture();
     const session = await openSession(adapter, {
@@ -1456,6 +1487,200 @@ describe("Claude Code HarnessAdapter", () => {
       liveStarted.item.itemId,
     ]);
     await session.close();
+  });
+
+  it("uses one Tool Item identity for a live Turn and its native history snapshot", async () => {
+    const { adapter, history, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("stable-live-tool-items"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    const nativeTurnKey = transport?.turns[0]?.userMessageId;
+    if (!transport || !nativeTurnKey) throw new Error("Fake Claude Turn did not start");
+
+    transport.event({
+      type: "tool.started",
+      callId: "bash-live-1",
+      toolName: "Bash",
+      arguments: { command: "npm run dev" },
+    });
+    const firstStarted = await nextEvent(iterator);
+    if (firstStarted.type !== "item.started" || firstStarted.item.type !== "commandExecution") {
+      throw new Error("Claude live Bash command did not start");
+    }
+    transport.event({
+      type: "tool.started",
+      callId: "bash-live-2",
+      toolName: "Bash",
+      arguments: { command: "npm run build" },
+    });
+    const secondStarted = await nextEvent(iterator);
+    if (secondStarted.type !== "item.started" || secondStarted.item.type !== "commandExecution") {
+      throw new Error("Claude live background Bash did not start");
+    }
+    transport.event({
+      type: "tool.completed",
+      callId: "bash-live-1",
+      toolName: "Bash",
+      outputText: "built",
+      isError: false,
+    });
+    await nextEvent(iterator);
+    transport.event({
+      type: "tool.completed",
+      callId: "bash-live-2",
+      toolName: "Bash",
+      outputText: "Command running in background with ID: bash-task-1.",
+      isError: false,
+      backgroundTaskId: "bash-task-1",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "item.detached" });
+    transport.event({
+      type: "message.completed",
+      messageId: "native-assistant",
+      checkpointId: "native-assistant",
+    });
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    history.push(
+      {
+        type: "user",
+        uuid: nativeTurnKey,
+        session_id: transport.sessionId,
+        message: { role: "user", content: "stable-live-tool-items" },
+      },
+      {
+        type: "assistant",
+        uuid: "native-assistant",
+        session_id: transport.sessionId,
+        message: {
+          id: "native-message",
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "bash-live-1",
+              name: "Bash",
+              input: { command: "npm run dev" },
+            },
+            {
+              type: "tool_use",
+              id: "bash-live-2",
+              name: "Bash",
+              input: { command: "npm run build" },
+            },
+          ],
+          stop_reason: "end_turn",
+        },
+      },
+      {
+        type: "user",
+        uuid: "native-tool-results",
+        session_id: transport.sessionId,
+        toolUseResult: { stdout: "built" },
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "bash-live-1", content: "built" },
+            {
+              type: "tool_result",
+              tool_use_id: "bash-live-2",
+              content: "Command running in background with ID: bash-task-1.",
+            },
+          ],
+        },
+      },
+    );
+
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    const commands = snapshot.value.turns[0]?.items.filter(
+      ({ item }) => item.type === "commandExecution",
+    );
+    expect(commands?.map(({ item }) => item.itemId)).toEqual([
+      firstStarted.type === "item.started" ? firstStarted.item.itemId : "",
+      secondStarted.type === "item.started" ? secondStarted.item.itemId : "",
+    ]);
+    await session.close();
+  });
+
+  it("settles a detached background command from its task notification, not as a Subagent", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const directory = await mkdtemp(path.join(tmpdir(), "claude-live-bg-"));
+    try {
+      const outputFile = path.join(directory, "task-1.output");
+      await writeFile(outputFile, "ticked\n");
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("background-command"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+
+      transport.event({
+        type: "tool.started",
+        callId: "bash-call",
+        toolName: "Bash",
+        arguments: { command: "sleep 3" },
+      });
+      await nextEvent(iterator);
+      transport.event({
+        type: "tool.completed",
+        callId: "bash-call",
+        toolName: "Bash",
+        outputText: "Command running in background with ID: bash-task.",
+        isError: false,
+        backgroundTaskId: "bash-task",
+      });
+      expect(await nextEvent(iterator)).toMatchObject({ type: "item.detached" });
+
+      // Desktop's "stop all background terminals" stops the detached command's task.
+      await session.stopBackgroundWork?.();
+      expect(transport.stopBackgroundTaskCalls).toEqual(["bash-task"]);
+
+      // Its native notification completes the command with the task's output file.
+      transport.threadEvent({
+        type: "subagent.settled",
+        nativeSubagentId: "bash-task",
+        callId: "bash-call",
+        status: "interrupted",
+        outputFile,
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.updated",
+        update: { type: "output.append", text: "ticked\n" },
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.completed",
+        snapshot: {
+          item: { output: "ticked\n" },
+          outcome: { status: "cancelled", reason: "Background command stopped" },
+        },
+      });
+
+      // The same notification shape still settles Subagents it does not name.
+      transport.threadEvent({
+        type: "subagent.settled",
+        nativeSubagentId: "agent-task",
+        callId: "agent-call",
+        status: "completed",
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "subagent.state.changed",
+        nativeSubagentId: "agent-task",
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+      await adapter.close();
+    }
   });
 
   it.each([false, true])("waits for transcript persistence (timeout: %s)", async (timeout) => {
@@ -3459,6 +3684,196 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("passes the native bypass prerequisite from the Session environment", async () => {
+    const available = fixture();
+    const sandboxed = { IS_SANDBOX: "1" };
+    const session = await openSession(available.adapter, sandboxed);
+    await session.execute(textTurn("bypass-prerequisite"));
+    expect(available.dependencies.bypassPermissionsAvailable).toHaveBeenCalledWith(sandboxed);
+    expect(available.dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ allowDangerouslySkipPermissions: true }),
+    );
+    available.transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+
+    const unavailable = fixture({}, { bypassPermissionsAvailable: false });
+    const rootSession = await openSession(unavailable.adapter);
+    await rootSession.execute(textTurn("root-prerequisite"));
+    expect(unavailable.dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ allowDangerouslySkipPermissions: false }),
+    );
+    unavailable.transports[0]?.finish({ status: "succeeded" });
+    await rootSession.close();
+  });
+
+  it("omits bypass permissions from the catalog when Claude Code cannot use it", async () => {
+    const { adapter } = fixture({}, { bypassPermissionsAvailable: false });
+
+    const inspection = await adapter.inspect({ cwd: "/synthetic" });
+    expect(inspection).toMatchObject({
+      status: "ready",
+      permissionModes: {
+        defaultModeId: "default",
+        modes: [{ id: "plan" }, { id: "default" }, { id: "acceptEdits" }, { id: "auto" }],
+      },
+    });
+  });
+
+  it("rejects unavailable bypass permissions for create and live selection", async () => {
+    const { adapter, dependencies, transports } = fixture(
+      {},
+      { bypassPermissionsAvailable: false },
+    );
+    const bypass = harnessPermissionModeIdSchema.parse("bypassPermissions");
+    const unavailable = {
+      ok: false,
+      error: {
+        code: "unsupported",
+        message: expect.stringContaining("IS_SANDBOX=1"),
+        retryable: false,
+      },
+    };
+
+    await expect(
+      adapter.open({ kind: "create", cwd: "/synthetic", permissionModeId: bypass }),
+    ).resolves.toMatchObject(unavailable);
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+
+    const session = await openSession(adapter);
+    await session.execute(textTurn("root-live-selection"));
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject(unavailable);
+    expect(transports[0]?.setPermissionMode).not.toHaveBeenCalled();
+    expect(transports[0]?.permissionMode).toBe("default");
+    transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+  });
+
+  it("keeps a restored Thread usable when its saved bypass mode is unavailable", async () => {
+    const { adapter, dependencies, transports } = fixture(
+      {},
+      { bypassPermissionsAvailable: false },
+    );
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/synthetic",
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "restored-bypass-session",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    // Host restores a saved Thread mode through a cold selection before the first Turn.
+    await expect(
+      session.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("bypassPermissions"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: { effectivePermissionModeId: "default" },
+    });
+
+    await session.execute(textTurn("restored-cold-selection"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        permissionMode: "default",
+        allowDangerouslySkipPermissions: false,
+      }),
+    );
+    transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+  });
+
+  it("restores an unavailable bypass Permission Mode as the native default", async () => {
+    const { adapter, dependencies, transports } = fixture(
+      {},
+      { bypassPermissionsAvailable: false },
+    );
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/synthetic",
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "bypass-session",
+        formatVersion: 1,
+      }),
+      permissionModeId: harnessPermissionModeIdSchema.parse("bypassPermissions"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    await opened.value.execute(textTurn("restored-bypass"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        openMode: "resume",
+        permissionMode: "default",
+        allowDangerouslySkipPermissions: false,
+      }),
+    );
+    transports[0]?.finish({ status: "succeeded" });
+    await opened.value.close();
+  });
+
+  it("explains native bypass permission rejections", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    await session.execute(textTurn("native-bypass-rejection"));
+    const bypass = harnessPermissionModeIdSchema.parse("bypassPermissions");
+
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(
+      new Error(
+        "Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions",
+      ),
+    );
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: expect.stringContaining("started this Session without bypass permissions"),
+        retryable: false,
+      },
+    });
+
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(
+      new Error(
+        "Cannot set permission mode to bypassPermissions because it is disabled by settings or configuration",
+      ),
+    );
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: expect.stringContaining("permissions.disableBypassPermissionsMode"),
+        retryable: false,
+      },
+    });
+
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(new Error("connection closed"));
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "Claude Code rejected the Permission Mode selection",
+        retryable: true,
+      },
+    });
+    expect(transports[0]?.permissionMode).toBe("default");
+    transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+  });
+
   it("selects Model and Thinking during a Turn and preserves native Model rejection", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -4935,6 +5350,7 @@ describe("Claude Code HarnessAdapter", () => {
   it("rejects missing installation before acceptance without outputs", async () => {
     const dependencies: ClaudeAdapterDependencies = {
       randomUUID: () => "claude-id",
+      bypassPermissionsAvailable: () => true,
       inspectInstallation: () => undefined,
       createInspector: () => ({
         inspect: async () => ({
@@ -4955,6 +5371,8 @@ describe("Claude Code HarnessAdapter", () => {
         setIdleTurnHandler: () => undefined,
         setThreadEventHandler: () => undefined,
         setIdleLive: () => undefined,
+        hasBackgroundTasks: () => false,
+        stopBackgroundTask: async () => undefined,
         start: async () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },

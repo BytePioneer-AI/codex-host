@@ -15,11 +15,21 @@ export interface RendererHarnessAccountClient {
 
 type HarnessAccount = HarnessAccountListResult["accounts"][number];
 
+function accountKey(account: HarnessAccount): string {
+  return [account.harnessId, account.email ?? "", account.label ?? "", account.plan ?? ""].join(
+    "\0",
+  );
+}
+
 function sortedAccounts(accounts: Iterable<HarnessAccount>): HarnessAccount[] {
   return [...accounts].sort((a, b) => {
     if (a.harnessId === "antigravity") return b.harnessId === "antigravity" ? 0 : 1;
     if (b.harnessId === "antigravity") return -1;
-    return a.harnessId.localeCompare(b.harnessId);
+    return (
+      a.harnessId.localeCompare(b.harnessId) ||
+      (a.label ?? "").localeCompare(b.label ?? "") ||
+      (a.email ?? "").localeCompare(b.email ?? "")
+    );
   });
 }
 
@@ -45,7 +55,7 @@ export function createHarnessAccounts(
       return false;
     }
     if (signal.aborted) return true;
-    const byHarnessId = new Map(accounts.map((account) => [account.harnessId, account]));
+    const byAccount = new Map(accounts.map((account) => [accountKey(account), account]));
     await Promise.all(
       sources.sources.map(async (source) => {
         try {
@@ -54,20 +64,27 @@ export function createHarnessAccounts(
             ...(force ? { refresh: true } : {}),
           });
           if (signal.aborted || result.harnessId !== source.harnessId) return;
-          if (result.account) {
-            byHarnessId.set(result.harnessId, {
-              ...result.account,
+          for (const key of [...byAccount.keys()]) {
+            if (byAccount.get(key)?.harnessId === result.harnessId) byAccount.delete(key);
+          }
+          const reported = result.accounts ?? (result.account ? [result.account] : []);
+          for (const account of reported) {
+            const row = {
+              ...account,
               harnessId: result.harnessId,
               harnessName: result.harnessName,
-            });
-          } else {
-            byHarnessId.delete(source.harnessId);
+            };
+            byAccount.set(accountKey(row), row);
           }
         } catch {
-          if (!signal.aborted) byHarnessId.delete(source.harnessId);
+          if (!signal.aborted) {
+            for (const key of [...byAccount.keys()]) {
+              if (byAccount.get(key)?.harnessId === source.harnessId) byAccount.delete(key);
+            }
+          }
         }
         if (!signal.aborted) {
-          accounts = sortedAccounts(byHarnessId.values());
+          accounts = sortedAccounts(byAccount.values());
           onChange();
         }
       }),

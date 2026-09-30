@@ -12,6 +12,7 @@ pub struct InstalledResources {
     pub host_runtime: PathBuf,
     pub desktop_controller: PathBuf,
     pub renderer_extension: PathBuf,
+    pub console_server: PathBuf,
 }
 
 impl InstalledResources {
@@ -74,6 +75,7 @@ impl InstalledResources {
             host_runtime: resource_root.join("app/host-runtime.mjs"),
             desktop_controller: resource_root.join("app/desktop-controller.mjs"),
             renderer_extension: resource_root.join("app/renderer-extension.js"),
+            console_server: resource_root.join("app/console-server.mjs"),
         })
     }
 
@@ -99,6 +101,7 @@ impl InstalledResources {
                 .join("packages/desktop-control/dist/release-main.js"),
             renderer_extension: repository_root
                 .join("packages/renderer-extension/dist/production.js"),
+            console_server: repository_root.join("packages/console-server/dist/main.js"),
         })
     }
 }
@@ -143,6 +146,7 @@ mod tests {
                 host_runtime: root.join("app/host-runtime.mjs"),
                 desktop_controller: root.join("app/desktop-controller.mjs"),
                 renderer_extension: root.join("app/renderer-extension.js"),
+                console_server: root.join("app/console-server.mjs"),
             }
         );
     }
@@ -180,6 +184,7 @@ mod tests {
                 host_runtime: root.join("packages/host-runtime/dist/main.js"),
                 desktop_controller: root.join("packages/desktop-control/dist/release-main.js"),
                 renderer_extension: root.join("packages/renderer-extension/dist/production.js"),
+                console_server: root.join("packages/console-server/dist/main.js"),
             }
         );
     }

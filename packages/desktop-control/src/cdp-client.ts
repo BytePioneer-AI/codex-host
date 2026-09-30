@@ -62,6 +62,18 @@ interface CdpResponse {
   };
 }
 
+/**
+ * The thrown value's description (message and stack) when CDP provides it;
+ * `exceptionDetails.text` alone is only a summary such as "Uncaught".
+ */
+export function cdpExceptionMessage(details: Record<string, unknown>, fallback: string): string {
+  const exception = details.exception;
+  if (isRecord(exception) && typeof exception.description === "string" && exception.description) {
+    return exception.description;
+  }
+  return typeof details.text === "string" && details.text ? details.text : fallback;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -304,11 +316,7 @@ export class CdpClient {
     });
     if (!isRecord(response)) throw new Error("Runtime.evaluate returned an invalid result");
     if (isRecord(response.exceptionDetails)) {
-      const text =
-        typeof response.exceptionDetails.text === "string"
-          ? response.exceptionDetails.text
-          : "Renderer evaluation failed";
-      throw new Error(text);
+      throw new Error(cdpExceptionMessage(response.exceptionDetails, "Renderer evaluation failed"));
     }
     if (!isRecord(response.result) || !("value" in response.result)) {
       throw new Error("Runtime.evaluate did not return a value");

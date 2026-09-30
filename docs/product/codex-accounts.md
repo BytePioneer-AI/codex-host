@@ -25,20 +25,22 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 因此在单个 Composer 选中外部 Agent、Adapter 就绪且没有 codexhost 自身的提交阻塞时，`renderer-codex-usage-gate.ts` 只把该 Composer 对这两道门的订阅快照投影为 `false`，继续走原生提交链路。不写账号、atom 或额度查询缓存，Codex 额度横幅保持显示；其他 Composer、Codex 路径和空输入、附件、运行中等其他原生限制不受影响。外部 Harness 的真实额度与错误由其自身处理。切回 Codex、Composer 移除或扩展卸载时恢复实时原生结果。
 
-门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号；无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
+门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
 
 ## 其他 Harness 的只读账号额度
 
-统一列表中展示 Grok Build、agy（Antigravity）、Claude Code 当前原生认证可读取的真实额度。原管理列改为目标 Harness 图标；原生管理边界保留在账号信息的说明中。这不是多账号管理：不提供添加、删除、切换、设为默认或重置卡操作，也不修改 Codex 当前账号。搜索和已用/剩余切换作用于所有行，刷新按钮重新查询两类额度。各 Harness 独立并行查询，任一有效结果返回后立即显示，不等待其他 Harness；全局刷新期间同样逐项恢复。
+统一列表中展示 Grok Build、agy（Antigravity）、Claude Code、Cursor、Kimi Code、Qoder 和 Pi 当前原生认证可读取的真实额度或预付费余额。原管理列改为目标 Harness 图标；原生管理边界保留在账号信息的说明中。这不是多账号管理：不提供添加、删除、切换、设为默认或重置卡操作，也不修改 Codex 当前账号。搜索和已用/剩余切换作用于所有行，刷新按钮重新查询两类额度。各 Harness 独立并行查询，任一有效结果返回后立即显示，不等待其他 Harness；全局刷新期间同样逐项恢复。
 
-- 仅在返回有效额度窗口时显示账号。API Key、第三方 Provider、未登录、无可用数据或查询失败时不显示占位行。Host 按 Harness 缓存完成的账号检查结果 15 秒，关闭后立即重开设置页可复用该短期结果；工具栏「刷新额度」显式绕过缓存，刷新后不复用上一份账号额度，避免退出或改变认证后展示旧账号。
-- 左侧展示各 Harness/供应商的产品 Logo；主标题优先显示邮箱或可识别名称，Harness 名称和套餐作为次级信息。没有账号身份时以 Harness 名称为主标题，不重复名称或显示「当前登录账号」，不会猜测邮箱。邮箱按列宽省略，悬停可查看完整身份。不记录或展示账号快照更新时间；原型中的示例套餐不作为真实数据来源。
+- 仅在返回有效额度窗口或预付费余额时显示账号。API Key 或第三方 Provider 不自动代表存在套餐额度；未登录、无可用数据或查询失败时不显示占位行。Host 按 Harness 缓存完成的账号检查结果 15 秒，关闭后立即重开设置页可复用该短期结果；工具栏「刷新额度」显式绕过缓存，刷新后不复用上一份账号额度，避免退出或改变认证后展示旧账号。
+- 左侧展示各 Harness/供应商的产品 Logo；主标题优先显示邮箱或可识别名称，Harness 名称和套餐作为次级信息。没有账号身份时以 Harness 名称为主标题，不重复名称或显示「当前登录账号」，不会猜测邮箱。邮箱按列宽省略，悬停可查看完整身份。不记录或展示账号快照更新时间；原型中的示例套餐不作为真实数据来源。预付费余额没有套餐上限或重置时间，因此只显示 Provider 返回的金额和币种，不编造百分比。
+- Pi 在配置了 DeepSeek API Key 时显示该 Provider 报告的预付费余额。`models.json` 中带 API Key 和 base URL 的自定义 Provider 会向该站点自己的 `GET /v1/usage` 查询 sub2api 钱包或 Key 额度；只有响应明确给出币种和非负可用金额时才显示。Key 只发送给用户配置的站点且不跟随重定向。一个 Pi 可报告多个 Billing Source，Host 最多投影八个独立账号行。
+- Cursor 使用原生 OAuth 凭据读取 DashboardService 的 Auto 与 API 月度比例和账期结束时间；API Key 与内存凭据模式不读取无关的已保存 OAuth。Kimi Code 读取 coding usages，原生 Token 过期或接口返回 401 时通过原 refresh token 刷新并更新原生凭据文件。Qoder 通过 SDK `getUsageInfo()` 与 `accountInfo()` 读取套餐 Credits、身份以及共享资源包；不会把 Session 累计消耗冒充账号额度。
 - Grok Build 复用原生 xAI OAuth 认证和 billing 查询，展示周期、重置时间及产品用量；不将其他 issuer 的 Token 发到 xAI。套餐使用比例优先读取 `creditUsagePercent`；省略时按原生规则使用旧版套餐额度 `monthlyLimit` / `used`，没有正数套餐上限但有可识别的周/月周期及有效重置时间时，按原生零用量语义展示已用 0% / 剩余 100%，保留账号行。请求失败、空配置或异常用量字段不补成 0%；不使用 `onDemandCap` / `onDemandUsed` 的按需消费金额替代套餐比例。显式配置 `XAI_API_KEY`、`GROK_API_KEY` 或 `GROK_TOKEN` 时保守地不展示保存的 OAuth 账号。此页展示 Harness 账号额度，不判定某个 Thread 的逐模型凭据或实际 Billing Source。
 - agy 执行原生 `--print=/usage --output-format stream-json`，由 CLI 自己解析认证，展示实际模型组与窗口。当前该输出不提供账号邮箱或套餐，以 Harness 名称为主标题。
 - Claude Code 使用 Agent SDK 0.3.220 的 `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` 主动查询，并通过 `accountInfo()` 读取身份。仅投影 `rate_limits_available` 为真且有效的套餐窗口，包括原生返回的模型独立窗口；不将 session Token、会话花费或额外用量金额混为额度百分比。当前不展示 `extra_usage` 金额。旧 SDK/CLI 不支持该实验性操作时不展示。
 - 查询不需要已有 Thread，不发起 Model Turn；Claude SDK 检查使用空输入流、无工具且不持久化 Session，并在成功、失败、超时后关闭检查进程。Broker 路径转发同一个只读能力。
 
-公共数据链路是 `HarnessAdapter.inspectAccount()` → `codexhost/harness/accounts/sources` / `codexhost/harness/accounts/inspect` → 设置页；旧 Host 仍可回退到聚合的 `codexhost/harness/accounts/list`。渐进式与聚合路由共享同一份按 Harness 的 15 秒缓存和在途请求。账号快照只有可展示身份、套餐与额度，无凭据、原生路径或原始 SDK 对象；Host 不直接依赖具体 Adapter。仅查询当前 Host 已加载插件，单插件失败或超时不会阻断其他账号的返回与展示。
+公共数据链路是 `HarnessAdapter.inspectAccount()` / `inspectAccounts()` → `codexhost/harness/accounts/sources` / `codexhost/harness/accounts/inspect` → 设置页；旧 Host 仍可回退到聚合的 `codexhost/harness/accounts/list`。`inspectAccounts()` 只用于一个 Harness 同时报告多个 Billing Source，兼容字段 `account` 始终保留第一项。渐进式与聚合路由共享同一份按 Harness 的 15 秒缓存和在途请求。账号快照只有可展示身份、套餐、额度或余额，无凭据、原生路径或原始 SDK 对象；Host 不直接依赖具体 Adapter。仅查询当前 Host 已加载插件，单插件失败或超时不会阻断其他账号的返回与展示。
 
 ## 手动导入到 Pi
 

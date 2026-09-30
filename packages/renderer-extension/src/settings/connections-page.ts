@@ -1,4 +1,8 @@
-import type { CodexhostError, HarnessLaunchSettings } from "@codexhost/shared-contracts";
+import type {
+  CodexhostError,
+  HarnessInstallationState,
+  HarnessLaunchSettings,
+} from "@codexhost/shared-contracts";
 
 import {
   getSharedAgentGroupPreferenceStore,
@@ -12,6 +16,7 @@ import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext }
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
+import { createHarnessVersionPanel } from "./harness-version-panel.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 export const CODEXHOST_GITHUB_ISSUES_NEW_URL =
@@ -39,6 +44,11 @@ export interface RendererConnectionDiagnostics {
   snapshot(): RendererConnectionSnapshot;
   refresh(): Promise<void>;
   openWebUi?(hostId: string, agent: ExternalRendererAgent): Promise<void>;
+  installation?(
+    hostId: string,
+    agent: ExternalRendererAgent,
+    action: "check" | "update",
+  ): Promise<HarnessInstallationState>;
   getLaunchSettings?(hostId: string, agent: ExternalRendererAgent): Promise<HarnessLaunchSettings>;
   setLaunchSettings?(
     hostId: string,
@@ -258,6 +268,7 @@ function createConnectionIdentityIcon(
 }
 
 interface ConnectionRowGroupController {
+  readonly disabled: boolean;
   readonly section: AgentGroupSection;
   readonly moveLabel: string;
   readonly dragHandleTitle: string;
@@ -334,6 +345,7 @@ function createConnectionRow(
   if (group) {
     const toggle = document.createElement("button");
     toggle.type = "button";
+    toggle.disabled = group.disabled;
     toggle.className = "settings-connection-row__group-toggle";
     toggle.title = group.moveLabel;
     toggle.setAttribute("aria-label", group.moveLabel);
@@ -358,7 +370,7 @@ function createConnectionRow(
     select();
   });
   if (group) {
-    row.draggable = true;
+    row.draggable = !group.disabled;
     row.dataset.connectionGroupSection = group.section;
     row.addEventListener("dragstart", group.onDragStart);
     row.addEventListener("dragover", group.onDragOver);
@@ -610,7 +622,7 @@ function createGroupResetButton(
   document: Document,
   messages: RendererSettingsMessages,
   onReset: () => void,
-): HTMLElement {
+): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "settings-connection-group-reset";
@@ -648,7 +660,10 @@ export function createConnectionsSettingsPage(
       header.append(headingCopy, refresh);
       const content = document.createElement("div");
       content.className = "settings-connections-content";
-      context.content.append(header, content);
+      const syncMessage = document.createElement("p");
+      syncMessage.className = "settings-page-description";
+      syncMessage.setAttribute("role", "status");
+      context.content.append(header, syncMessage, content);
 
       let pending = false;
       let selectedHostId: string | null = null;
@@ -656,6 +671,9 @@ export function createConnectionsSettingsPage(
       // Background availability updates must not discard a path draft or an in-flight save.
       let launchControls: { hostId: string; itemKey: string; element: HTMLElement | null } | null =
         null;
+      // Panels are owned by the page and keyed by Host + Harness, not by each
+      // diagnostic render. Keep in-flight updates and check results across row switches.
+      const versionPanels = new Map<string, HTMLElement>();
       let latestSnapshot: RendererConnectionSnapshot | null = null;
       let disposeHostScroller = (): void => undefined;
 
@@ -707,6 +725,15 @@ export function createConnectionsSettingsPage(
       };
 
       const render = (snapshot: RendererConnectionSnapshot | null): void => {
+        const syncStatus = groupPreference.syncStatus();
+        const groupDisabled = syncStatus === "loading" || syncStatus === "saving";
+        syncMessage.hidden = syncStatus === "ready";
+        syncMessage.textContent =
+          syncStatus === "error"
+            ? messages.connectionGroupSyncFailed
+            : syncStatus === "saving"
+              ? messages.connectionGroupSaving
+              : messages.connectionGroupLoading;
         latestSnapshot = snapshot;
         disposeHostScroller();
         disposeHostScroller = () => undefined;
@@ -835,6 +862,25 @@ export function createConnectionsSettingsPage(
             runRefresh,
           );
           launchControls = { hostId: selectedHost.hostId, itemKey: item.key, element };
+          const agent = item.agentSnapshot?.agent;
+          const installation = diagnostics?.installation?.bind(diagnostics);
+          if (
+            agent &&
+            item.availability !== "notInstalled" &&
+            item.availability !== "checking" &&
+            installation
+          ) {
+            const key = JSON.stringify([selectedHost.hostId, agent]);
+            let panel = versionPanels.get(key);
+            if (!panel) {
+              const hostId = selectedHost.hostId;
+              panel = createHarnessVersionPanel(document, messages, context.signal, agent, {
+                run: (action) => installation(hostId, agent, action),
+              });
+              versionPanels.set(key, panel);
+            }
+            inspector.append(panel);
+          }
         };
 
         const pinnedItem = items.find((item) => item.key === "renderer-adapter");
@@ -907,6 +953,7 @@ export function createConnectionsSettingsPage(
           agent: ExternalRendererAgent,
           section: AgentGroupSection,
         ): ConnectionRowGroupController => ({
+          disabled: groupDisabled,
           section,
           moveLabel:
             section === "main"
@@ -917,6 +964,10 @@ export function createConnectionsSettingsPage(
             groupPreference.moveAgent(agent, section === "main" ? "more" : "main", null);
           },
           onDragStart(event) {
+            if (groupDisabled) {
+              event.preventDefault();
+              return;
+            }
             draggingAgent = agent;
             event.dataTransfer?.setData("text/plain", agent);
             if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
@@ -1011,11 +1062,11 @@ export function createConnectionsSettingsPage(
           }
           rows.append(zone);
 
-          rows.append(
-            createGroupResetButton(document, messages, () => {
-              groupPreference.resetToDefault();
-            }),
-          );
+          const reset = createGroupResetButton(document, messages, () => {
+            groupPreference.resetToDefault();
+          });
+          reset.disabled = groupDisabled;
+          rows.append(reset);
         }
 
         const selectedItem = items.find((item) => item.key === selectedItemKey) ?? items[0];

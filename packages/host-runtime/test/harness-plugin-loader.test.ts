@@ -13,7 +13,7 @@ import {
 import { loadHarnessPlugins, type HarnessPluginDiagnostic } from "../src/harness-plugin-loader.js";
 import { HarnessPluginRegistry } from "../src/harness-plugin-registry.js";
 import { installedHarnessPluginOptions } from "../src/installed-harness-plugins.js";
-import { pluginResourcePath, readPluginIcon } from "../src/plugin-files.js";
+import { pluginResourcePath, readPluginIcon } from "@codexhost/harness-plugin-files";
 
 const roots: string[] = [];
 const context = {

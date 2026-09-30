@@ -12,10 +12,12 @@ import {
 export interface PiNativeModelRef {
   provider: string;
   id: string;
+  fast?: boolean;
 }
 
 export interface PiNativeModel extends PiNativeModelRef {
   reasoning: boolean;
+  api?: string;
 }
 
 const PI_MODEL_REF_PREFIX = "pi-model-v1.";
@@ -50,9 +52,10 @@ function assertNativePart(value: string, name: string): void {
 export function encodePiModelRef(model: PiNativeModelRef): HarnessModelRef {
   assertNativePart(model.provider, "Model provider");
   assertNativePart(model.id, "Model id");
-  const encoded = Buffer.from(JSON.stringify([model.provider, model.id]), "utf8").toString(
-    "base64url",
-  );
+  const encoded = Buffer.from(
+    JSON.stringify(model.fast ? [model.provider, model.id, true] : [model.provider, model.id]),
+    "utf8",
+  ).toString("base64url");
   return harnessModelRefSchema.parse({ id: `${PI_MODEL_REF_PREFIX}${encoded}` });
 }
 
@@ -70,13 +73,17 @@ export function decodePiModelRef(ref: HarnessModelRef): PiNativeModelRef {
   }
   if (
     !Array.isArray(decoded) ||
-    decoded.length !== 2 ||
+    (decoded.length !== 2 && !(decoded.length === 3 && decoded[2] === true)) ||
     typeof decoded[0] !== "string" ||
     typeof decoded[1] !== "string"
   ) {
     throw new Error("Pi Model Ref has an invalid native identity");
   }
-  const native = { provider: decoded[0], id: decoded[1] };
+  const native: PiNativeModelRef = {
+    provider: decoded[0],
+    id: decoded[1],
+    ...(decoded[2] === true ? { fast: true } : {}),
+  };
   assertNativePart(native.provider, "Model provider");
   assertNativePart(native.id, "Model id");
   if (encodePiModelRef(native).id !== parsedRef.id) {

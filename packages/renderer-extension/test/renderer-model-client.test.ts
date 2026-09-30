@@ -1,4 +1,5 @@
 import {
+  HARNESS_INSTALLATION_METHOD,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
   harnessIdSchema,
@@ -7,6 +8,7 @@ import {
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type HarnessInstallationParams,
   type ThreadUsageInspection,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -73,6 +75,42 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it.each(["check", "update"] as const)(
+    "routes Harness installation %s through the fixed Host method",
+    async (action) => {
+      const params = { harnessId: piHarnessId, action };
+      const result = {
+        currentVersion: "1.0.0",
+        latestVersion: "1.1.0",
+        updateAvailable: true,
+        canUpdate: true,
+      };
+      const sendRequest = vi.fn().mockResolvedValue(result);
+      const client = createRendererModelClient([{ sendRequest }]);
+      if (!client?.installation) throw new Error("Missing installation client");
+      await expect(client.installation(params)).resolves.toEqual(result);
+      expect(sendRequest).toHaveBeenCalledExactlyOnceWith(HARNESS_INSTALLATION_METHOD, params, {
+        priority: "interactive",
+      });
+      sendRequest.mockResolvedValueOnce({ ...result, currentVersion: 42 });
+      await expect(client.installation(params)).rejects.toThrow();
+      sendRequest.mockResolvedValueOnce({ ...result, command: "private-command" });
+      await expect(client.installation(params)).rejects.toThrow();
+    },
+  );
+
+  it.each([
+    { harnessId: "pi", action: "install" },
+    { harnessId: "", action: "check" },
+    { harnessId: "pi", action: "update", command: "evil" },
+  ])("rejects invalid Harness installation params before sending: %j", async (params) => {
+    const sendRequest = vi.fn();
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.installation) throw new Error("Missing installation client");
+    await expect(client.installation(params as HarnessInstallationParams)).rejects.toThrow();
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+
   it("validates launch setting requests and responses on the selected request client", async () => {
     const harnessId = harnessIdSchema.parse("workbuddy");
     const result = { path: "D:\\Apps\\WorkBuddy", restartRequired: true };
@@ -250,6 +288,18 @@ describe("Renderer fixed Model request client", () => {
     await expect(remote?.listHarnessPlugins?.()).rejects.toThrow();
   });
 
+  it("opens the console through its fixed Host method and validates the address", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:26339/" })
+      .mockResolvedValueOnce({ url: "https://example.com/" });
+    const client = createRendererModelClient([{ addNotificationCallback: vi.fn(), sendRequest }]);
+    if (!client?.openConsole) throw new Error("Synthetic Model client cannot open the console");
+    await expect(client.openConsole()).resolves.toEqual({ url: "http://127.0.0.1:26339/" });
+    expect(sendRequest).toHaveBeenCalledWith("codexhost/console/open", {});
+    await expect(client.openConsole()).rejects.toThrow();
+  });
+
   it("calls only the fixed inspect and select methods with validated params", async () => {
     let usageNotification: ((notification: unknown) => void) | undefined;
     const removeUsageNotification = vi.fn();
@@ -329,6 +379,7 @@ describe("Renderer fixed Model request client", () => {
       "credentialImports",
       "executeThreadCommand",
       "forkThread",
+      "getHarnessDisplaySettings",
       "getHarnessLaunchSettings",
       "importHarnessSession",
       "inspectCodexAccountUsage",
@@ -338,6 +389,7 @@ describe("Renderer fixed Model request client", () => {
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "installation",
       "listCodexAccounts",
       "listHarnessAccountSources",
       "listHarnessAccounts",
@@ -346,12 +398,14 @@ describe("Renderer fixed Model request client", () => {
       "listLoadedSessions",
       "listSessionImportSources",
       "listThreadOwnership",
+      "openConsole",
       "openHarnessWebUi",
       "readUpdateStatus",
       "refreshCodexAccounts",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
+      "setHarnessDisplaySettings",
       "setHarnessLaunchSettings",
       "setIdleReleaseSettings",
       "startUpdate",

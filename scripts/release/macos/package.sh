@@ -26,6 +26,8 @@ for relative in \
   libexec/codexhost-updater \
   runtime/node \
   app/codexhost-distribution.json \
+  app/console-server.mjs \
+  app/console-web.js \
   app/desktop-controller.mjs \
   app/host-runtime.mjs \
   app/renderer-extension.js \

@@ -40,6 +40,22 @@ function catalog(levels: readonly string[]) {
 }
 
 describe("Renderer combined Model and Thinking picker presentation", () => {
+  it("uses the same label and Thinking options for a Fast selection", () => {
+    const fast = harnessModelRefSchema.parse({ id: "priority" });
+    const normal = catalog(["off", "high"]);
+    const withFast = harnessModelCatalogSchema.parse({
+      ...normal,
+      models: normal.models.map((entry) => ({ ...entry, fastModel: fast })),
+    });
+    expect(
+      rendererModelPickerPresentation({
+        status: "ready",
+        catalog: withFast,
+        selected: fast,
+        selectedThinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).toMatchObject({ modelLabel: "provider / model", thinkingLabel: "High" });
+  });
   it("anchors the main menu's right edge to the model trigger", () => {
     expect(
       rendererModelPickerMainMenuPlacement(

@@ -153,7 +153,7 @@ describe("Claude history mapping", () => {
             {
               item: {
                 type: "toolExecution",
-                itemId: "claude-item-v1-assistant-1-tool-2",
+                itemId: "claude-item-v2-user-1-tool-1",
                 toolName: "Read",
                 arguments: {},
                 output: { content: [{ type: "text", text: "ignored" }] },
@@ -233,7 +233,7 @@ describe("Claude history mapping", () => {
             {
               item: {
                 type: "commandExecution",
-                itemId: "claude-item-v1-assistant-1-tool-0",
+                itemId: "claude-item-v2-user-1-tool-1",
                 command: "pwd",
                 output: "/work/project",
               },
@@ -242,7 +242,7 @@ describe("Claude history mapping", () => {
             {
               item: {
                 type: "toolExecution",
-                itemId: "claude-item-v1-assistant-1-tool-1",
+                itemId: "claude-item-v2-user-1-tool-2",
                 toolName: "Write",
                 arguments: { path: "a.txt" },
                 output: { content: [{ type: "text", text: "permission denied" }] },

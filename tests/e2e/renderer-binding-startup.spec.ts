@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { decodePiTransportSelection } from "@codexhost/protocol-core";
 import { build } from "esbuild";
 import path from "node:path";
 
@@ -21,6 +22,8 @@ const { outputFiles } = await build({
   stdin: {
     contents: `
       import { installRendererBindingProbe } from "./packages/renderer-extension/src/renderer-binding-probe.ts";
+      import { modelSelectionForAgent } from "./packages/renderer-extension/src/versioned-renderer-adapter.ts";
+      import { createDraftPrewarmPolicyBridge } from "./packages/desktop-control/src/renderer-draft-prewarm-runtime.ts";
       import { parseKiroModelCatalog } from "./packages/adapters/kiro-cli/src/models.ts";
       import { KIRO_COMMAND_CATALOG } from "./packages/adapters/kiro-cli/src/commands.ts";
 
@@ -39,7 +42,7 @@ const { outputFiles } = await build({
             { value: "fixed", name: "Fixed Kiro Model", _meta: { kiro: { hasEffort: false } } },
           ],
         }]) : {
-          models: [{ ref: model, label: "Startup Model" }],
+          models: [{ ref: model, fastModel: { id: "pi-model-v1.startup-fast" }, label: "Startup Model" }],
           defaultModel: model,
           thinkingOptions: [],
         },
@@ -101,6 +104,9 @@ const { outputFiles } = await build({
         undefined,
         (agent, model, thinkingOptionId) => {
           globalThis.appliedConfiguration = { agent, model, thinkingOptionId };
+          window.__codexhostHostRoutingV1?.forComposer()?.policy.select(
+            modelSelectionForAgent(null, null, agent, model, thinkingOptionId)?.model ?? null,
+          );
           return true;
         },
         {
@@ -142,13 +148,28 @@ const { outputFiles } = await build({
       );
 
       setTimeout(() => {
-        const policy = {
-          state: "ready",
-          hostId: "local",
-          select: async () => undefined,
-          clear: async () => undefined,
+        globalThis.threadStartRequests = [];
+        const bridge = {
+          sendRequest: async (method, params) => {
+            globalThis.threadStartRequests.push({ method, params });
+            return { thread: { id: "fixture-thread" } };
+          },
+          prewarmThreadStart(params) { return this.sendRequest("thread/start", params); },
+          enqueueRequest: unavailable,
+          onResult: () => {},
+          onError: () => {},
         };
+        const policy = createDraftPrewarmPolicyBridge(
+          { onNotification() {}, onRequest() {}, dispatchAppServerResponse() {} },
+          bridge, "local", window, { discardAllPrewarmedThreads() {} },
+        );
         window.__codexhostHostRoutingV1 = { forComposer: () => ({ hostId: "local", policy }) };
+        globalThis.prewarmTestDraft = () => bridge.prewarmThreadStart({ cwd: "/fixture/workspace", model: "native" });
+        document.addEventListener("click", (event) => {
+          if (!event.defaultPrevented && event.target?.matches("button[type=submit]")) {
+            void bridge.sendRequest("thread/start", { cwd: "/fixture/workspace", model: "native" });
+          }
+        });
       }, 100);
     `,
     resolveDir: repositoryRoot,
@@ -236,6 +257,76 @@ test("a native Codex draft hides the external Harness command button", async ({ 
   const root = page.locator("[data-codexhost-harness-command-control]");
   await expect(root).toHaveAttribute("hidden", "");
   await expect(root).toBeHidden();
+});
+
+test("a remounted draft keeps explicit Fast through submission, but a new draft starts without it", async ({
+  page,
+}) => {
+  await page.route("http://startup.test/", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" }),
+  );
+  await page.goto("http://startup.test/");
+  await page.evaluate(() =>
+    localStorage.setItem(
+      "codexhost.new-thread-preference.v1",
+      JSON.stringify({
+        version: 1,
+        lastAgent: "pi",
+        externalByAgent: {},
+      }),
+    ),
+  );
+  await page.addScriptTag({ content: browserBundle });
+  const fast = page.locator("[data-codexhost-fast-toggle]:visible");
+  await expect(fast).toHaveAttribute("aria-pressed", "false");
+  await fast.click();
+  await expect(fast).toHaveAttribute("aria-pressed", "true");
+  await page.evaluate(() => Reflect.get(globalThis, "prewarmTestDraft")());
+
+  const remount = async (newDraft: boolean) => {
+    await page.locator("[data-codex-composer-root]:visible").evaluate((original, newDraft) => {
+      const originalEditor = original.querySelector("[data-codex-composer]");
+      if (!originalEditor) throw new Error("Missing fixture editor");
+      const originalFiber = Object.getOwnPropertyDescriptor(
+        originalEditor,
+        "__reactFiber$startup",
+      )?.value;
+      if (!originalFiber) throw new Error("Missing fixture Fiber");
+      const data = originalFiber.updateQueue.memoCache.data.map((row: unknown[]) => [...row]);
+      if (newDraft) data[1][2] = "client-new-thread:next";
+      const fiber = { ...originalFiber, updateQueue: { memoCache: { data } } };
+      const composer = document.createElement("div");
+      composer.setAttribute("data-codex-composer-root", "true");
+      const editor = originalEditor.cloneNode(true);
+      Object.defineProperty(editor, "__reactFiber$startup", { configurable: true, value: fiber });
+      const toolbar = document.createElement("div");
+      const send = document.createElement("button");
+      send.type = "submit";
+      toolbar.append(send);
+      composer.append(editor, toolbar);
+      // Desktop can retain the old Composer or mount its replacement in another container;
+      // neither produces a paired removal/addition MutationRecord.
+      (original as HTMLElement).hidden = true;
+      document.body.append(composer);
+    }, newDraft);
+  };
+  await remount(false);
+  await expect(fast).toHaveAttribute("aria-pressed", "true");
+  await page.locator("[data-codex-composer-root]:visible button[type=submit]").click();
+  expect(await page.evaluate(() => Reflect.get(globalThis, "appliedConfiguration"))).toMatchObject({
+    agent: "pi",
+    model: { id: "pi-model-v1.startup-fast" },
+  });
+  const requests = await page.evaluate(() => Reflect.get(globalThis, "threadStartRequests"));
+  expect(requests).toHaveLength(2);
+  for (const request of requests) {
+    expect(request.method).toBe("thread/start");
+    expect(decodePiTransportSelection(request.params.model)?.model).toEqual({
+      id: "pi-model-v1.startup-fast",
+    });
+  }
+  await remount(true);
+  await expect(fast).toHaveAttribute("aria-pressed", "false");
 });
 
 test("a draft waits for the Desktop prewarm policy before applying its Model", async ({ page }) => {

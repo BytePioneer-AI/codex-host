@@ -192,6 +192,26 @@ describe("External Thread sections", () => {
     expect(harness.official.requests).toEqual([]);
   });
 
+  it("reports an applied official move even when External anchors cannot be saved", async () => {
+    const harness = new Harness(new Set(["ext-a"]));
+    await harness.move("ext-a", PINNED);
+    const failure = new Error("disk full");
+    const move = (threadId: string, movingExternal: boolean) =>
+      moveThreadSection({
+        move: { threadId, sectionId: PINNED, beforeThreadId: null },
+        movingExternal,
+        externalThreadIds: harness.externalIds,
+        placements: harness.placements,
+        requestOfficial: harness.official.request,
+        savePlacements: () => Promise.reject(failure),
+        now: new Date(),
+      });
+    await expect(move("off-1", false)).resolves.toEqual({ kind: "moved", persistError: failure });
+    expect(harness.official.sections.get(PINNED)).toEqual(["off-1"]);
+    // An External move changed nothing yet, so its persistence failure is a real failure.
+    await expect(move("ext-a", true)).rejects.toBe(failure);
+  });
+
   it("keeps entry time when a Thread is reordered inside its section", async () => {
     const harness = new Harness(new Set(["ext-a", "ext-b"]));
     await harness.move("ext-a", PINNED);

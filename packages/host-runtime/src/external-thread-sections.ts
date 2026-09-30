@@ -261,7 +261,10 @@ export async function listSectionThreads(input: {
 }
 
 export type SectionMoveOutcome =
-  { kind: "forward" } | { kind: "moved" } | { kind: "error"; error: JsonObject };
+  | { kind: "forward" }
+  /** `persistError`: the official move applied but External anchors could not be saved. */
+  | { kind: "moved"; persistError?: unknown }
+  | { kind: "error"; error: JsonObject };
 
 function officialError(response: JsonObject): JsonObject | null {
   const error = response.error;
@@ -336,6 +339,14 @@ export async function moveThreadSection(input: {
       });
       const error = officialError(response);
       if (error) return { kind: "error", error };
+      // The official Thread moved; failing now would misreport it. Stale anchors only
+      // shift External Threads within the section until the next move re-anchors them.
+      try {
+        await input.savePlacements(plan.placements);
+      } catch (persistError) {
+        return { kind: "moved", persistError };
+      }
+      return { kind: "moved" };
     }
     await input.savePlacements(plan.placements);
     return { kind: "moved" };

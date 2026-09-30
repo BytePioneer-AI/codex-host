@@ -2519,6 +2519,8 @@ export class AppServerHost {
         savePlacements: (next) => this.#repository.replaceSectionPlacements(next),
         now: new Date(),
       });
+      if (outcome.kind === "moved" && outcome.persistError !== undefined)
+        this.#diagnose(outcome.persistError);
       if (outcome.kind === "forward") await this.#forwardOfficialRequest(request, frame);
       else if (outcome.kind === "error")
         await this.#writer.json(rpcEnvelope(request, { error: outcome.error }));
@@ -2532,6 +2534,13 @@ export class AppServerHost {
   async #externalSectionFields(threadId: string) {
     const placements = await this.#repository.listSectionPlacements();
     return threadSectionFields(placements.find((entry) => entry.hostThreadId === threadId));
+  }
+
+  /** Cached External Thread projections predate section moves; responses read the placement. */
+  async #withExternalSection(thread: JsonObject): Promise<JsonObject> {
+    return typeof thread.id === "string"
+      ? { ...thread, ...(await this.#externalSectionFields(thread.id)) }
+      : thread;
   }
 
   async #setExternalThreadArchived(
@@ -2576,7 +2585,9 @@ export class AppServerHost {
       };
     }
     await this.#writer.json(
-      rpcEnvelope(request, { result: archived ? {} : { thread: projected } }),
+      rpcEnvelope(request, {
+        result: archived ? {} : { thread: await this.#withExternalSection(projected) },
+      }),
     );
     await this.#writer.json({
       method: archived ? "thread/archived" : "thread/unarchived",
@@ -3649,7 +3660,11 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, result.error.code, result.error.message));
       return;
     }
-    await this.#writer.json(rpcEnvelope(request, { result: threadRollbackResult(result.thread) }));
+    await this.#writer.json(
+      rpcEnvelope(request, {
+        result: threadRollbackResult(await this.#withExternalSection(result.thread)),
+      }),
+    );
   }
 
   async #setExternalThreadName(
@@ -3822,7 +3837,7 @@ export class AppServerHost {
     }
     const turns = this.#externalHistoryTurns(thread);
     const responseThread = {
-      ...thread.thread,
+      ...(await this.#withExternalSection(thread.thread)),
       turns: params.excludeTurns === true ? [] : turns,
     };
     const result = threadForkResult(responseThread, {

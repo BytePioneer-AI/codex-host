@@ -1,4 +1,6 @@
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
+import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
+import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
 import {
   isConsoleHostMethod,
   CONSOLE_OPEN_METHOD,
@@ -33,7 +35,11 @@ import { managedDelegationSkillReference } from "./delegation-skill.js";
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import { NativeAccountObserver } from "./native-account-observer.js";
 import { nativeThreadSupportsReferences } from "./native-thread-reference-capability.js";
-import { HarnessAccountInspectionCache, listHarnessAccountSources } from "./harness-accounts.js";
+import {
+  HarnessAccountInspectionCache,
+  listedHarnessAccounts,
+  listHarnessAccountSources,
+} from "./harness-accounts.js";
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -1237,9 +1243,7 @@ export class AppServerHost {
           ),
         );
         const result = harnessAccountListResultSchema.parse({
-          accounts: inspections.flatMap(({ harnessId, harnessName, account }) =>
-            account ? [{ ...account, harnessId, harnessName }] : [],
-          ),
+          accounts: inspections.flatMap((inspection) => listedHarnessAccounts(inspection)),
         });
         await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       });
@@ -1247,6 +1251,26 @@ export class AppServerHost {
     }
     if (request.method === "codexhost/harness/inspect") {
       this.#dispatchDesktopRequest(() => this.#inspectHarness(request));
+      return;
+    }
+    if (request.method === HARNESS_INSTALLATION_METHOD) {
+      this.#dispatchDesktopRequest(async () => {
+        await this.#waitForPlugins();
+        try {
+          const result = await handleHarnessInstallation(request.params, this.#externalAdapters);
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        } catch (error) {
+          await this.#writer.json(
+            rpcError(
+              request,
+              error instanceof HarnessInstallationError ? error.code : -32077,
+              error instanceof HarnessInstallationError
+                ? error.message
+                : "Harness version management failed",
+            ),
+          );
+        }
+      });
       return;
     }
     if (request.method === "codexhost/harness/web-ui/open") {

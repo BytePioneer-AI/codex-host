@@ -105,6 +105,57 @@
   position: relative;
 }
 
+.console-announcement {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: min(930px, calc(100% - 80px));
+  margin: 28px auto 0;
+  padding: 14px 16px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--settings-warning);
+  background: var(--settings-warning-bg);
+  border: 1px solid var(--settings-warning-border);
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+
+.console-announcement[data-type="info"] {
+  color: var(--settings-focus);
+  background: color-mix(in srgb, var(--settings-focus) 7%, var(--settings-bg));
+  border-color: color-mix(in srgb, var(--settings-focus) 24%, var(--settings-bg));
+}
+
+.console-announcement[data-type="danger"] {
+  color: var(--settings-danger);
+  background: var(--settings-danger-bg);
+  border-color: var(--settings-danger-border);
+}
+
+.console-announcement > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.console-announcement[hidden] {
+  display: none;
+}
+
+.console-announcement > div {
+  min-width: 0;
+}
+
+.console-announcement .settings-update-notes {
+  margin-top: 4px;
+  color: inherit;
+  font: inherit;
+}
+
+.console-announcement a {
+  color: inherit;
+}
+
 .console-offline {
   display: flex;
   align-items: center;
@@ -554,6 +605,7 @@
   }
 
   .settings-page__content,
+  .console-announcement,
   .console-offline {
     width: calc(100% - 32px);
   }

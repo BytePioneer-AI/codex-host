@@ -938,8 +938,13 @@ export function installCurrentRendererAdapter(): {
   const currentRequestRoute = (): RendererHostRoute | null => {
     fiberWalkLimited = false;
     const route = disposed ? null : (window.__codexhostHostRoutingV1?.forComposer() ?? null);
-    usageSubscription.connect(clients.forRoute(route));
-    idleReleaseSync.connect(disposed ? null : clients.forHost("local"));
+    const client = clients.forRoute(route);
+    usageSubscription.connect(client);
+    // A ready local route already validated this connection in this operation.
+    // Remote routes still resolve the local settings owner independently.
+    idleReleaseSync.connect(
+      disposed ? null : route?.hostId === "local" ? client : clients.forHost("local"),
+    );
     updateStatus(
       route ? "ready" : "installing",
       route
@@ -967,8 +972,11 @@ export function installCurrentRendererAdapter(): {
   };
   const modelControl: RendererModelClient = Object.freeze({
     currentHostId: () => {
-      currentRequestRoute();
-      return disposed ? null : (window.__codexhostHostRoutingV1?.hostIdForComposer() ?? null);
+      const route = currentRequestRoute();
+      // Preserve known Host identity even when its native manager is disconnected.
+      return disposed
+        ? null
+        : (route?.hostId ?? window.__codexhostHostRoutingV1?.hostIdForComposer() ?? null);
     },
     clientForHost: (hostId: string) => (disposed ? null : clients.forHost(hostId)),
     listHarnessPlugins: async () => {

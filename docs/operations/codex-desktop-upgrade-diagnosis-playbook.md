@@ -344,6 +344,21 @@ ChatGPT 登录的 Codex 额度耗尽时，外部 Agent 的发送按钮仍为 dis
 
 任一步骤数量不对，按 Desktop 新结构修改识别条件；不要改为按 hook 序号、压缩名或写入账号数据放行。若 Desktop 改为按 Thread、Model 或 host 豁免外部 Harness，或不再在 Renderer 中拦截，删除该模块。
 
+### 输入卡顿与所有权查找的性能边界
+
+`Codex (Renderer)` 的 CPU 同时包含官方界面和 codexhost 注入逻辑；Host Runtime 进程占用低不能排除扩展开销。排查输入卡顿时，抓取主页面的 CPU profile 和包含实际输入的 Timeline，关注 `scan`、`discoverRendererHosts`、`committedReactAncestors` 以及输入事件内的同步耗时。注入脚本可能没有 URL，需结合函数、脚本 ID 和构建产物定位，不能仅按 URL 统计。
+
+当前输入路径遵守以下边界：
+
+- 编辑器内部的文字、输入法组合及富文本子节点变化不触发 binding 的全局扫描；Transcript 的纯文字、工具输出和不含 Composer 的折叠变化也不会触发。编辑器/Composer 本身的替换、身份标记增删、inline Composer 插入/移除及包含它的祖先可见性变化仍会触发协调。输入提交校验不依赖该扫描，仍走原有输入/提交事件处理。
+- 侧边栏只在相关行及其子树、身份属性或包含行的节点插入/移除时扫描，不因 Transcript 更新扫描全部会话。两类 DOM 扫描按 `requestAnimationFrame` 合并；同步的输入/提交校验不改为等待下一帧。
+- 恢复原生控件的 `hidden` / `aria-hidden` 时仅写入变化的值，避免属性观察器收到无意义的重复通知。
+- 查询当前 Host 时复用本次已验证路由的 Host ID；本地路由也复用同一个客户端做本地设置同步。断开时仍单独读取已知 Host 身份，不能把远程 Host 错认成本地。
+- React `return` 链只作为候选路径，从 `root.current` 沿实际 `child`/`sibling` 边逐层验证（允许对应 alternate），验证成功才返回；遇到 bailout/reparenting 等路径不符的情况，回退到有界全树查找。不能为了性能直接信任旧 `return` 链。
+- 不跨调用缓存 Fiber 路径或 Request Manager。即使根对象未改变，也必须看到原生连接替换、断开和原地树变化。
+
+回归至少覆盖连续输入、多个挂载 Composer、编辑器替换、Host 切换/重连、旧 DOM Fiber 指向 alternate，以及 bailout 子节点保留旧父指针。性能比较应在同一棵真实树上核对新旧查找结果一致，再比较耗时；局部算法加速不等于已经证明整机 CPU 或完整交互同等改善。
+
 ## 七、常见误判
 
 ### 误判 1：Adapter ready 就代表全部修复

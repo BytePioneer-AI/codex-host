@@ -1,6 +1,6 @@
 import { installRendererDraftPrewarmPolicyDirect } from "@codexhost/desktop-control";
 import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, assert, expect, it, vi } from "vitest";
 import { installCurrentRendererAdapter } from "../src/versioned-renderer-adapter.js";
 
 const remoteId = "remote-ssh-discovered:linux";
@@ -129,6 +129,40 @@ it.each(["local", remoteId])(
         expect.anything(),
       );
     } finally {
+      adapter.dispose();
+    }
+  },
+);
+
+it.each(["local", remoteId])(
+  "reuses the validated %s route when reading current Host identity",
+  async (hostId) => {
+    const { adapter, managers } = await setup(hostId);
+    const routing = window.__codexhostHostRoutingV1;
+    assert(routing);
+    const forComposer = vi.spyOn(routing, "forComposer");
+    const hostIdForComposer = vi.spyOn(routing, "hostIdForComposer");
+    const forHost = vi.spyOn(routing, "forHost");
+    try {
+      expect(adapter.modelControl?.currentHostId?.()).toBe(hostId);
+      expect(forComposer).toHaveBeenCalledTimes(1);
+      expect(hostIdForComposer).not.toHaveBeenCalled();
+      if (hostId === "local") expect(forHost).not.toHaveBeenCalled();
+      else expect(forHost).toHaveBeenCalledExactlyOnceWith("local");
+
+      managers.delete(hostId);
+      expect(adapter.modelControl?.currentHostId?.()).toBe(hostId);
+      expect(hostIdForComposer).toHaveBeenCalledTimes(1);
+      expect(adapter.status.state).toBe("installing");
+
+      managers.set(hostId, manager(hostId));
+      expect(adapter.modelControl?.currentHostId?.()).toBe(hostId);
+      expect(adapter.status.state).toBe("ready");
+      expect(hostIdForComposer).toHaveBeenCalledTimes(1);
+    } finally {
+      forComposer.mockRestore();
+      hostIdForComposer.mockRestore();
+      forHost.mockRestore();
       adapter.dispose();
     }
   },

@@ -1,4 +1,8 @@
-import type { CodexhostError, HarnessLaunchSettings } from "@codexhost/shared-contracts";
+import type {
+  CodexhostError,
+  HarnessInstallationState,
+  HarnessLaunchSettings,
+} from "@codexhost/shared-contracts";
 
 import {
   getSharedAgentGroupPreferenceStore,
@@ -12,6 +16,7 @@ import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext }
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
+import { createHarnessVersionPanel } from "./harness-version-panel.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 export const CODEXHOST_GITHUB_ISSUES_NEW_URL =
@@ -39,6 +44,11 @@ export interface RendererConnectionDiagnostics {
   snapshot(): RendererConnectionSnapshot;
   refresh(): Promise<void>;
   openWebUi?(hostId: string, agent: ExternalRendererAgent): Promise<void>;
+  installation?(
+    hostId: string,
+    agent: ExternalRendererAgent,
+    action: "check" | "update",
+  ): Promise<HarnessInstallationState>;
   getLaunchSettings?(hostId: string, agent: ExternalRendererAgent): Promise<HarnessLaunchSettings>;
   setLaunchSettings?(
     hostId: string,
@@ -661,6 +671,9 @@ export function createConnectionsSettingsPage(
       // Background availability updates must not discard a path draft or an in-flight save.
       let launchControls: { hostId: string; itemKey: string; element: HTMLElement | null } | null =
         null;
+      // Panels are owned by the page and keyed by Host + Harness, not by each
+      // diagnostic render. Keep in-flight updates and check results across row switches.
+      const versionPanels = new Map<string, HTMLElement>();
       let latestSnapshot: RendererConnectionSnapshot | null = null;
       let disposeHostScroller = (): void => undefined;
 
@@ -849,6 +862,25 @@ export function createConnectionsSettingsPage(
             runRefresh,
           );
           launchControls = { hostId: selectedHost.hostId, itemKey: item.key, element };
+          const agent = item.agentSnapshot?.agent;
+          const installation = diagnostics?.installation?.bind(diagnostics);
+          if (
+            agent &&
+            item.availability !== "notInstalled" &&
+            item.availability !== "checking" &&
+            installation
+          ) {
+            const key = JSON.stringify([selectedHost.hostId, agent]);
+            let panel = versionPanels.get(key);
+            if (!panel) {
+              const hostId = selectedHost.hostId;
+              panel = createHarnessVersionPanel(document, messages, context.signal, agent, {
+                run: (action) => installation(hostId, agent, action),
+              });
+              versionPanels.set(key, panel);
+            }
+            inspector.append(panel);
+          }
         };
 
         const pinnedItem = items.find((item) => item.key === "renderer-adapter");

@@ -6,6 +6,8 @@ export {
   CONSOLE_OPEN_METHOD,
   isConsoleHostMethod,
   type ConsoleHostMethod,
+  consoleAnnouncementSchema,
+  type ConsoleAnnouncement,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
   type ConsoleOpenResult,

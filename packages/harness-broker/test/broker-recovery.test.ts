@@ -204,6 +204,7 @@ describe("broker recovery ownership", () => {
       const environments = ["first-parent", "second-parent"].map((threadId) => ({
         CODEXHOST_THREAD_ID: threadId,
         CODEXHOST_CLI_PATH: path.join(f.root, "codexhost"),
+        CODEXHOST_CLI_NODE_PATH: path.join(f.root, "node"),
         CODEXHOST_RUNTIME_ENDPOINT: "synthetic-runtime",
         CODEXHOST_RUNTIME_TOKEN: "synthetic-token",
       }));

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -56,6 +56,24 @@ describe("delegation Skill installation", () => {
     });
     expect(results.map((result) => result.status)).toEqual(["updated", "updated"]);
     await expect(readFile(destinations[0] ?? "", "utf8")).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
+  });
+
+  it("updates the v4 Skill shipped in v0.4.0-v0.6.0", async () => {
+    const root = await home();
+    const shipped = await readFile(
+      new URL("./fixtures/codexhost-delegation-v4.md", import.meta.url),
+      "utf8",
+    );
+    const destinations = paths(root);
+    for (const destination of destinations) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, shipped, "utf8");
+    }
+    const results = await installDelegationSkills({ homeDirectory: root });
+    expect(results.map((result) => result.status)).toEqual(["updated", "updated"]);
+    for (const destination of destinations) {
+      await expect(readFile(destination, "utf8")).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
+    }
   });
 
   it("preserves a user-modified copy while independently installing the other destination", async () => {

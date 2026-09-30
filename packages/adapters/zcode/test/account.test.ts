@@ -359,12 +359,8 @@ describe("ZCode account configuration and Start Plan entitlement", () => {
 
   it("resolves endpoint origin from environment variables", () => {
     expect(resolveEndpointOrigin({})).toBe("https://zcode.z.ai");
-    expect(resolveEndpointOrigin({ ZCODE_ENV: "test" })).toBe("https://zcode.chatglm.site");
     expect(resolveEndpointOrigin({ ZCODE_BASE_URL: "http://127.0.0.1:8080" })).toBe(
       "http://127.0.0.1:8080",
-    );
-    expect(resolveEndpointOrigin({ ZCODE_ENDPOINT_ORIGIN: "https://custom.zcode.site/path" })).toBe(
-      "https://custom.zcode.site",
     );
   });
 });

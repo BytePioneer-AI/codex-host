@@ -173,4 +173,96 @@ describe("delegation control server", () => {
       await server.close();
     }
   });
+
+  it("registers a watch on the delegated child for the Host-resolved parent", async () => {
+    const started = {
+      delegationId: "delegation-1",
+      threadId: "child",
+      turnId: "turn-1",
+      harnessId: "pi" as const,
+      deepLink: "codex://threads/child",
+      status: "running" as const,
+      next: { read: "read", wait: "wait" },
+    };
+    const start = vi.fn(async (): Promise<typeof started & { parentThreadId?: string }> => ({
+      ...started,
+      parentThreadId: "parent",
+    }));
+    const watch = vi.fn(async (input: { threadId: string; notifyThreadId: string }) => ({
+      threadId: input.threadId,
+      notifyThreadId: input.notifyThreadId,
+      state: "watching" as const,
+      status: "running" as const,
+      timeoutMs: 5_000,
+    }));
+    const api = {
+      listHarnesses: vi.fn(),
+      inspect: vi.fn(),
+      start,
+      send: vi.fn(),
+      cancel: vi.fn(),
+      read: vi.fn(),
+      wait: vi.fn(),
+      list: vi.fn(),
+    };
+    const server = await startDelegationControlServer({
+      token,
+      api,
+      watchApi: { watch, watches: vi.fn(async () => ({ watches: [] })) },
+    });
+    const unsupported = await startDelegationControlServer({ token, api });
+    try {
+      const response = await fetch(
+        `${server.endpoint}/v1/delegate/start`,
+        authorized({ harnessId: "pi", task: "work", watchTimeoutMs: 5_000 }),
+      );
+      await expect(response.json()).resolves.toMatchObject({
+        threadId: "child",
+        watch: { state: "watching", notifyThreadId: "parent" },
+      });
+      // The watch option never reaches the Host session's start operation.
+      expect(start).toHaveBeenCalledWith({ harnessId: "pi", task: "work" });
+      expect(watch).toHaveBeenCalledWith({
+        threadId: "child",
+        notifyThreadId: "parent",
+        timeoutMs: 5_000,
+      });
+
+      watch.mockRejectedValueOnce(new Error("synthetic watch failure"));
+      const failed = await fetch(
+        `${server.endpoint}/v1/delegate/start`,
+        authorized({ harnessId: "pi", task: "work", watchTimeoutMs: 5_000 }),
+      );
+      expect(failed.status).toBe(200);
+      await expect(failed.json()).resolves.toMatchObject({
+        threadId: "child",
+        watch: { state: "notRegistered", reason: "synthetic watch failure" },
+      });
+
+      // Without a Host-resolved parent the watch is reported as not registered.
+      start.mockResolvedValueOnce(started);
+      watch.mockRejectedValueOnce(new Error("Notified Thread is required; pass --notify <thread>"));
+      const orphan = await fetch(
+        `${server.endpoint}/v1/delegate/start`,
+        authorized({ harnessId: "pi", task: "work", watchTimeoutMs: 5_000 }),
+      );
+      await expect(orphan.json()).resolves.toMatchObject({
+        watch: { state: "notRegistered", reason: expect.stringContaining("--notify") },
+      });
+      expect(watch).toHaveBeenLastCalledWith({
+        threadId: "child",
+        notifyThreadId: "",
+        timeoutMs: 5_000,
+      });
+
+      const rejected = await fetch(
+        `${unsupported.endpoint}/v1/thread/watch`,
+        authorized({ threadId: "child", notifyThreadId: "parent", timeoutMs: 5_000 }),
+      );
+      expect(rejected.status).toBe(400);
+    } finally {
+      await server.close();
+      await unsupported.close();
+    }
+  });
 });

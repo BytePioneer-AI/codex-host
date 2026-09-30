@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { HarnessLaunchSettingsStore } from "../src/harness-launch-settings.js";
+import { HarnessLaunchSettingsStore } from "../src/launch-settings.js";
 
 const roots: string[] = [];
 afterEach(async () => {

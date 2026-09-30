@@ -474,6 +474,16 @@ export interface ItemCompletedEvent {
   snapshot: HostItemSnapshot;
 }
 
+/**
+ * The Item keeps running after its Turn completes (a native background command).
+ * It settles later with `item.updated` / `item.completed` on the same Turn.
+ */
+export interface ItemDetachedEvent {
+  type: "item.detached";
+  turnId: HostTurnId;
+  itemId: HostItemId;
+}
+
 export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
@@ -503,6 +513,7 @@ export type HostEvent =
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
+  | ItemDetachedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent
   | SessionFaultedEvent;
@@ -519,6 +530,10 @@ export interface HarnessSession {
   readonly commands?: HarnessCommandCapability;
 
   refreshUsage?(): Promise<void>;
+  /** Native background work (e.g. a background command) is still running; the Session must not be released. */
+  hasBackgroundWork?(): boolean;
+  /** Stops every running detached Item; each still settles through its own events. */
+  stopBackgroundWork?(): Promise<HarnessResult<void>>;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;

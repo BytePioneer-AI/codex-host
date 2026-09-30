@@ -14,6 +14,7 @@ import {
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
+  type StoredSectionPlacementV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "@codexhost/mapping-store";
@@ -70,6 +71,10 @@ export interface ExternalThreadStore {
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
   removeProvisional(hostThreadId: HostThreadId): Promise<void>;
   removeThread(hostThreadId: HostThreadId): Promise<void>;
+  listSectionPlacements(): Promise<StoredSectionPlacementV1[]>;
+  replaceSectionPlacements(
+    placements: readonly StoredSectionPlacementV1[],
+  ): Promise<StoredSectionPlacementV1[]>;
   close(): Promise<void>;
 }
 
@@ -118,6 +123,16 @@ export class ExternalThreadRepository {
 
   list(): Promise<StoredThreadRecordV1[]> {
     return this.store.listThreads();
+  }
+
+  listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {
+    return this.store.listSectionPlacements();
+  }
+
+  replaceSectionPlacements(
+    placements: readonly StoredSectionPlacementV1[],
+  ): Promise<StoredSectionPlacementV1[]> {
+    return this.store.replaceSectionPlacements(placements);
   }
 
   materializeSubagent(parent: StoredThreadRecordV1, child: HostSubagentState) {
@@ -482,12 +497,26 @@ export function createExternalThreadRecordInput(input: {
   };
 }
 
+/** Official Thread section fields; External Threads take them from their Host placement. */
+export function threadSectionFields(placement?: StoredSectionPlacementV1): {
+  section: StoredSectionPlacementV1["section"] | null;
+  sectionEnteredAt: number | null;
+} {
+  return placement
+    ? {
+        section: placement.section,
+        sectionEnteredAt: Math.floor(Date.parse(placement.enteredAt) / 1_000),
+      }
+    : { section: null, sectionEnteredAt: null };
+}
+
 export function externalThreadValue(input: {
   record: StoredThreadRecordV1;
   turns: JsonObject[];
   sessionId: string;
   running?: boolean;
   loaded?: boolean;
+  placement?: StoredSectionPlacementV1;
 }): JsonObject {
   const { record } = input;
   const createdAt = Math.floor(Date.parse(record.createdAt) / 1_000);
@@ -557,6 +586,7 @@ export function externalThreadValue(input: {
     canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,
     historyMode: record.historyMode,
     isPinned: false,
+    ...threadSectionFields(input.placement),
     agentNickname: record.subagent ? record.title || null : null,
     agentRole: record.subagent?.role ?? null,
     extra: null,

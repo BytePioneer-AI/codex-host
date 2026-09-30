@@ -1,5 +1,8 @@
 type Fiber = Record<string, unknown>;
 
+/** Dispatched on the Renderer global when the bounded fiber walk gives up. */
+export const REACT_FIBER_WALK_LIMIT_EVENT = "codexhost:react-fiber-walk-limit";
+
 /** DOM Fiber pointers can retain the alternate tree after a React commit.
  * Read ownership from the published tree, including its actual parent path:
  * bailout/reused children can also retain stale `return` pointers.
@@ -8,15 +11,29 @@ export function committedReactAncestors(value: unknown): readonly Fiber[] {
   // Self-contained: Desktop Control serializes this function for Renderer evaluation.
   // Bound traversal work, not valid UI nesting. Existing Thread layouts can
   // exceed 200 ancestors even when their request manager is nearby.
-  const MAX_VISITED_FIBERS = 20_000;
+  // Large Desktop sidebars already exceed 20,000 committed fibers.
+  const MAX_VISITED_FIBERS = 200_000;
   const fiber = (value: unknown): Fiber | null =>
     typeof value === "object" && value !== null ? (value as Fiber) : null;
+  // An empty result alone leaves the Composer on "Loading models…" with no
+  // cause. The event name is inlined because this function is serialized.
+  const exhausted = (): readonly Fiber[] => {
+    const target = globalThis as { dispatchEvent?: (event: Event) => boolean };
+    if (typeof target.dispatchEvent === "function" && typeof CustomEvent === "function")
+      target.dispatchEvent(
+        new CustomEvent("codexhost:react-fiber-walk-limit", {
+          detail: { limit: MAX_VISITED_FIBERS },
+        }),
+      );
+    return [];
+  };
   const first = fiber(value);
   if (!first) return [];
   const previous: Fiber[] = [];
   const seen = new Set<Fiber>();
   for (let node: Fiber | null = first; node; node = fiber(node.return)) {
-    if (seen.has(node) || seen.size >= MAX_VISITED_FIBERS) return [];
+    if (seen.has(node)) return [];
+    if (seen.size >= MAX_VISITED_FIBERS) return exhausted();
     seen.add(node);
     previous.push(node);
   }
@@ -50,5 +67,5 @@ export function committedReactAncestors(value: unknown): readonly Fiber[] {
     const child = fiber(entry.node.child);
     if (child) stack.push({ node: child, parent: entry });
   }
-  return [];
+  return stack.length > 0 ? exhausted() : [];
 }

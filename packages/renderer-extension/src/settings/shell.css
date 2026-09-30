@@ -71,30 +71,28 @@
   border: 0;
 }
 
-.codexhost-settings-dialog {
-  /* Native window controls sit above the DOM top layer. Center below them. */
-  inset: var(--settings-titlebar-height) 0 0;
-  width: min(1120px, calc(100vw - 32px));
-  height: min(780px, calc(100vh - var(--settings-titlebar-height) - 32px));
+.codexhost-settings-page {
+  /*
+   * Covers the native content area beside the navigation rail. The rail's
+   * geometry arrives as custom properties; window controls keep the title bar.
+   * The layer sits above native content but below native popovers (z-50).
+   */
+  position: fixed;
+  z-index: 40;
+  top: max(var(--settings-titlebar-height), var(--codexhost-settings-rail-top, 0px));
+  right: 0;
+  bottom: 0;
+  left: var(--codexhost-settings-rail-right, 0px);
+  display: flex;
+  flex-direction: column;
   -webkit-app-region: no-drag;
-  max-width: none;
-  max-height: none;
-  margin: auto;
+  margin: 0;
   padding: 0;
   overflow: hidden;
   color: var(--settings-text);
   background: var(--settings-bg);
-  border: 1px solid var(--settings-border);
-  border-radius: 14px;
-  box-shadow: light-dark(0 16px 42px rgb(0 0 0 / 16%), 0 20px 54px rgb(0 0 0 / 42%));
-}
-
-.codexhost-settings-dialog::backdrop {
-  /* Backdrops do not inherit the shell's custom properties. */
-  top: env(titlebar-area-height, 0px);
-  -webkit-app-region: no-drag;
-  background: light-dark(rgb(0 0 0 / 24%), rgb(0 0 0 / 56%));
-  backdrop-filter: blur(1px);
+  border-left: 1px solid var(--settings-border);
+  container: codexhost-settings-page / inline-size;
 }
 
 .settings-frame,
@@ -107,7 +105,9 @@
 
 .settings-frame {
   display: flex;
+  flex: 1;
   flex-direction: column;
+  min-height: 0;
 }
 
 .settings-layout {
@@ -1965,13 +1965,8 @@
   stroke: currentColor;
 }
 
-@media (max-width: 720px) {
-  .codexhost-settings-dialog {
-    width: calc(100vw - 16px);
-    height: calc(100vh - var(--settings-titlebar-height) - 16px);
-    border-radius: 10px;
-  }
-
+/* The page is narrower than the window, so compact layout follows its own width. */
+@container codexhost-settings-page (max-width: 720px) {
   .settings-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);

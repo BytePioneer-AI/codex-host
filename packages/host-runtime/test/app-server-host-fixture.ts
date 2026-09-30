@@ -99,6 +99,9 @@ export class JsonLineCollector {
   waitFor(predicate: (message: JsonObject) => boolean): Promise<JsonObject> {
     const existing = this.messages.find(predicate);
     if (existing) return Promise.resolve(existing);
+    // Match the Windows test budget in tests/vitest.config.js: disk-backed Host
+    // requests can exceed two seconds under the runner's filesystem load.
+    const timeoutMs = process.platform === "win32" ? 20_000 : 2_000;
     return new Promise<JsonObject>((resolve, reject) => {
       const waiter = {
         predicate,
@@ -107,7 +110,7 @@ export class JsonLineCollector {
           const index = this.#waiters.indexOf(waiter);
           if (index >= 0) this.#waiters.splice(index, 1);
           reject(new Error("Timed out waiting for Host output"));
-        }, 2_000),
+        }, timeoutMs),
       };
       this.#waiters.push(waiter);
     });

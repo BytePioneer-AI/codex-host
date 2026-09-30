@@ -133,18 +133,22 @@ mod tests {
     use std::fs;
     use std::io;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+    static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 
     fn fixture() -> (PathBuf, PathBuf, UpdateHandoff) {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("codexhost-handoff-{}-{unique}", std::process::id()));
-        fs::create_dir(&root).unwrap();
+        let root = loop {
+            let id = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+            let root =
+                std::env::temp_dir().join(format!("codexhost-handoff-{}-{id}", std::process::id()));
+            match fs::create_dir(&root) {
+                Ok(()) => break root,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("failed to create handoff fixture: {error}"),
+            }
+        };
         let request = root.join("request-v1.json");
         (root, request, UpdateHandoff::from_token(TOKEN).unwrap())
     }

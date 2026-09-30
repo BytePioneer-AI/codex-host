@@ -44,12 +44,45 @@ export function committedReactAncestors(value: unknown): readonly Fiber[] {
   const current = fiber(rootState.current);
   if (!current) return [];
 
+  // Most DOM pointers already follow the committed tree. Validate every edge
+  // against the parent's child list before trusting return pointers, so reused
+  // children with stale parents still take the published-tree search below.
+  const directPath = (path: Fiber[]): boolean => {
+    if (path.at(-1) !== current) return false;
+    let visited = 0;
+    for (let index = 0; index < path.length - 1; index += 1) {
+      const child = path[index];
+      const siblings = new Set<Fiber>();
+      let node = fiber(path[index + 1]?.child);
+      while (node !== child) {
+        if (!node || siblings.has(node) || ++visited >= MAX_VISITED_FIBERS) return false;
+        siblings.add(node);
+        node = fiber(node.sibling);
+      }
+    }
+    return true;
+  };
+  if (directPath(previous)) return previous;
+  const alternate = fiber(first.alternate);
+  if (alternate) {
+    const path: Fiber[] = [];
+    const visited = new Set<Fiber>();
+    for (let node: Fiber | null = alternate; node; node = fiber(node.return)) {
+      if (visited.has(node) || visited.size >= MAX_VISITED_FIBERS) {
+        path.length = 0;
+        break;
+      }
+      visited.add(node);
+      path.push(node);
+    }
+    if (directPath(path)) return path;
+  }
+
   interface Entry {
     node: Fiber;
     parent: Entry | null;
   }
   const stack: Entry[] = [{ node: current, parent: null }];
-  const alternate = fiber(first.alternate);
   seen.clear();
   while (stack.length > 0 && seen.size < MAX_VISITED_FIBERS) {
     const entry = stack.pop();

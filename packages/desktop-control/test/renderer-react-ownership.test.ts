@@ -121,6 +121,33 @@ describe("committed React ownership", () => {
     expect(events).toEqual([]);
   });
 
+  it.each([false, true])("skips unrelated committed subtrees (alternate: %s)", (useAlternate) => {
+    const root: Fiber = {};
+    const state = { current: root };
+    root.stateNode = state;
+    const composer: Fiber = { return: root };
+    const unrelated: Fiber = { sibling: composer };
+    const readChild = vi.fn(() => ({}));
+    Object.defineProperty(unrelated, "child", { get: readChild });
+    root.child = unrelated;
+    const pointer: Fiber = useAlternate
+      ? { return: { stateNode: state }, alternate: composer }
+      : composer;
+    expect(committedReactAncestors(pointer)).toEqual([composer, root]);
+    expect(readChild).not.toHaveBeenCalled();
+  });
+
+  it("falls back when a return path reaches the current root through an uncommitted parent", () => {
+    const root: Fiber = {};
+    root.stateNode = { current: root };
+    const actualParent: Fiber = { return: root };
+    const staleParent: Fiber = { return: root };
+    const composer: Fiber = { return: staleParent };
+    actualParent.child = composer;
+    root.child = actualParent;
+    expect(committedReactAncestors(composer)).toEqual([composer, actualParent, root]);
+  });
+
   it("announces an exhausted walk instead of failing silently", () => {
     const events = captureLimitEvents();
     const first: Fiber = {};

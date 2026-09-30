@@ -48,7 +48,10 @@ import {
   rendererHarnessMessages,
   rendererLiveCommandsPendingNotice,
 } from "./renderer-harness-localization.js";
-import { installReasoningTranscriptSoftWrap } from "./renderer-transcript-dom.js";
+import {
+  installReasoningTranscriptSoftWrap,
+  TRANSCRIPT_ITEM_SELECTOR,
+} from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
 import {
   createRendererCodexUsageGate,
@@ -663,6 +666,27 @@ export function applyComposerModelWrite(
   if (target?.[0] === "conversation") return true;
   if (!isComposerModelWriteAllowed(target)) return false;
   return write();
+}
+
+export function mutationMayAffectComposer(mutation: MutationRecord): boolean {
+  const target =
+    mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+  if (!target || target.closest(CODEX_COMPOSER_SELECTOR)) return true;
+  if (mutation.type === "characterData") return false;
+  if (
+    !target.closest(`${TRANSCRIPT_ITEM_SELECTOR}, [data-turn-key], [data-content-search-turn-key]`)
+  )
+    return true;
+  // Transcript text, tool output and disclosure changes do not replace the
+  // Composer. Still handle inline Composers added or removed with a transcript.
+  return (
+    mutation.type === "childList" &&
+    [...mutation.addedNodes, ...mutation.removedNodes].some(
+      (node) =>
+        node instanceof Element &&
+        (node.matches(CODEX_COMPOSER_SELECTOR) || node.querySelector(CODEX_COMPOSER_SELECTOR)),
+    )
+  );
 }
 
 function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
@@ -2596,7 +2620,7 @@ export function installRendererBindingProbe(
     refreshTargetsOnNextScan ||= refreshTargets;
     if (scanScheduled || disposed) return;
     scanScheduled = true;
-    queueMicrotask(scan);
+    requestAnimationFrame(scan);
   };
 
   const composerRootsWithin = (node: Node): Element[] => {
@@ -2739,8 +2763,10 @@ export function installRendererBindingProbe(
   };
 
   const mutationObserver = new MutationObserver((mutations) => {
-    transferReplacedComposers(mutations);
-    scheduleScan(mutations.some(mutationMayChangeComposerTarget));
+    const relevant = mutations.filter(mutationMayAffectComposer);
+    if (relevant.length === 0) return;
+    transferReplacedComposers(relevant);
+    scheduleScan(relevant.some(mutationMayChangeComposerTarget));
   });
   const onHostRouteChange = (): void => {
     const hostId = activeModelHostId();

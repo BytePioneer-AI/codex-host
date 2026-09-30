@@ -8,6 +8,14 @@ const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
 
+test.beforeEach(async ({ page }) => {
+  // The Renderer reads localStorage; about:blank does not provide an origin.
+  await page.route("http://codexhost.test/", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" }),
+  );
+  await page.goto("http://codexhost.test/");
+});
+
 await build({
   entryPoints: [path.join(repositoryRoot, "packages/shared-contracts/src/index.ts")],
   bundle: true,

@@ -48,5 +48,6 @@ codexhost remote uninstall  # 卸载，保留 Thread 映射数据
 - **`codexhost/harness/inspect is unsupported on this Host connection`**：当前 SSH 连接没有接入 codexhost。确认被控机器已安装并启动相同版本的 codexhost，然后重新连接 SSH 工作区。
 - **`remote status` 提示 degraded 或需要重新安装**：重新执行 `codexhost remote install`，再执行 `codexhost remote start`。
 - **原生 Codex 请求返回 `Official request failed; retry explicitly`**：被控机器上的官方 Codex 进程退出后，codexhost 会自动按退避重新拉起它，重新连接 SSH 工作区会立即重试。若持续失败，执行 `codexhost remote stop` 和 `codexhost remote start`。
+- **重连后几秒显示已连接、随即断开，再连一次才成功**：被控机器上残留了上一个 listener 的控制 socket（例如 listener 被强制结束）时，旧版本的启动检查会把新 listener 误判为未就绪，并在 10 秒后将其结束。升级到包含修复的版本即可。临时处理：通常再重连一次就能恢复，因为被结束的 listener 正常退出时会删除这个 socket；如果仍然反复出现，先确认被控机器上没有 listener 进程（`pgrep -f '^codexhost remote app-server listener'` 无输出），再删除 `~/.codex/app-server-control/app-server-control.sock`（设置了 `CODEX_HOME` 时位于其下）后重连。
 - **看不到某个 Harness**：在被控机器上检查该 Harness 是否已安装并登录，然后在设置中点击「重新诊断连接」。
 - **macOS 上安装失败，提示 launchd / `gui/$UID` 错误**：被控机器需要有已登录的图形会话，登录后重新执行 `codexhost remote install`。

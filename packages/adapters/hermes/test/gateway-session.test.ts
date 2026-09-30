@@ -241,6 +241,19 @@ describe("Hermes gateway native interactions", () => {
       expect.objectContaining({ value: "gpt-5" }),
     );
   });
+  it.each([
+    "openai:--provider",
+    "custom:omniroute:-model",
+    "openai:model --provider other",
+    "provider name:model",
+    "provider\tname:model",
+    "-provider:model",
+    "openai:",
+  ])("rejects unsafe parsed model-switch arguments from %j", async (modelId) => {
+    const f = fixture();
+    await expect(f.bridge.setModel(modelId)).rejects.toThrow("Invalid Hermes Model choice");
+    expect(f.request).not.toHaveBeenCalled();
+  });
 });
 
 describe("Hermes gateway native turn projection", () => {

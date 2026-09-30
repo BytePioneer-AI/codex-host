@@ -212,6 +212,13 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     // switch path misparses `custom:<name>:<model>`, so the provider goes in
     // its explicit flag and the confirmation below still compares the choice.
     const choice = await resolveGatewayModel(this.transport, modelId);
+    // resolveGatewayModel validates the input; validate its parsed tokens too,
+    // because config.set reparses this value as model-switch arguments.
+    if (
+      !choice.model ||
+      [choice.model, choice.provider].some((value) => /\s/u.test(value) || value.startsWith("-"))
+    )
+      throw new Error("Invalid Hermes Model choice for gateway switching");
     const result = await this.transport.request("config.set", {
       key: "model",
       value: choice.provider ? `${choice.model} --provider ${choice.provider}` : modelId,

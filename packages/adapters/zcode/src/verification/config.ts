@@ -18,7 +18,13 @@ const responseSchema = z.object({
   data: z.object({
     configs: z.object({
       captcha: z
-        .object({ enabled: z.boolean().optional(), region: field, prefix: field, sceneId: field })
+        .object({
+          enabled: z.boolean().optional(),
+          skip_model_request: z.boolean().optional(),
+          region: field,
+          prefix: field,
+          sceneId: field,
+        })
         .optional(),
     }),
   }),
@@ -26,7 +32,7 @@ const responseSchema = z.object({
 
 /**
  * Reads the unauthenticated client configuration. Returns undefined when Desktop would send no
- * CAPTCHA headers: verification disabled or its fields incomplete.
+ * CAPTCHA headers: verification disabled, skip_model_request true, or its fields incomplete.
  */
 export function createCaptchaConfigSource(
   /** The installed App's version, which Desktop reports as `app_version`. */
@@ -46,7 +52,11 @@ export function createCaptchaConfigSource(
       throw new ZcodeError("unavailable", "ZCode client configuration is unavailable", true);
     const captcha = parsed.data.data.configs.captcha;
     const value =
-      captcha?.enabled !== false && captcha?.region && captcha.prefix && captcha.sceneId
+      captcha?.enabled !== false &&
+      captcha?.skip_model_request !== true &&
+      captcha?.region &&
+      captcha.prefix &&
+      captcha.sceneId
         ? { region: captcha.region, prefix: captcha.prefix, sceneId: captcha.sceneId }
         : undefined;
     cached = { expires: Date.now() + CONFIG_TTL_MS, value };

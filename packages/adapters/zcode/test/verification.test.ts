@@ -4,6 +4,7 @@ import {
   type ZcodeVerifier,
   type ZcodeVerifierOptions,
 } from "../src/verification/index.js";
+import { createCaptchaConfigSource } from "../src/verification/config.js";
 import { DEFAULT_TIMING, verificationPage } from "../src/verification/page.js";
 
 interface Message {
@@ -175,6 +176,40 @@ describe("ZCode verification page", () => {
     captchaConfig = { enabled: true, region: "r", prefix: "p" };
     expect(await start(host.openLocalPage).verify(new AbortController().signal)).toEqual({});
     expect(host.openLocalPage).not.toHaveBeenCalled();
+  });
+
+  it("honors skip_model_request: returns undefined / no headers when true, returns config when false or absent", async () => {
+    const source = createCaptchaConfigSource("9.8.7");
+
+    // skip_model_request: true -> undefined
+    captchaConfig = { ...captcha, skip_model_request: true };
+    expect(await source(new AbortController().signal)).toBeUndefined();
+
+    // Verifier with skip_model_request: true returns empty headers without opening a page
+    const host = desktop();
+    const verifierInstance = start(host.openLocalPage);
+    expect(await verifierInstance.verify(new AbortController().signal)).toEqual({});
+    expect(host.openLocalPage).not.toHaveBeenCalled();
+    await verifierInstance.close();
+
+    // skip_model_request: false -> returns config
+    const sourceFalse = createCaptchaConfigSource("9.8.7-false");
+    captchaConfig = { ...captcha, skip_model_request: false };
+    expect(await sourceFalse(new AbortController().signal)).toEqual({
+      region: "test-region",
+      prefix: "test-prefix",
+      sceneId: "scene",
+    });
+
+    // skip_model_request absent -> returns config
+    const sourceAbsent = createCaptchaConfigSource("9.8.7-absent");
+    captchaConfig = { ...captcha };
+    delete (captchaConfig as { skip_model_request?: boolean }).skip_model_request;
+    expect(await sourceAbsent(new AbortController().signal)).toEqual({
+      region: "test-region",
+      prefix: "test-prefix",
+      sceneId: "scene",
+    });
   });
 
   it("fails clearly without a local in-app browser", async () => {

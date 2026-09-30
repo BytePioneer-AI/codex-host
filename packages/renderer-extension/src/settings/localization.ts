@@ -114,6 +114,7 @@ export interface RendererSettingsMessages {
   readonly accountNativeManagementHint: string;
   readonly accountDefaultHint: string;
   readonly accountCreditsRemaining: string;
+  readonly accountBalanceRemaining: string;
   readonly accountCreditsLoading: string;
   readonly accountCreditsEmpty: string;
   readonly accountCreditsFailed: string;
@@ -181,6 +182,19 @@ export interface RendererSettingsMessages {
   readonly connectionDeepSeekTestedVersions: string;
   readonly connectionInstall: string;
   readonly connectionInstallDescription: string;
+  readonly harnessVersionTitle: string;
+  readonly harnessVersionCurrent: string;
+  readonly harnessVersionLatest: string;
+  readonly harnessVersionCheck: string;
+  readonly harnessVersionChecking: string;
+  readonly harnessVersionUpdate: string;
+  readonly harnessVersionUpdating: string;
+  readonly harnessVersionUpToDate: string;
+  readonly harnessVersionUpdated: string;
+  readonly harnessVersionFailed: string;
+  readonly harnessVersionUnsupported: string;
+  readonly harnessVersionManual: string;
+  readonly harnessVersionNote: string;
   readonly connectionErrorTitle: string;
   readonly connectionErrorLog: string;
   readonly connectionOpenIssue: string;
@@ -364,6 +378,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "This account comes from {harness}'s native authentication. This page only displays identity and limits; manage sign-in, sign-out and switching in the native client.",
   accountDefaultHint: "This is the current identity for all Codex Threads.",
   accountCreditsRemaining: "Remaining",
+  accountBalanceRemaining: "remaining balance",
   accountCreditsLoading: "Loading limits…",
   accountCreditsEmpty: "No limit data available",
   accountCreditsFailed: "Could not load limits",
@@ -435,6 +450,21 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "Supported DSH versions: 0.1.2-rc.1, 0.1.5-rc.1, 0.1.5-rc.2, 0.1.5-rc.3, 0.1.7-rc.1 and 0.1.7-rc.2. Other versions may connect after native protocol checks, but are not listed as supported.",
   connectionInstall: "Install",
   connectionInstallDescription: "This Harness was not detected.",
+  harnessVersionTitle: "Harness CLI version",
+  harnessVersionCurrent: "Current version",
+  harnessVersionLatest: "Latest version",
+  harnessVersionCheck: "Check for updates",
+  harnessVersionChecking: "Checking versions…",
+  harnessVersionUpdate: "Update",
+  harnessVersionUpdating: "Updating…",
+  harnessVersionUpToDate: "Up to date",
+  harnessVersionUpdated: "Update verified. New sessions will use the new version.",
+  harnessVersionFailed:
+    "Could not complete the operation. Check the native installation and check for updates again.",
+  harnessVersionUnsupported: "This Host or plugin does not support CLI version management.",
+  harnessVersionManual: "Use the original installer to update this installation.",
+  harnessVersionNote:
+    "Updates the Harness CLI on the selected Host, not the codexhost plugin. Existing sessions are not restarted; an update already started continues if you leave this page.",
   connectionErrorTitle: "Connection check failed",
   connectionErrorLog: "Error log",
   connectionOpenIssue: "Open GitHub Issue",
@@ -633,6 +663,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "此账号来自 {harness} 的原生登录。这里只读展示身份与额度；登录、退出和切换请在其原生客户端中完成。",
   accountDefaultHint: "所有 Codex 会话当前使用此身份。",
   accountCreditsRemaining: "剩余",
+  accountBalanceRemaining: "剩余余额",
   accountCreditsLoading: "正在读取额度…",
   accountCreditsEmpty: "暂无额度数据",
   accountCreditsFailed: "额度读取失败",
@@ -702,6 +733,20 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。其他版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
+  harnessVersionTitle: "Harness CLI 版本",
+  harnessVersionCurrent: "当前版本",
+  harnessVersionLatest: "最新版本",
+  harnessVersionCheck: "检查更新",
+  harnessVersionChecking: "正在检查版本…",
+  harnessVersionUpdate: "更新",
+  harnessVersionUpdating: "正在更新…",
+  harnessVersionUpToDate: "已是最新",
+  harnessVersionUpdated: "已确认更新成功，新会话将使用新版本。",
+  harnessVersionFailed: "操作未完成，请检查原生安装并重新检查更新。",
+  harnessVersionUnsupported: "当前 Host 或插件不支持 CLI 版本管理。",
+  harnessVersionManual: "请使用原安装方式更新此 Harness。",
+  harnessVersionNote:
+    "更新的是所选 Host 上的 Harness CLI，不是 codexhost 插件。已有会话不会重启；离开页面后已开始的更新仍会继续。",
   connectionErrorTitle: "连接检查失败",
   connectionErrorLog: "错误日志",
   connectionOpenIssue: "提交 GitHub Issue",

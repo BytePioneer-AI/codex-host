@@ -37,7 +37,26 @@ const { outputFiles } = await build({
         const shell = mountRendererSettingsShell(registry, document, messages, {
           onOpenChange: (open) => events.push(open),
         });
-        globalThis.settingsFixture = { shell, events };
+        // Model the native distinction: reselecting Home opens "/", while
+        // returning from another destination restores the previous conversation.
+        const nativeNavigations = [];
+        history.replaceState({}, "", "/thread/settings-test");
+        document.body.addEventListener("click", (event) => {
+          const destination = event.target.closest("[data-sidebar-destination]");
+          if (!destination) return;
+          const id = destination.getAttribute("data-sidebar-destination");
+          const wasCurrent = destination.getAttribute("aria-current") === "page";
+          nativeNavigations.push(id);
+          for (const button of document.querySelectorAll("[data-sidebar-destination]")) {
+            button.toggleAttribute("data-selected", button === destination);
+            if (button === destination) button.setAttribute("aria-current", "page");
+            else button.removeAttribute("aria-current");
+          }
+          history.pushState({}, "", id === "builtin:home"
+            ? (wasCurrent ? "/" : "/thread/settings-test")
+            : "/plugins");
+        });
+        globalThis.settingsFixture = { shell, events, nativeNavigations };
       };
     `,
     resolveDir: path.resolve(import.meta.dirname, "../.."),
@@ -93,13 +112,15 @@ function openSettings(page: Page, pageId?: string) {
 
 function fixtureState(page: Page) {
   return page.evaluate(() => {
-    const { shell, events } = Reflect.get(globalThis, "settingsFixture");
+    const { shell, events, nativeNavigations } = Reflect.get(globalThis, "settingsFixture");
     const home = document.querySelector('[data-sidebar-destination="builtin:home"]');
     const rail = document.querySelector("nav[data-app-navigation-rail]");
     if (!home || !rail) throw new Error("Native rail fixture missing");
     return {
       open: shell.open,
       events: [...events],
+      nativeNavigations: [...nativeNavigations],
+      pathname: location.pathname,
       railMarked: rail.hasAttribute("data-codexhost-settings-open"),
       railStyles: document.querySelectorAll("[data-codexhost-settings-rail-style]").length,
       homeHighlight: getComputedStyle(home, "::before").opacity,
@@ -143,6 +164,98 @@ test("covers the content beside the rail and hides native selection without edit
   });
 });
 
+for (const activation of ["click", "Enter", "Space"] as const) {
+  test(`Home dismisses settings without resetting the conversation (${activation})`, async ({
+    page,
+  }) => {
+    await setup(page);
+    await openSettings(page, "appearance");
+    const home = page.locator('[data-sidebar-destination="builtin:home"]');
+    if (activation === "click") await home.click();
+    else {
+      await home.focus();
+      await page.keyboard.press(activation);
+    }
+
+    await expect(page.locator(".codexhost-settings-page")).toBeHidden();
+    expect(await fixtureState(page)).toMatchObject({
+      open: false,
+      events: [true, false],
+      pathname: "/thread/settings-test",
+      nativeNavigations: [],
+      railMarked: false,
+      railStyles: 0,
+      homeSelected: true,
+    });
+
+    // The interception belongs only to the open settings page.
+    await home.click();
+    expect(await fixtureState(page)).toMatchObject({
+      pathname: "/",
+      nativeNavigations: ["builtin:home"],
+    });
+  });
+}
+
+test("Home from settings over another destination uses native conversation restoration", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.locator('[data-sidebar-destination="builtin:plugins"]').click();
+  await openSettings(page);
+  await page.locator('[data-sidebar-destination="builtin:home"]').click();
+
+  await expect(page.locator(".codexhost-settings-page")).toBeHidden();
+  expect(await fixtureState(page)).toMatchObject({
+    pathname: "/thread/settings-test",
+    nativeNavigations: ["builtin:plugins", "builtin:home"],
+  });
+});
+
+for (const selection of ["missing", "ambiguous"] as const) {
+  test(`does not intercept Home with ${selection} native selection`, async ({ page }) => {
+    await setup(page);
+    await page.evaluate((selection) => {
+      if (selection === "missing") {
+        document
+          .querySelector('[data-sidebar-destination="builtin:home"]')
+          ?.removeAttribute("aria-current");
+      } else {
+        document
+          .querySelector('[data-sidebar-destination="builtin:plugins"]')
+          ?.setAttribute("aria-current", "page");
+      }
+    }, selection);
+    await openSettings(page);
+    await page.locator('[data-sidebar-destination="builtin:home"]').click();
+
+    await expect(page.locator(".codexhost-settings-page")).toBeHidden();
+    expect(await fixtureState(page)).toMatchObject({ nativeNavigations: ["builtin:home"] });
+  });
+}
+
+test("does not intercept Home after the native location changed", async ({ page }) => {
+  await setup(page);
+  await openSettings(page);
+  // pushState alone emits no popstate; click before another observer can close settings.
+  await page.evaluate(() => {
+    history.pushState({}, "", "/thread/another");
+    document.querySelector<HTMLButtonElement>('[data-sidebar-destination="builtin:home"]')?.click();
+  });
+
+  await expect(page.locator(".codexhost-settings-page")).toBeHidden();
+  expect(await fixtureState(page)).toMatchObject({ nativeNavigations: ["builtin:home"] });
+});
+
+test("does not intercept a modified Home click", async ({ page }) => {
+  await setup(page);
+  await openSettings(page);
+  await page.locator('[data-sidebar-destination="builtin:home"]').click({ modifiers: ["Shift"] });
+
+  await expect(page.locator(".codexhost-settings-page")).toBeHidden();
+  expect(await fixtureState(page)).toMatchObject({ nativeNavigations: ["builtin:home"] });
+});
+
 test("yields to a native rail destination", async ({ page }) => {
   await setup(page);
   await openSettings(page, "appearance");
@@ -150,7 +263,12 @@ test("yields to a native rail destination", async ({ page }) => {
   // The rail stays interactive: no modal blocks the native click.
   await page.locator('[data-sidebar-destination="builtin:plugins"]').click();
   await expect(page.locator(".codexhost-settings-page")).toBeHidden();
-  expect(await fixtureState(page)).toMatchObject({ open: false, railMarked: false });
+  expect(await fixtureState(page)).toMatchObject({
+    open: false,
+    railMarked: false,
+    pathname: "/plugins",
+    nativeNavigations: ["builtin:plugins"],
+  });
 });
 
 test("yields when native navigation changes the current destination", async ({ page }) => {

@@ -99,7 +99,28 @@ export function attachRendererSettingsRailPage(
     if (!(event.target instanceof Element)) return;
     if (!event.target.closest(NAVIGATION_RAIL_SELECTOR)) return;
     if (event.target.closest(`[${SETTINGS_TRIGGER_ATTRIBUTE}]`)) return;
-    if (event.target.closest(RAIL_DESTINATION_SELECTOR)) navigateAway();
+    const destination = event.target.closest(RAIL_DESTINATION_SELECTOR);
+    if (!destination) return;
+    // Settings only covers the native page. Reselecting an already-current Home
+    // would reset its conversation to `/`; dismiss the cover instead. If the
+    // native location or selection is unclear/changed, leave navigation alone.
+    if (
+      event.button === 0 &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      destination.getAttribute("data-sidebar-destination") === "builtin:home" &&
+      destination.getAttribute("aria-current") === "page" &&
+      initialDestinations === "builtin:home" &&
+      destination.closest(NAVIGATION_RAIL_SELECTOR) === rail &&
+      currentDestinations(rail) === initialDestinations &&
+      ownerWindow?.location.href === initialLocation
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    navigateAway();
   };
 
   const MutationObserverCtor = ownerWindow?.MutationObserver;

@@ -16,6 +16,7 @@ import {
   type HarnessId,
 } from "@codexhost/shared-contracts";
 import { qoderEnvironment, resolveQoderExecutable } from "./qoder-command.js";
+import { projectQoderAccount } from "./qoder-account.js";
 import { mapQoderException } from "./qoder-errors.js";
 import { mapQoderSnapshot } from "./qoder-history.js";
 import { decodeQoderModelRef, parseQoderModelCatalog } from "./qoder-models.js";
@@ -30,6 +31,7 @@ import type {
   GetSessionInfoOptions,
   GetSessionMessagesOptions,
   QoderModelInfo,
+  QoderQuery,
   QoderQueryFactory,
   SDKSessionInfo,
   SessionMessage,
@@ -103,6 +105,44 @@ export class QoderAdapter implements HarnessAdapter {
       options.resolveExecutable ??
       ((input, dependencies) =>
         resolveQoderExecutable({ ...input, variant: this.#variant }, dependencies));
+  }
+
+  async inspectAccount() {
+    let probe: QoderQuery | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const executable = this.#resolveExecutable({
+        ...(this.#commandOverride ? { command: this.#commandOverride } : {}),
+        environment: this.#environment as NodeJS.ProcessEnv,
+        platform: this.#platform,
+      });
+      probe = this.#queryFactory({
+        prompt: "",
+        options: {
+          cwd: process.cwd(),
+          pathToQoderCLIExecutable: executable,
+          ...(this.#environment ? { env: this.#environment } : {}),
+          auth: qoderAuthForEnvironment(this.#variant, this.#environment),
+        },
+      });
+      return await Promise.race([
+        Promise.all([probe.getUsageInfo?.(), probe.accountInfo?.().catch(() => undefined)]).then(
+          ([usage, identity]) => projectQoderAccount(usage, identity),
+        ),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), 10_000);
+        }),
+      ]);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+      try {
+        await probe?.close();
+      } catch {
+        // The quota probe must not leak a query process.
+      }
+    }
   }
 
   async inspect(input?: InspectHarnessInput): Promise<HarnessInspection> {

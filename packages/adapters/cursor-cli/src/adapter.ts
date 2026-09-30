@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fetchCursorAccount } from "./account-usage.js";
 import {
   HarnessOutputChannel,
   sanitizeDiagnosticTail,
@@ -134,6 +135,10 @@ export class CursorAdapter implements HarnessAdapter {
   >();
   #closed = false;
   constructor(readonly options: CursorAdapterOptions = {}) {}
+  async inspectAccount() {
+    if (this.#closed) return null;
+    return fetchCursorAccount({ environment: this.options.environment ?? process.env });
+  }
   transportOptions(cwd: string, environment?: NodeJS.ProcessEnv): CursorTransportOptions {
     return {
       cwd: path.resolve(cwd),

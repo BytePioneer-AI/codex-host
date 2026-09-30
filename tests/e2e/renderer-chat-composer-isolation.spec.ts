@@ -8,6 +8,14 @@ const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
 
+test.beforeEach(async ({ page }) => {
+  // The Renderer reads localStorage; about:blank does not provide an origin.
+  await page.route("http://codexhost.test/", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" }),
+  );
+  await page.goto("http://codexhost.test/");
+});
+
 await build({
   entryPoints: [path.join(repositoryRoot, "packages/shared-contracts/src/index.ts")],
   bundle: true,
@@ -96,26 +104,32 @@ test("ordinary Chat composers remain untouched", async ({ page }) => {
   expect(await dispatchInputIntents(page)).toEqual(unmodifiedInputResults);
 });
 
-test("a composer stops affecting input when the Codex marker is removed", async ({ page }) => {
-  await page.setContent(`
+for (const inline of [false, true]) {
+  test(`a composer stops affecting input when its marker is removed (inline: ${inline})`, async ({
+    page,
+  }) => {
+    await page.setContent(`
     <!doctype html>
     <body>
+      ${inline ? '<section data-local-conversation-item-target-ids="item-1">' : ""}
       <form data-codex-composer-root data-mode="work">
         <div contenteditable="true" role="textbox">draft</div>
         <button type="submit" aria-label="Send">Send</button>
       </form>
+      ${inline ? "</section>" : ""}
     </body>
   `);
-  await page.addScriptTag({ content: browserBundle });
-  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(1);
+    await page.addScriptTag({ content: browserBundle });
+    await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(1);
 
-  await page.locator("[data-mode=work]").evaluate((composer) => {
-    composer.removeAttribute("data-codex-composer-root");
-    composer.setAttribute("data-chat-composer", "true");
-    composer.setAttribute("data-mode", "chat");
+    await page.locator("[data-mode=work]").evaluate((composer) => {
+      composer.removeAttribute("data-codex-composer-root");
+      composer.setAttribute("data-chat-composer", "true");
+      composer.setAttribute("data-mode", "chat");
+    });
+
+    await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
+    await expect(page.locator("[data-mode=chat] button[type=submit]")).toBeEnabled();
+    expect(await dispatchInputIntents(page)).toEqual(unmodifiedInputResults);
   });
-
-  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
-  await expect(page.locator("[data-mode=chat] button[type=submit]")).toBeEnabled();
-  expect(await dispatchInputIntents(page)).toEqual(unmodifiedInputResults);
-});
+}

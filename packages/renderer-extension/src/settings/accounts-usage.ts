@@ -76,11 +76,18 @@ export function resetCreditDetailLine(
 
 type AccountUsagePeriod = "five_hour" | "seven_day";
 
+interface AccountUsageAmount {
+  readonly used?: number | undefined;
+  readonly limit?: number | undefined;
+  readonly unit?: string | undefined;
+}
+
 interface AccountUsageWindow {
   readonly label: string;
   readonly usedPercent: number;
   readonly resetsAt: string | undefined;
   readonly scoped: boolean;
+  readonly amount?: AccountUsageAmount;
 }
 
 interface AccountUsageRow {
@@ -161,6 +168,7 @@ function splitUsageWindows(
   const primary: AccountUsageWindow = {
     label: credits.label ?? creditsPeriodLabel(credits.periodType, messages),
     usedPercent: credits.usedPercent,
+    amount: credits,
     resetsAt: credits.resetsAt,
     scoped: Boolean(credits.label && scopedUsageProduct(credits.label)),
   };
@@ -176,6 +184,7 @@ function splitUsageWindows(
     const window: AccountUsageWindow = {
       label: creditsProductLabel(product.product, messages),
       usedPercent: product.usagePercent,
+      amount: product,
       resetsAt: product.resetsAt,
       scoped: Boolean(scoped),
     };
@@ -218,14 +227,19 @@ function renderUsageWindow(
   label.className = "settings-account-usage__title";
   label.textContent = window.label;
   label.title = window.label;
-  const value = display === "remaining" ? 100 - window.usedPercent : window.usedPercent;
+  const emptyCap = window.amount?.limit === 0;
+  const value = emptyCap
+    ? 0
+    : display === "remaining"
+      ? 100 - window.usedPercent
+      : window.usedPercent;
   const valueLabel =
     display === "remaining" ? messages.accountCreditsRemaining : messages.accountCreditsUsed;
   const tone = rendererCreditsTone(window.usedPercent);
   const percent = document.createElement("div");
   percent.className = `settings-account-usage__percent settings-account-usage__percent--${tone}`;
   const number = document.createElement("span");
-  number.textContent = formatRendererCreditsPercent(value);
+  number.textContent = emptyCap ? "—" : formatRendererCreditsPercent(value);
   const reset = window.resetsAt
     ? renderAccountResetTime(document, window.resetsAt, messages)
     : null;
@@ -242,6 +256,15 @@ function renderUsageWindow(
   fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
   bar.append(fill);
   meter.append(label, percent, bar);
+  const credits = window.amount;
+  if (credits && credits.used !== undefined && credits.limit !== undefined && credits.unit) {
+    const amount = document.createElement("div");
+    amount.className = "settings-account-usage__sub";
+    const quantity =
+      display === "remaining" ? Math.max(0, credits.limit - credits.used) : credits.used;
+    amount.textContent = `${quantity.toLocaleString(messages.locale)} / ${credits.limit.toLocaleString(messages.locale)} ${credits.unit}`;
+    meter.append(amount);
+  }
   if (reset) meter.append(reset.timestamp);
   return meter;
 }

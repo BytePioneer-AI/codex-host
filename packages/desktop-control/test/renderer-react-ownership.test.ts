@@ -35,6 +35,72 @@ describe("committed React ownership", () => {
     expect(committedReactAncestors(first)).toEqual([first, currentParent, currentRoot]);
   });
 
+  it("validates a published parent path without walking unrelated subtrees", () => {
+    const root: Fiber = {};
+    const parent: Fiber = { return: root };
+    const first: Fiber = { return: parent };
+    const readSidebarChildren = vi.fn(() => ({}));
+    root.stateNode = { current: root };
+    root.child = {
+      get child() {
+        return readSidebarChildren();
+      },
+      sibling: parent,
+    };
+    parent.child = first;
+
+    expect(committedReactAncestors(first)).toEqual([first, parent, root]);
+    expect(readSidebarChildren).not.toHaveBeenCalled();
+
+    // Even an in-place change under the same published root must be observed.
+    parent.child = {};
+    expect(committedReactAncestors(first)).toEqual([]);
+    expect(readSidebarChildren).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates alternate parent identities without traversing earlier subtrees", () => {
+    const state: { current?: Fiber } = {};
+    const oldRoot: Fiber = { stateNode: state };
+    const currentRoot: Fiber = { stateNode: state };
+    const currentParent: Fiber = { return: currentRoot };
+    const oldParent: Fiber = { return: oldRoot, alternate: currentParent };
+    const alternate: Fiber = { return: currentParent };
+    const first: Fiber = { return: oldParent, alternate };
+    const readSidebarChildren = vi.fn(() => ({}));
+    currentParent.child = alternate;
+    currentRoot.child = {
+      get child() {
+        return readSidebarChildren();
+      },
+      sibling: currentParent,
+    };
+    state.current = currentRoot;
+
+    expect(committedReactAncestors(first)).toEqual([alternate, currentParent, currentRoot]);
+    expect(readSidebarChildren).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the actual published parent when a plausible path is disconnected", () => {
+    const root: Fiber = {};
+    const staleParent: Fiber = { return: root };
+    const first: Fiber = { return: staleParent };
+    const actualParent: Fiber = { child: first };
+    root.stateNode = { current: root };
+    staleParent.child = {};
+    staleParent.sibling = actualParent;
+    root.child = staleParent;
+    expect(committedReactAncestors(first)).toEqual([first, actualParent, root]);
+  });
+
+  it("does not substitute an unrelated published root for the requested root", () => {
+    const root: Fiber = { stateNode: { current: {} } };
+    expect(committedReactAncestors(root)).toEqual([]);
+    const alternate: Fiber = {};
+    root.alternate = alternate;
+    root.stateNode = { current: alternate };
+    expect(committedReactAncestors(root)).toEqual([alternate]);
+  });
+
   it("follows later commits without retaining a cached manager", () => {
     const state: { current?: Fiber } = {};
     const oldRoot: Fiber = { stateNode: state };
@@ -119,6 +185,33 @@ describe("committed React ownership", () => {
     root.child = sibling;
     expect(committedReactAncestors(first)).toEqual([first, root]);
     expect(events).toEqual([]);
+  });
+
+  it.each([false, true])("skips unrelated committed subtrees (alternate: %s)", (useAlternate) => {
+    const root: Fiber = {};
+    const state = { current: root };
+    root.stateNode = state;
+    const composer: Fiber = { return: root };
+    const unrelated: Fiber = { sibling: composer };
+    const readChild = vi.fn(() => ({}));
+    Object.defineProperty(unrelated, "child", { get: readChild });
+    root.child = unrelated;
+    const pointer: Fiber = useAlternate
+      ? { return: { stateNode: state }, alternate: composer }
+      : composer;
+    expect(committedReactAncestors(pointer)).toEqual([composer, root]);
+    expect(readChild).not.toHaveBeenCalled();
+  });
+
+  it("falls back when a return path reaches the current root through an uncommitted parent", () => {
+    const root: Fiber = {};
+    root.stateNode = { current: root };
+    const actualParent: Fiber = { return: root };
+    const staleParent: Fiber = { return: root };
+    const composer: Fiber = { return: staleParent };
+    actualParent.child = composer;
+    root.child = actualParent;
+    expect(committedReactAncestors(composer)).toEqual([composer, actualParent, root]);
   });
 
   it("announces an exhausted walk instead of failing silently", () => {

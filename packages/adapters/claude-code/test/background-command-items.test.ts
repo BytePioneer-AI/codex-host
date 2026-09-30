@@ -76,7 +76,9 @@ describe("Claude background command Items", () => {
     await appendFile(file, "wörld\n");
 
     expect(items.settle(notification("failed", file))).toBe(true);
-    expect(items.settle(notification("completed", file))).toBe(false);
+    // A duplicate notification still belongs to the command while its final read is pending.
+    expect(items.settle(notification("completed", file))).toBe(true);
+    expect(items.taskIds()).toEqual([]);
     const completed = await completion(events);
 
     const appended = events
@@ -176,5 +178,85 @@ describe("Claude background command Items", () => {
     expect(events).toMatchObject([
       { type: "item.completed", snapshot: { outcome: { status: "cancelled", reason: "closed" } } },
     ]);
+  });
+
+  it("settles a notified task before closing even while its final output open is pending", async () => {
+    const file = await outputFile();
+    await writeFile(file, "late output");
+    const handle = await open(file, "r");
+    const close = vi.spyOn(handle, "close");
+    const pendingOpen = Promise.withResolvers<FsPromises.FileHandle>();
+    vi.mocked(open).mockReturnValueOnce(pendingOpen.promise);
+    const { events, items } = follow(file);
+    try {
+      items.settle(notification("failed", file));
+      await Promise.resolve();
+      items.abandonAll("Session closed");
+      expect(events).toMatchObject([
+        { type: "item.completed", snapshot: { outcome: { status: "failed" } } },
+      ]);
+      pendingOpen.resolve(handle);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(events).toHaveLength(1);
+    } finally {
+      items.abandonAll("test ended");
+      pendingOpen.resolve(handle);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    }
+  });
+
+  it("closes a late output handle without reading after the command is abandoned", async () => {
+    const file = await outputFile();
+    const handle = await open(file, "r");
+    const read = vi.spyOn(handle, "read");
+    const close = vi.spyOn(handle, "close");
+    const pendingOpen = Promise.withResolvers<FsPromises.FileHandle>();
+    vi.mocked(open).mockReturnValueOnce(pendingOpen.promise);
+    vi.useFakeTimers();
+    const { items } = follow(file);
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      items.abandonAll("Session closed");
+      pendingOpen.resolve(handle);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      items.abandonAll("test ended");
+      pendingOpen.resolve(handle);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    }
+  });
+
+  it("stops an in-flight read after abandonment without opening queued polls", async () => {
+    const file = await outputFile();
+    const handle = await open(file, "r");
+    const pendingRead = Promise.withResolvers<undefined>();
+    const read = vi.spyOn(handle, "read").mockImplementation(async () => {
+      await pendingRead.promise;
+      return { bytesRead: 1, buffer: Buffer.from("x") };
+    });
+    const close = vi.spyOn(handle, "close");
+    vi.mocked(open).mockClear().mockResolvedValueOnce(handle);
+    vi.useFakeTimers();
+    const { events, items } = follow(file);
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+      // A further poll and the final read are queued behind the slow read.
+      await vi.advanceTimersByTimeAsync(1_000);
+      items.settle(notification("completed", file));
+      items.abandonAll("Session closed");
+      pendingRead.resolve(undefined);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(read).toHaveBeenCalledOnce();
+      expect(open).toHaveBeenCalledOnce();
+      expect(events).toMatchObject([
+        { type: "item.completed", snapshot: { outcome: { status: "succeeded" } } },
+      ]);
+    } finally {
+      items.abandonAll("test ended");
+      pendingRead.resolve(undefined);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    }
   });
 });

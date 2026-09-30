@@ -5064,3 +5064,552 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 });
+
+describe("DeepSeek Harness timed user questions", () => {
+  const QUESTIONS = [{ id: "pick", question: "Which?", options: [{ label: "A" }, { label: "B" }] }];
+  const PENDING = { pending: true, callId: "call-ask", message: "No answer batch arrived." };
+  const ANSWER = { answers: [{ id: "pick", selected: ["B"] }] };
+  type Wait = ModernQuestionDelivery["request"]["wait"] | null;
+
+  function askResult(
+    seq: number,
+    payload: unknown,
+    options: { failed?: boolean; callId?: string } = {},
+  ): ModernJournalEvent {
+    const callId = options.callId ?? "call-ask";
+    return event(
+      seq,
+      "tool/result",
+      {
+        turn: 1,
+        step: 1,
+        ...(options.failed ? { error: { name: "UserQuestionError", code: "ASK_ABORTED" } } : {}),
+        message: {
+          id: `result-${seq}`,
+          role: "tool",
+          toolCallId: callId,
+          isError: options.failed === true,
+          source: { kind: "tool", callId },
+          content: [
+            { type: "text", text: typeof payload === "string" ? payload : JSON.stringify(payload) },
+          ],
+        },
+      },
+      true,
+    );
+  }
+
+  /** A Host-bound V4 Turn whose `ask_user_question` call (seq 3-4) is shown as `question-1`. */
+  async function openTimedQuestion(
+    handlers: CallHandler[] = [],
+    wait: Wait = { callId: "call-ask", timed: true },
+  ) {
+    const respond = vi.fn<ModernQuestionDelivery["respond"]>(async () => undefined);
+    const reject = vi.fn<ModernQuestionDelivery["reject"]>(async () => undefined);
+    const test = setup(
+      [() => accepted(), ...handlers],
+      [],
+      ["request-1", "question-1"],
+      5_000,
+      null,
+      undefined,
+      undefined,
+      [],
+      DEEPSEEK_V017_PROFILE,
+    );
+    const outputs: HarnessOutput[] = [];
+    void (async () => {
+      for await (const output of test.session.outputs) outputs.push(output);
+    })();
+    const events = (): HostEvent[] =>
+      outputs.flatMap((output) => (output.kind === "event" ? [output.event] : []));
+    await test.session.execute({
+      type: "turn.start",
+      turnId: turnId("timed-turn"),
+      input: [{ type: "text", text: "ask" }],
+    });
+    const request = { questions: QUESTIONS, ...(wait ? { wait } : {}) };
+    for (const entry of [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      userMessage(2, "ask", "request-1"),
+      event(
+        3,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "assistant-3",
+            role: "assistant",
+            content: [
+              { type: "tool-call", id: "call-ask", name: "ask_user_question", arguments: "{}" },
+            ],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [],
+        },
+        true,
+      ),
+      event(4, "tool/call", {
+        turn: 1,
+        step: 1,
+        callId: "call-ask",
+        name: "ask_user_question",
+        arguments: "{}",
+      }),
+    ]) {
+      test.feed.push(entry);
+    }
+    await vi.waitFor(() => expect(events().some(({ type }) => type === "item.started")).toBe(true));
+    test.session.onDelivery(questionDelivery("event-timed", request, respond, reject));
+    await vi.waitFor(() => expect(outputs.some(({ kind }) => kind === "interaction")).toBe(true));
+    return {
+      test,
+      respond,
+      reject,
+      events,
+      closed: () => events().filter(({ type }) => type === "interaction.closed"),
+      answerCalls: () =>
+        test.remote.calls.filter(({ endpoint }) => endpoint === "userQuestions/answer"),
+      /** Wait until the native result at `seq` has been projected. */
+      settled: async () =>
+        vi.waitFor(() => expect(events().some(({ type }) => type === "item.completed")).toBe(true)),
+      answer: (answers: Record<string, string[]>, cancelled = false) =>
+        test.session.execute({
+          type: "interaction.respond",
+          interactionId: "question-1" as never,
+          response: { type: "question", answers, ...(cancelled ? { cancelled: true } : {}) },
+        }),
+      endTurn: async (seq: number, step = 1) => {
+        test.feed.push(event(seq, "step/end", { turn: 1, step }));
+        test.feed.push(event(seq + 1, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+        await vi.waitFor(() =>
+          expect(events().some(({ type }) => type === "turn.completed")).toBe(true),
+        );
+      },
+    };
+  }
+
+  it("answers a continued question through the native late-answer Remote within its Turn", async () => {
+    const q = await openTimedQuestion([() => ({ ok: true, value: true })]);
+    q.test.session.onCancel("event-timed");
+    q.test.feed.push(askResult(5, PENDING));
+    await q.settled();
+    expect(q.closed()).toEqual([]);
+    q.test.feed.push(event(6, "step/end", { turn: 1, step: 1 }));
+    q.test.feed.push(event(7, "step/start", { turn: 1, step: 2 }));
+
+    await expect(q.answer({ pick: ["B"] })).resolves.toEqual({
+      ok: true,
+      value: { accepted: true },
+    });
+    expect(q.respond).not.toHaveBeenCalled();
+    expect(q.answerCalls().map(({ args }) => args)).toEqual([
+      { agentId: SESSION_ID, callId: "call-ask", answer: ANSWER },
+    ]);
+    await vi.waitFor(() =>
+      expect(q.closed()).toEqual([
+        {
+          type: "interaction.closed",
+          interactionId: "question-1",
+          turnId: "timed-turn",
+          reason: "responded",
+        },
+      ]),
+    );
+
+    // DSH steers the reply as a sourced user message; it is not Host user input.
+    const reply = {
+      id: "reply-1",
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            kind: "answer_to_pending_question",
+            tool: "ask_user_question",
+            callId: "call-ask",
+            questions: QUESTIONS,
+            answers: ANSWER.answers,
+          }),
+        },
+      ],
+      source: { kind: "user-question-reply", callId: "call-ask", outcome: "answered" },
+    };
+    q.test.feed.push(
+      event(8, "agent/inbox/spliced", { target: "next-step", start: 0, inserted: [reply] }),
+    );
+    q.test.feed.push(event(9, "user/message", reply, true));
+    q.test.feed.push(
+      event(
+        10,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 2,
+          message: {
+            id: "assistant-10",
+            role: "assistant",
+            content: [{ type: "text", text: "Using B" }],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [],
+        },
+        true,
+      ),
+    );
+    await q.endTurn(11, 2);
+    expect(q.events().some(({ type }) => type === "turn.autonomous.started")).toBe(false);
+    const snapshot = await q.test.session.readSnapshot();
+    expect(snapshot.ok && snapshot.value.turns.map(({ input }) => input)).toEqual([
+      [{ type: "text", text: "ask" }],
+    ]);
+    await q.test.session.close();
+  });
+
+  it.each([
+    {
+      name: "skipping writes no native reply",
+      handlers: [] as CallHandler[],
+      cancelled: true,
+      result: { ok: true, value: { accepted: true } },
+      reason: "cancelled",
+      calls: 0,
+    },
+    {
+      name: "a declined reply is superseded",
+      handlers: [() => ({ ok: true, value: false })] as CallHandler[],
+      cancelled: false,
+      result: { ok: false, error: expect.objectContaining({ code: "invalidState" }) },
+      reason: "superseded",
+      calls: 1,
+    },
+    {
+      name: "a rejected reply is superseded",
+      handlers: [
+        () => ({
+          ok: false,
+          error: { code: "gateway/internal", message: "a reply is already queued", details: {} },
+        }),
+      ] as CallHandler[],
+      cancelled: false,
+      result: { ok: false, error: expect.objectContaining({ code: "nativeFailure" }) },
+      reason: "superseded",
+      calls: 1,
+    },
+  ])("closes a continued question when $name", async (scenario) => {
+    const q = await openTimedQuestion(scenario.handlers);
+    q.test.feed.push(askResult(5, PENDING));
+    await q.settled();
+    await expect(
+      q.answer(scenario.cancelled ? {} : { pick: ["A"] }, scenario.cancelled),
+    ).resolves.toEqual(scenario.result);
+    expect(q.answerCalls()).toHaveLength(scenario.calls);
+    await vi.waitFor(() =>
+      expect(q.closed().map((closed) => (closed as { reason: string }).reason)).toEqual([
+        scenario.reason,
+      ]),
+    );
+    await q.endTurn(6);
+    await q.test.session.close();
+  });
+
+  it("keeps a continued question open after a transport failure", async () => {
+    const q = await openTimedQuestion([() => Promise.reject(new Error("socket closed"))]);
+    q.test.feed.push(askResult(5, PENDING));
+    await q.settled();
+    await expect(q.answer({ pick: ["A"] })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unavailable" },
+    });
+    expect(q.closed()).toEqual([]);
+    await q.endTurn(6);
+    expect(q.closed().map((closed) => (closed as { reason: string }).reason)).toEqual(["expired"]);
+    await q.test.session.close();
+  });
+
+  it("expires an unanswered continued question before its Host Turn completes", async () => {
+    const q = await openTimedQuestion();
+    q.test.session.onCancel("event-timed");
+    q.test.feed.push(askResult(5, PENDING));
+    await q.endTurn(6);
+    const types = q.events().map(({ type }) => type);
+    expect(types.indexOf("interaction.closed")).toBeLessThan(types.indexOf("turn.completed"));
+    expect(q.closed()).toMatchObject([{ reason: "expired" }]);
+    expect(q.reject).not.toHaveBeenCalled();
+    await expect(q.answer({ pick: ["A"] })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    expect(q.answerCalls()).toEqual([]);
+    await q.test.session.close();
+  });
+
+  it.each([
+    ["the pending result", PENDING, false, 1],
+    ["an answer from another Client", ANSWER, false, 0],
+    ["a cancelled ask", "aborted", true, 0],
+  ] as const)(
+    "delivers an answer given after release only when DSH records %s",
+    async (_label, payload, failed, deliveries) => {
+      const q = await openTimedQuestion([() => ({ ok: true, value: true })]);
+      q.test.session.onCancel("event-timed");
+      await expect(q.answer({ pick: ["B"] })).resolves.toEqual({
+        ok: true,
+        value: { accepted: true },
+      });
+      expect(q.closed()).toMatchObject([{ reason: "responded" }]);
+      expect(q.answerCalls()).toEqual([]);
+      q.test.feed.push(askResult(5, payload, { failed }));
+      await q.settled();
+      await vi.waitFor(() => expect(q.answerCalls()).toHaveLength(deliveries));
+      if (deliveries) {
+        expect(q.answerCalls()[0]?.args).toEqual({
+          agentId: SESSION_ID,
+          callId: "call-ask",
+          answer: ANSWER,
+        });
+      }
+      await q.endTurn(6);
+      await q.test.session.close();
+    },
+  );
+
+  it.each([
+    ["re-sends an in-time answer DSH dropped after releasing the wait", PENDING, 1],
+    ["keeps an in-time answer DSH accepted", ANSWER, 0],
+  ] as const)("%s", async (_label, payload, deliveries) => {
+    const q = await openTimedQuestion([() => ({ ok: true, value: true })]);
+    await expect(q.answer({ pick: ["B"] })).resolves.toEqual({
+      ok: true,
+      value: { accepted: true },
+    });
+    expect(q.respond).toHaveBeenCalledWith(ANSWER);
+    q.test.feed.push(askResult(5, payload));
+    await q.settled();
+    await vi.waitFor(() => expect(q.answerCalls()).toHaveLength(deliveries));
+    await q.endTurn(6);
+    expect(q.closed()).toMatchObject([{ reason: "responded" }]);
+    await q.test.session.close();
+  });
+
+  it.each([
+    ["superseded", ANSWER, false],
+    ["cancelled", "aborted", true],
+  ] as const)(
+    "closes a released question as %s when DSH settles its call another way",
+    async (reason, payload, failed) => {
+      const q = await openTimedQuestion();
+      q.test.session.onCancel("event-timed");
+      q.test.feed.push(askResult(5, payload, { failed }));
+      await vi.waitFor(() => expect(q.closed()).toMatchObject([{ reason }]));
+      await q.endTurn(6);
+      expect(q.answerCalls()).toEqual([]);
+      await q.test.session.close();
+    },
+  );
+
+  it("forgets an in-time answer whose delivery failed", async () => {
+    const q = await openTimedQuestion();
+    q.respond.mockRejectedValueOnce(new Error("socket closed"));
+    await expect(q.answer({ pick: ["B"] })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unavailable" },
+    });
+    q.test.session.onCancel("event-timed");
+    q.test.feed.push(askResult(5, PENDING));
+    await q.settled();
+    expect(q.answerCalls()).toEqual([]);
+    await q.endTurn(6);
+    expect(q.closed()).toMatchObject([{ reason: "expired" }]);
+    await q.test.session.close();
+  });
+
+  it("faults the Session when the late-answer receipt is not a boolean", async () => {
+    const q = await openTimedQuestion([() => ({ ok: true, value: { accepted: true } })]);
+    q.test.feed.push(askResult(5, PENDING));
+    await q.settled();
+    await expect(q.answer({ pick: ["A"] })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "protocolError",
+        message: "DeepSeek Harness userQuestions/answer returned an invalid receipt",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(q.events().some(({ type }) => type === "session.faulted")).toBe(true),
+    );
+    await q.test.session.close().catch(() => undefined);
+  });
+
+  it.each([
+    ["an indefinite wait", { callId: "call-ask" }],
+    ["no wait", null],
+  ] as const)("still closes a cancelled question with %s immediately", async (_label, wait) => {
+    const q = await openTimedQuestion([], wait);
+    q.test.session.onCancel("event-timed");
+    await vi.waitFor(() => expect(q.closed()).toMatchObject([{ reason: "cancelled" }]));
+    q.test.feed.push(askResult(5, PENDING));
+    await q.endTurn(6);
+    expect(q.closed()).toHaveLength(1);
+    expect(q.answerCalls()).toEqual([]);
+    await q.test.session.close();
+  });
+
+  /** A V4 PTC Turn whose `run_code` (call-1) dispatches `ask_user_question` as `question-1`. */
+  async function openPtcQuestion(handlers: CallHandler[] = []) {
+    const test = setup(
+      [() => accepted(), ...handlers],
+      [],
+      ["request-1", "question-1"],
+      5_000,
+      null,
+      undefined,
+      undefined,
+      [],
+      DEEPSEEK_V017_PROFILE,
+    );
+    const outputs: HarnessOutput[] = [];
+    void (async () => {
+      for await (const output of test.session.outputs) outputs.push(output);
+    })();
+    const events = (): HostEvent[] =>
+      outputs.flatMap((output) => (output.kind === "event" ? [output.event] : []));
+    await test.session.execute({
+      type: "turn.start",
+      turnId: turnId("ptc-question"),
+      input: [{ type: "text", text: "ask" }],
+    });
+    const dispatch = {
+      rootCallId: "call-1",
+      parentCallId: "call-1",
+      subCallId: "call-1:ptc:1",
+      name: "ask_user_question",
+      arguments: { questions: [{ id: "pick", question: "Which?" }] },
+    };
+    for (const entry of [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      userMessage(2, "ask", "request-1"),
+      event(
+        3,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "assistant-3",
+            role: "assistant",
+            content: [{ type: "tool-call", id: "call-1", name: "run_code", arguments: "{}" }],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [],
+        },
+        true,
+      ),
+      event(4, "tool/call", {
+        turn: 1,
+        step: 1,
+        callId: "call-1",
+        name: "run_code",
+        arguments: "{}",
+      }),
+      event(5, "tool/ptc-dispatch-start", dispatch),
+    ]) {
+      test.feed.push(entry);
+    }
+    await vi.waitFor(() => expect(events().some(({ type }) => type === "item.started")).toBe(true));
+    test.session.onDelivery(
+      questionDelivery(
+        "event-ptc",
+        {
+          questions: [{ id: "pick", question: "Which?" }],
+          wait: { callId: "call-1:ptc:1", timed: true },
+        },
+        vi.fn(async () => undefined),
+        vi.fn(async () => undefined),
+      ),
+    );
+    await vi.waitFor(() => expect(outputs.some(({ kind }) => kind === "interaction")).toBe(true));
+    test.session.onCancel("event-ptc");
+    return {
+      test,
+      events,
+      closed: () => events().filter(({ type }) => type === "interaction.closed"),
+      settle: async (settled: Record<string, unknown>) => {
+        test.feed.push(event(6, "tool/ptc-dispatch", { ...dispatch, ...settled }));
+        await vi.waitFor(() =>
+          expect(events().some(({ type }) => type === "item.completed")).toBe(true),
+        );
+      },
+      endTurn: async () => {
+        test.feed.push(
+          event(
+            7,
+            "tool/result",
+            {
+              turn: 1,
+              step: 1,
+              message: {
+                id: "result-7",
+                role: "tool",
+                toolCallId: "call-1",
+                isError: false,
+                source: { kind: "tool", callId: "call-1" },
+                content: [{ type: "text", text: "asked" }],
+              },
+            },
+            true,
+          ),
+        );
+        test.feed.push(event(8, "step/end", { turn: 1, step: 1 }));
+        test.feed.push(event(9, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+        await vi.waitFor(() =>
+          expect(events().some(({ type }) => type === "turn.completed")).toBe(true),
+        );
+      },
+    };
+  }
+
+  it("answers a PTC sub-call question that DSH recorded as pending", async () => {
+    const q = await openPtcQuestion([() => ({ ok: true, value: true })]);
+    await q.settle({
+      isError: false,
+      content: [{ type: "text", text: JSON.stringify({ ...PENDING, callId: "call-1:ptc:1" }) }],
+    });
+    await expect(
+      q.test.session.execute({
+        type: "interaction.respond",
+        interactionId: "question-1" as never,
+        response: { type: "question", answers: { pick: ["Later"] } },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(q.test.remote.calls.at(-1)).toMatchObject({
+      endpoint: "userQuestions/answer",
+      args: {
+        agentId: SESSION_ID,
+        callId: "call-1:ptc:1",
+        answer: { answers: [{ id: "pick", selected: [], custom: "Later" }] },
+      },
+    });
+    await vi.waitFor(() => expect(q.closed()).toMatchObject([{ reason: "responded" }]));
+    await q.endTurn();
+    await q.test.session.close();
+  });
+
+  it.each([
+    ["cancelled", { isError: true, content: [{ type: "text", text: "Error: aborted" }] }],
+    ["superseded", { isError: false, content: [{ type: "text", text: '{"answers":[]}' }] }],
+    ["superseded", { isError: false, content: [] }],
+  ] as const)(
+    "closes a PTC question as %s when its dispatch settles it",
+    async (reason, settled) => {
+      const q = await openPtcQuestion();
+      await q.settle(settled);
+      await vi.waitFor(() => expect(q.closed()).toMatchObject([{ reason }]));
+      await q.endTurn();
+      await q.test.session.close();
+    },
+  );
+});

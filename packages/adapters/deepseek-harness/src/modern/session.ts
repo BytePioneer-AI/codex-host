@@ -21,11 +21,13 @@ import {
   type HostItem,
   type HostItemOutcome,
   type HostInteraction,
+  type HostQuestionResponse,
   type HostReasoningItem,
   type HostTextInput,
   type HostThreadSnapshot,
   type HostToolExecutionItem,
   type HostUsage,
+  type InteractionClosedEvent,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
   type ModelSelectCommand,
@@ -79,6 +81,7 @@ import {
   type ModernEventGateway,
   type ModernEventDelivery,
   type ModernEventSink,
+  type ModernQuestionAnswer,
   type ModernQuestionDelivery,
 } from "./event-gateway.js";
 import {
@@ -229,6 +232,8 @@ interface ActiveHostTurn {
   /** Open PTC program calls, which project no Item of their own. */
   readonly programCalls: Set<string>;
   readonly interactions: Set<HostInteractionId>;
+  /** Timed-question answers awaiting the native result that shows whether DSH received them. */
+  readonly timedReplies: Map<string, ModernQuestionAnswer>;
   terminal: boolean;
   cancelAcknowledged: boolean;
   cancelPromise?: Promise<HarnessResult<TurnCancelAccepted>>;
@@ -260,6 +265,11 @@ interface ActiveInteraction {
   readonly delivery: ModernEventDelivery;
   readonly interaction: HostInteraction;
   responding: boolean;
+  /**
+   * DSH released this timed question's foreground wait while the Host Turn went on:
+   * `released` until the call's native result is known, `continued` once it recorded pending.
+   */
+  continuation?: "released" | "continued";
 }
 
 interface ActiveCommand {
@@ -613,7 +623,14 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   onCancel(eventId: string): void {
     if (this.#queuedDeliveries.delete(eventId)) return;
     const interactionId = this.#interactionByEventId.get(eventId);
-    if (interactionId) this.#closeInteraction(interactionId, "cancelled");
+    if (!interactionId) return;
+    const pending = this.#interactions.get(interactionId);
+    if (pending && this.#outlivesReleasedWait(pending)) {
+      // DSH ended only the foreground wait; the call's native result decides what follows.
+      pending.continuation ??= "released";
+      return;
+    }
+    this.#closeInteraction(interactionId, "cancelled");
   }
 
   async cancelNative(): Promise<void> {
@@ -648,7 +665,20 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         error: invalidState("DeepSeek Harness Interaction response is already in progress"),
       };
     }
+    if (
+      pending.continuation &&
+      pending.delivery.type === "question" &&
+      command.response.type === "question"
+    ) {
+      return this.#respondAfterReleasedWait(
+        command.interactionId,
+        pending,
+        pending.delivery,
+        command.response,
+      );
+    }
     pending.responding = true;
+    let retainedCallId: string | undefined;
     try {
       if (pending.delivery.type === "approval") {
         if (command.response.type !== "approval") throw new Error("unreachable response type");
@@ -658,10 +688,12 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       } else {
         if (command.response.type !== "question") throw new Error("unreachable response type");
         if (command.response.cancelled) await pending.delivery.reject();
-        else
-          await pending.delivery.respond(
-            questionAnswer(pending.delivery, command.response.answers),
-          );
+        else {
+          const answer = questionAnswer(pending.delivery, command.response.answers);
+          // DSH drops a result for a wait it already released without reporting it.
+          retainedCallId = this.#retainTimedAnswer(pending.delivery, answer);
+          await pending.delivery.respond(answer);
+        }
       }
       if (this.#interactions.get(command.interactionId) !== pending || this.#closed) {
         return {
@@ -677,6 +709,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       );
       return { ok: true, value: { accepted: true } };
     } catch (error) {
+      if (retainedCallId !== undefined) this.#active?.timedReplies.delete(retainedCallId);
       if (this.#faulted) return { ok: false, error: this.#faulted };
       if (this.#interactions.get(command.interactionId) !== pending || this.#closed) {
         return {
@@ -689,6 +722,162 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       if (eventGatewayFailureRequiresSessionFault(error)) this.#fault(failure);
       return { ok: false, error: failure };
     }
+  }
+
+  /** Answer a timed question whose foreground wait DSH already released. */
+  async #respondAfterReleasedWait(
+    interactionId: HostInteractionId,
+    pending: ActiveInteraction,
+    delivery: ModernQuestionDelivery,
+    response: HostQuestionResponse,
+  ): Promise<HarnessResult<InteractionRespondAccepted>> {
+    const callId = delivery.request.wait?.callId;
+    if (callId === undefined) throw new Error("unreachable released question without a call");
+    if (response.cancelled) {
+      // Like closing DSH's own panel, skipping writes no native reply.
+      this.#active?.timedReplies.delete(callId);
+      this.#closeInteraction(interactionId, "cancelled");
+      return { ok: true, value: { accepted: true } };
+    }
+    const answer = questionAnswer(delivery, response.answers);
+    if (pending.continuation === "released") {
+      // DSH has not recorded whether this call continued; deliver only if it did.
+      this.#active?.timedReplies.set(callId, answer);
+      this.#closeInteraction(interactionId, "responded");
+      return { ok: true, value: { accepted: true } };
+    }
+    pending.responding = true;
+    let result: HarnessResult<boolean>;
+    try {
+      result = await this.#answerContinuedQuestion(callId, answer);
+    } finally {
+      pending.responding = false;
+    }
+    if (this.#faulted) return { ok: false, error: this.#faulted };
+    if (this.#interactions.get(interactionId) !== pending || this.#closed) {
+      return {
+        ok: false,
+        error: invalidState("DeepSeek Harness Interaction is no longer active"),
+      };
+    }
+    if (!result.ok) {
+      if (result.error.code !== "unavailable") this.#closeInteraction(interactionId, "superseded");
+      return result;
+    }
+    if (!result.value) {
+      this.#closeInteraction(interactionId, "superseded");
+      return {
+        ok: false,
+        error: invalidState("DeepSeek Harness question can no longer be answered"),
+      };
+    }
+    this.#closeInteraction(interactionId, "responded");
+    return { ok: true, value: { accepted: true } };
+  }
+
+  /** Steer an answer for a continued timed question into the native Agent. */
+  async #answerContinuedQuestion(
+    callId: string,
+    answer: ModernQuestionAnswer,
+  ): Promise<HarnessResult<boolean>> {
+    const abort = new AbortController();
+    this.#operationControllers.add(abort);
+    try {
+      const response = await callAbortable(
+        this.#remote.call<unknown>(
+          "userQuestions/answer",
+          { agentId: this.#sessionId, callId, answer },
+          abort.signal,
+        ),
+        abort.signal,
+      );
+      if (!response.ok) {
+        return { ok: false, error: remoteFailure("userQuestions/answer", response.error) };
+      }
+      if (typeof response.value !== "boolean") {
+        const error: HarnessError = {
+          code: "protocolError",
+          message: "DeepSeek Harness userQuestions/answer returned an invalid receipt",
+          retryable: false,
+        };
+        this.#fault(error);
+        return { ok: false, error };
+      }
+      return { ok: true, value: response.value };
+    } catch (error) {
+      return {
+        ok: false,
+        error: this.#closed
+          ? closedError()
+          : unavailableError(error, "DeepSeek Harness userQuestions/answer failed"),
+      };
+    } finally {
+      this.#operationControllers.delete(abort);
+    }
+  }
+
+  #outlivesReleasedWait(pending: ActiveInteraction): boolean {
+    const active = this.#active;
+    return (
+      !this.#closed &&
+      !this.#closing &&
+      pending.delivery.type === "question" &&
+      pending.delivery.request.wait?.timed === true &&
+      active !== undefined &&
+      !active.terminal &&
+      active.interactions.has(pending.interaction.interactionId)
+    );
+  }
+
+  #retainTimedAnswer(
+    delivery: ModernQuestionDelivery,
+    answer: ModernQuestionAnswer,
+  ): string | undefined {
+    const wait = delivery.request.wait;
+    const active = this.#active;
+    if (wait?.timed !== true || !active || active.terminal) return undefined;
+    active.timedReplies.set(wait.callId, answer);
+    return wait.callId;
+  }
+
+  /** Apply the native result of a timed question's call to its Host interaction. */
+  #observeTimedQuestion(
+    active: ActiveHostTurn,
+    callId: string,
+    readOutcome: () => TimedQuestionOutcome,
+  ): void {
+    const retained = active.timedReplies.get(callId);
+    active.timedReplies.delete(callId);
+    let interactionId: HostInteractionId | undefined;
+    for (const candidate of active.interactions) {
+      const delivery = this.#interactions.get(candidate)?.delivery;
+      if (
+        delivery?.type === "question" &&
+        delivery.request.wait?.timed === true &&
+        delivery.request.wait.callId === callId
+      ) {
+        interactionId = candidate;
+        break;
+      }
+    }
+    const pending = interactionId ? this.#interactions.get(interactionId) : undefined;
+    if (!pending && !retained) return;
+    const outcome = readOutcome();
+    if (outcome === "continued") {
+      if (pending) pending.continuation = "continued";
+      if (retained) this.#deliverRetainedAnswer(callId, retained);
+      return;
+    }
+    // The call settled natively: answered elsewhere in time, skipped, cancelled, or failed.
+    if (interactionId && pending && !pending.responding) {
+      this.#closeInteraction(interactionId, outcome === "answered" ? "superseded" : "cancelled");
+    }
+  }
+
+  #deliverRetainedAnswer(callId: string, answer: ModernQuestionAnswer): void {
+    if (this.#closed || this.#closing) return;
+    // The Host interaction already closed as responded; DSH keeps the question answerable.
+    void this.#answerContinuedQuestion(callId, answer).catch(() => undefined);
   }
 
   #publishInteraction(delivery: ModernEventDelivery, active: ActiveHostTurn): void {
@@ -771,7 +960,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     }
   }
 
-  #closeInteraction(interactionId: HostInteractionId, reason: "responded" | "cancelled"): void {
+  #closeInteraction(
+    interactionId: HostInteractionId,
+    reason: InteractionClosedEvent["reason"],
+  ): void {
     const pending = this.#interactions.get(interactionId);
     if (!pending) return;
     this.#interactions.delete(interactionId);
@@ -788,9 +980,15 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   #closeActiveInteractions(active: ActiveHostTurn): void {
     for (const interactionId of [...active.interactions]) {
       const pending = this.#interactions.get(interactionId);
+      if (pending?.continuation) {
+        // DSH released this wait earlier; answers cannot cross into another Host Turn.
+        this.#closeInteraction(interactionId, "expired");
+        continue;
+      }
       if (pending) void settleCancelledInteraction(pending.delivery).catch(() => undefined);
       this.#closeInteraction(interactionId, "cancelled");
     }
+    active.timedReplies.clear();
   }
 
   #closeAllInteractions(): void {
@@ -2008,6 +2206,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       programCalls: new Set(),
       reasoningOrdinal: 0,
       interactions: new Set(),
+      timedReplies: new Map(),
       terminal: false,
       cancelAcknowledged: false,
     };
@@ -2061,7 +2260,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#startTool(active, data, event.seq);
         return;
       case "tool/result":
-        if (event.surfaceOp === "append") this.#completeTool(active, event);
+        if (event.surfaceOp === "append") {
+          const callId = this.#completeTool(active, event);
+          this.#observeTimedQuestion(active, callId, () => toolResultQuestionOutcome(data));
+        }
         return;
       case "tool/ptc-dispatch-start":
         if (projectsPtcDispatches(this.#profile)) {
@@ -2071,6 +2273,11 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       case "tool/ptc-dispatch":
         if (projectsPtcDispatches(this.#profile)) {
           this.#settlePtcDispatch(active, data, event.seq, event.time);
+        }
+        if (typeof data.subCallId === "string") {
+          this.#observeTimedQuestion(active, data.subCallId, () =>
+            ptcDispatchQuestionOutcome(data),
+          );
         }
         return;
       case "step/end":
@@ -2277,18 +2484,19 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     return tool;
   }
 
-  #completeTool(active: ActiveHostTurn, event: ModernJournalEvent): void {
+  /** Complete the Tool Item of one appended native result and return its call. */
+  #completeTool(active: ActiveHostTurn, event: ModernJournalEvent): string {
     const data = event.data as Record<string, unknown>;
     const seq = event.seq;
     const result = projectToolResult(data.message, this.#toolOutputLimit);
     if (!result) throw new ModernHistoryError("protocolError", "Modern tool/result is malformed");
     const advertised = active.advertisedTools.get(result.callId);
     active.advertisedTools.delete(result.callId);
-    if (active.programCalls.delete(result.callId)) return;
+    if (active.programCalls.delete(result.callId)) return result.callId;
     let tool = active.tools.get(result.callId);
     if (!tool && advertised && isNotStartedToolResult(data, event.sourceEventSeqs, seq)) {
       // Cold history shows a call DSH closed before it started as one failed Tool.
-      if (isPtcProgramTool(this.#profile, advertised.toolName)) return;
+      if (isPtcProgramTool(this.#profile, advertised.toolName)) return result.callId;
       tool = this.#openTool(active, result.callId, seq, advertised.toolName, advertised.arguments);
     }
     if (!tool) throw new ModernHistoryError("protocolError", "Modern tool/result is unmatched");
@@ -2326,6 +2534,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#completeItem(active, fileItem, { status: "succeeded" });
       }
     }
+    return result.callId;
   }
 
   #startPtcDispatch(
@@ -2504,6 +2713,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         programCalls: new Set(),
         reasoningOrdinal: 0,
         interactions: new Set(),
+        timedReplies: new Map(),
         terminal: false,
         cancelAcknowledged: false,
       };
@@ -2999,6 +3209,37 @@ function questionAnswer(
       return { id: question.id, selected, ...(custom === undefined ? {} : { custom }) };
     }),
   };
+}
+
+type TimedQuestionOutcome = "continued" | "answered" | "failed";
+
+/** DSH keeps a timed question answerable after its pending payload or an unknown outcome. */
+function toolResultQuestionOutcome(data: Readonly<Record<string, unknown>>): TimedQuestionOutcome {
+  const message = isRecord(data.message) ? data.message : {};
+  if (
+    pendingQuestionPayload(message.content) ||
+    (isRecord(data.error) && data.error.code === "TOOL_OUTCOME_UNKNOWN")
+  ) {
+    return "continued";
+  }
+  return data.error === undefined && message.isError !== true ? "answered" : "failed";
+}
+
+function ptcDispatchQuestionOutcome(data: Readonly<Record<string, unknown>>): TimedQuestionOutcome {
+  if (data.isError === true || data.error !== undefined) return "failed";
+  return pendingQuestionPayload(data.content) ? "continued" : "answered";
+}
+
+function pendingQuestionPayload(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  const text: unknown = content.find((block) => isRecord(block) && block.type === "text");
+  if (!isRecord(text) || typeof text.text !== "string") return false;
+  try {
+    const parsed: unknown = JSON.parse(text.text);
+    return isRecord(parsed) && parsed.pending === true;
+  } catch {
+    return false;
+  }
 }
 
 function settleCancelledInteraction(delivery: ModernEventDelivery): Promise<void> {

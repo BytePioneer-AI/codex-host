@@ -29,6 +29,7 @@ import {
   type KimiAcpTransportOptions,
   type SessionEventHandler,
 } from "./acp-transport.js";
+import { fetchKimiAccount } from "./account-identity.js";
 import { resolveKimiExecutable } from "./command.js";
 import {
   createKimiNativeSessionRef,
@@ -175,6 +176,11 @@ export class KimiAdapter implements HarnessAdapter {
   constructor(options: KimiAdapterOptions = {}, dependencies: KimiAdapterDependencies = {}) {
     this.#options = options;
     this.#deps = dependencies;
+  }
+
+  async inspectAccount() {
+    if (this.#closed) return null;
+    return fetchKimiAccount({ environment: { ...process.env, ...this.#options.environment } });
   }
 
   #createTransport(options: KimiAcpTransportOptions): KimiAcpTransportLike {

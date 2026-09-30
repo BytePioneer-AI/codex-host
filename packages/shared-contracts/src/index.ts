@@ -31,6 +31,7 @@ export {
 } from "./manual-compaction.js";
 
 export {
+  accountBalanceSnapshotSchema,
   harnessAccountSnapshotSchema,
   harnessAccountSourceSchema,
   harnessAccountSourceListParamsSchema,
@@ -41,6 +42,7 @@ export {
   harnessAccountListResultSchema,
 } from "./harness-accounts.js";
 export type {
+  AccountBalanceSnapshot,
   HarnessAccountSnapshot,
   HarnessAccountSource,
   HarnessAccountSourceListResult,

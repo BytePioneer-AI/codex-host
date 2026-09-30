@@ -1,3 +1,4 @@
+import { fetchPiAccounts } from "./account-balance.js";
 import { createPiCredentialImports } from "./pi-credential-imports.js";
 import { persistEmptyPiSession, readPiEmptySessionConfiguration } from "./pi-empty-session.js";
 import { createTwoFilesPatch, parsePatch } from "diff";
@@ -2080,6 +2081,7 @@ export class PiAdapter implements HarnessAdapter {
   readonly #inspections = new Set<PiTurnTransport>();
   readonly #sessions = new Set<PiHarnessSession>();
   readonly #toolOutputLimit: number;
+  readonly #environment: NodeJS.ProcessEnv;
   #closePromise: Promise<void> | null = null;
   #thinkingSelectionSupported: boolean | null = null;
 
@@ -2103,9 +2105,21 @@ export class PiAdapter implements HarnessAdapter {
       remove: (name) => updateCatalog(imports.remove(name)),
     };
     this.#createTransport = dependencies.createTransport;
+    this.#environment = options.environment ?? process.env;
     this.#importIndex = new PiSessionImportIndex({ ...process.env, ...options.environment });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
+  }
+
+  /** Pi itself holds no Account; this reports configured Provider balances. */
+  async inspectAccounts() {
+    if (this.#closePromise) return [];
+    return fetchPiAccounts({ environment: this.#environment });
+  }
+
+  async inspectAccount() {
+    const accounts = await this.inspectAccounts();
+    return accounts[0] ?? null;
   }
 
   #readImport<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<HarnessResult<T>> {

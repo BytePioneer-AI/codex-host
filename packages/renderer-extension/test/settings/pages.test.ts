@@ -717,6 +717,37 @@ describe("Read-only Harness accounts", () => {
     expect(mounted.refreshing).toBe(false);
     scope.dispose();
   });
+
+  it("shows every Billing Source from one Harness inspection", async () => {
+    const scope = new RendererSettingsPageScope();
+    const mounted = createHarnessAccounts(
+      scope.signal,
+      () => ({
+        listHarnessAccountSources: async () => ({
+          sources: [{ harnessId: harnessIdSchema.parse("pi"), harnessName: "Pi" }],
+        }),
+        inspectHarnessAccount: async () => ({
+          harnessId: harnessIdSchema.parse("pi"),
+          harnessName: "Pi",
+          account: {
+            label: "qingge",
+            balance: { amount: 4, currency: "USD", label: "钱包余额" },
+          },
+          accounts: [
+            { label: "qingge", balance: { amount: 4, currency: "USD", label: "钱包余额" } },
+            {
+              label: "DeepSeek",
+              balance: { amount: 12.5, currency: "CNY", label: "DeepSeek API" },
+            },
+          ],
+        }),
+      }),
+      vi.fn(),
+    );
+    await mounted.refresh();
+    expect(mounted.accounts.map((account) => account.label)).toEqual(["DeepSeek", "qingge"]);
+    scope.dispose();
+  });
 });
 
 describe("Renderer Connections page", () => {

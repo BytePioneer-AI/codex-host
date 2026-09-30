@@ -163,6 +163,23 @@ describe("Account limit windows", () => {
     }
   });
 
+  it("shows native quantities and keeps a zero cap empty", () => {
+    const remaining = usage({ ...credits, used: 20, limit: 100, unit: "credits" }, "remaining");
+    expect(text(remaining)).toContain("80 / 100 credits");
+
+    const empty = usage(
+      { ...credits, usedPercent: 0, used: 0, limit: 0, unit: "credits" },
+      "remaining",
+    );
+    expect(text(empty)).toContain("0 / 0 credits");
+    expect(text(empty)).toContain("—");
+    expect(
+      elements(empty)
+        .find((element) => element.attributes.get("role") === "meter")
+        ?.attributes.get("aria-valuenow"),
+    ).toBe("0");
+  });
+
   it("keeps unavailable, loading, empty, and failed states distinct from zero usage", () => {
     expect(
       elements(renderAccountUsage(document, undefined, messages, "used", vi.fn())).some(

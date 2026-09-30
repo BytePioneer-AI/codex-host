@@ -265,10 +265,10 @@ describe("ZCode account configuration and Start Plan entitlement", () => {
 
   it("HTTP 400 → not entitled, no models, unavailableReason: not-entitled", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-      return new Response(
-        JSON.stringify({ code: 3001, message: "parameter error" }),
-        { status: 400, headers: { "content-type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ code: 3001, message: "parameter error" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
     });
 
     const result = await accountConfig(installation, env);
@@ -347,9 +347,7 @@ describe("ZCode account configuration and Start Plan entitlement", () => {
     );
     const entitled2 = await accountConfig(installation, env);
 
-    fetchSpy.mockResolvedValueOnce(
-      new Response(JSON.stringify({ code: 0, data: { plans: [] } })),
-    );
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ code: 0, data: { plans: [] } })));
     const unentitled = await accountConfig(installation, env);
 
     expect(entitled1.params.revision).not.toEqual(entitled2.params.revision);

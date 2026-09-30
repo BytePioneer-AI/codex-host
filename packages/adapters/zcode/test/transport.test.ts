@@ -216,10 +216,7 @@ describe("ZCode installed CLI transport", () => {
       options({ environment: { ...options().environment, CODEXHOST_THREAD_ID: "thread-1" } }),
     );
     await transport.close();
-    const builtinFile = path.join(
-      resources,
-      "config/provider/zcode-builtin.json",
-    );
+    const builtinFile = path.join(resources, "config/provider/zcode-builtin.json");
     const [launch] = await log();
     expect(launch).toEqual({
       argv: ["app-server", "--stdio", "--surface", "desktop"],

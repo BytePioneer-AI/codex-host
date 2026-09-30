@@ -213,7 +213,9 @@ describe("ZCode installation discovery", () => {
   });
 
   it("rejects unsupported platforms with a clear not-installed error", async () => {
-    await expect(resolveInstallation({}, undefined, "freebsd" as NodeJS.Platform)).rejects.toMatchObject({
+    await expect(
+      resolveInstallation({}, undefined, "freebsd" as NodeJS.Platform),
+    ).rejects.toMatchObject({
       code: "notInstalled",
       message: expect.stringMatching(/not supported on freebsd/i),
     });

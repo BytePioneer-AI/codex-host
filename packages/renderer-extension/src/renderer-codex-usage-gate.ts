@@ -335,6 +335,8 @@ function project({ subscriber, store, atom, instance, subscribeEffect }: Subscri
     subscriber,
     instance,
     restore() {
+      // A refreshed instance getter may delegate to the subscriber; restoring
+      // the subscriber also restores that wrapper without replacing its identity.
       if (subscriber.getSnapshot === allowed) subscriber.getSnapshot = original;
       if (instance.getSnapshot === allowed) instance.getSnapshot = originalInstance;
       onChange();

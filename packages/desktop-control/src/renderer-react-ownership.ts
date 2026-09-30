@@ -1,6 +1,9 @@
 type Fiber = Record<string, unknown>;
 
-/** Dispatched on the Renderer global when the bounded fiber walk gives up. */
+/** Dispatched on the Renderer global when the bounded fiber walk gives up.
+ * Keep the literal inside committedReactAncestors in sync: that function is
+ * serialized for Renderer evaluation and cannot reference this module constant.
+ */
 export const REACT_FIBER_WALK_LIMIT_EVENT = "codexhost:react-fiber-walk-limit";
 
 /** DOM Fiber pointers can retain the alternate tree after a React commit.

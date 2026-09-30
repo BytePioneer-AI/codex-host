@@ -52,7 +52,8 @@ export function createQoderInstallation(
         !/already\s+(?:on|at)\s+(?:the\s+)?latest|up.to.date|no updates?\s+available/i.test(output)
       ) {
         const diagnostic = `Qoder update check returned an unknown response: ${sanitizeDiagnosticTail(output)}`;
-        // Host intentionally returns a generic plugin error; retain local diagnostics.
+        // Local diagnostics only: redaction does not make native output safe for the UI.
+        // Host must keep mapping this exception to its generic installation error.
         console.warn(diagnostic);
         throw new Error(diagnostic);
       }

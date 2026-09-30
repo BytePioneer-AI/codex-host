@@ -29,6 +29,10 @@ Agent 间任务协作目前是单向的：正常 Cursor Session 可以通过原�
 
 Pi Adapter 接入 `pi-subagents`（nicobailon）的异步 Host 状态与检查协议，以及同步 workflow 的 `workflowChildren` 摘要，复用公共子 Thread 和渲染链路。异步转写是原生有界窗口；同步 workflow 从父结果定位只读子 Session，文件不可用时可展示明确标注的原生结果摘要。没有已支持身份协议的同步单 Agent 调用及其他同名插件不自动兼容。详见 [Pi subagent 映射](pi/pi-subagents.md)。
 
+## Pi Codex Fast
+
+Pi 当前 Model 同时具备 Codex OAuth、Codex API 和本地 `priority` 元数据时，Composer 显示默认关闭的闪电开关。Host 自动加载随插件交付的小型 Pi 扩展，通过原生 Provider 参数设置 priority，不依赖 Provider 名称，也不改变 Thinking 或 Pi 全局配置。缺少能力事实时不显示；真实服务端速度和额度效果未作承诺。详见 [Pi Codex Fast](pi/pi-fast.md)。
+
 ## Pi 权限模式
 
 已核对本机 Pi `0.85.1` 的 RPC、get_state 和类型定义，没有原生会话权限模式目录或权限切换入口；其默认工具执行方式不等同于一个可选择的 Permission Mode。`--tools` / `--exclude-tools` 是工具装载过滤，`--approve` 是项目文件信任，均不能冒充统一的只读/询问/完全访问权限策略。

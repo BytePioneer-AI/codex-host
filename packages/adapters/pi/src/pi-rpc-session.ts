@@ -12,6 +12,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { parsePiNativeCommands, type PiNativeCommand } from "./pi-slash-commands.js";
+import { ensurePiFastExtension, PI_FAST_ACK, PI_FAST_COMMAND } from "./pi-fast-mode.js";
 import type { PiEmptySessionConfiguration } from "./pi-empty-session.js";
 import { resolvePiExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { PiSessionHistory } from "./pi-history.js";
@@ -33,6 +34,7 @@ export interface PiSessionState {
   provider: string | null;
   modelId: string | null;
   thinkingLevel: HarnessThinkingOptionId | null;
+  fast?: boolean;
   contextUsage: Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null;
 }
 
@@ -155,6 +157,7 @@ export interface PiRpcSessionOptions {
 
 export interface PiRpcProcessOptions {
   cwd: string;
+  fastExtension?: string;
   command?: string;
   environment: NodeJS.ProcessEnv;
   sessionFile?: string;
@@ -321,7 +324,11 @@ function parseAvailableModels(response: Record<string, unknown>): PiNativeModel[
         "Pi RPC catalog contains a Model without reasoning capability",
       );
     }
-    return { ...parsed, reasoning: model.reasoning };
+    return {
+      ...parsed,
+      reasoning: model.reasoning,
+      ...(typeof model.api === "string" ? { api: model.api } : {}),
+    };
   });
 }
 
@@ -444,6 +451,7 @@ export function piRpcProcessCommand(
     ? ["--thinking", options.emptySessionConfiguration.thinkingLevel]
     : [];
   const arguments_ = [
+    ...(options.fastExtension ? ["--extension", options.fastExtension] : []),
     "--mode",
     "rpc",
     ...modelArguments,
@@ -494,6 +502,8 @@ export class PiRpcSession {
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
+  #fast: Pick<PiNativeModelRef, "provider" | "id"> | null = null;
+  #fastAcknowledgement: { message: string; received: boolean } | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
   #manualCompaction: ManualCompaction | null = null;
   #stderrTail = "";
@@ -527,7 +537,12 @@ export class PiRpcSession {
 
   get state(): PiSessionState {
     if (!this.#state) throw new Error("Pi RPC Session has not started");
-    return this.#state;
+    if (
+      this.#fast &&
+      (this.#fast.provider !== this.#state.provider || this.#fast.id !== this.#state.modelId)
+    )
+      this.#fast = null;
+    return this.#fast ? { ...this.#state, fast: true } : this.#state;
   }
 
   get stderrTail(): string {
@@ -548,8 +563,13 @@ export class PiRpcSession {
 
   async start(): Promise<this> {
     if (this.#child || this.#closed) throw new Error("Pi RPC Session cannot be started twice");
+    const fastExtension =
+      this.#processAdapter === nodeProcessAdapter
+        ? await ensurePiFastExtension({ ...process.env, ...this.#options.environment })
+        : undefined;
     const child = this.#processAdapter.spawn({
       cwd: this.#options.cwd,
+      ...(fastExtension ? { fastExtension } : {}),
       ...(this.#options.command ? { command: this.#options.command } : {}),
       environment: withNodeRuntimeOnPath({
         ...process.env,
@@ -732,7 +752,47 @@ export class PiRpcSession {
     }
   }
 
+  async supportsFastMode(): Promise<boolean> {
+    return (await this.getCommands()).some(
+      (command) => command.name === PI_FAST_COMMAND && command.source === "extension",
+    );
+  }
+
+  async selectFastMode(enabled: boolean): Promise<PiSessionState> {
+    if (!enabled && !this.#fast) return this.state;
+    if (!(await this.supportsFastMode()))
+      throw new Error("Installed Pi does not support the Host Fast extension");
+    const nonce = randomUUID();
+    const mode = enabled ? "on" : "off";
+    const acknowledgement = { message: `${PI_FAST_ACK}${nonce}:${mode}`, received: false };
+    this.#fastAcknowledgement = acknowledgement;
+    try {
+      await this.#send("prompt", { message: `/${PI_FAST_COMMAND} ${mode} ${nonce}` });
+      if (!acknowledgement.received) throw new Error("Pi did not confirm the Fast selection");
+      this.#fast = enabled
+        ? { provider: this.state.provider ?? "", id: this.state.modelId ?? "" }
+        : null;
+      return this.state;
+    } catch (error) {
+      // The extension may have changed request policy before its response/notification failed.
+      // An unknown policy must never remain usable for subsequent Turns.
+      const fault =
+        error instanceof PiRpcFaultError
+          ? error
+          : new PiRpcFaultError(
+              "protocolError",
+              `Pi Fast selection could not be confirmed: ${message(error)}`,
+            );
+      this.#fail(fault);
+      await this.close().catch(() => undefined);
+      throw fault;
+    } finally {
+      this.#fastAcknowledgement = null;
+    }
+  }
+
   async selectModel(model: PiNativeModelRef): Promise<PiSessionState> {
+    if (this.#fast) await this.selectFastMode(false);
     await this.#send("set_model", { provider: model.provider, modelId: model.id });
     return this.#refreshState("Model");
   }
@@ -746,7 +806,7 @@ export class PiRpcSession {
   async #refreshState(operation: string): Promise<PiSessionState> {
     try {
       this.#state = parseSessionState(await this.#send("get_state", {}));
-      return this.#state;
+      return this.state;
     } catch (error) {
       const fault =
         error instanceof PiRpcFaultError
@@ -937,6 +997,16 @@ export class PiRpcSession {
   }
 
   #handle(value: Record<string, unknown>): void {
+    if (
+      value.type === "extension_ui_request" &&
+      value.method === "notify" &&
+      typeof value.message === "string" &&
+      value.message.startsWith(PI_FAST_ACK)
+    ) {
+      if (this.#fastAcknowledgement?.message === value.message)
+        this.#fastAcknowledgement.received = true;
+      return;
+    }
     if (this.#closed || this.#failed) return;
     if (value.type === "response") {
       this.#handleResponse(value);

@@ -2,6 +2,8 @@ import nodePath from "node:path";
 
 import type { HarnessAdapter, HarnessSession } from "@codexhost/harness-adapter";
 import {
+  decodeExternalTransportSelection,
+  encodeExternalTransportSelection,
   mapExternalThreadHarnessError,
   type DecodedThreadForkRequest,
   type ExternalHarnessId,
@@ -166,6 +168,23 @@ export async function executeExternalThreadFork(input: {
       await session.close().catch(() => undefined);
       await repository.removeProvisional(provisional.hostThreadId).catch(() => undefined);
       return { ok: false, error: mapExternalThreadHarnessError(snapshot.error, "read") };
+    }
+    // Persist the derived Session's actual Model, not a source-only runtime selection.
+    // Do this while provisional so a persistence failure still removes the entire Fork.
+    const effectiveModel = snapshot.value.state?.effectiveModel;
+    const selection = decodeExternalTransportSelection(
+      source.harnessId,
+      provisional.transportModelId,
+    );
+    if (effectiveModel && selection?.model && selection.model.id !== effectiveModel.id) {
+      const transportModelId = encodeExternalTransportSelection(source.harnessId, {
+        ...selection,
+        model: effectiveModel,
+      });
+      provisional = await repository.setTransportModelId(
+        provisional.hostThreadId,
+        transportModelId,
+      );
     }
     const aligned = await repository.commitDerivedSnapshot(
       provisional,

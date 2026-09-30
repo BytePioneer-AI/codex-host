@@ -14,7 +14,29 @@ export async function npmInstallation(
   packages: readonly string[],
   environment: NodeJS.ProcessEnv,
 ) {
-  let directory = path.dirname(await realpath(command));
+  let selected = await realpath(command);
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(selected)) {
+    const shim = (await readFile(selected, "utf8")).replaceAll("\\", "/");
+    const root = path.dirname(selected);
+    for (const name of packages) {
+      const directory = path.join(root, "node_modules", ...name.split("/"));
+      const metadata = await readFile(path.join(directory, "package.json"), "utf8")
+        .then((text) => JSON.parse(text) as { bin?: string | Record<string, string> })
+        .catch(() => null);
+      const bins =
+        typeof metadata?.bin === "string" ? [metadata.bin] : Object.values(metadata?.bin ?? {});
+      const bin = bins.find(
+        (entry) =>
+          !entry.includes("..") &&
+          shim.includes(`node_modules/${name}/${entry.replace(/^\.\//, "")}`),
+      );
+      if (bin) {
+        selected = await realpath(path.join(directory, bin));
+        break;
+      }
+    }
+  }
+  let directory = path.dirname(selected);
   for (let depth = 0; depth < 8; depth++) {
     const metadata = await readFile(path.join(directory, "package.json"), "utf8")
       .then((text) => JSON.parse(text) as { name?: string; version?: string })
@@ -38,6 +60,7 @@ export async function npmInstallation(
       );
       const canUpdate = modules === globalRoot && !!npm;
       return {
+        prefix,
         currentVersion,
         canUpdate,
         latest: async () => {

@@ -55,11 +55,22 @@ export const harnessModelSchema = z
     ref: harnessModelRefSchema,
     label: nonBlankTextSchema.max(HARNESS_MODEL_LABEL_MAX_LENGTH),
     resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
+    /** Optional opaque selection for this same Model with priority processing enabled. */
+    fastModel: harnessModelRefSchema.optional(),
     supportedThinkingOptionIds: z.array(harnessThinkingOptionIdSchema).optional(),
   })
   .strict();
 
 export type HarnessModel = z.infer<typeof harnessModelSchema>;
+
+/** Resolve a normal or advertised Fast selection without interpreting Harness-owned refs. */
+export function catalogModelForRef(
+  catalog: HarnessModelCatalog | undefined,
+  ref: HarnessModelRef | undefined,
+): HarnessModel | undefined {
+  if (!ref) return undefined;
+  return catalog?.models.find((model) => model.ref.id === ref.id || model.fastModel?.id === ref.id);
+}
 
 const harnessThinkingOptionsSchema = z
   .array(harnessThinkingOptionSchema)
@@ -97,6 +108,19 @@ export const harnessModelCatalogSchema = z
         });
       }
       refs.add(model.ref.id);
+      if (model.fastModel) {
+        if (
+          refs.has(model.fastModel.id) ||
+          catalog.models.some((entry) => entry.ref.id === model.fastModel?.id)
+        ) {
+          context.addIssue({
+            code: "custom",
+            message: "Fast Model refs must be distinct and unique",
+            path: ["models", index, "fastModel"],
+          });
+        }
+        refs.add(model.fastModel.id);
+      }
       const supportedThinkingIds = new Set<string>();
       for (const [optionIndex, optionId] of (model.supportedThinkingOptionIds ?? []).entries()) {
         if (supportedThinkingIds.has(optionId)) {
@@ -300,6 +324,7 @@ export type ThreadThinkingSelectParams = z.infer<typeof threadThinkingSelectPara
 export const threadInspectionParamsSchema = z
   .object({
     threadId: hostThreadIdSchema,
+    includeReferenceCapability: z.boolean().optional(),
   })
   .strict();
 
@@ -309,6 +334,7 @@ const codexThreadInspectionSchema = z
   .object({
     owner: z.literal("codex"),
     locked: z.literal(true),
+    supportsThreadReferences: z.literal(true).optional(),
   })
   .strict();
 

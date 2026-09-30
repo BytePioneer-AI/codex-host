@@ -13,6 +13,8 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "ba509f57e5448e796b3dfdd5031dcb08672eded50b61c0a54de84cfa02c49dd3",
   "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
   "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
+  // v4, shipped in v0.4.0-v0.6.0.
+  "fa7944cd1e72ffbaf932fca2074bdb78aad4670d8990b6711220dd83c39509a0",
   "b9c1cce41d2556e73a6514aa55618d7d3f2f9ef935f5ae50b0da5a04941514b4",
 ];
 

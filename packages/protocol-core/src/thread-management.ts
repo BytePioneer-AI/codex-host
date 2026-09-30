@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { JsonObject, JsonRpcRequest, JsonValue } from "@codexhost/shared-contracts";
 
 const HOST_CURSOR_PREFIX = "codexhost:thread-list:v1:";
+const SECTION_CURSOR_PREFIX = "codexhost:thread-section-list:v1:";
 const MAX_CURSOR_LENGTH = 65_536;
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
@@ -18,6 +19,7 @@ const THREAD_LIST_FIELDS = new Set([
   "modelProviders",
   "parentThreadId",
   "searchTerm",
+  "sectionId",
   "sortDirection",
   "sortKey",
   "sourceKinds",
@@ -65,13 +67,22 @@ export interface DecodedThreadListRequest {
   parentThreadId: string | null;
   ancestorThreadId: string | null;
   searchTerm: string | null;
+  /** Omitted (`undefined`) matches every section; `null` matches unsectioned Threads. */
+  sectionId: string | null | undefined;
   sortDirection: ThreadListSortDirection;
   sortKey: OfficialThreadListSortKey;
   sourceKinds: string[] | null;
   useStateDbOnly: boolean;
   queryFingerprint: string;
   cursor: HostThreadListCursor | null;
+  /** Offset into a Host-merged `section_position` list; null for its first or an official page. */
+  sectionOffset: number | null;
   supportsExternal: boolean;
+}
+
+export interface DecodedThreadSectionMoveRequest extends DecodedThreadManagementRequest {
+  sectionId: string | null;
+  beforeThreadId: string | null;
 }
 
 export interface DecodedThreadManagementRequest {
@@ -137,8 +148,12 @@ function decodeLimit(value: unknown): number {
   return Math.min(value as number, MAX_PAGE_SIZE);
 }
 
-function decodeSortDirection(value: unknown): ThreadListSortDirection {
-  if (value === undefined || value === null) return "desc";
+function decodeSortDirection(
+  value: unknown,
+  sortKey: OfficialThreadListSortKey,
+): ThreadListSortDirection {
+  // Official section order defaults to its stored (ascending) position.
+  if (value === undefined || value === null) return sortKey === "section_position" ? "asc" : "desc";
   if (value !== "asc" && value !== "desc") {
     throw new Error("thread/list params.sortDirection must be 'asc', 'desc', or null");
   }
@@ -266,8 +281,12 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
     throw new Error("thread/list cannot combine parentThreadId and ancestorThreadId");
   }
   const searchTerm = nullableText(params.searchTerm, "thread/list params.searchTerm");
-  const sortDirection = decodeSortDirection(params.sortDirection);
+  const sectionId =
+    params.sectionId === undefined
+      ? undefined
+      : nullableText(params.sectionId, "thread/list params.sectionId");
   const sortKey = decodeSortKey(params.sortKey);
+  const sortDirection = decodeSortDirection(params.sortDirection, sortKey);
   const sourceKinds = nullableTextArray(params.sourceKinds, "thread/list params.sourceKinds");
   if (sourceKinds?.some((kind) => !THREAD_SOURCE_KINDS.has(kind))) {
     throw new Error("thread/list params.sourceKinds contains an unsupported value");
@@ -283,6 +302,8 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
     modelProviders,
     parentThreadId,
     searchTerm,
+    ...(sectionId === undefined ? {} : { sectionId }),
+    ...(sortKey === "section_position" ? { sortDirection } : {}),
     sortKey,
     sourceKinds,
     useStateDbOnly: params.useStateDbOnly === true,
@@ -290,18 +311,26 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
   const cursorText = nullableText(params.cursor, "thread/list params.cursor");
   const hasUnknownFields = Object.keys(params).some((name) => !THREAD_LIST_FIELDS.has(name));
   const isHostCursor = cursorText?.startsWith(HOST_CURSOR_PREFIX) === true;
+  const isSectionCursor = cursorText?.startsWith(SECTION_CURSOR_PREFIX) === true;
   if (sortKey === "section_position" && isHostCursor) {
     throw new Error("thread/list Host cursor cannot be used with section_position sorting");
   }
+  if (sortKey !== "section_position" && isSectionCursor) {
+    throw new Error("thread/list section cursor requires section_position sorting");
+  }
+  // An official cursor continues an official-only listing, so later pages stay official.
   const supportsExternal =
-    sortKey !== "section_position" && !hasUnknownFields && (cursorText === null || isHostCursor);
+    !hasUnknownFields &&
+    (cursorText === null || (sortKey === "section_position" ? isSectionCursor : isHostCursor));
   const cursor =
-    supportsExternal && cursorText
+    supportsExternal && isHostCursor && cursorText
       ? decodeHostThreadListCursor(cursorText, {
           queryFingerprint: fingerprint,
           sortDirection,
         })
       : null;
+  const sectionOffset =
+    isSectionCursor && cursorText ? decodeSectionCursor(cursorText, fingerprint) : null;
   return {
     params: { ...(params as JsonObject) },
     archived,
@@ -312,14 +341,66 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
     parentThreadId,
     ancestorThreadId,
     searchTerm,
+    sectionId,
     sortDirection,
     sortKey,
     sourceKinds,
     useStateDbOnly: params.useStateDbOnly === true,
     queryFingerprint: fingerprint,
     cursor,
+    sectionOffset,
     supportsExternal,
   };
+}
+
+/** Cursor for a `section_position` list whose order the Host merged across Thread owners. */
+export function encodeSectionThreadListCursor(queryFingerprint: string, offset: number): string {
+  if (!Number.isSafeInteger(offset) || offset <= 0) throw new Error("Section cursor is invalid");
+  return `${SECTION_CURSOR_PREFIX}${Buffer.from(
+    JSON.stringify({ formatVersion: 1, queryFingerprint, offset }),
+  ).toString("base64url")}`;
+}
+
+function decodeSectionCursor(value: string, queryFingerprint: string): number {
+  if (value.length > MAX_CURSOR_LENGTH) throw new Error("thread/list cursor is invalid");
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(
+      Buffer.from(value.slice(SECTION_CURSOR_PREFIX.length), "base64url").toString("utf8"),
+    );
+  } catch {
+    throw new Error("thread/list cursor is invalid");
+  }
+  if (
+    !isRecord(decoded) ||
+    decoded.formatVersion !== 1 ||
+    !Number.isSafeInteger(decoded.offset) ||
+    (decoded.offset as number) <= 0
+  ) {
+    throw new Error("thread/list cursor is invalid");
+  }
+  if (decoded.queryFingerprint !== queryFingerprint) {
+    throw new Error("thread/list cursor does not match the current query");
+  }
+  return decoded.offset as number;
+}
+
+export function decodeThreadSectionMoveRequest(
+  request: JsonRpcRequest,
+): DecodedThreadSectionMoveRequest | null {
+  if (request.method !== "thread/section/move") return null;
+  const params = paramsObject(request, request.method);
+  if (typeof params.threadId !== "string" || params.threadId.length === 0) {
+    throw new Error("thread/section/move params.threadId must be non-empty text");
+  }
+  if (params.sectionId !== null && typeof params.sectionId !== "string") {
+    throw new Error("thread/section/move params.sectionId must be text or null");
+  }
+  const beforeThreadId = nullableText(
+    params.beforeThreadId,
+    "thread/section/move params.beforeThreadId",
+  );
+  return { threadId: params.threadId, sectionId: params.sectionId, beforeThreadId };
 }
 
 export function decodeThreadArchiveRequest(

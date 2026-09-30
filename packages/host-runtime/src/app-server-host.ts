@@ -119,6 +119,7 @@ import {
   createProductionExternalThreadStore,
   ExternalThreadRepository,
   externalThreadValue,
+  threadSectionFields,
   type ExternalThreadStore,
 } from "./external-thread-repository.js";
 import {
@@ -216,6 +217,8 @@ import {
   officialThreadListPageFromResponse,
   OfficialThreadListError,
 } from "./thread-list-aggregator.js";
+import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
+import { externalThreadListEntries } from "./external-thread-list.js";
 import {
   CodexTurnProjector,
   decodeCreateRoute,
@@ -227,6 +230,7 @@ import {
   decodeThreadMetadataUpdateRequest,
   decodeThreadRevertRequest,
   decodeThreadRollbackRequest,
+  decodeThreadSectionMoveRequest,
   encodeJsonFrame,
   mapExternalThreadHarnessError,
   projectCodexRateLimitsToCredits,
@@ -246,6 +250,7 @@ import {
   type CodexQuestionProjection,
   type DecodedThreadForkRequest,
   type DecodedThreadListRequest,
+  type DecodedThreadSectionMoveRequest,
   type DecodedThreadRevertRequest,
   type DecodedThreadRollbackRequest,
   type ExternalThreadRpcError,
@@ -458,6 +463,7 @@ const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
   "thread/resume",
   "thread/revert",
   "thread/rollback",
+  "thread/section/move",
   "thread/turns/list",
   "thread/unarchive",
   "thread/unsubscribe",
@@ -601,6 +607,7 @@ export class AppServerHost {
   #routeObservationTracker = new RequestRouteObservationTracker();
   #officialServerRequests = new Map<JsonRpcId, JsonRpcId>();
   #nextOfficialServerRequestId = 0;
+  #sectionMoves: Promise<void> = Promise.resolve();
   #writer: OrderedWriter;
   /** Console requests share Desktop handling; their replies return to the console. */
   readonly #consoleRequestPrefix = `codexhost-console:${randomUUID()}:`;
@@ -1361,11 +1368,34 @@ export class AppServerHost {
         await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
         return;
       }
-      if (!listRequest.supportsExternal) {
+      if (
+        !listRequest.supportsExternal ||
+        (listRequest.sortKey === "section_position" && typeof listRequest.sectionId !== "string")
+      ) {
         await this.#forwardOfficialRequest(request, frame);
         return;
       }
-      this.#dispatchDesktopRequest(() => this.#listThreads(request, listRequest));
+      this.#dispatchDesktopRequest(() =>
+        listRequest.sortKey === "section_position"
+          ? this.#listSectionThreads(request, frame, listRequest)
+          : this.#listThreads(request, listRequest),
+      );
+      return;
+    }
+    if (request.method === "thread/section/move") {
+      let move: DecodedThreadSectionMoveRequest;
+      try {
+        const decoded = decodeThreadSectionMoveRequest(request);
+        if (!decoded) throw new Error("Expected thread/section/move request");
+        move = decoded;
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        return;
+      }
+      // Moves read and rewrite one shared order, so they apply one at a time.
+      const task = this.#sectionMoves.then(() => this.#moveThreadSection(request, frame, move));
+      this.#sectionMoves = task.catch(() => undefined);
+      this.#dispatchDesktopRequest(() => task);
       return;
     }
     if (request.method === "thread/archive" || request.method === "thread/unarchive") {
@@ -2390,16 +2420,18 @@ export class AppServerHost {
     listRequest: DecodedThreadListRequest,
   ): Promise<void> {
     try {
-      const records = await this.#repository.list();
+      const [records, placements] = await Promise.all([
+        this.#repository.list(),
+        this.#repository.listSectionPlacements(),
+      ]);
+      const placementById = new Map(
+        placements.map((entry) => [entry.hostThreadId as string, entry]),
+      );
       const result = await aggregateThreadList({
         query: listRequest,
         records,
-        runtimeFor: (threadId) => {
-          const thread = this.#externalRuntime.get(threadId);
-          const subagentStatus = this.#subagentThreadStatuses.get(threadId);
-          if (subagentStatus) return { running: subagentStatus === "active" };
-          return thread ? { running: thread.running } : null;
-        },
+        runtimeFor: (threadId) => this.#listRuntimeState(threadId),
+        placementOf: (threadId) => placementById.get(threadId),
         requestOfficialPage: async (params) =>
           officialThreadListPageFromResponse(
             await this.#officialRuntime.request("thread/list", params),
@@ -2414,6 +2446,92 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32082, "Thread list aggregation failed"));
       this.#diagnose(error);
     }
+  }
+
+  #listRuntimeState(threadId: string): { running: boolean } | null {
+    const subagentStatus = this.#subagentThreadStatuses.get(threadId);
+    if (subagentStatus) return { running: subagentStatus === "active" };
+    const thread = this.#externalRuntime.get(threadId);
+    return thread ? { running: thread.running } : null;
+  }
+
+  /** `section_position` lists merge External section placements into the official order. */
+  async #listSectionThreads(
+    request: JsonRpcRequest,
+    frame: Buffer<ArrayBufferLike>,
+    query: DecodedThreadListRequest,
+  ): Promise<void> {
+    try {
+      const [records, placements] = await Promise.all([
+        this.#repository.list(),
+        this.#repository.listSectionPlacements(),
+      ]);
+      const placementById = new Map(
+        placements.map((entry) => [entry.hostThreadId as string, entry]),
+      );
+      const externalRows = new Map(
+        externalThreadListEntries({
+          records,
+          query,
+          runtimeFor: (threadId) => this.#listRuntimeState(threadId),
+          placementOf: (threadId) => placementById.get(threadId),
+        }).map((entry) => [String(entry.thread.id), entry.thread]),
+      );
+      const page = await listSectionThreads({
+        query,
+        placements,
+        externalRows,
+        requestOfficial: (method, params) => this.#requestOfficial(method, params),
+      });
+      if (!page) {
+        await this.#forwardOfficialRequest(request, frame);
+        return;
+      }
+      await this.#writer.json(rpcEnvelope(request, { result: page }));
+    } catch (error) {
+      if (error instanceof OfficialThreadListError) {
+        await this.#writer.json(rpcEnvelope(request, { error: error.rpcError }));
+        return;
+      }
+      await this.#writer.json(rpcError(request, -32082, "Thread list aggregation failed"));
+      this.#diagnose(error);
+    }
+  }
+
+  async #moveThreadSection(
+    request: JsonRpcRequest,
+    frame: Buffer<ArrayBufferLike>,
+    move: DecodedThreadSectionMoveRequest,
+  ): Promise<void> {
+    try {
+      const location = await this.#locateExternalThread(move.threadId);
+      if (await this.#writeResolutionError(request, location)) return;
+      const [records, placements] = await Promise.all([
+        this.#repository.list(),
+        this.#repository.listSectionPlacements(),
+      ]);
+      const outcome = await moveThreadSection({
+        move,
+        movingExternal: location.kind === "external",
+        externalThreadIds: new Set(records.map((record) => record.hostThreadId)),
+        placements,
+        requestOfficial: (method, params) => this.#requestOfficial(method, params),
+        savePlacements: (next) => this.#repository.replaceSectionPlacements(next),
+        now: new Date(),
+      });
+      if (outcome.kind === "forward") await this.#forwardOfficialRequest(request, frame);
+      else if (outcome.kind === "error")
+        await this.#writer.json(rpcEnvelope(request, { error: outcome.error }));
+      else await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32081, "Thread section could not be moved"));
+      this.#diagnose(error);
+    }
+  }
+
+  async #externalSectionFields(threadId: string) {
+    const placements = await this.#repository.listSectionPlacements();
+    return threadSectionFields(placements.find((entry) => entry.hostThreadId === threadId));
   }
 
   async #setExternalThreadArchived(
@@ -3600,13 +3718,16 @@ export class AppServerHost {
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
   ): Promise<void> {
     try {
-      const thread = location.thread
-        ? { ...location.thread.thread, turns: [] }
-        : externalThreadValue({
-            record: location.record,
-            turns: [],
-            sessionId: await this.#repository.sessionTreeId(location.record),
-          });
+      const thread = {
+        ...(location.thread
+          ? { ...location.thread.thread, turns: [] }
+          : externalThreadValue({
+              record: location.record,
+              turns: [],
+              sessionId: await this.#repository.sessionTreeId(location.record),
+            })),
+        ...(await this.#externalSectionFields(location.record.hostThreadId)),
+      };
       await this.#writer.json(rpcEnvelope(request, { result: { thread } }));
       if (location.thread) await this.#replayExternalUsage(location.thread);
     } catch {
@@ -3640,6 +3761,7 @@ export class AppServerHost {
         result: {
           thread: {
             ...thread.thread,
+            ...(await this.#externalSectionFields(thread.record.hostThreadId)),
             turns: includeTurns ? this.#externalHistoryTurns(thread) : [],
           },
         },

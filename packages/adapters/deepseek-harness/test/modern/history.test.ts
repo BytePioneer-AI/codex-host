@@ -272,6 +272,54 @@ describe("DeepSeek Harness Modern history projection", () => {
     expect(projection.usage).toMatchObject({ inputTokens: 5, outputTokens: 3 });
   });
 
+  it("keeps a late timed-question reply out of the human transcript", () => {
+    // DSH 0.2.0-rc.2 steers a late answer as a sourced user message.
+    const reply = {
+      id: "reply-6",
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            kind: "answer_to_pending_question",
+            tool: "ask_user_question",
+            callId: "call-ask",
+            questions: [{ id: "pick", question: "Pick one" }],
+            answers: [{ id: "pick", selected: ["B"] }],
+          }),
+        },
+      ],
+      source: { kind: "user-question-reply", callId: "call-ask", outcome: "answered" },
+    };
+    const projection = projectModernHistory({
+      sessionId: SESSION_ID,
+      events: [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        userMessage(2, ["ask"]),
+        assistantMessage(3, 1, 1, "waiting", "ask first"),
+        event(4, "step/end", { turn: 1, step: 1 }),
+        event(5, "step/start", { turn: 1, step: 2 }),
+        event(6, "agent/inbox/spliced", { target: "next-step", start: 0, inserted: [reply] }),
+        event(7, "user/message", reply, true),
+        assistantMessage(8, 1, 2, "Using B", "got B"),
+        event(9, "step/end", { turn: 1, step: 2 }),
+        event(10, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+      ],
+    });
+
+    expect(projection.snapshot.turns.map(({ input }) => input)).toEqual([
+      [{ type: "text", text: "ask" }],
+    ]);
+    expect(projection.snapshot.turns[0]?.items.map(({ item }) => item.type)).toEqual([
+      "reasoning",
+      "agentMessage",
+      "reasoning",
+      "agentMessage",
+    ]);
+    expect(JSON.stringify(projection.snapshot)).not.toContain("answer_to_pending_question");
+  });
+
   it.each([
     [
       "a range outside the current surface",

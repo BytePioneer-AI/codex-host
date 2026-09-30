@@ -694,9 +694,28 @@ export class MappingStore {
   /** Section placements of stored External Threads, in insertion order. */
   async listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {
     this.#requireInitialized();
+    // A removed Thread's placement still names its successor; Threads anchored to it
+    // follow that chain so they keep their position instead of falling to the end.
+    const removedSuccessors = new Map<string, string | null>(
+      this.#sectionPlacements
+        .filter((placement) => !this.#records.has(placement.hostThreadId))
+        .map((placement) => [placement.hostThreadId, placement.beforeThreadId]),
+    );
     return this.#sectionPlacements
       .filter((placement) => this.#records.has(placement.hostThreadId))
-      .map((placement) => cloneRecord(placement));
+      .map((placement) => {
+        const next = cloneRecord(placement);
+        const visited = new Set<string>();
+        while (next.beforeThreadId !== null && removedSuccessors.has(next.beforeThreadId)) {
+          if (visited.has(next.beforeThreadId)) {
+            next.beforeThreadId = null;
+            break;
+          }
+          visited.add(next.beforeThreadId);
+          next.beforeThreadId = removedSuccessors.get(next.beforeThreadId) ?? null;
+        }
+        return next;
+      });
   }
 
   /** Atomically replaces every section placement; placements of removed Threads are dropped. */

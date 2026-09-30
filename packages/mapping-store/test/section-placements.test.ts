@@ -84,8 +84,48 @@ describe("Mapping Store section placements", () => {
       placement(b, null),
     ]);
     await second.removeThread(b);
-    await expect(second.listSectionPlacements()).resolves.toEqual([placement(a, b)]);
+    // A was anchored to the removed B, so it inherits B's anchor (last in the section).
+    await expect(second.listSectionPlacements()).resolves.toEqual([placement(a, null)]);
     await second.close();
+  });
+
+  it("keeps order when an anchoring Thread is removed", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-sections-"));
+    temporaryDirectories.push(directory);
+    const store = await openStore(directory, "only");
+    const a = await createThread(store, "thread-a");
+    const b = await createThread(store, "thread-b");
+    const c = await createThread(store, "thread-c");
+    const d = await createThread(store, "thread-d");
+    // Order [a, b, d, c, official-o]: a -> b -> c -> official-o, and d -> c.
+    await store.replaceSectionPlacements([
+      placement(a, b),
+      placement(b, c),
+      placement(c, "official-o"),
+      placement(d, c),
+    ]);
+    await store.removeThread(b);
+    await store.removeThread(c);
+    // a follows b -> c -> official-o; d follows c -> official-o.
+    await expect(store.listSectionPlacements()).resolves.toEqual([
+      placement(a, "official-o"),
+      placement(d, "official-o"),
+    ]);
+    await store.close();
+  });
+
+  it("stops at a cycle of removed anchors", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-sections-"));
+    temporaryDirectories.push(directory);
+    const store = await openStore(directory, "only");
+    const a = await createThread(store, "thread-a");
+    const b = await createThread(store, "thread-b");
+    const c = await createThread(store, "thread-c");
+    await store.replaceSectionPlacements([placement(a, b), placement(b, c), placement(c, b)]);
+    await store.removeThread(b);
+    await store.removeThread(c);
+    await expect(store.listSectionPlacements()).resolves.toEqual([placement(a, null)]);
+    await store.close();
   });
 
   it("drops placements of unknown Threads and rejects duplicates", async () => {

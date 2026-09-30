@@ -707,6 +707,13 @@ describe("Pi HarnessAdapter Session", () => {
         ok: true,
       });
       expect(live.selectFastMode).toHaveBeenLastCalledWith(false);
+      live.selectFastMode.mockClear();
+      live.getAvailableThinkingLevels.mockRejectedValueOnce(new Error("Thinking discovery failed"));
+      expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
+        ok: false,
+      });
+      expect(live.selectFastMode).not.toHaveBeenCalled();
+      expect(live.state.fast).toBe(false);
       expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
         ok: true,
       });

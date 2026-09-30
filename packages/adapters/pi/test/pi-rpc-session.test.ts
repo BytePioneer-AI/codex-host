@@ -19,6 +19,8 @@ type Scenario =
   | "final-only"
   | "fast"
   | "fast-no-ack"
+  | "fast-command-error"
+  | "fast-no-off-ack"
   | "reasoning"
   | "reasoning-multiple-blocks"
   | "settled-streaming"
@@ -60,6 +62,7 @@ class FakePiRpcProcess extends EventEmitter {
   readonly pid = 42_000;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
+  fastEnabled = false;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #promptCount = 0;
   #sessionId = "synthetic-session";
@@ -207,10 +210,7 @@ class FakePiRpcProcess extends EventEmitter {
       }
       return;
     }
-    if (
-      command.type === "get_commands" &&
-      (this.#scenario === "fast" || this.#scenario === "fast-no-ack")
-    ) {
+    if (command.type === "get_commands" && this.#scenario.startsWith("fast")) {
       this.#respond(command, {
         commands: [{ name: "codexhost-fast-mode", description: "Host Fast", source: "extension" }],
       });
@@ -222,7 +222,18 @@ class FakePiRpcProcess extends EventEmitter {
       command.message.startsWith("/codexhost-fast-mode ")
     ) {
       const [, mode, nonce] = command.message.split(" ");
-      if (this.#scenario === "fast")
+      this.fastEnabled = mode === "on";
+      if (this.#scenario === "fast-command-error") {
+        this.#output({
+          type: "response",
+          id: command.id,
+          command: "prompt",
+          success: false,
+          error: "Extension failed after activation",
+        });
+        return;
+      }
+      if (this.#scenario === "fast" || (this.#scenario === "fast-no-off-ack" && mode === "on"))
         this.#output({
           type: "extension_ui_request",
           id: "fast-ack",
@@ -838,16 +849,33 @@ describe("Pi Fast command acknowledgement", () => {
     }
   });
 
-  it("does not report success when Pi handles a command without confirming the change", async () => {
-    const rpc = session("fast-no-ack");
-    await rpc.start();
-    try {
-      await expect(rpc.selectFastMode(true)).rejects.toThrow("did not confirm");
-      expect(rpc.state).not.toHaveProperty("fast");
-    } finally {
-      await rpc.close();
-    }
-  });
+  it.each<Scenario>(["fast-no-ack", "fast-command-error", "fast-no-off-ack"])(
+    "faults and closes when request policy cannot be confirmed: %s",
+    async (scenario) => {
+      const process = new FakePiRpcProcess(scenario);
+      const onFault = vi.fn();
+      const rpc = new PiRpcSession(
+        { cwd: "/synthetic", commandTimeoutMs: 2_000, closeTimeoutMs: 500, onFault },
+        { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+      );
+      await rpc.start();
+      try {
+        if (scenario === "fast-no-off-ack") await rpc.selectFastMode(true);
+        await expect(rpc.selectFastMode(scenario !== "fast-no-off-ack")).rejects.toThrow(
+          "Fast selection could not be confirmed",
+        );
+        expect(onFault).toHaveBeenCalledOnce();
+        expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+        // The native side can already have enabled priority despite the Host-side failure.
+        expect(process.fastEnabled).toBe(scenario !== "fast-no-off-ack");
+        expect(process.exitCode).toBe(0);
+        await expect(rpc.runTurn("must not be sent", vi.fn())).rejects.toThrow("unavailable");
+        await expect(rpc.getAvailableModels()).rejects.toThrow("unavailable");
+      } finally {
+        await rpc.close();
+      }
+    },
+  );
 });
 
 function autonomousSession(onFault = vi.fn()): {

@@ -978,11 +978,12 @@ class PiHarnessSession implements HarnessSession {
         state = samePiModel(nativeModelFromState(transport.state), requested)
           ? transport.state
           : await transport.selectModel(requested);
+        // Complete fallible discovery before changing request policy, then publish immediately.
+        thinkingLevels = await transport.getAvailableThinkingLevels();
         if (requested.fast || state.fast) {
           if (!transport.selectFastMode) throw new Error("Pi Fast extension is unavailable");
           state = await transport.selectFastMode(requested.fast === true);
         }
-        thinkingLevels = await transport.getAvailableThinkingLevels();
         this.#publishTransportState(state, thinkingLevels);
       } catch (error) {
         if (error instanceof PiRpcFaultError) this.#fault(error);

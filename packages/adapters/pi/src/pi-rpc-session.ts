@@ -773,6 +773,19 @@ export class PiRpcSession {
         ? { provider: this.state.provider ?? "", id: this.state.modelId ?? "" }
         : null;
       return this.state;
+    } catch (error) {
+      // The extension may have changed request policy before its response/notification failed.
+      // An unknown policy must never remain usable for subsequent Turns.
+      const fault =
+        error instanceof PiRpcFaultError
+          ? error
+          : new PiRpcFaultError(
+              "protocolError",
+              `Pi Fast selection could not be confirmed: ${message(error)}`,
+            );
+      this.#fail(fault);
+      await this.close().catch(() => undefined);
+      throw fault;
     } finally {
       this.#fastAcknowledgement = null;
     }

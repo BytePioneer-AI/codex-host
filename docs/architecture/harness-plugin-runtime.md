@@ -135,7 +135,7 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 | OpenCode | `--version`；npm 安装查询原包版本并更新其准确 prefix，标准 `~/.opencode/bin/opencode` 原生安装查询官方 GitHub Release 并执行 `upgrade <version> --method curl`。其他包管理器、自定义安装和 Windows 原生安装只检查，不进入交互式安装回退。 |
 | Claude Code | `--version` 和官方 stable/latest 版本源；读取用户及本机文件型受管设置，使用原生 `claude update` 保留策略执行。识别的全局 npm 安装固定 npm prefix，标准原生 launcher 允许更新；版本限制、其他安装渠道及 macOS 受管远程 Broker 保留手动更新。 |
 | CodeBuddy | `--version`；识别的 npm 安装查询 `@tencent-ai/codebuddy-code`，只有全局安装允许在原 prefix 更新。原生安装只显示已安装版本，最新版本和更新交给原安装器；macOS 受管远程 Broker 尚不转发该能力。 |
-| Kiro CLI | `--version`；macOS 读取配置/策略指定源的 `index.json`（默认官方 stable 源），筛选 OS/CPU 和已开始发布的版本，不调用不支持的 `--check`。其他平台使用原生 `update --check`。仅识别的应用或用户级原生安装可更新；支持时传 `--non-interactive`，不传 `--force`，系统包与自定义安装保留手动更新。 |
+| Kiro CLI | 只通过 `--version` 显示当前版本；最新版本未知，不检查更新源、不执行更新。Kiro 的更新策略与发布源选择交给原生安装器，设置页提示使用原生更新器或安装方式。 |
 | DeepSeek Harness | 原生 `--version`，保留离线 npx 参数；识别的 npm 安装查询 `@deepseek-ai/dsh`，只有全局安装更新原 prefix。离线 npx、Python wheel、桌面载体及项目安装不创建或更新另一份全局安装。 |
 | Hermes | 原生 `--version`、`update --plan`、`update --check`；使用原生渠道判定和提交标识而非普通 SemVer 比较。仅可原地更新且能报告提交标识、支持非交互与 Gateway 重启延后的干净 Git 安装执行 `update --yes --no-gateway-restart`；桌面包、Docker、Nix 等仍由原生安装所有者更新。 |
 

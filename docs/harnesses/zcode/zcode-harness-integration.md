@@ -8,13 +8,13 @@ Adapter 拥有每个 Session 的 CLI 进程、原 ZCode Services 在转发之外
 
 ## 安装
 
-安装 ZCode Desktop 并在其中登录 Start Plan 账号，然后在 codexhost 中重新检测。默认使用 `/Applications/ZCode.app`；可以在连接设置中保存应用位置（插件启动路径），或设置 `CODEXHOST_ZCODE_APP`，保存的路径优先。缺少 `Contents/Info.plist` 中的 `CFBundleExecutable`/`CFBundleShortVersionString`、对应的 `Contents/MacOS` 可执行文件、`Contents/Resources/glm/zcode.cjs` 或内置 Provider 配置时，检测结果为未安装。对 Host 的 Node 版本没有额外要求。
+安装 ZCode Desktop 并在其中登录 Start Plan 账号，然后在 codexhost 中重新检测。默认使用 `/Applications/ZCode.app`；可以在连接设置中保存应用位置（插件启动路径），或设置 `CODEXHOST_ZCODE_APP`，保存的路径优先。缺少 `Contents/Info.plist` 中的 `CFBundleExecutable`/`CFBundleShortVersionString`、对应的 Electron Helper 可执行文件（`Contents/Frameworks/<CFBundleExecutable> Helper.app/Contents/MacOS/<CFBundleExecutable> Helper`）、`Contents/Resources/glm/zcode.cjs` 或内置 Provider 配置时，检测结果为未安装。对 Host 的 Node 版本没有额外要求。
 
 检测会建立一个 deferred 草稿会话读取模型目录后立即关闭；草稿在首条输入前不落库，检测不会留下会话，也不发送 Prompt。
 
 ## 进程与协议
 
-每个 Session 一个进程：`<App>/Contents/MacOS/<CFBundleExecutable> <App>/Contents/Resources/glm/zcode.cjs app-server --stdio --surface desktop`，cwd 为工作区，并设置 `ELECTRON_RUN_AS_NODE=1`。这与 ZCode Desktop 启动自带 CLI 的方式相同（开源 `zcodeAgentProcessManager.ts` 的 `resolveBundledWorkspaceZCodeAgentCommand`）：CLI 运行在 App 自带的 Electron Node 上（3.14.3 为 Electron 41 / Node 24.14），其插件中为 Electron 预编译的原生模块也因此可用。与 Desktop 一样，CLI 的工具子进程会继承 `ELECTRON_RUN_AS_NODE`。环境变量为 Thread 环境加上：
+每个 Session 一个进程：`<App>/Contents/Frameworks/<CFBundleExecutable> Helper.app/Contents/MacOS/<CFBundleExecutable> Helper <App>/Contents/Resources/glm/zcode.cjs app-server --stdio --surface desktop`，cwd 为工作区，并设置 `ELECTRON_RUN_AS_NODE=1`。这与 ZCode Desktop 启动自带 CLI 的方式相同（开源 `zcodeAgentProcessManager.ts` 的 `resolveBundledWorkspaceZCodeAgentCommand`，Desktop Host 作为 utilityProcess 并在 spawn 时使用 `process.execPath` 即 Helper）：CLI 运行在 App 自带的 Electron Helper Node 上，属于后台 `UIElement` 进程，不会在 macOS Dock 栏产生独立应用图标，其插件中为 Electron 预编译的原生模块也因此可用。与 Desktop 一样，CLI 的工具子进程会继承 `ELECTRON_RUN_AS_NODE`。环境变量为 Thread 环境加上：
 
 - `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`：已装 App 的 `config/provider/zcode-builtin.json`（环境中已显式设置时沿用）。
 - `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`：`{ZCODE_DATA_BASE_DIR || HOME}/.zcode/v2/provider_config.json`（已显式设置时沿用）。
@@ -38,16 +38,16 @@ CLI 发来的反向请求（`src/transport.ts`）：
 
 首版只支持 Start Plan。凭据只读：Adapter 读取 ZCode Desktop 写入的 `{ZCODE_DATA_BASE_DIR || HOME}/.zcode/v2/credentials.json`，从不写入，也不复制到 codexhost 配置、Native Ref、日志、错误信息或磁盘。
 
-- **账号配置**：进程启动后、任何会话操作之前推送 `provider/updateAccountConfig`。账号家族（`zai` / `bigmodel`）取自凭据 `oauth:active_provider`；Overlay 取内置配置中 `access.mode === "start-plan"` 且 `accountType` 匹配的 Provider，权益按 entitled 声明，由服务端最终裁决。`basedOnZCodeBuiltinRevision` 为 `zcode-builtin:<release.revision>:<sha256(内置配置绝对路径)>`，与 CLI 自己的内置层不一致时 CLI 会静默保留旧注册表，因此回执的 `receivedRevision` 必须等于发出的 revision。未登录时推送空 Overlay，只剩个人 Provider。账号在进程生命周期内不重新推送，切换账号后需重新打开 Thread。
+- **账号配置**：进程启动后、任何会话操作之前推送 `provider/updateAccountConfig`。账号家族（`zai` / `bigmodel`）取自凭据 `oauth:active_provider`。Adapter 在内存中读取 JWT 及 `~/.zcode/v2/telemetry-state.json` 中的 `deviceMid`，向服务端请求余额与权益信封（`GET <origin>/api/v1/zcode-plan/billing/balance?app_version=<version>`，携带 Bearer JWT 与 `X-Device-Mid`，超时 15 秒）。按 Desktop 规则先执行到期规范化（已过 `ends_at` 的活跃计划标记为 `expired` 并剔除关联余额）；仅当存在 active 的 Start Plan 时判定为 entitled，可用模型严格从余额的 `model:*` capability 提取，并针对内置配置对应的 `builtinModelIds` 规范化为官方模型 ID 大小写。若无有效订阅、订阅未生效（pending）、未登录、缺少设备 ID 或请求失败，均按 fail-closed 处理（`entitled: false`、`availability: "unavailable"`、`unavailableReason: "not-entitled"`，不注入模型）。Overlay revision 随计算出的 providers/states 摘要变化。`basedOnZCodeBuiltinRevision` 为 `zcode-builtin:<release.revision>:<sha256(内置配置绝对路径)>`，与 CLI 自己的内置层不一致时 CLI 会静默保留旧注册表，因此回执的 `receivedRevision` 必须等于发出的 revision。未登录时推送空 Overlay，只剩个人 Provider。账号在进程生命周期内不重新推送，切换账号后需重新打开 Thread。
 - **请求期鉴权**：CLI 对 Start Plan 的每次模型请求发出 Header 请求。Adapter 在内存中解密 `zcodejwttoken`（`enc:v1:`，AES-256-GCM，密钥为 `sha256(ZCODE_CREDENTIAL_SECRET || "zcode-credential-fallback:<platform>:<homedir>:<username>")`），调用验证器取得一次性验证码 Header，回 `{headersApplied:true, requestAuth:{apiKey, headers}}`。其他账号模式、凭据缺失或解密失败回 `{headersApplied:false, errorMessage}`，提示在 ZCode Desktop 登录。收到 `interaction/providerRuntimeHeadersCancelled` 时中止对应请求的验证。设置了 `ZCODE_DATA_BASE_DIR` 或 `ZCODE_CREDENTIAL_SECRET` 时须与 Desktop 登录环境一致。
 
 ## 账号验证页
 
 验证器在 `src/verification/`，接口为 `verify(signal) → headers`、`prewarm()` 与 `close()`。与 ZCode Desktop 一个窗口服务所有会话一致，整个 Adapter（即一个 Host）共用一个验证器：懒创建，Adapter 关闭时关闭。所有 Session 的验证请求进入同一个串行队列；每个请求只由自己的 signal 取消，Session 或其 CLI 进程关闭时只取消它自己进行中和排队中的验证，不关闭共享页面，也不影响其他 Session。页面的打开归验证器所有，发起打开的请求被取消时，页面仍继续加载供后续请求使用。
 
-验证码公开配置按所用 ZCode.app（与 CLI 同一个安装位置，含连接设置中保存的路径）的版本请求。验证页常驻 Codex 内置浏览器的后台标签页，复用页面和 SDK 脚本，每次验证新建一个 SDK 实例：页面生命周期内脚本只加载一次、任务连接只建立一次；每个任务清空挂载元素后重新调用 `initAliyunCaptcha`，拿到实例后按 Desktop 的规则等到距脚本加载满 2 秒，再调用一次 `startTracelessVerification()`，任务以任何结果结束后丢弃该实例。服务端的无感超时从页面实际开始验证时起算，等实例的时限为 10 秒，均与 Desktop 一致。SDK 回调绑定到所属实例和任务，已丢弃实例的回调只记诊断；SDK 在弹出挑战时重复调用 `getInstance` 不影响进行中的任务。需要人工操作时才显示页面。验证结果只用于对应请求，不缓存、复用或写入历史/日志。
+验证码公开配置按所用 ZCode.app（与 CLI 同一个安装位置，含连接设置中保存的路径）的版本请求。当配置中 `enabled === false` 或 ZCode 3.14.4+ 的 `skip_model_request === true` 时，Adapter 视为无需验证码，请求期回空 Header，验证记录记为 `not_required`，不打开验证页。当需要验证时，验证页常驻 Codex 内置浏览器的后台标签页，复用页面和 SDK 脚本，每次验证新建一个 SDK 实例：页面生命周期内脚本只加载一次、任务连接只建立一次；每个任务清空挂载元素后重新调用 `initAliyunCaptcha`，拿到实例后按 Desktop 的规则等到距脚本加载满 2 秒，再调用一次 `startTracelessVerification()`，任务以任何结果结束后丢弃该实例。服务端的无感超时从页面实际开始验证时起算，等实例的时限为 10 秒，均与 Desktop 一致。SDK 回调绑定到所属实例和任务，已丢弃实例的回调只记诊断；SDK 在弹出挑战时重复调用 `getInstance` 不影响进行中的任务。需要人工操作时才显示页面。验证结果只用于对应请求，不缓存、复用或写入历史/日志。
 
-预热：第一个 Session 成功打开（新建或恢复）且当前账号提供了 Start Plan 时，触发一次 `prewarm()`：配置启用时打开常驻页、加载 SDK 脚本并初始化一个实例，不执行验证，这个实例只供第一次验证使用；检测（inspect）不触发。配置未启用或没有本地页面能力时不做任何事。预热失败只让页面暂不可用，不影响 Session 打开，下一次验证按常规重新打开。用户关闭标签或页面所属任务失效后，下一次验证或预热会重新打开页面。受管远程 Host 不提供本地页面能力。
+预热：第一个 Session 成功打开（新建或恢复）且当前账号实际具备 Start Plan 权益（`startPlan === true`）时，触发一次 `prewarm()`：配置启用且未跳过模型验证时打开常驻页、加载 SDK 脚本并初始化一个实例，不执行验证，这个实例只供第一次验证使用；检测（inspect）不触发。配置未启用或没有本地页面能力时不做任何事。预热失败只让页面暂不可用，不影响 Session 打开，下一次验证按常规重新打开。用户关闭标签或页面所属任务失效后，下一次验证或预热会重新打开页面。受管远程 Host 不提供本地页面能力。
 
 内置浏览器的存储是一个全局分区（`codex-browser-app`），不按任务区分；标签页只是按 conversationId 挂在某个任务的侧栏下。这一点是根据 Codex Desktop 的数据目录结构推断的，不是公开契约。常驻页挂在打开时可见的任务下。
 

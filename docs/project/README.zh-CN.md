@@ -119,7 +119,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 </details>
 
-### 亮点功能
+### 功能介绍
 
 <table>
   <tr>

@@ -1159,6 +1159,27 @@
   padding: 12px;
 }
 
+.settings-harness-version {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border-top: 1px solid var(--settings-divider);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-harness-version__values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: var(--settings-muted);
+}
+
+.settings-harness-version p {
+  margin: 0;
+}
+
 .settings-harness-launch {
   display: grid;
   gap: 10px;

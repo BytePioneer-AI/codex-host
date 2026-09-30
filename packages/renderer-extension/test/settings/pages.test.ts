@@ -29,6 +29,7 @@ import {
 } from "../../src/settings/credential-imports.js";
 import { credentialImportChinese } from "../../src/settings/credential-import-messages.js";
 import { createHarnessAccounts } from "../../src/settings/harness-accounts.js";
+import { createHarnessVersionPanel } from "../../src/settings/harness-version-panel.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
 import { createRendererModelClient } from "../../src/renderer-model-client.js";
 import { RendererSessionImportUnavailableError } from "../../src/renderer-session-import-client.js";
@@ -750,7 +751,148 @@ describe("Read-only Harness accounts", () => {
   });
 });
 
+describe("Harness CLI version panel", () => {
+  const state = {
+    currentVersion: "1.0.0",
+    latestVersion: "1.1.0",
+    updateAvailable: true,
+    canUpdate: true,
+  };
+  const mount = (run: (action: "check" | "update") => Promise<typeof state>) => {
+    const document = new FakeDocument();
+    const abort = new AbortController();
+    const panel = createHarnessVersionPanel(
+      document as unknown as Document,
+      rendererSettingsMessages("en"),
+      abort.signal,
+      "pi",
+      { run },
+    ) as unknown as FakeElement;
+    const button = (action: string) => {
+      const element = descendants(panel).find(
+        (element) => element.dataset.harnessVersionAction === action,
+      );
+      if (!element) throw new Error(`Missing version action ${action}`);
+      return element;
+    };
+    return { panel, abort, button };
+  };
+  it("checks once, updates explicitly, and prevents duplicate clicks", async () => {
+    const updated = deferred<typeof state>();
+    const run = vi.fn((action: "check" | "update") =>
+      action === "check" ? Promise.resolve(state) : updated.promise,
+    );
+    const { panel, abort, button } = mount(run);
+    expect(button("update").disabled).toBe(true);
+    await vi.waitFor(() => expect(button("update").disabled).toBe(false));
+    expect(visibleText(panel)).toContain("Current version: 1.0.0");
+    button("update").dispatch("click");
+    button("update").dispatch("click");
+    button("check").dispatch("click");
+    expect(run.mock.calls).toEqual([["check"], ["update"]]);
+    expect(button("check").disabled).toBe(true);
+    updated.resolve({ ...state, currentVersion: "1.1.0", updateAvailable: false });
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("Update verified"));
+    expect(button("update").disabled).toBe(true);
+    abort.abort();
+  });
+  it("keeps failures retryable and provides the original installer link", async () => {
+    const run = vi.fn(async () => state).mockRejectedValueOnce(new Error("secret-native-output"));
+    const { panel, button, abort } = mount(run);
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("Could not complete"));
+    expect(visibleText(panel)).not.toContain("secret-native-output");
+    button("check").dispatch("click");
+    await vi.waitFor(() => expect(button("update").disabled).toBe(false));
+    expect(descendants(panel).find((element) => element.tagName === "a")?.href).toBe(
+      "https://pi.dev/",
+    );
+    abort.abort();
+  });
+  it("keeps unsupported plugins and manual installations from updating", async () => {
+    const unsupported = mount(async () => {
+      throw { code: -32078 };
+    });
+    await vi.waitFor(() => expect(visibleText(unsupported.panel)).toContain("does not support"));
+    expect(unsupported.button("update").disabled).toBe(true);
+    unsupported.abort.abort();
+    const manual = mount(async () => ({ ...state, canUpdate: false }));
+    await vi.waitFor(() => expect(visibleText(manual.panel)).toContain("original installer"));
+    expect(manual.button("update").disabled).toBe(true);
+    manual.abort.abort();
+  });
+  it("does not apply late responses after the page closes", async () => {
+    const result = deferred<typeof state>();
+    const { panel, abort, button } = mount(() => result.promise);
+    abort.abort();
+    result.resolve(state);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(visibleText(panel)).not.toContain("1.0.0");
+    expect(button("check").disabled).toBe(true);
+  });
+});
+
 describe("Renderer Connections page", () => {
+  it("places version controls in the selected Host's inspector and preserves them across diagnostics", async () => {
+    const installation = vi.fn(async () => ({
+      currentVersion: "1.0.0",
+      latestVersion: "1.1.0",
+      updateAvailable: true,
+      canUpdate: true,
+    }));
+    let notify: () => void = () => undefined;
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: ["local", "remote-test"].map((hostId) => ({
+          hostId,
+          active: hostId === "local",
+          agents: [{ agent: "pi" as const, availability: "ready" as const, error: null }],
+        })),
+      }),
+      installation,
+      refresh: async () => undefined,
+      subscribe: (listener) => {
+        notify = listener;
+        return () => undefined;
+      },
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected Connections page");
+    const doc = new FakeDocument();
+    const content = doc.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const row = descendants(content).find((element) => element.dataset.connectionItem === "pi");
+    if (!row) throw new Error("Expected Pi row");
+    row.dispatch("click", { target: null });
+    await vi.waitFor(() => expect(installation).toHaveBeenCalledWith("local", "pi", "check"));
+    const first = descendants(content).find((element) => element.dataset.harnessVersion === "pi");
+    expect(first).toBeDefined();
+    notify();
+    expect(descendants(content).find((element) => element.dataset.harnessVersion === "pi")).toBe(
+      first,
+    );
+    expect(installation).toHaveBeenCalledTimes(1);
+    const remoteTab = descendants(content).find(
+      (element) => element.dataset.connectionHostTab === "remote-test",
+    );
+    if (!remoteTab) throw new Error("Expected remote Host tab");
+    remoteTab.dispatch("click");
+    await vi.waitFor(() => expect(installation).toHaveBeenCalledWith("remote-test", "pi", "check"));
+    expect(
+      descendants(content).find((element) => element.dataset.harnessVersion === "pi"),
+    ).not.toBe(first);
+    if (typeof cleanup === "function") cleanup();
+    scope.dispose();
+  });
   it.each([
     ["pi", "https://pi.dev/install.sh"],
     ["claude-code", "https://claude.ai/install.sh"],

@@ -1,5 +1,6 @@
 import type {
   HarnessAccountSnapshot,
+  HarnessInstallationState,
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
@@ -572,6 +573,10 @@ export interface HarnessSessionImportCapability {
 }
 
 export interface HarnessAdapter {
+  /** Native CLI version checks and explicit updates. Never updates the Host plugin,
+   * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
+   */
+  installation?(action: "check" | "update"): Promise<HarnessInstallationState>;
   readonly credentialExport?: HarnessCredentialExport;
   readonly credentialImports?: HarnessCredentialImports;
   readonly harnessId: HarnessId;

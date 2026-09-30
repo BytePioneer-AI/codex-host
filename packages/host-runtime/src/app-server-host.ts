@@ -1,4 +1,6 @@
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
+import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
+import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
 import {
   isConsoleHostMethod,
   CONSOLE_OPEN_METHOD,
@@ -1248,6 +1250,26 @@ export class AppServerHost {
     }
     if (request.method === "codexhost/harness/inspect") {
       this.#dispatchDesktopRequest(() => this.#inspectHarness(request));
+      return;
+    }
+    if (request.method === HARNESS_INSTALLATION_METHOD) {
+      this.#dispatchDesktopRequest(async () => {
+        await this.#waitForPlugins();
+        try {
+          const result = await handleHarnessInstallation(request.params, this.#externalAdapters);
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        } catch (error) {
+          await this.#writer.json(
+            rpcError(
+              request,
+              error instanceof HarnessInstallationError ? error.code : -32077,
+              error instanceof HarnessInstallationError
+                ? error.message
+                : "Harness version management failed",
+            ),
+          );
+        }
+      });
       return;
     }
     if (request.method === "codexhost/harness/web-ui/open") {

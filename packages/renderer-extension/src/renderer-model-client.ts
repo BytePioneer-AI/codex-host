@@ -1,4 +1,9 @@
 import {
+  HARNESS_INSTALLATION_METHOD,
+  harnessInstallationParamsSchema,
+  harnessInstallationStateSchema,
+  type HarnessInstallationParams,
+  type HarnessInstallationState,
   HARNESS_DISPLAY_GET_METHOD,
   HARNESS_DISPLAY_SET_METHOD,
   harnessDisplaySettingsSchema,
@@ -182,6 +187,7 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
   getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
   setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
@@ -352,6 +358,15 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
+      return harnessInstallationStateSchema.parse(
+        await manager.sendRequest(
+          HARNESS_INSTALLATION_METHOD,
+          harnessInstallationParamsSchema.parse(input),
+          { priority: "interactive" },
+        ),
+      );
+    },
     async getHarnessDisplaySettings() {
       return harnessDisplaySettingsSchema.parse(
         await manager.sendRequest(HARNESS_DISPLAY_GET_METHOD, {}),

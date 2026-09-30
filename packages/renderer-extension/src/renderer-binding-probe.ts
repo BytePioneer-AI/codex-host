@@ -2420,6 +2420,12 @@ export function installRendererBindingProbe(
         refreshHarnessAvailabilityForHost(hostId, true, false, true),
       );
     },
+    async installation(hostId, agent, action) {
+      const client = modelClientForHost(hostId);
+      if (!client?.installation)
+        throw new Error("Harness version management is unavailable on this Host");
+      return client.installation({ harnessId: externalHarnessIds[agent], action });
+    },
     async getLaunchSettings(hostId, agent) {
       const client = hostId === "local" ? modelClientForHost(hostId) : null;
       if (!client?.getHarnessLaunchSettings) throw new Error("Launch settings are unavailable");

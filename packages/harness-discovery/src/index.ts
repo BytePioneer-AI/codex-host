@@ -24,3 +24,13 @@ export {
   type RunnableCandidateContext,
 } from "./resolve.js";
 export { versionManagerBinaryDirectories, type VersionManagerContext } from "./version-managers.js";
+export {
+  createInstallationManager,
+  fetchInstallationText,
+  installationVersion,
+  newerInstallationVersion,
+  runInstallationCommand,
+  versionFromOutput,
+  type InstallationState,
+} from "./installation.js";
+export { npmInstallation } from "./npm-installation.js";

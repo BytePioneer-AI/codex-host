@@ -2264,6 +2264,180 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
+  it("projects DSH recovery results for unfinished V4 calls like cold history", async () => {
+    const test = setup(
+      [() => accepted()],
+      [],
+      ["request-1"],
+      5_000,
+      null,
+      undefined,
+      undefined,
+      [],
+      DEEPSEEK_V017_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    await test.session.execute({
+      type: "turn.start",
+      turnId: turnId("recovery-turn"),
+      input: [{ type: "text", text: "edit" }],
+    });
+    const recovery = (seq: number, callId: string, started: boolean): ModernJournalEvent => ({
+      ...event(
+        seq,
+        "tool/result",
+        {
+          turn: 1,
+          step: 1,
+          error: started
+            ? { name: "ToolOutcomeUnknownError", code: "TOOL_OUTCOME_UNKNOWN" }
+            : { name: "ToolNotStartedError", code: "TOOL_NOT_STARTED" },
+          message: {
+            id: `interrupted-tool-result-${callId}-${seq}`,
+            role: "tool",
+            toolCallId: callId,
+            isError: true,
+            source: { kind: "tool", callId },
+            content: [{ type: "text", text: "The tool call was interrupted." }],
+          },
+        },
+        true,
+      ),
+      ...(started ? { sourceEventSeqs: [4] } : {}),
+    });
+    const events = [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      userMessage(2, "edit", "request-1"),
+      event(
+        3,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "assistant-3",
+            role: "assistant",
+            content: [
+              { type: "tool-call", id: "call-1", name: "read", arguments: "{}" },
+              { type: "tool-call", id: "call-2", name: "write", arguments: '{"path":"a"}' },
+              { type: "tool-call", id: "call-3", name: "run_code", arguments: "{}" },
+            ],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [],
+        },
+        true,
+      ),
+      event(4, "tool/call", { turn: 1, step: 1, callId: "call-1", name: "read", arguments: "{}" }),
+      recovery(5, "call-1", true),
+      recovery(6, "call-2", false),
+      recovery(7, "call-3", false),
+      event(8, "step/end", { turn: 1, step: 1 }),
+      event(9, "turn/end", { turn: 1, reason: { kind: "aborted", reason: { kind: "user" } } }),
+    ];
+    for (const entry of events) test.feed.push(entry);
+    const emitted = await eventsThrough(outputs, "turn.completed");
+
+    expect(toolLifecycle(emitted)).toEqual([
+      ["item.started", "read"],
+      ["item.completed", "read"],
+      ["item.started", "write"],
+      ["item.completed", "write"],
+    ]);
+    const completed = emitted.flatMap((entry) =>
+      entry.type === "item.completed" && entry.snapshot.item.type === "toolExecution"
+        ? [entry.snapshot]
+        : [],
+    );
+    expect(completed).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({ itemId: `dsh-modern:${SESSION_ID}:event:4:tool` }),
+        outcome: expect.objectContaining({ status: "failed" }),
+      }),
+      expect.objectContaining({
+        item: expect.objectContaining({
+          itemId: `dsh-modern:${SESSION_ID}:event:6:tool`,
+          arguments: { path: "a" },
+          output: { content: [{ type: "text", text: "The tool call was interrupted." }] },
+        }),
+        outcome: expect.objectContaining({ status: "failed" }),
+      }),
+    ]);
+    const snapshot = await test.session.readSnapshot();
+    expect(snapshot.ok && snapshot.value.turns[0]?.items.map(({ item }) => item.itemId)).toEqual(
+      completed.map(({ item }) => item.itemId),
+    );
+    await test.session.close();
+  });
+
+  it("faults a live V4 result for a call that neither started nor matches a recovery shape", async () => {
+    const test = setup(
+      [() => accepted()],
+      [],
+      ["request-1"],
+      5_000,
+      null,
+      undefined,
+      undefined,
+      [],
+      DEEPSEEK_V017_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    await test.session.execute({
+      type: "turn.start",
+      turnId: turnId("unmatched-turn"),
+      input: [{ type: "text", text: "edit" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(2, "edit", "request-1"));
+    test.feed.push(
+      event(
+        3,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "assistant-3",
+            role: "assistant",
+            content: [{ type: "tool-call", id: "call-2", name: "write", arguments: "{}" }],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [],
+        },
+        true,
+      ),
+    );
+    test.feed.push(
+      event(
+        4,
+        "tool/result",
+        {
+          turn: 1,
+          step: 1,
+          error: { name: "ToolNotStartedError", code: "TOOL_NOT_STARTED" },
+          message: {
+            id: "cancelled-tool-result-call-2-4",
+            role: "tool",
+            toolCallId: "call-2",
+            isError: true,
+            source: { kind: "tool", callId: "call-2" },
+            content: [{ type: "text", text: "Not started." }],
+          },
+        },
+        true,
+      ),
+    );
+    const emitted = await eventsThrough(outputs, "session.faulted");
+    expect(emitted.at(-1)).toMatchObject({
+      type: "session.faulted",
+      error: { code: "protocolError" },
+    });
+    await test.session.close().catch(() => undefined);
+  });
+
   it("accepts an uncertain prompt when its native user requestId arrives during grace", async () => {
     vi.useFakeTimers();
     const test = setup(

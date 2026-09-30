@@ -497,3 +497,156 @@ describe("DSH 0.1.7 V4 journal", () => {
     ).toBe(false);
   });
 });
+
+describe("DSH V4 recovery results for unfinished tool calls", () => {
+  const surface = (seq: number, type: string, data: object, extra: object = {}) => ({
+    ...event(seq, type, data, true),
+    ...extra,
+  });
+  const recoveryResult = (
+    seq: number,
+    callId: string,
+    id: string,
+    started: boolean,
+    overrides: { error?: object; message?: object; extra?: object } = {},
+  ): ModernJournalEvent =>
+    surface(
+      seq,
+      "tool/result",
+      {
+        turn: 1,
+        step: 1,
+        error:
+          overrides.error ??
+          (started
+            ? { name: "ToolOutcomeUnknownError", code: "TOOL_OUTCOME_UNKNOWN" }
+            : { name: "ToolNotStartedError", code: "TOOL_NOT_STARTED" }),
+        message: {
+          id,
+          role: "tool",
+          toolCallId: callId,
+          isError: true,
+          source: { kind: "tool", callId },
+          content: [{ type: "text", text: "The tool call was interrupted." }],
+          ...overrides.message,
+        },
+      },
+      overrides.extra,
+    );
+  /** A failed live step: `call-1` started, `call-2` never did; DSH closes both. */
+  const failedStep = (
+    notStarted: ModernJournalEvent,
+    secondTool = "write",
+  ): ModernJournalEvent[] => [
+    event(0, "turn/start", { turn: 1 }),
+    event(1, "step/start", { turn: 1, step: 1 }),
+    surface(2, "assistant/message", {
+      turn: 1,
+      step: 1,
+      message: {
+        id: "assistant-2",
+        role: "assistant",
+        source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+        content: [
+          { type: "tool-call", id: "call-1", name: "read", arguments: '{"path":"a.ts"}' },
+          { type: "tool-call", id: "call-2", name: secondTool, arguments: '{"path":"b.ts"}' },
+        ],
+      },
+      stream: [],
+    }),
+    event(3, "tool/call", {
+      turn: 1,
+      step: 1,
+      callId: "call-1",
+      name: "read",
+      arguments: '{"path":"a.ts"}',
+    }),
+    recoveryResult(4, "call-1", "interrupted-tool-result-call-1-4", true, {
+      extra: { sourceEventSeqs: [3] },
+    }),
+    notStarted,
+    event(6, "step/end", { turn: 1, step: 1 }),
+    event(7, "turn/end", { turn: 1, reason: { kind: "aborted", reason: { kind: "user" } } }),
+  ];
+  const project = (events: ModernJournalEvent[]) =>
+    projectModernHistory({ sessionId, events, profile: DEEPSEEK_V017_PROFILE }).snapshot;
+
+  it.each([
+    ["an interrupted id carrying its own seq", "interrupted-tool-result-call-2-5"],
+    ["an interrupted id carrying another integer", "interrupted-tool-result-call-2-17"],
+    ["a fork id carrying its own seq", "forked-tool-result-call-2-5"],
+  ])("projects both calls as failed Tools for %s", (_label, id) => {
+    const snapshot = project(failedStep(recoveryResult(5, "call-2", id, false)));
+    expect(snapshot.turns[0]?.items).toEqual([
+      {
+        item: {
+          type: "toolExecution",
+          itemId: `dsh-modern:${sessionId}:event:3:tool`,
+          toolName: "read",
+          arguments: { path: "a.ts" },
+          output: { content: [{ type: "text", text: "The tool call was interrupted." }] },
+        },
+        outcome: expect.objectContaining({ status: "failed" }),
+      },
+      {
+        item: {
+          type: "toolExecution",
+          itemId: `dsh-modern:${sessionId}:event:5:tool`,
+          toolName: "write",
+          arguments: { path: "b.ts" },
+          output: { content: [{ type: "text", text: "The tool call was interrupted." }] },
+        },
+        outcome: expect.objectContaining({ status: "failed" }),
+      },
+    ]);
+  });
+
+  it("shows no Item for a PTC run_code program that never started", () => {
+    const snapshot = project(
+      failedStep(
+        recoveryResult(5, "call-2", "interrupted-tool-result-call-2-5", false),
+        "run_code",
+      ),
+    );
+    expect(
+      snapshot.turns[0]?.items.map(({ item }) => item.type === "toolExecution" && item.toolName),
+    ).toEqual(["read"]);
+  });
+
+  it.each([
+    ["a fork id with another seq", "forked-tool-result-call-2-4", {}],
+    ["a non-integer suffix", "interrupted-tool-result-call-2-x", {}],
+    ["a leading-zero suffix", "interrupted-tool-result-call-2-05", {}],
+    ["another callId", "interrupted-tool-result-call-9-5", {}],
+    ["an unknown cause", "cancelled-tool-result-call-2-5", {}],
+    [
+      "the started-call error",
+      "interrupted-tool-result-call-2-5",
+      { error: { name: "ToolOutcomeUnknownError", code: "TOOL_OUTCOME_UNKNOWN" } },
+    ],
+    ["a source event", "interrupted-tool-result-call-2-5", { extra: { sourceEventSeqs: [2] } }],
+    [
+      "two content blocks",
+      "interrupted-tool-result-call-2-5",
+      {
+        message: {
+          content: [
+            { type: "text", text: "one" },
+            { type: "text", text: "two" },
+          ],
+        },
+      },
+    ],
+  ])("rejects a not-started result with %s", (_label, id, overrides) => {
+    expect(() => project(failedStep(recoveryResult(5, "call-2", id, false, overrides)))).toThrow(
+      "unmatched tool/result",
+    );
+  });
+
+  it("rejects a not-started result that is not marked as an error", () => {
+    const result = recoveryResult(5, "call-2", "interrupted-tool-result-call-2-5", false, {
+      message: { isError: false },
+    });
+    expect(() => project(failedStep(result))).toThrow("error marker is malformed");
+  });
+});

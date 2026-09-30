@@ -335,7 +335,7 @@ export class ModernEventValidator {
             const tool = trace.toolCalls.get(callId);
             if (
               !tool ||
-              (!tool.started && !isV4ForkToolResult(data, event.sourceEventSeqs, event.seq))
+              (!tool.started && !isNotStartedToolResult(data, event.sourceEventSeqs, event.seq))
             ) {
               fail("Modern history contains an unmatched tool/result");
             }
@@ -518,37 +518,47 @@ function registerV4ToolCalls(value: unknown, trace: ValidatorTrace): void {
   }
 }
 
-function isV4ForkToolResult(
-  data: Record<string, unknown>,
+/**
+ * DSH's `ToolCallRecovery` answers an advertised call that never reached
+ * `tool/call` with one synthetic error result. A Fork seed names it
+ * `forked-tool-result-<callId>-<its own seq>`; a failed live step (0.2.0+) or
+ * crash recovery names it `interrupted-tool-result-<callId>-<integer>`, which
+ * DSH's own format code accepts without tying the integer to the event seq.
+ */
+export function isNotStartedToolResult(
+  data: Readonly<Record<string, unknown>>,
   sourceEventSeqs: unknown,
   seq: number,
 ): boolean {
+  const message = data.message;
   if (
     !isRecord(data.error) ||
     data.error.name !== "ToolNotStartedError" ||
     data.error.code !== "TOOL_NOT_STARTED" ||
-    !isRecord(data.message) ||
-    data.message.role !== "tool" ||
-    data.message.isError !== true ||
-    !isRecord(data.message.source) ||
-    data.message.source.kind !== "tool" ||
-    typeof data.message.source.callId !== "string" ||
-    data.message.toolCallId !== data.message.source.callId ||
-    typeof data.message.id !== "string" ||
-    data.message.id !== `forked-tool-result-${data.message.source.callId}-${seq}` ||
     sourceEventSeqs !== undefined ||
-    !Array.isArray(data.message.content) ||
-    data.message.content.length !== 1
+    !isRecord(message) ||
+    message.role !== "tool" ||
+    message.isError !== true ||
+    !isRecord(message.source) ||
+    message.source.kind !== "tool" ||
+    typeof message.source.callId !== "string" ||
+    message.toolCallId !== message.source.callId ||
+    typeof message.id !== "string" ||
+    !Array.isArray(message.content) ||
+    message.content.length !== 1
   ) {
     return false;
   }
-  const content = data.message.content[0];
-  return (
-    isRecord(content) &&
-    content.type === "text" &&
-    typeof content.text === "string" &&
-    data.message.id.endsWith(`-${seq}`)
-  );
+  const content: unknown = message.content[0];
+  if (!isRecord(content) || content.type !== "text" || typeof content.text !== "string") {
+    return false;
+  }
+  const callId = message.source.callId;
+  if (message.id === `forked-tool-result-${callId}-${seq}`) return true;
+  const prefix = `interrupted-tool-result-${callId}-`;
+  if (!message.id.startsWith(prefix)) return false;
+  const suffix = message.id.slice(prefix.length);
+  return /^(?:0|[1-9]\d*)$/u.test(suffix) && Number.isSafeInteger(Number(suffix));
 }
 
 function validateDeveloperHeader(event: ModernJournalEvent, trace: ValidatorTrace): void {
@@ -942,14 +952,7 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
         break;
       case "tool/result":
         if (active && event.surfaceOp === "append") {
-          projectToolResultEvent(
-            active,
-            input.sessionId,
-            data,
-            event.seq,
-            toolOutputLimit,
-            profile,
-          );
+          projectToolResultEvent(active, input.sessionId, event, toolOutputLimit, profile);
         }
         break;
       case "tool/ptc-dispatch-start":
@@ -1108,25 +1111,27 @@ function projectToolCall(
 function projectToolResultEvent(
   turn: HistoryTurn,
   sessionId: string,
-  data: Record<string, unknown>,
-  seq: number,
+  event: ModernJournalEvent,
   limit: number,
   profile: DeepSeekModernProfile,
 ): void {
+  const data = event.data as Record<string, unknown>;
+  const seq = event.seq;
   const result = projectToolResult(data.message, limit);
   if (!result) fail("Modern history contains an unprojectable tool/result");
   const advertised = turn.advertisedTools.get(result.callId);
-  const forked = advertised !== undefined && isForkedToolResult(data, result.callId, seq);
+  const notStarted =
+    advertised !== undefined && isNotStartedToolResult(data, event.sourceEventSeqs, seq);
   if (
     turn.programCalls.delete(result.callId) ||
-    (forked && isPtcProgramTool(profile, advertised.toolName))
+    (notStarted && isPtcProgramTool(profile, advertised.toolName))
   ) {
     turn.advertisedTools.delete(result.callId);
     return;
   }
   let tool = turn.tools.get(result.callId);
   if (!tool) {
-    if (forked) {
+    if (notStarted) {
       const item: HostToolExecutionItem = {
         type: "toolExecution",
         itemId: modernItemId(sessionId, `event:${seq}:tool`),
@@ -1203,21 +1208,6 @@ function projectPtcDispatchSettle(
     item: { ...tool.item, ...(output ? { output } : {}) },
     outcome: ptcDispatchOutcome(data, tool.toolName),
   };
-}
-
-function isForkedToolResult(data: Record<string, unknown>, callId: string, seq: number): boolean {
-  const message = data.message;
-  return (
-    isRecord(data.error) &&
-    data.error.name === "ToolNotStartedError" &&
-    data.error.code === "TOOL_NOT_STARTED" &&
-    isRecord(message) &&
-    message.role === "tool" &&
-    message.isError === true &&
-    message.toolCallId === callId &&
-    typeof message.id === "string" &&
-    message.id === `forked-tool-result-${callId}-${seq}`
-  );
 }
 
 function finishIncompleteTools(turn: HistoryTurn, outcome: HostItemOutcome): void {

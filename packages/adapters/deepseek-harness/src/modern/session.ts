@@ -86,6 +86,7 @@ import {
   MODERN_TOOL_OUTPUT_LIMIT,
   ModernEventValidator,
   ModernHistoryError,
+  isNotStartedToolResult,
   modernCheckpointRef,
   modernItemId,
   modernNativeTurnRef,
@@ -223,12 +224,19 @@ interface ActiveHostTurn {
   reasoning?: LiveReasoningItem;
   reasoningOrdinal: number;
   readonly tools: Map<string, LiveTool>;
+  /** Assistant tool requests not yet started, for DSH's not-started recovery results. */
+  readonly advertisedTools: Map<string, AdvertisedTool>;
   /** Open PTC program calls, which project no Item of their own. */
   readonly programCalls: Set<string>;
   readonly interactions: Set<HostInteractionId>;
   terminal: boolean;
   cancelAcknowledged: boolean;
   cancelPromise?: Promise<HarnessResult<TurnCancelAccepted>>;
+}
+
+interface AdvertisedTool {
+  readonly toolName: string;
+  readonly arguments: string;
 }
 
 interface BufferedAssistantAttempt {
@@ -1996,6 +2004,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       input: [...input],
       autonomous,
       tools: new Map(),
+      advertisedTools: new Map(),
       programCalls: new Set(),
       reasoningOrdinal: 0,
       interactions: new Set(),
@@ -2052,7 +2061,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#startTool(active, data, event.seq);
         return;
       case "tool/result":
-        if (event.surfaceOp === "append") this.#completeTool(active, data, event.seq);
+        if (event.surfaceOp === "append") this.#completeTool(active, event);
         return;
       case "tool/ptc-dispatch-start":
         if (projectsPtcDispatches(this.#profile)) {
@@ -2167,6 +2176,22 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   #completeAssistant(active: ActiveHostTurn, data: Record<string, unknown>): void {
     const message = data.message as Record<string, unknown>;
     const step = data.step as number;
+    if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (
+          isRecord(block) &&
+          block.type === "tool-call" &&
+          typeof block.id === "string" &&
+          typeof block.name === "string" &&
+          typeof block.arguments === "string"
+        ) {
+          active.advertisedTools.set(block.id, {
+            toolName: block.name,
+            arguments: block.arguments,
+          });
+        }
+      }
+    }
     const reasoning = contentText(message.content, "reasoning");
     const text = contentText(message.content, "text");
     if (this.#profile.assistantStream && active.agent && !text.startsWith(active.agent.text)) {
@@ -2225,29 +2250,47 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (active.tools.has(callId) || active.programCalls.has(callId)) {
       throw new ModernHistoryError("protocolError", "Modern tool/call is duplicated");
     }
+    active.advertisedTools.delete(callId);
     if (isPtcProgramTool(this.#profile, data.name as string)) {
       active.programCalls.add(callId);
       return;
     }
+    this.#openTool(active, callId, seq, data.name as string, data.arguments);
+  }
+
+  #openTool(
+    active: ActiveHostTurn,
+    callId: string,
+    seq: number,
+    toolName: string,
+    rawArguments: unknown,
+  ): LiveTool {
     const item: HostToolExecutionItem = {
       type: "toolExecution",
       itemId: modernItemId(this.#sessionId, `event:${seq}:tool`),
-      toolName: data.name as string,
-      arguments: parseArguments(data.arguments),
+      toolName,
+      arguments: parseArguments(rawArguments),
     };
-    active.tools.set(callId, {
-      item,
-      toolName: item.toolName,
-      startedAtMs: this.#now(),
-    });
+    const tool = { item, toolName, startedAtMs: this.#now() };
+    active.tools.set(callId, tool);
     this.#emit({ type: "item.started", turnId: active.turnId, item });
+    return tool;
   }
 
-  #completeTool(active: ActiveHostTurn, data: Record<string, unknown>, seq: number): void {
+  #completeTool(active: ActiveHostTurn, event: ModernJournalEvent): void {
+    const data = event.data as Record<string, unknown>;
+    const seq = event.seq;
     const result = projectToolResult(data.message, this.#toolOutputLimit);
     if (!result) throw new ModernHistoryError("protocolError", "Modern tool/result is malformed");
+    const advertised = active.advertisedTools.get(result.callId);
+    active.advertisedTools.delete(result.callId);
     if (active.programCalls.delete(result.callId)) return;
-    const tool = active.tools.get(result.callId);
+    let tool = active.tools.get(result.callId);
+    if (!tool && advertised && isNotStartedToolResult(data, event.sourceEventSeqs, seq)) {
+      // Cold history shows a call DSH closed before it started as one failed Tool.
+      if (isPtcProgramTool(this.#profile, advertised.toolName)) return;
+      tool = this.#openTool(active, result.callId, seq, advertised.toolName, advertised.arguments);
+    }
     if (!tool) throw new ModernHistoryError("protocolError", "Modern tool/result is unmatched");
     active.tools.delete(result.callId);
     const item: HostToolExecutionItem = {
@@ -2457,6 +2500,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         input: hostBound ? [...pending.command.input] : [...buffer.input],
         autonomous: !hostBound,
         tools: new Map(),
+        advertisedTools: new Map(),
         programCalls: new Set(),
         reasoningOrdinal: 0,
         interactions: new Set(),

@@ -138,6 +138,25 @@ describe("External Thread sections through AppServerHost", () => {
     await stopFixture(fixture);
   });
 
+  it("reports the saved section on resume and unarchive responses", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    serveOfficialSections(fixture, []);
+    await call(fixture, 121, "thread/section/move", { threadId, sectionId: PINNED });
+    const pinned = { section: { id: PINNED, name: "Pinned", appearance: null } };
+
+    const resumed = await call(fixture, 122, "thread/resume", { threadId });
+    expect(resumed.result).toMatchObject({ thread: { id: threadId, ...pinned } });
+
+    await expect(call(fixture, 123, "thread/archive", { threadId })).resolves.toEqual({
+      id: 123,
+      result: {},
+    });
+    const unarchived = await call(fixture, 124, "thread/unarchive", { threadId });
+    expect(unarchived.result).toMatchObject({ thread: { id: threadId, ...pinned } });
+    await stopFixture(fixture);
+  });
+
   it("returns the official error for a missing section", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

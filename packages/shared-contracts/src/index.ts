@@ -177,6 +177,7 @@ export {
   harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelCatalogSchema,
+  catalogModelForRef,
   harnessModelRefIdSchema,
   harnessModelRefSchema,
   harnessModelSchema,

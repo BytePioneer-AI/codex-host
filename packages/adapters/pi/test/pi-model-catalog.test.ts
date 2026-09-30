@@ -19,6 +19,22 @@ describe("Pi Model Catalog normalization", () => {
     expect(decodePiModelRef(ref)).toEqual(native);
   });
 
+  it("encodes Fast as a distinct opaque ref while preserving the original off encoding", () => {
+    const native = { provider: "c", id: "model" };
+    const normal = encodePiModelRef(native);
+    expect(encodePiModelRef({ ...native, fast: false })).toEqual(normal);
+    expect(Buffer.from(normal.id.slice("pi-model-v1.".length), "base64url").toString()).toBe(
+      JSON.stringify(["c", "model"]),
+    );
+    const fast = encodePiModelRef({ ...native, fast: true });
+    expect(fast).not.toEqual(normal);
+    expect(decodePiModelRef(fast)).toEqual({ ...native, fast: true });
+    const invalid = harnessModelRefSchema.parse({
+      id: `pi-model-v1.${Buffer.from(JSON.stringify(["c", "model", false])).toString("base64url")}`,
+    });
+    expect(() => decodePiModelRef(invalid)).toThrow();
+  });
+
   it("keeps Provider identity distinct, removes exact duplicates, and sorts deterministically", () => {
     const catalog = normalizePiModelCatalog(
       [

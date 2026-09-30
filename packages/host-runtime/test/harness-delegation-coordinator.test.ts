@@ -7,7 +7,12 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import type { ExternalHarnessId } from "@codexhost/protocol-core";
-import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  harnessModelCatalogSchema,
+  hostThreadIdSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { HarnessDelegationCoordinator } from "../src/harness-delegation-coordinator.js";
@@ -304,6 +309,42 @@ describe("HarnessDelegationCoordinator", () => {
       expect(adapter.openInputs[0]).toMatchObject({ model, thinkingOptionId });
       expect(result.configuration?.requested).toEqual({ model, thinkingOptionId });
       expect((await value.repository.list())[0]?.transportModelId).not.toBe("codexhost/pi-native");
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("validates an advertised Fast ref with the same Thinking options and preserves the opaque selection", async () => {
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: { id: "normal" },
+          fastModel: { id: "priority" },
+          label: "Model",
+          supportedThinkingOptionIds: ["high"],
+        },
+      ],
+      thinkingOptions: [{ id: "high", label: "High" }],
+    });
+    const model = catalog.models[0]?.fastModel;
+    const thinkingOptionId = catalog.thinkingOptions[0]?.id;
+    if (!model || !thinkingOptionId) throw new Error("Missing fixture selections");
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"), catalog);
+    const value = await fixture(adapter);
+    try {
+      const result = await value.coordinator.start({
+        harnessId: "pi",
+        task: "fixture task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        model,
+        thinkingOptionId,
+      });
+      expect(result.configuration).toMatchObject({
+        requested: { model, thinkingOptionId },
+        effective: { effectiveModel: model, effectiveThinkingOptionId: thinkingOptionId },
+      });
+      expect(adapter.openInputs[0]).toMatchObject({ model, thinkingOptionId });
     } finally {
       await value.close();
     }

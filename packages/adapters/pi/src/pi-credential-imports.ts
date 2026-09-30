@@ -90,6 +90,21 @@ function describeOauth(credential: unknown): { label?: string; vendor?: "openai-
     ...(match ? { vendor: match.vendor } : {}),
   };
 }
+/** Local credential classification only; no installation probe, refresh, or exported tokens. */
+export function readPiCodexProviderNames(environment: NodeJS.ProcessEnv): string[] {
+  const agentDir =
+    environment.PI_CODING_AGENT_DIR ??
+    path.join(environment.HOME ?? environment.USERPROFILE ?? os.homedir(), ".pi/agent");
+  try {
+    const auth = parseAuth(readFileSync(path.join(agentDir, "auth.json"), "utf8"));
+    return Object.entries(auth)
+      .filter(([, credential]) => describeOauth(credential).vendor === "openai-codex")
+      .map(([provider]) => provider);
+  } catch {
+    return [];
+  }
+}
+
 function writeAuth(filename: string, content: string): void {
   const temporary = `${filename}.${randomUUID()}.tmp`;
   try {

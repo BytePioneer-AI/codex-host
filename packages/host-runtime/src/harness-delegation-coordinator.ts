@@ -16,7 +16,12 @@ import {
   type JsonObject,
   type RoutedHarnessId,
 } from "@codexhost/protocol-core";
-import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  catalogModelForRef,
+  harnessIdSchema,
+  hostThreadIdSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
 
 import {
   DELEGATION_THREAD_ID_ENV,
@@ -639,12 +644,14 @@ export class HarnessDelegationCoordinator {
         "Harness does not support Model selection",
       );
     }
-    if (model && !inspection.catalog.models.some((candidate) => candidate.ref.id === model.id)) {
+    if (model && !catalogModelForRef(inspection.catalog, model)) {
       throw new DelegationControlError(
         "INVALID_ARGUMENT",
         "Model is unavailable for the target Harness",
         {
-          validModelIds: inspection.catalog.models.map((candidate) => candidate.ref.id),
+          validModelIds: inspection.catalog.models.flatMap((candidate) =>
+            candidate.fastModel ? [candidate.ref.id, candidate.fastModel.id] : [candidate.ref.id],
+          ),
         },
       );
     }
@@ -655,9 +662,7 @@ export class HarnessDelegationCoordinator {
         "Harness does not support Thinking selection",
       );
     }
-    const modelEntry = selectedModel
-      ? inspection.catalog.models.find((candidate) => candidate.ref.id === selectedModel.id)
-      : undefined;
+    const modelEntry = catalogModelForRef(inspection.catalog, selectedModel);
     const validThinkingOptionIds = modelEntry?.supportedThinkingOptionIds ?? [];
     if (!validThinkingOptionIds.includes(thinkingOptionId)) {
       throw new DelegationControlError(

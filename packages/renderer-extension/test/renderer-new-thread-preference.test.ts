@@ -46,6 +46,18 @@ const permissionModes = harnessPermissionModeCatalogSchema.parse({
 });
 
 describe("Renderer new-Thread external configuration preference", () => {
+  it("restores Model and Thinking but keeps Fast off for a new Thread", () => {
+    const storage = memoryStorage();
+    const fast = harnessModelRefSchema.parse({ id: "priority" });
+    const catalog = harnessModelCatalogSchema.parse({
+      ...modelCatalog,
+      models: modelCatalog.models.map((entry) => ({ ...entry, fastModel: fast })),
+    });
+    writeNewThreadExternalConfigurationPreference("pi", fast, thinkingOptionId, undefined, storage);
+    expect(readNewThreadExternalConfigurationPreference("pi", catalog, undefined, storage)).toEqual(
+      { model, thinkingOptionId },
+    );
+  });
   it("persists and restores the Grok Permission Mode with Model and Thinking", () => {
     const storage = memoryStorage();
     const permissionModeId = harnessPermissionModeIdSchema.parse("auto");

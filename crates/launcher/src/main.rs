@@ -805,7 +805,14 @@ fn supervise_desktop(
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
     wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))?;
-    let desktop_root = process_snapshot(desktop_pid)?;
+    let desktop_root = match process_snapshot(desktop_pid) {
+        Ok(root) => root,
+        Err(error) => {
+            let _ = desktop.kill();
+            let _ = desktop.wait();
+            return Err(error.into());
+        }
+    };
     let mut controller = match start_desktop_controller(options, control, environment) {
         Ok(started) => started,
         Err(error) => {

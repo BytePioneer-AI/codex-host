@@ -113,8 +113,8 @@ function openWithLauncher(launcherExecutable: string, url: string): Promise<bool
 }
 
 /**
- * Ensures exactly one console answers on the configured port, restarting it
- * when it belongs to a different installation. Returns the port.
+ * Ensures the requested console installation and build answer on the configured
+ * port, restarting a previous instance when needed. Returns the confirmed port.
  */
 export async function ensureConsole(
   options: Pick<OpenConsoleOptions, "appDirectory" | "entryPath" | "environment">,
@@ -125,24 +125,36 @@ export async function ensureConsole(
   let probe = await probeConsole(port);
   // Another installation, or this installation after an update, replaces the console.
   const ownBuildId = await consoleBuildId(options.entryPath);
-  if (
-    probe.kind === "console" &&
-    (probe.appDirectory !== options.appDirectory || probe.buildId !== ownBuildId)
-  ) {
-    await requestShutdown(port).catch(() => undefined);
-    probe = await waitFor(port, (next) => next.kind !== "console", 5_000);
+  const matches = (next: ConsoleProbe): boolean =>
+    next.kind === "console" &&
+    next.appDirectory === options.appDirectory &&
+    next.buildId === ownBuildId;
+  if (probe.kind === "console" && !matches(probe)) {
+    // A concurrent opener may have replaced the old instance while we read the build.
+    probe = await probeConsole(port);
+    if (probe.kind === "console" && !matches(probe)) {
+      await requestShutdown(port).catch(() => undefined);
+      probe = await waitFor(port, (next) => next.kind !== "console" || matches(next), 5_000);
+    }
   }
   if (probe.kind === "foreign") {
     throw new Error(
       `port ${port} is used by another program; set ${CONSOLE_PORT_ENV} to a free port and retry`,
     );
   }
+  if (probe.kind === "console" && !matches(probe)) {
+    throw new Error(
+      `codexhost console on port ${port} did not stop for the requested installation`,
+    );
+  }
   if (probe.kind === "free") {
     startDetachedServer(options.entryPath, environment);
-    probe = await waitFor(port, (next) => next.kind === "console", 10_000);
-    if (probe.kind !== "console") {
-      throw new Error(`codexhost console did not start on port ${port}`);
-    }
+    probe = await waitFor(port, matches, 10_000);
+  }
+  if (!matches(probe)) {
+    throw new Error(
+      `codexhost console did not start on port ${port} for the requested installation`,
+    );
   }
   return { port };
 }

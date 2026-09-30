@@ -4,6 +4,7 @@ import type {
   RendererAgent,
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
+import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
   AccountCreditsSnapshot,
   CodexAccountSummary,
@@ -759,9 +760,7 @@ export function renderComposerAgentControl(
   }
 
   const selectedModel = modelView.selected;
-  const selectedCatalogModel = modelView.catalog?.models.find(
-    (model) => model.ref.id === selectedModel?.id,
-  );
+  const selectedCatalogModel = catalogModelForRef(modelView.catalog, selectedModel);
   const availableThinkingOptions =
     modelView.thinkingSelectionSupported === false
       ? []
@@ -804,7 +803,13 @@ export function renderComposerAgentControl(
     pickerView.nativeModelHidden,
     switching || state.agent !== "codex",
   );
-  renderRendererModelPicker(control.modelPicker, modelView, state.agent !== "codex", state.agent);
+  renderRendererModelPicker(
+    control.modelPicker,
+    modelView,
+    state.agent !== "codex",
+    state.agent,
+    locale,
+  );
   const permissionModeVisible =
     state.agent !== "codex" &&
     permissionModeView.status !== "idle" &&

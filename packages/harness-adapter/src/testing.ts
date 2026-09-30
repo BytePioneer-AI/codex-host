@@ -1,4 +1,5 @@
 import {
+  catalogModelForRef,
   harnessIdSchema,
   harnessModelCatalogSchema,
   hostInteractionIdSchema,
@@ -109,23 +110,21 @@ const defaultFakeCatalog = harnessModelCatalogSchema.parse({
 });
 
 function catalogHasModel(catalog: HarnessModelCatalog, model: HarnessModelRef): boolean {
-  return catalog.models.some((candidate) => candidate.ref.id === model.id);
+  return catalogModelForRef(catalog, model) !== undefined;
 }
 
 function resolvedLabelForModel(
   catalog: HarnessModelCatalog,
   model: HarnessModelRef | undefined,
 ): string | undefined {
-  return catalog.models.find((candidate) => candidate.ref.id === model?.id)?.resolvedModelLabel;
+  return catalogModelForRef(catalog, model)?.resolvedModelLabel;
 }
 
 function thinkingOptionsForModel(
   catalog: HarnessModelCatalog,
   model: HarnessModelRef | undefined,
 ): HarnessThinkingOption[] {
-  const supported = catalog.models.find(
-    (candidate) => candidate.ref.id === model?.id,
-  )?.supportedThinkingOptionIds;
+  const supported = catalogModelForRef(catalog, model)?.supportedThinkingOptionIds;
   return supported ? catalog.thinkingOptions.filter((option) => supported.includes(option.id)) : [];
 }
 

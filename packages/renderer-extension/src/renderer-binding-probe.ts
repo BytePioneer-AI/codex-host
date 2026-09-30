@@ -1,4 +1,5 @@
 import {
+  catalogModelForRef,
   decodeHarnessPluginRoute,
   harnessIdSchema,
   permissionModeFixedAtCreate,
@@ -251,7 +252,7 @@ function isExternalConfigurationReadyView(
 ): boolean {
   return (
     modelView.status !== "selecting" &&
-    modelView.catalog?.models.some((model) => model.ref.id === modelView.selected?.id) === true &&
+    catalogModelForRef(modelView.catalog, modelView.selected) !== undefined &&
     isPermissionModeControlReady(permissionModeView)
   );
 }
@@ -713,7 +714,7 @@ function catalogWithConfigurationState(
   const models = catalog.models.map((candidate) => {
     const normalized = { ...candidate };
     delete normalized.supportedThinkingOptionIds;
-    return candidate.ref.id === model.id
+    return candidate === catalogModelForRef(catalog, model)
       ? { ...normalized, supportedThinkingOptionIds }
       : normalized;
   });
@@ -1445,7 +1446,7 @@ export function installRendererBindingProbe(
       const previousModel = controller.modelForAgent(mounted.composer, agent);
       const previousModelAvailable =
         previousModel !== undefined &&
-        inspection.catalog.models.some((model) => model.ref.id === previousModel.id);
+        catalogModelForRef(inspection.catalog, previousModel) !== undefined;
       const preferredConfiguration =
         current.phase === "draft" && !previousModelAvailable
           ? readNewThreadExternalConfigurationPreference(
@@ -1654,7 +1655,10 @@ export function installRendererBindingProbe(
     if (current.agent === "codex") return;
     const agent = current.agent;
     const catalog = mounted.modelView.catalog;
-    const selected = catalog?.models.find((model) => model.ref.id === modelId)?.ref;
+    const entry = catalog?.models.find(
+      (model) => model.ref.id === modelId || model.fastModel?.id === modelId,
+    );
+    const selected = entry?.ref.id === modelId ? entry.ref : entry?.fastModel;
     if (!catalog || !selected || !modelControl) return;
     const previousModel = controller.modelForAgent(mounted.composer, agent);
     const previousThinking = controller.thinkingOptionForAgent(mounted.composer, agent);
@@ -1722,7 +1726,7 @@ export function installRendererBindingProbe(
           throw new Error("External Harness did not confirm an effective Model");
         }
         effectiveModel = state.effectiveModel;
-        if (!catalog.models.some((model) => model.ref.id === effectiveModel.id)) {
+        if (!catalogModelForRef(catalog, effectiveModel)) {
           throw new Error("External Harness activated a Model outside the current catalog");
         }
         effectiveThinkingOptionId = supportsThinkingSelection
@@ -1945,7 +1949,7 @@ export function installRendererBindingProbe(
     const selectedThinkingOptionId = catalog?.thinkingOptions.find(
       ({ id }) => id === thinkingOptionId,
     )?.id;
-    const catalogModel = catalog?.models.find((candidate) => candidate.ref.id === model?.id);
+    const catalogModel = catalogModelForRef(catalog, model);
     if (
       !mounted.modelView.thinkingSelectionSupported ||
       !catalog ||

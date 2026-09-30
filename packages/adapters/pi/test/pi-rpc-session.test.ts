@@ -17,6 +17,8 @@ import {
 
 type Scenario =
   | "final-only"
+  | "fast"
+  | "fast-no-ack"
   | "reasoning"
   | "reasoning-multiple-blocks"
   | "settled-streaming"
@@ -69,6 +71,11 @@ class FakePiRpcProcess extends EventEmitter {
   #thinkingLevel = "high";
   readonly #scenario: Scenario;
   readonly #compactionDelayMs: number | undefined;
+
+  setNativeModel(provider: string, modelId: string): void {
+    this.#provider = provider;
+    this.#modelId = modelId;
+  }
 
   constructor(scenario: Scenario, compactionDelayMs?: number) {
     super();
@@ -198,6 +205,32 @@ class FakePiRpcProcess extends EventEmitter {
       ) {
         this.#completeInteractionTurn();
       }
+      return;
+    }
+    if (
+      command.type === "get_commands" &&
+      (this.#scenario === "fast" || this.#scenario === "fast-no-ack")
+    ) {
+      this.#respond(command, {
+        commands: [{ name: "codexhost-fast-mode", description: "Host Fast", source: "extension" }],
+      });
+      return;
+    }
+    if (
+      command.type === "prompt" &&
+      typeof command.message === "string" &&
+      command.message.startsWith("/codexhost-fast-mode ")
+    ) {
+      const [, mode, nonce] = command.message.split(" ");
+      if (this.#scenario === "fast")
+        this.#output({
+          type: "extension_ui_request",
+          id: "fast-ack",
+          method: "notify",
+          message: `codexhost-fast-mode:${nonce}:${mode}`,
+          notifyType: "info",
+        });
+      this.#respond(command, { disposition: "handled" });
       return;
     }
     if (command.type === "get_state") {
@@ -766,6 +799,56 @@ function session(
     processAdapter,
   );
 }
+
+describe("Pi Fast command acknowledgement", () => {
+  it("changes only Fast and keeps the confirmed state through Thinking refresh", async () => {
+    const rpc = session("fast");
+    await rpc.start();
+    try {
+      expect(await rpc.supportsFastMode()).toBe(true);
+      expect(await rpc.selectFastMode(true)).toMatchObject({ fast: true, thinkingLevel: "high" });
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("low")),
+      ).toMatchObject({ fast: true, thinkingLevel: "low" });
+      expect(await rpc.selectFastMode(false)).not.toHaveProperty("fast");
+      expect(rpc.state.thinkingLevel).toBe("low");
+    } finally {
+      await rpc.close();
+    }
+  });
+  it("clears the confirmed Fast state when a native extension switches Model", async () => {
+    const process = new FakePiRpcProcess("fast");
+    const rpc = new PiRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    try {
+      await rpc.selectFastMode(true);
+      process.setNativeModel("another-provider", "unsupported");
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("low")),
+      ).not.toHaveProperty("fast");
+      process.setNativeModel("synthetic-provider", "synthetic-model");
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("high")),
+      ).not.toHaveProperty("fast");
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("does not report success when Pi handles a command without confirming the change", async () => {
+    const rpc = session("fast-no-ack");
+    await rpc.start();
+    try {
+      await expect(rpc.selectFastMode(true)).rejects.toThrow("did not confirm");
+      expect(rpc.state).not.toHaveProperty("fast");
+    } finally {
+      await rpc.close();
+    }
+  });
+});
 
 function autonomousSession(onFault = vi.fn()): {
   rpc: PiRpcSession;

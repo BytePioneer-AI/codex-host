@@ -31,7 +31,16 @@ export const PI_FAST_EXTENSION = `export default function(pi) {
           if (!original) throw new Error("Codex Provider is unavailable");
           if (!wrapped.has(model.provider)) {
             const options = (model, value) => target && model.api === "openai-codex-responses" && target.provider === model.provider && target.id === model.id
-              ? { ...value, serviceTier: "priority" } : value;
+              ? {
+                  ...value,
+                  serviceTier: "priority",
+                  // Pi streamSimple drops serviceTier but preserves onPayload.
+                  onPayload: async (payload, requestModel) => {
+                    const request = { ...payload, service_tier: "priority" };
+                    const replacement = await value?.onPayload?.(request, requestModel);
+                    return { ...(replacement === undefined ? request : replacement), service_tier: "priority" };
+                  },
+                } : value;
             pi.registerProvider({
               ...original,
               stream: (model, context, value) => original.stream(model, context, options(model, value)),

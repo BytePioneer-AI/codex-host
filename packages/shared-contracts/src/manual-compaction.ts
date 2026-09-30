@@ -4,7 +4,7 @@ import { hostThreadIdSchema, hostTurnIdSchema } from "./ids.js";
 
 /**
  * Host notification sent immediately before the `item/started` of a context
- * compaction inside a user-invoked Harness command Turn. Codex Desktop marks a
+ * compaction inside an explicit Harness `/compact` command Turn. Codex Desktop marks a
  * compaction as manual only through its own client-side registration, so the
  * Renderer uses this signal to register the compaction the same way.
  */

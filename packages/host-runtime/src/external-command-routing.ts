@@ -3,6 +3,7 @@ import type { JsonObject } from "@codexhost/protocol-core";
 import {
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
+  type HarnessCommandDescriptor,
 } from "@codexhost/shared-contracts";
 
 export class ExternalCommandError extends Error {
@@ -54,7 +55,7 @@ export async function resolveExternalCommand(
   commands: NonNullable<HarnessSession["commands"]>,
   text: string,
   options: { liveCatalogPending?: (catalog: HarnessCommandCatalog) => boolean } = {},
-): Promise<{ commandId: string; arguments?: JsonObject } | null> {
+): Promise<{ descriptor: HarnessCommandDescriptor; arguments?: JsonObject } | null> {
   const catalog = await commands.list();
   if (!catalog.ok) throw new ExternalCommandError(-32073, catalog.error.message);
   const commandText = text.trim();
@@ -80,7 +81,7 @@ export async function resolveExternalCommand(
   }
   const argumentText = commandText.slice(matched.invocation.length).trimStart();
   return {
-    commandId: matched.id,
+    descriptor: matched,
     ...(argumentText.length > 0 ? { arguments: { text: argumentText } } : {}),
   };
 }

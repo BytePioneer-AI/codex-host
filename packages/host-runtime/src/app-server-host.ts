@@ -67,6 +67,7 @@ import {
   externalThreadForkParamsSchema,
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
+  type HarnessCommandDescriptor,
   harnessCommandsInspectParamsSchema,
   type HarnessId,
   harnessIdSchema,
@@ -617,6 +618,7 @@ export class AppServerHost {
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
+  #manualCompactionTurns = new WeakMap<ExternalThread, HostTurnId>();
   #closeRequested = false;
   readonly #pluginLoadAbort = new AbortController();
   #pluginLoading: Promise<void> | undefined;
@@ -3017,7 +3019,7 @@ export class AppServerHost {
       try {
         const started = await this.#beginExternalCommand(
           thread,
-          params.commandId,
+          descriptor,
           params.arguments,
           params.turnId,
         );
@@ -3045,7 +3047,7 @@ export class AppServerHost {
 
   async #beginExternalCommand(
     thread: ExternalThread,
-    commandId: string,
+    descriptor: HarnessCommandDescriptor,
     arguments_: JsonObject | undefined,
     requestedTurnId?: HostTurnId,
   ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
@@ -3077,11 +3079,13 @@ export class AppServerHost {
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
     thread.ephemeralTurnIds.add(turnId);
+    if (descriptor.invocation === "/compact") this.#manualCompactionTurns.set(thread, turnId);
+    else this.#manualCompactionTurns.delete(thread);
 
     try {
       const result = await commands.execute({
         turnId,
-        commandId,
+        commandId: descriptor.id,
         ...(arguments_ ? { arguments: arguments_ } : {}),
       });
       if (!result.ok) throw new ExternalCommandError(-32073, result.error.message);
@@ -3092,6 +3096,7 @@ export class AppServerHost {
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
       thread.ephemeralTurnIds.delete(turnId);
+      this.#manualCompactionTurns.delete(thread);
       gate.resolve();
       this.#signalActiveWorkChanged();
       throw error;
@@ -4075,7 +4080,7 @@ export class AppServerHost {
         this.#pendingExternalCommandRequests.delete(thread.id);
         return await this.#beginExternalTurn(thread, text);
       }
-      return await this.#beginExternalCommand(thread, command.commandId, command.arguments);
+      return await this.#beginExternalCommand(thread, command.descriptor, command.arguments);
     } catch (error) {
       if (error instanceof ExternalCommandError || error instanceof ExternalSteerError) throw error;
       this.#diagnose(error);
@@ -4436,6 +4441,7 @@ export class AppServerHost {
       const completedAt = Math.floor(Date.now() / 1000);
       if (ephemeralTurn) {
         thread.ephemeralTurnIds.delete(event.turnId);
+        this.#manualCompactionTurns.delete(thread);
       } else {
         thread.turns.push(result.completedTurn);
         thread.projectedTerminalTurnId = event.turnId;
@@ -4463,9 +4469,10 @@ export class AppServerHost {
     if (
       event.type === "item.started" &&
       event.item.type === "contextCompaction" &&
-      thread.ephemeralTurnIds.has(event.turnId)
+      this.#manualCompactionTurns.get(thread) === event.turnId
     ) {
-      // Command Turns are user-invoked. Desktop labels a compaction manual only
+      // Only explicit /compact commands are manual; other commands can auto-compact.
+      // Desktop labels a compaction manual only
       // through its own client registration, which must precede item/started.
       await this.#writer.json({
         method: THREAD_MANUAL_COMPACTION_STARTED_METHOD,

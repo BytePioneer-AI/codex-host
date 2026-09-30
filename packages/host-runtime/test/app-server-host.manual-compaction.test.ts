@@ -35,9 +35,9 @@ function compactionStarted(message: JsonObject, turnId: string): boolean {
   );
 }
 
-function installCompactCommand(session: FakeHarnessSession): void {
+function installCompactingCommand(session: FakeHarnessSession, descriptor = compactCommand): void {
   session.commands = {
-    list: async () => ({ ok: true, value: { commands: [compactCommand] } }),
+    list: async () => ({ ok: true, value: { commands: [descriptor] } }),
     execute: async ({ turnId }: HarnessCommandInvocation) => {
       session.publishEphemeralCommand(turnId, {
         type: "contextCompaction",
@@ -60,7 +60,7 @@ describe("manual compaction announcement", () => {
         const threadId = await startPiThread(fixture);
         const session = fixture.adapter.sessions[0];
         if (!session) throw new Error("Fake Pi Session was not opened");
-        installCompactCommand(session);
+        installCompactingCommand(session);
         const requestedTurnId = hostTurnIdSchema.parse("manual-compact");
         writeRequest(fixture.desktopInput, {
           id: 2,
@@ -92,6 +92,49 @@ describe("manual compaction announcement", () => {
           announced,
         );
         expect(announced + 1).toBe(index((message) => compactionStarted(message, turnId)));
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it.each(["codexhost/thread/command/execute", "turn/start"])(
+    "does not announce automatic compaction inside another command through %s",
+    async (requestMethod) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Pi Session was not opened");
+        const initCommand = harnessCommandDescriptorSchema.parse({
+          id: "fake.init",
+          invocation: "/init",
+          label: "Init",
+          argumentMode: "none",
+        });
+        installCompactingCommand(session, initCommand);
+        writeRequest(fixture.desktopInput, {
+          id: 2,
+          method: requestMethod,
+          params:
+            requestMethod === "turn/start"
+              ? { threadId, input: [{ type: "text", text: "/init" }] }
+              : { threadId, commandId: initCommand.id },
+        });
+        const response = await fixture.collector.waitFor((message) => requestId(message, 2));
+        const result = response.result as JsonObject;
+        const turnId = String(
+          requestMethod === "turn/start" ? (result.turn as JsonObject).id : result.turnId,
+        );
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+        expect(
+          fixture.collector.messages.some((message) => compactionStarted(message, turnId)),
+        ).toBe(true);
+        expect(
+          fixture.collector.messages.some((message) =>
+            method(message, THREAD_MANUAL_COMPACTION_STARTED_METHOD),
+          ),
+        ).toBe(false);
       } finally {
         await stopFixture(fixture);
       }

@@ -23,7 +23,7 @@ export interface RendererMessageTarget {
  * compactThread; the compaction Item's wire fields cannot set it.
  *
  * Host sends THREAD_MANUAL_COMPACTION_STARTED_METHOD right before the
- * compaction Item of a user-invoked Harness command Turn. Registering it here
+ * compaction Item of an explicit Harness `/compact` command Turn. Registering it here
  * lets Desktop's next item/started for the Thread consume the registration,
  * exactly as it does for its own manual compaction.
  *

@@ -477,6 +477,8 @@ function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null
  * account limits, not the current thread's context window.
  */
 export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLElement | null {
+  // An unverified picker can be mounted at the Composer's end, outside the toolbar.
+  if (!control.nativePermissionModeControlVerified) return null;
   const root = control.permissionModePicker?.root;
   return root?.parentElement ? root : null;
 }

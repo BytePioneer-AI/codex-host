@@ -20,6 +20,9 @@ use serde_json::{Value, json};
 use crate::desktop_attachment::endpoint_ready;
 use crate::runtime_instance::{default_descriptor_path, read_descriptor};
 
+mod command;
+use command::{COMMAND_TIMEOUT, run_console_command};
+
 /// `0` disables starting, opening, and announcing the console during launch.
 pub const CONSOLE_ENV: &str = "CODEXHOST_CONSOLE";
 const LAUNCHER_EXECUTABLE_ENV: &str = "CODEXHOST_LAUNCHER_EXECUTABLE";
@@ -91,11 +94,13 @@ pub fn start_for_launch(command: ConsoleCommand) {
     let ensure_command = command.clone();
     let ensure = thread::spawn(move || {
         if let Ok(mut process) = node_command(&ensure_command) {
-            let _ = process
+            process
                 .arg("ensure")
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+                .stderr(Stdio::null());
+            if let Err(error) = run_console_command(&mut process, false, COMMAND_TIMEOUT) {
+                eprintln!("codexhost launcher: {error}");
+            }
         }
     });
     if let Ok(mut slot) = LAUNCH_CONSOLE.lock() {
@@ -123,8 +128,11 @@ fn parse_console_url(stdout: &[u8]) -> Option<String> {
 
 fn console_url(command: &ConsoleCommand) -> Result<String, Box<dyn Error>> {
     let mut process = node_command(command)?;
-    process.arg("open").arg("--no-browser");
-    let output = process.stderr(Stdio::inherit()).output()?;
+    process
+        .arg("open")
+        .arg("--no-browser")
+        .stderr(Stdio::inherit());
+    let output = run_console_command(&mut process, true, COMMAND_TIMEOUT)?;
     if !output.status.success() {
         return Err("codexhost console could not be started".into());
     }
@@ -154,6 +162,8 @@ fn launch_presentation() -> Option<Presentation> {
 /// Opens the console once if the Desktop Controller of this launch reports a
 /// persistent Renderer integration failure, the case in which Codex Desktop
 /// runs without codexhost features and the Launcher still reported success.
+/// Monitoring lasts for the Launcher process lifetime, so later failures are
+/// still reported after an initially healthy integration.
 fn watch_integration() {
     let (Some(status_path), Some(launch_started)) = (
         crate::startup_record::diagnostics_directory()
@@ -241,7 +251,9 @@ fn show(reason: Option<&str>) -> bool {
 pub fn open(command: &ConsoleCommand) -> Result<bool, Box<dyn Error>> {
     let mut process = node_command(command)?;
     process.arg("open");
-    Ok(process.status()?.success())
+    Ok(run_console_command(&mut process, false, COMMAND_TIMEOUT)?
+        .status
+        .success())
 }
 
 pub fn console_command_for(node: &Path, host_runtime: &Path, installed: &Path) -> ConsoleCommand {

@@ -19,6 +19,8 @@
 
 控制台在校验 Shim、Host Runtime、Desktop Controller 和 Renderer 等 Codex 启动资源之前启动；这些文件缺失时，仍能提供故障恢复入口。npm 包装脚本将这部分校验交给 Launcher，不提前拦截。Launcher、Node 和控制台自身文件仍须可用，端口占用等控制台自身故障不保证能打开网页；命令参数解析失败也不进入启动流程。
 
+Launcher 调用的每条控制台 CLI 命令（后台 `ensure`、获取地址与显式打开）最多等待 30 秒。超时会报错，并终止、回收该次 CLI 进程；退出确认最多再等 5 秒，失败时报告原文，不继续无限等待。已经分离运行的控制台服务不属于这次终止范围。启动流程中的控制台故障不阻止 Codex Desktop 启动。获取地址时最多接受 64 KiB 输出，以临时文件捕获，避免管道堵塞或分离进程继承 stdout 后迟迟不结束。
+
 Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAtMs: null`）。只要该记录对应的 Launcher 仍存活，总览和侧边栏显示“正在启动”，不再提示重复启动；启动完成或失败后由同一条记录更新结果。超时沿用 Launcher 原有的超时与失败处理，不在网页额外设置倒计时。如果 Launcher 异常退出而留下未完成记录，控制台显示启动失败，不会永久停在“正在启动”。
 
 从已打开的 Web 控制台点击“启动”时，安装版调用 Launcher 的显式 `launch` 命令，npm 版通过 npm 包装脚本启动；两者都不再打开浏览器标签页。原页面通过状态轮询展示启动结果。
@@ -49,11 +51,13 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 | `diagnostics/desktop-controller-v1.json` | Desktop Controller | Renderer 注入状态：注入中 / 正常 / 失败、当前失败原因、失败次数，以及恢复后仍保留的上次失败原因与时间 |
 | `logs/host-runtime-*.log` | Host Runtime | 见 [`host-runtime-log.md`](host-runtime-log.md) |
 
-目录权限 `0700`，文件 `0600`（权限位按平台支持生效）。写入失败不影响启动。
+Unix 上诊断目录权限为 `0700`，文件为 `0600`。Windows 上诊断目录和启动记录继承父目录的 ACL，Launcher 不另外设置 ACL；默认数据目录位于当前用户的个人目录，使用 `CODEXHOST_DATA_DIR` 时由该目录的实际 ACL 决定访问范围。写入失败不影响启动。
 
 Desktop Controller 在注入失败时仍会让 Codex 正常运行并在后台重试，所以“Codex 打开了但没有 codexhost 功能”时，Launcher 的启动记录显示成功，原因在注入状态文件中。
 
 启动时首次注入可能因 Codex 页面仍在加载而失败一次：注入脚本已登记到页面、加载完成后照常运行，功能不受影响，Controller 在下一次尝试时恢复。因此控制台只在注入持续失败（连续失败 2 次及以上，或失败状态超过 1 分钟）时，在总览显示“codexhost 功能未能加载”，并在同页给出原因；单次早期失败只保留在状态文件和诊断包中。
+
+安装包启动成功后，Launcher 每 5 秒读取本次启动的注入状态；这项监测随 Launcher 存活而持续，初始正常后仍可发现后续失败。遇到持续失败时打开总览一次并结束该监测线程；Launcher 退出时线程随进程结束。
 
 ## 安全
 

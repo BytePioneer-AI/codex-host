@@ -92,6 +92,30 @@ describe("Hermes native installation", () => {
     expect(mocks.run.mock.calls.some((call) => call[1].includes("--yes"))).toBe(false);
   });
 
+  it.each(["git is unavailable", "dubious ownership", "not a git repository"])(
+    "retains version information and keeps updates manual when status fails: %s",
+    async (error) => {
+      mocks.run.mockImplementation(async (_command, args) => {
+        if (args[0] === "--version")
+          return "Hermes Agent v0.10.0\nInstall directory: /chosen/source";
+        if (args[0] === "-C") throw new Error(error);
+        if (args[1] === "--help") return help;
+        if (args[1] === "--plan") return "Install: git (v0.10.0 @ abc12345)";
+        return "Selected release available: v0.11.0";
+      });
+      const installation = createHermesInstallation({});
+      await expect(installation("check")).resolves.toMatchObject({
+        currentVersion: "0.10.0 @ abc12345",
+        latestVersion: "v0.11.0",
+        updateAvailable: true,
+        canUpdate: false,
+        message: expect.stringContaining("native updater manually"),
+      });
+      await expect(installation("update")).rejects.toThrow("clean source checkout");
+      expect(mocks.run.mock.calls.some((call) => call[1].includes("--yes"))).toBe(false);
+    },
+  );
+
   it("does not mistake Python's version for the Harness version", async () => {
     mocks.run.mockResolvedValue("Python: 3.13.0");
     await expect(createHermesInstallation({})("check")).rejects.toThrow("unknown version response");

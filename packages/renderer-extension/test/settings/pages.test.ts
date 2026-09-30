@@ -833,6 +833,17 @@ describe("Harness CLI version panel", () => {
     expect(button("update").disabled).toBe(true);
     abort.abort();
   });
+  it("does not label an unknown latest version current even when updates are supported", async () => {
+    const { panel, button, abort } = mount(async () => ({
+      ...state,
+      latestVersion: "Unknown",
+      updateAvailable: false,
+    }));
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("Latest version: Unknown"));
+    expect(button("update").textContent).toBe("Update");
+    expect(button("update").disabled).toBe(true);
+    abort.abort();
+  });
   it("does not apply late responses after the page closes", async () => {
     const result = deferred<typeof state>();
     const { panel, abort, button } = mount(() => result.promise);

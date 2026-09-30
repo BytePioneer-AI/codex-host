@@ -43,9 +43,14 @@ export function createHermesInstallation(environment: NodeJS.ProcessEnv, command
       // Do not compare source revisions as SemVer or restart a user's Gateway fleet.
       const root = versionOutput.match(/^Install directory:\s*(.+)$/m)?.[1]?.trim();
       const clean = root
-        ? !(
-            await runInstallationCommand("git", ["-C", root, "status", "--porcelain"], environment)
-          ).trim()
+        ? await runInstallationCommand(
+            "git",
+            ["-C", root, "status", "--porcelain"],
+            environment,
+          ).then(
+            (output) => !output.trim(),
+            () => false,
+          )
         : false;
       const canUpdate =
         !!sha && clean && help.includes("--yes") && help.includes("--no-gateway-restart");

@@ -59,7 +59,7 @@ export function createHarnessVersionPanel(
     check.disabled = busy || unsupported || signal.aborted;
     update.disabled = busy || signal.aborted || !state?.canUpdate || !state.updateAvailable;
     update.textContent =
-      state?.canUpdate && !state.updateAvailable
+      state?.canUpdate && state.latestVersion !== "Unknown" && !state.updateAvailable
         ? messages.harnessVersionUpToDate
         : messages.harnessVersionUpdate;
     note.textContent = state?.message

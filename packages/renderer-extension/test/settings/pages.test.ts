@@ -820,6 +820,19 @@ describe("Harness CLI version panel", () => {
     expect(manual.button("update").disabled).toBe(true);
     manual.abort.abort();
   });
+  it("shows native manual-update guidance without claiming an unknown latest version is current", async () => {
+    const { panel, button, abort } = mount(async () => ({
+      ...state,
+      latestVersion: "Unknown",
+      updateAvailable: false,
+      canUpdate: false,
+      message: "This installation belongs to its desktop app.",
+    }));
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("belongs to its desktop app"));
+    expect(button("update").textContent).toBe("Update");
+    expect(button("update").disabled).toBe(true);
+    abort.abort();
+  });
   it("does not apply late responses after the page closes", async () => {
     const result = deferred<typeof state>();
     const { panel, abort, button } = mount(() => result.promise);

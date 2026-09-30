@@ -23,6 +23,19 @@ describe("Harness installation versions", () => {
     expect(() => installationVersion("1.2.3; echo secret")).toThrow();
   });
 
+  it.each([
+    ["0.2.0-rc.2", "0.2.0-rc.3", true],
+    ["0.2.0-rc.10", "0.2.0-rc.2", false],
+    ["0.2.0", "0.2.0-rc.3", false],
+    ["0.2.0-rc.3", "0.2.0", true],
+    ["0.2.0-1", "0.2.0-alpha", true],
+    ["0.2.0-rc", "0.2.0-rc.1", true],
+    ["1.2.3+local", "1.2.3+other", false],
+    ["1.2.3-rc.2+local", "1.2.3-rc.3+other", true],
+  ])("orders %s against %s without a downgrade", (current, latest, expected) => {
+    expect(newerInstallationVersion(current, latest)).toBe(expected);
+  });
+
   it("coalesces concurrent checks and updates, and verifies the installed version", async () => {
     const gate = Promise.withResolvers<undefined>();
     let version = "1.0.0";

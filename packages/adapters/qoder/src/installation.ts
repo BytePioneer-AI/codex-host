@@ -1,15 +1,21 @@
 import {
   createInstallationManager,
   installationVersion,
+  newerInstallationVersion,
   runInstallationCommand,
   versionFromOutput,
 } from "@codexhost/harness-discovery";
 import { resolveQoderExecutable } from "./qoder-command.js";
+import type { QoderVariant } from "./qoder-runtime.js";
 
-export function createQoderInstallation(environment: NodeJS.ProcessEnv, command?: string) {
+export function createQoderInstallation(
+  environment: NodeJS.ProcessEnv,
+  command?: string,
+  variant: QoderVariant = "global",
+) {
   const run = (args: string[], timeout?: number) =>
     runInstallationCommand(
-      resolveQoderExecutable({ environment, ...(command ? { command } : {}) }),
+      resolveQoderExecutable({ environment, variant, ...(command ? { command } : {}) }),
       args,
       environment,
       timeout,
@@ -17,13 +23,28 @@ export function createQoderInstallation(environment: NodeJS.ProcessEnv, command?
   return createInstallationManager({
     async check() {
       const currentVersion = versionFromOutput(await run(["--version"]));
+      if (
+        variant === "cn" &&
+        !(await run(["update", "--help"]).catch(() => "")).includes("--check")
+      )
+        return {
+          currentVersion,
+          latestVersion: "Unknown",
+          updateAvailable: false,
+          canUpdate: false,
+          message:
+            "This Qoder China release does not expose a non-installing update check. Use its original installer.",
+        };
       const output = await run(["update", "--check"]);
       const available = output.match(/Update available:\s*\S+\s*(?:->|\u2192)\s*(\S+)/i);
       if (available?.[1])
         return {
           currentVersion,
           latestVersion: installationVersion(available[1]),
-          updateAvailable: true,
+          updateAvailable: newerInstallationVersion(
+            currentVersion,
+            installationVersion(available[1]),
+          ),
           canUpdate: true,
         };
       if (

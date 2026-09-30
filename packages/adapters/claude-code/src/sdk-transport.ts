@@ -112,6 +112,11 @@ export interface ClaudeSdkTransportOptions {
   model?: string;
   thinkingOptionId: HarnessThinkingOptionId;
   permissionMode: ClaudePermissionMode;
+  /**
+   * Native prerequisite for a later live `bypassPermissions` selection. Callers decide it with
+   * `claudeBypassPermissionsAvailable()` because plain root makes Claude Code exit at startup.
+   */
+  allowDangerouslySkipPermissions?: boolean;
   closeTimeoutMs: number;
   abortTimeoutMs?: number;
   onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
@@ -146,12 +151,6 @@ function rejectAfter(
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     },
   };
-}
-
-export function allowsDangerouslySkipPermissions(
-  getuid: (() => number) | undefined = process.getuid,
-): boolean {
-  return getuid === undefined || getuid() !== 0;
 }
 
 function processExited(child: ChildProcessWithoutNullStreams): boolean {
@@ -392,6 +391,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #onPlanLimit: (planLimit: ClaudePlanLimitEvent) => void;
   readonly #openMode: "create" | "resume";
   #permissionMode: ClaudePermissionMode;
+  readonly #allowDangerouslySkipPermissions: boolean;
   readonly #queryFactory: typeof query;
   #thinkingOptionId: HarnessThinkingOptionId;
   #active: ActiveTurn | null = null;
@@ -429,6 +429,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#onPlanLimit = options.onPlanLimit;
     this.#openMode = options.openMode;
     this.#permissionMode = options.permissionMode;
+    this.#allowDangerouslySkipPermissions = options.allowDangerouslySkipPermissions ?? false;
     this.#queryFactory = options.queryFactory ?? query;
     this.#thinkingOptionId = parseClaudeThinkingOptionId(options.thinkingOptionId);
   }
@@ -477,7 +478,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         pathToClaudeCodeExecutable: executable,
         settingSources: ["user"],
         permissionMode: this.#permissionMode,
-        ...(allowsDangerouslySkipPermissions() ? { allowDangerouslySkipPermissions: true } : {}),
+        ...(this.#allowDangerouslySkipPermissions ? { allowDangerouslySkipPermissions: true } : {}),
         canUseTool: (toolName, input, options) => this.#canUseTool(toolName, input, options),
         persistSession: true,
         includePartialMessages: true,

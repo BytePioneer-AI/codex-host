@@ -5,6 +5,7 @@ import {
   type DelegationStartInput,
   type DelegationWatchApi,
   type HarnessInspectInput,
+  type ThreadAnswerInput,
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadWaitInput,
@@ -73,6 +74,10 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
 
   async wait(input: ThreadWaitInput) {
     return (await this.#registrationForThread(input.threadId)).wait(input);
+  }
+
+  async answer(input: ThreadAnswerInput) {
+    return (await this.#registrationForThread(input.threadId)).answer(input);
   }
 
   async watch(input: ThreadWatchInput) {

@@ -819,6 +819,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
         params: { threadId, input: [{ type: "text", text: "keep running" }] },
       });
       await readJsonLine(fixture.official.stdin);
+      writeRequest(fixture.official.stdout, { id: 1, result: { turn: { id: turnId } } });
+      await fixture.collector.waitFor((message) => requestId(message, 1));
       fixture.official.stdout.write(
         `${JSON.stringify({ method: "turn/started", params: { threadId, turn: { id: turnId } } })}\n`,
       );

@@ -22,6 +22,7 @@ import {
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
   type DelegationConfigurationResult,
+  type DelegationPendingQuestion,
   type DelegationStartInput,
   type DelegationStartResult,
   type DelegationThreadListResult,
@@ -29,6 +30,8 @@ import {
   type HarnessInspectInput,
   type HarnessInspectResult,
   type HarnessListResult,
+  type ThreadAnswerInput,
+  type ThreadAnswerResult,
   type ThreadCancelInput,
   type ThreadCancelResult,
   type ThreadListInput,
@@ -127,6 +130,8 @@ export class HarnessDelegationCoordinator {
   readonly #officialThreadCwd: (threadId: string) => Promise<string | undefined>;
   readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
+  readonly #pendingQuestions: (threadId: string) => DelegationPendingQuestion[];
+  readonly #answerQuestion: (input: ThreadAnswerInput) => Promise<ThreadAnswerResult>;
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -156,6 +161,8 @@ export class HarnessDelegationCoordinator {
     officialThreadCwd(threadId: string): Promise<string | undefined>;
     activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
+    pendingQuestions(threadId: string): DelegationPendingQuestion[];
+    answerQuestion(input: ThreadAnswerInput): Promise<ThreadAnswerResult>;
   }) {
     this.#adapters = input.adapters;
     this.#environment = input.environment;
@@ -173,6 +180,8 @@ export class HarnessDelegationCoordinator {
     this.#officialThreadCwd = input.officialThreadCwd;
     this.#activeOfficialParents = input.activeOfficialParents;
     this.#externalThreadBusy = input.externalThreadBusy;
+    this.#pendingQuestions = input.pendingQuestions;
+    this.#answerQuestion = input.answerQuestion;
   }
 
   async listHarnesses(): Promise<HarnessListResult> {
@@ -474,7 +483,9 @@ export class HarnessDelegationCoordinator {
   async #read(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
     validateReadOptions(input);
     const location = await this.#externalRuntime.locate(input.threadId);
-    if (location.kind === "official") return this.#readOfficial(input);
+    if (location.kind === "official") {
+      return this.#withPendingQuestions(await this.#readOfficial(input), input.threadId);
+    }
     if (location.kind === "error")
       throw new DelegationControlError("THREAD_NOT_FOUND", location.error.message);
     const resolution = await this.#externalRuntime.resolve(input.threadId);
@@ -519,7 +530,25 @@ export class HarnessDelegationCoordinator {
     if (delegation && delegation.status !== status) {
       await this.#repository.setDelegationStatus(delegation.delegationId, status);
     }
-    return snapshot;
+    return this.#withPendingQuestions(snapshot, thread.id);
+  }
+
+  /**
+   * Questions come from the owning Host session's single pending-Question state,
+   * so `thread read` reports them whether the Thread is external or native.
+   */
+  #withPendingQuestions(
+    snapshot: DelegationThreadSnapshot,
+    threadId: string,
+  ): DelegationThreadSnapshot {
+    return { ...snapshot, pendingQuestions: this.#pendingQuestions(threadId) };
+  }
+
+  async answer(input: ThreadAnswerInput): Promise<ThreadAnswerResult> {
+    if (typeof input.threadId !== "string" || !input.threadId.trim()) {
+      throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
+    }
+    return this.#answerQuestion(input);
   }
 
   async wait(input: ThreadWaitInput): Promise<DelegationThreadSnapshot & { timedOut: boolean }> {
@@ -529,7 +558,11 @@ export class HarnessDelegationCoordinator {
     const deadline = Date.now() + input.timeoutMs;
     while (true) {
       const snapshot = await this.read(input);
-      if (terminal(snapshot.status)) return { ...snapshot, timedOut: false };
+      // A pending Question is a ready condition: waiting for the Turn to end
+      // would deadlock the caller that is expected to answer it.
+      if (terminal(snapshot.status) || snapshot.pendingQuestions?.length) {
+        return { ...snapshot, timedOut: false };
+      }
       const remaining = deadline - Date.now();
       if (remaining <= 0) return { ...snapshot, timedOut: true };
       await delay(Math.min(100, remaining));

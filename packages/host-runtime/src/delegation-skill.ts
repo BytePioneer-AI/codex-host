@@ -3,10 +3,11 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 8;
+const SKILL_VERSION = 10;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+  "a6e753ed092239429ebc0dcba8090fb9425fa65292b7810ba990c13a531816a6",
   "9d2f491850fb0b4084a31ba9b5e4a550b5e833747af322090d8ed0ff80b88c30",
   "2bb0aebb9b06febbc6c0c0bcdb0b32506c7cdbf8dc3b734cc6b2a86621270e4e",
   "aff258622dc8ff321f32b15620d081e578cb9c9ed1134d6a57f35ca8e7762c0a",
@@ -14,6 +15,7 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
   "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
   "b9c1cce41d2556e73a6514aa55618d7d3f2f9ef935f5ae50b0da5a04941514b4",
+  "ca06be59f0d47c9a54d05ed2d9588c9c737306cc155cb4dff3fe2a2a61891dde",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -23,8 +25,8 @@ description: >
   Delegate tasks to other coding agents, or read and follow up on existing
   external agent sessions. Use when the user asks another agent (including
   @agent) to independently perform a task, or asks to view a specified external
-  session's content, progress, or results, send follow-up messages, wait, or
-  cancel a task. Not for recapping the current conversation, discussing or
+  session's content, progress, or results, send follow-up messages, answer its
+  questions, wait, or cancel a task. Not for recapping the current conversation, discussing or
   configuring agents, or role-playing.
 ---
 
@@ -55,14 +57,32 @@ user’s request and the task:
 - send a follow-up message to the same Thread;
 - cancel its current Turn;
 - read its current state immediately;
+- answer a Question the Thread is waiting for;
 - wait for a bounded period;
 - check it again later;
 - watch it, so the Host notifies this Thread once when the watched Thread stops
-  and no waiting or polling is needed meanwhile;
+  or waits for an answer, and no waiting or polling is needed meanwhile;
 - leave it running in the background.
 
-A watch notification reports execution state only. Read the Thread before
-judging or reporting its work.
+A delegated Thread may ask a Question while its Turn is still running, and that
+Turn cannot finish until it is answered. \`thread read\` reports those requests in
+\`pendingQuestions\` with an opaque interaction ID, the Turn, and the original
+Desktop request parameters in \`request\`; an empty list means none. Reading and
+answering need no watch.
+
+Answer with \`thread answer <thread> --interaction <id> --answers-file <file>\`.
+The file contains the existing reply result, for example
+\`{"answers":{"decision":{"answers":["Continue"]}}}\`. Use the prompts and option
+labels in the reported request. The existing handler owns reply interpretation,
+cancellation, and invalid-input behavior. Read again before retrying a failed
+reply. After answering, watch again or read for the outcome; submission does not
+prove the work succeeded. A Question the user must decide, and anything outside the task authorization,
+belongs to the user rather than to you.
+
+A watch notification can report that the watched Thread needs input
+(\`needsInput\`), naming the request and Turn, and it may also report
+\`alreadyNeedsInput\` or \`alreadyTerminal\` at registration. It reports execution
+state only. Read the Thread before judging or reporting its work.
 
 Report the result returned by read or a completed wait, together with the target
 agent, status, and a labeled task link. Keep internal tracking IDs in tool calls.

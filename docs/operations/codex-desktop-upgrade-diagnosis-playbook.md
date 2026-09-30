@@ -315,10 +315,16 @@ ChatGPT 登录的 Codex 额度耗尽时，外部 Agent 的发送按钮仍为 dis
 
 ```text
 1. 从编辑器向上找到唯一带 onLocalSubmitStart 和布尔 submitDisabled 的组件
-2. 在其 hook 链中找「useMemo([store, atom]) → useSyncExternalStore inst → 订阅 effect」三连
-3. 对每个布尔候选，用追踪代理重放 atom.read：
-   - 读取 hardBlocked 但不读取 active：reserve 门，必须恰好 1 个
-   - 读取 authMethod 且读取 rate_limit.allowed：账号门，额度耗尽时必须恰好 1 个
+2. 在其 hook 链中找「subscriber memo → useSyncExternalStore inst → 订阅 effect」三连：
+   - memo 依赖为 [store, atom]，或 26.928 的 [readonly signal adapter, undefined]
+   - adapter 提供 atom/store/get/subscribe；atom 不得可写；effect 依赖 subscriber.subscribe
+   - inst.getSnapshot 可以是 subscriber.getSnapshot，也可以是 lazy createRender wrapper；
+     wrapper 的布尔快照必须与 subscriber 和原生 atom 相同，且不能产生追踪型 render
+3. 对每个布尔候选，用追踪代理重放 atom.read；26.928 的 signal 会间接读取 readonly
+   布尔 selector，需有界递归重放，拒绝循环、结果不一致和混合门：
+   - 读取 hardBlocked 但不读取 active、账号门字段：reserve 门，必须恰好 1 个
+   - 读取 authMethod 且读取 rate_limit.allowed，不读取 reserve 字段：账号门，
+     额度耗尽时必须恰好 1 个
 ```
 
 任一步骤数量不对，按 Desktop 新结构修改识别条件；不要改为按 hook 序号、压缩名或写入账号数据放行。若 Desktop 改为按 Thread、Model 或 host 豁免外部 Harness，或不再在 Renderer 中拦截，删除该模块。

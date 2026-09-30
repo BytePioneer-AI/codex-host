@@ -7,13 +7,7 @@ import {
   resolveModernForkBoundary,
 } from "../../src/modern/history.js";
 import type { ModernJournalEvent } from "../../src/modern/journal.js";
-import {
-  DEEPSEEK_V015_PROFILE,
-  DEEPSEEK_V017_PROFILE,
-  deepSeekModernProfile,
-  hasDeepSeekModernStream,
-  isDeepSeekV015,
-} from "../../src/profiles/profile.js";
+import { DEEPSEEK_V4_PROFILE, deepSeekModernProfile } from "../../src/profiles/profile.js";
 
 const sessionId = "v4-session";
 const event = (seq: number, type: string, data: object, surface = false): ModernJournalEvent => ({
@@ -124,54 +118,46 @@ function v4History(): ModernJournalEvent[] {
   ];
 }
 
-describe("DSH 0.1.7 V4 journal", () => {
-  it("selects V4 from the minimum release onward and keeps older V3 isolated", () => {
-    expect(deepSeekModernProfile("0.1.7-rc.1")).toBe(DEEPSEEK_V017_PROFILE);
-    expect(deepSeekModernProfile("0.1.5-rc.3").sessionFormatVersion).toBe(3);
-    expect(deepSeekModernProfile("0.1.7-rc.0").sessionFormatVersion).toBe(3);
-    expect(deepSeekModernProfile("0.1.7-rc.2").sessionFormatVersion).toBe(4);
-    for (const version of ["0.1.7", "0.1.8-alpha.1", "0.2.0", "1.0.0"]) {
-      expect(deepSeekModernProfile(version).sessionFormatVersion).toBe(4);
+describe("DSH V4 journal", () => {
+  it("binds the single V4 profile to the probed version and parses only V4 headers", () => {
+    expect(deepSeekModernProfile("0.1.7-rc.1")).toBe(DEEPSEEK_V4_PROFILE);
+    for (const version of ["0.1.7-rc.2", "0.2.0-rc.1", "0.2.0-rc.2", "1.0.0"]) {
+      const profile = deepSeekModernProfile(version);
+      expect(profile).toEqual({ ...DEEPSEEK_V4_PROFILE, version });
+      expect(Object.isFrozen(profile)).toBe(true);
     }
-    expect(isDeepSeekV015(DEEPSEEK_V017_PROFILE)).toBe(false);
-    expect(hasDeepSeekModernStream(DEEPSEEK_V017_PROFILE)).toBe(true);
     expect(
-      DEEPSEEK_V017_PROFILE.parseHeader(
+      DEEPSEEK_V4_PROFILE.parseHeader(
         { version: 4, id: sessionId, createdAt: 1, isSeeded: false, delegationDepth: 0 },
         { sessionId },
       ).version,
     ).toBe(4);
     expect(
-      DEEPSEEK_V017_PROFILE.parseHeader(
+      DEEPSEEK_V4_PROFILE.parseHeader(
         { version: 4, id: sessionId, createdAt: 1, isSeeded: false },
         { sessionId },
       ).delegationDepth,
     ).toBe(0);
     expect(() =>
-      DEEPSEEK_V017_PROFILE.parseHeader(
+      DEEPSEEK_V4_PROFILE.parseHeader(
         { version: 4, id: sessionId, createdAt: 1, isSeeded: false, delegationDepth: null },
         { sessionId },
       ),
     ).toThrow();
-    expect(() =>
-      DEEPSEEK_V017_PROFILE.parseHeader(
-        { version: 3, id: sessionId, createdAt: 1, isSeeded: false },
-        { sessionId },
-      ),
-    ).toThrow();
-    expect(() =>
-      DEEPSEEK_V015_PROFILE.parseHeader(
-        { version: 4, id: sessionId, createdAt: 1, isSeeded: false },
-        { sessionId },
-      ),
-    ).toThrow();
+    for (const header of [
+      { version: 3, id: sessionId, createdAt: 1, isSeeded: false },
+      { version: 0, id: sessionId, createdAt: 1 },
+      { version: 4, id: sessionId, createdAt: 1, isSeeded: false, seedLength: 0 },
+    ]) {
+      expect(() => DEEPSEEK_V4_PROFILE.parseHeader(header, { sessionId })).toThrow();
+    }
   });
 
   it("projects native V4 developer, tool result, image offload and workspace events", () => {
     const projected = projectModernHistory({
       sessionId,
       events: v4History(),
-      profile: DEEPSEEK_V017_PROFILE,
+      profile: DEEPSEEK_V4_PROFILE,
     });
     expect(projected.snapshot.turns).toHaveLength(1);
     expect(projected.snapshot.turns[0]?.checkpoint?.checkpointId).toBe("v4-turn-end:11");
@@ -224,10 +210,10 @@ describe("DSH 0.1.7 V4 journal", () => {
         event(10, "step/end", { turn: 1, step: 1 }),
         event(11, "turn/end", { turn: 1, reason: { kind: "completed" } }),
       ];
-      const validator = new ModernEventValidator(100, DEEPSEEK_V017_PROFILE);
+      const validator = new ModernEventValidator(100, DEEPSEEK_V4_PROFILE);
       expect(() => events.forEach((item) => validator.accept(item))).not.toThrow();
       expect(() =>
-        projectModernHistory({ sessionId, events, profile: DEEPSEEK_V017_PROFILE }),
+        projectModernHistory({ sessionId, events, profile: DEEPSEEK_V4_PROFILE }),
       ).not.toThrow();
     },
   );
@@ -260,7 +246,7 @@ describe("DSH 0.1.7 V4 journal", () => {
       projectModernHistory({
         sessionId,
         events: [...v4History().slice(0, 9), replacement],
-        profile: DEEPSEEK_V017_PROFILE,
+        profile: DEEPSEEK_V4_PROFILE,
       }),
     ).toThrow("tool/result replacement changed more than result content");
   });
@@ -330,15 +316,15 @@ describe("DSH 0.1.7 V4 journal", () => {
       return item;
     }) as unknown as ModernJournalEvent[];
     expect(
-      projectModernHistory({ sessionId, events: history, profile: DEEPSEEK_V017_PROFILE }).snapshot
+      projectModernHistory({ sessionId, events: history, profile: DEEPSEEK_V4_PROFILE }).snapshot
         .turns,
     ).toHaveLength(1);
   });
 
-  it("rejects invalid V4 references and V4 records in the V3 profile", () => {
+  it("rejects invalid V4 references", () => {
     const history = v4History();
     const project = (events: ModernJournalEvent[]) =>
-      projectModernHistory({ sessionId, events, profile: DEEPSEEK_V017_PROFILE });
+      projectModernHistory({ sessionId, events, profile: DEEPSEEK_V4_PROFILE });
     expect(() =>
       project(
         history.map((item, index) =>
@@ -361,9 +347,6 @@ describe("DSH 0.1.7 V4 journal", () => {
           index === 9 ? { ...item, data: { targets: [{ seq: 4, imageIndexes: [0, 0] }] } } : item,
         ),
       ),
-    ).toThrow();
-    expect(() =>
-      projectModernHistory({ sessionId, events: history, profile: DEEPSEEK_V015_PROFILE }),
     ).toThrow();
     expect(() =>
       project(
@@ -463,11 +446,11 @@ describe("DSH 0.1.7 V4 journal", () => {
       event(5, "turn/end", { turn: 1, reason: { kind: "forked" } }),
     ];
     expect(
-      projectModernHistory({ sessionId, events: forkRepair, profile: DEEPSEEK_V017_PROFILE })
-        .snapshot.turns,
+      projectModernHistory({ sessionId, events: forkRepair, profile: DEEPSEEK_V4_PROFILE }).snapshot
+        .turns,
     ).toHaveLength(1);
     expect(() =>
-      DEEPSEEK_V017_PROFILE.parseHistoryRecord(
+      DEEPSEEK_V4_PROFILE.parseHistoryRecord(
         {
           type: "event",
           event: {
@@ -482,17 +465,18 @@ describe("DSH 0.1.7 V4 journal", () => {
 
   it("uses exact V4 Fork boundaries and rejects cross-format checkpoints", () => {
     const source = v4History();
-    const boundary = resolveModernForkBoundary(source, "v4-turn-end:11", DEEPSEEK_V017_PROFILE);
+    const boundary = resolveModernForkBoundary(source, "v4-turn-end:11", DEEPSEEK_V4_PROFILE);
     if (boundary === null) throw new Error("V4 boundary was not resolved");
     expect(boundary.events).toHaveLength(12);
-    expect(resolveModernForkBoundary(source, "v3-turn-end:11", DEEPSEEK_V017_PROFILE)).toBeNull();
+    expect(resolveModernForkBoundary(source, "v3-turn-end:11", DEEPSEEK_V4_PROFILE)).toBeNull();
+    expect(resolveModernForkBoundary(source, "turn-end:11", DEEPSEEK_V4_PROFILE)).toBeNull();
     const child = [...boundary.events, event(12, "session/end-seed", { inherited: true })];
-    expect(matchesModernForkHistory(boundary.events, child, DEEPSEEK_V017_PROFILE)).toBe(true);
+    expect(matchesModernForkHistory(boundary.events, child, DEEPSEEK_V4_PROFILE)).toBe(true);
     expect(
       matchesModernForkHistory(
         boundary.events,
         [...child, event(13, "turn/end", { turn: 1, reason: { kind: "forked" } })],
-        DEEPSEEK_V017_PROFILE,
+        DEEPSEEK_V4_PROFILE,
       ),
     ).toBe(false);
   });
@@ -569,7 +553,7 @@ describe("DSH V4 recovery results for unfinished tool calls", () => {
     event(7, "turn/end", { turn: 1, reason: { kind: "aborted", reason: { kind: "user" } } }),
   ];
   const project = (events: ModernJournalEvent[]) =>
-    projectModernHistory({ sessionId, events, profile: DEEPSEEK_V017_PROFILE }).snapshot;
+    projectModernHistory({ sessionId, events, profile: DEEPSEEK_V4_PROFILE }).snapshot;
 
   it.each([
     ["an interrupted id carrying its own seq", "interrupted-tool-result-call-2-5"],

@@ -15,21 +15,15 @@ import {
   type ModernJournalEvent,
   type ModernJournalRemote,
 } from "../../src/modern/journal.js";
+import { DEEPSEEK_V4_PROFILE } from "../../src/profiles/profile.js";
 import {
-  DEEPSEEK_V012_PROFILE,
-  DEEPSEEK_V015_PROFILE,
-  DEEPSEEK_V017_PROFILE,
-  deepSeekModernProfile,
-  isDeepSeekV015,
-} from "../../src/profiles/profile.js";
-import {
-  expandV015AssistantStream,
-  parseV015AssistantBaseline,
-  parseV015AssistantFrame,
-} from "../../src/profiles/v015.js";
+  expandAssistantStream,
+  parseAssistantBaseline,
+  parseAssistantFrame,
+} from "../../src/profiles/v4.js";
 import type { ModernRemoteResult } from "../../src/modern/wire.js";
 
-const SESSION_ID = "session-v015";
+const SESSION_ID = "session-v4";
 const CWD = String.raw`E:\Coding\Project\fixture`;
 
 class FollowFeed implements AsyncIterable<unknown>, AsyncIterator<unknown> {
@@ -111,11 +105,12 @@ function snapshot(
   return {
     type: "snapshot",
     header: {
-      version: 3,
+      version: 4,
       id: SESSION_ID,
       createdAt: 1,
       cwd: CWD,
       isSeeded: false,
+      delegationDepth: 0,
     },
     cursor,
     records: events.map(record),
@@ -126,7 +121,7 @@ function snapshot(
   };
 }
 
-function v015History(): ModernJournalEvent[] {
+function v4History(): ModernJournalEvent[] {
   return [
     event(0, "turn/start", { turn: 1 }),
     event(1, "step/start", { turn: 1, step: 1 }),
@@ -178,14 +173,14 @@ function v015History(): ModernJournalEvent[] {
     event(5, "session-log-deepseek/delivery-accepted", {
       sessionId: SESSION_ID,
       throughSeq: 4,
-      sessionFormatVersion: 3,
+      sessionFormatVersion: 4,
     }),
     event(6, "step/end", { turn: 1, step: 1 }),
     event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }),
   ];
 }
 
-describe("DeepSeek v0.1.5 RC profile", () => {
+describe("DSH V4 journal wire", () => {
   it("closes follow when a reconnect baseline exceeds the live buffer bound", async () => {
     const feed = new FollowFeed();
     const close = vi.spyOn(feed, "return");
@@ -208,7 +203,7 @@ describe("DeepSeek v0.1.5 RC profile", () => {
       openModernJournal(
         new FakeRemote(feed),
         { sessionId: SESSION_ID, cwd: CWD },
-        { profile: DEEPSEEK_V015_PROFILE, maxBufferedLiveEvents: 1 },
+        { maxBufferedLiveEvents: 1 },
       ),
     ).rejects.toMatchObject({ code: "limitExceeded" });
     expect(close).toHaveBeenCalledOnce();
@@ -216,11 +211,11 @@ describe("DeepSeek v0.1.5 RC profile", () => {
 
   it("preserves native raw empty tool fragments while rejecting invalid compact runs", () => {
     const chunk = { type: "tool-call-delta", index: 0, id: "", name: "", argumentsDelta: "{" };
-    expect(expandV015AssistantStream([{ type: "chunk", time: 1, chunk }])).toEqual([
+    expect(expandAssistantStream([{ type: "chunk", time: 1, chunk }])).toEqual([
       { time: 1, chunk },
     ]);
     expect(
-      parseV015AssistantFrame({
+      parseAssistantFrame({
         type: "chunk",
         attemptId: "a",
         revision: 2,
@@ -230,14 +225,13 @@ describe("DeepSeek v0.1.5 RC profile", () => {
       }),
     ).toMatchObject({ chunk });
     expect(() =>
-      expandV015AssistantStream([
+      expandAssistantStream([
         { type: "tool-call-chunks", time0: 1, index: 0, id: "", name: "", dt: [], args: ["{"] },
       ]),
     ).toThrow();
-    expect(() => DEEPSEEK_V012_PROFILE.validateChunk(chunk)).toThrow();
   });
 
-  it("reads native message feedback as log-only metadata and rejects it in v012", () => {
+  it("reads native message feedback as log-only metadata", () => {
     const feedback = [
       event(0, "feedback/message-put", {
         sessionId: SESSION_ID,
@@ -253,13 +247,8 @@ describe("DeepSeek v0.1.5 RC profile", () => {
       event(1, "feedback/message-delete", { sessionId: SESSION_ID, messageId: "m" }),
     ];
     expect(
-      projectModernHistory({
-        sessionId: SESSION_ID,
-        profile: DEEPSEEK_V015_PROFILE,
-        events: feedback,
-      }).snapshot.turns,
+      projectModernHistory({ sessionId: SESSION_ID, events: feedback }).snapshot.turns,
     ).toEqual([]);
-    expect(() => projectModernHistory({ sessionId: SESSION_ID, events: feedback })).toThrow();
     for (const invalid of [
       { ...(feedback[0] as ModernJournalEvent), surfaceOp: "append" as const },
       event(0, "feedback/message-put", {
@@ -268,48 +257,34 @@ describe("DeepSeek v0.1.5 RC profile", () => {
       }),
       event(0, "feedback/message-delete", { sessionId: SESSION_ID }),
     ]) {
+      expect(() => projectModernHistory({ sessionId: SESSION_ID, events: [invalid] })).toThrow();
+    }
+  });
+
+  it("accepts native fractional Hook durations", () => {
+    const hook = {
+      turn: 1,
+      point: "PostToolUse",
+      handlerId: "hook",
+      decision: "pass",
+      durationMs: 9.40504199999998,
+    };
+    expect(() =>
+      projectModernHistory({ sessionId: SESSION_ID, events: [event(0, "hook/result", hook)] }),
+    ).not.toThrow();
+    for (const durationMs of [-1, Infinity, NaN, "9.4"]) {
       expect(() =>
         projectModernHistory({
           sessionId: SESSION_ID,
-          profile: DEEPSEEK_V015_PROFILE,
-          events: [invalid],
+          events: [event(0, "hook/result", { ...hook, durationMs })],
         }),
       ).toThrow();
     }
   });
 
-  it.each([DEEPSEEK_V012_PROFILE, DEEPSEEK_V015_PROFILE])(
-    "accepts native fractional Hook durations in $version",
-    (profile) => {
-      const hook = {
-        turn: 1,
-        point: "PostToolUse",
-        handlerId: "hook",
-        decision: "pass",
-        durationMs: 9.40504199999998,
-      };
-      expect(() =>
-        projectModernHistory({
-          sessionId: SESSION_ID,
-          profile,
-          events: [event(0, "hook/result", hook)],
-        }),
-      ).not.toThrow();
-      for (const durationMs of [-1, Infinity, NaN, "9.4"]) {
-        expect(() =>
-          projectModernHistory({
-            sessionId: SESSION_ID,
-            profile,
-            events: [event(0, "hook/result", { ...hook, durationMs })],
-          }),
-        ).toThrow();
-      }
-    },
-  );
-
   it("expands compact Assistant streams without changing delta boundaries", () => {
     expect(
-      expandV015AssistantStream([
+      expandAssistantStream([
         { type: "text-chunks", time0: 10, index: 0, dt: [2], texts: ["a", "b"] },
         {
           type: "tool-call-chunks",
@@ -354,12 +329,12 @@ describe("DeepSeek v0.1.5 RC profile", () => {
     [[{ type: "chunk", time: 1, chunk: { type: "usage", usage: { value: Number.NaN } } }]],
     [[{ type: "chunk", time: 1, chunk: { type: "usage", usage: { value: undefined } } }]],
   ])("rejects malformed compact stream %j", (stream) => {
-    expect(() => expandV015AssistantStream(stream)).toThrow(/v0\.1\.5/u);
+    expect(() => expandAssistantStream(stream)).toThrow(/DSH V4/u);
   });
 
   it("requires a positive baseline revision for an active attempt", () => {
     expect(
-      parseV015AssistantBaseline({
+      parseAssistantBaseline({
         revision: 1,
         activeAttempt: {
           attemptId: "attempt-1",
@@ -372,7 +347,7 @@ describe("DeepSeek v0.1.5 RC profile", () => {
       }),
     ).toMatchObject({ revision: 1, activeAttempt: { nextIndex: 0, stream: [] } });
     expect(() =>
-      parseV015AssistantBaseline({
+      parseAssistantBaseline({
         revision: 0,
         activeAttempt: {
           attemptId: "attempt-1",
@@ -388,7 +363,7 @@ describe("DeepSeek v0.1.5 RC profile", () => {
 
   it("validates dense live frame fields", () => {
     expect(
-      parseV015AssistantFrame({
+      parseAssistantFrame({
         type: "chunk",
         attemptId: "attempt-1",
         revision: 2,
@@ -398,7 +373,7 @@ describe("DeepSeek v0.1.5 RC profile", () => {
       }),
     ).toMatchObject({ type: "chunk", revision: 2, index: 0 });
     expect(() =>
-      parseV015AssistantFrame({
+      parseAssistantFrame({
         type: "chunk",
         attemptId: "attempt-1",
         revision: 2,
@@ -409,15 +384,11 @@ describe("DeepSeek v0.1.5 RC profile", () => {
     ).toThrow(/chunk/u);
   });
 
-  it("opens v3 with assistant streaming and keeps transient frames outside the durable cursor", async () => {
+  it("opens with assistant streaming and keeps transient frames outside the durable cursor", async () => {
     const feed = new FollowFeed();
     feed.push(snapshot([event(0, "fixture/event", { ok: true })]));
     const remote = new FakeRemote(feed);
-    const journal = await openModernJournal(
-      remote,
-      { sessionId: SESSION_ID, cwd: CWD },
-      { profile: DEEPSEEK_V015_PROFILE },
-    );
+    const journal = await openModernJournal(remote, { sessionId: SESSION_ID, cwd: CWD });
     const live = journal.live[Symbol.asyncIterator]();
     feed.push({
       type: "assistant-stream",
@@ -464,11 +435,10 @@ describe("DeepSeek v0.1.5 RC profile", () => {
         },
       }),
     );
-    const journal = await openModernJournal(
-      new FakeRemote(feed),
-      { sessionId: SESSION_ID, cwd: CWD },
-      { profile: DEEPSEEK_V015_PROFILE },
-    );
+    const journal = await openModernJournal(new FakeRemote(feed), {
+      sessionId: SESSION_ID,
+      cwd: CWD,
+    });
     const live = journal.live[Symbol.asyncIterator]();
     await expect(live.next()).resolves.toMatchObject({
       value: { type: "assistant-stream", frame: { type: "start", attemptId: "attempt-1" } },
@@ -496,11 +466,10 @@ describe("DeepSeek v0.1.5 RC profile", () => {
   it("accepts revision one when a replacement Agent starts a new lifecycle", async () => {
     const feed = new FollowFeed();
     feed.push(snapshot([], { assistantStream: { revision: 3 } }));
-    const journal = await openModernJournal(
-      new FakeRemote(feed),
-      { sessionId: SESSION_ID, cwd: CWD },
-      { profile: DEEPSEEK_V015_PROFILE },
-    );
+    const journal = await openModernJournal(new FakeRemote(feed), {
+      sessionId: SESSION_ID,
+      cwd: CWD,
+    });
     const live = journal.live[Symbol.asyncIterator]();
     feed.push({
       type: "assistant-stream",
@@ -523,11 +492,10 @@ describe("DeepSeek v0.1.5 RC profile", () => {
   it("marks an Assistant revision gap for baseline recovery", async () => {
     const feed = new FollowFeed();
     feed.push(snapshot([], { assistantStream: { revision: 3 } }));
-    const journal = await openModernJournal(
-      new FakeRemote(feed),
-      { sessionId: SESSION_ID, cwd: CWD },
-      { profile: DEEPSEEK_V015_PROFILE },
-    );
+    const journal = await openModernJournal(new FakeRemote(feed), {
+      sessionId: SESSION_ID,
+      cwd: CWD,
+    });
     const live = journal.live[Symbol.asyncIterator]();
     feed.push({
       type: "assistant-stream",
@@ -545,56 +513,37 @@ describe("DeepSeek v0.1.5 RC profile", () => {
     await journal.close();
   });
 
-  it("isolates v0 and v3 wire formats", async () => {
-    const v0Feed = new FollowFeed();
-    v0Feed.push(
-      snapshot([], {
-        header: { version: 0, id: SESSION_ID, createdAt: 1, cwd: CWD },
-      }),
-    );
+  it.each([
+    { version: 0, id: SESSION_ID, createdAt: 1, cwd: CWD },
+    { version: 3, id: SESSION_ID, createdAt: 1, cwd: CWD, isSeeded: false },
+  ])("rejects a pre-V4 journal header %j", async (header) => {
+    const feed = new FollowFeed();
+    feed.push(snapshot([], { header }));
     await expect(
-      openModernJournal(
-        new FakeRemote(v0Feed),
-        { sessionId: SESSION_ID, cwd: CWD },
-        { profile: DEEPSEEK_V015_PROFILE },
-      ),
-    ).rejects.toMatchObject({ code: "protocolError" });
-
-    const v3Feed = new FollowFeed();
-    v3Feed.push(snapshot([]));
-    await expect(
-      openModernJournal(
-        new FakeRemote(v3Feed),
-        { sessionId: SESSION_ID, cwd: CWD },
-        { profile: DEEPSEEK_V012_PROFILE },
-      ),
+      openModernJournal(new FakeRemote(feed), { sessionId: SESSION_ID, cwd: CWD }),
     ).rejects.toMatchObject({ code: "protocolError" });
   });
 
-  it("projects retry Usage once per v3 settlement and emits v3 references", () => {
-    const projection = projectModernHistory({
-      sessionId: SESSION_ID,
-      events: v015History(),
-      profile: DEEPSEEK_V015_PROFILE,
-    });
+  it("projects retry Usage once per settlement and emits V4 references", () => {
+    const projection = projectModernHistory({ sessionId: SESSION_ID, events: v4History() });
 
     expect(projection.snapshot.turns).toHaveLength(1);
     expect(projection.snapshot.turns[0]).toMatchObject({
       checkpoint: {
-        checkpointId: "v3-turn-end:7",
-        locator: { dshVersion: "0.1.5-rc.1" },
+        checkpointId: "v4-turn-end:7",
+        locator: { dshVersion: "0.1.7-rc.1" },
       },
       items: [{ item: { type: "agentMessage", text: "done" } }],
     });
     expect(projection.nativeRef).toMatchObject({
       formatVersion: 1,
-      locator: { dshVersion: "0.1.5-rc.1" },
+      locator: { dshVersion: "0.1.7-rc.1" },
     });
     expect(projection.usage).toMatchObject({ inputTokens: 5, outputTokens: 3 });
   });
 
-  it("accepts an empty migrated message stream but rejects v3 chunk events and provenance", () => {
-    const history = v015History();
+  it("accepts an empty migrated message stream but rejects V0 chunk events and provenance", () => {
+    const history = v4History();
     const message = history[4] as ModernJournalEvent;
     const data = message.data as Record<string, unknown>;
     const migrated = projectModernHistory({
@@ -604,7 +553,6 @@ describe("DeepSeek v0.1.5 RC profile", () => {
         { ...message, data: { ...data, stream: [] } as never },
         ...history.slice(5),
       ],
-      profile: DEEPSEEK_V015_PROFILE,
     });
     expect(migrated.snapshot.turns[0]?.items).toMatchObject([
       { item: { type: "agentMessage", text: "done" } },
@@ -620,46 +568,37 @@ describe("DeepSeek v0.1.5 RC profile", () => {
             chunk: { type: "text-delta", index: 0, text: "x" },
           }),
         ],
-        profile: DEEPSEEK_V015_PROFILE,
       }),
     ).toThrow(ModernHistoryError);
     expect(() =>
       projectModernHistory({
         sessionId: SESSION_ID,
         events: [...history.slice(0, 4), { ...message, sourceEventSeqs: [1] }],
-        profile: DEEPSEEK_V015_PROFILE,
       }),
     ).toThrow(ModernHistoryError);
   });
 
-  it("uses the tagged v3 fork marker and rejects a v1 checkpoint namespace", () => {
-    const source = v015History();
-    const boundary = resolveModernForkBoundary(source, "v3-turn-end:7", DEEPSEEK_V015_PROFILE);
+  it("uses the tagged V4 fork marker and rejects V0/V3 checkpoint namespaces", () => {
+    const source = v4History();
+    const boundary = resolveModernForkBoundary(source, "v4-turn-end:7");
     expect(boundary?.atSeq).toBe(7);
-    expect(resolveModernForkBoundary(source, "turn-end:7", DEEPSEEK_V015_PROFILE)).toBeNull();
+    expect(resolveModernForkBoundary(source, "turn-end:7")).toBeNull();
+    expect(resolveModernForkBoundary(source, "v3-turn-end:7")).toBeNull();
     const child = [
       ...source,
       event(8, "session/end-seed", { inherited: true }),
       event(9, "agent-preset/selected", { agentPreset: "coding" }),
     ];
-    expect(matchesModernForkHistory(source, child, DEEPSEEK_V015_PROFILE)).toBe(true);
-    expect(
-      matchesModernForkHistory(
-        source,
-        [...source, event(8, "session/end-seed", {})],
-        DEEPSEEK_V015_PROFILE,
-      ),
-    ).toBe(false);
+    expect(matchesModernForkHistory(source, child)).toBe(true);
+    expect(matchesModernForkHistory(source, [...source, event(8, "session/end-seed", {})])).toBe(
+      false,
+    );
   });
 });
 
-describe("DSH 0.1.5-rc.1 V3 durable protocol", () => {
+describe("DSH V4 durable protocol", () => {
   const project = (events: readonly ModernJournalEvent[]) =>
-    projectModernHistory({
-      sessionId: SESSION_ID,
-      events,
-      profile: DEEPSEEK_V015_PROFILE,
-    });
+    projectModernHistory({ sessionId: SESSION_ID, events });
   const system = (seq: number, text = "system instructions"): ModernJournalEvent =>
     event(
       seq,
@@ -671,7 +610,7 @@ describe("DSH 0.1.5-rc.1 V3 durable protocol", () => {
           id: `system-${seq}`,
           role: "system",
           content: [{ type: "text", text }],
-          source: { kind: "plugin", plugin: "agent-loop" },
+          source: { kind: "system-prompt" },
         },
       },
       true,
@@ -682,9 +621,9 @@ describe("DSH 0.1.5-rc.1 V3 durable protocol", () => {
     system(2),
   ];
 
-  it("replays the RC's recorded empty-response retry, system message and request header", () => {
+  it("replays the tool-call Turn that DSH 0.2.0-rc.2 recorded live", () => {
     const rows = readFileSync(
-      new URL("../fixtures/dsh-015rc1-empty-response-retry.v3.jsonl", import.meta.url),
+      new URL("../fixtures/dsh-020rc2-tool-call-turn.v4.jsonl", import.meta.url),
       "utf8",
     )
       .trim()
@@ -695,22 +634,21 @@ describe("DSH 0.1.5-rc.1 V3 durable protocol", () => {
     const { type: recordType, ...header } = first;
     expect(recordType).toBe("session");
     expect(
-      DEEPSEEK_V015_PROFILE.parseHeader(header, {
+      DEEPSEEK_V4_PROFILE.parseHeader(header, {
         sessionId: header.id as string,
         cwd: header.cwd as string,
-      }).version,
-    ).toBe(3);
+      }),
+    ).toMatchObject({ version: 4, delegationDepth: 0 });
     // DSH snapshots elide event seq/time and substitute the environment's tool catalog.
     const events = rows.map((row, seq) => {
       const data = row.data as Record<string, unknown>;
       if (row.type === "request/header") {
         const header = data.header as Record<string, unknown>;
-        expect(header).not.toHaveProperty("system");
         data.header = {
           ...header,
           tools: [
             {
-              name: "fixture",
+              name: "bash",
               description: "fixture",
               parameters: { type: "object", properties: {} },
             },
@@ -719,47 +657,34 @@ describe("DSH 0.1.5-rc.1 V3 durable protocol", () => {
       }
       return { ...row, seq, time: 1_000 + seq } as unknown as ModernJournalEvent;
     });
-    const projected = projectModernHistory({
-      sessionId: header.id as string,
-      events,
-      profile: DEEPSEEK_V015_PROFILE,
-    });
+    const projected = projectModernHistory({ sessionId: header.id as string, events });
     expect(projected.snapshot.turns).toHaveLength(1);
-    expect(projected.snapshot.turns[0]).toMatchObject({
-      items: [{ item: { type: "agentMessage", text: "Recovered." } }],
+    const [turn] = projected.snapshot.turns;
+    // The runtime-context message is native model input, not something the user typed.
+    expect(turn?.input).toEqual([
+      {
+        type: "text",
+        text: "Use the bash tool to run exactly: echo SNAPSHOT_OK. Then reply with the single word DONE and stop.",
+      },
+    ]);
+    expect(turn?.items.map(({ item, outcome }) => [item.type, outcome?.status])).toEqual([
+      ["reasoning", "succeeded"],
+      ["toolExecution", "succeeded"],
+      ["reasoning", "succeeded"],
+      ["agentMessage", "succeeded"],
+    ]);
+    expect(turn?.items[1]?.item).toMatchObject({
+      toolName: "bash",
+      arguments: { command: "echo SNAPSHOT_OK" },
+      output: { content: [{ type: "text", text: "SNAPSHOT_OK\n" }] },
     });
-    expect(projected.usage).toMatchObject({ inputTokens: 12, outputTokens: 3 });
+    expect(turn?.items[3]?.item).toMatchObject({ text: "DONE" });
+    expect(turn?.checkpoint?.checkpointId).toBe(`v4-turn-end:${events.length - 1}`);
     assert(projected.effectiveModel);
     expect(decodeDeepSeekHarnessModelRef(projected.effectiveModel)).toMatchObject({
       provider: "deepseek-official",
       model: "deepseek-v4-flash",
     });
-  });
-
-  it("keeps exact executable and durable format versions isolated", () => {
-    expect(deepSeekModernProfile("0.1.2-rc.1")).toBe(DEEPSEEK_V012_PROFILE);
-    expect(deepSeekModernProfile("0.1.5-rc.1")).toBe(DEEPSEEK_V015_PROFILE);
-    for (const version of ["0.1.5-rc.2", "0.1.5-rc.3"]) {
-      const profile = deepSeekModernProfile(version);
-      expect(profile).toMatchObject({ ...DEEPSEEK_V015_PROFILE, version });
-      expect(isDeepSeekV015(profile)).toBe(true);
-    }
-    expect(deepSeekModernProfile("0.2.0")).toMatchObject({
-      ...DEEPSEEK_V017_PROFILE,
-      version: "0.2.0",
-    });
-    expect(isDeepSeekV015(deepSeekModernProfile("0.2.0"))).toBe(false);
-    const newerV0 = deepSeekModernProfile("0.1.2-rc.2");
-    expect(newerV0).toMatchObject({ ...DEEPSEEK_V012_PROFILE, version: "0.1.2-rc.2" });
-    expect(isDeepSeekV015(newerV0)).toBe(false);
-    for (const version of [0, 1, 2, 4]) {
-      expect(() =>
-        DEEPSEEK_V015_PROFILE.parseHeader(
-          { version, id: SESSION_ID, createdAt: 1, isSeeded: false },
-          { sessionId: SESSION_ID },
-        ),
-      ).toThrow();
-    }
   });
 
   it("folds system head replacements using event seqs without displaying system messages", () => {
@@ -779,7 +704,6 @@ describe("DSH 0.1.5-rc.1 V3 durable protocol", () => {
       event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }),
     ];
     expect(project(history).snapshot.turns[0]).toMatchObject({ input: [], items: [] });
-    expect(() => projectModernHistory({ sessionId: SESSION_ID, events: history })).toThrow();
     for (const surfaceOp of [
       { op: "replace", start: 2, end: 2 },
       { op: "replace", startSeq: 1, endSeq: 2 },
@@ -941,9 +865,6 @@ describe("DSH 0.1.5-rc.1 V3 durable protocol", () => {
   it.each(metadata)("accepts native %s data and rejects extra wire fields", (type, data) => {
     expect(project([event(0, type, data)]).snapshot.turns).toEqual([]);
     expect(() => project([event(0, type, { ...data, unsupported: true })])).toThrow();
-    expect(() =>
-      projectModernHistory({ sessionId: SESSION_ID, events: [event(0, type, data)] }),
-    ).toThrow();
   });
 
   it.each([
@@ -974,57 +895,67 @@ describe("DSH 0.1.5-rc.1 V3 durable protocol", () => {
     } as const;
     const feed = new FollowFeed();
     feed.push(snapshot([opaque]));
-    const journal = await openModernJournal(
-      new FakeRemote(feed),
-      { sessionId: SESSION_ID, cwd: CWD },
-      { profile: DEEPSEEK_V015_PROFILE },
-    );
+    const journal = await openModernJournal(new FakeRemote(feed), {
+      sessionId: SESSION_ID,
+      cwd: CWD,
+    });
     expect(journal.events).toEqual([opaque]);
     expect(project(journal.events).snapshot.turns).toEqual([]);
     await journal.close();
     expect(() => project([{ ...opaque, ignorable: undefined } as never])).toThrow();
     expect(() => project([event(0, "future/metadata", {})])).toThrow(/unknown required/);
     expect(() => project([{ ...opaque, type: "feedback/record" }])).toThrow(/surface metadata/);
-    expect(() => projectModernHistory({ sessionId: SESSION_ID, events: [opaque] })).toThrow();
   });
 
-  it("rejects V0 replacement coordinates at the V3 journal boundary", () => {
+  it("rejects V0 replacement coordinates at the journal boundary", () => {
     const original = { ...system(3), sourceEventSeqs: [2] };
     expect(
-      DEEPSEEK_V015_PROFILE.parseHistoryRecord(
+      DEEPSEEK_V4_PROFILE.parseHistoryRecord(
         record({ ...original, surfaceOp: { op: "replace", startSeq: 2, endSeq: 2 } }),
         1,
       )[0],
     ).toMatchObject({ surfaceOp: { startSeq: 2, endSeq: 2 } });
     expect(() =>
-      DEEPSEEK_V015_PROFILE.parseHistoryRecord(
+      DEEPSEEK_V4_PROFILE.parseHistoryRecord(
         record({ ...original, surfaceOp: { op: "replace", start: 2, end: 2 } }),
-        1,
-      ),
-    ).toThrow();
-    expect(() =>
-      DEEPSEEK_V012_PROFILE.parseHistoryRecord(
-        record({ ...original, surfaceOp: { op: "replace", startSeq: 2, endSeq: 2 } }),
         1,
       ),
     ).toThrow();
   });
 
-  it("validates nested file and tool-result blocks", () => {
+  it("validates file attachments and keeps tool-result blocks out of message content", () => {
+    const file = { type: "file", attachment: { attachmentId: "file", name: "notes", bytes: 0 } };
+    expect(() => DEEPSEEK_V4_PROFILE.validateContent([file])).not.toThrow();
+    expect(() =>
+      DEEPSEEK_V4_PROFILE.validateContent([
+        { type: "file", attachment: { attachmentId: "file", name: "notes", bytes: -1 } },
+      ]),
+    ).toThrow();
+    expect(() =>
+      DEEPSEEK_V4_PROFILE.validateContent([
+        { type: "tool-result", toolCallId: "t", content: [file] },
+      ]),
+    ).toThrow();
+  });
+
+  it("validates nested file and tool-result blocks in team messages", () => {
+    const message = (content: unknown) =>
+      event(0, "team/message/queued", {
+        version: 2,
+        teamId: "team",
+        message: { id: "m", senderId: "a", senderName: "Alice", targetId: "b", content },
+      });
     const block = {
       type: "tool-result",
       toolCallId: "t",
       content: [{ type: "file", attachment: { attachmentId: "file", name: "notes", bytes: 0 } }],
     };
-    expect(() => DEEPSEEK_V015_PROFILE.validateContent([block])).not.toThrow();
-    expect(() =>
-      DEEPSEEK_V015_PROFILE.validateContent([{ ...block, toolCallId: undefined, id: "t" }]),
-    ).toThrow();
-    expect(() => DEEPSEEK_V015_PROFILE.validateContent([{ ...block, isError: "yes" }])).toThrow();
-    expect(() =>
-      DEEPSEEK_V015_PROFILE.validateContent([
-        { type: "file", attachment: { attachmentId: "file", name: "notes", bytes: -1 } },
-      ]),
-    ).toThrow();
+    expect(project([message([block])]).snapshot.turns).toEqual([]);
+    for (const invalid of [
+      { ...block, toolCallId: undefined, id: "t" },
+      { ...block, isError: "yes" },
+    ]) {
+      expect(() => project([message([invalid])])).toThrow();
+    }
   });
 });

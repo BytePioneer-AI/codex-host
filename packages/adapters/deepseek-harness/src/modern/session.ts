@@ -108,10 +108,9 @@ import {
   type ModernJournalOptions,
   type ModernJournalRemote,
 } from "./journal.js";
-import { DEEPSEEK_V012_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
+import { DEEPSEEK_V4_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import {
   isPtcProgramTool,
-  projectsPtcDispatches,
   ptcDispatchItem,
   ptcDispatchKey,
   ptcDispatchOutcome,
@@ -153,7 +152,6 @@ export function modernSessionCapabilities(
 const CORRELATION_BOUNDARIES = new Set([
   "request/header",
   "request/context",
-  "assistant/chunk",
   "assistant/attempt",
   "assistant/message",
   "tool/call",
@@ -397,7 +395,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.harnessId = options.harnessId ?? DEEPSEEK_HARNESS_ID;
     this.#remote = options.remote;
     this.#journal = options.journal;
-    this.#profile = options.journal.profile ?? DEEPSEEK_V012_PROFILE;
+    this.#profile = options.journal.profile ?? DEEPSEEK_V4_PROFILE;
     this.#control = options.control;
     this.#modelCatalog = options.modelCatalog;
     this.#permissionModes = options.permissionModes;
@@ -453,7 +451,6 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       nativeRef: projection.nativeRef,
       modelCatalog: this.#modelCatalog,
       permissionModes: this.#permissionModes,
-      profile: this.#profile,
     });
     this.#nativeRef = projection.nativeRef;
     this.initialState = configuration.state;
@@ -1005,7 +1002,6 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       nativeRef: this.#nativeRef,
       modelCatalog: this.#modelCatalog,
       permissionModes: this.#permissionModes,
-      profile: this.#profile,
     });
   }
 
@@ -1118,7 +1114,6 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#permissionModes,
         command.permissionModeId,
         signal,
-        this.#profile,
       );
       return { value: { completed: true } as const, changed: selected.changed };
     });
@@ -1455,7 +1450,6 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#sessionId,
         active.line,
         active.abort.signal,
-        this.#profile,
       );
       if (this.#activeCommand !== active) return;
       if (!execution) {
@@ -1669,20 +1663,18 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
             previous.turn !== frame.turn ||
             previous.step !== frame.step
           ) {
-            throw new ModernJournalDesyncError(
-              "DSH v0.1.5 Assistant baseline changed attempt identity",
-            );
+            throw new ModernJournalDesyncError("DSH Assistant baseline changed attempt identity");
           }
           previous.nextIndex = 0;
           this.#assistantRebaseline = false;
           return;
         }
         if (previous && !previous.ended && !this.#assistantRebaseline && frame.revision !== 1) {
-          throw new ModernJournalDesyncError("DSH v0.1.5 Assistant attempts overlap");
+          throw new ModernJournalDesyncError("DSH Assistant attempts overlap");
         }
         if (frame.startedAfterSeq > this.#events.length - 1) {
           throw new ModernJournalDesyncError(
-            "DSH v0.1.5 Assistant attempt starts after the durable cursor",
+            "DSH Assistant attempt starts after the durable cursor",
           );
         }
         this.#discardAssistantAttempt();
@@ -1734,16 +1726,14 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         const attempt = this.#assistantAttempt;
         if (!attempt || attempt.ended || attempt.attemptId !== frame.attemptId) return;
         if (frame.index !== attempt.nextIndex) {
-          throw new ModernJournalDesyncError(
-            "DSH v0.1.5 Assistant stream is not attempt-contiguous",
-          );
+          throw new ModernJournalDesyncError("DSH Assistant stream is not attempt-contiguous");
         }
         this.#profile.validateChunk(frame.chunk);
         const replayed = attempt.chunks[frame.index];
         if (replayed) {
           if (replayed.time !== frame.time || !isDeepStrictEqual(replayed.chunk, frame.chunk)) {
             throw new ModernJournalDesyncError(
-              "DSH v0.1.5 Assistant baseline conflicts with streamed chunks",
+              "DSH Assistant baseline conflicts with streamed chunks",
             );
           }
           attempt.nextIndex += 1;
@@ -1753,7 +1743,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         if (bytes > this.#maxBufferedLiveBytes - attempt.retainedBytes) {
           throw new ModernJournalError(
             "limitExceeded",
-            "DSH v0.1.5 Assistant attempt exceeded maxBufferedLiveBytes",
+            "DSH Assistant attempt exceeded maxBufferedLiveBytes",
           );
         }
         attempt.retainedBytes += bytes;
@@ -1766,14 +1756,12 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         const attempt = this.#assistantAttempt;
         if (!attempt || attempt.attemptId !== frame.attemptId || attempt.ended) return;
         if (frame.index !== attempt.nextIndex || frame.index !== attempt.chunks.length) {
-          throw new ModernJournalDesyncError(
-            "DSH v0.1.5 Assistant stream ended outside its attempt",
-          );
+          throw new ModernJournalDesyncError("DSH Assistant stream ended outside its attempt");
         }
         if (frame.outcome.kind === "abandoned") {
           if (attempt.settlement) {
             throw new ModernJournalDesyncError(
-              "DSH v0.1.5 abandoned Assistant attempt has a durable settlement",
+              "DSH abandoned Assistant attempt has a durable settlement",
             );
           }
           this.#discardAssistantAttempt();
@@ -1789,7 +1777,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
             return;
           }
           throw new ModernJournalDesyncError(
-            "DSH v0.1.5 Assistant settlement does not match its stream end",
+            "DSH Assistant settlement does not match its stream end",
           );
         }
         attempt.ended = true;
@@ -1885,7 +1873,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (attempt.settlement) {
       throw new ModernHistoryError(
         "protocolError",
-        "DSH v0.1.5 Assistant attempt has multiple durable settlements",
+        "DSH Assistant attempt has multiple durable settlements",
       );
     }
     attempt.settlement = { eventType: event.type, seq: event.seq };
@@ -2241,10 +2229,6 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       case "request/context":
       case "model/selection":
         return;
-      case "assistant/chunk":
-        if (!isRecord(data.chunk)) return;
-        this.#projectAssistantChunk(active, data.chunk, data.step as number, initialReplay);
-        return;
       case "assistant/message":
         this.#projectAssistantSettlement(active, event, initialReplay);
         if (event.surfaceOp === "append") this.#completeAssistant(active, data);
@@ -2266,14 +2250,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         }
         return;
       case "tool/ptc-dispatch-start":
-        if (projectsPtcDispatches(this.#profile)) {
-          this.#startPtcDispatch(active, data, event.seq, event.time);
-        }
+        this.#startPtcDispatch(active, data, event.seq, event.time);
         return;
       case "tool/ptc-dispatch":
-        if (projectsPtcDispatches(this.#profile)) {
-          this.#settlePtcDispatch(active, data, event.seq, event.time);
-        }
+        this.#settlePtcDispatch(active, data, event.seq, event.time);
         if (typeof data.subCallId === "string") {
           this.#observeTimedQuestion(active, data.subCallId, () =>
             ptcDispatchQuestionOutcome(data),
@@ -2401,22 +2381,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     }
     const reasoning = contentText(message.content, "reasoning");
     const text = contentText(message.content, "text");
-    if (this.#profile.assistantStream && active.agent && !text.startsWith(active.agent.text)) {
-      this.#cancelAgentItem(active);
-    }
-    this.#assertAgentPrefix(active, text);
+    // A settled message that revised its streamed text cancels the streamed Item.
+    if (active.agent && !text.startsWith(active.agent.text)) this.#cancelAgentItem(active);
     this.#completeReasoning(active, reasoning, step);
     this.#completeAgentPrefix(active, text, step);
-  }
-
-  #assertAgentPrefix(active: ActiveHostTurn, finalText: string): void {
-    const streamedText = active.agent?.text ?? "";
-    if (streamedText && !finalText.startsWith(streamedText)) {
-      throw new ModernHistoryError(
-        "protocolError",
-        "Modern assistant message does not match its streamed prefix",
-      );
-    }
   }
 
   #completeReasoning(active: ActiveHostTurn, finalText: string, step: number): void {
@@ -2458,7 +2426,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       throw new ModernHistoryError("protocolError", "Modern tool/call is duplicated");
     }
     active.advertisedTools.delete(callId);
-    if (isPtcProgramTool(this.#profile, data.name as string)) {
+    if (isPtcProgramTool(data.name as string)) {
       active.programCalls.add(callId);
       return;
     }
@@ -2496,7 +2464,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     let tool = active.tools.get(result.callId);
     if (!tool && advertised && isNotStartedToolResult(data, event.sourceEventSeqs, seq)) {
       // Cold history shows a call DSH closed before it started as one failed Tool.
-      if (isPtcProgramTool(this.#profile, advertised.toolName)) return result.callId;
+      if (isPtcProgramTool(advertised.toolName)) return result.callId;
       tool = this.#openTool(active, result.callId, seq, advertised.toolName, advertised.arguments);
     }
     if (!tool) throw new ModernHistoryError("protocolError", "Modern tool/result is unmatched");
@@ -3338,7 +3306,7 @@ function isVisibleWork(event: ModernJournalEvent): boolean {
   if (event.type === "assistant/message" || event.type === "tool/result") {
     return event.surfaceOp === "append";
   }
-  return event.type === "assistant/chunk" || event.type === "tool/call";
+  return event.type === "tool/call";
 }
 
 function safeLimit(value: number, name: string, minimum: number): number {

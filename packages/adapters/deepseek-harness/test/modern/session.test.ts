@@ -14,15 +14,12 @@ import {
   openModernJournal,
   type ModernJournal,
   type ModernJournalEvent,
+  type ModernJournalJson,
   type ModernJournalLiveItem,
   type ModernJournalRemote,
 } from "../../src/modern/journal.js";
-import {
-  DEEPSEEK_V012_PROFILE,
-  DEEPSEEK_V015_PROFILE,
-  DEEPSEEK_V017_PROFILE,
-  type DeepSeekModernProfile,
-} from "../../src/profiles/profile.js";
+import { DEEPSEEK_V4_PROFILE, type DeepSeekModernProfile } from "../../src/profiles/profile.js";
+import type { DeepSeekAssistantFrame } from "../../src/profiles/v4.js";
 import { parseModernModelCatalog } from "../../src/modern/catalog.js";
 import type {
   ModernControlJsonValue,
@@ -46,6 +43,8 @@ import {
 } from "../../src/modern/session.js";
 
 const SESSION_ID = "modern-session";
+/** A goal round's context message, the autonomous source V4 records. */
+const GOAL_SOURCE = { kind: "goal", goalId: "goal-1", revision: 1, round: 1 };
 const MODEL_CATALOG = parseModernModelCatalog({
   default: { provider: "deepseek", model: "deepseek-v4" },
   routableProviders: ["deepseek"],
@@ -82,7 +81,7 @@ class FakeControl implements ModernSessionControl {
   readonly #listeners = new Map<string, Set<(row: ModernProjectionRow | undefined) => void>>();
   readonly #rows: Record<string, ModernProjectionRow>;
 
-  constructor(permissionModeId?: string, profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE) {
+  constructor(permissionModeId?: string) {
     this.#rows = {
       modelSelection: {
         value: {
@@ -92,7 +91,7 @@ class FakeControl implements ModernSessionControl {
         seq: 0,
       },
       ...(permissionModeId
-        ? { permissions: { value: permissionValue(permissionModeId, profile), seq: 0 } }
+        ? { permissions: { value: permissionValue(permissionModeId), seq: 0 } }
         : {}),
     };
   }
@@ -200,6 +199,54 @@ class EventFeed
     this.#pending = undefined;
     if (pending) pending(item);
     else this.#items.push(item);
+  }
+}
+
+/** Live V4 Assistant attempts; each frame takes the next Session-wide revision. */
+class LiveAttempts {
+  #revision = 0;
+  #attemptId = "";
+  #index = 0;
+
+  constructor(readonly feed: EventFeed) {}
+
+  start(attemptId: string, startedAfterSeq: number, turn = 1, step = 1): void {
+    this.#attemptId = attemptId;
+    this.#index = 0;
+    this.#push({
+      type: "start",
+      attemptId,
+      revision: ++this.#revision,
+      startedAfterSeq,
+      turn,
+      step,
+    });
+  }
+
+  chunk(chunk: Readonly<Record<string, ModernJournalJson>>): void {
+    const revision = ++this.#revision;
+    this.#push({
+      type: "chunk",
+      attemptId: this.#attemptId,
+      revision,
+      index: this.#index++,
+      time: 1_000 + revision,
+      chunk,
+    });
+  }
+
+  commit(seq: number): void {
+    this.#push({
+      type: "end",
+      attemptId: this.#attemptId,
+      revision: ++this.#revision,
+      index: this.#index,
+      outcome: { kind: "committed", eventType: "assistant/message", seq },
+    });
+  }
+
+  #push(frame: DeepSeekAssistantFrame): void {
+    this.feed.push({ type: "assistant-stream", frame });
   }
 }
 
@@ -331,6 +378,7 @@ function inboxAdmission(seq: number, rpcId: string): ModernJournalEvent {
   });
 }
 
+/** A settled Assistant message that advertises the `write` call its Turn then runs. */
 function assistantMessage(
   seq: number,
   text: string,
@@ -353,6 +401,7 @@ function assistantMessage(
         ],
         source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
       },
+      stream: [],
       usage,
     },
     true,
@@ -381,6 +430,7 @@ function finalAssistantMessage(
         ],
         source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
       },
+      stream: [],
       usage: { inputTokens: 2, outputTokens: 1 },
     },
     true,
@@ -396,14 +446,10 @@ function toolResult(seq: number): ModernJournalEvent {
       step: 1,
       message: {
         id: `result-${seq}`,
-        role: "user",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: "call-1",
-            content: [{ type: "text", text: "ok" }],
-          },
-        ],
+        role: "tool",
+        toolCallId: "call-1",
+        isError: false,
+        content: [{ type: "text", text: "ok" }],
         source: { kind: "tool", callId: "call-1" },
       },
       meta: { diffs: [{ path: "a.txt", oldText: null, newText: "x\n" }] },
@@ -416,16 +462,9 @@ function accepted(): ModernRemoteResult<unknown> {
   return { ok: true, value: { accepted: true } };
 }
 
-function permissionValue(
-  currentValue: string,
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
-): ModernControlJsonValue {
-  // V4 projects only the current value; its options come from the process catalog.
-  if (profile.sessionFormatVersion === 4) return { currentValue };
-  return {
-    options: PERMISSION_CATALOG.modes.map(({ id, label }) => ({ value: id, name: label })),
-    currentValue,
-  } as ModernControlJsonValue;
+/** V4 projects only the current value; its options come from the process catalog. */
+function permissionValue(currentValue: string): ModernControlJsonValue {
+  return { currentValue };
 }
 
 function turnId(value: string): HostTurnId {
@@ -441,7 +480,7 @@ function setup(
   maxHistoryBytes?: number,
   acceptedCorrelationTimeoutMs = MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
   replacementFeeds: AsyncIterable<unknown>[] = [],
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
+  profile: DeepSeekModernProfile = DEEPSEEK_V4_PROFILE,
   maxBufferedLiveBytes?: number,
 ): {
   feed: EventFeed;
@@ -452,15 +491,10 @@ function setup(
 } {
   const feed = new EventFeed();
   const remote = new FakeRemote(handlers, replacementFeeds);
-  const control = new FakeControl(permissionModes?.defaultModeId, profile);
+  const control = new FakeControl(permissionModes?.defaultModeId);
   const journal: ModernJournal & { closeCalls: number } = {
     profile,
-    header:
-      profile.sessionFormatVersion === 4
-        ? { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false, delegationDepth: 0 }
-        : profile.sessionFormatVersion === 3
-          ? { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false }
-          : { version: 0, id: SESSION_ID, createdAt: 1 },
+    header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false, delegationDepth: 0 },
     cursor: history.length - 1,
     projections: { asOfSeq: history.length - 1, values: {} },
     events: history,
@@ -575,25 +609,9 @@ async function eventsThrough(
   return events;
 }
 
-/**
- * Stream one native PTC Turn: `run_code` dispatches `pwsh Get-Date` at seq 5-6,
- * 450ms apart, in the profile's own event and message shapes.
- */
-async function streamPtcTurn(
-  profile: DeepSeekModernProfile,
-): Promise<{ test: ReturnType<typeof setup>; emitted: HostEvent[] }> {
-  const v4 = profile.sessionFormatVersion === 4;
-  const test = setup(
-    [() => accepted()],
-    [],
-    ["request-1"],
-    5_000,
-    null,
-    undefined,
-    undefined,
-    [],
-    profile,
-  );
+/** Stream one native PTC Turn: `run_code` dispatches `pwsh Get-Date` at seq 5-6, 450ms apart. */
+async function streamPtcTurn(): Promise<{ test: ReturnType<typeof setup>; emitted: HostEvent[] }> {
+  const test = setup([() => accepted()], [], ["request-1"]);
   const outputs = test.session.outputs[Symbol.asyncIterator]();
   await test.session.execute({
     type: "turn.start",
@@ -601,11 +619,10 @@ async function streamPtcTurn(
     input: [{ type: "text", text: "date" }],
   });
   const runCode = JSON.stringify({ code: "await tools.pwsh({ command: 'Get-Date' })" });
-  const kind = v4 ? "ptc" : "code";
   const dispatch = {
     rootCallId: "call-1",
     parentCallId: "call-1",
-    subCallId: `call-1:${kind}:1`,
+    subCallId: "call-1:ptc:1",
     name: "pwsh",
     arguments: { command: "Get-Date" },
   };
@@ -627,7 +644,7 @@ async function streamPtcTurn(
           content: [{ type: "tool-call", id: "call-1", name: "run_code", arguments: runCode }],
           source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
         },
-        ...(v4 ? { stream: [] } : {}),
+        stream: [],
       },
       true,
     ),
@@ -638,22 +655,22 @@ async function streamPtcTurn(
       name: "run_code",
       arguments: runCode,
     }),
-    { ...event(5, `tool/${kind}-dispatch-start`, dispatch), time: 2_000 },
-    { ...event(6, `tool/${kind}-dispatch`, { ...dispatch, isError: false, content }), time: 2_450 },
+    { ...event(5, "tool/ptc-dispatch-start", dispatch), time: 2_000 },
+    { ...event(6, "tool/ptc-dispatch", { ...dispatch, isError: false, content }), time: 2_450 },
     event(
       7,
       "tool/result",
       {
         turn: 1,
         step: 1,
-        message: v4
-          ? { id: "result-7", role: "tool", toolCallId: "call-1", isError: false, content, source }
-          : {
-              id: "result-7",
-              role: "user",
-              content: [{ type: "tool-result", toolCallId: "call-1", content }],
-              source,
-            },
+        message: {
+          id: "result-7",
+          role: "tool",
+          toolCallId: "call-1",
+          isError: false,
+          content,
+          source,
+        },
       },
       true,
     ),
@@ -686,12 +703,12 @@ async function waitForGraceTimer(): Promise<void> {
 
 describe("DeepSeek Harness Modern Session", () => {
   it.each(["status", "providerRetryAfterMs"])(
-    "does not reconnect when a V3 finish contains an invalid %s",
+    "does not reconnect when a finish chunk contains an invalid %s",
     async (field) => {
       const follow = new EventFeed();
       follow.push({
         type: "snapshot",
-        header: { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false },
+        header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false },
         cursor: -1,
         records: [],
         hasMore: false,
@@ -702,7 +719,7 @@ describe("DeepSeek Harness Modern Session", () => {
       const journal = await openModernJournal(
         remote,
         { sessionId: SESSION_ID },
-        { profile: DEEPSEEK_V015_PROFILE },
+        { profile: DEEPSEEK_V4_PROFILE },
       );
       const session = new ModernHarnessSession({
         remote,
@@ -755,7 +772,7 @@ describe("DeepSeek Harness Modern Session", () => {
     },
   );
 
-  it("does not revisit the excluded durable prefix when a V3 attempt starts at the tail", async () => {
+  it("does not revisit the excluded durable prefix when an attempt starts at the tail", async () => {
     const history = [
       event(0, "agent-preset/selected", { agentPreset: "standard" }),
       event(1, "turn/start", { turn: 1 }),
@@ -771,7 +788,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
       [],
-      DEEPSEEK_V015_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     await eventsThrough(outputs, "turn.started");
@@ -871,7 +888,7 @@ describe("DeepSeek Harness Modern Session", () => {
     }
     const remote = new FakeRemote([]);
     const journal: ModernJournal = {
-      header: { version: 0, id: SESSION_ID, createdAt: 1 },
+      header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false },
       cursor: -1,
       projections: { asOfSeq: -1, values: {} },
       events: [],
@@ -930,30 +947,15 @@ describe("DeepSeek Harness Modern Session", () => {
     test.feed.push(userMessage(2, "firstsecond", "request-1"));
     expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
 
+    const stream = new LiveAttempts(test.feed);
+    stream.start("attempt-1", 2);
+    stream.chunk({ type: "reasoning-delta", index: 0, text: "think" });
+    stream.chunk({ type: "text-delta", index: 1, text: "done" });
+    stream.chunk({ type: "usage", usage: { inputTokens: 2, outputTokens: 1 } });
+    test.feed.push(assistantMessage(3, "done", "think"));
+    stream.commit(3);
     test.feed.push(
-      event(3, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "reasoning-delta", index: 0, text: "think" },
-      }),
-    );
-    test.feed.push(
-      event(4, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "text-delta", index: 1, text: "done" },
-      }),
-    );
-    test.feed.push(
-      event(5, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "usage", usage: { inputTokens: 2, outputTokens: 1 } },
-      }),
-    );
-    test.feed.push(assistantMessage(6, "done", "think"));
-    test.feed.push(
-      event(7, "tool/call", {
+      event(4, "tool/call", {
         turn: 1,
         step: 1,
         callId: "call-1",
@@ -961,9 +963,9 @@ describe("DeepSeek Harness Modern Session", () => {
         arguments: "{}",
       }),
     );
-    test.feed.push(toolResult(8));
-    test.feed.push(event(9, "step/end", { turn: 1, step: 1 }));
-    test.feed.push(event(10, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    test.feed.push(toolResult(5));
+    test.feed.push(event(6, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }));
 
     const emitted = await eventsThrough(outputs, "turn.completed");
     expect(emitted.some((item) => item.type === "turn.autonomous.started")).toBe(false);
@@ -977,7 +979,7 @@ describe("DeepSeek Harness Modern Session", () => {
       type: "turn.completed",
       turnId: id,
       nativeTurnRef: { nativeTurnKey: "turn:1" },
-      outcome: { status: "succeeded", checkpoint: { checkpointId: "turn-end:10" } },
+      outcome: { status: "succeeded", checkpoint: { checkpointId: "v4-turn-end:7" } },
     });
 
     const snapshot = await test.session.readSnapshot();
@@ -989,7 +991,7 @@ describe("DeepSeek Harness Modern Session", () => {
   });
 
   it("streams V4 PTC sub-calls in place of run_code with native durations", async () => {
-    const { test, emitted } = await streamPtcTurn(DEEPSEEK_V017_PROFILE);
+    const { test, emitted } = await streamPtcTurn();
     const itemId = `dsh-modern:${SESSION_ID}:event:5:tool`;
     expect(toolLifecycle(emitted)).toEqual([
       ["item.started", "pwsh"],
@@ -1042,22 +1044,14 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("keeps a V0 run_code live as one Tool and ignores its dispatches", async () => {
-    const { test, emitted } = await streamPtcTurn(DEEPSEEK_V012_PROFILE);
-    expect(toolLifecycle(emitted)).toEqual([
-      ["item.started", "run_code"],
-      ["item.completed", "run_code"],
-    ]);
-    await test.session.close();
-  });
-
-  it("streams V0 reasoning and reconciles trailing line breaks, revisions, and repeated Turns", async () => {
+  it("streams reasoning and reconciles trailing line breaks, revisions, and repeated Turns", async () => {
     const test = setup(
       [() => accepted(), () => accepted(), () => accepted(), () => accepted()],
       [],
       ["request-1", "request-2", "request-3", "request-4"],
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const stream = new LiveAttempts(test.feed);
     const cases = [
       {
         chunks: [{ type: "reasoning-delta", index: 0, text: "first thought\n\n" }],
@@ -1100,25 +1094,19 @@ describe("DeepSeek Harness Modern Session", () => {
       test.feed.push(userMessage(seq++, `prompt ${nativeTurn}`, `request-${nativeTurn}`));
       expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
       const streamed: HostEvent[] = [];
-      for (const chunk of value.chunks) {
-        test.feed.push(event(seq++, "assistant/chunk", { turn: nativeTurn, step: 1, chunk }));
-      }
+      stream.start(`attempt-${nativeTurn}`, seq - 1, nativeTurn);
+      for (const chunk of value.chunks) stream.chunk(chunk);
       if (index < 2) {
         streamed.push(...(await eventsThrough(outputs, "item.updated")));
         expect(streamed.at(-1)).toMatchObject({
           type: "item.updated",
           update: { type: "text.append", text: ["first thought", "use path A"][index] },
         });
-        expect(test.feed.seen.at(-1)?.type).toBe("assistant/chunk");
       }
-      test.feed.push(
-        event(seq++, "assistant/chunk", {
-          turn: nativeTurn,
-          step: 1,
-          chunk: { type: "text-delta", index: 1, text: value.text },
-        }),
-      );
-      test.feed.push(finalAssistantMessage(seq++, nativeTurn, value.text, value.final));
+      stream.chunk({ type: "text-delta", index: 1, text: value.text });
+      const settlementSeq = seq++;
+      test.feed.push(finalAssistantMessage(settlementSeq, nativeTurn, value.text, value.final));
+      stream.commit(settlementSeq);
       test.feed.push(event(seq++, "step/end", { turn: nativeTurn, step: 1 }));
       test.feed.push(event(seq++, "turn/end", { turn: nativeTurn, reason: { kind: "completed" } }));
 
@@ -1175,6 +1163,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("omits empty final reasoning and does not carry it into later steps", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const stream = new LiveAttempts(test.feed);
     const id = turnId("host-turn-empty-reasoning");
     await test.session.execute({
       type: "turn.start",
@@ -1185,57 +1174,27 @@ describe("DeepSeek Harness Modern Session", () => {
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
     test.feed.push(userMessage(2, "prompt", "request-1"));
     expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
-    test.feed.push(
-      event(3, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "block-start", index: 0, blockType: "reasoning" },
-      }),
-    );
-    test.feed.push(
-      event(4, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "block-end", index: 0, block: { type: "reasoning", text: "" } },
-      }),
-    );
-    test.feed.push(finalAssistantMessage(5, 1, "first answer", "", 1));
-    test.feed.push(event(6, "step/end", { turn: 1, step: 1 }));
-    test.feed.push(event(7, "step/start", { turn: 1, step: 2 }));
-    test.feed.push(
-      event(8, "assistant/chunk", {
-        turn: 1,
-        step: 2,
-        chunk: { type: "reasoning-delta", index: 0, text: "draft" },
-      }),
-    );
-    test.feed.push(
-      event(9, "assistant/chunk", {
-        turn: 1,
-        step: 2,
-        chunk: { type: "text-delta", index: 1, text: "second answer" },
-      }),
-    );
-    test.feed.push(finalAssistantMessage(10, 1, "second answer", "final thought", 2));
-    test.feed.push(event(11, "step/end", { turn: 1, step: 2 }));
-    test.feed.push(event(12, "step/start", { turn: 1, step: 3 }));
-    test.feed.push(
-      event(13, "assistant/chunk", {
-        turn: 1,
-        step: 3,
-        chunk: { type: "reasoning-delta", index: 0, text: "removed provisional thought" },
-      }),
-    );
-    test.feed.push(
-      event(14, "assistant/chunk", {
-        turn: 1,
-        step: 3,
-        chunk: { type: "text-delta", index: 1, text: "third answer" },
-      }),
-    );
-    test.feed.push(finalAssistantMessage(15, 1, "third answer", "", 3));
-    test.feed.push(event(16, "step/end", { turn: 1, step: 3 }));
-    test.feed.push(event(17, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    stream.start("step-1", 2, 1, 1);
+    stream.chunk({ type: "block-start", index: 0, blockType: "reasoning" });
+    stream.chunk({ type: "block-end", index: 0, block: { type: "reasoning", text: "" } });
+    test.feed.push(finalAssistantMessage(3, 1, "first answer", "", 1));
+    stream.commit(3);
+    test.feed.push(event(4, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(5, "step/start", { turn: 1, step: 2 }));
+    stream.start("step-2", 5, 1, 2);
+    stream.chunk({ type: "reasoning-delta", index: 0, text: "draft" });
+    stream.chunk({ type: "text-delta", index: 1, text: "second answer" });
+    test.feed.push(finalAssistantMessage(6, 1, "second answer", "final thought", 2));
+    stream.commit(6);
+    test.feed.push(event(7, "step/end", { turn: 1, step: 2 }));
+    test.feed.push(event(8, "step/start", { turn: 1, step: 3 }));
+    stream.start("step-3", 8, 1, 3);
+    stream.chunk({ type: "reasoning-delta", index: 0, text: "removed provisional thought" });
+    stream.chunk({ type: "text-delta", index: 1, text: "third answer" });
+    test.feed.push(finalAssistantMessage(9, 1, "third answer", "", 3));
+    stream.commit(9);
+    test.feed.push(event(10, "step/end", { turn: 1, step: 3 }));
+    test.feed.push(event(11, "turn/end", { turn: 1, reason: { kind: "completed" } }));
 
     const emitted = await eventsThrough(outputs, "turn.completed");
     const reasoningItems = emitted.flatMap((item) =>
@@ -1262,66 +1221,8 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("cancels uncommitted V0 reasoning at a native step boundary", async () => {
+  it("streams native reasoning before the durable Assistant message", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
-    await test.session.execute({
-      type: "turn.start",
-      turnId: turnId("reasoning-step-boundary"),
-      input: [{ type: "text", text: "two steps" }],
-    });
-    test.feed.push(event(0, "turn/start", { turn: 1 }));
-    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
-    test.feed.push(userMessage(2, "two steps", "request-1"));
-    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
-    test.feed.push(
-      event(3, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "reasoning-delta", index: 0, text: "orphan" },
-      }),
-    );
-    const emitted = await eventsThrough(outputs, "item.updated");
-    test.feed.push(event(4, "step/end", { turn: 1, step: 1 }));
-    test.feed.push(event(5, "step/start", { turn: 1, step: 2 }));
-    test.feed.push(
-      event(6, "assistant/chunk", {
-        turn: 1,
-        step: 2,
-        chunk: { type: "reasoning-delta", index: 0, text: "next" },
-      }),
-    );
-    emitted.push(...(await eventsThrough(outputs, "item.updated")));
-    test.feed.push(finalAssistantMessage(7, 1, "", "next", 2));
-    test.feed.push(event(8, "step/end", { turn: 1, step: 2 }));
-    test.feed.push(event(9, "turn/end", { turn: 1, reason: { kind: "completed" } }));
-    emitted.push(...(await eventsThrough(outputs, "turn.completed")));
-    const reasoning = emitted.flatMap((entry) =>
-      entry.type === "item.completed" && entry.snapshot.item.type === "reasoning"
-        ? [entry.snapshot]
-        : [],
-    );
-    expect(reasoning.map(({ outcome }) => outcome.status)).toEqual(["cancelled", "succeeded"]);
-    expect(new Set(reasoning.map(({ item }) => item.itemId)).size).toBe(2);
-    expect(reasoning[1]).toMatchObject({ item: { text: "next" } });
-    await test.session.close();
-  });
-
-  it.each([
-    ["V3", DEEPSEEK_V015_PROFILE],
-    ["V4", DEEPSEEK_V017_PROFILE],
-  ])("streams native %s reasoning before the durable Assistant message", async (_name, profile) => {
-    const test = setup(
-      [() => accepted()],
-      [],
-      ["request-1"],
-      5_000,
-      null,
-      undefined,
-      undefined,
-      [],
-      profile,
-    );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const id = turnId("reasoning-stream-turn");
     await test.session.execute({
@@ -1519,7 +1420,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       undefined,
       [],
-      DEEPSEEK_V017_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     await test.session.execute({
@@ -1655,7 +1556,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       undefined,
       [replacement],
-      DEEPSEEK_V017_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     expect(await nextEvent(outputs)).toMatchObject({ type: "turn.autonomous.started" });
@@ -1760,53 +1661,10 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("keeps streamed assistant text prefix validation strict", async () => {
-    const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
-    const id = turnId("host-turn-text-prefix");
-    await test.session.execute({
-      type: "turn.start",
-      turnId: id,
-      input: [{ type: "text", text: "prompt" }],
-    });
-    test.feed.push(event(0, "turn/start", { turn: 1 }));
-    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
-    test.feed.push(userMessage(2, "prompt", "request-1"));
-    expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
-    test.feed.push(
-      event(3, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "text-delta", index: 0, text: "draft" },
-      }),
-    );
-    test.feed.push(finalAssistantMessage(4, 1, "revised", "must not publish"));
-
-    const emitted = await eventsThrough(outputs, "session.faulted");
-    expect(emitted).toContainEqual(
-      expect.objectContaining({
-        type: "session.faulted",
-        error: expect.objectContaining({
-          code: "protocolError",
-          message: "Modern assistant message does not match its streamed prefix",
-        }),
-      }),
-    );
-    expect(
-      emitted.some(
-        (item) =>
-          (item.type === "item.started" && item.item.type === "reasoning") ||
-          (item.type === "item.completed" && item.snapshot.item.type === "reasoning"),
-      ),
-    ).toBe(false);
-    await expect(test.session.close()).rejects.toThrow(
-      "native execution stop was not confirmed before the Session fault",
-    );
-  });
-
   it("ignores live surface replacement copies for correlation and visible output", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const stream = new LiveAttempts(test.feed);
     const id = turnId("host-turn-surface-replacement");
     await test.session.execute({
       type: "turn.start",
@@ -1819,24 +1677,15 @@ describe("DeepSeek Harness Modern Session", () => {
     expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
     test.feed.push({
       ...userMessage(3, "model-only prompt", "request-1"),
-      surfaceOp: { op: "replace", start: 2, end: 2 },
+      surfaceOp: { op: "replace", startSeq: 2, endSeq: 2 },
       sourceEventSeqs: [2],
     });
-    test.feed.push(
-      event(4, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "text-delta", index: 0, text: "visible answer" },
-      }),
-    );
-    test.feed.push(finalAssistantMessage(5, 1, "visible answer", ""));
-    test.feed.push({
-      ...finalAssistantMessage(6, 1, "model-only answer", "model-only thought"),
-      surfaceOp: { op: "replace", start: 5, end: 5 },
-      sourceEventSeqs: [5],
-    });
-    test.feed.push(event(7, "step/end", { turn: 1, step: 1 }));
-    test.feed.push(event(8, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    stream.start("visible", 3);
+    stream.chunk({ type: "text-delta", index: 0, text: "visible answer" });
+    test.feed.push(finalAssistantMessage(4, 1, "visible answer", ""));
+    stream.commit(4);
+    test.feed.push(event(5, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }));
 
     const emitted = await eventsThrough(outputs, "turn.completed");
     const completedMessages = emitted.flatMap((item) =>
@@ -1861,88 +1710,6 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("publishes final reasoning after incomplete-history resume and journal replacement", async () => {
-    const history = [
-      event(0, "turn/start", { turn: 1 }),
-      event(1, "step/start", { turn: 1, step: 1 }),
-      userMessage(2, "resumed", "old-request"),
-      event(3, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "reasoning-delta", index: 0, text: "obsolete draft\n\n" },
-      }),
-      event(4, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "text-delta", index: 1, text: "recovered answer" },
-      }),
-    ];
-    const replacementEvents = [
-      ...history,
-      finalAssistantMessage(5, 1, "recovered answer", "authoritative thought"),
-      event(6, "step/end", { turn: 1, step: 1 }),
-      event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }),
-    ];
-    const replacement = new EventFeed();
-    replacement.push({
-      type: "snapshot",
-      header: { version: 0, id: SESSION_ID, createdAt: 1 },
-      cursor: 7,
-      records: replacementEvents.map((item) => ({ type: "event", event: item })),
-      hasMore: false,
-      projections: { asOfSeq: 7, values: {} },
-    } as never);
-    const test = setup(
-      [],
-      history,
-      ["autonomous-recovery"],
-      5_000,
-      null,
-      undefined,
-      MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
-      [replacement],
-    );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
-    expect(await nextEvent(outputs)).toMatchObject({
-      type: "turn.autonomous.started",
-      turnId: "autonomous-recovery",
-    });
-    expect(await nextEvent(outputs)).toEqual({
-      type: "turn.started",
-      turnId: "autonomous-recovery",
-    });
-
-    test.feed.finish();
-    const emitted = await eventsThrough(outputs, "turn.completed");
-    expect(test.remote.streamCalls).toBe(1);
-    expect(
-      emitted.flatMap((item) => (item.type === "item.started" ? [item.item.type] : [])),
-    ).toEqual(["reasoning", "agentMessage", "reasoning"]);
-    expect(
-      emitted.flatMap((item) => (item.type === "item.completed" ? [item.snapshot.item.type] : [])),
-    ).toEqual(["reasoning", "reasoning", "agentMessage"]);
-    expect(
-      emitted.find(
-        (item) =>
-          item.type === "item.completed" &&
-          item.snapshot.item.type === "reasoning" &&
-          item.snapshot.outcome.status === "succeeded",
-      ),
-    ).toMatchObject({ snapshot: { item: { text: "authoritative thought" } } });
-    expect(emitted.at(-1)).toMatchObject({
-      type: "turn.completed",
-      outcome: { status: "succeeded" },
-    });
-    const snapshot = await test.session.readSnapshot();
-    expect(snapshot).toMatchObject({ ok: true });
-    if (!snapshot.ok) throw new Error("expected recovered Modern history Snapshot");
-    expect(snapshot.value.turns[0]?.items.map(({ item }) => item.type)).toEqual([
-      "reasoning",
-      "agentMessage",
-    ]);
-    await test.session.close();
-  });
-
   it("buffers turn/start and step/start through a multi-message claim until any rpcId matches", async () => {
     const receipt = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => receipt.promise], [], ["request-1"]);
@@ -1962,8 +1729,8 @@ describe("DeepSeek Harness Modern Session", () => {
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
     test.feed.push(userMessage(2, "foreign", "foreign-request"));
     test.feed.push({
-      ...finalAssistantMessage(3, 1, "model-only replacement", ""),
-      surfaceOp: { op: "replace", start: 2, end: 2 },
+      ...userMessage(3, "model-only replacement"),
+      surfaceOp: { op: "replace", startSeq: 2, endSeq: 2 },
       sourceEventSeqs: [2],
     });
     test.feed.push(userMessage(4, "context-without-rpc"));
@@ -1998,26 +1765,23 @@ describe("DeepSeek Harness Modern Session", () => {
     test.feed.push(userMessage(2, "usage", "request-1"));
     expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
 
-    test.feed.push(
-      event(3, "assistant/chunk", {
+    // Failed attempts settle their streamed Usage durably; only valid Usage counts.
+    const attempt = (seq: number, usage: Record<string, ModernJournalJson>) =>
+      event(seq, "assistant/attempt", {
         turn: 1,
         step: 1,
-        chunk: { type: "usage", usage: { inputTokens: 4, outputTokens: 2 } },
-      }),
-    );
-    test.feed.push(
-      event(4, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "usage", usage: { inputTokens: "broken", outputTokens: 99 } },
-      }),
-    );
-    test.feed.push(
-      assistantMessage(5, "done", "think", {
-        inputTokens: 10,
-        outputTokens: "broken",
-      }),
-    );
+        stream: [{ type: "chunk", time: 1_000 + seq, chunk: { type: "usage", usage } }],
+      });
+    test.feed.push(attempt(3, { inputTokens: 4, outputTokens: 2 }));
+    test.feed.push(attempt(4, { inputTokens: "broken", outputTokens: 99 }));
+    const settled = finalAssistantMessage(5, 1, "done", "think");
+    test.feed.push({
+      ...settled,
+      data: {
+        ...(settled.data as Record<string, ModernJournalJson>),
+        usage: { inputTokens: 10, outputTokens: "broken" },
+      },
+    });
     test.feed.push(event(6, "step/end", { turn: 1, step: 1 }));
     test.feed.push(event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }));
 
@@ -2069,42 +1833,31 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it.each([
-    ["plugin", { kind: "plugin", plugin: "fixture" }],
-    ["goal", { kind: "goal", goalId: "goal-1", revision: 1, round: 1 }],
-  ])(
-    "starts a live autonomous Turn at the boundary after a %s user/message",
-    async (_kind, source) => {
-      const test = setup([], [], ["autonomous-source"]);
-      const outputs = test.session.outputs[Symbol.asyncIterator]();
-      test.feed.push(event(0, "turn/start", { turn: 1 }));
-      test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
-      test.feed.push(sourcedUserMessage(2, "context", source));
-      test.feed.push(requestHeader(3));
+  it("starts a live autonomous Turn at the boundary after a goal user/message", async () => {
+    const test = setup([], [], ["autonomous-source"]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(sourcedUserMessage(2, "context", GOAL_SOURCE));
+    test.feed.push(requestHeader(3));
 
-      expect(await nextEvent(outputs)).toEqual({
-        type: "turn.autonomous.started",
-        turnId: "autonomous-source",
-        input: [],
-      });
-      expect(await nextEvent(outputs)).toEqual({
-        type: "turn.started",
-        turnId: "autonomous-source",
-      });
-      await test.session.close();
-    },
-  );
+    expect(await nextEvent(outputs)).toEqual({
+      type: "turn.autonomous.started",
+      turnId: "autonomous-source",
+      input: [],
+    });
+    expect(await nextEvent(outputs)).toEqual({
+      type: "turn.started",
+      turnId: "autonomous-source",
+    });
+    await test.session.close();
+  });
 
   it("resumes visible incomplete history as an autonomous Turn without completing it in snapshots", async () => {
     const history = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
       userMessage(2, "resumed", "old-request"),
-      event(3, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "text-delta", index: 0, text: "partial" },
-      }),
     ];
     const test = setup([], history, ["autonomous-resume"]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
@@ -2116,6 +1869,10 @@ describe("DeepSeek Harness Modern Session", () => {
       type: "turn.started",
       turnId: "autonomous-resume",
     });
+    // The opening baseline replays the in-flight attempt as live frames.
+    const stream = new LiveAttempts(test.feed);
+    stream.start("in-flight", 2);
+    stream.chunk({ type: "text-delta", index: 0, text: "partial" });
     expect(await nextEvent(outputs)).toMatchObject({ type: "item.started" });
     expect(await nextEvent(outputs)).toMatchObject({
       type: "item.updated",
@@ -2128,10 +1885,10 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("does not resume incomplete history whose only assistant surface is a replacement", async () => {
+  it("does not resume incomplete history whose only surface is a compaction replacement", async () => {
     const replacement = {
-      ...finalAssistantMessage(7, 2, "model-only answer", "model-only thought"),
-      surfaceOp: { op: "replace" as const, start: 2, end: 2 },
+      ...userMessage(7, "model-only checkpoint"),
+      surfaceOp: { op: "replace" as const, startSeq: 2, endSeq: 2 },
       sourceEventSeqs: [2],
     };
     const test = setup(
@@ -2161,14 +1918,11 @@ describe("DeepSeek Harness Modern Session", () => {
     await expect(outputs.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
-  it.each([
-    ["plugin", { kind: "plugin", plugin: "fixture" }],
-    ["goal", { kind: "goal", goalId: "goal-1", revision: 1, round: 1 }],
-  ])("resumes an incomplete %s user/message Turn as autonomous", async (_kind, source) => {
+  it("resumes an incomplete goal user/message Turn as autonomous", async () => {
     const history = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
-      sourcedUserMessage(2, "context", source),
+      sourcedUserMessage(2, "context", GOAL_SOURCE),
     ];
     const test = setup([], history, ["autonomous-resume-source"]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
@@ -2240,7 +1994,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       undefined,
       [],
-      DEEPSEEK_V017_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const id = turnId("host-turn-fork");
@@ -2274,7 +2028,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       undefined,
       [],
-      DEEPSEEK_V017_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     await test.session.execute({
@@ -2381,7 +2135,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       undefined,
       [],
-      DEEPSEEK_V017_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     await test.session.execute({
@@ -2700,7 +2454,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
     test.feed.push(event(0, "turn/start", { turn: 1 }));
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
-    test.feed.push(sourcedUserMessage(2, "plugin context", { kind: "plugin", plugin: "fixture" }));
+    test.feed.push(sourcedUserMessage(2, "goal context", GOAL_SOURCE));
     test.feed.push(requestHeader(3));
     expect(await nextEvent(outputs)).toMatchObject({
       type: "turn.autonomous.started",
@@ -2944,7 +2698,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     test.feed.push(event(0, "turn/start", { turn: 1 }));
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
-    test.feed.push(sourcedUserMessage(2, "plugin context", { kind: "plugin", plugin: "fixture" }));
+    test.feed.push(sourcedUserMessage(2, "goal context", GOAL_SOURCE));
     test.feed.push(requestHeader(3));
     expect(await nextEvent(outputs)).toMatchObject({ type: "turn.autonomous.started" });
     expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
@@ -3127,53 +2881,41 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it.each([
-    ["V0", DEEPSEEK_V012_PROFILE, { images: [] }],
-    ["V4", DEEPSEEK_V017_PROFILE, { submittedAttachments: [] }],
-  ])(
-    "selects %s Permission through the exact command and confirms its projection",
-    async (_name, profile, attachments) => {
-      const receipt = deferred<ModernRemoteResult<unknown>>();
-      const test = setup(
-        [() => receipt.promise],
-        [],
-        ["autonomous-1"],
-        5_000,
-        PERMISSION_CATALOG,
-        undefined,
-        undefined,
-        [],
-        profile,
-      );
-      const outputs = test.session.outputs[Symbol.asyncIterator]();
+  it("selects Permission through the exact command and confirms its projection", async () => {
+    const receipt = deferred<ModernRemoteResult<unknown>>();
+    const test = setup([() => receipt.promise], [], ["autonomous-1"], 5_000, PERMISSION_CATALOG);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
 
-      const selecting = test.session.execute({
-        type: "permissionMode.select",
-        permissionModeId: "danger-full-access" as never,
-      });
-      await vi.waitFor(() => expect(test.remote.calls).toHaveLength(1));
-      expect(test.remote.calls[0]).toMatchObject({
-        endpoint: "commands/execute",
-        args: { agentId: SESSION_ID, line: "/permission danger-full-access", ...attachments },
-        options: { timeoutMs: null },
-      });
-      expect(test.remote.calls[0]?.signal).toBeInstanceOf(AbortSignal);
-      test.control.update("permissions", permissionValue("danger-full-access", profile), 1);
-      receipt.resolve({
-        ok: true,
-        value: {
-          commandId: "permission-1",
-          result: { kind: "success", text: "full access" },
-        },
-      });
-      await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
-      expect(await nextEvent(outputs)).toMatchObject({
-        type: "session.state.changed",
-        state: { effectivePermissionModeId: "danger-full-access" },
-      });
-      await test.session.close();
-    },
-  );
+    const selecting = test.session.execute({
+      type: "permissionMode.select",
+      permissionModeId: "danger-full-access" as never,
+    });
+    await vi.waitFor(() => expect(test.remote.calls).toHaveLength(1));
+    expect(test.remote.calls[0]).toMatchObject({
+      endpoint: "commands/execute",
+      args: {
+        agentId: SESSION_ID,
+        line: "/permission danger-full-access",
+        submittedAttachments: [],
+      },
+      options: { timeoutMs: null },
+    });
+    expect(test.remote.calls[0]?.signal).toBeInstanceOf(AbortSignal);
+    test.control.update("permissions", permissionValue("danger-full-access"), 1);
+    receipt.resolve({
+      ok: true,
+      value: {
+        commandId: "permission-1",
+        result: { kind: "success", text: "full access" },
+      },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(await nextEvent(outputs)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectivePermissionModeId: "danger-full-access" },
+    });
+    await test.session.close();
+  });
 
   it("does not let late journal configuration roll back newer control state", async () => {
     const test = setup([]);
@@ -3243,7 +2985,7 @@ describe("DeepSeek Harness Modern Session", () => {
     ).resolves.toEqual({ ok: true, value: { turnId: commandTurnId } });
     expect(test.remote.calls[0]).toMatchObject({
       endpoint: "commands/execute",
-      args: { agentId: SESSION_ID, line: "/goal ship", images: [] },
+      args: { agentId: SESSION_ID, line: "/goal ship", submittedAttachments: [] },
       options: { timeoutMs: null },
     });
     expect(test.remote.calls[0]?.signal).toBeInstanceOf(AbortSignal);
@@ -4054,7 +3796,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("bounds v015 attempt buffering even while its live feed is being consumed", async () => {
+  it("bounds attempt buffering even while its live feed is being consumed", async () => {
     const history = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
@@ -4063,13 +3805,13 @@ describe("DeepSeek Harness Modern Session", () => {
     const test = setup(
       [],
       history,
-      ["bounded-v015"],
+      ["bounded-attempt"],
       5000,
       null,
       undefined,
       MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
       [],
-      DEEPSEEK_V015_PROFILE,
+      DEEPSEEK_V4_PROFILE,
       200,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
@@ -4098,7 +3840,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await expect(test.session.close()).rejects.toThrow("native execution stop was not confirmed");
   });
 
-  it("streams v0.1.5 attempts and cancels failed retry text before the successful message", async () => {
+  it("streams attempts and cancels failed retry text before the successful message", async () => {
     const history = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
@@ -4107,13 +3849,13 @@ describe("DeepSeek Harness Modern Session", () => {
     const test = setup(
       [],
       history,
-      ["autonomous-v015"],
+      ["autonomous-retry"],
       5_000,
       null,
       undefined,
       MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
       [],
-      DEEPSEEK_V015_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     await Promise.resolve();
@@ -4273,7 +4015,7 @@ describe("DeepSeek Harness Modern Session", () => {
     expect(emitted.filter(({ type }) => type === "item.started")).toHaveLength(3);
     const ui = new CodexTurnProjector({
       threadId: "stream-retry-thread",
-      turnId: turnId("autonomous-v015"),
+      turnId: turnId("autonomous-retry"),
       cwd: "/fixture",
       startedAtMs: 1_000,
     });
@@ -4339,7 +4081,7 @@ describe("DeepSeek Harness Modern Session", () => {
       expect.objectContaining({
         type: "turn.completed",
         outcome: expect.objectContaining({
-          checkpoint: expect.objectContaining({ checkpointId: "v3-turn-end:6" }),
+          checkpoint: expect.objectContaining({ checkpointId: "v4-turn-end:6" }),
         }),
       }),
     );
@@ -4353,7 +4095,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("publishes buffered v0.1.5 chunks as soon as the correlated Host Turn is admitted", async () => {
+  it("publishes buffered attempt chunks as soon as the correlated Host Turn is admitted", async () => {
     const receipt = deferred<ModernRemoteResult<unknown>>();
     const test = setup(
       [() => receipt.promise],
@@ -4364,7 +4106,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
       [],
-      DEEPSEEK_V015_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const started = test.session.execute({
@@ -4423,7 +4165,7 @@ describe("DeepSeek Harness Modern Session", () => {
     const replacement = new EventFeed();
     replacement.push({
       type: "snapshot",
-      header: { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false },
+      header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false },
       cursor: 2,
       records: history.map((entry) => ({ type: "event", event: entry })),
       hasMore: false,
@@ -4439,7 +4181,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
       [replacement],
-      DEEPSEEK_V015_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     test.feed.push({
@@ -4488,7 +4230,7 @@ describe("DeepSeek Harness Modern Session", () => {
   });
 
   it.each([false, true])(
-    "deduplicates a reconnected v0.1.5 attempt when settlement is in the replacement snapshot: %s",
+    "deduplicates a reconnected attempt when settlement is in the replacement snapshot: %s",
     async (settled) => {
       const history = [
         event(0, "turn/start", { turn: 1 }),
@@ -4516,7 +4258,7 @@ describe("DeepSeek Harness Modern Session", () => {
       const replacement = new EventFeed();
       replacement.push({
         type: "snapshot",
-        header: { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false },
+        header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false },
         cursor: settled ? 3 : 2,
         records: [...history, ...(settled ? [message] : [])].map((entry) => ({
           type: "event",
@@ -4547,7 +4289,7 @@ describe("DeepSeek Harness Modern Session", () => {
         undefined,
         MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
         [replacement],
-        DEEPSEEK_V015_PROFILE,
+        DEEPSEEK_V4_PROFILE,
       );
       const outputs = test.session.outputs[Symbol.asyncIterator]();
       test.feed.push({
@@ -4658,7 +4400,7 @@ describe("DeepSeek Harness Modern Session", () => {
       const replacement = new EventFeed();
       replacement.push({
         type: "snapshot",
-        header: { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false },
+        header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false },
         cursor: messageSeq + 2,
         records: [...history, ...settled].map((entry) => ({ type: "event", event: entry })),
         hasMore: false,
@@ -4674,7 +4416,7 @@ describe("DeepSeek Harness Modern Session", () => {
         undefined,
         MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
         [replacement],
-        DEEPSEEK_V015_PROFILE,
+        DEEPSEEK_V4_PROFILE,
       );
       const outputs = test.session.outputs[Symbol.asyncIterator]();
       test.feed.push({
@@ -4734,7 +4476,7 @@ describe("DeepSeek Harness Modern Session", () => {
     },
   );
 
-  it("cancels an abandoned v0.1.5 attempt and preserves a revised final message without prefix pollution", async () => {
+  it("cancels an abandoned attempt and preserves a revised final message without prefix pollution", async () => {
     const history = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
@@ -4749,7 +4491,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
       [],
-      DEEPSEEK_V015_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     test.feed.push({
@@ -4882,7 +4624,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("reopens v0.1.5 journal state after a known attempt index gap", async () => {
+  it("reopens journal state after a known attempt index gap", async () => {
     const history = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
@@ -4891,7 +4633,7 @@ describe("DeepSeek Harness Modern Session", () => {
     const replacement = new EventFeed();
     replacement.push({
       type: "snapshot",
-      header: { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false },
+      header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false },
       cursor: 2,
       records: history.map((entry) => ({ type: "event", event: entry })),
       hasMore: false,
@@ -4907,7 +4649,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
       [replacement],
-      DEEPSEEK_V015_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     expect(await nextEvent(outputs)).toMatchObject({ type: "turn.autonomous.started" });
@@ -4977,7 +4719,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("accepts an end frame when its v0.1.5 settlement was already in the opening snapshot", async () => {
+  it("accepts an end frame when its settlement was already in the opening snapshot", async () => {
     const history = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
@@ -5009,7 +4751,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
       [],
-      DEEPSEEK_V015_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     await Promise.resolve();
@@ -5115,7 +4857,7 @@ describe("DeepSeek Harness timed user questions", () => {
       undefined,
       undefined,
       [],
-      DEEPSEEK_V017_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs: HarnessOutput[] = [];
     void (async () => {
@@ -5468,7 +5210,7 @@ describe("DeepSeek Harness timed user questions", () => {
       undefined,
       undefined,
       [],
-      DEEPSEEK_V017_PROFILE,
+      DEEPSEEK_V4_PROFILE,
     );
     const outputs: HarnessOutput[] = [];
     void (async () => {

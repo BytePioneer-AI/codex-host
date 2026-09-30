@@ -33,7 +33,6 @@ import {
 
 import { encodeDeepSeekHarnessModelRef, parseDeepSeekThinkingOptionId } from "../model-catalog.js";
 import {
-  deepSeekUsageKey,
   isRecord,
   mergeDeepSeekUsage,
   nonBlankString,
@@ -45,11 +44,7 @@ import {
   structuredDiffs,
 } from "../projection.js";
 import type { ModernJournalEvent } from "./journal.js";
-import {
-  DEEPSEEK_V012_PROFILE,
-  hasDeepSeekModernStream,
-  type DeepSeekModernProfile,
-} from "../profiles/profile.js";
+import { DEEPSEEK_V4_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import {
   boundedInteger,
   enumValue,
@@ -66,7 +61,6 @@ import {
 export { ModernHistoryError, type ModernHistoryErrorCode } from "../profiles/validation.js";
 import {
   isPtcProgramTool,
-  projectsPtcDispatches,
   ptcDispatchItem,
   ptcDispatchKey,
   ptcDispatchOutcome,
@@ -86,7 +80,6 @@ const KNOWN_EVENT_TYPES = new Set([
   "approval/decided",
   "approval/policy",
   "assistant/attempt",
-  "assistant/chunk",
   "assistant/message",
   "command/done",
   "command/run",
@@ -95,12 +88,14 @@ const KNOWN_EVENT_TYPES = new Set([
   "compaction/start",
   "compaction/summary",
   "deliverables/presented",
+  "developer/message",
   "feedback/record",
   "feedback/message-put",
   "feedback/message-delete",
   "goal/change",
   "hook/invoked",
   "hook/result",
+  "image/offload",
   "llm/retry",
   "llm/retry-started",
   "model/selection",
@@ -130,8 +125,6 @@ const KNOWN_EVENT_TYPES = new Set([
   "tool-workflow/run-end",
   "tool-workflow/run-start",
   "tool/call",
-  "tool/code-dispatch",
-  "tool/code-dispatch-start",
   "tool/ptc-dispatch",
   "tool/ptc-dispatch-start",
   "tool/result",
@@ -139,25 +132,12 @@ const KNOWN_EVENT_TYPES = new Set([
   "turn/start",
   "user/message",
   "web/deepseek-search-llm-request",
+  "workspace/changes",
 ]);
-
-const V4_EVENT_TYPES = new Set(["developer/message", "image/offload", "workspace/changes"]);
-
-function knownEvent(type: string, profile: DeepSeekModernProfile): boolean {
-  return (
-    KNOWN_EVENT_TYPES.has(type) || (profile.sessionFormatVersion === 4 && V4_EVENT_TYPES.has(type))
-  );
-}
-
-function surfaceEvent(type: string, profile: DeepSeekModernProfile): boolean {
-  return (
-    SURFACE_EVENT_TYPES.has(type) ||
-    (profile.sessionFormatVersion === 4 && type === "developer/message")
-  );
-}
 
 const SURFACE_EVENT_TYPES = new Set([
   "system/message",
+  "developer/message",
   "user/message",
   "assistant/message",
   "tool/result",
@@ -170,7 +150,6 @@ interface ValidatorTrace {
   nextTurn: number;
   nextStep: number;
   surface: ModernJournalEvent[];
-  pendingCalls: Set<string>;
   commandStates: Map<string, "running" | "done">;
   commandEventSeqs: Set<number>;
   requestHeaders: Map<number, Record<string, unknown>>;
@@ -189,7 +168,6 @@ export class ModernEventValidator {
     nextTurn: 1,
     nextStep: 1,
     surface: [],
-    pendingCalls: new Set(),
     commandStates: new Map(),
     commandEventSeqs: new Set(),
     requestHeaders: new Map(),
@@ -199,7 +177,7 @@ export class ModernEventValidator {
 
   constructor(
     maxEvents = MODERN_HISTORY_MAX_EVENTS,
-    profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
+    profile: DeepSeekModernProfile = DEEPSEEK_V4_PROFILE,
   ) {
     this.#maxEvents = boundedInteger(maxEvents, "maxEvents", 1);
     this.#profile = profile;
@@ -211,26 +189,20 @@ export class ModernEventValidator {
     if (event.seq !== trace.count) fail("Modern history is not a contiguous zero-based prefix");
     trace.count += 1;
 
-    if (
-      hasDeepSeekModernStream(this.#profile) &&
-      !knownEvent(event.type, this.#profile) &&
-      event.ignorable === true
-    )
-      return;
-    if (!surfaceEvent(event.type, this.#profile)) {
+    if (!KNOWN_EVENT_TYPES.has(event.type) && event.ignorable === true) return;
+    if (!SURFACE_EVENT_TYPES.has(event.type)) {
       if (event.surfaceOp !== undefined || event.sourceEventSeqs !== undefined) {
         fail("Modern history has surface metadata on a log-only event");
       }
     } else if (event.surfaceOp === undefined) {
       fail("Modern history surface event omitted surfaceOp");
     }
-    if (!knownEvent(event.type, this.#profile)) {
-      if (event.ignorable === true) return;
+    if (!KNOWN_EVENT_TYPES.has(event.type)) {
       fail("Modern history contains an unknown required event");
     }
     if (!isRecord(event.data)) fail("Modern history contains malformed known event data");
     this.#profile.validateEvent(event);
-    acceptSurfaceEvent(trace, event, this.#profile);
+    acceptSurfaceEvent(trace, event);
 
     const data = event.data;
     switch (event.type) {
@@ -247,11 +219,11 @@ export class ModernEventValidator {
       case "turn/end": {
         exactKeys(data, ["turn", "reason"]);
         const turn = positiveInteger(data.turn, "turn/end turn");
-        validateTurnReason(data.reason, this.#profile);
+        validateTurnReason(data.reason);
         if (trace.openTurn !== turn || trace.openStep !== null) {
           fail("Modern history has an invalid turn/end boundary");
         }
-        if (this.#profile.sessionFormatVersion === 4 && trace.toolCalls.size > 0) {
+        if (trace.toolCalls.size > 0) {
           fail("Modern history turn/end leaves unresolved tool calls");
         }
         trace.openTurn = null;
@@ -270,12 +242,11 @@ export class ModernEventValidator {
       case "step/end": {
         exactKeys(data, ["turn", "step"]);
         requireOpenStep(trace, data, "step/end");
-        if (this.#profile.sessionFormatVersion === 4 && trace.toolCalls.size > 0) {
+        if (trace.toolCalls.size > 0) {
           fail("Modern history step/end leaves unresolved tool calls");
         }
         trace.openStep = null;
         trace.nextStep += 1;
-        trace.pendingCalls.clear();
         return;
       }
       case "user/message":
@@ -288,15 +259,10 @@ export class ModernEventValidator {
       case "system/message":
         requireOpenStep(trace, data, "system/message");
         return;
-      case "assistant/chunk":
-        exactKeys(data, ["turn", "step", "chunk"]);
-        requireOpenStep(trace, data, "assistant/chunk");
-        this.#profile.validateChunk(data.chunk);
-        return;
       case "assistant/message": {
         requireOpenStep(trace, data, "assistant/message");
         validateAssistantMessage(data.message, this.#profile);
-        if (this.#profile.sessionFormatVersion === 4) registerV4ToolCalls(data.message, trace);
+        registerToolCalls(data.message, trace);
         if (data.interrupted !== undefined && data.interrupted !== true) {
           fail("Modern history assistant/message has invalid interrupted marker");
         }
@@ -311,38 +277,30 @@ export class ModernEventValidator {
         requireOpenStep(trace, data, "tool/call");
         const callId = requiredString(data.callId, "tool/call callId");
         const name = requiredString(data.name, "tool/call name");
-        if (typeof data.arguments !== "string" || trace.pendingCalls.has(callId)) {
+        if (typeof data.arguments !== "string") {
           fail("Modern history contains an invalid tool/call");
         }
-        if (this.#profile.sessionFormatVersion === 4) {
-          const tool = trace.toolCalls.get(callId);
-          if (!tool || tool.started || tool.name !== name || tool.arguments !== data.arguments) {
-            fail("Modern history tool/call does not match its advertised tool call");
-          }
-          tool.started = true;
-          return;
+        const tool = trace.toolCalls.get(callId);
+        if (!tool || tool.started || tool.name !== name || tool.arguments !== data.arguments) {
+          fail("Modern history tool/call does not match its advertised tool call");
         }
-        trace.pendingCalls.add(callId);
+        tool.started = true;
         return;
       }
       case "tool/result": {
         requiredOptionalKeys(data, ["turn", "step", "message"], ["error", "meta"]);
         const callId = validateToolResultMessage(data.message, this.#profile);
-        if (data.error !== undefined) validateToolError(data.error, this.#profile);
+        if (data.error !== undefined) validateToolError(data.error);
         if (event.surfaceOp === "append") {
           requireOpenStep(trace, data, "tool/result");
-          if (this.#profile.sessionFormatVersion === 4) {
-            const tool = trace.toolCalls.get(callId);
-            if (
-              !tool ||
-              (!tool.started && !isNotStartedToolResult(data, event.sourceEventSeqs, event.seq))
-            ) {
-              fail("Modern history contains an unmatched tool/result");
-            }
-            trace.toolCalls.delete(callId);
-          } else if (!trace.pendingCalls.delete(callId)) {
+          const tool = trace.toolCalls.get(callId);
+          if (
+            !tool ||
+            (!tool.started && !isNotStartedToolResult(data, event.sourceEventSeqs, event.seq))
+          ) {
             fail("Modern history contains an unmatched tool/result");
           }
+          trace.toolCalls.delete(callId);
         } else if (trace.openTurn === null) {
           fail("Modern history contains a tool/result replacement outside a Turn");
         }
@@ -354,7 +312,7 @@ export class ModernEventValidator {
         trace.requestHeaders.set(event.seq, data.header as Record<string, unknown>);
         return;
       case "request/context":
-        validateRequestContext(data, this.#profile);
+        validateRequestContext(data);
         if (trace.openTurn === null) fail("Modern history request/context is outside a Turn");
         return;
       case "model/selection":
@@ -455,11 +413,9 @@ export class ModernEventValidator {
       case "tool-workflow/run-end":
         validateWorkflow(event.type, data);
         return;
-      case "tool/code-dispatch-start":
-      case "tool/code-dispatch":
       case "tool/ptc-dispatch-start":
       case "tool/ptc-dispatch":
-        validateCodeDispatch(event.type, data, this.#profile);
+        validatePtcDispatch(event.type, data, this.#profile);
         return;
       case "compaction/start":
       case "compaction/summary":
@@ -494,7 +450,7 @@ export class ModernEventValidator {
       case "team/task":
       case "team/message/queued":
       case "team/message/delivered":
-        validateTeamEvent(event.type, data, this.#profile);
+        validateTeamEvent(event.type, data);
         return;
       case "web/deepseek-search-llm-request":
         validateSearchRequest(data);
@@ -505,7 +461,7 @@ export class ModernEventValidator {
   }
 }
 
-function registerV4ToolCalls(value: unknown, trace: ValidatorTrace): void {
+function registerToolCalls(value: unknown, trace: ValidatorTrace): void {
   if (!isRecord(value) || !Array.isArray(value.content)) return;
   for (const block of value.content) {
     if (!isRecord(block) || block.type !== "tool-call") continue;
@@ -648,12 +604,8 @@ function validateImageOffload(data: Record<string, unknown>, trace: ValidatorTra
   }
 }
 
-function acceptSurfaceEvent(
-  trace: ValidatorTrace,
-  event: ModernJournalEvent,
-  profile: DeepSeekModernProfile,
-): void {
-  if (!surfaceEvent(event.type, profile)) return;
+function acceptSurfaceEvent(trace: ValidatorTrace, event: ModernJournalEvent): void {
+  if (!SURFACE_EVENT_TYPES.has(event.type)) return;
   const sources = event.sourceEventSeqs;
   if (
     sources !== undefined &&
@@ -662,8 +614,7 @@ function acceptSurfaceEvent(
         (seq) => !nonNegativeSafeInteger(seq) || Object.is(seq, -0) || seq >= event.seq,
       ) ||
       new Set(sources).size !== sources.length ||
-      (sources.length === 0 &&
-        (profile.sessionFormatVersion === 4 || event.type !== "assistant/message")))
+      sources.length === 0)
   ) {
     fail("Modern history surface event has invalid sourceEventSeqs");
   }
@@ -671,7 +622,6 @@ function acceptSurfaceEvent(
   const op = event.surfaceOp;
   if (op === "append") {
     if (
-      profile.sessionFormatVersion === 4 &&
       event.type === "system/message" &&
       trace.surface.length > 0 &&
       !trace.surface.some((surface) => surface.type === "system/message")
@@ -681,25 +631,23 @@ function acceptSurfaceEvent(
     trace.surface.push(event);
     return;
   }
-  const start = hasDeepSeekModernStream(profile) ? "startSeq" : "start";
-  const end = hasDeepSeekModernStream(profile) ? "endSeq" : "end";
   if (
     !isRecord(op) ||
     Reflect.ownKeys(op).length !== 3 ||
     !Object.hasOwn(op, "op") ||
-    !Object.hasOwn(op, start) ||
-    !Object.hasOwn(op, end) ||
+    !Object.hasOwn(op, "startSeq") ||
+    !Object.hasOwn(op, "endSeq") ||
     op.op !== "replace" ||
-    !nonNegativeSafeInteger(op[start]) ||
-    Object.is(op[start], -0) ||
-    !nonNegativeSafeInteger(op[end]) ||
-    Object.is(op[end], -0)
+    !nonNegativeSafeInteger(op.startSeq) ||
+    Object.is(op.startSeq, -0) ||
+    !nonNegativeSafeInteger(op.endSeq) ||
+    Object.is(op.endSeq, -0)
   ) {
     fail("Modern history surface event has an invalid replacement operation");
   }
 
-  const startIndex = trace.surface.findIndex(({ seq }) => seq === op[start]);
-  const endIndex = trace.surface.findIndex(({ seq }) => seq === op[end]);
+  const startIndex = trace.surface.findIndex(({ seq }) => seq === op.startSeq);
+  const endIndex = trace.surface.findIndex(({ seq }) => seq === op.endSeq);
   if (startIndex === -1 || endIndex === -1 || startIndex > endIndex) {
     fail("Modern history surface replacement has an invalid current range");
   }
@@ -719,10 +667,7 @@ function acceptSurfaceEvent(
     if (
       shadowed.length !== 1 ||
       shadowed[0]?.type !== "tool/result" ||
-      !isDeepStrictEqual(
-        comparableToolResultData(shadowed[0], profile),
-        comparableToolResultData(event, profile),
-      )
+      !isDeepStrictEqual(comparableToolResultData(shadowed[0]), comparableToolResultData(event))
     ) {
       fail("Modern history tool/result replacement changed more than result content");
     }
@@ -730,31 +675,13 @@ function acceptSurfaceEvent(
   trace.surface.splice(startIndex, endIndex - startIndex + 1, event);
 }
 
-function comparableToolResultData(
-  event: ModernJournalEvent,
-  profile: DeepSeekModernProfile,
-): Record<string, unknown> {
+/** A result replacement may change only the blocks stored on the Tool message. */
+function comparableToolResultData(event: ModernJournalEvent): Record<string, unknown> {
   const data = event.data;
-  if (
-    !isRecord(data) ||
-    !isRecord(data.message) ||
-    !Array.isArray(data.message.content) ||
-    (profile.sessionFormatVersion !== 4 && !isRecord(data.message.content[0]))
-  ) {
+  if (!isRecord(data) || !isRecord(data.message) || !Array.isArray(data.message.content)) {
     fail("Modern history tool/result replacement is malformed");
   }
-  // V4 stores result blocks directly on the Tool message; V0/V3 wrap them
-  // in one tool-result block whose metadata must remain unchanged.
-  if (profile.sessionFormatVersion === 4) {
-    return { ...data, message: { ...data.message, content: null } };
-  }
-  return {
-    ...data,
-    message: {
-      ...data.message,
-      content: [{ ...data.message.content[0], content: null }],
-    },
-  };
+  return { ...data, message: { ...data.message, content: null } };
 }
 
 export interface ModernIncompleteTurn {
@@ -780,7 +707,7 @@ export interface ModernForkBoundary {
 
 export function parseModernCheckpointSeq(
   checkpointId: string,
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
+  profile: DeepSeekModernProfile = DEEPSEEK_V4_PROFILE,
 ): number | null {
   if (!checkpointId.startsWith(profile.checkpointPrefix)) return null;
   const match = /^(0|[1-9]\d*)$/u.exec(checkpointId.slice(profile.checkpointPrefix.length));
@@ -793,23 +720,20 @@ export function parseModernCheckpointSeq(
 export function resolveModernForkBoundary(
   events: readonly ModernJournalEvent[],
   checkpointId: string,
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
+  profile: DeepSeekModernProfile = DEEPSEEK_V4_PROFILE,
 ): ModernForkBoundary | null {
   const atSeq = parseModernCheckpointSeq(checkpointId, profile);
   if (atSeq === null || events[atSeq]?.seq !== atSeq || events[atSeq]?.type !== "turn/end") {
     return null;
   }
-  if (profile.sessionFormatVersion === 4) return { atSeq, events: events.slice(0, atSeq + 1) };
-  let cut = atSeq + 1;
-  while (cut < events.length && events[cut]?.type !== "turn/start") cut += 1;
-  return { atSeq, events: events.slice(0, cut) };
+  return { atSeq, events: events.slice(0, atSeq + 1) };
 }
 
 /** Verify the inherited raw prefix and the child's one legal seed marker. */
 export function matchesModernForkHistory(
   expectedPrefix: readonly ModernJournalEvent[],
   childEvents: readonly ModernJournalEvent[],
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
+  profile: DeepSeekModernProfile = DEEPSEEK_V4_PROFILE,
 ): boolean {
   if (!expectedPrefix.every((event, index) => isDeepStrictEqual(event, childEvents[index]))) {
     return false;
@@ -850,7 +774,7 @@ export interface ProjectModernHistoryInput {
 export function projectModernHistory(input: ProjectModernHistoryInput): ModernHistoryProjection {
   if (!nonBlankString(input.sessionId)) throw new TypeError("sessionId must be a non-empty string");
   const harnessId = input.harnessId ?? DEEPSEEK_HARNESS_ID;
-  const profile = input.profile ?? DEEPSEEK_V012_PROFILE;
+  const profile = input.profile ?? DEEPSEEK_V4_PROFILE;
   const toolOutputLimit = boundedInteger(
     input.toolOutputLimit ?? MODERN_TOOL_OUTPUT_LIMIT,
     "toolOutputLimit",
@@ -872,13 +796,8 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
       if (parsed) usage = mergeDeepSeekUsage(usage, parsed);
     }
   };
-  const recordUsage = (data: Record<string, unknown>, raw: unknown, fallback: string): void => {
-    if (!validUsage(raw) || !parseDeepSeekUsage(raw, contextWindowTokens)) return;
-    rawUsageByStep.set(deepSeekUsageKey(data, fallback), raw);
-    rebuildUsage();
-  };
   const recordSettlementUsage = (data: Record<string, unknown>, eventSeq: number): void => {
-    const raw = profile.settlementUsage?.(data);
+    const raw = profile.settlementUsage(data);
     if (!validUsage(raw) || !parseDeepSeekUsage(raw, contextWindowTokens)) return;
     rawUsageByStep.set(`settlement:${eventSeq}`, raw);
     rebuildUsage();
@@ -886,7 +805,7 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
 
   for (const [index, event] of input.events.entries()) {
     validator.accept(event);
-    if (!knownEvent(event.type, profile) || !isRecord(event.data)) continue;
+    if (!KNOWN_EVENT_TYPES.has(event.type) || !isRecord(event.data)) continue;
     const data = event.data;
     switch (event.type) {
       case "turn/start":
@@ -929,39 +848,28 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
           active.input.push(...textInputs(data.content));
         }
         break;
-      case "assistant/chunk":
-        if (isRecord(data.chunk) && data.chunk.type === "usage") {
-          recordUsage(data, data.chunk.usage, `event:${event.seq}`);
-        }
-        break;
       case "assistant/attempt":
         recordSettlementUsage(data, event.seq);
         break;
       case "assistant/message":
-        if (profile.settlementUsage && event.surfaceOp === "append") {
+        if (event.surfaceOp === "append") {
           recordSettlementUsage(data, event.seq);
-        } else if (event.surfaceOp === "append" && data.usage !== undefined) {
-          recordUsage(data, data.usage, `event:${event.seq}`);
-        }
-        if (active && event.surfaceOp === "append") {
-          projectAssistantMessage(active, input.sessionId, data);
+          if (active) projectAssistantMessage(active, input.sessionId, data);
         }
         break;
       case "tool/call":
-        if (active) projectToolCall(active, input.sessionId, data, event.seq, profile);
+        if (active) projectToolCall(active, input.sessionId, data, event.seq);
         break;
       case "tool/result":
         if (active && event.surfaceOp === "append") {
-          projectToolResultEvent(active, input.sessionId, event, toolOutputLimit, profile);
+          projectToolResultEvent(active, input.sessionId, event, toolOutputLimit);
         }
         break;
       case "tool/ptc-dispatch-start":
-        if (active && projectsPtcDispatches(profile)) {
-          projectPtcDispatchStart(active, input.sessionId, data, event.seq);
-        }
+        if (active) projectPtcDispatchStart(active, input.sessionId, data, event.seq);
         break;
       case "tool/ptc-dispatch":
-        if (active && projectsPtcDispatches(profile)) {
+        if (active) {
           projectPtcDispatchSettle(active, input.sessionId, data, event.seq, toolOutputLimit);
         }
         break;
@@ -989,7 +897,7 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
     harnessId,
     nativeSessionId: input.sessionId,
     formatVersion: 1,
-    ...(hasDeepSeekModernStream(profile) ? { locator: { dshVersion: profile.version } } : {}),
+    locator: { dshVersion: profile.version },
   });
   const state: HarnessSessionState = {
     nativeRef,
@@ -1027,14 +935,14 @@ export function modernCheckpointRef(
   harnessId: HarnessId,
   sessionId: string,
   seq: number,
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
+  profile: DeepSeekModernProfile = DEEPSEEK_V4_PROFILE,
 ): NativeCheckpointRef {
   return nativeCheckpointRefSchema.parse({
     harnessId,
     nativeSessionId: sessionId,
     checkpointId: `${profile.checkpointPrefix}${seq}`,
     formatVersion: 1,
-    ...(hasDeepSeekModernStream(profile) ? { locator: { dshVersion: profile.version } } : {}),
+    locator: { dshVersion: profile.version },
   });
 }
 
@@ -1086,12 +994,11 @@ function projectToolCall(
   sessionId: string,
   data: Record<string, unknown>,
   seq: number,
-  profile: DeepSeekModernProfile,
 ): void {
   if (turn.tools.has(data.callId as string) || turn.programCalls.has(data.callId as string)) {
     fail("Modern history reused an unfinished Tool callId");
   }
-  if (isPtcProgramTool(profile, data.name as string)) {
+  if (isPtcProgramTool(data.name as string)) {
     turn.programCalls.add(data.callId as string);
     turn.advertisedTools.delete(data.callId as string);
     return;
@@ -1113,7 +1020,6 @@ function projectToolResultEvent(
   sessionId: string,
   event: ModernJournalEvent,
   limit: number,
-  profile: DeepSeekModernProfile,
 ): void {
   const data = event.data as Record<string, unknown>;
   const seq = event.seq;
@@ -1124,7 +1030,7 @@ function projectToolResultEvent(
     advertised !== undefined && isNotStartedToolResult(data, event.sourceEventSeqs, seq);
   if (
     turn.programCalls.delete(result.callId) ||
-    (notStarted && isPtcProgramTool(profile, advertised.toolName))
+    (notStarted && isPtcProgramTool(advertised.toolName))
   ) {
     turn.advertisedTools.delete(result.callId);
     return;
@@ -1321,19 +1227,15 @@ function stepPosition(
   };
 }
 
-function validateUserMessage(
-  data: Record<string, unknown>,
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
-): void {
-  if (profile.sessionFormatVersion === 4) requiredFields(data, ["id", "role", "content", "source"]);
-  else exactKeys(data, ["id", "role", "content", "source"]);
+function validateUserMessage(data: Record<string, unknown>, profile: DeepSeekModernProfile): void {
+  requiredFields(data, ["id", "role", "content", "source"]);
   requiredString(data.id, "user/message id");
   if (data.role !== "user") fail("Modern history user/message has an invalid role");
   profile.validateContent(data.content);
   if (
     !isRecord(data.source) ||
     !requiredString(data.source.kind, "user/message source kind") ||
-    (profile.sessionFormatVersion === 4 && data.source.kind === "plugin")
+    data.source.kind === "plugin"
   ) {
     fail("Modern history user/message has an invalid source");
   }
@@ -1342,14 +1244,9 @@ function validateUserMessage(
   }
 }
 
-function validateAssistantMessage(
-  value: unknown,
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
-): void {
+function validateAssistantMessage(value: unknown, profile: DeepSeekModernProfile): void {
   if (!isRecord(value)) fail("Modern history assistant/message is malformed");
-  if (profile.sessionFormatVersion === 4)
-    requiredFields(value, ["id", "role", "content", "source"]);
-  else exactKeys(value, ["id", "role", "content", "source"]);
+  requiredFields(value, ["id", "role", "content", "source"]);
   requiredString(value.id, "assistant/message id");
   if (value.role !== "assistant") fail("Modern history assistant/message has an invalid role");
   profile.validateContent(value.content);
@@ -1363,49 +1260,22 @@ function validateAssistantMessage(
   }
 }
 
-function validateToolResultMessage(
-  value: unknown,
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
-): string {
+/** V4 stores result blocks directly on a `tool` role message. */
+function validateToolResultMessage(value: unknown, profile: DeepSeekModernProfile): string {
   if (!isRecord(value)) fail("Modern history tool/result message is malformed");
-  if (profile.sessionFormatVersion === 4) {
-    requiredFields(value, ["id", "role", "content", "source", "toolCallId"]);
-    requiredString(value.id, "tool/result message id");
-    if (value.role !== "tool" || !isRecord(value.source) || value.source.kind !== "tool") {
-      fail("Modern history tool/result message has an invalid role or source");
-    }
-    const callId = requiredString(value.source.callId, "tool/result source callId");
-    if (
-      value.toolCallId !== callId ||
-      (value.isError !== undefined && typeof value.isError !== "boolean")
-    ) {
-      fail("Modern history tool/result message has invalid callId or isError");
-    }
-    profile.validateContent(value.content);
-    return callId;
-  }
-  exactKeys(value, ["id", "role", "content", "source"]);
+  requiredFields(value, ["id", "role", "content", "source", "toolCallId"]);
   requiredString(value.id, "tool/result message id");
-  if (value.role !== "user" || !isRecord(value.source) || value.source.kind !== "tool") {
+  if (value.role !== "tool" || !isRecord(value.source) || value.source.kind !== "tool") {
     fail("Modern history tool/result message has an invalid role or source");
   }
   const callId = requiredString(value.source.callId, "tool/result source callId");
-  if (!Array.isArray(value.content) || value.content.length !== 1 || !isRecord(value.content[0])) {
-    fail("Modern history tool/result message has invalid content");
-  }
-  const block = value.content[0];
-  requiredOptionalKeys(block, ["type", "toolCallId", "content"], ["isError"]);
   if (
-    block.type !== "tool-result" ||
-    block.toolCallId !== callId ||
-    !Array.isArray(block.content)
+    value.toolCallId !== callId ||
+    (value.isError !== undefined && typeof value.isError !== "boolean")
   ) {
-    fail("Modern history tool/result block is malformed");
+    fail("Modern history tool/result message has invalid callId or isError");
   }
-  profile.validateContent(block.content);
-  if (block.isError !== undefined && typeof block.isError !== "boolean") {
-    fail("Modern history tool/result block has invalid isError");
-  }
+  profile.validateContent(value.content);
   return callId;
 }
 
@@ -1442,7 +1312,7 @@ function validUsage(value: unknown): value is Record<string, unknown> {
     .every((field) => value[field] === undefined || nonNegativeSafeInteger(value[field]));
 }
 
-function validateTurnReason(value: unknown, profile: DeepSeekModernProfile): void {
+function validateTurnReason(value: unknown): void {
   if (!isRecord(value) || typeof value.kind !== "string") {
     fail("Modern history turn/end reason is malformed");
   }
@@ -1451,11 +1321,7 @@ function validateTurnReason(value: unknown, profile: DeepSeekModernProfile): voi
     case "max-tokens":
     case "blocked":
     case "interrupted":
-      exactKeys(value, ["kind"]);
-      return;
     case "forked":
-      if (profile.sessionFormatVersion !== 4)
-        fail("Modern history contains an unknown Turn outcome");
       exactKeys(value, ["kind"]);
       return;
     case "aborted":
@@ -1520,15 +1386,8 @@ function validateRequestHeader(data: Record<string, unknown>): void {
   }
 }
 
-function validateRequestContext(
-  data: Record<string, unknown>,
-  profile: DeepSeekModernProfile,
-): void {
-  requiredOptionalKeys(
-    data,
-    ["provider", "model"],
-    hasDeepSeekModernStream(profile) ? ["contextWindow", "systemPromptUpdate"] : ["contextWindow"],
-  );
+function validateRequestContext(data: Record<string, unknown>): void {
+  requiredOptionalKeys(data, ["provider", "model"], ["contextWindow", "systemPromptUpdate"]);
   if (!nonBlankString(data.provider) || !nonBlankString(data.model)) {
     fail("Modern history request/context has an invalid Model route");
   }
@@ -1547,13 +1406,9 @@ function validateModelSelection(data: Record<string, unknown>): void {
   }
 }
 
-function validateToolError(value: unknown, profile: DeepSeekModernProfile): void {
+function validateToolError(value: unknown): void {
   if (!isRecord(value)) fail("Modern history tool/result error is malformed");
-  requiredOptionalKeys(
-    value,
-    ["name", "code"],
-    profile.sessionFormatVersion === 4 ? ["reason"] : [],
-  );
+  requiredOptionalKeys(value, ["name", "code"], ["reason"]);
   requiredString(value.name, "tool/result error name");
   requiredString(value.code, "tool/result error code");
   if (value.reason !== undefined && typeof value.reason !== "string") {
@@ -1785,26 +1640,25 @@ function validateWorkflow(type: string, data: Record<string, unknown>): void {
   enumValue(data.stopReason, ["completed", "cancelled", "error"], "workflow stopReason");
 }
 
-function validateCodeDispatch(
+function validatePtcDispatch(
   type: string,
   data: Record<string, unknown>,
   profile: DeepSeekModernProfile,
 ): void {
+  const settle = type === "tool/ptc-dispatch";
   const required = ["rootCallId", "parentCallId", "subCallId", "name", "arguments"];
-  if (type === "tool/code-dispatch" || type === "tool/ptc-dispatch")
-    required.push("isError", "content");
-  // V4 settles a failed sub-call with tool/result's optional error identity.
-  const v4Settle = type === "tool/ptc-dispatch" && profile.sessionFormatVersion === 4;
-  requiredOptionalKeys(data, required, v4Settle ? ["error"] : []);
+  if (settle) required.push("isError", "content");
+  // A failed sub-call settles with tool/result's optional error identity.
+  requiredOptionalKeys(data, required, settle ? ["error"] : []);
   for (const key of ["rootCallId", "parentCallId", "subCallId", "name"]) {
-    requiredString(data[key], `tool/code-dispatch ${key}`);
+    requiredString(data[key], `tool/ptc-dispatch ${key}`);
   }
-  if (type === "tool/code-dispatch" || type === "tool/ptc-dispatch") {
+  if (settle) {
     if (typeof data.isError !== "boolean" || !Array.isArray(data.content)) {
-      fail("Modern history tool/code-dispatch result is malformed");
+      fail("Modern history tool/ptc-dispatch result is malformed");
     }
     profile.validateContent(data.content);
-    if (data.error !== undefined) validateToolError(data.error, profile);
+    if (data.error !== undefined) validateToolError(data.error);
   }
 }
 
@@ -1937,13 +1791,8 @@ function validateSubagentModelPolicy(data: Record<string, unknown>): void {
   for (const route of data.allowedModels) validateModelRoute(route, "subagent Model policy route");
 }
 
-function validateTeamEvent(
-  type: string,
-  data: Record<string, unknown>,
-  profile: DeepSeekModernProfile,
-): void {
-  if (data.version !== (hasDeepSeekModernStream(profile) ? 2 : 1))
-    fail("Modern history team event version is malformed");
+function validateTeamEvent(type: string, data: Record<string, unknown>): void {
+  if (data.version !== 2) fail("Modern history team event version is malformed");
   requiredString(data.teamId, "team event teamId");
   if (type === "team/message/delivered") {
     exactKeys(data, ["version", "teamId", "messageId", "targetId"]);

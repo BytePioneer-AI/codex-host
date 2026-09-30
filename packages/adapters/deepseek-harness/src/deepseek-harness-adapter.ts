@@ -31,7 +31,6 @@ import {
   ModernDeepSeekHarnessAdapter,
   type ModernDeepSeekHarnessAdapterOptions,
 } from "./modern/deepseek-harness-adapter.js";
-import { deepSeekModernProfile, hasDeepSeekModernStream } from "./profiles/profile.js";
 
 const DEEPSEEK_HARNESS_ID = harnessIdSchema.parse("deepseek-harness");
 const EXTERNAL_MODERN_WEB_MESSAGE =
@@ -79,7 +78,7 @@ class DelegateSelectionError extends Error {
   }
 }
 
-/** Public DeepSeek Adapter that selects a native journal profile for its executable. */
+/** Public DeepSeek Adapter that gates the local CLI version and delegates to the managed Web. */
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
@@ -108,10 +107,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             harnessId: this.harnessId,
             nativeSessionId,
             formatVersion: 1,
-            ...(this.#delegate &&
-            hasDeepSeekModernStream(deepSeekModernProfile(this.#delegate.version))
-              ? { locator: { dshVersion: this.#delegate.version } }
-              : {}),
+            ...(this.#delegate ? { locator: { dshVersion: this.#delegate.version } } : {}),
           }),
         },
       };

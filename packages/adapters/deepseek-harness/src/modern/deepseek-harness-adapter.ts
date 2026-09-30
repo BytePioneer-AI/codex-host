@@ -63,7 +63,6 @@ import { loadModernPermissionModeCatalog, ModernPermissionModeError } from "./pe
 import {
   deepSeekModernProfile,
   type DeepSeekModernVersion,
-  hasDeepSeekModernStream,
   type DeepSeekModernProfile,
 } from "../profiles/profile.js";
 import {
@@ -94,8 +93,8 @@ interface ParsedModernForkInput {
 interface ModernForkExpectation extends ParsedModernForkInput {
   readonly childSessionId: string;
   readonly atSeq: number;
-  readonly minimumSeedLength: number;
-  readonly exactSeedLength?: number;
+  /** V4 seeds exactly the events through the checkpoint's `turn/end`. */
+  readonly seedLength: number;
 }
 
 type ModernRollbackPlan =
@@ -107,7 +106,8 @@ type ModernRollbackPlan =
   | { readonly kind: "create"; readonly agentPreset: string };
 
 export interface ModernDeepSeekHarnessAdapterOptions extends ModernRemoteConnectionOptions {
-  readonly version?: DeepSeekModernVersion;
+  /** Probed CLI version; Native references and checkpoints record it as their locator. */
+  readonly version: DeepSeekModernVersion;
   readonly toolOutputLimit?: number;
   readonly maxEvents?: number;
   readonly maxHistoryBytes?: number;
@@ -182,9 +182,11 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     dependencies: Partial<ModernDeepSeekHarnessAdapterDependencies> = {},
   ) {
     this.#options = options;
-    this.#profile = deepSeekModernProfile(options.version ?? "0.1.2-rc.1");
+    this.#profile = deepSeekModernProfile(options.version);
     this.#dependencies = { ...DEFAULT_DEPENDENCIES, ...dependencies };
-    const connectionOptions = { ...options };
+    const connectionOptions: ModernRemoteConnectionOptions & { version?: string } = {
+      ...options,
+    };
     delete connectionOptions.version;
     this.#connection = this.#dependencies.createConnection(connectionOptions);
     if (options.openWebUi && this.#connection.openWebUi) {
@@ -198,7 +200,6 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       onFault: (error) => this.#fail(toHarnessError(error, "unavailable")),
     });
     this.#control = new ModernControlStore(this.#connection, {
-      profile: this.#profile,
       onFault: (error) => this.#fail(toHarnessError(error, "unavailable")),
     });
     this.#removeConnectionFaultListener = this.#connection.onFault((error) => {
@@ -276,11 +277,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     try {
       await this.#connection.connect();
       this.#assertAccepting();
-      const candidates = await loadModernSessionCandidates(
-        this.#connection,
-        this.#lifetime.signal,
-        this.#profile,
-      );
+      const candidates = await loadModernSessionCandidates(this.#connection, this.#lifetime.signal);
       this.#assertAccepting();
       return { ok: true, value: candidates };
     } catch (error) {
@@ -300,14 +297,14 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         input.kind === "fork" ? parseModernForkInput(input, this.#profile) : undefined;
       const rollbackSourceSessionId =
         input.kind === "rollbackLastTurn"
-          ? modernSessionId(input.sourceRef, "roll back", this.#profile)
+          ? modernSessionId(input.sourceRef, "roll back")
           : undefined;
       let rollbackPlan: ModernRollbackPlan | undefined;
       let sessionId =
         input.kind === "create"
           ? `session-${this.#dependencies.randomUUID()}`
           : input.kind === "resume"
-            ? modernSessionId(input.nativeRef, "resume", this.#profile)
+            ? modernSessionId(input.nativeRef, "resume")
             : undefined;
       if (sessionId) {
         if (this.#sessionIds.has(sessionId)) {
@@ -403,7 +400,6 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
             permissionModes,
             createConfiguration.permissionModeId,
             this.#lifetime.signal,
-            this.#profile,
           );
           this.#assertAccepting();
         }
@@ -417,10 +413,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       this.#assertAccepting();
       if (forkExpectation) {
         await this.#verifyForkJournal(forkExpectation, journal, cwd);
-        if (
-          hasDeepSeekModernStream(this.#profile) &&
-          (await clearInheritedForkInbox(this.#connection, journal, this.#lifetime.signal))
-        ) {
+        if (await clearInheritedForkInbox(this.#connection, journal, this.#lifetime.signal)) {
           await journal.close();
           journal = await openModernJournal(
             this.#connection,
@@ -463,13 +456,10 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
           harnessId: this.harnessId,
           nativeSessionId: sessionId,
           formatVersion: 1,
-          ...(hasDeepSeekModernStream(this.#profile)
-            ? { locator: { dshVersion: this.#profile.version } }
-            : {}),
+          locator: { dshVersion: this.#profile.version },
         }),
         modelCatalog: catalog,
         permissionModes,
-        profile: this.#profile,
       });
       verifyCreateConfiguration(createConfiguration, openedConfiguration);
       if (createConfiguration?.unattended && !delegationPermissionIsApplied(journal.events)) {
@@ -488,9 +478,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         modelCatalog: catalog,
         permissionModes,
         sessionId,
-        ...(hasDeepSeekModernStream(this.#profile)
-          ? { flushSession: () => this.#connection.flushSession(sessionId) }
-          : {}),
+        flushSession: () => this.#connection.flushSession(sessionId),
         randomUUID: this.#dependencies.randomUUID,
         now: this.#dependencies.now,
         ...(this.#options.toolOutputLimit === undefined
@@ -650,8 +638,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       this.#journalOptions(),
     );
     let atSeq: number;
-    let minimumSeedLength: number;
-    let exactSeedLength: number | undefined;
+    let seedLength: number;
     try {
       const boundary = resolveModernForkBoundary(source.events, input.checkpointId, this.#profile);
       if (!boundary) throw forkCheckpointError();
@@ -672,13 +659,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         throw forkCheckpointError();
       }
       atSeq = boundary.atSeq;
-      minimumSeedLength = boundary.events.length;
-      if (
-        this.#profile.sessionFormatVersion === 4 ||
-        boundary.events.length < source.events.length
-      ) {
-        exactSeedLength = boundary.events.length;
-      }
+      seedLength = boundary.events.length;
     } finally {
       await source.close();
     }
@@ -703,8 +684,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       ...input,
       childSessionId: result.value.sessionId,
       atSeq,
-      minimumSeedLength,
-      ...(exactSeedLength === undefined ? {} : { exactSeedLength }),
+      seedLength,
     };
   }
 
@@ -717,9 +697,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     if (
       child.header.parentSession !== expected.sourceSessionId ||
       child.header.cwd !== cwd ||
-      seedLength === undefined ||
-      seedLength < expected.minimumSeedLength ||
-      (expected.exactSeedLength !== undefined && seedLength !== expected.exactSeedLength)
+      seedLength !== expected.seedLength
     ) {
       throw forkProtocolError();
     }
@@ -820,11 +798,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       return Promise.resolve(this.#permissionModes ?? null);
     }
     if (this.#permissionModesPromise) return this.#permissionModesPromise;
-    const operation = loadModernPermissionModeCatalog(
-      this.#connection,
-      this.#lifetime.signal,
-      this.#profile,
-    )
+    const operation = loadModernPermissionModeCatalog(this.#connection, this.#lifetime.signal)
       .then((catalog) => {
         this.#permissionModes = catalog;
         this.#permissionModesLoaded = true;
@@ -1065,16 +1039,12 @@ function delegationPermissionIsApplied(events: readonly ModernJournalEvent[]): b
   );
 }
 
-function modernSessionId(
-  ref: unknown,
-  operation: "resume" | "roll back",
-  profile: DeepSeekModernProfile,
-): string {
+function modernSessionId(ref: unknown, operation: "resume" | "roll back"): string {
   const parsed = nativeSessionRefSchema.safeParse(ref);
   if (
     !parsed.success ||
     parsed.data.harnessId !== DEEPSEEK_HARNESS_ID ||
-    !sessionLocatorMatches(parsed.data.locator, profile)
+    !sessionLocatorMatches(parsed.data.locator)
   ) {
     throw new AdapterOperationError({
       code: "invalidRequest",
@@ -1096,7 +1066,7 @@ function parseModernForkInput(
     !checkpoint.success ||
     source.data.harnessId !== DEEPSEEK_HARNESS_ID ||
     checkpoint.data.harnessId !== DEEPSEEK_HARNESS_ID ||
-    !sessionLocatorMatches(source.data.locator, profile) ||
+    !sessionLocatorMatches(source.data.locator) ||
     !checkpointLocatorMatches(checkpoint.data.locator, profile) ||
     checkpoint.data.nativeSessionId !== source.data.nativeSessionId
   ) {
@@ -1112,33 +1082,22 @@ function parseModernForkInput(
   };
 }
 
-function sessionLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
-  if (locator === undefined) return true;
-  // A Native Session ID may be reopened after upgrading between V3 CLI releases.
-  // The journal header/history still has to match the selected format; checkpoints remain exact.
-  if (
-    !hasDeepSeekModernStream(profile) ||
-    !isRecord(locator) ||
-    Reflect.ownKeys(locator).length !== 1 ||
-    typeof locator.dshVersion !== "string"
-  ) {
-    return false;
-  }
-  if (!isDeepSeekSemVer(locator.dshVersion)) return false;
-  const original = deepSeekModernProfile(locator.dshVersion);
+/**
+ * A Native Session may be reopened after the CLI changed: codexhost only ever wrote no locator
+ * (V0 era) or the probed `dshVersion` (V3/V4 eras). DSH migrates the Session to V4 itself and its
+ * history must still pass V4 validation; checkpoints stay bound to the exact version.
+ */
+function sessionLocatorMatches(locator: unknown): boolean {
   return (
-    original.sessionFormatVersion === profile.sessionFormatVersion ||
-    (profile.sessionFormatVersion === 4 && original.sessionFormatVersion === 3)
+    locator === undefined ||
+    (isRecord(locator) &&
+      Reflect.ownKeys(locator).length === 1 &&
+      typeof locator.dshVersion === "string" &&
+      isDeepSeekSemVer(locator.dshVersion))
   );
 }
 
 function checkpointLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
-  return hasDeepSeekModernStream(profile)
-    ? profileLocatorMatches(locator, profile)
-    : locator === undefined;
-}
-
-function profileLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
   return (
     isRecord(locator) &&
     Reflect.ownKeys(locator).length === 1 &&

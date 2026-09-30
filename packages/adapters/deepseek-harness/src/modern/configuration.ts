@@ -28,7 +28,6 @@ import {
   readModernPermissionModeState,
 } from "./permission-modes.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
-import { DEEPSEEK_V012_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import {
   redactModernCredential,
   sanitizeModernRemoteFailure,
@@ -261,7 +260,6 @@ export function readModernConfigurationSnapshot(input: {
   readonly nativeRef: NativeSessionRef;
   readonly modelCatalog: ModernModelCatalogSnapshot;
   readonly permissionModes: HarnessPermissionModeCatalog | null;
-  readonly profile?: DeepSeekModernProfile;
 }): ModernConfigurationSnapshot {
   const rows = input.control.snapshot(input.sessionId);
   if (!rows) {
@@ -274,7 +272,6 @@ export function readModernConfigurationSnapshot(input: {
   const permission = readModernPermissionModeState(
     rows[MODERN_PERMISSION_PROJECTION_KEY],
     input.permissionModes,
-    input.profile ?? DEEPSEEK_V012_PROFILE,
   );
   return {
     model,
@@ -420,7 +417,6 @@ export async function selectModernPermissionMode(
   catalog: HarnessPermissionModeCatalog | null,
   permissionModeId: HarnessPermissionModeId,
   signal: AbortSignal,
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
 ): Promise<{ readonly projectionSeq: number; readonly changed: boolean }> {
   const requested = harnessPermissionModeIdSchema.safeParse(permissionModeId);
   if (!requested.success || !catalog?.modes.some(({ id }) => id === requested.data)) {
@@ -429,13 +425,7 @@ export async function selectModernPermissionMode(
       "DeepSeek Harness Permission Mode is unavailable",
     );
   }
-  const current = await requireModernPermissionModeState(
-    control,
-    sessionId,
-    catalog,
-    signal,
-    profile,
-  );
+  const current = await requireModernPermissionModeState(control, sessionId, catalog, signal);
   if (current.permissionModeId === requested.data) {
     return { projectionSeq: current.projectionSeq, changed: false };
   }
@@ -447,7 +437,6 @@ export async function selectModernPermissionMode(
       sessionId,
       `/permission ${requested.data}`,
       signal,
-      profile,
     );
   } catch (error) {
     if (!isUncertainTransportFailure(error)) {
@@ -458,7 +447,6 @@ export async function selectModernPermissionMode(
           beforeSeq,
           catalog,
           requested.data,
-          profile,
         );
       }
       throw normalizeConnectionFailure(error, "commands/execute request failed");
@@ -471,7 +459,6 @@ export async function selectModernPermissionMode(
         catalog,
         requested.data,
         signal,
-        profile,
       );
       return { projectionSeq: confirmed.seq, changed: true };
     } catch (confirmationError) {
@@ -489,14 +476,7 @@ export async function selectModernPermissionMode(
     );
   }
   if (execution.result.kind !== "success") {
-    assertNoPermissionMutationContradiction(
-      control,
-      sessionId,
-      beforeSeq,
-      catalog,
-      requested.data,
-      profile,
-    );
+    assertNoPermissionMutationContradiction(control, sessionId, beforeSeq, catalog, requested.data);
     throw configurationError("remoteError", execution.result.text, "commands/error");
   }
   const confirmed = await waitForPermissionMode(
@@ -506,7 +486,6 @@ export async function selectModernPermissionMode(
     catalog,
     requested.data,
     signal,
-    profile,
   );
   return { projectionSeq: confirmed.seq, changed: true };
 }
@@ -534,11 +513,10 @@ function assertNoPermissionMutationContradiction(
   beforeSeq: number,
   catalog: HarnessPermissionModeCatalog,
   requested: HarnessPermissionModeId,
-  profile: DeepSeekModernProfile,
 ): void {
   const row = control.snapshot(sessionId)?.[MODERN_PERMISSION_PROJECTION_KEY];
   if (!row || row.seq <= beforeSeq) return;
-  if (isModernPermissionModeProjectionMatch(row.value, catalog, requested, profile)) {
+  if (isModernPermissionModeProjectionMatch(row.value, catalog, requested)) {
     throw configurationError(
       "protocolError",
       "DeepSeek Harness rejected a Permission Mode that its projection committed",
@@ -652,11 +630,10 @@ async function requireModernPermissionModeState(
   sessionId: string,
   catalog: HarnessPermissionModeCatalog,
   signal: AbortSignal,
-  profile: DeepSeekModernProfile,
 ): Promise<NonNullable<ReturnType<typeof readModernPermissionModeState>>> {
   const existing = control.snapshot(sessionId)?.[MODERN_PERMISSION_PROJECTION_KEY];
   if (existing)
-    return readModernPermissionModeState(existing, catalog, profile) as NonNullable<
+    return readModernPermissionModeState(existing, catalog) as NonNullable<
       ReturnType<typeof readModernPermissionModeState>
     >;
   let malformed: ModernConfigurationError | undefined;
@@ -666,7 +643,7 @@ async function requireModernPermissionModeState(
     -1,
     (value) => {
       try {
-        readModernPermissionModeState({ value, seq: 0 }, catalog, profile);
+        readModernPermissionModeState({ value, seq: 0 }, catalog);
       } catch (error) {
         malformed = configurationError(
           "protocolError",
@@ -680,7 +657,7 @@ async function requireModernPermissionModeState(
     { signal },
   );
   if (malformed) throw malformed;
-  return readModernPermissionModeState(row, catalog, profile) as NonNullable<
+  return readModernPermissionModeState(row, catalog) as NonNullable<
     ReturnType<typeof readModernPermissionModeState>
   >;
 }
@@ -692,7 +669,6 @@ async function waitForPermissionMode(
   catalog: HarnessPermissionModeCatalog,
   expected: HarnessPermissionModeId,
   signal: AbortSignal,
-  profile: DeepSeekModernProfile,
 ): Promise<ModernProjectionRow> {
   let malformed: ModernConfigurationError | undefined;
   const row = await control.waitFor(
@@ -701,7 +677,7 @@ async function waitForPermissionMode(
     afterSeq,
     (value) => {
       try {
-        return isModernPermissionModeProjectionMatch(value, catalog, expected, profile);
+        return isModernPermissionModeProjectionMatch(value, catalog, expected);
       } catch (error) {
         malformed = configurationError(
           "protocolError",

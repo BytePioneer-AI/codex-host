@@ -4,13 +4,17 @@ import type {
   ModernJournalOpenRequest,
   ModernJournalLiveItem,
 } from "../modern/journal.js";
-import type { DeepSeekV015AssistantBaseline } from "./v015.js";
-import { DEEPSEEK_V012_PROFILE } from "./v012.js";
-import { DEEPSEEK_V015_PROFILE } from "./v015.js";
-import { DEEPSEEK_V017_PROFILE } from "./v017.js";
-export { DEEPSEEK_V012_PROFILE, DEEPSEEK_V015_PROFILE, DEEPSEEK_V017_PROFILE };
+import {
+  DEEPSEEK_V4_FIRST_VERSION,
+  DEEPSEEK_V4_PROFILE,
+  type DeepSeekAssistantBaseline,
+} from "./v4.js";
+export { DEEPSEEK_V4_PROFILE };
 
 export type DeepSeekModernVersion = string;
+
+/** First DSH release that writes Session Format V4; older CLIs are refused before Web starts. */
+export const DEEPSEEK_MINIMUM_VERSION = DEEPSEEK_V4_FIRST_VERSION;
 
 interface SemVer {
   readonly major: number;
@@ -19,10 +23,7 @@ interface SemVer {
   readonly prerelease: readonly (string | number)[];
 }
 
-/** First DSH release that writes Session Format V4; older CLIs are refused before Web starts. */
-export const DEEPSEEK_MINIMUM_VERSION = "0.1.7-rc.1";
-
-const V4_MINIMUM = parseSemVer(DEEPSEEK_MINIMUM_VERSION);
+const MINIMUM = parseSemVer(DEEPSEEK_MINIMUM_VERSION);
 
 function parseSemVer(value: string): SemVer | undefined {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(value);
@@ -67,24 +68,22 @@ function compareSemVer(left: SemVer, right: SemVer): number {
 /** True for a normative SemVer at or above {@link DEEPSEEK_MINIMUM_VERSION}. */
 export function isSupportedDeepSeekVersion(version: string): boolean {
   const parsed = parseSemVer(version);
-  return parsed !== undefined && V4_MINIMUM !== undefined && compareSemVer(parsed, V4_MINIMUM) >= 0;
+  return parsed !== undefined && MINIMUM !== undefined && compareSemVer(parsed, MINIMUM) >= 0;
 }
 
-/** Selected once from the executable version; native V0/V3 records remain strictly validated. */
+/** Session Format V4 rules, bound to the probed CLI version that native locators record. */
 export interface DeepSeekModernProfile {
   readonly version: DeepSeekModernVersion;
-  readonly checkpointPrefix: "turn-end:" | "v3-turn-end:" | "v4-turn-end:";
+  readonly checkpointPrefix: "v4-turn-end:";
   readonly matchesForkTail: (
     expectedPrefix: readonly ModernJournalEvent[],
     childEvents: readonly ModernJournalEvent[],
   ) => boolean;
-  readonly sessionFormatVersion: 0 | 3 | 4;
-  readonly assistantStream: boolean;
   readonly snapshotKeys: readonly string[];
   readonly parseHeader: (value: unknown, expected: ModernJournalOpenRequest) => ModernJournalHeader;
   readonly parseHistoryRecord: (value: unknown, remainingEvents: number) => ModernJournalEvent[];
   readonly parseLiveItem: (value: unknown) => ModernJournalLiveItem;
-  readonly parseAssistantBaseline?: (value: unknown) => DeepSeekV015AssistantBaseline;
+  readonly parseAssistantBaseline: (value: unknown) => DeepSeekAssistantBaseline;
   readonly inheritedEventCount: (
     header: ModernJournalHeader,
     events: readonly ModernJournalEvent[],
@@ -92,23 +91,11 @@ export interface DeepSeekModernProfile {
   readonly validateEvent: (event: ModernJournalEvent) => void;
   readonly validateContent: (value: unknown) => void;
   readonly validateChunk: (value: unknown) => void;
-  readonly settlementUsage?: (data: Record<string, unknown>) => unknown;
+  readonly settlementUsage: (data: Record<string, unknown>) => unknown;
 }
 
 export function deepSeekModernProfile(version: DeepSeekModernVersion): DeepSeekModernProfile {
-  // V4 is the forward-compatible profile family; history validation remains the compatibility gate.
-  const base = /^0\.1\.2(?:-|\+|$)/u.test(version)
-    ? DEEPSEEK_V012_PROFILE
-    : isSupportedDeepSeekVersion(version)
-      ? DEEPSEEK_V017_PROFILE
-      : DEEPSEEK_V015_PROFILE;
-  return base.version === version ? base : Object.freeze({ ...base, version });
-}
-
-export function isDeepSeekV015(profile: DeepSeekModernProfile): boolean {
-  return profile.sessionFormatVersion === 3;
-}
-
-export function hasDeepSeekModernStream(profile: DeepSeekModernProfile): boolean {
-  return profile.sessionFormatVersion >= 3;
+  return DEEPSEEK_V4_PROFILE.version === version
+    ? DEEPSEEK_V4_PROFILE
+    : Object.freeze({ ...DEEPSEEK_V4_PROFILE, version });
 }

@@ -56,6 +56,7 @@ function assistantMessage(
     cacheReadTokens: 2,
     reasoningTokens: 1,
   },
+  toolCall = false,
 ): ModernJournalEvent {
   return event(
     seq,
@@ -69,17 +70,23 @@ function assistantMessage(
         content: [
           { type: "reasoning", text: reasoning },
           { type: "text", text },
-          { type: "tool-call", id: "call-1", name: "write", arguments: '{"path":"a.txt"}' },
+          ...(toolCall
+            ? [{ type: "tool-call", id: "call-1", name: "write", arguments: '{"path":"a.txt"}' }]
+            : []),
         ],
         source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
       },
+      stream: [
+        { type: "reasoning-chunks", time0: 1_000, index: 0, dt: [], texts: [reasoning] },
+        { type: "text-chunks", time0: 1_001, index: 1, dt: [], texts: [text] },
+      ],
       usage,
     },
     true,
   );
 }
 
-function toolResult(seq: number): ModernJournalEvent {
+function toolResult(seq: number, text = "written"): ModernJournalEvent {
   return event(
     seq,
     "tool/result",
@@ -88,20 +95,26 @@ function toolResult(seq: number): ModernJournalEvent {
       step: 1,
       message: {
         id: `tool-result-${seq}`,
-        role: "user",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: "call-1",
-            content: [{ type: "text", text: "written" }],
-          },
-        ],
+        role: "tool",
+        toolCallId: "call-1",
+        isError: false,
+        content: [{ type: "text", text }],
         source: { kind: "tool", callId: "call-1" },
       },
       meta: { diffs: [{ path: "a.txt", oldText: null, newText: "hello\n" }] },
     },
     true,
   );
+}
+
+function toolCall(seq: number): ModernJournalEvent {
+  return event(seq, "tool/call", {
+    turn: 1,
+    step: 1,
+    callId: "call-1",
+    name: "write",
+    arguments: '{"path":"a.txt"}',
+  });
 }
 
 function completeHistory(): ModernJournalEvent[] {
@@ -125,37 +138,16 @@ function completeHistory(): ModernJournalEvent[] {
       model: "deepseek-v4",
       contextWindow: 128_000,
     }),
-    event(6, "assistant/chunk", {
-      turn: 1,
-      step: 1,
-      chunk: { type: "reasoning-delta", index: 0, text: "think" },
-    }),
-    event(7, "assistant/chunk", {
-      turn: 1,
-      step: 1,
-      chunk: { type: "text-delta", index: 1, text: "done" },
-    }),
-    event(8, "assistant/chunk", {
-      turn: 1,
-      step: 1,
-      chunk: { type: "usage", usage: { inputTokens: 4, outputTokens: 2 } },
-    }),
-    assistantMessage(9, 1, 1, "done", "think"),
-    event(10, "tool/call", {
-      turn: 1,
-      step: 1,
-      callId: "call-1",
-      name: "write",
-      arguments: '{"path":"a.txt"}',
-    }),
-    toolResult(11),
-    event(12, "step/end", { turn: 1, step: 1 }),
-    event(13, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+    assistantMessage(6, 1, 1, "done", "think", undefined, true),
+    toolCall(7),
+    toolResult(8),
+    event(9, "step/end", { turn: 1, step: 1 }),
+    event(10, "turn/end", { turn: 1, reason: { kind: "completed" } }),
   ];
 }
 
 describe("DeepSeek Harness Modern history projection", () => {
-  it("resolves and verifies the exact fork prefix including its between-Turn tail", () => {
+  it("resolves and verifies the exact V4 fork prefix and its inherited marker", () => {
     const source = [
       event(0, "turn/start", { turn: 1 }),
       userMessage(1, ["first"]),
@@ -164,15 +156,15 @@ describe("DeepSeek Harness Modern history projection", () => {
       event(4, "permission/preset", { preset: "workspace-write" }),
       event(5, "turn/start", { turn: 2 }),
     ];
-    const boundary = resolveModernForkBoundary(source, "turn-end:2");
+    const boundary = resolveModernForkBoundary(source, "v4-turn-end:2");
 
-    expect(boundary).toEqual({ atSeq: 2, events: source.slice(0, 5) });
+    expect(boundary).toEqual({ atSeq: 2, events: source.slice(0, 3) });
     if (!boundary) return;
-    const marker = event(5, "session/end-seed", {});
+    const marker = event(3, "session/end-seed", { inherited: true });
     const child = [
       ...boundary.events,
       marker,
-      event(6, "sandbox/mode", { mode: "workspace-write" }),
+      event(4, "sandbox/mode", { mode: "workspace-write" }),
     ];
     expect(matchesModernForkHistory(boundary.events, child)).toBe(true);
     expect(
@@ -186,20 +178,19 @@ describe("DeepSeek Harness Modern history projection", () => {
     expect(
       matchesModernForkHistory(boundary.events, [
         ...boundary.events,
-        marker,
-        event(6, "turn/start", { turn: 2 }),
+        event(3, "session/end-seed", {}),
       ]),
     ).toBe(false);
-    expect(resolveModernForkBoundary(source, "turn-end:3")).toBeNull();
-    expect(resolveModernForkBoundary(source, "turn-end:02")).toBeNull();
-
-    const alreadyMarked = [...source.slice(0, 3), event(3, "session/end-seed", {})];
-    const nested = resolveModernForkBoundary(alreadyMarked, "turn-end:2");
-    expect(nested?.events).toEqual(alreadyMarked);
-    expect(matchesModernForkHistory(alreadyMarked, alreadyMarked)).toBe(true);
     expect(
-      matchesModernForkHistory(alreadyMarked, [...alreadyMarked, event(4, "session/end-seed", {})]),
+      matchesModernForkHistory(boundary.events, [
+        ...boundary.events,
+        marker,
+        event(4, "turn/start", { turn: 2 }),
+      ]),
     ).toBe(false);
+    expect(resolveModernForkBoundary(source, "v4-turn-end:3")).toBeNull();
+    expect(resolveModernForkBoundary(source, "v4-turn-end:02")).toBeNull();
+    expect(resolveModernForkBoundary(source, "turn-end:2")).toBeNull();
   });
 
   it("projects complete text, reasoning, Tool, Diff, Model, Thinking and Usage history", () => {
@@ -213,7 +204,7 @@ describe("DeepSeek Harness Modern history projection", () => {
     const turn = projection.snapshot.turns[0];
     expect(turn).toMatchObject({
       nativeTurnRef: { nativeTurnKey: "turn:1" },
-      checkpoint: { checkpointId: "turn-end:13" },
+      checkpoint: { checkpointId: "v4-turn-end:10" },
       input: [
         { type: "text", text: "first" },
         { type: "text", text: "second" },
@@ -249,22 +240,14 @@ describe("DeepSeek Harness Modern history projection", () => {
       contextWindowTokens: 128_000,
     });
     expect(projection.incompleteTurn).toBeUndefined();
-    expect(projection.lastSeq).toBe(13);
+    expect(projection.lastSeq).toBe(10);
   });
 
   it("keeps surface replacement copies out of the human transcript and Usage", () => {
     const replacementUser = {
       ...userMessage(3, ["model-only replacement"]),
-      surfaceOp: { op: "replace" as const, start: 2, end: 2 },
+      surfaceOp: { op: "replace" as const, startSeq: 2, endSeq: 2 },
       sourceEventSeqs: [2],
-    };
-    const replacementAssistant = {
-      ...assistantMessage(5, 1, 1, "model-only answer", "model-only thought", {
-        inputTokens: 500,
-        outputTokens: 300,
-      }),
-      surfaceOp: { op: "replace" as const, start: 4, end: 4 },
-      sourceEventSeqs: [4],
     };
     const projection = projectModernHistory({
       sessionId: SESSION_ID,
@@ -274,9 +257,8 @@ describe("DeepSeek Harness Modern history projection", () => {
         userMessage(2, ["visible prompt"]),
         replacementUser,
         assistantMessage(4, 1, 1, "visible answer", "visible thought"),
-        replacementAssistant,
-        event(6, "step/end", { turn: 1, step: 1 }),
-        event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+        event(5, "step/end", { turn: 1, step: 1 }),
+        event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }),
       ],
     });
 
@@ -298,8 +280,8 @@ describe("DeepSeek Harness Modern history projection", () => {
         event(1, "step/start", { turn: 1, step: 1 }),
         userMessage(2, ["visible"]),
         {
-          ...assistantMessage(3, 1, 1, "replacement", ""),
-          surfaceOp: { op: "replace" as const, start: 1, end: 1 },
+          ...userMessage(3, ["replacement"]),
+          surfaceOp: { op: "replace" as const, startSeq: 1, endSeq: 1 },
           sourceEventSeqs: [1],
         },
       ],
@@ -310,10 +292,10 @@ describe("DeepSeek Harness Modern history projection", () => {
         event(0, "turn/start", { turn: 1 }),
         event(1, "step/start", { turn: 1, step: 1 }),
         userMessage(2, ["visible"]),
-        assistantMessage(3, 1, 1, "answer", ""),
+        userMessage(3, ["second"]),
         {
-          ...assistantMessage(4, 1, 1, "replacement", ""),
-          surfaceOp: { op: "replace" as const, start: 3, end: 2 },
+          ...userMessage(4, ["replacement"]),
+          surfaceOp: { op: "replace" as const, startSeq: 3, endSeq: 2 },
           sourceEventSeqs: [2, 3],
         },
       ],
@@ -325,18 +307,39 @@ describe("DeepSeek Harness Modern history projection", () => {
         event(1, "step/start", { turn: 1, step: 1 }),
         userMessage(2, ["visible"]),
         {
-          ...assistantMessage(3, 1, 1, "replacement", ""),
-          surfaceOp: { op: "replace" as const, start: 2, end: 2 },
-          sourceEventSeqs: [],
+          ...userMessage(3, ["replacement"]),
+          surfaceOp: { op: "replace" as const, startSeq: 2, endSeq: 2 },
         },
       ],
     ],
     [
-      "an empty non-assistant source list",
+      "pre-V4 replacement coordinates",
+      [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        userMessage(2, ["visible"]),
+        {
+          ...userMessage(3, ["replacement"]),
+          surfaceOp: { op: "replace", start: 2, end: 2 } as never,
+          sourceEventSeqs: [2],
+        },
+      ],
+    ],
+    [
+      "an empty source list",
       [
         event(0, "turn/start", { turn: 1 }),
         event(1, "step/start", { turn: 1, step: 1 }),
         { ...userMessage(2, ["visible"]), sourceEventSeqs: [] },
+      ],
+    ],
+    [
+      "assistant provenance",
+      [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        userMessage(2, ["visible"]),
+        { ...assistantMessage(3, 1, 1, "answer", ""), sourceEventSeqs: [2] },
       ],
     ],
   ])("rejects a surface event with %s", (_label, events) => {
@@ -346,39 +349,25 @@ describe("DeepSeek Harness Modern history projection", () => {
   });
 
   it("allows tool/result replacement to change only one current result's content", () => {
-    const original = toolResult(3);
+    const original = toolResult(4);
     const originalData = original.data as Record<string, unknown>;
     const originalMessage = originalData.message as Record<string, unknown>;
-    const originalBlock = (originalMessage.content as Record<string, unknown>[])[0];
     const replacement = {
       ...original,
-      seq: 4,
-      time: 1_004,
+      seq: 5,
+      time: 1_005,
       data: {
         ...originalData,
-        message: {
-          ...originalMessage,
-          content: [
-            {
-              ...originalBlock,
-              content: [{ type: "text", text: "pruned" }],
-            },
-          ],
-        },
+        message: { ...originalMessage, content: [{ type: "text", text: "pruned" }] },
       } as never,
-      surfaceOp: { op: "replace" as const, start: 3, end: 3 },
-      sourceEventSeqs: [3],
+      surfaceOp: { op: "replace" as const, startSeq: 4, endSeq: 4 },
+      sourceEventSeqs: [4],
     };
     const prefix = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
-      event(2, "tool/call", {
-        turn: 1,
-        step: 1,
-        callId: "call-1",
-        name: "write",
-        arguments: "{}",
-      }),
+      assistantMessage(2, 1, 1, "writing", "plan", undefined, true),
+      toolCall(3),
       original,
     ];
 
@@ -391,9 +380,9 @@ describe("DeepSeek Harness Modern history projection", () => {
         events: [
           ...prefix,
           {
-            ...toolResult(4),
-            surfaceOp: { op: "replace", start: 3, end: 3 },
-            sourceEventSeqs: [3],
+            ...toolResult(5),
+            surfaceOp: { op: "replace", startSeq: 4, endSeq: 4 },
+            sourceEventSeqs: [4],
           },
         ],
       }),
@@ -401,14 +390,14 @@ describe("DeepSeek Harness Modern history projection", () => {
   });
 
   it("keeps an incomplete Turn out of completed history and returns its exact event suffix", () => {
-    const events = completeHistory().slice(0, 10);
+    const events = completeHistory().slice(0, 9);
     const projection = projectModernHistory({ sessionId: SESSION_ID, events });
 
     expect(projection.snapshot.turns).toEqual([]);
     expect(projection.incompleteTurn?.turn).toBe(1);
     expect(projection.incompleteTurn?.events).toEqual(events.slice(1));
     expect(projection.incompleteTurn?.events.map(({ seq }) => seq)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9,
+      1, 2, 3, 4, 5, 6, 7, 8,
     ]);
   });
 
@@ -419,6 +408,7 @@ describe("DeepSeek Harness Modern history projection", () => {
         events: [{ ...event(0, "plugin/future", { any: true }), ignorable: true }],
       }),
     ).not.toThrow();
+    // V4 keeps an ignorable future event's surface metadata opaque.
     expect(() =>
       projectModernHistory({
         sessionId: SESSION_ID,
@@ -430,7 +420,7 @@ describe("DeepSeek Harness Modern history projection", () => {
           },
         ],
       }),
-    ).toThrowError(ModernHistoryError);
+    ).not.toThrow();
     expect(() =>
       projectModernHistory({
         sessionId: SESSION_ID,
@@ -492,8 +482,8 @@ describe("DeepSeek Harness Modern history projection", () => {
       }),
     ],
     [
-      "code dispatch",
-      event(0, "tool/code-dispatch", {
+      "PTC dispatch",
+      event(0, "tool/ptc-dispatch", {
         rootCallId: "root",
         parentCallId: "parent",
         subCallId: "sub",
@@ -751,20 +741,18 @@ describe("DeepSeek Harness Modern history projection", () => {
   });
 
   it("ignores malformed Usage telemetry without changing valid Usage or Turn outcome", () => {
+    const usageAttempt = (seq: number, usage: Record<string, unknown>) =>
+      event(seq, "assistant/attempt", {
+        turn: 1,
+        step: 1,
+        stream: [{ type: "chunk", time: 1_000 + seq, chunk: { type: "usage", usage } }],
+      });
     const events = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
       userMessage(2, ["hello"]),
-      event(3, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "usage", usage: { inputTokens: 4, outputTokens: 2 } },
-      }),
-      event(4, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "usage", usage: { inputTokens: "broken", outputTokens: 99 } },
-      }),
+      usageAttempt(3, { inputTokens: 4, outputTokens: 2 }),
+      usageAttempt(4, { inputTokens: "broken", outputTokens: 99 }),
       assistantMessage(5, 1, 1, "done", "think", {
         inputTokens: 10,
         outputTokens: "broken",

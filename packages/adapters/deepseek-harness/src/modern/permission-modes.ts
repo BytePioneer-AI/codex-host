@@ -1,7 +1,5 @@
 import { Buffer } from "node:buffer";
 
-import Schema from "@deepseek-ai/schemastery";
-
 import {
   HARNESS_PERMISSION_MODE_CATALOG_MAX_LENGTH,
   HARNESS_PERMISSION_MODE_DESCRIPTION_MAX_LENGTH,
@@ -13,7 +11,6 @@ import {
   type HarnessPermissionModeId,
 } from "@codexhost/shared-contracts";
 
-import { DEEPSEEK_V015_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import type { ModernProjectionRow } from "./control-store.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
 import {
@@ -22,22 +19,16 @@ import {
   type ModernRemoteResult,
 } from "./wire.js";
 
-const PERMISSION_NAMESPACE = "permission";
-const SETTINGS_ENDPOINT = "settings/describe";
-/** DSH 0.1.7+ serves its selectable presets from this process-level Remote. */
+/** DSH serves its selectable presets from this process-level Remote. */
 const PERMISSION_CATALOG_ENDPOINT = "permissionPresets/catalog";
 /** Gateway fault for a Remote whose Service this DSH composition does not include. */
 const SERVICE_UNAVAILABLE = "gateway/service-unavailable";
 const CUSTOM_PERMISSION_MODE_ID = "custom";
-/** DSH 0.1.7+ reserves `auto` for a preset that a live integration may add after a catalog read. */
+/** DSH reserves `auto` for a preset that a live integration may add after a catalog read. */
 const AUTO_PERMISSION_MODE_ID = "auto";
-const MAX_SETTINGS_BYTES = 16 * 1024 * 1024;
-const MAX_SETTINGS_DEPTH = 64;
-const MAX_SETTINGS_NODES = 200_000;
-const MAX_NAMESPACES = 512;
-const MAX_NAMESPACE_ID_LENGTH = 256;
-const MAX_SECRETS_PER_NAMESPACE = 1_024;
-const MAX_SECRET_PATH_SEGMENTS = 64;
+const MAX_CATALOG_BYTES = 16 * 1024 * 1024;
+const MAX_CATALOG_DEPTH = 64;
+const MAX_CATALOG_NODES = 200_000;
 
 export type ModernPermissionModeErrorCode =
   | "authenticationRequired"
@@ -87,26 +78,6 @@ function connectionError(
   );
 }
 
-interface PermissionNamespaceView {
-  readonly schema: unknown;
-  readonly value: unknown;
-  readonly base?: unknown;
-  readonly user?: unknown;
-  readonly applies: "live" | "restart";
-  readonly secrets: readonly unknown[];
-}
-
-interface SchemaNode {
-  readonly type?: unknown;
-  readonly value?: unknown;
-  readonly list?: unknown;
-  readonly dict?: Record<string, SchemaNode>;
-  readonly meta?: {
-    readonly required?: unknown;
-    readonly description?: unknown;
-  };
-}
-
 function permissionError(
   code: ModernPermissionModeErrorCode,
   message: string,
@@ -138,10 +109,10 @@ function assertBoundedJson(value: unknown): void {
   const seen = new Set<object>();
   const visit = (candidate: unknown, depth: number): void => {
     nodes += 1;
-    if (depth > MAX_SETTINGS_DEPTH || nodes > MAX_SETTINGS_NODES) {
+    if (depth > MAX_CATALOG_DEPTH || nodes > MAX_CATALOG_NODES) {
       throw permissionError(
         "limitExceeded",
-        "DeepSeek Harness settings response exceeded its bound",
+        "DeepSeek Harness permission catalog exceeded its bound",
       );
     }
     if (
@@ -153,18 +124,27 @@ function assertBoundedJson(value: unknown): void {
       return;
     }
     if (typeof candidate !== "object" || candidate === null || seen.has(candidate)) {
-      throw permissionError("protocolError", "DeepSeek Harness returned invalid settings data");
+      throw permissionError(
+        "protocolError",
+        "DeepSeek Harness returned invalid permission catalog data",
+      );
     }
     seen.add(candidate);
     if (Array.isArray(candidate)) {
       for (const item of candidate) visit(item, depth + 1);
     } else {
       if (!isPlainRecord(candidate)) {
-        throw permissionError("protocolError", "DeepSeek Harness returned invalid settings data");
+        throw permissionError(
+          "protocolError",
+          "DeepSeek Harness returned invalid permission catalog data",
+        );
       }
       for (const key of Reflect.ownKeys(candidate)) {
         if (typeof key !== "string") {
-          throw permissionError("protocolError", "DeepSeek Harness returned invalid settings data");
+          throw permissionError(
+            "protocolError",
+            "DeepSeek Harness returned invalid permission catalog data",
+          );
         }
         visit(candidate[key], depth + 1);
       }
@@ -176,15 +156,21 @@ function assertBoundedJson(value: unknown): void {
   try {
     text = JSON.stringify(value);
   } catch {
-    throw permissionError("protocolError", "DeepSeek Harness returned invalid settings data");
+    throw permissionError(
+      "protocolError",
+      "DeepSeek Harness returned invalid permission catalog data",
+    );
   }
   if (text === undefined) {
-    throw permissionError("protocolError", "DeepSeek Harness returned invalid settings data");
+    throw permissionError(
+      "protocolError",
+      "DeepSeek Harness returned invalid permission catalog data",
+    );
   }
-  if (Buffer.byteLength(text, "utf8") > MAX_SETTINGS_BYTES) {
+  if (Buffer.byteLength(text, "utf8") > MAX_CATALOG_BYTES) {
     throw permissionError(
       "limitExceeded",
-      "DeepSeek Harness settings response exceeded its byte bound",
+      "DeepSeek Harness permission catalog exceeded its byte bound",
     );
   }
 }
@@ -199,244 +185,6 @@ function nonBlankString(value: unknown, maximum: number, area: string): string {
     throw permissionError("protocolError", `DeepSeek Harness returned an invalid ${area}`);
   }
   return value;
-}
-
-function validRevision(value: unknown): value is number {
-  return (
-    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
-  );
-}
-
-function validateSecrets(value: unknown): readonly unknown[] {
-  if (!Array.isArray(value)) {
-    throw permissionError("protocolError", "DeepSeek Harness returned invalid settings secrets");
-  }
-  if (value.length > MAX_SECRETS_PER_NAMESPACE) {
-    throw permissionError(
-      "limitExceeded",
-      "DeepSeek Harness settings secrets exceeded their bound",
-    );
-  }
-  for (const secret of value) {
-    if (
-      !isPlainRecord(secret) ||
-      !exactKeys(secret, ["path", "set"]) ||
-      !Array.isArray(secret.path) ||
-      secret.path.length > MAX_SECRET_PATH_SEGMENTS ||
-      typeof secret.set !== "boolean"
-    ) {
-      throw permissionError("protocolError", "DeepSeek Harness returned invalid settings secrets");
-    }
-    for (const segment of secret.path) {
-      if (typeof segment !== "string") {
-        throw permissionError(
-          "protocolError",
-          "DeepSeek Harness returned invalid settings secrets",
-        );
-      }
-    }
-  }
-  return value;
-}
-
-function parseDescribe(value: unknown): PermissionNamespaceView | null {
-  assertBoundedJson(value);
-  if (!isPlainRecord(value) || !exactKeys(value, ["writable", "hasDocument", "namespaces"])) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned an invalid settings response",
-    );
-  }
-  if (
-    typeof value.writable !== "boolean" ||
-    typeof value.hasDocument !== "boolean" ||
-    !Array.isArray(value.namespaces)
-  ) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned an invalid settings response",
-    );
-  }
-  if (value.namespaces.length > MAX_NAMESPACES) {
-    throw permissionError(
-      "limitExceeded",
-      "DeepSeek Harness settings namespaces exceeded their bound",
-    );
-  }
-
-  const namespaceIds: string[] = [];
-  const permissionNamespaces: PermissionNamespaceView[] = [];
-  for (const candidate of value.namespaces) {
-    if (
-      !isPlainRecord(candidate) ||
-      !exactKeys(
-        candidate,
-        ["ns", "schema", "value", "applies", "secrets", "revision"],
-        ["base", "user"],
-      ) ||
-      (candidate.applies !== "live" && candidate.applies !== "restart") ||
-      !validRevision(candidate.revision)
-    ) {
-      throw permissionError(
-        "protocolError",
-        "DeepSeek Harness returned an invalid settings namespace",
-      );
-    }
-    const ns = nonBlankString(candidate.ns, MAX_NAMESPACE_ID_LENGTH, "settings namespace id");
-    const secrets = validateSecrets(candidate.secrets);
-    namespaceIds.push(ns);
-    if (ns === PERMISSION_NAMESPACE) {
-      permissionNamespaces.push({
-        schema: candidate.schema,
-        value: candidate.value,
-        ...(Object.hasOwn(candidate, "base") ? { base: candidate.base } : {}),
-        ...(Object.hasOwn(candidate, "user") ? { user: candidate.user } : {}),
-        applies: candidate.applies,
-        secrets,
-      });
-    }
-  }
-  if (new Set(namespaceIds).size !== namespaceIds.length) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned duplicate settings namespaces",
-    );
-  }
-  if (permissionNamespaces.length === 0) return null;
-  if (permissionNamespaces.length !== 1) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned duplicate permission namespaces",
-    );
-  }
-  return permissionNamespaces[0] as PermissionNamespaceView;
-}
-
-function permissionSection(
-  value: unknown,
-  requireDefault: boolean,
-  knownIds: ReadonlySet<string>,
-  area: string,
-): void {
-  if (
-    !isPlainRecord(value) ||
-    !exactKeys(value, requireDefault ? ["defaultPreset"] : [], ["defaultPreset"])
-  ) {
-    throw permissionError("protocolError", `DeepSeek Harness returned invalid permission ${area}`);
-  }
-  if (value.defaultPreset !== undefined) {
-    const id = harnessPermissionModeIdSchema.safeParse(value.defaultPreset);
-    if (!id.success || !knownIds.has(id.data)) {
-      throw permissionError(
-        "protocolError",
-        `DeepSeek Harness returned invalid permission ${area}`,
-      );
-    }
-  }
-}
-
-function catalogFromNamespace(view: PermissionNamespaceView): HarnessPermissionModeCatalog {
-  if (view.applies !== "live") {
-    throw permissionError("protocolError", "DeepSeek Harness permission settings are not live");
-  }
-  if (view.secrets.length !== 0) {
-    throw permissionError("protocolError", "DeepSeek Harness permission settings declared secrets");
-  }
-
-  let root: SchemaNode;
-  try {
-    root = new Schema(view.schema as never) as unknown as SchemaNode;
-  } catch {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned an invalid permission schema",
-    );
-  }
-  const dictionary = root.type === "object" ? root.dict : undefined;
-  if (
-    !dictionary ||
-    Object.keys(dictionary).length !== 1 ||
-    !Object.hasOwn(dictionary, "defaultPreset")
-  ) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned an invalid permission schema",
-    );
-  }
-  const field = dictionary.defaultPreset as SchemaNode;
-  if (field.meta?.required !== true) {
-    throw permissionError("protocolError", "DeepSeek Harness permission default is not required");
-  }
-  const choices =
-    field.type === "union" ? field.list : field.type === "const" ? [field] : undefined;
-  if (!Array.isArray(choices) || choices.length === 0) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness permission schema has no preset choices",
-    );
-  }
-  if (choices.length > HARNESS_PERMISSION_MODE_CATALOG_MAX_LENGTH) {
-    throw permissionError(
-      "limitExceeded",
-      "DeepSeek Harness permission choices exceeded their bound",
-    );
-  }
-
-  const modes = choices.map((candidate) => {
-    const choice = candidate as SchemaNode;
-    const parsedId = harnessPermissionModeIdSchema.safeParse(choice.value);
-    if (choice.type !== "const" || !parsedId.success) {
-      throw permissionError(
-        "protocolError",
-        "DeepSeek Harness returned an invalid permission choice",
-      );
-    }
-    if (parsedId.data === CUSTOM_PERMISSION_MODE_ID) {
-      throw permissionError(
-        "protocolError",
-        "DeepSeek Harness advertised the reserved custom permission",
-      );
-    }
-    const described = choice.meta?.description;
-    if (described !== undefined && typeof described !== "string") {
-      throw permissionError(
-        "protocolError",
-        "DeepSeek Harness returned an invalid permission label",
-      );
-    }
-    const label = described ?? parsedId.data;
-    nonBlankString(label, HARNESS_PERMISSION_MODE_LABEL_MAX_LENGTH, "permission label");
-    return { id: parsedId.data, label };
-  });
-  const ids = modes.map(({ id }) => id);
-  if (new Set(ids).size !== ids.length) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned duplicate permission choices",
-    );
-  }
-  const knownIds = new Set(ids);
-  permissionSection(view.value, true, knownIds, "value");
-  if (view.base !== undefined) permissionSection(view.base, false, knownIds, "base");
-  if (view.user !== undefined) permissionSection(view.user, false, knownIds, "user section");
-  const defaultModeId = (view.value as { readonly defaultPreset: HarnessPermissionModeId })
-    .defaultPreset;
-  try {
-    return harnessPermissionModeCatalogSchema.parse({ modes, defaultModeId });
-  } catch {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned an unusable permission catalog",
-    );
-  }
-}
-
-/** Strictly parse the Modern `settings/describe` value and its optional permission namespace. */
-export function parseModernPermissionModeCatalog(
-  value: unknown,
-): HarnessPermissionModeCatalog | null {
-  const permission = parseDescribe(value);
-  return permission ? catalogFromNamespace(permission) : null;
 }
 
 function presetOptions(value: unknown, area: string): HarnessPermissionMode[] {
@@ -501,7 +249,7 @@ function presetOptions(value: unknown, area: string): HarnessPermissionMode[] {
 }
 
 /**
- * Strictly parse the DSH 0.1.7+ `permissionPresets/catalog` value. `options`
+ * Strictly parse the `permissionPresets/catalog` value. `options`
  * lists every selectable preset, including a live `auto`; `defaultOptions`
  * lists the configured presets eligible as the default.
  */
@@ -546,22 +294,17 @@ export function parseModernPermissionPresetCatalog(value: unknown): HarnessPermi
   }
 }
 
-/**
- * Read the exact no-argument permission catalog: `permissionPresets/catalog`
- * for V4, the permission settings namespace before it.
- */
+/** Read the exact no-argument process-level permission catalog. */
 export async function loadModernPermissionModeCatalog(
   remote: ModernPermissionModeRemote,
   signal?: AbortSignal,
-  profile: DeepSeekModernProfile = DEEPSEEK_V015_PROFILE,
 ): Promise<HarnessPermissionModeCatalog | null> {
-  const presets = profile.sessionFormatVersion === 4;
-  const endpoint = presets ? PERMISSION_CATALOG_ENDPOINT : SETTINGS_ENDPOINT;
+  const endpoint = PERMISSION_CATALOG_ENDPOINT;
   try {
     const result = await remote.call<unknown>(endpoint, {}, signal);
     if (!result.ok) {
       // A composition without the permission plugin has no catalog Service.
-      if (presets && result.error.code === SERVICE_UNAVAILABLE) return null;
+      if (result.error.code === SERVICE_UNAVAILABLE) return null;
       const safe = sanitizeModernRemoteFailure(result.error);
       throw permissionError(
         "remoteError",
@@ -569,9 +312,7 @@ export async function loadModernPermissionModeCatalog(
         safe.code,
       );
     }
-    return presets
-      ? parseModernPermissionPresetCatalog(result.value)
-      : parseModernPermissionModeCatalog(result.value);
+    return parseModernPermissionPresetCatalog(result.value);
   } catch (error) {
     if (error instanceof ModernPermissionModeError) throw error;
     if (error instanceof ModernRemoteConnectionError) throw connectionError(error, endpoint);
@@ -585,8 +326,9 @@ export async function loadModernPermissionModeCatalog(
 }
 
 /**
- * DSH 0.1.7+ projects only the current value; its options come from the
- * process catalog. `auto` may be current without being in an earlier catalog read.
+ * The `permissions` projection holds only the current value; its options come
+ * from the process catalog. `auto` may be current without being in an earlier
+ * catalog read.
  */
 function parseCurrentPermission(
   value: unknown,
@@ -618,113 +360,10 @@ function parseCurrentPermission(
   return current.data;
 }
 
-function parseProjectionValue(
-  value: unknown,
-  catalog: HarnessPermissionModeCatalog,
-  profile: DeepSeekModernProfile,
-): HarnessPermissionModeId {
-  if (profile.sessionFormatVersion === 4) return parseCurrentPermission(value, catalog);
-  if (!isPlainRecord(value) || !exactKeys(value, ["options", "currentValue"])) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned an invalid permissions projection",
-    );
-  }
-  if (
-    !Array.isArray(value.options) ||
-    value.options.length > HARNESS_PERMISSION_MODE_CATALOG_MAX_LENGTH + 1
-  ) {
-    throw permissionError("protocolError", "DeepSeek Harness returned invalid permission options");
-  }
-  const options = value.options.map((candidate) => {
-    if (!isPlainRecord(candidate) || !exactKeys(candidate, ["value", "name"], ["description"])) {
-      throw permissionError(
-        "protocolError",
-        "DeepSeek Harness returned an invalid permission option",
-      );
-    }
-    const id = harnessPermissionModeIdSchema.safeParse(candidate.value);
-    if (!id.success) {
-      throw permissionError(
-        "protocolError",
-        "DeepSeek Harness returned an invalid permission option id",
-      );
-    }
-    nonBlankString(
-      candidate.name,
-      HARNESS_PERMISSION_MODE_LABEL_MAX_LENGTH,
-      "permission option name",
-    );
-    if (
-      candidate.description !== undefined &&
-      (typeof candidate.description !== "string" ||
-        candidate.description.length > HARNESS_PERMISSION_MODE_DESCRIPTION_MAX_LENGTH)
-    ) {
-      throw permissionError(
-        "protocolError",
-        "DeepSeek Harness returned an invalid permission option description",
-      );
-    }
-    return { id: id.data, name: candidate.name };
-  });
-  const ids = options.map(({ id }) => id);
-  if (new Set(ids).size !== ids.length) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned duplicate permission options",
-    );
-  }
-
-  const current = harnessPermissionModeIdSchema.safeParse(value.currentValue);
-  if (!current.success) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned an invalid current permission",
-    );
-  }
-  const customIndex = ids.indexOf(CUSTOM_PERMISSION_MODE_ID as HarnessPermissionModeId);
-  if (
-    customIndex >= 0 &&
-    (customIndex !== ids.length - 1 || current.data !== CUSTOM_PERMISSION_MODE_ID)
-  ) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned an invalid custom permission state",
-    );
-  }
-  if (current.data === CUSTOM_PERMISSION_MODE_ID && customIndex < 0) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness omitted its current custom permission",
-    );
-  }
-  const selectable = options.filter(({ id }) => id !== CUSTOM_PERMISSION_MODE_ID);
-  const expected = catalog.modes.map(({ id }) => id);
-  if (
-    selectable.length !== expected.length ||
-    selectable.some(
-      ({ id, name }, index) => id !== expected[index] || name !== catalog.modes[index]?.label,
-    )
-  ) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness permissions projection disagrees with its settings catalog",
-    );
-  }
-  if (current.data !== CUSTOM_PERMISSION_MODE_ID && !expected.includes(current.data)) {
-    throw permissionError(
-      "protocolError",
-      "DeepSeek Harness returned an unknown current permission",
-    );
-  }
-  return current.data;
-}
-
 /** Read one control-store row without hiding a missing or malformed permission projection. */
 export function readModernPermissionModeState(
   row: ModernProjectionRow | undefined,
   catalog: HarnessPermissionModeCatalog | null,
-  profile: DeepSeekModernProfile,
 ): ModernPermissionModeState | undefined {
   if (!catalog) {
     if (row) {
@@ -745,7 +384,7 @@ export function readModernPermissionModeState(
     );
   }
   return {
-    permissionModeId: parseProjectionValue(row.value, catalog, profile),
+    permissionModeId: parseCurrentPermission(row.value, catalog),
     projectionSeq: row.seq,
   };
 }
@@ -755,11 +394,10 @@ export function isModernPermissionModeProjectionMatch(
   value: unknown,
   catalog: HarnessPermissionModeCatalog,
   expectedPermissionModeId: HarnessPermissionModeId,
-  profile: DeepSeekModernProfile,
 ): boolean {
   const expected = harnessPermissionModeIdSchema.safeParse(expectedPermissionModeId);
   if (!expected.success || !catalog.modes.some(({ id }) => id === expected.data)) {
     throw new TypeError("expectedPermissionModeId is not in the permission catalog");
   }
-  return parseProjectionValue(value, catalog, profile) === expected.data;
+  return parseCurrentPermission(value, catalog) === expected.data;
 }

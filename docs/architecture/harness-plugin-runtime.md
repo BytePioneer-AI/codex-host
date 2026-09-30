@@ -215,7 +215,7 @@ Renderer 的 `listHarnessPlugins()` 使用绑定的 RequestManager 发送此固�
 
 Host release Bundle 不再包含 Adapter 或 Harness SDK；Bundle 审计拒绝它们重新泄漏进核心。npm 和 Installer 的文件白名单包含每个插件的入口、Manifest、图标及根目录启用文件，现有第三方许可声明继续随发行版交付。
 
-DeepSeek 插件通过自身的 HTTP/WebSocket 实现连接受支持的本机 DSH，不打包 DSH CLI。Legacy 专用的 `@deepseek-ai/dsh-apiproxy`、`@deepseek-ai/dsh-session` SDK 及其打包项已移除；Modern 仍使用的 `schemastery` 随插件构建保留。V0/V3/V4 profile 和 Assistant 流解析属于插件，不进入 Host 或 Renderer；V4 的 `developer/message`、surface 引用和 Fork closer 也不会泄漏到公共契约。
+DeepSeek 插件通过自身的 HTTP/WebSocket 实现连接受支持的本机 DSH，不打包 DSH CLI。Legacy 专用的 `@deepseek-ai/dsh-apiproxy`、`@deepseek-ai/dsh-session` SDK 及其打包项已移除；只有 V0/V3 `settings/describe` 权限解析使用的 `schemastery` 也随这两个 profile 移除，插件运行依赖只剩 `diff`、`ws` 和 `zod`。V4 profile 和 Assistant 流解析属于插件，不进入 Host 或 Renderer；V4 的 `developer/message`、surface 引用和 Fork closer 也不会泄漏到公共契约。
 
 普通 Host、Remote Control 和 SSH listener 的每个连接都从该连接实际使用的 Runtime 旁查找插件。SSH 安装继续引用远端包中的 Host Runtime，不需要回退本机目录。手动复制 Runtime 时必须同时携带相邻 `plugins/`；仅复制 `host-runtime.mjs` 将得到没有预装 Harness 的核心，而不是隐式加载本机源码。macOS Aqua Broker 也经同一个 Loader 只创建其需要的插件，并使用直接模式和冷实例，避免递归创建 Broker 客户端。
 

@@ -948,7 +948,17 @@ export class MappingStore {
       await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
       const metadata = threadMetadataOf(next);
       if (!sameJson(threadMetadataOf(current), metadata)) {
-        await this.#writeMetadataFile(hostThreadId, metadata);
+        // Only a metadata patch changes metadata, and it changes nothing else in the record
+        // besides Revision and updatedAt. Restoring the previous record therefore makes a failed
+        // metadata write leave disk equal to memory; the metadata file itself is replaced atomically.
+        try {
+          await this.#writeMetadataFile(hostThreadId, metadata);
+        } catch (error) {
+          await this.#replaceFile(this.#recordPath(hostThreadId), current, false).catch(
+            () => undefined,
+          );
+          throw error;
+        }
       }
       this.#records.set(hostThreadId, next);
       this.#rebuildIndexes();

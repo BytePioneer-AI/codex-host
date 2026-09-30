@@ -779,6 +779,33 @@ describe("mapping-store package", () => {
     await second.close();
   });
 
+  it("leaves the record unchanged on disk and in memory when the metadata write fails", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    const before = await first.getThread(threadId);
+    const recordFile = path.join(directory, "threads", `${threadId}.json`);
+    const onDiskBefore = await readFile(recordFile, "utf8");
+    // A non-empty directory at the metadata path makes the atomic rename fail.
+    const blocker = path.join(directory, "thread-metadata", `${threadId}.json`);
+    await mkdir(blocker);
+    await writeFile(path.join(blocker, "block"), "");
+
+    await expect(first.updateMetadata(threadId, { projectId: "project-a" })).rejects.toMatchObject({
+      code: "IO_ERROR",
+    });
+    await expect(first.getThread(threadId)).resolves.toEqual(before);
+    await expect(readFile(recordFile, "utf8")).resolves.toBe(onDiskBefore);
+    await first.close();
+
+    await rm(blocker, { recursive: true });
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toEqual(before);
+    await second.close();
+  });
+
   it("moves inline metadata out of the record and drops metadata of removed Threads", async () => {
     const directory = await temporaryStoreDirectory();
     const first = new MappingStore({ directory });

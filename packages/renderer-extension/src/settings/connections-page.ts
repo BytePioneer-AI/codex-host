@@ -43,7 +43,8 @@ export interface RendererConnectionSnapshot {
 
 export interface RendererConnectionDiagnostics {
   snapshot(): RendererConnectionSnapshot;
-  refresh(): Promise<void>;
+  /** With a Host, wait for existing diagnostics and start a fresh post-mutation inspection. */
+  refresh(hostId?: string): Promise<void>;
   openWebUi?(hostId: string, agent: ExternalRendererAgent): Promise<void>;
   installation?(
     hostId: string,

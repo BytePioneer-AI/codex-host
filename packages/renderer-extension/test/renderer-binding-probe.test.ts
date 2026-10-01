@@ -156,6 +156,42 @@ describe("Renderer connection diagnostics", () => {
     expect(completed).toBe(true);
   });
 
+  it.each([false, true])(
+    "starts a new target Host inspection after pending diagnostics settle (failure=%s)",
+    async (failed) => {
+      const pending = Promise.withResolvers<undefined>();
+      const fresh = Promise.withResolvers<undefined>();
+      let observed = "notInstalled";
+      const refreshHost = vi.fn(async () => {
+        await fresh.promise;
+        observed = "ready";
+      });
+      const pendingHost = vi.fn(() => pending.promise);
+      const refresh = refreshConnectionHosts(["remote"], refreshHost, pendingHost);
+      expect(pendingHost).toHaveBeenCalledExactlyOnceWith("remote");
+      expect(refreshHost).not.toHaveBeenCalled();
+      if (failed) pending.reject(new Error("old inspection failed"));
+      else pending.resolve(undefined);
+      await vi.waitFor(() => expect(refreshHost).toHaveBeenCalledExactlyOnceWith("remote"));
+      expect(observed).toBe("notInstalled");
+      fresh.resolve(undefined);
+      await refresh;
+      expect(observed).toBe("ready");
+    },
+  );
+
+  it("propagates fresh inspection failure after draining the old request", async () => {
+    await expect(
+      refreshConnectionHosts(
+        ["local"],
+        async () => {
+          throw new Error("fresh failure");
+        },
+        () => Promise.resolve(),
+      ),
+    ).rejects.toThrow("fresh failure");
+  });
+
   it("rejects when one Host refresh fails", async () => {
     await expect(
       refreshConnectionHosts(["local", "remote"], (hostId) =>

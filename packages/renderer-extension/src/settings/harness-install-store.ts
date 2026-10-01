@@ -49,7 +49,7 @@ function createStore(diagnostics: RendererConnectionDiagnostics) {
       // A failed installer may still have written a usable CLI; never assume it
       // remains absent, nor call a successful CLI install authenticated/ready.
       try {
-        await diagnostics.refresh();
+        await diagnostics.refresh(host);
         const refreshed = diagnostics
           .snapshot()
           .hosts.find((candidate) => candidate.hostId === host)

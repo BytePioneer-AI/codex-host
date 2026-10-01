@@ -89,6 +89,7 @@ describe("connection-owned install state", () => {
     expect(harnessInstallStore(diagnostics)).toBe(store);
     result.resolve(state);
     await vi.waitFor(() => expect(store.get("remote", "pi")?.status).toBe("checking"));
+    expect(diagnostics.refresh).toHaveBeenCalledExactlyOnceWith("remote");
     refreshed.resolve(undefined);
     await pending;
     expect(store.get("remote", "pi")).toBeUndefined();
@@ -105,7 +106,7 @@ describe("connection-owned install state", () => {
     const store = harnessInstallStore(diagnostics);
     await store.install("local", "pi");
     expect(store.get("local", "pi")).toEqual({ status: "error", error: "Installation failed" });
-    expect(diagnostics.refresh).toHaveBeenCalledOnce();
+    expect(diagnostics.refresh).toHaveBeenCalledExactlyOnceWith("local");
     await store.install("local", "pi");
     expect(store.get("local", "pi")).toBeUndefined();
   });

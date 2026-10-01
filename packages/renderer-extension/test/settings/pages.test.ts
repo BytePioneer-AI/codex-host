@@ -925,7 +925,7 @@ describe("Renderer Connections page", () => {
   it.each([
     ["pi", "https://pi.dev/install.sh"],
     ["claude-code", "https://claude.ai/install.sh"],
-    ["deepseek-harness", "npm install -g @deepseek-ai/dsh@0.1.5-rc.1"],
+    ["deepseek-harness", "npm install -g @deepseek-ai/dsh@latest"],
     ["opencode", "opencode-ai"],
     ["grok", "@xai-official/grok"],
     ["omp", "https://omp.sh/install"],

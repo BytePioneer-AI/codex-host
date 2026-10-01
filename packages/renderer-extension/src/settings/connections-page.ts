@@ -60,7 +60,8 @@ export interface RendererConnectionDiagnostics {
   subscribe(listener: () => void): () => void;
 }
 
-type ConnectionAvailability = RendererAgentAvailability | RendererAdapterStatus["state"];
+type ConnectionAvailability =
+  RendererAgentAvailability | RendererAdapterStatus["state"] | "updating";
 type ConnectionTone = "ready" | "checking" | "setup" | "failed";
 
 interface ConnectionListItem {
@@ -79,6 +80,7 @@ function connectionStatusLabel(
   messages: RendererSettingsMessages,
   hasError = false,
 ): string {
+  if (availability === "updating") return messages.connectionStatusUpdating;
   if (hasError && availability !== "notInstalled") return messages.connectionStatusError;
   if (availability === "ready") return messages.connectionStatusReady;
   if (availability === "checking") return messages.connectionStatusChecking;
@@ -97,6 +99,7 @@ function connectionStatusTone(
   availability: ConnectionAvailability,
   hasError = false,
 ): ConnectionTone {
+  if (availability === "updating") return "checking";
   if (hasError && availability !== "notInstalled") return "failed";
   if (availability === "ready") return "ready";
   if (availability === "checking" || availability === "installing") return "checking";
@@ -531,9 +534,11 @@ function renderConnectionInspector(
     title.textContent = connectionStatusLabel(item.availability, messages);
     const description = document.createElement("p");
     description.textContent =
-      item.availability === "ready"
-        ? messages.connectionReadyDescription
-        : messages.connectionUnavailableDescription;
+      item.availability === "updating"
+        ? messages.harnessVersionUpdating
+        : item.availability === "ready"
+          ? messages.connectionReadyDescription
+          : messages.connectionUnavailableDescription;
     status.append(title, description);
     body.append(status);
     if (item.openWebUi) {
@@ -696,6 +701,7 @@ export function createConnectionsSettingsPage(
       // Panels are owned by the page and keyed by Host + Harness, not by each
       // diagnostic render. Keep in-flight updates and check results across row switches.
       const versionPanels = new Map<string, HTMLElement>();
+      const updatingVersions = new Set<string>();
       let latestSnapshot: RendererConnectionSnapshot | null = null;
       let disposeHostScroller = (): void => undefined;
 
@@ -857,6 +863,9 @@ export function createConnectionsSettingsPage(
             return {
               ...item,
               ...(state ? { availability: state.status } : {}),
+              ...(updatingVersions.has(JSON.stringify([selectedHost.hostId, agent]))
+                ? { availability: "updating" as const }
+                : {}),
               ...(state?.error ? { installError: state.error } : {}),
               ...(diagnostics?.installation && agent !== "workbuddy"
                 ? {
@@ -918,7 +927,17 @@ export function createConnectionsSettingsPage(
             if (!panel) {
               const hostId = selectedHost.hostId;
               panel = createHarnessVersionPanel(document, messages, context.signal, agent, {
-                run: (action) => installation(hostId, agent, action),
+                async run(action) {
+                  if (action !== "update") return installation(hostId, agent, action);
+                  updatingVersions.add(key);
+                  if (diagnostics) render(diagnostics.snapshot());
+                  try {
+                    return await installation(hostId, agent, action);
+                  } finally {
+                    updatingVersions.delete(key);
+                    if (!context.signal.aborted && diagnostics) render(diagnostics.snapshot());
+                  }
+                },
               });
               versionPanels.set(key, panel);
             }

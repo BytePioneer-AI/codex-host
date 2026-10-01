@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { DeepSeekHarnessAdapter } from "../src/deepseek-harness-adapter.js";
 import { createHarnessAdapter } from "../src/plugin.js";
 
@@ -7,9 +8,22 @@ vi.mock("../src/deepseek-harness-adapter.js", () => ({
   DeepSeekHarnessAdapter: vi.fn(function () {}),
 }));
 
+vi.mock("@codexhost/harness-discovery", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@codexhost/harness-discovery")>()),
+  createHarnessInstaller: vi.fn(() => vi.fn(async () => undefined)),
+}));
+
 beforeEach(() => vi.clearAllMocks());
 
 describe("DeepSeek plugin construction policy", () => {
+  it("installs the npm latest tag instead of pinning an older release", () => {
+    const environment = { PATH: "/synthetic/bin" };
+    createHarnessAdapter({ environment, platform: "darwin", managedRemoteHost: false });
+    expect(createHarnessInstaller).toHaveBeenCalledExactlyOnceWith(environment, {
+      npm: "@deepseek-ai/dsh@latest",
+    });
+  });
+
   it("preserves the explicit command, endpoint, environment and local Web UI handoff", async () => {
     const environment = {
       CODEXHOST_DEEPSEEK_HARNESS_COMMAND: "/synthetic/dsh",

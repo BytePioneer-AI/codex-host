@@ -24,7 +24,7 @@ export function createHarnessAdapter(context: HarnessPluginContext): DeepSeekHar
         : {}),
     }),
     {
-      install: createHarnessInstaller(environment, { npm: "@deepseek-ai/dsh@0.1.5-rc.1" }),
+      install: createHarnessInstaller(environment, { npm: "@deepseek-ai/dsh@latest" }),
       installation: createDeepSeekInstallation(
         environment,
         environment[DEEPSEEK_HARNESS_COMMAND_ENV],

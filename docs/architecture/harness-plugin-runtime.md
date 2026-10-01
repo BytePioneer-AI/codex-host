@@ -121,11 +121,13 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message? }`。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
 
+DSH 的 npx 更新只在显式点击更新时执行 `npx --yes --prefer-online @deepseek-ai/dsh --version`，保留与普通离线启动相同的无版本包规格及 Host 环境（包括 npm 缓存配置），避免 `@latest` 或固定版本规格创建另一份缓存。先确认在线命令返回目标版本，再用原来的 `--offline --no-install @deepseek-ai/dsh --version` 回读，任一步失败或版本不匹配均不报告成功。版本查询失败不执行更新；普通诊断和启动仍保持离线，不改变现有会话或自动重启已运行的 Web 进程。npm 原生管理缓存，不直接编辑缓存目录，也不新增 Host 持久状态。
+
 ### 首次安装
 
 RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 `install` 传给旧插件的 `installation()`。Host 先刷新检查，只有 `notInstalled` 才安装，避免把未登录或不可用误认为未安装；安装后通过 `installation("check")` 回读 CLI 版本。安装失败或版本无法确认都不报告成功，原生异常脱敏后显示在右侧详情。
 
-- DeepSeek Harness（固定 `@deepseek-ai/dsh@0.1.5-rc.1`）、OpenCode、Grok、CodeBuddy 使用官方 npm 包；需要已有 Node.js/npm；npm 在 PATH 未命中时继续搜索版本管理器与标准安装位置，适配 Desktop 的精简 GUI 环境。Grok 保留 npm 安装脚本允许项。
+- DeepSeek Harness（`@deepseek-ai/dsh@latest`，安装时跟随 npm `latest` 标签；不代表该版本已验证兼容，连接仍须通过原生协议校验）、OpenCode、Grok、CodeBuddy 使用官方 npm 包；需要已有 Node.js/npm；npm 在 PATH 未命中时继续搜索版本管理器与标准安装位置，适配 Desktop 的精简 GUI 环境。Grok 保留 npm 安装脚本允许项。
 - Pi、Claude Code、OMP、Antigravity、Kiro CLI、Cursor CLI、Hermes、Qoder 两版和 Kimi Code 使用各自 Adapter 固定的官方 HTTPS 安装脚本，按 Host OS 选择 Shell/PowerShell。脚本下载到临时目录，执行后清理；安装命令最多 10 分钟，不自动提权，不自动安装系统依赖，安装器不能依赖交互输入。
 - WorkBuddy 仍引导安装桌面应用。旧插件、旧 Host 和未转发能力的 Broker 返回不支持，不回退到本机安装。
 - Host 按 Adapter 合并并发安装，安装期间的检查/更新等待同一结果。Renderer 按连接及 Host/Harness 保存安装状态：列表中显示安装中、检测中或错误，安装时禁用下载按钮，错误保留在右侧并允许重试。切换行、Host 或关闭再打开设置不会取消操作；Host/连接进程重启后不恢复任务。
@@ -148,7 +150,7 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 | Claude Code | `--version` 和官方 stable/latest 版本源；读取用户及本机文件型受管设置，使用原生 `claude update` 保留策略执行。识别的全局 npm 安装固定 npm prefix，标准原生 launcher 允许更新；版本限制、其他安装渠道及 macOS 受管远程 Broker 保留手动更新。 |
 | CodeBuddy | `--version`；识别的 npm 安装查询 `@tencent-ai/codebuddy-code`，只有全局安装允许在原 prefix 更新。原生安装只显示已安装版本，最新版本和更新交给原安装器；macOS 受管远程 Broker 尚不转发该能力。 |
 | Kiro CLI | 只通过 `--version` 显示当前版本；最新版本未知，不检查更新源、不执行更新。Kiro 的更新策略与发布源选择交给原生安装器，设置页提示使用原生更新器或安装方式。 |
-| DeepSeek Harness | 原生 `--version`，保留离线 npx 参数；识别的 npm 安装查询 `@deepseek-ai/dsh`，只有全局安装更新原 prefix。离线 npx、Python wheel、桌面载体及项目安装不创建或更新另一份全局安装。 |
+| DeepSeek Harness | 原生 `--version`，独立查询 npm `@deepseek-ai/dsh` 的 `latest`，不受安装渠道限制。识别的全局安装更新原 prefix；npx 安装显式更新原缓存并验证离线启动版本。Python wheel、桌面载体及项目安装仍使用原安装方式更新，不创建或更新另一份全局安装。 |
 | Hermes | 原生 `--version`、`update --plan`、`update --check`；使用原生渠道判定和提交标识而非普通 SemVer 比较。仅可原地更新且能报告提交标识、支持非交互与 Gateway 重启延后的干净 Git 安装执行 `update --yes --no-gateway-restart`；桌面包、Docker、Nix 等仍由原生安装所有者更新。 |
 
 检查不发起 Model Turn、不安装任何内容。只有用户明确点击更新才调用原生安装器；并发更新合并为一次，检查不与更新后版本回读竞争，安装后版本未改变不报告成功。普通命令有 30 秒超时，更新命令最多 5 分钟，最新版本网络读取有 15 秒超时；失败后可重新打开连接页触发自动检查。更新的是 Harness CLI，不是 Host 插件或 codexhost 自身，不降级较新安装，不主动重启已有 Session。关闭设置只停止页面更新，不取消已接受的原生更新；现有进程的升级行为遵循 Harness 本身。

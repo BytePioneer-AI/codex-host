@@ -162,6 +162,7 @@ export interface RendererSettingsMessages {
   readonly connectionStatusUnavailable: string;
   readonly connectionStatusError: string;
   readonly connectionStatusInstalling: string;
+  readonly connectionStatusUpdating: string;
   readonly connectionStatusUnsupported: string;
   readonly connectionComponent: string;
   readonly connectionStatus: string;
@@ -428,6 +429,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatusUnavailable: "Unavailable",
   connectionStatusError: "Error",
   connectionStatusInstalling: "Installing",
+  connectionStatusUpdating: "Updating",
   connectionStatusUnsupported: "Unsupported",
   connectionComponent: "Component",
   connectionStatus: "Status",
@@ -717,6 +719,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatusUnavailable: "不可用",
   connectionStatusError: "错误",
   connectionStatusInstalling: "安装中",
+  connectionStatusUpdating: "更新中",
   connectionStatusUnsupported: "不支持",
   connectionComponent: "组件",
   connectionStatus: "状态",

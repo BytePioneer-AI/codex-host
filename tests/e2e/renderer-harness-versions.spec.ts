@@ -39,7 +39,7 @@ const { outputFiles } = await build({
               installedHosts.add(hostId);
             }
             if (action === "update") {
-              await new Promise(resolve => setTimeout(resolve, 300));
+              await new Promise(resolve => setTimeout(resolve, 1200));
               updated = true;
             }
             return {
@@ -94,8 +94,18 @@ test("checks automatically and updates explicitly in Connections, with separate 
   await page.screenshot({ path: testInfo.outputPath("versions-before.png") });
   await update.click();
   await expect(panel.getByRole("status")).toHaveText("正在更新…");
+  await expect(
+    page.locator('[data-connection-item="pi"] .settings-connection-row__status'),
+  ).toHaveText("更新中");
+  await expect(page.locator(".settings-connection-inspector__header")).toContainText("更新中");
+  await expect(
+    page.locator('[data-connection-item="claude-code"] .settings-connection-row__status'),
+  ).toHaveText("正常");
   await expect(update).toBeDisabled();
   await expect(panel.getByRole("status")).toContainText("已确认更新成功");
+  await expect(
+    page.locator('[data-connection-item="pi"] .settings-connection-row__status'),
+  ).toHaveText("正常");
   await expect(panel.getByRole("button", { name: "已是最新" })).toBeDisabled();
   await page.screenshot({ path: testInfo.outputPath("versions-updated.png") });
   await page.getByRole("tab", { name: "remote-test" }).click();

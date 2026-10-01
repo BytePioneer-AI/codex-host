@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
-import { classifyDeepSeekVersionOutput } from "../generation-selector.js";
+import { isDeepSeekSemVer } from "../generation-selector.js";
 import { deepSeekHarnessCommandCatalog } from "../harness-commands.js";
 
 import {
@@ -1124,16 +1124,12 @@ function sessionLocatorMatches(locator: unknown, profile: DeepSeekModernProfile)
   ) {
     return false;
   }
-  try {
-    const { version } = classifyDeepSeekVersionOutput(locator.dshVersion);
-    const original = deepSeekModernProfile(version);
-    return (
-      original.sessionFormatVersion === profile.sessionFormatVersion ||
-      (profile.sessionFormatVersion === 4 && original.sessionFormatVersion === 3)
-    );
-  } catch {
-    return false;
-  }
+  if (!isDeepSeekSemVer(locator.dshVersion)) return false;
+  const original = deepSeekModernProfile(locator.dshVersion);
+  return (
+    original.sessionFormatVersion === profile.sessionFormatVersion ||
+    (profile.sessionFormatVersion === 4 && original.sessionFormatVersion === 3)
+  );
 }
 
 function checkpointLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {

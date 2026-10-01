@@ -19,7 +19,10 @@ interface SemVer {
   readonly prerelease: readonly (string | number)[];
 }
 
-const V4_MINIMUM = parseSemVer("0.1.7-rc.1");
+/** First DSH release that writes Session Format V4; older CLIs are refused before Web starts. */
+export const DEEPSEEK_MINIMUM_VERSION = "0.1.7-rc.1";
+
+const V4_MINIMUM = parseSemVer(DEEPSEEK_MINIMUM_VERSION);
 
 function parseSemVer(value: string): SemVer | undefined {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(value);
@@ -61,7 +64,8 @@ function compareSemVer(left: SemVer, right: SemVer): number {
   return 0;
 }
 
-function usesV4Profile(version: string): boolean {
+/** True for a normative SemVer at or above {@link DEEPSEEK_MINIMUM_VERSION}. */
+export function isSupportedDeepSeekVersion(version: string): boolean {
   const parsed = parseSemVer(version);
   return parsed !== undefined && V4_MINIMUM !== undefined && compareSemVer(parsed, V4_MINIMUM) >= 0;
 }
@@ -95,7 +99,7 @@ export function deepSeekModernProfile(version: DeepSeekModernVersion): DeepSeekM
   // V4 is the forward-compatible profile family; history validation remains the compatibility gate.
   const base = /^0\.1\.2(?:-|\+|$)/u.test(version)
     ? DEEPSEEK_V012_PROFILE
-    : usesV4Profile(version)
+    : isSupportedDeepSeekVersion(version)
       ? DEEPSEEK_V017_PROFILE
       : DEEPSEEK_V015_PROFILE;
   return base.version === version ? base : Object.freeze({ ...base, version });

@@ -45,7 +45,7 @@ describe("Cursor and Kiro selection in one Desktop", () => {
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
       }),
     ).toEqual({ agent: "cursor-cli", model: cursor, permissionModeId: mode });
-    expect(RENDERER_AGENT_LABELS["cursor-cli"]).toBe("Cursor CLI (Experimental)");
+    expect(RENDERER_AGENT_LABELS["cursor-cli"]).toBe("Cursor CLI");
     expect(RENDERER_AGENT_INSTALL_URLS["cursor-cli"]).toBe(
       "https://cursor.com/docs/cli/installation",
     );

@@ -45,6 +45,7 @@ import {
   structuredDiffs,
 } from "../projection.js";
 import type { ModernJournalEvent } from "./journal.js";
+import { modernCompactionOutcome } from "./compaction.js";
 import {
   DEEPSEEK_V012_PROFILE,
   hasDeepSeekModernStream,
@@ -810,6 +811,7 @@ interface HistoryTurn {
   startIndex: number;
   input: HostTextInput[];
   items: HostItemSnapshot[];
+  compaction?: { nativeId: string; itemIndex: number };
   tools: Map<string, HistoryTool>;
   advertisedTools: Map<string, { toolName: string; arguments: string }>;
   model: HarnessModelRef | undefined;
@@ -926,6 +928,31 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
           projectAssistantMessage(active, input.sessionId, data);
         }
         break;
+      case "compaction/start":
+        if (active && data.turn === active.turn && data.sourceCommandId === undefined) {
+          if (active.compaction) fail("Modern compactions overlap");
+          const nativeId = data.compactionId as string;
+          active.compaction = { nativeId, itemIndex: active.items.length };
+          active.items.push({
+            item: {
+              type: "contextCompaction",
+              itemId: modernItemId(input.sessionId, `compaction:${nativeId}`),
+            },
+            outcome: { status: "succeeded" },
+          });
+        }
+        break;
+      case "compaction/end":
+        if (active && data.turn === active.turn && data.sourceCommandId === undefined) {
+          if (!active.compaction || active.compaction.nativeId !== data.compactionId)
+            fail("Modern compaction ended without its start");
+          const index = active.compaction.itemIndex;
+          const snapshot = active.items[index];
+          if (!snapshot) fail("Modern compaction Item is missing");
+          active.items[index] = { ...snapshot, outcome: modernCompactionOutcome(data) };
+          delete active.compaction;
+        }
+        break;
       case "tool/call":
         if (active) projectToolCall(active, input.sessionId, data, event.seq);
         break;
@@ -938,6 +965,20 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
         if (active) {
           const terminal = safeTurnReason(data.reason);
           finishIncompleteTools(active, itemOutcome(terminal.outcome));
+          if (active.compaction) {
+            const index = active.compaction.itemIndex;
+            const snapshot = active.items[index];
+            if (!snapshot) fail("Modern compaction Item is missing");
+            active.items[index] = {
+              ...snapshot,
+              outcome:
+                terminal.outcome.status === "succeeded"
+                  ? modernCompactionOutcome({
+                      error: "DeepSeek Harness compaction ended without a terminal event",
+                    })
+                  : itemOutcome(terminal.outcome),
+            };
+          }
           turns.push({
             nativeTurnRef: modernNativeTurnRef(harnessId, input.sessionId, active.turn),
             checkpoint: modernCheckpointRef(harnessId, input.sessionId, event.seq, profile),

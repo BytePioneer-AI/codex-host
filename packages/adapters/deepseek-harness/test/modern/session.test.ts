@@ -577,6 +577,295 @@ async function waitForGraceTimer(): Promise<void> {
   expect(vi.getTimerCount()).toBe(1);
 }
 
+describe("DeepSeek Harness automatic compaction", () => {
+  it.each([DEEPSEEK_V012_PROFILE, DEEPSEEK_V015_PROFILE, DEEPSEEK_V017_PROFILE])(
+    "projects repeated native compactions and preserves their history ($version)",
+    async (profile) => {
+      const test = setup(
+        [],
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [],
+        profile,
+      );
+      const outputs = test.session.outputs[Symbol.asyncIterator]();
+      beginAutonomousTurn(test);
+      await eventsThrough(outputs, "turn.started");
+      for (const [index, error] of [undefined, "summary failed"].entries()) {
+        const seq = 4 + index * 2;
+        const compactionId = `compact-${index}`;
+        test.feed.push(event(seq, "compaction/start", { compactionId, turn: 1 }));
+        const started = await nextEvent(outputs);
+        expect(started).toMatchObject({
+          type: "item.started",
+          item: { type: "contextCompaction" },
+        });
+        test.feed.push(
+          event(seq + 1, "compaction/end", { compactionId, turn: 1, ...(error ? { error } : {}) }),
+        );
+        expect(await nextEvent(outputs)).toMatchObject({
+          type: "item.completed",
+          snapshot: { outcome: { status: error ? "failed" : "succeeded" } },
+        });
+      }
+      test.control.update(
+        "contextPressure",
+        { pressureTokens: 100, projectedTokens: 25, contextWindow: 200 },
+        7,
+      );
+      expect(await nextEvent(outputs)).toMatchObject({
+        type: "session.usage.changed",
+        usage: { contextUsedTokens: 25, contextWindowTokens: 200 },
+      });
+      test.feed.push(event(8, "step/end", { turn: 1, step: 1 }));
+      test.feed.push(event(9, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+      expect(await nextEvent(outputs)).toMatchObject({
+        type: "turn.completed",
+        outcome: { status: "succeeded" },
+      });
+      const snapshot = await test.session.readSnapshot();
+      expect(snapshot).toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {
+              items: [
+                { item: { type: "contextCompaction" }, outcome: { status: "succeeded" } },
+                { item: { type: "contextCompaction" }, outcome: { status: "failed" } },
+              ],
+            },
+          ],
+        },
+      });
+      await test.session.close();
+      const reopened = setup(
+        [],
+        [...test.feed.seen],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [],
+        profile,
+      );
+      expect(await reopened.session.readSnapshot()).toEqual(snapshot);
+      await reopened.session.close();
+    },
+  );
+
+  it("waits through pre-step compaction before correlating an accepted prompt", async () => {
+    vi.useFakeTimers();
+    const test = setup([async () => accepted()], [], ["request-1"], 5_000, null, undefined, 10);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    await test.session.execute({
+      type: "turn.start",
+      turnId: turnId("pre-step"),
+      input: [{ type: "text", text: "go" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "compaction/start", { compactionId: "pre-step", turn: 1 }));
+    await vi.advanceTimersByTimeAsync(100);
+    test.feed.push(event(2, "compaction/end", { compactionId: "pre-step", turn: 1 }));
+    test.feed.push(event(3, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(4, "go", "request-1"));
+    test.feed.push(requestHeader(5));
+    const emitted = await eventsThrough(outputs, "item.completed");
+    expect(emitted).toMatchObject([
+      { type: "turn.started", turnId: "pre-step" },
+      { type: "item.started", item: { type: "contextCompaction" } },
+      { type: "item.completed", snapshot: { outcome: { status: "succeeded" } } },
+    ]);
+    test.feed.push(event(6, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.completed" });
+    await test.session.close();
+  });
+
+  it("re-arms accepted-prompt correlation after compaction instead of waiting forever", async () => {
+    vi.useFakeTimers();
+    const test = setup([async () => accepted()], [], ["request-1"], 5_000, null, undefined, 10);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    await test.session.execute({
+      type: "turn.start",
+      turnId: turnId("missing-echo"),
+      input: [{ type: "text", text: "go" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "compaction/start", { compactionId: "pre-step", turn: 1 }));
+    await vi.advanceTimersByTimeAsync(100);
+    test.feed.push(event(2, "compaction/end", { compactionId: "pre-step", turn: 1 }));
+    await vi.advanceTimersByTimeAsync(20);
+    const emitted = await eventsThrough(outputs, "session.faulted");
+    expect(emitted.at(-1)).toMatchObject({
+      type: "session.faulted",
+      error: { code: "protocolError" },
+    });
+    await test.session.close().catch(() => undefined);
+  });
+
+  it("does not duplicate the manual command Item from its native journal events", async () => {
+    const execution = deferred<ModernRemoteResult<unknown>>();
+    const test = setup([() => execution.promise]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    await test.session.commands.execute({ turnId: turnId("manual"), commandId: "dsh.compact" });
+    await nextEvent(outputs);
+    await nextEvent(outputs);
+    test.feed.push(
+      event(0, "compaction/start", {
+        compactionId: "manual",
+        turn: null,
+        sourceCommandId: "command-1",
+      }),
+    );
+    test.feed.push(
+      event(1, "compaction/end", {
+        compactionId: "manual",
+        turn: null,
+        sourceCommandId: "command-1",
+      }),
+    );
+    execution.resolve({ ok: true, value: { commandId: "command-1", result: { kind: "success" } } });
+    expect(await eventsThrough(outputs, "turn.completed")).toMatchObject([
+      { type: "item.completed", snapshot: { item: { type: "contextCompaction" } } },
+      { type: "turn.completed" },
+    ]);
+    await test.session.close();
+  });
+
+  it("updates occupancy for pruning without fabricating a summary compaction", async () => {
+    const test = setup([]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    beginAutonomousTurn(test);
+    await eventsThrough(outputs, "turn.started");
+    test.feed.push(
+      event(4, "compaction/prune", {
+        shadowedRange: { start: 2, end: 2 },
+        shadowedSeqs: [2],
+        shadowedTokenCount: 10,
+      }),
+    );
+    test.control.update("contextPressure", { projectedTokens: 0, contextWindow: 200 }, 4);
+    expect(await nextEvent(outputs)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { contextUsedTokens: 0 },
+    });
+    test.feed.push(event(5, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.completed" });
+    await test.session.close();
+  });
+
+  it("continues the reply after a native summary replacement without exposing the checkpoint as user input", async () => {
+    const test = setup([]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    beginAutonomousTurn(test);
+    await eventsThrough(outputs, "turn.started");
+    test.feed.push(event(4, "compaction/start", { compactionId: "summary", turn: 1 }));
+    test.feed.push(
+      event(5, "compaction/summary", {
+        compactionId: "summary",
+        summary: [{ type: "text", text: "checkpoint" }],
+        shadowedRange: { start: 2, end: 2 },
+        shadowedSeqs: [2],
+        shadowedTokenCount: 20,
+        provider: "deepseek",
+        model: "deepseek-v4",
+      }),
+    );
+    test.feed.push({
+      ...sourcedUserMessage(6, "checkpoint", {
+        kind: "plugin",
+        plugin: "compact",
+        compactionId: "summary",
+      }),
+      surfaceOp: { op: "replace", start: 2, end: 2 },
+      sourceEventSeqs: [4, 5, 2],
+    });
+    test.feed.push(event(7, "compaction/end", { compactionId: "summary", turn: 1 }));
+    test.feed.push(finalAssistantMessage(8, 1, "continued", ""));
+    test.feed.push(event(9, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(10, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    const emitted = await eventsThrough(outputs, "turn.completed");
+    expect(emitted[0]).toMatchObject({ type: "item.started", item: { type: "contextCompaction" } });
+    expect(emitted[1]).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "contextCompaction" }, outcome: { status: "succeeded" } },
+    });
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        type: "item.completed",
+        snapshot: expect.objectContaining({
+          item: expect.objectContaining({ type: "agentMessage", text: "continued" }),
+        }),
+      }),
+    );
+    expect(await test.session.readSnapshot()).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            input: [],
+            items: [
+              { item: { type: "contextCompaction" } },
+              { item: { type: "agentMessage", text: "continued" } },
+            ],
+          },
+        ],
+      },
+    });
+    await test.session.close();
+  });
+
+  it("resumes an in-flight compaction from its durable opening without duplicating it", async () => {
+    const history = [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      sourcedUserMessage(2, "continue", { kind: "goal", goalId: "goal-1", revision: 1, round: 1 }),
+      requestHeader(3),
+      event(4, "compaction/start", { compactionId: "resumed", turn: 1 }),
+    ];
+    const test = setup([], history);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const opening = await eventsThrough(outputs, "item.started");
+    expect(opening.at(-1)).toMatchObject({
+      type: "item.started",
+      item: { type: "contextCompaction" },
+    });
+    test.feed.push(event(5, "compaction/end", { compactionId: "resumed", turn: 1 }));
+    expect(await nextEvent(outputs)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "succeeded" } },
+    });
+    test.feed.push(event(6, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.completed" });
+    await test.session.close();
+  });
+
+  it("settles an unfinished compaction when its Turn is cancelled", async () => {
+    const test = setup([]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    beginAutonomousTurn(test);
+    await eventsThrough(outputs, "turn.started");
+    test.feed.push(event(4, "compaction/start", { compactionId: "cancelled", turn: 1 }));
+    await nextEvent(outputs);
+    await test.session.close();
+    expect(await nextEvent(outputs)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "contextCompaction" }, outcome: { status: "cancelled" } },
+    });
+    expect(await nextEvent(outputs)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+  });
+});
+
 describe("DeepSeek Harness Modern Session", () => {
   it.each(["status", "providerRetryAfterMs"])(
     "does not reconnect when a V3 finish contains an invalid %s",

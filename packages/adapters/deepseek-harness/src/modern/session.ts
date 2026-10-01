@@ -56,6 +56,11 @@ import {
 import { deepSeekHarnessCommandCatalog, parseDeepSeekHarnessCommand } from "../harness-commands.js";
 import { isRecord, parseArguments, projectToolResult, structuredDiffs } from "../projection.js";
 import type { ModernModelCatalogSnapshot } from "./catalog.js";
+import {
+  MODERN_CONTEXT_PRESSURE_KEY,
+  modernCompactionOutcome,
+  withModernContextPressure,
+} from "./compaction.js";
 import { executeModernCommand, ModernCommandError } from "./commands.js";
 import {
   modernConfigurationHarnessError,
@@ -184,6 +189,7 @@ interface NativeTurnBuffer {
   readonly initialResume: boolean;
   pending?: PendingPrompt;
   active?: ActiveHostTurn;
+  compacting?: string;
   replayed: number;
   sawUserMessage: boolean;
   reachedCorrelationBoundary: boolean;
@@ -214,6 +220,7 @@ interface ActiveHostTurn {
   agent?: LiveTextItem<HostAgentMessageItem>;
   reasoning?: LiveReasoningItem;
   reasoningOrdinal: number;
+  compaction?: { nativeId: string; item: HostContextCompactionItem };
   readonly tools: Map<string, LiveTool>;
   readonly interactions: Set<HostInteractionId>;
   terminal: boolean;
@@ -429,7 +436,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     });
     this.#nativeRef = projection.nativeRef;
     this.initialState = configuration.state;
-    this.initialUsage = projection.usage;
+    this.initialUsage = withModernContextPressure(
+      projection.usage,
+      this.#control.snapshot(this.#sessionId)?.[MODERN_CONTEXT_PRESSURE_KEY],
+    );
     this.#state = this.initialState;
     this.#usage = this.initialUsage;
     this.#fallbackModel = configuration.state.effectiveModel as HarnessModelRef;
@@ -466,6 +476,16 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#control.subscribe(this.#sessionId, MODERN_PERMISSION_PROJECTION_KEY, () =>
           this.#onConfigurationProjection(),
         ),
+      );
+      removeControlSubscriptions.push(
+        this.#control.subscribe(this.#sessionId, MODERN_CONTEXT_PRESSURE_KEY, () => {
+          if (!this.#closed && !this.#closing) {
+            this.#publishUsage(
+              this.#usage,
+              this.#active?.turnId ?? this.#activeCommand?.command.turnId,
+            );
+          }
+        }),
       );
       this.#detachEvents = options.eventGateway.attach(this.#sessionId, this);
     } catch (error) {
@@ -1084,7 +1104,14 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     pending.admitted = true;
     this.#acceptedTurnIds.add(pending.command.turnId);
     this.#scheduleBoundTurn(pending);
-    if (!pending.buffer && !pending.correlationTimer) {
+    this.#armAcceptedPromptCorrelation(pending);
+    return { ok: true, value: { turnId: pending.command.turnId } };
+  }
+
+  #armAcceptedPromptCorrelation(pending: PendingPrompt): void {
+    // DSH can compact in pre-step before appending the requestId-bearing user message.
+    // Wait for native completion rather than timing out a known accepted prompt.
+    if (!pending.buffer && !pending.correlationTimer && !this.#buffer?.compacting) {
       const timer = setTimeout(() => {
         if (pending.correlationTimer !== timer) return;
         pending.correlationTimer = undefined;
@@ -1097,7 +1124,6 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       }, this.#acceptedCorrelationTimeoutMs);
       pending.correlationTimer = timer;
     }
-    return { ok: true, value: { turnId: pending.command.turnId } };
   }
 
   #beginPromptCorrelationGrace(
@@ -1777,6 +1803,22 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     const buffer = this.#buffer;
     if (!buffer) return;
     buffer.events.push(event);
+    if (isRecord(event.data) && event.data.turn === buffer.nativeTurn) {
+      if (event.type === "compaction/start" && event.data.sourceCommandId === undefined) {
+        buffer.compacting = event.data.compactionId as string;
+        for (const pending of this.#pendingByRequestId.values()) {
+          if (pending.admitted) this.#clearPromptCorrelationTimer(pending);
+        }
+      } else if (
+        (event.type === "compaction/end" && event.data.compactionId === buffer.compacting) ||
+        event.type === "turn/end"
+      ) {
+        delete buffer.compacting;
+        for (const pending of this.#pendingByRequestId.values()) {
+          if (pending.admitted) this.#armAcceptedPromptCorrelation(pending);
+        }
+      }
+    }
     this.#observeBufferedCorrelation(buffer, event, true);
 
     if (buffer.active) {
@@ -2022,6 +2064,34 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       case "request/context":
       case "model/selection":
         return;
+      case "compaction/start": {
+        // Manual commands own a separate Host Turn; do not duplicate their Item.
+        if (data.turn !== active.nativeTurn || data.sourceCommandId !== undefined) return;
+        if (active.compaction)
+          throw new ModernHistoryError("protocolError", "Modern compactions overlap");
+        const nativeId = data.compactionId as string;
+        const item: HostContextCompactionItem = {
+          type: "contextCompaction",
+          itemId: modernItemId(this.#sessionId, `compaction:${nativeId}`),
+        };
+        active.compaction = { nativeId, item };
+        this.#emit({ type: "item.started", turnId: active.turnId, item });
+        return;
+      }
+      case "compaction/end": {
+        if (data.turn !== active.nativeTurn || data.sourceCommandId !== undefined) return;
+        if (!active.compaction || active.compaction.nativeId !== data.compactionId) {
+          throw new ModernHistoryError(
+            "protocolError",
+            "Modern compaction ended without its start",
+          );
+        }
+        const { item } = active.compaction;
+        delete active.compaction;
+        this.#completeItem(active, item, modernCompactionOutcome(data));
+        if (!initialReplay) this.#publishUsageChanges(active.turnId);
+        return;
+      }
       case "assistant/chunk":
         if (!isRecord(data.chunk)) return;
         this.#projectAssistantChunk(active, data.chunk, data.step as number, initialReplay);
@@ -2287,6 +2357,23 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   #completeOpenItems(active: ActiveHostTurn, outcome: HostItemOutcome): void {
+    if (active.compaction) {
+      this.#completeItem(
+        active,
+        active.compaction.item,
+        outcome.status === "succeeded"
+          ? {
+              status: "failed",
+              error: {
+                code: "nativeFailure",
+                message: "DeepSeek Harness compaction ended without a terminal event",
+                retryable: true,
+              },
+            }
+          : outcome,
+      );
+      delete active.compaction;
+    }
     if (active.reasoning) {
       const item = active.reasoning.item;
       delete active.reasoning;
@@ -2310,12 +2397,19 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   #publishUsageChanges(observedForTurnId?: HostTurnId): void {
-    const projection = this.#project();
-    if (JSON.stringify(projection.usage) !== JSON.stringify(this.#usage)) {
-      this.#usage = projection.usage;
+    this.#publishUsage(this.#project().usage, observedForTurnId);
+  }
+
+  #publishUsage(nativeUsage: HostUsage | null, observedForTurnId?: HostTurnId): void {
+    const usage = withModernContextPressure(
+      nativeUsage,
+      this.#control.snapshot(this.#sessionId)?.[MODERN_CONTEXT_PRESSURE_KEY],
+    );
+    if (JSON.stringify(usage) !== JSON.stringify(this.#usage)) {
+      this.#usage = usage;
       this.#emit({
         type: "session.usage.changed",
-        usage: projection.usage,
+        usage,
         ...(observedForTurnId ? { observedForTurnId } : {}),
       });
     }

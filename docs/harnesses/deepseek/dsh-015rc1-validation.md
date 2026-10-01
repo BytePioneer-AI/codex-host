@@ -1,5 +1,17 @@
 # DSH 012rc1 / 015rc1 / 015rc2 / 015rc3 / 017rc1 / 017rc2 对接验证
 
+## 自动压缩链路
+
+自动压缩的阈值、工具结果修剪、摘要、上下文替换和溢出重试由 DSH 原生 `compaction-basic` 所有，Host 不发送额外 `/compact`，也不调用 Codex 的远程压缩接口。
+
+Adapter 将同一原生 Turn 的 `compaction/start` / `compaction/end` 按 `compactionId` 投影为稳定 ID 的 `contextCompaction` Item；成功、原生错误和 Turn 提前终止均收敛 Item。压缩错误只结束该 Item，不强制结束原生 Turn。原生日志只有错误文本、没有独立取消标签时，不通过文本猜测取消。历史读取和恢复沿用相同 ID 与结果；手动命令仍使用命令结果链路，带 `sourceCommandId` 或 `turn: null` 的事件不重复生成自动压缩 Item。`compaction/prune` 不伪装成一次摘要压缩。
+
+上下文占用订阅原生 `contextPressure`，优先使用 `projectedTokens`（包含原生 surface 替换影响），旧投影退回 `pressureTokens`；缺失或无有效窗口时保留原有 usage 回退。占用变化不扣减累计消费计数，控制投影更新不重新扫描完整日志。
+
+DSH 可以在 pre-step、持久化带 requestId 的用户消息之前压缩。已确认接收的 prompt 在该原生压缩期间暂停等待关联的超时，结束后重新计时；Host 仍等待真实 requestId 关联才发布该 Turn 的缓冲事件，不猜测原生 Turn 身份，也不放宽请求结果不确定时的恢复规则。
+
+定向回归覆盖 V0/V3/V4 自动压缩、重复压缩、错误后 Turn 继续、历史恢复、取消收敛、手动命令去重、仅修剪的占用更新及 pre-step 关联超时。此链路的协议依据为 DSH upstream `639ed015` 的 `compaction-basic/src/index.ts`、`region.ts` 与 `token-meter/src/usage-projection.ts`；模拟协议测试不等于真实模型或 Desktop 验证。
+
 ## 0.1.7-rc.2 支持与验证边界
 
 DSH dsh-v0.1.7-rc.2 的 tag commit 为 477b4f420553e8a52c2fbccc464d7561b239c443。源码发布版本仍使用 Session Format V4，因此 Adapter 将 0.1.7-rc.2 及更高 SemVer 路由到现有 V4 profile；低于 0.1.7-rc.1 的现代版本继续路由 V3，0.1.2 系列继续使用 V0。

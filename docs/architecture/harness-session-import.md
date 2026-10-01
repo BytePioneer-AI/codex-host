@@ -2,7 +2,7 @@
 
 ## 当前范围
 
-设置 → 会话导入可登记 **Claude Code、Pi、Hermes** 和 **DSH** 的原生 Session（已验证 `0.1.2-rc.1` / `0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.5-rc.3` / `0.1.7-rc.1`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-015rc1-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
+设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP** 和 **DSH** 的原生 Session（已验证 `0.1.2-rc.1` / `0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.5-rc.3` / `0.1.7-rc.1`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-015rc1-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
 
 - 设置页始终使用本地 Host，即使 Composer 当前连接远程工作区。
 - 可选 Harness 来自该 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
@@ -90,6 +90,17 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 
 导入能力与 Claude CLI 的原生会话列表是两条边界：本页可以导入旧 `sdk-ts` 会话；codexhost 新建 SDK 会话另以 `codexhost-sdk` entrypoint 持久化，使当前 Claude CLI 版本的原生 picker 也能列出它们。
 
+## Cursor CLI ACP 原生规则
+
+- 仅枚举 Cursor 配置根目录下的 `acp-sessions/<UUID>/`。默认是 `~/.cursor/acp-sessions`；与恢复会话共用 `cursorConfigDirectory()`，优先使用 `CURSOR_CONFIG_DIR`，其次是 `XDG_CONFIG_HOME/cursor`。不扫描 Cursor IDE 聊天或普通 CLI `chats`，不转换它们的存储格式。
+- 读取 `meta.json` 的工作目录和只读 `store.db`，复用原有恢复校验：数据库 `agentId` 必须等于 Session ID，原生根节点、Turn ID、顺序和消息引用必须可解析，且至少有一条用户 Turn。工作目录必须存在，按真实路径返回。损坏、空历史、身份不符或不支持的存储不成为候选。
+- 标题来自首条用户文本，清理 NUL、折叠空白并按公共契约截断；更新时间取数据库和现存 WAL 的较新修改时间。浏览器只收到候选元数据，不收到数据库路径、完整历史或凭据。
+- 不跟随枚举的 Session 目录及 `meta.json`、`store.db`、WAL 符号链接。元数据文件上限为 1 MiB，历史解码沿用原生读取器的记录限制；不另设候选总数上限。扫描会检查目录、元数据、数据库与 WAL 的读取前后指纹，列表跳过变化项；提交导入时只重新读取指定 Session，变化则拒绝本次操作。不缓存已解析的历史。
+- `running` 始终为 `null`，稳定读取不等于会话空闲。**导入前关闭原生客户端中的会话**，Host 不提供跨进程独占或锁接管。
+- 解析结果通过公共契约返回原生引用，明确保存 `executionPolicy: default`。原生历史不能证明以前是否用了 `--force`，所以导入不会猜测或提升权限。Host 继续负责去重、映射持久化与 `notLoaded` 状态；打开后才走正常 ACP `session/load`。
+- 发现和解析不启动 Cursor、不发送 Model Turn、不改写会话内容。Adapter 关闭会取消并等待扫描结束；存储访问错误与空目录分别报告。当前不新增远程扫描或 Broker 导入。
+- 此能力仍依赖 Cursor 未公开的 ACP 存储格式；目录及指纹校验不是针对恶意本机文件替换的安全沙箱。
+
 ## DSH 原生规则
 
 - 通过托管 Web 的公开 Session API 发现候选并重新检查所选 Session，不直接扫描或改写 DSH 的原生日志文件。
@@ -98,6 +109,8 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 - 若配置的回环端点已有无法认证的 DSH Web，先关闭该实例，再重新运行连接诊断，让 codexhost 启动自己的 Web；不会接管或停止外部进程。
 
 ## 验证
+
+Cursor 定向测试使用隔离 SQLite 原生格式夹具，覆盖目录覆盖、只读发现、身份校验、空/坏存储、目录及文件软链、删除与变化复查、关闭取消，以及使用返回引用走 Adapter 恢复并继续同一历史。恢复过程的 ACP Transport 为模拟实现，不代表真实 Cursor CLI 或 Desktop 真机验收。
 
 定向测试覆盖 Claude Code 的 CLI/SDK entrypoint、目录与标题规则、坏文件、Subagent 排除、消失/歧义、只读发现、缓存和提交前复查；Pi 目录规则、活动分支、坏文件、消失/歧义、取消、只读发现，以及超过旧 64 MiB/256 MiB 和 100,000 Entry 限制的有效数据、缓存失效和按选中项复查；Host locator 持久化与重启、跨 Harness 相同 ID、旧 DSH RPC、幂等/竞争/忙碌/失败清理、过滤后分页与跨页搜索；Renderer 动态来源、分页大小/边界、搜索旧响应失效、导入期间控件锁定、未知状态、导入去重和导航失败恢复。
 

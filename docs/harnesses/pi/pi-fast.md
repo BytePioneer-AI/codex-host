@@ -21,12 +21,12 @@ Pi Adapter 在现有 `inspect()` 获取 Model 目录的同一临时 RPC 进程�
 
 小型扩展随 Pi Adapter Bundle 交付。启动原生 Pi 时，将内容寻址资源写到 `${CODEXHOST_DATA_DIR:-~/.codexhost}/extensions/pi-codex-fast/<digest>.mjs` 并通过 `--extension` 加载，不改 Pi 全局设置，也无需用户单独安装。默认关闭时不注册替代 Provider 或改变请求。
 
-开启时扩展包装当前 Provider 已有的 `stream` / `streamSimple`，保留其认证、模型和其他原生方法，仅对启用的目标 Model 加入原生 `serviceTier: "priority"`。关闭时不添加该参数。各 Pi 进程独立持有开关；切换 Model 前关闭，切换 Thinking 保持开关。设置通过扩展命令执行，并等待带随机 nonce 的原生通知确认，不能把普通 Prompt 回执当作成功，也不重启 Pi 模拟 Fast。命令发送后发生错误或缺少确认时，将会话标记为故障并关闭原生进程，禁止继续发送；不能假定报错意味着请求策略未改变。运行中选择先完成 Thinking 能力查询，再切换 Fast 并立即公布已确认状态，避免后续查询失败留下未公布的 priority。
+开启时扩展包装当前 Provider 已有的 `stream` / `streamSimple`，保留其认证、模型和其他原生方法，仅对启用的目标 Model 加入原生 `serviceTier: "priority"`，并通过 `onPayload` 确保最终请求体含 `service_tier: "priority"`：Pi 的 `streamSimple` 会丢弃前者，但保留 payload 钩子。包装会等待并保留原有钩子的修改、替换结果和错误，再确保 priority 字段；关闭时原样传递调用选项，不添加该参数。各 Pi 进程独立持有开关；切换 Model 前关闭，切换 Thinking 保持开关。设置通过扩展命令执行，并等待带随机 nonce 的原生通知确认，不能把普通 Prompt 回执当作成功，也不重启 Pi 模拟 Fast。命令发送后发生错误或缺少确认时，将会话标记为故障并关闭原生进程，禁止继续发送；不能假定报错意味着请求策略未改变。运行中选择先完成 Thinking 能力查询，再切换 Fast 并立即公布已确认状态，避免后续查询失败留下未公布的 priority。
 
 公共 Model Catalog 的可选 `fastModel` 是普通 Model 的独立、不含凭据的配置引用；Renderer、委派校验及 Model/Thinking 展示使用同一目录解析函数。Pi 的编码、凭据判定、缓存读取和请求语义全部属于 Pi Adapter，不进入 Host 或 Renderer。
 
 ## 验证边界
 
-定向测试覆盖别名及导入凭据、非 Codex 凭据、API 与模型不支持、缺少元数据、并发资源发布、参数与 Thinking 保持、原生命令确认、确认失败后的进程关闭与发送阻断、选择及恢复、Fork 的持久化与重新打开一致性，以及浏览器中按钮显隐、开关、Model 菜单和键盘操作。
+定向测试覆盖别名及导入凭据、非 Codex 凭据、API 与模型不支持、缺少元数据、并发资源发布、最终请求体的 priority 注入（包括 `streamSimple` 丢弃选项的路径）、已有 payload 钩子的同步修改/异步替换/错误传播、参数与 Thinking 保持、原生命令确认、确认失败后的进程关闭与发送阻断、选择及恢复、Fork 的持久化与重新打开一致性，以及浏览器中按钮显隐、开关、Model 菜单和键盘操作。
 
-本机 Pi 的隔离离线冒烟检查确认扩展可加载，并能在显式加载的别名 Provider 上确认开关；使用合成凭据，没有发起 Model Turn。浏览器验证包含真实控件及 binding/prewarm 路由的隔离测试页面，覆盖同一草稿重挂载后预建与发送的 Fast 引用一致性，但不等同于完整 Codex Desktop 验收。尚未验证真实付费 priority 请求的服务端接受、速度或额度变化，也不保证任意用户扩展在之后重新注册 Provider 时仍保持该包装。
+本机 Pi 的隔离离线冒烟检查确认扩展可加载，并能在显式加载的别名 Provider 上确认开关；使用合成凭据，没有发起 Model Turn。浏览器验证包含真实控件及 binding/prewarm 路由的隔离测试页面，覆盖同一草稿重挂载后预建与发送的 Fast 引用一致性，但不等同于完整 Codex Desktop 验收。本机 `c / gpt-6-astra` 的隔离真实请求检查确认：同一 Pi 会话按关→开→关发送时，请求的 `service_tier` 为缺省→`priority`→缺省，三个请求均成功完成。但服务端原始完成事件均返回 `default`，因此这只证明客户端请求策略正确，不能确认服务端实际采用 priority 调度，也未验证速度或额度变化。不保证任意用户扩展在之后重新注册 Provider 时仍保持该包装。

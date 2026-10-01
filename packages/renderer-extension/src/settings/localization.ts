@@ -114,6 +114,8 @@ export interface RendererSettingsMessages {
   readonly accountNativeManagementHint: string;
   readonly accountDefaultHint: string;
   readonly accountCreditsRemaining: string;
+  readonly accountCreditsRemainingQuota: string;
+  readonly accountCreditsUsedQuota: string;
   readonly accountBalanceRemaining: string;
   readonly accountCreditsLoading: string;
   readonly accountCreditsEmpty: string;
@@ -185,7 +187,6 @@ export interface RendererSettingsMessages {
   readonly harnessVersionTitle: string;
   readonly harnessVersionCurrent: string;
   readonly harnessVersionLatest: string;
-  readonly harnessVersionCheck: string;
   readonly harnessVersionChecking: string;
   readonly harnessVersionUpdate: string;
   readonly harnessVersionUpdating: string;
@@ -378,6 +379,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "This account comes from {harness}'s native authentication. This page only displays identity and limits; manage sign-in, sign-out and switching in the native client.",
   accountDefaultHint: "This is the current identity for all Codex Threads.",
   accountCreditsRemaining: "Remaining",
+  accountCreditsRemainingQuota: "Remaining quota",
+  accountCreditsUsedQuota: "Used quota",
   accountBalanceRemaining: "remaining balance",
   accountCreditsLoading: "Loading limits…",
   accountCreditsEmpty: "No limit data available",
@@ -453,14 +456,13 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessVersionTitle: "Harness CLI version",
   harnessVersionCurrent: "Current version",
   harnessVersionLatest: "Latest version",
-  harnessVersionCheck: "Check for updates",
   harnessVersionChecking: "Checking versions…",
   harnessVersionUpdate: "Update",
   harnessVersionUpdating: "Updating…",
   harnessVersionUpToDate: "Up to date",
   harnessVersionUpdated: "Update verified. New sessions will use the new version.",
   harnessVersionFailed:
-    "Could not complete the operation. Check the native installation and check for updates again.",
+    "Could not complete the operation. Check the network connection or native installation.",
   harnessVersionUnsupported: "This Host or plugin does not support CLI version management.",
   harnessVersionManual: "Use the original installer to update this installation.",
   harnessVersionNote:
@@ -664,6 +666,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "此账号来自 {harness} 的原生登录。这里只读展示身份与额度；登录、退出和切换请在其原生客户端中完成。",
   accountDefaultHint: "所有 Codex 会话当前使用此身份。",
   accountCreditsRemaining: "剩余",
+  accountCreditsRemainingQuota: "剩余额度",
+  accountCreditsUsedQuota: "已用额度",
   accountBalanceRemaining: "剩余余额",
   accountCreditsLoading: "正在读取额度…",
   accountCreditsEmpty: "暂无额度数据",
@@ -737,13 +741,12 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessVersionTitle: "Harness CLI 版本",
   harnessVersionCurrent: "当前版本",
   harnessVersionLatest: "最新版本",
-  harnessVersionCheck: "检查更新",
   harnessVersionChecking: "正在检查版本…",
   harnessVersionUpdate: "更新",
   harnessVersionUpdating: "正在更新…",
   harnessVersionUpToDate: "已是最新",
   harnessVersionUpdated: "已确认更新成功，新会话将使用新版本。",
-  harnessVersionFailed: "操作未完成，请检查原生安装并重新检查更新。",
+  harnessVersionFailed: "操作未完成，请检查网络连接或原生安装。",
   harnessVersionUnsupported: "当前 Host 或插件不支持 CLI 版本管理。",
   harnessVersionManual: "请使用原安装方式更新此 Harness。",
   harnessVersionNote:

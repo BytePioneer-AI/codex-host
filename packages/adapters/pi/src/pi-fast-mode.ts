@@ -31,7 +31,16 @@ export const PI_FAST_EXTENSION = `export default function(pi) {
           if (!original) throw new Error("Codex Provider is unavailable");
           if (!wrapped.has(model.provider)) {
             const options = (model, value) => target && model.api === "openai-codex-responses" && target.provider === model.provider && target.id === model.id
-              ? { ...value, serviceTier: "priority" } : value;
+              ? {
+                  ...value,
+                  serviceTier: "priority",
+                  // Pi streamSimple drops serviceTier but preserves onPayload.
+                  onPayload: async (payload, requestModel) => {
+                    const request = { ...payload, service_tier: "priority" };
+                    const replacement = await value?.onPayload?.(request, requestModel);
+                    return { ...(replacement === undefined ? request : replacement), service_tier: "priority" };
+                  },
+                } : value;
             pi.registerProvider({
               ...original,
               stream: (model, context, value) => original.stream(model, context, options(model, value)),
@@ -61,7 +70,13 @@ export async function ensurePiFastExtension(environment: NodeJS.ProcessEnv): Pro
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, PI_FAST_EXTENSION, { mode: 0o600 });
-    await rename(temporary, file);
+    try {
+      await rename(temporary, file);
+    } catch (error) {
+      // Windows may refuse to replace the file another start just published.
+      // Accept only the exact resource; do not hide an unsuccessful write.
+      if ((await readFile(file, "utf8").catch(() => "")) !== PI_FAST_EXTENSION) throw error;
+    }
   } finally {
     await rm(temporary, { force: true });
   }

@@ -13,7 +13,18 @@ The settings shell SHALL render inside an owned Shadow Root with owned CSS and b
 - **WHEN** settings opens without a visible navigation rail
 - **THEN** the page SHALL cover the window below the titlebar overlay
 
-#### Scenario: Narrow page
+#### Scenario: Desktop-sized window opens settings
+- **WHEN** the page opens with enough width for the desktop layout
+- **THEN** navigation and content SHALL render as a stable two-column settings layout
+- **AND** dynamic page content SHALL scroll without resizing or shifting the page controls
+
+#### Scenario: Native titlebar overlays the Renderer viewport
+- **WHEN** the browser exposes a nonzero `titlebar-area-height` environment value
+- **THEN** the page SHALL start below the titlebar and its height SHALL exclude that area at desktop and narrow widths
+- **AND** the page SHALL be a non-draggable interaction region without a backdrop
+- **AND** environments without a titlebar overlay SHALL use the navigation rail's top edge or the viewport top when the rail is unavailable
+
+#### Scenario: Narrow window opens settings
 - **WHEN** the page width cannot contain the two-column layout
 - **THEN** navigation SHALL become a horizontally scrollable compact row and content SHALL remain readable without overlapping the close control
 
@@ -23,6 +34,12 @@ The settings shell SHALL render inside an owned Shadow Root with owned CSS and b
 - **AND** the codexhost rail trigger SHALL show the selected treatment and expose `aria-current="page"`
 - **AND** closing SHALL remove the scoped CSS and the trigger selection
 - **AND** if Codex changes how it draws the rail highlight, settings SHALL remain functional with the native highlight visible
+
+#### Scenario: Codex visual implementation changes
+- **WHEN** a later Codex release renames or removes private settings classes, tokens, routes, or components
+- **THEN** the codexhost settings shell SHALL continue to render from its owned DOM and CSS
+- **AND** no production selector or import SHALL depend on those private settings implementation details
+- **AND** navigation rail placement and highlight handling SHALL remain limited to the verified rail boundary described above
 
 #### Scenario: Codex private theme CSS changes
 - **WHEN** Codex private color variables are absent, renamed, or semantically incompatible

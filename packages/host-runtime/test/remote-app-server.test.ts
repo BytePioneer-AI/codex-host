@@ -594,9 +594,30 @@ describe("remote SSH app-server transport", () => {
         firstClosing = first.close();
         await firstClientClosed;
 
+        // Exercise the reset race deterministically on every platform.
+        const probeConnection = vi.spyOn(net, "createConnection");
+        probeConnection.mockImplementationOnce(() => {
+          probeConnection.mockRestore();
+          const connection = new net.Socket();
+          queueMicrotask(() => {
+            const error = new Error("fixture shutdown reset") as NodeJS.ErrnoException;
+            error.code = "ECONNRESET";
+            connection.destroy(error);
+          });
+          return connection;
+        });
+
         let inactive = false;
         for (let attempt = 0; attempt < 100; attempt += 1) {
-          if (!(await socketAcceptsConnections(socketPath))) {
+          // A probe racing server.close() can be reset before connecting.
+          // Retry that transient result; only absence/refusal proves inactivity.
+          const active = await socketAcceptsConnections(socketPath).catch(
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === "ECONNRESET") return true;
+              throw error;
+            },
+          );
+          if (!active) {
             inactive = true;
             break;
           }

@@ -55,6 +55,15 @@ describe("Recovered external Turn errors", () => {
     expect(recovered).not.toContain(key("shared"));
     expect(recovered).not.toContain(key("codex", "local", "native-thread"));
   });
+
+  it("recognizes external history whose Turn model metadata is absent", () => {
+    const failed = {
+      ...entry("old", "failed", "local", "thread-1", null),
+      modelProvider: "codexhost",
+    };
+    const succeeded = entry("retry", "completed", "local", "thread-1", null);
+    expect(recoveredTurnErrorKeys([failed, succeeded])).toContain(key("old"));
+  });
 });
 
 describe("Reasoning transcript soft wrap", () => {

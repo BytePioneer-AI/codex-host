@@ -10,7 +10,7 @@ const { outputFiles } = await build({
     contents: `
       import { installRecoveredTurnErrors } from "./packages/renderer-extension/src/renderer-transcript-dom.ts";
       const entries = [
-        { hostId:"local", conversationId:"thread", turnId:"old", turn:{status:"failed",error:{message:"error"},params:{model:"codexhost/antigravity-native"}} },
+        { hostId:"local", conversationId:"thread", turnId:"old", modelProvider:"codexhost", turn:{status:"failed",error:{message:"error"},params:{model:null}} },
         { hostId:"local", conversationId:"thread", turnId:"retry", turn:{status:"inProgress",error:null,params:{model:null}} },
         { hostId:"remote", conversationId:"thread", turnId:"old", turn:{status:"failed",error:{message:"error"},params:{model:"codexhost/antigravity-native"}} },
         { hostId:"local", conversationId:"native", turnId:"old", turn:{status:"failed",error:{message:"error"},params:{model:"gpt-6.1"}} },

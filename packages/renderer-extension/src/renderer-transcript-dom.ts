@@ -18,12 +18,13 @@ const errorKey = (hostId: string, conversationId: string, turnId: string): strin
 export function recoveredTurnErrorKeys(entries: readonly unknown[]): ReadonlySet<string> {
   const external = new Set<string>();
   for (const entry of entries) {
-    if (!record(entry) || !record(entry.turn) || !record(entry.turn.params)) continue;
+    if (!record(entry) || !record(entry.turn)) continue;
+    const model = record(entry.turn.params) ? entry.turn.params.model : null;
     if (
       typeof entry.hostId === "string" &&
       typeof entry.conversationId === "string" &&
-      typeof entry.turn.params.model === "string" &&
-      entry.turn.params.model.startsWith("codexhost/")
+      (entry.modelProvider === "codexhost" ||
+        (typeof model === "string" && model.startsWith("codexhost/")))
     ) {
       external.add(errorKey(entry.hostId, entry.conversationId, ""));
     }

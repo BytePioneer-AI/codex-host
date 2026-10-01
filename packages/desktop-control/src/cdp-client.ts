@@ -18,7 +18,7 @@ export interface CdpFetchResponse {
   json(): Promise<unknown>;
 }
 
-export type CdpFetch = (url: string, init?: { signal?: AbortSignal }) => Promise<CdpFetchResponse>;
+export type CdpFetch = (url: string) => Promise<CdpFetchResponse>;
 
 interface CdpSocketEvent {
   data?: unknown;
@@ -125,8 +125,8 @@ function parseTarget(value: unknown): CdpTarget | null {
   };
 }
 
-function defaultFetch(url: string, init?: { signal?: AbortSignal }): Promise<CdpFetchResponse> {
-  return fetch(url, init);
+function defaultFetch(url: string): Promise<CdpFetchResponse> {
+  return fetch(url);
 }
 
 function defaultSocketFactory(url: string): CdpSocket {
@@ -178,11 +178,10 @@ export async function getCdpBrowserVersion(
 export async function listCdpTargets(
   endpoint: string,
   fetchImpl: CdpFetch = defaultFetch,
-  signal?: AbortSignal,
 ): Promise<CdpTarget[]> {
   const baseUrl = loopbackUrl(endpoint, ["http:", "https:"]);
   const targetsUrl = new URL("/json/list", baseUrl).toString();
-  const response = await fetchImpl(targetsUrl, signal ? { signal } : undefined);
+  const response = await fetchImpl(targetsUrl);
   if (!response.ok) throw new Error(`CDP target discovery failed with HTTP ${response.status}`);
   const value = await response.json();
   if (!Array.isArray(value)) throw new Error("CDP target discovery did not return an array");

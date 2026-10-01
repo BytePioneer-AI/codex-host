@@ -37,7 +37,6 @@ export interface DesktopControllerDependencies {
     rendererSource: string;
     enabledAgents: readonly string[];
     timeoutMs: number;
-    signal?: AbortSignal;
   }): Promise<RendererCdpControlSession>;
   startAttachmentServer(
     options: StartControllerAttachmentServerOptions,
@@ -277,7 +276,6 @@ export async function runDesktopController(
           "kimi-code",
         ],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
-        signal,
       },
       dependencies,
     );
@@ -285,6 +283,14 @@ export async function runDesktopController(
     return installed;
   };
   startupTrace("initialization started");
+  try {
+    session = await createSession();
+    recordRecoverySuccess();
+  } catch (error) {
+    startupTrace("initial Renderer Session unavailable", error);
+    session = undefined;
+    recordRecoveryFailure(error);
+  }
 
   let operation = Promise.resolve<unknown>(undefined);
   const useSession = <T>(callback: () => Promise<T>): Promise<T> => {
@@ -334,17 +340,6 @@ export async function runDesktopController(
       schemaVersion: 2,
       state: "compatible",
       issues: [],
-    });
-    await useSession(async () => {
-      if (session) return;
-      try {
-        session = await createSession();
-        recordRecoverySuccess();
-      } catch (error) {
-        startupTrace("initial Renderer Session unavailable", error);
-        session = undefined;
-        recordRecoveryFailure(error);
-      }
     });
     while (!signal.aborted) {
       await dependencies.sleep(dependencies.monitorIntervalMs);

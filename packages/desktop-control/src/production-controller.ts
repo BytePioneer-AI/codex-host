@@ -7,6 +7,11 @@ import {
   type StartControllerAttachmentServerOptions,
 } from "./controller-attachment-server.js";
 import {
+  createControllerStatusPublisher,
+  createRendererStatusReporter,
+  type DesktopControllerStatusDocument,
+} from "./controller-status.js";
+import {
   installRendererCdpControlSession,
   type RendererCdpControlSession,
 } from "./renderer-cdp-control-session.js";
@@ -37,6 +42,8 @@ export interface DesktopControllerDependencies {
     options: StartControllerAttachmentServerOptions,
   ): Promise<ControllerAttachmentServer>;
   ready(readiness: DesktopControllerReadiness): void;
+  /** Publishes Renderer integration state for the codexhost console. */
+  publishStatus?(document: DesktopControllerStatusDocument): void;
   sleep(milliseconds: number): Promise<void>;
   now?(): number;
   monitorIntervalMs: number;
@@ -85,6 +92,7 @@ const defaultDependencies: DesktopControllerDependencies = {
   ready: (readiness) => {
     process.stdout.write(`${serializeDesktopControllerReadiness(readiness)}\n`);
   },
+  publishStatus: createControllerStatusPublisher(),
   sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   monitorIntervalMs: 500,
 };
@@ -225,15 +233,22 @@ export async function runDesktopController(
   let session: RendererCdpControlSession | undefined;
   let nextRecoveryAt = 0;
   let recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
-  const recordRecoveryFailure = (): void => {
+  const status = createRendererStatusReporter(
+    (document) => dependencies.publishStatus?.(document),
+    now,
+  );
+  const recordRecoveryFailure = (error: unknown): void => {
     nextRecoveryAt = now() + recoveryDelayMs;
     recoveryDelayMs = Math.min(recoveryDelayMs * 2, RECOVERY_RETRY_MAX_MS);
+    status.failed(error);
   };
   const recordRecoverySuccess = (): void => {
     nextRecoveryAt = 0;
     recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
+    status.installed();
   };
   const createSession = async (): Promise<RendererCdpControlSession> => {
+    status.installing();
     startupTrace("reading Renderer bundle");
     const rendererSource = await dependencies.readRenderer(options.rendererPath);
     if (rendererSource.trim().length === 0) throw new Error("production Renderer Bundle is empty");
@@ -275,7 +290,7 @@ export async function runDesktopController(
   } catch (error) {
     startupTrace("initial Renderer Session unavailable", error);
     session = undefined;
-    recordRecoveryFailure();
+    recordRecoveryFailure(error);
   }
 
   let operation = Promise.resolve<unknown>(undefined);
@@ -303,7 +318,7 @@ export async function runDesktopController(
       return current;
     } catch (error) {
       resetSession();
-      recordRecoveryFailure();
+      recordRecoveryFailure(error);
       throw error;
     }
   };

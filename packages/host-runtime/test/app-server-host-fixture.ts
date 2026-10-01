@@ -20,6 +20,7 @@ import type { CodexAccountControl } from "../src/account/codex-account-control.j
 import type { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
 import type { OfficialAppServerConnection } from "../src/official-app-server-connection.js";
 import type { HostUpdateCoordinator } from "../src/update-coordinator.js";
+import type { HostConsoleOpener } from "../src/console-opener.js";
 
 export class FakeOfficialProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -98,6 +99,9 @@ export class JsonLineCollector {
   waitFor(predicate: (message: JsonObject) => boolean): Promise<JsonObject> {
     const existing = this.messages.find(predicate);
     if (existing) return Promise.resolve(existing);
+    // Host responses can require Mapping Store fsync/rename operations.
+    // Allow for Windows disk latency, as in tests/vitest.config.js.
+    const timeoutMs = process.platform === "win32" ? 10_000 : 2_000;
     return new Promise<JsonObject>((resolve, reject) => {
       const waiter = {
         predicate,
@@ -106,7 +110,7 @@ export class JsonLineCollector {
           const index = this.#waiters.indexOf(waiter);
           if (index >= 0) this.#waiters.splice(index, 1);
           reject(new Error("Timed out waiting for Host output"));
-        }, 2_000),
+        }, timeoutMs),
       };
       this.#waiters.push(waiter);
     });
@@ -270,6 +274,7 @@ export function createFixture(
     createOfficialConnection?: () =>
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
+    consoleOpener?: HostConsoleOpener;
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
@@ -324,6 +329,7 @@ export function createFixture(
         }
       : {}),
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
+    ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),

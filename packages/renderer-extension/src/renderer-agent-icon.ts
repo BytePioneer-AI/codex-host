@@ -25,7 +25,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   "kiro-cli": "Kiro CLI",
   codebuddy: "CodeBuddy",
   workbuddy: "WorkBuddy",
-  "cursor-cli": "Cursor CLI (Experimental)",
+  "cursor-cli": "Cursor CLI",
   devin: "Devin",
   hermes: "Hermes",
   qoder: "Qoder",

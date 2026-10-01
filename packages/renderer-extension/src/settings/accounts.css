@@ -139,15 +139,7 @@
   font-weight: 500;
   text-align: left;
 }
-.settings-account-table th:nth-child(1) {
-  width: 32%;
-}
-.settings-account-table th:nth-child(2),
-.settings-account-table th:nth-child(3) {
-  width: 24%;
-}
-.settings-account-table th:nth-child(4) {
-  width: 20%;
+.settings-account-table th:last-child {
   text-align: right;
 }
 .settings-account-table td {
@@ -228,7 +220,10 @@
   font-variant-numeric: tabular-nums;
 }
 .settings-account-usage__title {
-  display: none;
+  display: block;
+  grid-column: 1;
+  grid-row: 1;
+  margin-right: 8px;
   min-width: 0;
   color: var(--settings-muted);
   font-size: 11px;
@@ -236,24 +231,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.settings-account-extra-usage {
-  display: grid;
-  gap: 12px;
-  margin-top: 14px;
-}
-.settings-account-extra-usage .settings-account-usage__meter,
-.settings-account-usage__meter--scoped {
-  grid-template-rows: auto 20px 4px 17px;
-}
-.settings-account-extra-usage .settings-account-usage__title,
-.settings-account-usage__meter--scoped .settings-account-usage__title {
-  display: block;
-  grid-column: 1 / -1;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
 .settings-account-usage__percent {
-  grid-column: 1 / -1;
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
   display: flex;
   align-items: baseline;
@@ -310,6 +290,20 @@
 }
 .settings-account-usage__message {
   color: var(--settings-muted);
+}
+.settings-account-balance {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-account-balance strong {
+  font-size: 14px;
+  line-height: 20px;
+}
+.settings-account-balance__caption {
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
 }
 .settings-account-usage__missing {
   display: grid;
@@ -445,7 +439,8 @@
   .settings-account-table tbody {
     display: block;
   }
-  .settings-account-table thead {
+  .settings-account-table thead,
+  .settings-account-table colgroup {
     display: none;
   }
   .settings-account-row {
@@ -466,7 +461,8 @@
   }
   .settings-account-person-cell,
   .settings-account-management-cell,
-  .settings-account-usage-cell--message {
+  .settings-account-usage-cell--message,
+  .settings-account-balance-cell {
     grid-column: 1 / -1;
   }
   .settings-account-table .settings-account-row > td.settings-account-management-cell--empty {
@@ -486,18 +482,6 @@
   }
   .settings-account-email {
     font-size: 13px;
-  }
-  .settings-account-usage__title {
-    display: block;
-    grid-column: 1;
-  }
-  .settings-account-usage__percent,
-  .settings-account-usage__missing > span:not(.settings-account-usage__title) {
-    grid-column: 2;
-    text-align: right;
-  }
-  .settings-account-extra-usage .settings-account-usage__percent {
-    grid-column: 1 / -1;
   }
   .settings-account-table tr:not(.settings-account-row, [hidden]),
   .settings-account-table tr:not(.settings-account-row, [hidden]) > td {

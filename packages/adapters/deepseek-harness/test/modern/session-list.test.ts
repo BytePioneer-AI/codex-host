@@ -20,6 +20,7 @@ import {
   ModernRemoteConnectionError,
   type ModernRemoteConnectionErrorCode,
 } from "../../src/modern/remote-connection.js";
+import { deepSeekModernProfile } from "../../src/profiles/profile.js";
 import type { ModernRemoteResult } from "../../src/modern/wire.js";
 
 const cwd = path.resolve("fixture-modern-session-list");
@@ -62,6 +63,47 @@ class FakeRemote implements ModernSessionListRemote {
 }
 
 describe("DeepSeek Harness Modern Session list", () => {
+  it("parses rc.1 availability and projection provenance without exposing them as import metadata", () => {
+    const profile = deepSeekModernProfile("0.1.7-rc.1");
+    const value = {
+      items: [
+        row({
+          agentAvailable: true,
+          projections: { kind: "sequenced", asOfSeq: 3, values: { title: "Live title" } },
+        }),
+        row({
+          sessionId: "cold",
+          agentAvailable: false,
+          projections: { kind: "cached", asOfSeq: 2, values: { title: "Cold title" } },
+        }),
+      ],
+    };
+    expect(parseModernSessionCandidates(value, profile).map(({ title }) => title)).toEqual([
+      "Live title",
+      "Cold title",
+    ]);
+    for (const invalid of [
+      { items: [row()] },
+      { items: [row({ agentAvailable: 1 })] },
+      { items: [row({ agentAvailable: true, projections: { asOfSeq: 0, values: {} } })] },
+      {
+        items: [
+          row({
+            agentAvailable: true,
+            projections: { kind: "unknown", asOfSeq: 0, values: {} },
+          }),
+        ],
+      },
+    ]) {
+      expect(() => parseModernSessionCandidates(invalid, profile)).toThrowError(
+        expect.objectContaining({ code: "protocolError" }),
+      );
+    }
+    expect(() => parseModernSessionCandidates(value)).toThrowError(
+      expect.objectContaining({ code: "protocolError" }),
+    );
+  });
+
   it("projects eligible roots and ordinary Forks in authoritative order", () => {
     const nonCanonicalCwd = `${cwd}${path.sep}child${path.sep}..`;
     const missingCwd = row({ sessionId: "missing-cwd" });

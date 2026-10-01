@@ -1,4 +1,18 @@
 import {
+  HARNESS_INSTALLATION_METHOD,
+  harnessInstallationParamsSchema,
+  harnessInstallationStateSchema,
+  type HarnessInstallationParams,
+  type HarnessInstallationState,
+  HARNESS_DISPLAY_GET_METHOD,
+  HARNESS_DISPLAY_SET_METHOD,
+  harnessDisplaySettingsSchema,
+  type HarnessDisplaySet,
+  type HarnessDisplaySettings,
+  CONSOLE_OPEN_METHOD,
+  consoleOpenParamsSchema,
+  consoleOpenResultSchema,
+  type ConsoleOpenResult,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
   harnessLaunchSettingsGetSchema,
@@ -173,6 +187,9 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
+  getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
+  setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
   setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
@@ -198,9 +215,10 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   selectThreadPermissionMode(
     input: ThreadPermissionModeSelectParams,
   ): Promise<HarnessConfigurationState>;
-  checkUpdate(): Promise<UpdateCheckResult>;
+  checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  openConsole?(): Promise<ConsoleOpenResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
   listHarnessAccountSources?(): Promise<HarnessAccountSourceListResult>;
   inspectHarnessAccount?(input: HarnessAccountInspectParams): Promise<HarnessAccountInspectResult>;
@@ -340,6 +358,25 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
+      return harnessInstallationStateSchema.parse(
+        await manager.sendRequest(
+          HARNESS_INSTALLATION_METHOD,
+          harnessInstallationParamsSchema.parse(input),
+          { priority: "interactive" },
+        ),
+      );
+    },
+    async getHarnessDisplaySettings() {
+      return harnessDisplaySettingsSchema.parse(
+        await manager.sendRequest(HARNESS_DISPLAY_GET_METHOD, {}),
+      );
+    },
+    async setHarnessDisplaySettings(input: HarnessDisplaySet) {
+      return harnessDisplaySettingsSchema.parse(
+        await manager.sendRequest(HARNESS_DISPLAY_SET_METHOD, input),
+      );
+    },
     async getHarnessLaunchSettings(
       input: HarnessLaunchSettingsGet,
     ): Promise<HarnessLaunchSettings> {
@@ -469,12 +506,12 @@ export function createRendererModelClient(
     selectThreadModel,
     selectThreadThinking,
     selectThreadPermissionMode,
-    async checkUpdate(): Promise<UpdateCheckResult> {
+    async checkUpdate(): Promise<UpdateCheckResult | null> {
       const result = await manager.sendRequest(
         UPDATE_CHECK_METHOD,
         updateEmptyParamsSchema.parse({}),
       );
-      return updateCheckResultSchema.parse(result);
+      return updateCheckResultSchema.nullable().parse(result);
     },
     async startUpdate(): Promise<UpdateStartResult> {
       const result = await manager.sendRequest(
@@ -489,6 +526,13 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async openConsole(): Promise<ConsoleOpenResult> {
+      const result = await manager.sendRequest(
+        CONSOLE_OPEN_METHOD,
+        consoleOpenParamsSchema.parse({}),
+      );
+      return consoleOpenResultSchema.parse(result);
     },
     async inspectCodexAccountUsage(
       input: CodexAccountUsageParams,

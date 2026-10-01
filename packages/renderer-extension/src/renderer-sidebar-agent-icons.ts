@@ -252,7 +252,23 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
   }
 
   observe(onChange: () => void): () => void {
-    const observer = new MutationObserver(onChange);
+    const observer = new MutationObserver((mutations) => {
+      if (
+        mutations.some((mutation) => {
+          if (mutation.type === "attributes") return true;
+          const target =
+            mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+          if (target?.closest(SIDEBAR_THREAD_ROW_SELECTOR)) return true;
+          return [...mutation.addedNodes, ...mutation.removedNodes].some(
+            (node) =>
+              node instanceof Element &&
+              (node.matches(SIDEBAR_THREAD_ROW_SELECTOR) ||
+                node.querySelector(SIDEBAR_THREAD_ROW_SELECTOR)),
+          );
+        })
+      )
+        onChange();
+    });
     observer.observe(this.root, {
       attributes: true,
       attributeFilter: [SIDEBAR_THREAD_ID_ATTRIBUTE, SIDEBAR_THREAD_HOST_ID_ATTRIBUTE],
@@ -293,7 +309,7 @@ export function installRendererSidebarAgentIcons(options: {
   const scheduleScan = (): void => {
     if (disposed || scanScheduled) return;
     scanScheduled = true;
-    queueMicrotask(scan);
+    requestAnimationFrame(scan);
   };
 
   const clearOwnershipRetry = (key: string): void => {

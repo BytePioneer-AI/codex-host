@@ -18,6 +18,7 @@ import {
 import {
   DEEPSEEK_V012_PROFILE,
   DEEPSEEK_V015_PROFILE,
+  DEEPSEEK_V017_PROFILE,
   deepSeekModernProfile,
   isDeepSeekV015,
 } from "../../src/profiles/profile.js";
@@ -738,11 +739,16 @@ describe("DSH 0.1.5-rc.1 V3 durable protocol", () => {
   it("keeps exact executable and durable format versions isolated", () => {
     expect(deepSeekModernProfile("0.1.2-rc.1")).toBe(DEEPSEEK_V012_PROFILE);
     expect(deepSeekModernProfile("0.1.5-rc.1")).toBe(DEEPSEEK_V015_PROFILE);
-    for (const version of ["0.1.5-rc.2", "0.1.5-rc.3", "0.2.0"]) {
+    for (const version of ["0.1.5-rc.2", "0.1.5-rc.3"]) {
       const profile = deepSeekModernProfile(version);
       expect(profile).toMatchObject({ ...DEEPSEEK_V015_PROFILE, version });
       expect(isDeepSeekV015(profile)).toBe(true);
     }
+    expect(deepSeekModernProfile("0.2.0")).toMatchObject({
+      ...DEEPSEEK_V017_PROFILE,
+      version: "0.2.0",
+    });
+    expect(isDeepSeekV015(deepSeekModernProfile("0.2.0"))).toBe(false);
     const newerV0 = deepSeekModernProfile("0.1.2-rc.2");
     expect(newerV0).toMatchObject({ ...DEEPSEEK_V012_PROFILE, version: "0.1.2-rc.2" });
     expect(isDeepSeekV015(newerV0)).toBe(false);

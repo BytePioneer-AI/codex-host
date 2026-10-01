@@ -4,6 +4,7 @@ import {
   type CdpClientOptions,
   type CdpFetch,
   type CdpTarget,
+  cdpExceptionMessage,
 } from "./cdp-client.js";
 import {
   installRendererDraftPrewarmPolicyDirect,
@@ -165,11 +166,9 @@ async function evaluateSource(renderer: RendererCdpClient, source: string): Prom
   });
   if (!isRecord(response)) throw new Error("Renderer source evaluation returned an invalid result");
   if (isRecord(response.exceptionDetails)) {
-    const text =
-      typeof response.exceptionDetails.text === "string"
-        ? response.exceptionDetails.text
-        : "Renderer source evaluation failed";
-    throw new Error(text);
+    throw new Error(
+      cdpExceptionMessage(response.exceptionDetails, "Renderer source evaluation failed"),
+    );
   }
 }
 

@@ -36,6 +36,37 @@
 
 </div>
 
+## 후원
+
+<details open>
+<summary>클릭하여 접기</summary>
+
+<table>
+<tr>
+<td width="180"><a href="https://aixlau.me/register?aff=HOST"><img src="../imgs/sponsors/xinglian-ai.png" alt="Xinglian AI" width="160"></a></td>
+<td>이 프로젝트를 후원해 주신 <b>星链AI (Xinglian AI)</b>에 감사드립니다! Xinglian AI는 Codex, CodexHost 등 AI 코딩 도구를 위한 안정적이고 효율적인 API 중계 서비스를 제공하며, 주요 AI 모델에 빠르게 연결할 수 있습니다: 안정적인 회선 · 빠른 응답 · 다중 모델 호환 · 바로 사용 가능. API 설정과 전환 비용을 줄여 코딩에 더 집중할 수 있습니다. <a href="https://aixlau.me/register?aff=HOST">지금 체험하기 →</a></td>
+</tr>
+</table>
+</details>
+
+<a name="support"></a>
+<details>
+<summary><strong>☕ CodexHost의 지속적인 개발을 응원하고 싶으시다면 커피 한 잔 사 주세요</strong></summary>
+
+<p align="center">
+  <img src="../imgs/sponsor-wechat.png" width="200" alt="WeChat Pay" /><br />
+  <sub>WeChat으로 스캔 · 금액에 상관없이 모든 후원이 큰 힘이 됩니다</sub>
+</p>
+
+CodexHost는 무료 오픈 소스 프로젝트입니다. 후원금은 프로젝트를 유지하는 데 드는 실제 비용에 사용됩니다.
+
+- 🛠️ **개발 시간**: 새로운 기능, 버그 수정, 커뮤니티 PR 리뷰
+- 🤖 **AI 구독**: CodexHost가 연동하는 각 Harness와 AI 서비스의 유료 구독으로, 모든 연동을 실제로 테스트하고 최신 상태로 유지합니다
+
+<p align="center">❤️ 후원해 주셔서 감사합니다 ❤️</p>
+
+</details>
+
 ## 인터페이스 미리보기
 
 앱을 전환하지 않고도 **Pi, Claude Code, Grok Build 등 10개 이상의 Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
@@ -45,7 +76,7 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 ### 인터페이스
 
 <div align="center">
-  <img width="90%" src="../imgs/codexhost-interface-overview.png" alt="Codex Desktop에서 독립 Thread로 실행 중인 Pi, Claude Code, OpenCode, Oh My Pi, Grok Build, DeepSeek Harness">
+  <img width="90%" src="../imgs/codexhost-native-overview.png" alt="Codex Desktop에서 실행 중인 Claude Code, Pi, Grok Build, Oh My Pi 세션과 Diff 검토, Fork, Worktree, Agent 전환">
 </div>
 
 ## 빠른 시작
@@ -66,6 +97,10 @@ codexhost
 <details>
 <summary>설치 문제 해결</summary>
 
+**codexhost가 시작되지 않거나, Codex는 열렸지만 codexhost 기능이 보이지 않는 경우**
+
+`codexhost console`(Windows: 시작 메뉴 → "codexhost console")을 실행하면 로컬 콘솔 `http://127.0.0.1:26339/`이 열립니다. 마지막 시작 실패 원인, Codex Desktop 버전, Host Runtime 로그를 확인할 수 있고, Codex가 실행 중이 아닐 때 codexhost를 업데이트할 수 있습니다. 콘솔은 codexhost와 함께 시작됩니다. 설치 패키지로 실행하면 브라우저에서 열리고, 터미널에서 실행하면 주소가 출력됩니다.
+
 **macOS: 처음 열 때 "앱을 확인할 수 없음" 메시지가 표시됨**
 
 ```bash
@@ -84,37 +119,61 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 </details>
 
-### 상호작용 예시
+### 주요 기능
 
 <table>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>전체 작업 화면</strong></p>
+      <p><strong>전체 작업 화면</strong><br /><sub>여러 Harness의 세션이 하나의 사이드바에 모이고, 입력창 오른쪽 아래에서 언제든 Agent를 전환</sub></p>
       <div align="center">
-        <img width="90%" src="../imgs/codexhost-full-workspace.png" alt="프로젝트 구조, 대화 영역 및 여러 Agent 선택기가 표시된 Codex Desktop의 CodexHost 전체 작업 화면">
+        <img width="90%" src="../imgs/codexhost-full-workspace.png" alt="Codex Desktop에서 실행 중인 codexhost 전체 작업 화면: 프로젝트 구조, 대화 영역, 여러 Agent 선택기">
       </div>
     </td>
   </tr>
   <tr>
-    <td colspan="2" valign="top">
-      <p><strong>#으로 위임할 Agent 선택</strong></p>
-      <div align="center">
-        <img width="90%" src="../imgs/composer-hash-delegation-menu.png" alt="채팅 입력창에 #을 입력하면 작업을 위임할 Agent 목록이 표시됩니다">
-      </div>
+    <td width="50%" valign="top">
+      <p><strong>Diff 검토 패널</strong><br /><sub>매 턴의 변경 사항을 자동으로 요약하고, 「검토」를 누르면 오른쪽에서 전체 Diff 확인</sub></p>
+      <img src="../imgs/highlight-diff-review.png" alt="대화의 변경 요약 카드와 오른쪽 검토 패널의 Diff">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>아무 메시지에서나 Fork</strong><br /><sub>현재 작업 공간에서, 또는 새 Worktree에서 병렬 개발</sub></p>
+      <img src="../imgs/highlight-fork-worktree.png" alt="메시지에서 브랜치를 만드는 메뉴: 현재 작업 공간 또는 새 워크트리">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong># 입력으로 다른 Agent에 위임</strong><br /><sub>여러 Agent가 각자 독립 세션에서 병렬 실행 · <a href="#agent-간-협업">자세히 보기</a></sub></p>
+      <img src="../imgs/highlight-delegation.png" alt="# 입력으로 Codex, Claude Code, Grok 등 Agent를 선택하고 각 작업이 독립 세션에서 병렬 실행">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>도구 호출과 사고 과정</strong><br /><sub>모든 edit, 명령, 사고 과정을 펼쳐서 자세히 확인</sub></p>
+      <img src="../imgs/highlight-tool-details.png" alt="편집 기록을 펼쳐 새로 만든 파일의 Diff 표시">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>Subagent 가시화</strong><br /><sub>Subagent마다 고유 아이콘이 있고, 오른쪽에서 전체 대화 확인</sub></p>
+      <img src="../imgs/highlight-subagent.png" alt="메인 대화에 4개 Subagent 상태가 표시되고 오른쪽에 그중 하나의 전체 대화">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>원격 개발</strong><br /><sub>VPS를 프로젝트로 추가하면 Agent가 원격 머신에서 바로 실행 · <a href="#원격-harness">자세히 보기</a></sub></p>
+      <img src="../imgs/highlight-remote.png" alt="사이드바의 원격 VPS 프로젝트와 원격 머신의 작업 디렉터리를 반환하는 대화">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>사용량 한눈에 보기</strong><br /><sub>캐시 적중률, 예상 비용, 컨텍스트 사용량을 실시간 표시</sub></p>
+      <img src="../imgs/highlight-usage.png" alt="사용량 팝오버: 컨텍스트, 캐시 적중률, 캐시 읽기/쓰기, 총 Token, 예상 비용">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>계정 원클릭 가져오기</strong><br /><sub>로컬에 로그인된 Codex, Grok 자격 증명을 Pi로 바로 복사하고 한도를 실시간 확인</sub></p>
+      <img src="../imgs/highlight-account-import.png" alt="계정 설정: 5시간·7일 남은 한도와 Pi로 가져온 계정">
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>남은 사용량 표시</strong></p>
-      <img src="../imgs/grok-usage-limits.png" alt="5시간 및 7일 기간의 남은 한도와 초기화 시간">
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2" valign="top">
-      <p><strong>Mermaid 다이어그램 렌더링</strong></p>
-      <div align="center">
-        <img width="90%" src="../imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop과 Pi Agent TUI의 Mermaid 다이어그램 렌더링 비교">
-      </div>
+      <p><strong>Mermaid 다이어그램 렌더링</strong><br /><sub>왼쪽: Codex Desktop + Pi는 다이어그램을 바로 렌더링, 오른쪽: Pi TUI는 소스만 표시</sub></p>
+      <img src="../imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop과 Pi Agent TUI의 Mermaid 다이어그램 렌더링 비교">
     </td>
   </tr>
 </table>
@@ -232,7 +291,7 @@ CodexHost는 다른 방식을 택합니다.
       <sub><strong>함께 기여해 주세요.</strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="위챗 그룹 QR 코드" src="https://github.com/user-attachments/assets/e40b162e-a961-43ac-9728-af59890c4d72" />
+      <img width="230" alt="위챗 그룹 QR 코드" src="../imgs/wechat-qrcode.jpg" />
     </td>
   </tr>
 </table>

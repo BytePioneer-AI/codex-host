@@ -100,10 +100,14 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.mocked(forkCursorSession).mockReset();
 });
-async function fixture() {
+async function fixture(executionPolicy?: "unattended-full-access") {
   const adapter = new CursorAdapter({ environment: {} });
   adapters.push(adapter);
-  const opened = await adapter.open({ kind: "create", cwd: process.cwd() });
+  const opened = await adapter.open({
+    kind: "create",
+    cwd: process.cwd(),
+    ...(executionPolicy ? { executionPolicy } : {}),
+  });
   if (!opened.ok) throw new Error(opened.error.message);
   const source = opened.value;
   const sourceRef = source.initialState.nativeRef;
@@ -292,6 +296,40 @@ describe("Cursor Adapter fork adoption", () => {
     expect(f.transaction.discard).not.toHaveBeenCalled();
     expect(CursorTransport.prototype.open).toHaveBeenCalledWith(targetId);
     expect(await f.source.readSnapshot()).toMatchObject({ ok: true });
+  });
+
+  it("inherits unattended full access into a forked session", async () => {
+    const f = await fixture("unattended-full-access");
+    expect(f.input.sourceRef.locator).toEqual({ executionPolicy: "unattended-full-access" });
+    const result = await f.adapter.open(f.input);
+    if (!result.ok) throw new Error(result.error.message);
+    expect(result.value.initialState.nativeRef).toMatchObject({
+      nativeSessionId: targetId,
+      locator: { executionPolicy: "unattended-full-access" },
+    });
+    const transport = vi.mocked(CursorTransport.prototype.prepare).mock.contexts[0];
+    if (!(transport instanceof CursorTransport)) throw new Error("Missing derived transport");
+    expect(transport.options.executionPolicy).toBe("unattended-full-access");
+  });
+
+  it("inherits unattended full access into a rollback session", async () => {
+    native.turns = [{ id: randomUUID(), text: "hello", rewindRoot: "a".repeat(64) }];
+    const f = await fixture("unattended-full-access");
+    native.target = [];
+    f.transaction.expected = [];
+    const result = await f.adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef: f.input.sourceRef,
+      cwd: f.input.cwd,
+    });
+    if (!result.ok) throw new Error(result.error.message);
+    expect(result.value.initialState.nativeRef).toMatchObject({
+      nativeSessionId: targetId,
+      locator: { executionPolicy: "unattended-full-access" },
+    });
+    const transport = vi.mocked(CursorTransport.prototype.prepare).mock.contexts[0];
+    if (!(transport instanceof CursorTransport)) throw new Error("Missing derived transport");
+    expect(transport.options.executionPolicy).toBe("unattended-full-access");
   });
 
   it("discards a target if ACP load changed its retained history", async () => {

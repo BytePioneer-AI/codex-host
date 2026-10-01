@@ -3,12 +3,14 @@ import type {
   HostFileChange,
   HostItem,
   HostItemOutcome,
+  HostItemSnapshot,
   HostItemUpdate,
   HostQuestionInteraction,
   HostTurnSnapshot,
   HistoricalTurnOutcome,
   InteractionClosedEvent,
   ItemCompletedEvent,
+  ItemDetachedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
   TurnCompletedEvent,
@@ -23,6 +25,7 @@ import type {
 } from "@codexhost/shared-contracts";
 import { REASONING_TRANSCRIPT_COMMAND } from "@codexhost/shared-contracts";
 import { createTwoFilesPatch } from "diff";
+import path from "node:path";
 import { summarizeFileChanges } from "./file-change-summary.js";
 
 import {
@@ -33,12 +36,14 @@ import {
   projectCodexQuestionRequest,
   type CodexQuestionRequestProjection,
 } from "./codex-question.js";
+import { inferredFinalAnswer } from "./final-answer-phase.js";
 
 export type ProjectableHostEvent =
   | TurnStartedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
+  | ItemDetachedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent;
 
@@ -122,6 +127,14 @@ function nestedString(
   return undefined;
 }
 
+function toolWorkingDirectory(args: JsonValue, defaultCwd: string): string {
+  const workdir = nestedString(args, ["workdir"]);
+  if (workdir === undefined) return defaultCwd;
+  const windows = /^(?:[a-z]:[/\\]|\\\\)/iu;
+  const paths = windows.test(defaultCwd) || windows.test(workdir) ? path.win32 : path.posix;
+  return paths.resolve(defaultCwd, workdir);
+}
+
 function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): string | null {
   if (!item.output) return null;
   const text = item.output.content
@@ -145,7 +158,7 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
   const command = nestedString(args, ["command", "cmd", "script", "commandLine", "command_line"]);
   if (
     command &&
-    ["bash", "exec", "terminal", "run", "shell", "powershell", "command"].includes(lower)
+    ["bash", "exec", "terminal", "run", "shell", "powershell", "pwsh", "command"].includes(lower)
   ) {
     return command;
   }
@@ -469,13 +482,15 @@ function projectItem(
         phase: item.phase ?? null,
         memoryCitation: null,
       };
-    case "reasoning":
+    case "reasoning": {
+      const text = reasoningDisplayText(item.text);
       return {
         id: reasoningPreviewItemId(item.itemId),
         type: "reasoning",
-        summary: item.text.length > 0 ? [item.text] : [],
+        summary: text ? [text] : [],
         content: [],
       };
+    }
     case "contextCompaction":
       return { id: item.itemId, type: "contextCompaction" };
     case "commandExecution":
@@ -499,13 +514,13 @@ function projectItem(
           id: item.itemId,
           type: "commandExecution",
           command,
-          cwd: defaultCwd,
+          cwd: toolWorkingDirectory(item.arguments, defaultCwd),
           processId: null,
           source: "agent",
           status: itemStatus(outcome),
           commandActions: [],
           aggregatedOutput: includeCommandOutput ? toolOutputText(item) : null,
-          exitCode: outcome ? (outcome.status === "succeeded" ? 0 : 1) : null,
+          exitCode: null,
           durationMs: item.durationMs ?? null,
         };
       }
@@ -568,6 +583,10 @@ export function reasoningPreviewItemId(itemId: HostItemId): string {
   return `${itemId}-summary`;
 }
 
+function reasoningDisplayText(text: string): string {
+  return text.replace(/[\r\n]+$/u, "");
+}
+
 /**
  * Codex renders Reasoning summary deltas as an ephemeral one-line preview but
  * keeps no text after the Turn. The Command Execution lane is the one that
@@ -588,7 +607,7 @@ function projectReasoningTranscriptItem(
     source: "agent",
     status: itemStatus(outcome),
     commandActions: [],
-    aggregatedOutput: item.text.length > 0 ? item.text : null,
+    aggregatedOutput: reasoningDisplayText(item.text) || null,
     exitCode: outcome ? 0 : null,
     durationMs,
   };
@@ -638,6 +657,30 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
           additionalDetails: null,
         }
       : null;
+  const projectEntry = ({ item, outcome }: HostItemSnapshot): JsonObject[] => {
+    if (itemFileChanges(item) !== null) {
+      return files?.itemId === item.itemId
+        ? [projectItem(files, { status: "succeeded" }, cwd)]
+        : [];
+    }
+    if (item.type === "toolExecution") {
+      if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments)) return [];
+      if (isFileMutatingTool(item.toolName)) return [];
+    }
+    if (item.type === "reasoning" && !reasoningDisplayText(item.text)) return [];
+    return item.type === "reasoning"
+      ? [
+          projectItem(item, outcome, cwd, true, input.threadId ?? ""),
+          projectReasoningTranscriptItem(item, outcome, cwd),
+        ]
+      : [projectItem(item, outcome, cwd, true, input.threadId ?? "")];
+  };
+  const entries = snapshot.items.map((entry) => ({ entry, projected: projectEntry(entry) }));
+  const lastVisible = entries.findLast(({ projected }) => projected.length > 0)?.entry;
+  const finalAnswer = inferredFinalAnswer(
+    lastVisible,
+    historicalStatus(snapshot.outcome) === "completed",
+  );
   return {
     id: turnId,
     status: historicalStatus(snapshot.outcome),
@@ -648,24 +691,11 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         clientId: null,
         content: snapshot.input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
       },
-      ...snapshot.items.flatMap(({ item, outcome }) => {
-        if (itemFileChanges(item) !== null) {
-          return files?.itemId === item.itemId
-            ? [projectItem(files, { status: "succeeded" }, cwd)]
-            : [];
-        }
-        if (item.type === "toolExecution") {
-          if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments))
-            return [];
-          if (isFileMutatingTool(item.toolName)) return [];
-        }
-        return item.type === "reasoning"
-          ? [
-              projectItem(item, outcome, cwd, true, input.threadId ?? ""),
-              projectReasoningTranscriptItem(item, outcome, cwd),
-            ]
-          : [projectItem(item, outcome, cwd, true, input.threadId ?? "")];
-      }),
+      ...entries.flatMap(({ entry, projected }) =>
+        finalAnswer && entry === lastVisible
+          ? projectEntry({ ...entry, item: finalAnswer })
+          : projected,
+      ),
     ],
     error,
     startedAt: hasTiming ? Math.floor(startedAtMs / 1000) : null,
@@ -713,6 +743,8 @@ export class CodexTurnProjector {
   readonly #turnId: HostTurnId;
   #completed = false;
   #started = false;
+  /** Items allowed to outlive the Turn terminal; they settle later on this Turn. */
+  readonly #detached = new Set<HostItemId>();
   #fileItemId: HostItemId | null = null;
 
   constructor(input: {
@@ -728,6 +760,30 @@ export class CodexTurnProjector {
     this.#input = input.initialInput ?? [];
     this.#startedAtMs = input.startedAtMs;
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
+  }
+
+  get completed(): boolean {
+    return this.#completed;
+  }
+
+  /** A completed Turn still owns detached Items that have not settled. */
+  get hasOpenDetachedItems(): boolean {
+    return [...this.#detached].some((itemId) => this.#items.get(itemId)?.outcome === null);
+  }
+
+  /**
+   * Wire format of detached Items that have not settled: `inProgress` with the
+   * output accumulated so far. History projection overlays these by Item id.
+   */
+  openDetachedWireItems(): ReadonlyMap<HostItemId, JsonObject> {
+    const items = new Map<HostItemId, JsonObject>();
+    for (const itemId of this.#wireItemOrder) {
+      if (!this.#detached.has(itemId)) continue;
+      const projected = this.#items.get(itemId);
+      if (!projected || projected.outcome) continue;
+      items.set(itemId, projectItem(projected.item, null, this.#cwd, true, this.#threadId));
+    }
+    return items;
   }
 
   pendingTurn(startedAt: number | null = null): JsonObject {
@@ -759,8 +815,22 @@ export class CodexTurnProjector {
     if (event.turnId !== this.#turnId) {
       throw new Error("Host output references another Turn");
     }
-    if (this.#completed) throw new Error("Host output follows the Turn terminal event");
+    if (
+      this.#completed &&
+      !(
+        (event.type === "item.updated" && this.#detached.has(event.itemId)) ||
+        (event.type === "item.completed" && this.#detached.has(event.snapshot.item.itemId))
+      )
+    ) {
+      throw new Error("Host output follows the Turn terminal event");
+    }
     switch (event.type) {
+      case "item.detached":
+        if (this.#activeItem(event.itemId).item.type !== "commandExecution") {
+          throw new Error("Only a command Item can outlive its Turn");
+        }
+        this.#detached.add(event.itemId);
+        return { messages: [] };
       case "turn.started":
         return this.#startTurn();
       case "item.started":
@@ -878,7 +948,9 @@ export class CodexTurnProjector {
     this.#items.set(event.item.itemId, projected);
     if (
       (event.item.type === "agentMessage" || event.item.type === "reasoning") &&
-      event.item.text.length === 0
+      (event.item.type === "reasoning"
+        ? reasoningDisplayText(event.item.text).length === 0
+        : event.item.text.length === 0)
     ) {
       // An empty Reasoning Item would surface as a transcript card with no
       // content, so defer the wire Item until real summary text arrives.
@@ -899,10 +971,11 @@ export class CodexTurnProjector {
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
     const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
     if (event.item.type === "reasoning") {
+      const text = reasoningDisplayText(event.item.text);
       messages.push(
         this.#startReasoningTranscript(event.item, startedAtMs),
-        this.#reasoningOutputDelta(event.item.itemId, event.item.text, startedAtMs),
-        ...this.#reasoningDelta(projected, event.item.text, startedAtMs),
+        this.#reasoningOutputDelta(event.item.itemId, text, startedAtMs),
+        ...this.#reasoningDelta(projected, text, startedAtMs),
       );
     }
     return { messages };
@@ -931,6 +1004,10 @@ export class CodexTurnProjector {
           },
         });
       } else if (next.type === "reasoning") {
+        const previousText =
+          previous.type === "reasoning" ? reasoningDisplayText(previous.text) : "";
+        const delta = reasoningDisplayText(next.text).slice(previousText.length);
+        if (!delta) return { messages };
         if (!projected.wireStarted) {
           messages.push(
             this.#startWireItem(projected, { ...next, text: "" }, emittedAtMs),
@@ -938,8 +1015,8 @@ export class CodexTurnProjector {
           );
         }
         messages.push(
-          this.#reasoningOutputDelta(event.itemId, event.update.text, emittedAtMs),
-          ...this.#reasoningDelta(projected, event.update.text, emittedAtMs),
+          this.#reasoningOutputDelta(event.itemId, delta, emittedAtMs),
+          ...this.#reasoningDelta(projected, delta, emittedAtMs),
         );
       }
     } else if (event.update.type === "output.append") {
@@ -1095,11 +1172,17 @@ export class CodexTurnProjector {
     if (this.#interactions.size > 0) {
       throw new Error("Host Turn completed with pending Interactions");
     }
-    const active = [...this.#items.values()].filter(({ outcome }) => outcome === null);
+    const active = [...this.#items.values()].filter(
+      ({ item, outcome }) => outcome === null && !this.#detached.has(item.itemId),
+    );
     if (active.length > 0) throw new Error("Host Turn completed with active Items");
     this.#completed = true;
     const completedAt = Math.floor(completedAtMs / 1000);
     const error = turnError(event.outcome);
+    const lastWireItemId = this.#wireItemOrder.at(-1);
+    const lastVisible = lastWireItemId === undefined ? undefined : this.#items.get(lastWireItemId);
+    const finalAnswer = inferredFinalAnswer(lastVisible, event.outcome.status === "succeeded");
+    if (lastVisible && finalAnswer) lastVisible.item = finalAnswer;
     const turn: JsonObject = {
       id: this.#turnId,
       status: turnStatus(event.outcome),
@@ -1108,7 +1191,11 @@ export class CodexTurnProjector {
         ...this.#projectInput(),
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
-          if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
+          if (!projected) throw new Error("Host Turn contains an unknown Item");
+          if (!projected.outcome) {
+            if (this.#detached.has(itemId)) return [];
+            throw new Error("Host Turn contains an incomplete Item");
+          }
           if (!projected.wireStarted) return [];
           if (projected.item.type === "reasoning") {
             const reasoning = projected.item;
@@ -1152,6 +1239,11 @@ export class CodexTurnProjector {
               },
             ]
           : []),
+        // Desktop ignores Turn items on turn/completed and replaces an Item by id
+        // on item/completed, so the inferred phase must arrive as a replacement.
+        ...(lastVisible && finalAnswer
+          ? [this.#completedItemReplay(lastVisible, completedAtMs)]
+          : []),
         ...(error
           ? [
               {
@@ -1171,6 +1263,21 @@ export class CodexTurnProjector {
           params: { threadId: this.#threadId, turn },
         },
       ],
+    };
+  }
+
+  #completedItemReplay(projected: ProjectedItem, emittedAtMs: number): JsonObject {
+    const startedAtMs = projected.startedAtMs ?? emittedAtMs;
+    return {
+      method: "item/completed",
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        startedAtMs,
+        completedAtMs: startedAtMs + (projected.durationMs ?? 0),
+        item: projectItem(projected.item, projected.outcome, this.#cwd),
+      },
     };
   }
 

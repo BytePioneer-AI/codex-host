@@ -263,7 +263,7 @@ function sessionState(
   };
 }
 
-const openCodeCommandCatalog = harnessCommandCatalogSchema.parse({
+export const openCodeCommandCatalog = harnessCommandCatalogSchema.parse({
   commands: [
     {
       id: COMPACT_COMMAND_ID,

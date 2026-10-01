@@ -1,3 +1,4 @@
+import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
 import {
   hostThreadIdSchema,
   hostTurnIdSchema,
@@ -15,6 +16,7 @@ import {
 const RESPONSE_CONVERSATION_ATTRIBUTE = "data-response-annotation-conversation";
 const TURN_KEY_ATTRIBUTE = "data-content-search-turn-key";
 const OPEN_THREAD_TIMEOUT_MS = 5_000;
+const FAST_FORK_OWNER_DEPTH = 64;
 
 function abortError(): Error {
   return Object.assign(new Error("Thread opening was aborted"), { name: "AbortError" });
@@ -120,42 +122,68 @@ function firstFiber(element: Element): Record<string, unknown> | null {
   return isRecord(value) ? value : null;
 }
 
-export function rendererForkTargetFromButton(button: HTMLButtonElement): RendererForkTarget | null {
-  const annotation = button.closest<HTMLElement>(`[${RESPONSE_CONVERSATION_ATTRIBUTE}]`);
-  const turnElement = button.closest<HTMLElement>(`[${TURN_KEY_ATTRIBUTE}]`);
-  const threadId = hostThreadIdSchema.safeParse(
-    annotation?.getAttribute(RESPONSE_CONVERSATION_ATTRIBUTE),
-  );
-  const turnId = hostTurnIdSchema.safeParse(turnElement?.getAttribute(TURN_KEY_ATTRIBUTE));
-  if (!threadId.success || !turnId.success) return null;
+function directForkAncestors(first: Record<string, unknown>): Record<string, unknown>[] {
+  const ancestors: Record<string, unknown>[] = [];
+  const seen = new Set<Record<string, unknown>>();
+  let fiber: Record<string, unknown> | null = first;
+  while (fiber && ancestors.length < FAST_FORK_OWNER_DEPTH) {
+    if (seen.has(fiber)) return [];
+    seen.add(fiber);
+    ancestors.push(fiber);
+    fiber = isRecord(fiber.return) ? fiber.return : null;
+  }
+  return ancestors;
+}
 
+/** A component (not a DOM element) that owns a callback other than a plain click or Fork. */
+function ownsOtherCallback(
+  fiber: Record<string, unknown>,
+  props: Record<string, unknown>,
+): boolean {
+  if (typeof fiber.type === "string") return false;
+  return Object.keys(props).some(
+    (name) =>
+      /^on[A-Z]/.test(name) &&
+      name !== "onClick" &&
+      name !== "onFork" &&
+      typeof props[name] === "function",
+  );
+}
+
+function forkTargetFromAncestors(
+  button: HTMLButtonElement,
+  threadId: HostThreadId,
+  turnId: HostTurnId,
+  ancestors: readonly Record<string, unknown>[],
+): RendererForkTarget | null {
   const conversationIds = new Set<string>();
   const turnIds = new Set<string>();
   const hostIds = new Set<string>();
   const projectlessStates = new Set<boolean>();
   let hasForkCallback = false;
-  let fiber = firstFiber(button);
-  const buttonProps = fiber?.memoizedProps;
-  if (!isRecord(buttonProps) || !Object.hasOwn(buttonProps, "aria-busy")) return null;
-  for (let depth = 0; fiber && depth < 24; depth += 1) {
+  for (const fiber of ancestors) {
     const props = fiber.memoizedProps;
-    if (isRecord(props)) {
-      if (typeof props.conversationId === "string") conversationIds.add(props.conversationId);
-      if (typeof props.turnId === "string") turnIds.add(props.turnId);
-      if (typeof props.hostId === "string") hostIds.add(props.hostId);
-      if (typeof props.isProjectlessConversation === "boolean") {
-        projectlessStates.add(props.isProjectlessConversation);
-      }
-      if (typeof props.onFork === "function") hasForkCallback = true;
+    if (!isRecord(props)) continue;
+    // Copy and Fork share the same action-bar owner and button primitive. The
+    // Fork button reaches that owner directly; Copy passes through its own
+    // callback owner (onCopy) first, so it must not be treated as Fork.
+    if (!hasForkCallback && typeof props.onFork !== "function" && ownsOtherCallback(fiber, props)) {
+      return null;
     }
-    fiber = isRecord(fiber.return) ? fiber.return : null;
+    if (typeof props.conversationId === "string") conversationIds.add(props.conversationId);
+    if (typeof props.turnId === "string") turnIds.add(props.turnId);
+    if (typeof props.hostId === "string") hostIds.add(props.hostId);
+    if (typeof props.isProjectlessConversation === "boolean") {
+      projectlessStates.add(props.isProjectlessConversation);
+    }
+    if (typeof props.onFork === "function") hasForkCallback = true;
   }
   if (
     !hasForkCallback ||
     conversationIds.size !== 1 ||
-    !conversationIds.has(threadId.data) ||
+    !conversationIds.has(threadId) ||
     turnIds.size !== 1 ||
-    !turnIds.has(turnId.data) ||
+    !turnIds.has(turnId) ||
     hostIds.size !== 1 ||
     !hostIds.has("local") ||
     projectlessStates.size !== 1
@@ -165,9 +193,27 @@ export function rendererForkTargetFromButton(button: HTMLButtonElement): Rendere
   return {
     control: button,
     isProjectlessConversation: projectlessStates.has(true),
-    threadId: threadId.data,
-    turnId: turnId.data,
+    threadId,
+    turnId,
   };
+}
+
+export function rendererForkTargetFromButton(button: HTMLButtonElement): RendererForkTarget | null {
+  const annotation = button.closest<HTMLElement>(`[${RESPONSE_CONVERSATION_ATTRIBUTE}]`);
+  const turnElement = button.closest<HTMLElement>(`[${TURN_KEY_ATTRIBUTE}]`);
+  const threadId = hostThreadIdSchema.safeParse(
+    annotation?.getAttribute(RESPONSE_CONVERSATION_ATTRIBUTE),
+  );
+  const turnId = hostTurnIdSchema.safeParse(turnElement?.getAttribute(TURN_KEY_ATTRIBUTE));
+  if (!threadId.success || !turnId.success) return null;
+
+  const fiber = firstFiber(button);
+  const buttonProps = fiber?.memoizedProps;
+  if (!fiber || !isRecord(buttonProps) || !Object.hasOwn(buttonProps, "aria-busy")) return null;
+  return (
+    forkTargetFromAncestors(button, threadId.data, turnId.data, directForkAncestors(fiber)) ??
+    forkTargetFromAncestors(button, threadId.data, turnId.data, committedReactAncestors(fiber))
+  );
 }
 
 export function inspectRendererForkContract(

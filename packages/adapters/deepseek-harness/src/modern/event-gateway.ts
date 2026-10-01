@@ -23,6 +23,7 @@ export interface ModernQuestionOption {
 export interface ModernQuestionIntent {
   readonly kind: "plan-review";
   readonly approve: string;
+  readonly callId?: string;
 }
 
 export interface ModernQuestionItem {
@@ -1052,13 +1053,18 @@ function parseQuestionOption(value: unknown): ModernQuestionOption {
 function parseQuestionIntent(value: unknown): ModernQuestionIntent {
   if (
     !isPlainRecord(value) ||
-    !hasExactKeys(value, ["kind", "approve"]) ||
+    !hasOnlyKeys(value, ["kind", "approve"], ["callId"]) ||
     value.kind !== "plan-review" ||
-    !nonBlankString(value.approve)
+    !nonBlankString(value.approve) ||
+    (Object.hasOwn(value, "callId") && !nonBlankString(value.callId))
   ) {
     throw invalidFrame();
   }
-  return { kind: "plan-review", approve: value.approve };
+  return {
+    kind: "plan-review",
+    approve: value.approve,
+    ...(typeof value.callId === "string" ? { callId: value.callId } : {}),
+  };
 }
 
 function parseQuestionAnswer(value: unknown): ModernQuestionAnswer {

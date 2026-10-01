@@ -14,13 +14,14 @@ import {
   type RendererSettingsMessages,
 } from "./localization.js";
 import { CODEXHOST_GITHUB_REPOSITORY_URL, createDefaultRendererSettingsRegistry } from "./pages.js";
+import { attachRendererSettingsRailPage, type RendererSettingsRailPage } from "./rail-page.js";
 
 export const SETTINGS_SHELL_ATTRIBUTE = "data-codexhost-settings-shell";
 export const RENDERER_SETTINGS_COLOR_SCHEME = "inherit";
 
 export interface RendererSettingsShell {
   readonly root: HTMLElement;
-  readonly dialog: HTMLDialogElement;
+  readonly surface: HTMLElement;
   readonly registry: RendererSettingsPageRegistry;
   readonly supported: boolean;
   readonly activePageId: string;
@@ -36,12 +37,6 @@ declare global {
   }
 }
 
-export function isRendererSettingsDialogSupported(
-  dialog: Pick<HTMLDialogElement, "showModal" | "close">,
-): boolean {
-  return typeof dialog.showModal === "function" && typeof dialog.close === "function";
-}
-
 function setActiveNavigation(
   buttons: ReadonlyMap<string, HTMLButtonElement>,
   activePageId: string,
@@ -52,10 +47,16 @@ function setActiveNavigation(
   }
 }
 
+export interface RendererSettingsShellOptions {
+  /** Reports page visibility so the rail trigger can mirror native selection. */
+  onOpenChange?(open: boolean): void;
+}
+
 export function mountRendererSettingsShell(
   registry?: RendererSettingsPageRegistry,
   ownerDocument: Document = document,
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
+  { onOpenChange }: RendererSettingsShellOptions = {},
 ): RendererSettingsShell {
   const resolvedRegistry = registry ?? createDefaultRendererSettingsRegistry(messages);
   if (!ownerDocument.body) throw new Error("Renderer document body is unavailable");
@@ -72,8 +73,11 @@ export function mountRendererSettingsShell(
   // Tailwind declares the cascade layer order, so it must precede the unlayered settings CSS.
   style.textContent = `${tailwindCss}\n${settingsCss}\n${accountsCss}`;
 
-  const dialog = ownerDocument.createElement("dialog");
-  dialog.className = "codexhost-settings-dialog";
+  // A page beside the native navigation rail, not a modal: the rail stays
+  // usable and native navigation replaces the page.
+  const surface = ownerDocument.createElement("section");
+  surface.className = "codexhost-settings-page";
+  surface.hidden = true;
   const frame = ownerDocument.createElement("div");
   frame.className = "settings-frame";
 
@@ -91,7 +95,7 @@ export function mountRendererSettingsShell(
   brandName.textContent = "CodexHost";
   const brandTitle = ownerDocument.createElement("span");
   brandTitle.className = "settings-brand__title";
-  brandTitle.id = "codexhost-settings-dialog-title";
+  brandTitle.id = "codexhost-settings-page-title";
   brandTitle.textContent = messages.title;
   brandCopy.append(brandName, brandTitle);
   brand.append(brandMark, brandCopy);
@@ -123,9 +127,9 @@ export function mountRendererSettingsShell(
   sidebar.append(navigation);
   layout.append(sidebar, page);
   frame.append(header, layout);
-  dialog.append(frame);
-  dialog.setAttribute("aria-labelledby", brandTitle.id);
-  shadow.append(style, dialog);
+  surface.append(frame);
+  surface.setAttribute("aria-labelledby", brandTitle.id);
+  shadow.append(style, surface);
   ownerDocument.body.append(root);
 
   const navigationState = new RendererSettingsNavigationState(resolvedRegistry);
@@ -133,6 +137,7 @@ export function mountRendererSettingsShell(
   let activeScope: RendererSettingsPageScope | null = null;
   let activeCleanup: (() => void) | null = null;
   let opener: HTMLElement | null = null;
+  let railPage: RendererSettingsRailPage | null = null;
   let lifecycleGeneration = 0;
   let disposed = false;
 
@@ -210,28 +215,28 @@ export function mountRendererSettingsShell(
   starLink.rel = "noopener noreferrer";
   starLink.setAttribute("aria-label", messages.starOnGitHub);
   starLink.title = messages.starOnGitHub;
-  starLink.append(createRendererSettingsIcon("star", 17));
+  starLink.append(createRendererSettingsIcon("github", 17));
   const starLabel = ownerDocument.createElement("span");
   starLabel.textContent = messages.starOnGitHub;
   starLink.append(starLabel);
   navigation.append(starLink);
-  const supported = isRendererSettingsDialogSupported(dialog);
+  const supported = true;
   const focusActiveNavigation = (): void => {
     navigationButtons
       .get(navigationState.activePageId)
       ?.focus({ preventScroll: true, focusVisible: false });
   };
-  const finishClose = (): void => {
+  const finishClose = (focusOpener: boolean): void => {
     disposeActivePage();
     navigationState.reset();
-    const focusTarget = opener;
+    const focusTarget = focusOpener ? opener : null;
     opener = null;
     const closeGeneration = ++lifecycleGeneration;
     const restoreFocus = (): void => {
       if (
         !disposed &&
         closeGeneration === lifecycleGeneration &&
-        !dialog.open &&
+        surface.hidden &&
         focusTarget?.isConnected
       ) {
         focusTarget.focus();
@@ -249,44 +254,57 @@ export function mountRendererSettingsShell(
     activatePage(pageId);
     target.focus();
   };
-  const onCloseClick = (): void => api.close();
-  const onDialogClick = (event: MouseEvent): void => {
-    if (event.target === dialog) api.close();
+  const hide = (restoreFocus: boolean): void => {
+    if (disposed || surface.hidden) return;
+    surface.hidden = true;
+    railPage?.dispose();
+    railPage = null;
+    ownerDocument.removeEventListener("keydown", onKeyDown, true);
+    finishClose(restoreFocus);
+    onOpenChange?.(false);
   };
-  const onDialogClose = (): void => finishClose();
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    // A page-owned modal (for example a credential import) closes first.
+    if (shadow.querySelector("dialog[open]")) return;
+    event.preventDefault();
+    hide(true);
+  };
+  const onCloseClick = (): void => api.close();
   navigation.addEventListener("click", onNavigationClick);
   closeButton.addEventListener("click", onCloseClick);
-  dialog.addEventListener("click", onDialogClick);
-  dialog.addEventListener("close", onDialogClose);
 
   const api: RendererSettingsShell = {
     root,
-    dialog,
+    surface,
     registry: resolvedRegistry,
     supported,
     get activePageId() {
       return navigationState.activePageId;
     },
     get open() {
-      return dialog.open;
+      return !surface.hidden;
     },
     openSettings(nextOpener, pageId = resolvedRegistry.defaultPageId) {
       if (disposed || !supported || !resolvedRegistry.getPage(pageId)) return false;
       lifecycleGeneration += 1;
       opener = nextOpener?.isConnected ? nextOpener : null;
       activatePage(pageId);
-      try {
-        if (!dialog.open) dialog.showModal();
-      } catch {
-        disposeActivePage();
-        opener = null;
-        return false;
+      if (surface.hidden) {
+        railPage = attachRendererSettingsRailPage({
+          ownerDocument,
+          surface,
+          onNavigateAway: () => hide(false),
+        });
+        surface.hidden = false;
+        ownerDocument.addEventListener("keydown", onKeyDown, true);
+        onOpenChange?.(true);
       }
       queueMicrotask(focusActiveNavigation);
       return true;
     },
     close() {
-      if (!disposed && dialog.open) dialog.close();
+      hide(true);
     },
     dispose() {
       if (disposed) return;
@@ -294,9 +312,9 @@ export function mountRendererSettingsShell(
       opener = null;
       navigation.removeEventListener("click", onNavigationClick);
       closeButton.removeEventListener("click", onCloseClick);
-      dialog.removeEventListener("click", onDialogClick);
-      dialog.removeEventListener("close", onDialogClose);
-      if (dialog.open) dialog.close();
+      ownerDocument.removeEventListener("keydown", onKeyDown, true);
+      railPage?.dispose();
+      railPage = null;
       disposeActivePage();
       root.remove();
     },
@@ -308,13 +326,14 @@ export function installRendererSettingsShell(
   definitions?: readonly RendererSettingsPageDefinition[],
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   ownerDocument: Document = document,
+  options: RendererSettingsShellOptions = {},
 ): RendererSettingsShell {
   const registry = definitions
     ? createRendererSettingsPageRegistry(definitions)
     : createDefaultRendererSettingsRegistry(messages);
   const ownerWindow = ownerDocument.defaultView ?? window;
   ownerWindow.__codexhostSettingsShellV1?.dispose();
-  const shell = mountRendererSettingsShell(registry, ownerDocument, messages);
+  const shell = mountRendererSettingsShell(registry, ownerDocument, messages, options);
   ownerWindow.__codexhostSettingsShellV1 = shell;
   const dispose = shell.dispose.bind(shell);
   shell.dispose = () => {

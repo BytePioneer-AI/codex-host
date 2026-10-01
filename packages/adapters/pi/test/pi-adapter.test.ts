@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -32,6 +32,7 @@ import {
 } from "../src/pi-subagents.js";
 import type { PiSessionHistory } from "../src/pi-history.js";
 import { encodePiModelRef } from "../src/pi-model-catalog.js";
+import type { PiNativeCommand } from "../src/pi-slash-commands.js";
 import {
   PiRpcFaultError,
   type PiAutonomousTurn,
@@ -78,9 +79,25 @@ class FakePiTransport implements PiTurnTransport {
     });
   });
   readonly start = vi.fn(async () => undefined);
+  readonly getCommands = vi.fn(async (): Promise<PiNativeCommand[]> => []);
+  readonly supportsFastMode = vi.fn(async () => false);
+  readonly selectFastMode = vi.fn(async (enabled: boolean) => {
+    this.state = { ...this.state, fast: enabled };
+    return this.state;
+  });
   readonly getAvailableModels = vi.fn(async () => [
-    { provider: "synthetic-provider", id: "synthetic-model", reasoning: true },
-    { provider: "synthetic-provider", id: "alternate-model", reasoning: false },
+    {
+      provider: "synthetic-provider",
+      id: "synthetic-model",
+      reasoning: true,
+      api: "openai-codex-responses",
+    },
+    {
+      provider: "synthetic-provider",
+      id: "alternate-model",
+      reasoning: false,
+      api: "openai-codex-responses",
+    },
   ]);
   readonly getAvailableThinkingLevels = vi.fn<() => Promise<HarnessThinkingOptionId[] | null>>(
     async () =>
@@ -111,6 +128,7 @@ class FakePiTransport implements PiTurnTransport {
   readonly selectModel = vi.fn(async (model: { provider: string; id: string }) => {
     this.state = {
       ...this.state,
+      fast: false,
       provider: model.provider,
       modelId: model.id,
       ...(model.id === "alternate-model"
@@ -623,6 +641,180 @@ describe("Pi HarnessAdapter Session", () => {
     expect(transports[0]?.getAvailableThinkingLevels).toHaveBeenCalledOnce();
     expect(transports[0]?.close).toHaveBeenCalledOnce();
     await adapter.close();
+  });
+
+  it.each([false, true])("supports alias Fast (uncached cwd: %s)", async (liveSelection) => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "pi-fast-adapter-"));
+    await mkdir(path.join(home, ".pi/agent"), { recursive: true });
+    await mkdir(path.join(home, ".codex"));
+    const claims = Buffer.from(
+      JSON.stringify({ iss: "https://auth.openai.com", client_id: "app_EMoamEEZ73f0CkXaXp7hrann" }),
+    ).toString("base64url");
+    await writeFile(
+      path.join(home, ".pi/agent/auth.json"),
+      JSON.stringify({
+        "synthetic-provider": { type: "oauth", access: `header.${claims}.signature` },
+      }),
+    );
+    await writeFile(
+      path.join(home, ".codex/models_cache.json"),
+      JSON.stringify({
+        models: [{ slug: "synthetic-model", service_tiers: [{ id: "priority" }] }],
+      }),
+    );
+    const transports: FakePiTransport[] = [];
+    const adapter = new PiAdapter(
+      { environment: { HOME: home } },
+      {
+        createTransport: () => {
+          const transport = new FakePiTransport();
+          transport.supportsFastMode.mockResolvedValue(true);
+          transport.getCommands.mockResolvedValue([
+            {
+              name: "codexhost-fast-mode",
+              description: "Internal Fast command",
+              source: "extension",
+            },
+          ]);
+          transports.push(transport);
+          return transport;
+        },
+      },
+    );
+    try {
+      const inspection = await adapter.inspect({ cwd: home });
+      if (inspection.status !== "ready") throw new Error("Inspection failed");
+      const base = encodePiModelRef({ provider: "synthetic-provider", id: "synthetic-model" });
+      const fast = inspection.catalog.models.find((model) => model.ref.id === base.id)?.fastModel;
+      if (!fast) throw new Error("Missing Fast choice");
+      expect(
+        inspection.catalog.models.find((model) => model.label.endsWith("alternate-model"))
+          ?.fastModel,
+      ).toBeUndefined();
+      await adapter.inspect({ cwd: home });
+      expect(transports).toHaveLength(1);
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: liveSelection ? path.join(home, "uninspected-project") : home,
+        model: liveSelection ? base : fast,
+      });
+      if (!opened.ok) throw new Error("Create failed");
+      const session = opened.value;
+      await session.readSnapshot();
+      if (liveSelection) {
+        expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
+          ok: true,
+        });
+      }
+      // Capability checks must reuse the running Session, not spawn an inspection process.
+      expect(transports).toHaveLength(2);
+      const snapshot = await session.readSnapshot();
+      expect(snapshot).toMatchObject({ ok: true, value: { state: { effectiveModel: fast } } });
+      const live = transports[1];
+      if (!live) throw new Error("Missing live transport");
+      expect(live.selectFastMode).toHaveBeenCalledWith(true);
+      expect(JSON.stringify(await session.commands?.list())).not.toContain("codexhost-fast-mode");
+      expect(live.selectModel).not.toHaveBeenCalled();
+      expect(await session.execute({ type: "model.select", model: base })).toMatchObject({
+        ok: true,
+      });
+      expect(live.selectFastMode).toHaveBeenLastCalledWith(false);
+      live.selectFastMode.mockClear();
+      if (liveSelection) {
+        live.supportsFastMode.mockResolvedValueOnce(false);
+        expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
+          ok: false,
+        });
+        // A different workspace need not expose the Model advertised by the picker's catalog.
+        live.getAvailableModels.mockResolvedValueOnce([]);
+        expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
+          ok: false,
+        });
+        expect(live.selectFastMode).not.toHaveBeenCalled();
+
+        let finishInspection!: () => void;
+        live.getAvailableModels.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishInspection = () => resolve([]);
+            }),
+        );
+        const selecting = session.execute({ type: "model.select", model: fast });
+        await vi.waitFor(() => expect(finishInspection).toBeDefined());
+        expect(await session.execute({ type: "model.select", model: base })).toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+        finishInspection();
+        expect(await selecting).toMatchObject({ ok: false });
+        expect(transports).toHaveLength(2);
+      }
+      live.getAvailableThinkingLevels.mockRejectedValueOnce(new Error("Thinking discovery failed"));
+      expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
+        ok: false,
+      });
+      expect(live.selectFastMode).not.toHaveBeenCalled();
+      expect(live.state.fast).toBe(false);
+      expect(await session.execute({ type: "model.select", model: fast })).toMatchObject({
+        ok: true,
+      });
+      expect(live.selectModel).not.toHaveBeenCalled();
+      expect(live.state.thinkingLevel).toBe("high");
+      const invalid = encodePiModelRef({
+        provider: "synthetic-provider",
+        id: "alternate-model",
+        fast: true,
+      });
+      expect(await session.execute({ type: "model.select", model: invalid })).toMatchObject({
+        ok: false,
+      });
+      expect(
+        await session.execute({
+          type: "model.select",
+          model: encodePiModelRef({ provider: "synthetic-provider", id: "alternate-model" }),
+        }),
+      ).toMatchObject({ ok: true });
+      expect(live.state.fast).toBe(false);
+      const resumed = await adapter.open({
+        kind: "resume",
+        cwd: home,
+        model: fast,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "pi",
+          nativeSessionId: "pi-session-1",
+          locator: { sessionFile: "/synthetic/pi-session.jsonl" },
+          formatVersion: 1,
+        }),
+      });
+      expect(resumed).toMatchObject({
+        ok: true,
+        value: { initialState: { effectiveModel: fast } },
+      });
+      await rm(path.join(home, ".codex/models_cache.json"));
+      await adapter.inspect({ cwd: home, refresh: true });
+      const restoredWithoutSupport = await adapter.open({
+        kind: "resume",
+        cwd: home,
+        model: fast,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "pi",
+          nativeSessionId: "pi-session-1",
+          locator: { sessionFile: "/synthetic/pi-session.jsonl" },
+          formatVersion: 1,
+        }),
+      });
+      expect(restoredWithoutSupport).toMatchObject({
+        ok: true,
+        value: { initialState: { effectiveModel: base } },
+      });
+      expect(await adapter.open({ kind: "create", cwd: home, model: fast })).toMatchObject({
+        ok: false,
+        error: { code: "unsupported" },
+      });
+    } finally {
+      await adapter.close();
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it("caches successful inspection by cwd, coalesces requests, and honors refresh", async () => {

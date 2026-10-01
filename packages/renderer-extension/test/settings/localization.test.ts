@@ -34,6 +34,8 @@ describe("Renderer settings localization", () => {
     expect(english.title).toBe("Settings");
     expect(chinese.title).toBe("设置");
     expect(chinese.openSettings).toBe("打开 codexhost 设置");
+    expect(chinese.starOnGitHub).toBe("Star 支持");
+    expect(english.starOnGitHub).toBe("Star to support");
     expect(chinese.updateInstallation).toBe("安装方式");
     expect(chinese.updateInstallationWindowsInstaller).toBe("Windows 安装程序");
     expect(english.updateInstallationMacOsDmg).toBe("macOS DMG");
@@ -49,6 +51,13 @@ describe("Renderer settings localization", () => {
     expect(english.updateDownloadFromReleases).toBe("Download from GitHub Releases");
     expect(chinese.updateDownloadFromReleases).toBe("前往 GitHub Releases 下载");
     expect(chinese.updateDownloadWindowsInstaller).toBe("下载 Windows 安装包");
+    expect(chinese.updateStarCallout).toBe(
+      "如果 CodexHost 帮到了你，请在 GitHub 点个 Star，这对我们意义重大 👉",
+    );
+    expect(english.updateStarCallout).toBe(
+      "If CodexHost has helped you, please Star it on GitHub. It means a lot to us 👉",
+    );
+    expect(chinese.updateStarLink).toBe("GitHub");
     expect(chinese.pageLabels.about).toBe("关于");
     expect(chinese.pageLabels["session-import"]).toBe("会话导入");
     expect(chinese.sessionImportAvailabilityNote).toContain("可选 Harness 来自本地 Host");

@@ -1,4 +1,5 @@
 import {
+  catalogModelForRef,
   decodeHarnessPluginRoute,
   harnessIdSchema,
   permissionModeFixedAtCreate,
@@ -48,7 +49,10 @@ import {
   rendererHarnessMessages,
   rendererLiveCommandsPendingNotice,
 } from "./renderer-harness-localization.js";
-import { installReasoningTranscriptSoftWrap } from "./renderer-transcript-dom.js";
+import {
+  installReasoningTranscriptSoftWrap,
+  TRANSCRIPT_ITEM_SELECTOR,
+} from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
 import {
   createRendererCodexUsageGate,
@@ -250,7 +254,7 @@ function isExternalConfigurationReadyView(
 ): boolean {
   return (
     modelView.status !== "selecting" &&
-    modelView.catalog?.models.some((model) => model.ref.id === modelView.selected?.id) === true &&
+    catalogModelForRef(modelView.catalog, modelView.selected) !== undefined &&
     isPermissionModeControlReady(permissionModeView)
   );
 }
@@ -668,6 +672,35 @@ export function applyComposerModelWrite(
   return write();
 }
 
+export function mutationMayAffectComposer(mutation: MutationRecord): boolean {
+  const target =
+    mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+  if (!target) return true;
+  // Identity changes are lifecycle events even after the marker is removed.
+  if (mutation.type === "attributes" && mutation.attributeName === "data-codex-composer-root")
+    return true;
+  // Text/IME and rich-text changes inside an editor do not change its owner.
+  if (mutation.type !== "attributes" && editorForElement(target)) return false;
+  if (target.closest(CODEX_COMPOSER_SELECTOR)) return true;
+  if (mutation.type === "characterData") return false;
+  if (
+    !target.closest(`${TRANSCRIPT_ITEM_SELECTOR}, [data-turn-key], [data-content-search-turn-key]`)
+  )
+    return true;
+  // A disclosure containing an inline Composer can change its visibility.
+  if (mutation.type === "attributes") return target.querySelector(CODEX_COMPOSER_SELECTOR) !== null;
+  // Transcript text and tool output do not replace the Composer. Still handle
+  // inline Composers added or removed with a transcript.
+  return (
+    mutation.type === "childList" &&
+    [...mutation.addedNodes, ...mutation.removedNodes].some(
+      (node) =>
+        node instanceof Element &&
+        (node.matches(CODEX_COMPOSER_SELECTOR) || node.querySelector(CODEX_COMPOSER_SELECTOR)),
+    )
+  );
+}
+
 function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
   const target =
     mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
@@ -684,7 +717,7 @@ function catalogWithConfigurationState(
   const models = catalog.models.map((candidate) => {
     const normalized = { ...candidate };
     delete normalized.supportedThinkingOptionIds;
-    return candidate.ref.id === model.id
+    return candidate === catalogModelForRef(catalog, model)
       ? { ...normalized, supportedThinkingOptionIds }
       : normalized;
   });
@@ -1417,7 +1450,7 @@ export function installRendererBindingProbe(
       const previousModel = controller.modelForAgent(mounted.composer, agent);
       const previousModelAvailable =
         previousModel !== undefined &&
-        inspection.catalog.models.some((model) => model.ref.id === previousModel.id);
+        catalogModelForRef(inspection.catalog, previousModel) !== undefined;
       const preferredConfiguration =
         current.phase === "draft" && !previousModelAvailable
           ? readNewThreadExternalConfigurationPreference(
@@ -1626,7 +1659,10 @@ export function installRendererBindingProbe(
     if (current.agent === "codex") return;
     const agent = current.agent;
     const catalog = mounted.modelView.catalog;
-    const selected = catalog?.models.find((model) => model.ref.id === modelId)?.ref;
+    const entry = catalog?.models.find(
+      (model) => model.ref.id === modelId || model.fastModel?.id === modelId,
+    );
+    const selected = entry?.ref.id === modelId ? entry.ref : entry?.fastModel;
     if (!catalog || !selected || !modelControl) return;
     const previousModel = controller.modelForAgent(mounted.composer, agent);
     const previousThinking = controller.thinkingOptionForAgent(mounted.composer, agent);
@@ -1694,7 +1730,7 @@ export function installRendererBindingProbe(
           throw new Error("External Harness did not confirm an effective Model");
         }
         effectiveModel = state.effectiveModel;
-        if (!catalog.models.some((model) => model.ref.id === effectiveModel.id)) {
+        if (!catalogModelForRef(catalog, effectiveModel)) {
           throw new Error("External Harness activated a Model outside the current catalog");
         }
         effectiveThinkingOptionId = supportsThinkingSelection
@@ -1896,6 +1932,7 @@ export function installRendererBindingProbe(
         catalog,
         ...(previousPermissionModeId ? { selected: previousPermissionModeId } : {}),
         error: error instanceof Error ? error.message : String(error),
+        selectionRejected: true,
       };
     } finally {
       if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
@@ -1916,7 +1953,7 @@ export function installRendererBindingProbe(
     const selectedThinkingOptionId = catalog?.thinkingOptions.find(
       ({ id }) => id === thinkingOptionId,
     )?.id;
-    const catalogModel = catalog?.models.find((candidate) => candidate.ref.id === model?.id);
+    const catalogModel = catalogModelForRef(catalog, model);
     if (
       !mounted.modelView.thinkingSelectionSupported ||
       !catalog ||
@@ -2391,6 +2428,12 @@ export function installRendererBindingProbe(
         refreshHarnessAvailabilityForHost(hostId, true, false, true),
       );
     },
+    async installation(hostId, agent, action) {
+      const client = modelClientForHost(hostId);
+      if (!client?.installation)
+        throw new Error("Harness version management is unavailable on this Host");
+      return client.installation({ harnessId: externalHarnessIds[agent], action });
+    },
     async getLaunchSettings(hostId, agent) {
       const client = hostId === "local" ? modelClientForHost(hostId) : null;
       if (!client?.getHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
@@ -2599,7 +2642,7 @@ export function installRendererBindingProbe(
     refreshTargetsOnNextScan ||= refreshTargets;
     if (scanScheduled || disposed) return;
     scanScheduled = true;
-    queueMicrotask(scan);
+    requestAnimationFrame(scan);
   };
 
   const composerRootsWithin = (node: Node): Element[] => {
@@ -2742,8 +2785,10 @@ export function installRendererBindingProbe(
   };
 
   const mutationObserver = new MutationObserver((mutations) => {
-    transferReplacedComposers(mutations);
-    scheduleScan(mutations.some(mutationMayChangeComposerTarget));
+    const relevant = mutations.filter(mutationMayAffectComposer);
+    if (relevant.length === 0) return;
+    transferReplacedComposers(relevant);
+    scheduleScan(relevant.some(mutationMayChangeComposerTarget));
   });
   const onHostRouteChange = (): void => {
     const hostId = activeModelHostId();

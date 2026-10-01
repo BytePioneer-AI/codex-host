@@ -31,7 +31,7 @@ import {
   ModernDeepSeekHarnessAdapter,
   type ModernDeepSeekHarnessAdapterOptions,
 } from "./modern/deepseek-harness-adapter.js";
-import { deepSeekModernProfile, isDeepSeekV015 } from "./profiles/profile.js";
+import { deepSeekModernProfile, hasDeepSeekModernStream } from "./profiles/profile.js";
 
 const DEEPSEEK_HARNESS_ID = harnessIdSchema.parse("deepseek-harness");
 const EXTERNAL_MODERN_WEB_MESSAGE =
@@ -108,7 +108,8 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             harnessId: this.harnessId,
             nativeSessionId,
             formatVersion: 1,
-            ...(this.#delegate && isDeepSeekV015(deepSeekModernProfile(this.#delegate.version))
+            ...(this.#delegate &&
+            hasDeepSeekModernStream(deepSeekModernProfile(this.#delegate.version))
               ? { locator: { dshVersion: this.#delegate.version } }
               : {}),
           }),

@@ -36,6 +36,37 @@
 
 </div>
 
+## 赞助
+
+<details open>
+<summary>点击收起</summary>
+
+<table>
+<tr>
+<td width="180"><a href="https://aixlau.me/register?aff=HOST"><img src="../imgs/sponsors/xinglian-ai.png" alt="星链AI" width="160"></a></td>
+<td>感谢 <b>星链AI</b> 赞助本项目！星链AI 为 Codex、CodexHost 等 AI Coding 工具提供稳定、高效的 API 中转服务，支持主流 AI 模型快速接入：稳定线路 · 快速响应 · 多模型兼容 · 即开即用，减少 API 配置与切换成本，让你更专注于 Coding。<a href="https://aixlau.me/register?aff=HOST">点击立即体验 →</a></td>
+</tr>
+</table>
+</details>
+
+<a name="support"></a>
+<details>
+<summary><strong>☕ 如果愿意支持 CodexHost 的持续开发，欢迎请我喝杯咖啡</strong></summary>
+
+<p align="center">
+  <img src="../imgs/sponsor-wechat.png" width="200" alt="WeChat Pay" /><br />
+  <sub>微信扫码 · 金额不限，每一份支持都意义重大</sub>
+</p>
+
+CodexHost 是免费开源的项目。赞助将用于维持项目运行的实际成本：
+
+- 🛠️ **开发时间**：新功能、问题修复，以及审核社区提交的 PR
+- 🤖 **AI 订阅**：CodexHost 接入的各个 Harness 与 AI 服务的付费订阅，确保每个集成都能被实际测试并保持最新
+
+<p align="center">❤️ 感谢每一份支持 ❤️</p>
+
+</details>
+
 ## 界面预览
 
 无需切换应用，**Pi、Claude Code、Grok Build 等十余个 Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
@@ -45,7 +76,7 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 ### 界面
 
 <div align="center">
-  <img width="90%" src="../imgs/codexhost-interface-overview.png" alt="Pi、Claude Code、OpenCode、Oh My Pi、Grok Build 和 DeepSeek Harness 作为独立 Thread 运行在 Codex Desktop 中">
+  <img width="90%" src="../imgs/codexhost-native-overview.png" alt="Claude Code、Pi、Grok Build、Oh My Pi 的会话运行在 Codex Desktop 中，并可使用 Diff 审查、Fork、Worktree 和 Agent 切换">
 </div>
 
 ## 快速使用
@@ -66,6 +97,10 @@ codexhost
 <details>
 <summary>安装问题排查</summary>
 
+**codexhost 启动失败，或 Codex 打开了但没有 codexhost 功能**
+
+运行 `codexhost console`（Windows：开始菜单 →“codexhost console”），打开本地控制台 `http://127.0.0.1:26339/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新 codexhost。控制台随 codexhost 一起启动：安装包启动时自动在浏览器打开，终端启动时会输出访问地址。
+
 **macOS：首次打开提示「应用无法验证」**
 
 ```bash
@@ -84,40 +119,65 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 </details>
 
-### 交互展示
+### 功能介绍
 
 <table>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>完整工作界面</strong></p>
+      <p><strong>完整工作界面</strong><br /><sub>不同 Harness 的会话在同一个侧边栏里，输入框右下角随时切换 Agent</sub></p>
       <div align="center">
         <img width="90%" src="../imgs/codexhost-full-workspace.png" alt="Codex Desktop 中 codexhost 的完整工作界面，展示项目结构、对话区域和多个 Agent 选择器">
       </div>
     </td>
   </tr>
   <tr>
-    <td colspan="2" valign="top">
-      <p><strong>输入 # 选择委派目标</strong></p>
-      <div align="center">
-        <img width="90%" src="../imgs/composer-hash-delegation-menu.png" alt="在聊天输入框输入 # 后，菜单显示可委派任务的 Agent">
-      </div>
+    <td width="50%" valign="top">
+      <p><strong>Diff 审查面板</strong><br /><sub>每轮改动自动汇总，点「审核」在右侧查看完整 Diff</sub></p>
+      <img src="../imgs/highlight-diff-review.png" alt="对话中的改动汇总卡片与右侧审查面板中的 Diff">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>从任意消息 Fork</strong><br /><sub>在当前工作空间，或新建 Worktree 并行开发</sub></p>
+      <img src="../imgs/highlight-fork-worktree.png" alt="从消息创建分支的菜单：在此工作空间或新工作树中创建分支">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>输入 # 委派给其他 Agent</strong><br /><sub>多个 Agent 各开独立会话，并行执行 · <a href="#跨-agent-协作">了解更多</a></sub></p>
+      <img src="../imgs/highlight-delegation.png" alt="输入 # 选择 Codex、Claude Code、Grok 等 Agent，任务分别在独立会话中并行运行">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>工具调用与思考过程</strong><br /><sub>每次 edit、命令、思考都可展开查看细节</sub></p>
+      <img src="../imgs/highlight-tool-details.png" alt="展开编辑记录后显示新建文件的 Diff">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>Subagent 可见</strong><br /><sub>每个 Subagent 有独立图标，可在右侧查看完整对话</sub></p>
+      <img src="../imgs/highlight-subagent.png" alt="主对话中显示 4 个 Subagent 的状态，右侧打开其中一个的完整对话">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>远程开发</strong><br /><sub>把 VPS 添加为项目，Agent 直接在远程机器上执行 · <a href="#远程连接-harness">了解更多</a></sub></p>
+      <img src="../imgs/highlight-remote.png" alt="侧边栏中的远程 VPS 项目，对话返回远程机器的工作目录">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>用量一目了然</strong><br /><sub>缓存命中率、费用估算、上下文占用实时显示</sub></p>
+      <img src="../imgs/highlight-usage.png" alt="用量浮层：上下文、缓存命中率、缓存读写、Token 总数、费用估算">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>账号一键导入</strong><br /><sub>本机已登录的 Codex、Grok 凭证一键复制给 Pi，额度实时可见</sub></p>
+      <img src="../imgs/highlight-account-import.png" alt="账号设置页：账号的 5 小时与 7 天剩余额度，以及已导入 Pi 的账号">
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>剩余额度显示</strong></p>
-      <img src="../imgs/grok-usage-limits.png" alt="五小时与七天窗口的剩余额度和重置时间">
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2" valign="top">
-      <p><strong>Mermaid 图表可视化渲染</strong></p>
-      <div align="center">
-        <img width="90%" src="../imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
-      </div>
+      <p><strong>Mermaid 图表可视化渲染</strong><br /><sub>左：Codex Desktop + Pi，图表直接渲染；右：Pi TUI，只能看到源码</sub></p>
+      <img src="../imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
     </td>
   </tr>
 </table>
+
 
 ## 功能状态
 
@@ -232,7 +292,7 @@ CodexHost 的做法不同：
       <sub><strong>欢迎一起贡献~ </strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="7ba6eda891ba4c8d091f2a71a8b8e81d" src="https://github.com/user-attachments/assets/0e3c7269-c0c5-4f62-984a-f78b59166d6d" />
+      <img width="230" alt="微信群二维码" src="../imgs/wechat-qrcode.jpg" />
     </td>
   </tr>
 </table>

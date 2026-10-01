@@ -499,7 +499,7 @@ Renderer SHALL persist the last user-selected Claude Permission Mode as one prov
 
 ### Requirement: Renderer applies Claude mode changes through the owning Session
 
-A Claude draft selection SHALL update the provider preference and its bounded request-local carrier. An Existing Thread selection SHALL call only `codexhost/thread/permission-mode/select`, then apply the current catalog mode returned by Host. Native rejection SHALL leave the Thread on its prior current mode and show an ordinary selection error; it SHALL NOT fault the Renderer or route the Thread to Codex.
+A Claude draft selection SHALL update the provider preference and its bounded request-local carrier. An Existing Thread selection SHALL call only `codexhost/thread/permission-mode/select`, then apply the current catalog mode returned by Host. Native rejection SHALL leave the Thread on its prior current mode and show an ordinary selection error; it SHALL NOT fault the Renderer or route the Thread to Codex. Because the picker label returns to the prior mode, a rejected selection SHALL also show a visible failure mark on the picker trigger until the next successful selection or refresh, and the rejection reason SHALL remain available in the trigger tooltip and accessible label.
 
 #### Scenario: Existing Claude mode changes successfully
 
@@ -511,6 +511,7 @@ A Claude draft selection SHALL update the provider preference and its bounded re
 - **WHEN** Host reports an SDK rejection such as model-ineligible `auto`
 - **THEN** the Existing Thread SHALL retain its prior mode and remain usable
 - **AND** the provider preference SHALL remain the user's last selected default for future Claude drafts
+- **AND** the picker trigger SHALL show a visible failure mark with the Host-reported reason in its tooltip and accessible label
 
 ### Requirement: Renderer prerequisites SHALL gate only external capability availability
 Renderer Model target uniqueness、Adapter readiness和Draft Prewarm clearing SHALL保持外部Agent切换与提交的必要条件。主进程Title Policy ownership在直接Renderer CDP控制模式下 MAY不可用且 MUST NOT单独阻止Renderer Adapter安装。失败 MUST使对应外部能力不可用，但 SHALL NOT终止受管Desktop或成为Launcher兼容提示。系统 MUST NOT在Title Policy未安装时伪造其ready标记或声称外部标题隔离已生效。

@@ -67,6 +67,7 @@ export interface QoderQuery extends AsyncIterable<SDKMessage> {
   }): Promise<QoderModelInfo[]>;
   getContextUsage?(): Promise<unknown>;
   getUsageInfo?(): Promise<unknown>;
+  accountInfo?(): Promise<unknown>;
   setModel?(model?: string): Promise<void>;
   setPermissionMode?(mode: QoderPermissionMode): Promise<void>;
   request?(request: Record<string, unknown>): Promise<unknown>;

@@ -17,6 +17,10 @@ import {
 
 type Scenario =
   | "final-only"
+  | "fast"
+  | "fast-no-ack"
+  | "fast-command-error"
+  | "fast-no-off-ack"
   | "reasoning"
   | "reasoning-multiple-blocks"
   | "settled-streaming"
@@ -32,6 +36,7 @@ type Scenario =
   | "long-running"
   | "cancel"
   | "cancel-no-settle"
+  | "cancel-slow-settle"
   | "malformed-tool"
   | "interaction"
   | "interaction-timeout"
@@ -57,6 +62,7 @@ class FakePiRpcProcess extends EventEmitter {
   readonly pid = 42_000;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
+  fastEnabled = false;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #promptCount = 0;
   #sessionId = "synthetic-session";
@@ -68,6 +74,11 @@ class FakePiRpcProcess extends EventEmitter {
   #thinkingLevel = "high";
   readonly #scenario: Scenario;
   readonly #compactionDelayMs: number | undefined;
+
+  setNativeModel(provider: string, modelId: string): void {
+    this.#provider = provider;
+    this.#modelId = modelId;
+  }
 
   constructor(scenario: Scenario, compactionDelayMs?: number) {
     super();
@@ -197,6 +208,40 @@ class FakePiRpcProcess extends EventEmitter {
       ) {
         this.#completeInteractionTurn();
       }
+      return;
+    }
+    if (command.type === "get_commands" && this.#scenario.startsWith("fast")) {
+      this.#respond(command, {
+        commands: [{ name: "codexhost-fast-mode", description: "Host Fast", source: "extension" }],
+      });
+      return;
+    }
+    if (
+      command.type === "prompt" &&
+      typeof command.message === "string" &&
+      command.message.startsWith("/codexhost-fast-mode ")
+    ) {
+      const [, mode, nonce] = command.message.split(" ");
+      this.fastEnabled = mode === "on";
+      if (this.#scenario === "fast-command-error") {
+        this.#output({
+          type: "response",
+          id: command.id,
+          command: "prompt",
+          success: false,
+          error: "Extension failed after activation",
+        });
+        return;
+      }
+      if (this.#scenario === "fast" || (this.#scenario === "fast-no-off-ack" && mode === "on"))
+        this.#output({
+          type: "extension_ui_request",
+          id: "fast-ack",
+          method: "notify",
+          message: `codexhost-fast-mode:${nonce}:${mode}`,
+          notifyType: "info",
+        });
+      this.#respond(command, { disposition: "handled" });
       return;
     }
     if (command.type === "get_state") {
@@ -418,6 +463,23 @@ class FakePiRpcProcess extends EventEmitter {
       this.#startInteractionTurn(command);
       return;
     }
+    if (command.type === "abort" && this.#scenario === "cancel-slow-settle") {
+      // The Abort acknowledgement and settlement arrive well past the former 2s bound.
+      setTimeout(() => {
+        this.#respond(command);
+        setTimeout(() => {
+          this.#output({
+            type: "tool_execution_end",
+            toolCallId: "long-tool",
+            toolName: "gate_long_tool",
+            result: { content: [{ type: "text", text: "cancelled" }] },
+            isError: true,
+          });
+          this.#settleAgent();
+        }, 700);
+      }, 2_500);
+      return;
+    }
     this.#respond(command);
     if (
       command.type === "abort" &&
@@ -494,10 +556,15 @@ class FakePiRpcProcess extends EventEmitter {
       this.#scenario === "prompt-auto-compaction" ||
       this.#scenario === "prompt-preflight-compaction" ||
       this.#scenario === "settled-streaming" ||
-      ((this.#scenario === "cancel" || this.#scenario === "long-running") && this.#promptCount > 1)
+      ((this.#scenario === "cancel" ||
+        this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "long-running") &&
+        this.#promptCount > 1)
     ) {
       const text =
-        this.#scenario === "cancel" || this.#scenario === "long-running"
+        this.#scenario === "cancel" ||
+        this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "long-running"
           ? "continued"
           : "synthetic final text";
       const message = {
@@ -588,7 +655,11 @@ class FakePiRpcProcess extends EventEmitter {
       }, 180_001);
       return;
     }
-    if (this.#scenario === "cancel" || this.#scenario === "cancel-no-settle") {
+    if (
+      this.#scenario === "cancel" ||
+      this.#scenario === "cancel-no-settle" ||
+      this.#scenario === "cancel-slow-settle"
+    ) {
       this.#output({
         type: "tool_execution_start",
         toolCallId: "long-tool",
@@ -715,7 +786,7 @@ function session(
   options: {
     commandTimeoutMs?: number;
     nativeCompactionDelayMs?: number;
-    cancelTimeoutMs?: number;
+    cancelTimeoutMs?: number | "default";
   } = {},
 ): PiRpcSession {
   const processAdapter: PiRpcProcessAdapter = {
@@ -730,13 +801,82 @@ function session(
     {
       cwd: process.cwd(),
       commandTimeoutMs: options.commandTimeoutMs ?? 2_000,
-      cancelTimeoutMs: options.cancelTimeoutMs ?? 500,
+      ...(options.cancelTimeoutMs === "default"
+        ? {}
+        : { cancelTimeoutMs: options.cancelTimeoutMs ?? 500 }),
       closeTimeoutMs: 500,
       onFault,
     },
     processAdapter,
   );
 }
+
+describe("Pi Fast command acknowledgement", () => {
+  it("changes only Fast and keeps the confirmed state through Thinking refresh", async () => {
+    const rpc = session("fast");
+    await rpc.start();
+    try {
+      expect(await rpc.supportsFastMode()).toBe(true);
+      expect(await rpc.selectFastMode(true)).toMatchObject({ fast: true, thinkingLevel: "high" });
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("low")),
+      ).toMatchObject({ fast: true, thinkingLevel: "low" });
+      expect(await rpc.selectFastMode(false)).not.toHaveProperty("fast");
+      expect(rpc.state.thinkingLevel).toBe("low");
+    } finally {
+      await rpc.close();
+    }
+  });
+  it("clears the confirmed Fast state when a native extension switches Model", async () => {
+    const process = new FakePiRpcProcess("fast");
+    const rpc = new PiRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    try {
+      await rpc.selectFastMode(true);
+      process.setNativeModel("another-provider", "unsupported");
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("low")),
+      ).not.toHaveProperty("fast");
+      process.setNativeModel("synthetic-provider", "synthetic-model");
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("high")),
+      ).not.toHaveProperty("fast");
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it.each<Scenario>(["fast-no-ack", "fast-command-error", "fast-no-off-ack"])(
+    "faults and closes when request policy cannot be confirmed: %s",
+    async (scenario) => {
+      const process = new FakePiRpcProcess(scenario);
+      const onFault = vi.fn();
+      const rpc = new PiRpcSession(
+        { cwd: "/synthetic", commandTimeoutMs: 2_000, closeTimeoutMs: 500, onFault },
+        { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+      );
+      await rpc.start();
+      try {
+        if (scenario === "fast-no-off-ack") await rpc.selectFastMode(true);
+        await expect(rpc.selectFastMode(scenario !== "fast-no-off-ack")).rejects.toThrow(
+          "Fast selection could not be confirmed",
+        );
+        expect(onFault).toHaveBeenCalledOnce();
+        expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+        // The native side can already have enabled priority despite the Host-side failure.
+        expect(process.fastEnabled).toBe(scenario !== "fast-no-off-ack");
+        expect(process.exitCode).toBe(0);
+        await expect(rpc.runTurn("must not be sent", vi.fn())).rejects.toThrow("unavailable");
+        await expect(rpc.getAvailableModels()).rejects.toThrow("unavailable");
+      } finally {
+        await rpc.close();
+      }
+    },
+  );
+});
 
 function autonomousSession(onFault = vi.fn()): {
   rpc: PiRpcSession;
@@ -1549,6 +1689,46 @@ describe("Pi RPC Turn aggregation", () => {
       cancelled: false,
     });
     await rpc.close();
+  });
+
+  it("settles a cancellation whose Abort acknowledgement is slower than the former bound", async () => {
+    vi.useFakeTimers();
+    const onFault = vi.fn();
+    const rpc = session("cancel-slow-settle", onFault, {
+      commandTimeoutMs: 30_000,
+      cancelTimeoutMs: "default",
+    });
+    const events: PiTurnEvent[] = [];
+
+    try {
+      await rpc.start();
+      const turn = rpc.runTurn("cancel me slowly", (event) => events.push(event));
+      for (
+        let attempt = 0;
+        attempt < 10 && !events.some(({ type }) => type === "tool.started");
+        attempt += 1
+      ) {
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(events.some(({ type }) => type === "tool.started")).toBe(true);
+
+      const aborting = rpc.abort();
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(onFault).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_200);
+      await expect(aborting).resolves.toBeUndefined();
+      await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+      expect(onFault).not.toHaveBeenCalled();
+
+      await expect(rpc.runTurn("continue", (event) => events.push(event))).resolves.toEqual({
+        text: "continued",
+        cancelled: false,
+      });
+      await rpc.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fails and closes a cancellation that does not reach stable settlement", async () => {

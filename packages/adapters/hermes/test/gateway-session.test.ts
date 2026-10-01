@@ -10,6 +10,19 @@ import { HermesGatewaySessionTransport } from "../src/gateway-session-transport.
 import { HermesSession } from "../src/hermes-session.js";
 import type { HermesTransportEvent } from "../src/acp-transport.js";
 
+// Stand-in for Hermes's provider-aware parse_model_input (a configured named
+// custom provider wins over the plain `provider:model` split).
+vi.mock("../src/gateway-configuration.js", () => ({
+  resolveGatewayModel: async (_transport: unknown, modelId: string) => {
+    if (modelId.startsWith("custom:omniroute:"))
+      return { provider: "custom:omniroute", model: modelId.slice("custom:omniroute:".length) };
+    const colon = modelId.indexOf(":");
+    return colon > 0
+      ? { provider: modelId.slice(0, colon), model: modelId.slice(colon + 1) }
+      : { provider: "", model: modelId };
+  },
+}));
+
 function fixture() {
   const raw = new HermesGatewayTransport("unused", process.cwd(), {});
   const info = { model: "test", provider: "custom", yolo: false };
@@ -199,6 +212,34 @@ describe("Hermes gateway native interactions", () => {
     f.emit("session.info", { model: "test", provider: "custom", yolo: true });
     f.request.mockResolvedValue({ value: "0" });
     await expect(f.bridge.setPermissionMode("default")).rejects.toThrow("effective approval");
+  });
+  it("passes a named custom provider to the model switch separately", async () => {
+    const f = fixture();
+    f.request.mockImplementation(async (method, params) => {
+      if (method !== "config.set") return {};
+      f.emit("session.info", { model: "omni/turbo", provider: "custom:omniroute", yolo: false });
+      return { value: params.value };
+    });
+    await expect(f.bridge.setModel("custom:omniroute:omni/turbo")).resolves.toBeUndefined();
+    expect(f.request).toHaveBeenCalledWith("config.set", {
+      key: "model",
+      value: "omni/turbo --provider custom:omniroute",
+      scope: "session",
+      session_id: "runtime",
+    });
+  });
+  it("keeps a bare model identifier unchanged for the model switch", async () => {
+    const f = fixture();
+    f.request.mockImplementation(async (method, params) => {
+      if (method !== "config.set") return {};
+      f.emit("session.info", { model: "gpt-5", provider: "openai", yolo: false });
+      return { value: params.value };
+    });
+    await f.bridge.setModel("gpt-5");
+    expect(f.request).toHaveBeenCalledWith(
+      "config.set",
+      expect.objectContaining({ value: "gpt-5" }),
+    );
   });
 });
 

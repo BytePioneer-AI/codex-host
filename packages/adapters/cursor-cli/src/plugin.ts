@@ -1,4 +1,5 @@
 import { CURSOR_COMMAND_CATALOG } from "./slash-commands.js";
+import { createCursorInstallation } from "./installation.js";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import { CursorAdapter } from "./adapter.js";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
@@ -13,5 +14,8 @@ export function createHarnessAdapter(context: HarnessPluginContext): HarnessAdap
       liveCommandCatalog: true,
       environment: { ...context.environment },
     });
-  return new CursorAdapter({ environment: { ...context.environment } });
+  const environment = { ...context.environment };
+  return Object.assign(new CursorAdapter({ environment }), {
+    installation: createCursorInstallation(environment),
+  });
 }

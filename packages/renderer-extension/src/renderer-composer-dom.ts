@@ -4,6 +4,7 @@ import type {
   RendererAgent,
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
+import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
   AccountCreditsSnapshot,
   CodexAccountSummary,
@@ -433,9 +434,11 @@ function captureNativeControl(element: HTMLElement | null): NativeControlState |
 
 function restoreNativeControl(state: NativeControlState | null | undefined): void {
   if (!state) return;
-  state.element.hidden = state.hidden;
-  if (state.ariaHidden === null) state.element.removeAttribute("aria-hidden");
-  else state.element.setAttribute("aria-hidden", state.ariaHidden);
+  if (state.element.hidden !== state.hidden) state.element.hidden = state.hidden;
+  if (state.element.getAttribute("aria-hidden") !== state.ariaHidden) {
+    if (state.ariaHidden === null) state.element.removeAttribute("aria-hidden");
+    else state.element.setAttribute("aria-hidden", state.ariaHidden);
+  }
 }
 
 function refreshNativeContextUsageControl(control: ComposerAgentControl): void {
@@ -477,6 +480,8 @@ function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null
  * account limits, not the current thread's context window.
  */
 export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLElement | null {
+  // An unverified picker can be mounted at the Composer's end, outside the toolbar.
+  if (!control.nativePermissionModeControlVerified) return null;
   const root = control.permissionModePicker?.root;
   return root?.parentElement ? root : null;
 }
@@ -755,9 +760,7 @@ export function renderComposerAgentControl(
   }
 
   const selectedModel = modelView.selected;
-  const selectedCatalogModel = modelView.catalog?.models.find(
-    (model) => model.ref.id === selectedModel?.id,
-  );
+  const selectedCatalogModel = catalogModelForRef(modelView.catalog, selectedModel);
   const availableThinkingOptions =
     modelView.thinkingSelectionSupported === false
       ? []
@@ -800,7 +803,13 @@ export function renderComposerAgentControl(
     pickerView.nativeModelHidden,
     switching || state.agent !== "codex",
   );
-  renderRendererModelPicker(control.modelPicker, modelView, state.agent !== "codex", state.agent);
+  renderRendererModelPicker(
+    control.modelPicker,
+    modelView,
+    state.agent !== "codex",
+    state.agent,
+    locale,
+  );
   const permissionModeVisible =
     state.agent !== "codex" &&
     permissionModeView.status !== "idle" &&

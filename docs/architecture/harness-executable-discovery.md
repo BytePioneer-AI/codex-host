@@ -102,7 +102,7 @@ Windows 当前覆盖常见的：
 
 ## DeepSeek Harness 的特殊性
 
-DeepSeek Adapter 已在 `0.1.2-rc.1`、`0.1.5-rc.1` 和 `0.1.5-rc.2` 验证；其他符合 SemVer 的 CLI 版本不会只因版本不同被拒绝，但不代表已验证兼容。Legacy 协议及外部 Host attach/fallback 已移除。默认诊断端点为：
+DeepSeek Adapter 已在 `0.1.2-rc.1`、`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.5-rc.3` 和 `0.1.7-rc.1` 验证。其他符合 SemVer 的 CLI 版本不会只因版本不同被拒绝，但不代表已验证兼容。Legacy 协议及外部 Host attach/fallback 已移除。默认诊断端点为：
 
 ```text
 http://127.0.0.1:3080/
@@ -112,11 +112,11 @@ http://127.0.0.1:3080/
 
 1. 校验诊断端点只包含无凭据的 loopback HTTP 根地址，拒绝 bootstrap URL 和查询参数。
 2. 依次检查显式命令、当前 `PATH` 中的 `dsh`、本地 `npx --offline --no-install @deepseek-ai/dsh`；显式配置不可用时不静默改用其他安装。
-3. 执行 `--version`，要求输出单行规范 SemVer；`0.1.2` 系列尝试 V0 profile，其余版本尝试 V3 profile。实际 Web Remote、日志及流式事件仍按对应协议严格验证；不兼容时返回真实启动或协议错误，而不是仅因版本号拒绝。
+3. 执行 `--version`，要求输出单行规范 SemVer；`0.1.2` 系列尝试 V0 profile，`0.1.7-rc.1` 选择 V4 profile，其余版本尝试 V3 profile。实际 Web Remote、日志及流式事件仍按对应协议严格验证；不兼容时返回真实启动或协议错误，而不是仅因版本号拒绝。
 4. 对诊断端点做无凭据指纹检查。若已有 DSH Web 返回已识别的认证要求，提示关闭该实例后重新诊断；不会接管其凭据或停止它。端点属于其他服务时不向其发送会话内容。
 5. 启动 `web --no-open --host 127.0.0.1 --port 0`，等待原生 bootstrap，完成认证，再建立 HTTP/WebSocket 通信。托管进程使用自己的临时端口。
 
-正常使用无需手动启动 `dsh web`。版本变化后重新启动 codexhost，以重新选择对应日志与流式 profile；V0/V3 的历史边界见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。
+正常使用无需手动启动 `dsh web`。版本变化后重新启动 codexhost，以重新选择对应日志与流式 profile；V0/V3/V4 的历史边界见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。
 
 DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生命周期属于 Adapter 专用语义，应继续留在 `packages/adapters/deepseek-harness`。
 
@@ -128,7 +128,7 @@ DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生�
 
 - 命令明确区分 macOS/Linux 终端与 Windows PowerShell；npm 安装提示 Node.js 前置依赖。页面列出系统选项，不根据本机系统推断远程 Host 的系统。
 - 远程 Host 必须在目标机器操作；Windows 原生 Host 不会自动使用 WSL 中的安装。
-- DeepSeek 安装指引固定已验证的 `@deepseek-ai/dsh@0.1.5-rc.1`，不追随 npm latest；这不是连接白名单。更新验证结果时应同步维护设置页的测试版本提示；通常无需手动运行 `dsh web`。另 `dsh@0.1.5-rc.2` 的 `^0.1.5-rc.2` 子包范围可能在 npm 安装时选中 rc.3，且 Cordis 需要精确版本；`dsh --version` 成功不代表 Web 插件可启动。若诊断报插件加载或 HMR 错误，需核对实际依赖树与 Web profile 的 `patchReload`，参见[版本验证记录](../harnesses/deepseek/dsh-015rc1-validation.md)，放开版本白名单不能修复 DSH CLI 自身的启动故障。
+- DeepSeek 安装指引固定已验证的 `@deepseek-ai/dsh@0.1.5-rc.1`，不追随 npm latest；这不是连接白名单。更新验证结果时应同步维护设置页的测试版本提示；通常无需手动运行 `dsh web`。另 `dsh@0.1.5-rc.2` 的 `^0.1.5-rc.2` 子包范围可能在 npm 安装时选中 rc.3，且 Cordis 需要精确版本；`dsh --version` 成功不代表 Web 插件可启动。若诊断报插件加载或 HMR 错误，需核对实际依赖树与 Web profile 的 `patchReload`，参见[版本验证记录](../harnesses/deepseek/dsh-015rc1-validation.md)，放开版本白名单不能修复 DSH CLI 自身的启动故障。`0.1.5-rc.3` 和 `0.1.7-rc.1` 已通过各自真实 Gate，设置页可据产品策略选择其中一个作为推荐安装版本。
 - WorkBuddy 提供 macOS/Windows 官方下载与安装指南，不冒充 CLI npm 包、不提供未经确认的 Linux 安装命令。桌面登录态与内置 CLI 认证不能混为一谈。
 - Qoder 与 Qoder CN 使用各自安装源和启动命令。
 - 完成安装及原生认证/配置后，用户手动重新检测。复制失败显示反馈；诊断失败仍沿用现有连接错误详情。自定义 WorkBuddy 路径和环境变量变更可能需要重启 codexhost。

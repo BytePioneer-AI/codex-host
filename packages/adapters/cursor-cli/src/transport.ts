@@ -14,6 +14,7 @@ import {
 import { createCursorDelegationBridge } from "./delegation-bridge.js";
 import { cursorInvocation } from "./command.js";
 import { parseCursorNativeModels } from "./models.js";
+import type { HarnessExecutionPolicy } from "@codexhost/harness-adapter";
 
 export interface CursorTransportOptions {
   cwd: string;
@@ -21,6 +22,8 @@ export interface CursorTransportOptions {
   command?: string;
   timeoutMs?: number;
   delegation?: boolean;
+  /** Native `--force` is requested only for delegated unattended full access. */
+  executionPolicy?: HarnessExecutionPolicy;
   /** History replay needs session/load, not the account model catalog. */
   loadModelCatalog?: boolean;
 }
@@ -90,7 +93,12 @@ export class CursorTransport {
   }
 
   async #prepare(): Promise<void> {
-    const invocation = cursorInvocation(this.options.environment, this.options.command);
+    // Program options must precede the `acp` subcommand; --force also trusts the workspace.
+    const invocation = cursorInvocation(
+      this.options.environment,
+      this.options.command,
+      this.options.executionPolicy === "unattended-full-access" ? ["--force", "acp"] : ["acp"],
+    );
     const child = spawn(invocation.command, invocation.arguments, {
       cwd: this.options.cwd,
       env: this.options.environment,

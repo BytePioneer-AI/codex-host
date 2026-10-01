@@ -585,7 +585,7 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
 
     let current_executable = env::current_exe()?;
     let socket_path = default_remote_socket_path()?;
-    let previous_socket = socket_identity(&socket_path);
+    let mut previous_socket = socket_identity(&socket_path);
     if previous_socket.is_some() {
         let stock_codex_path = env::var_os(STOCK_CODEX_PATH_ENV)
             .map(PathBuf::from)
@@ -614,6 +614,13 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
             })?;
             return Ok(0);
         }
+        // No process owns the existing socket: a previous listener exited without
+        // removing it. The replacement listener removes this stale path and binds
+        // a new socket, and filesystems such as ext4 immediately hand the freed
+        // inode number to that new socket. A stale (dev, ino) baseline would then
+        // never look replaced and the healthy replacement would be terminated at
+        // the startup timeout, so a connectable socket alone proves readiness.
+        previous_socket = None;
     }
     let mut command = Command::new(&current_executable);
     command

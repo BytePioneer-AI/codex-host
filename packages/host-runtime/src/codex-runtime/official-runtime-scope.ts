@@ -1,3 +1,5 @@
+import type { Writable } from "node:stream";
+
 import { parseJsonFrame, type JsonObject } from "@codexhost/protocol-core";
 
 import type { OfficialAppServerConnection } from "../official-app-server-connection.js";
@@ -10,18 +12,46 @@ import {
 } from "./official-runtime-owner.js";
 import { OfficialAdmissionError, OfficialWorkGate } from "./official-work-gate.js";
 
+/** Automatic replacement of a failed official generation for long-lived Host deployments. */
+export interface OfficialRuntimeRecoveryOptions {
+  /** Backoff before each consecutive restart attempt; the last delay repeats. */
+  delaysMs?: readonly number[];
+  /** A generation that stayed ready this long resets the backoff. */
+  stableMs?: number;
+}
+
+const DEFAULT_RECOVERY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
+const DEFAULT_RECOVERY_STABLE_MS = 60_000;
+
 /** Process ownership shared by all AppServerHost clients in one Host deployment. */
 export class OfficialRuntimeScope {
   readonly owner: OfficialRuntimeOwner;
   readonly gate: OfficialWorkGate;
   readonly permanentHome: string;
-  readonly #failure = Promise.withResolvers<Error>();
+  readonly #diagnosticOutput: Writable;
+  readonly #recovery: { delaysMs: readonly number[]; stableMs: number } | undefined;
   #starting: Promise<void> | undefined;
   #started = false;
   #closed = false;
+  #readyAt = 0;
+  #recoveryAttempt = 0;
+  #recoveryTimer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(input: Omit<OfficialRuntimeOwnerOptions, "gate"> & { permanentHome: string }) {
+  constructor(
+    input: Omit<OfficialRuntimeOwnerOptions, "gate"> & {
+      permanentHome: string;
+      /** Only long-lived deployments opt in; others keep one generation per Scope start. */
+      recovery?: OfficialRuntimeRecoveryOptions;
+    },
+  ) {
     this.permanentHome = input.permanentHome;
+    this.#diagnosticOutput = input.diagnosticOutput;
+    const delaysMs = input.recovery?.delaysMs ?? DEFAULT_RECOVERY_DELAYS_MS;
+    if (input.recovery && delaysMs.length === 0)
+      throw new Error("Official runtime recovery requires at least one delay");
+    this.#recovery = input.recovery
+      ? { delaysMs, stableMs: input.recovery.stableMs ?? DEFAULT_RECOVERY_STABLE_MS }
+      : undefined;
     this.gate = new OfficialWorkGate();
     this.owner = new OfficialRuntimeOwner({
       createBackend: () => {
@@ -32,8 +62,7 @@ export class OfficialRuntimeScope {
       gate: this.gate,
     });
     this.gate.subscribe(() => {
-      if (this.#started && this.gate.phase === "unavailable")
-        this.#failure.resolve(new Error("Official Codex is unavailable"));
+      if (this.#started && this.gate.phase === "unavailable") this.#generationFailed();
     });
   }
 
@@ -43,24 +72,33 @@ export class OfficialRuntimeScope {
 
   start(): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Official Codex is unavailable"));
-    if (this.#started) return Promise.resolve();
-    if (this.owner.running) {
+    if (this.#starting) return this.#starting;
+    if (this.#started && (!this.#recovery || this.owner.running)) return Promise.resolve();
+    if (!this.#started && this.owner.running) {
       this.#started = true;
       return Promise.resolve();
     }
-    if (this.#starting) return this.#starting;
-    const starting = this.owner.start().then(() => {
+    // A caller that needs Codex now (for example a reconnecting Desktop) skips
+    // the remaining backoff; the attempt itself still proves the old exit first.
+    this.#clearRecoveryTimer();
+    const starting = (async () => {
+      if (this.#recovery) await this.owner.stop();
+      await this.owner.start();
       if (this.#closed) throw new OfficialAdmissionError("unavailable");
       this.#started = true;
+      this.#readyAt = Date.now();
       this.gate.initialized();
-    });
+    })();
     this.#starting = starting;
     void starting.then(
       () => {
-        this.#starting = undefined;
+        if (this.#starting === starting) this.#starting = undefined;
+        // The generation may already have failed while this start was settling.
+        if (this.gate.phase === "unavailable") this.#scheduleRecovery();
       },
       () => {
-        this.#starting = undefined;
+        if (this.#starting === starting) this.#starting = undefined;
+        this.#scheduleRecovery();
       },
     );
     return starting;
@@ -69,14 +107,49 @@ export class OfficialRuntimeScope {
   attach(output: CodexRuntimeOutput, onBackendStopped?: () => void): OfficialClientSession {
     return this.owner.attach(output, onBackendStopped);
   }
-  failure(): Promise<Error> {
-    return this.#failure.promise;
-  }
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#clearRecoveryTimer();
     // A failed close still owns a possibly live backend; allow stop retries.
     await this.owner.stop();
+  }
+
+  /** One ready generation became unavailable. The Scope, not each client, owns the response. */
+  #generationFailed(): void {
+    // Prove exit without closing the Scope or detaching clients: a transport
+    // failure can leave the process alive, and a replacement needs it gone.
+    // Deferred because the owner publishes unavailable from inside stop()
+    // before that stop becomes joinable.
+    queueMicrotask(() => {
+      if (!this.#closed && this.gate.phase === "unavailable")
+        void this.owner.stop().catch(() => undefined);
+    });
+    if (!this.#recovery || this.#closed) return;
+    if (Date.now() - this.#readyAt >= this.#recovery.stableMs) this.#recoveryAttempt = 0;
+    this.#scheduleRecovery();
+  }
+
+  #scheduleRecovery(): void {
+    if (!this.#recovery || this.#closed || this.#recoveryTimer || this.#starting) return;
+    const { delaysMs } = this.#recovery;
+    const delay = delaysMs[Math.min(this.#recoveryAttempt, delaysMs.length - 1)] ?? 0;
+    this.#recoveryAttempt++;
+    this.#diagnosticOutput.write(
+      `codexhost: official Codex is unavailable; restarting in ${String(delay)}ms\n`,
+    );
+    const timer = setTimeout(() => {
+      this.#recoveryTimer = undefined;
+      // Failure schedules the next attempt through start().
+      this.start().catch(() => undefined);
+    }, delay);
+    timer.unref();
+    this.#recoveryTimer = timer;
+  }
+
+  #clearRecoveryTimer(): void {
+    if (this.#recoveryTimer) clearTimeout(this.#recoveryTimer);
+    this.#recoveryTimer = undefined;
   }
 }
 
@@ -97,9 +170,6 @@ export class OfficialRuntimeClient {
 
   initialize(): Promise<void> {
     return this.#scope.start();
-  }
-  failure(): Promise<Error> {
-    return this.#scope.failure();
   }
   async initializeProtocol(params: JsonObject): Promise<JsonObject> {
     if (this.#closed || this.#scope.closed) throw new OfficialAdmissionError("unavailable");

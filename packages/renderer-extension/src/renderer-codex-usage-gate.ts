@@ -62,7 +62,11 @@ function hooksOf(fiber: unknown): Hook[] {
   return hook == null ? result : [];
 }
 
-/** Composer components that combine native submit blockers into `submitDisabled`. */
+/**
+ * Composer components that combine native submit blockers into `submitDisabled`
+ * and hold the reserve gate. Desktop wraps the owner in a pass-through component
+ * with the same props but no gate hooks, so props alone are ambiguous.
+ */
 function submitOwners(composer: Element): Fiber[] {
   // The ProseMirror editor is not rendered by React; start at its nearest React host.
   let element: Element | null = composer.querySelector(EDITOR_SELECTOR) ?? composer;
@@ -78,8 +82,11 @@ function submitOwners(composer: Element): Fiber[] {
           isRecord(props) &&
           "onLocalSubmitStart" in props &&
           typeof props.submitDisabled === "boolean",
-      );
-      return owners as Fiber[];
+      ) as Fiber[];
+      return owners.filter((owner) => {
+        const gates = gateSubscriptions(owner);
+        return !gates.invalid && gates.reserve.length > 0;
+      });
     }
     element = element.parentElement;
   }
@@ -94,14 +101,23 @@ function findSubmitOwner(composer: Element): Fiber | null {
 function subscriptionAt(hook: Hook): Subscription | null {
   const memo = hook.memoizedState;
   if (!Array.isArray(memo) || !Array.isArray(memo[1])) return null;
-  const [subscriber, [store, atom]] = memo as [unknown, unknown[]];
+  const [subscriber, dependencies] = memo as [unknown, unknown[]];
+  if (dependencies.length !== 2) return null;
+  // 26.928 parameterized selectors memoize a readonly signal adapter instead
+  // of [store, atom]. The subscription still targets that adapter's atom.
+  const signal = dependencies[0];
+  const adapted =
+    dependencies[1] === undefined &&
+    isRecord(signal) &&
+    typeof signal.get === "function" &&
+    typeof signal.subscribe === "function";
+  const [store, atom] = adapted ? [signal.store, signal.atom] : dependencies;
   const instance = hook.next?.queue;
   const effect = hook.next?.next?.memoizedState;
   if (
     !isRecord(subscriber) ||
     typeof subscriber.getSnapshot !== "function" ||
     typeof subscriber.subscribe !== "function" ||
-    (typeof subscriber.createRender === "function" && subscriber.createRender() != null) ||
     !isRecord(store) ||
     typeof store.get !== "function" ||
     typeof store.sub !== "function" ||
@@ -110,7 +126,7 @@ function subscriptionAt(hook: Hook): Subscription | null {
     "write" in atom ||
     !isRecord(instance) ||
     typeof instance.value !== "boolean" ||
-    instance.getSnapshot !== subscriber.getSnapshot ||
+    typeof instance.getSnapshot !== "function" ||
     !isRecord(effect) ||
     typeof effect.create !== "function" ||
     !Array.isArray(effect.deps) ||
@@ -131,7 +147,7 @@ function subscriptionAt(hook: Hook): Subscription | null {
  * Identify a gate by the fields its selector reads, not by minified names or
  * hook positions. Dependencies are replayed read-only through tracing copies.
  */
-function gateKind({ store, atom }: Subscription): GateKind | null {
+function gateKind({ store, atom }: Subscription): GateKind | "mixed" | null {
   const read = new Set<string>();
   const trace = (value: RecordValue, prefix: string): RecordValue =>
     new Proxy(
@@ -145,8 +161,29 @@ function gateKind({ store, atom }: Subscription): GateKind | null {
     );
   try {
     const native = store.get(atom);
-    const replayed = atom.read((dependency) => {
+    const visiting = new Set<Atom>();
+    let remaining = 128;
+    const replay = (dependency: Atom): unknown => {
+      if (remaining-- <= 0 || visiting.has(dependency)) {
+        throw new Error("Codex usage selector dependencies are unavailable");
+      }
       const value = store.get(dependency);
+      // New signal atoms delegate to another readonly boolean selector. Replay
+      // those indirections too, but never evaluate writable state atom readers.
+      if (
+        typeof value === "boolean" &&
+        typeof dependency.read === "function" &&
+        !("write" in dependency)
+      ) {
+        visiting.add(dependency);
+        try {
+          const result = dependency.read(replay);
+          if (result !== value) throw new Error("Codex usage selector replay differs");
+          return result;
+        } finally {
+          visiting.delete(dependency);
+        }
+      }
       if (!isRecord(value)) return value;
       if (typeof value.hardBlocked === "boolean") return trace(value, "reserve");
       if ("authMethod" in value) return trace(value, "auth");
@@ -157,22 +194,66 @@ function gateKind({ store, atom }: Subscription): GateKind | null {
         };
       }
       return value;
-    });
+    };
+    visiting.add(atom);
+    const replayed = atom.read(replay);
     if (typeof native !== "boolean" || replayed !== native) return null;
   } catch {
     return null;
   }
-  if (read.has("reserve.hardBlocked") && !read.has("reserve.active")) return "reserve";
-  if (read.has("auth.authMethod") && read.has("limit.allowed")) return "account";
+  const reserve = read.has("reserve.hardBlocked") && !read.has("reserve.active");
+  const account = read.has("auth.authMethod") && read.has("limit.allowed");
+  // A combined selector cannot be separated into the two verified gates.
+  if (account && (read.has("reserve.hardBlocked") || read.has("reserve.active"))) return "mixed";
+  if (reserve) return "reserve";
+  if (account) return "account";
   return null;
 }
 
-function gateSubscriptions(owner: Fiber): Record<GateKind, Subscription[]> {
-  const found: Record<GateKind, Subscription[]> = { account: [], reserve: [] };
+function snapshotsMatch(
+  { subscriber, instance, store, atom }: Subscription,
+  projected?: Projection,
+): boolean {
+  // Direct snapshots also cover already-bound gates. A lazy wrapper must agree
+  // with this readonly atom; never silently treat a mismatched Account gate as
+  // the legitimate API-key case where its selector does not read usage.
+  try {
+    if (typeof subscriber.createRender === "function" && subscriber.createRender() != null) {
+      return false;
+    }
+    if (instance.getSnapshot === subscriber.getSnapshot) return true;
+    if (typeof subscriber.createRender !== "function") return false;
+    const expected =
+      projected?.subscriber === subscriber && projected.instance === instance
+        ? false
+        : store.get(atom);
+    return (
+      typeof expected === "boolean" &&
+      subscriber.getSnapshot() === expected &&
+      instance.getSnapshot() === expected
+    );
+  } catch {
+    return false;
+  }
+}
+
+function gateSubscriptions(
+  owner: Fiber,
+  projections?: ReadonlyMap<GateKind, Projection>,
+): Record<GateKind, Subscription[]> & { invalid: boolean } {
+  const found: Record<GateKind, Subscription[]> & { invalid: boolean } = {
+    account: [],
+    reserve: [],
+    invalid: false,
+  };
   for (const hook of hooksOf(owner)) {
     const subscription = subscriptionAt(hook);
     const kind = subscription && gateKind(subscription);
-    if (subscription && kind) found[kind].push(subscription);
+    if (subscription && kind) {
+      if (kind !== "mixed" && snapshotsMatch(subscription, projections?.get(kind))) {
+        found[kind].push(subscription);
+      } else found.invalid = true;
+    }
   }
   return found;
 }
@@ -182,11 +263,15 @@ function gateSubscriptions(owner: Fiber): Record<GateKind, Subscription[]> {
  * returns early without reading usage when it cannot block (for example API-key
  * sign-in), so it may legitimately be absent until it reads `rate_limit`.
  */
-function discoverGates(owner: Fiber): Map<GateKind, Subscription> | null {
+function discoverGates(
+  owner: Fiber,
+  projections: ReadonlyMap<GateKind, Projection>,
+): Map<GateKind, Subscription> | null {
+  const gates = gateSubscriptions(owner, projections);
+  if (gates.invalid) return null;
   const found = new Map<GateKind, Subscription>();
-  for (const [kind, subscriptions] of Object.entries(gateSubscriptions(owner)) as Array<
-    [GateKind, Subscription[]]
-  >) {
+  for (const kind of ["account", "reserve"] as const) {
+    const subscriptions = gates[kind];
     if (subscriptions.length > 1) return null;
     if (subscriptions[0]) found.set(kind, subscriptions[0]);
   }
@@ -241,6 +326,7 @@ function project({ subscriber, store, atom, instance, subscribeEffect }: Subscri
   if (!notify) throw new Error("Codex usage gate listener is unavailable");
   const onChange = notify;
   const original = subscriber.getSnapshot;
+  const originalInstance = instance.getSnapshot;
   const allowed = (): boolean => false;
   subscriber.getSnapshot = allowed;
   instance.getSnapshot = allowed;
@@ -250,7 +336,7 @@ function project({ subscriber, store, atom, instance, subscribeEffect }: Subscri
     instance,
     restore() {
       if (subscriber.getSnapshot === allowed) subscriber.getSnapshot = original;
-      if (instance.getSnapshot === allowed) instance.getSnapshot = original;
+      if (instance.getSnapshot === allowed) instance.getSnapshot = originalInstance;
       onChange();
     },
   };
@@ -301,7 +387,7 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
   };
   const bind = (): RendererCodexUsageGateStatus => {
     const current = owner ?? findSubmitOwner(composer);
-    const gates = current && discoverGates(current);
+    const gates = current && discoverGates(current, projections);
     // The reserve gate always reads its field, so its absence means an unknown contract.
     if (!current || !gates?.has("reserve")) throw new Error("Codex usage gate is unavailable");
     owner = current;

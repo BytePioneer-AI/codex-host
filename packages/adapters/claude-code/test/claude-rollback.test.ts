@@ -60,6 +60,7 @@ async function fixture(turns = 1) {
   const transports: Array<ClaudeTurnTransport & { input: ClaudeTransportFactoryInput }> = [];
   const dependencies: ClaudeAdapterDependencies = {
     randomUUID,
+    bypassPermissionsAvailable: () => true,
     inspectInstallation: () => undefined,
     createInspector: () => ({
       inspect: async () => ({
@@ -104,6 +105,8 @@ async function fixture(turns = 1) {
         setIdleTurnHandler: () => undefined,
         setThreadEventHandler: () => undefined,
         setIdleLive: () => undefined,
+        hasBackgroundTasks: () => false,
+        stopBackgroundTask: async () => undefined,
         getContextUsage: async () => null,
         getPermissionMode: () => permissionMode,
         setPermissionMode: async (mode) => {

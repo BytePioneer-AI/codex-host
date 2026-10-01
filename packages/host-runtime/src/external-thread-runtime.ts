@@ -62,6 +62,10 @@ export interface ExternalThread {
   historyHydrated: boolean;
   running: boolean;
   activeTurnId: HostTurnId | null;
+  // Terminal Turn projected by this process that is still the latest Turn
+  // attempt; any later start clears it. A read may report it when native
+  // history cannot be refreshed.
+  projectedTerminalTurnId: HostTurnId | null;
   latestUsage: HostUsage | null;
   usageTurnId: HostTurnId | null;
   projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
@@ -307,6 +311,7 @@ export class ExternalThreadRuntime {
       responseGates: new Map(),
       ephemeralTurnIds: new Set(),
       persistenceError: null,
+      projectedTerminalTurnId: null,
       ignoredInteractionIds: new Set(),
     };
     this.idleRelease.touch(externalThread);

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fetchInstallationText, runInstallationCommand } from "./installation.js";
-import { resolveHarnessExecutable } from "./resolve.js";
+import { resolveHarnessExecutable, VERSION_MANAGER_ROOTS } from "./resolve.js";
 import { withNodeRuntimeOnPath } from "./node-runtime.js";
 
 /** Trusted Adapter-owned sources only; never accept these options from an RPC caller. */
@@ -20,7 +20,26 @@ export function createHarnessInstaller(
     const env = withNodeRuntimeOnPath(environment);
     if ("npm" in source) {
       const npm = resolveHarnessExecutable(
-        { id: "npm", command: "npm", installRoots: { posix: [], windows: [] } },
+        {
+          id: "npm",
+          command: "npm",
+          installRoots: {
+            posix: [
+              "~/.npm-global/bin",
+              "~/.local/bin",
+              VERSION_MANAGER_ROOTS,
+              "/opt/homebrew/bin",
+              "/usr/local/bin",
+              "/usr/bin",
+            ],
+            windows: [
+              "${APPDATA}/npm",
+              VERSION_MANAGER_ROOTS,
+              "${ProgramFiles}/nodejs",
+              "${LOCALAPPDATA}/Programs/nodejs",
+            ],
+          },
+        },
         { environment: env },
       );
       if (!npm) throw new Error("Install Node.js and npm first");

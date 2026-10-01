@@ -125,11 +125,11 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 `install` 传给旧插件的 `installation()`。Host 先刷新检查，只有 `notInstalled` 才安装，避免把未登录或不可用误认为未安装；安装后通过 `installation("check")` 回读 CLI 版本。安装失败或版本无法确认都不报告成功，原生异常脱敏后显示在右侧详情。
 
-- DeepSeek Harness（固定 `@deepseek-ai/dsh@0.1.5-rc.1`）、OpenCode、Grok、CodeBuddy 使用官方 npm 包；需要已有 Node.js/npm，Grok 保留 npm 安装脚本允许项。
+- DeepSeek Harness（固定 `@deepseek-ai/dsh@0.1.5-rc.1`）、OpenCode、Grok、CodeBuddy 使用官方 npm 包；需要已有 Node.js/npm；npm 在 PATH 未命中时继续搜索版本管理器与标准安装位置，适配 Desktop 的精简 GUI 环境。Grok 保留 npm 安装脚本允许项。
 - Pi、Claude Code、OMP、Antigravity、Kiro CLI、Cursor CLI、Hermes、Qoder 两版和 Kimi Code 使用各自 Adapter 固定的官方 HTTPS 安装脚本，按 Host OS 选择 Shell/PowerShell。脚本下载到临时目录，执行后清理；安装命令最多 10 分钟，不自动提权，不自动安装系统依赖，安装器不能依赖交互输入。
 - WorkBuddy 仍引导安装桌面应用。旧插件、旧 Host 和未转发能力的 Broker 返回不支持，不回退到本机安装。
 - Host 按 Adapter 合并并发安装，安装期间的检查/更新等待同一结果。Renderer 按连接及 Host/Harness 保存安装状态：列表中显示安装中、检测中或错误，安装时禁用下载按钮，错误保留在右侧并允许重试。切换行、Host 或关闭再打开设置不会取消操作；Host/连接进程重启后不恢复任务。
-- 成功和失败后均重新诊断连接；CLI 安装完成不意味着登录、Provider 配置或所有 Adapter 能力可用。检测结果才决定最终连接状态。版本回读还可能依赖更新源网络；版本检查失败时应先重新诊断，不盲目重装。
+- 成功和失败后均重新诊断连接；CLI 安装完成不意味着登录、Provider 配置或所有 Adapter 能力可用。检测结果才决定最终连接状态：即使版本回读失败，只要同一 Host/Harness 的本次重新诊断确认 `ready`，就清除安装失败覆盖状态；其他 Host 的状态或刷新失败后的旧快照不能清除错误。版本回读还可能依赖更新源网络；版本检查失败时应先重新诊断，不盲目重装。
 
 安装路径来自仓库维护的官方指引，并非所有系统/架构已通过真实安装验收。前置依赖、网络、官方安装器交互和平台支持仍影响结果；模拟测试不代表真实安装成功。
 

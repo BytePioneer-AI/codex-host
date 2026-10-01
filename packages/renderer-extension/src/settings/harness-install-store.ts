@@ -50,6 +50,13 @@ function createStore(diagnostics: RendererConnectionDiagnostics) {
       // remains absent, nor call a successful CLI install authenticated/ready.
       try {
         await diagnostics.refresh();
+        const refreshed = diagnostics
+          .snapshot()
+          .hosts.find((candidate) => candidate.hostId === host)
+          ?.agents.find((candidate) => candidate.agent === agent);
+        // A successful fresh diagnosis is authoritative even when version
+        // readback (e.g. its latest-version endpoint) failed after installation.
+        if (refreshed?.availability === "ready") failure = undefined;
       } catch (error) {
         failure ??= errorMessage(error);
       }

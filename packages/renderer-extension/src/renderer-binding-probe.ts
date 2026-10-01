@@ -207,8 +207,16 @@ const rendererUsageRefreshDelays = [250, 500, 1000, 2000, 4000, 8000] as const;
 export function refreshConnectionHosts(
   hostIds: Iterable<string>,
   refreshHost: (hostId: string) => Promise<void>,
+  pendingHost?: (hostId: string) => Promise<void> | undefined,
 ): Promise<void> {
-  return Promise.all([...hostIds].map((hostId) => refreshHost(hostId))).then(() => undefined);
+  return Promise.all(
+    [...hostIds].map(async (hostId) => {
+      // Mutation readback must not reuse an observation started before the mutation.
+      // Drain it even if it failed; the new inspection owns the resulting status.
+      if (pendingHost) await pendingHost(hostId)?.catch(() => undefined);
+      await refreshHost(hostId);
+    }),
+  ).then(() => undefined);
 }
 
 export function rendererUsageRefreshDelay(attempt: number): number {
@@ -2418,10 +2426,17 @@ export function installRendererBindingProbe(
         }),
       };
     },
-    refresh(): Promise<void> {
+    refresh(hostId?: string): Promise<void> {
+      if (hostId !== undefined) {
+        return refreshConnectionHosts(
+          [hostId],
+          (target) => refreshHarnessAvailabilityForHost(target, true, false, true),
+          (target) => hostHarnessAvailabilityState(target).request?.promise,
+        );
+      }
       reconcileHarnessAvailabilityHost();
-      return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (hostId) =>
-        refreshHarnessAvailabilityForHost(hostId, true, false, true),
+      return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (target) =>
+        refreshHarnessAvailabilityForHost(target, true, false, true),
       );
     },
     async installation(hostId, agent, action) {

@@ -16,13 +16,15 @@ const { outputFiles } = await build({
       globalThis.setupHarnessVersions = () => {
         const calls = [];
         let updated = false;
+        let installAttempts = 0;
+        const installedHosts = new Set();
         const diagnostics = {
           snapshot: () => ({
             adapter: { state:"ready", reason:"ready", modelUpdates:1, hook:"request-bridge" },
             hosts: ["local", "remote-test"].map(hostId => ({ hostId, active:hostId === "local", agents: [
               {agent:"pi",availability:"ready",error:null},
               {agent:"claude-code",availability:"ready",error:null},
-              {agent:"omp",availability:"notInstalled",error:null},
+              {agent:"omp",availability:installedHosts.has(hostId) ? "ready" : "notInstalled",error:null},
             ] })),
           }),
           subscribe: () => () => {},
@@ -30,6 +32,12 @@ const { outputFiles } = await build({
           installation: async (hostId, agent, action) => {
             calls.push({hostId,agent,action});
             if (agent === "claude-code") throw {code:-32078};
+            if (action === "install") {
+              installAttempts++;
+              await new Promise(resolve => setTimeout(resolve, 1200));
+              if (installAttempts === 1) throw new Error("Installation failed: check network and prerequisites.");
+              installedHosts.add(hostId);
+            }
             if (action === "update") {
               await new Promise(resolve => setTimeout(resolve, 300));
               updated = true;
@@ -118,6 +126,42 @@ test("unsupported plugins show original instructions without disabling supported
   await page.getByRole("row", { name: /^Pi 正常/ }).click();
   await expect(panel.getByRole("button", { name: "更新", exact: true })).toBeEnabled();
   await page.screenshot({ path: testInfo.outputPath("versions-supported.png") });
+});
+
+test("downloads explicitly, shows progress and errors, and retries on the selected Host", async ({
+  page,
+}, testInfo) => {
+  const row = page.locator('[data-connection-item="omp"]');
+  const download = row.getByRole("button", { name: "安装: Oh My Pi", exact: true });
+  await expect(download).toBeEnabled();
+  await page.screenshot({ path: testInfo.outputPath("install-before.png") });
+  await download.click();
+  await expect(row).toContainText("安装中");
+  await expect(download).toBeDisabled();
+  await page.screenshot({ path: testInfo.outputPath("install-running.png") });
+  await expect(page.locator('.settings-connection-inspector [role="alert"]')).toContainText(
+    "Installation failed",
+  );
+  await expect(row).toContainText("错误");
+  await expect(download).toBeEnabled();
+  await page.screenshot({ path: testInfo.outputPath("install-error.png") });
+  await download.click();
+  await expect(row).toContainText("安装中");
+  await page.getByRole("tab", { name: "remote-test" }).click();
+  await expect(row).toContainText("未安装");
+  await page.getByRole("tab", { name: "本地", exact: true }).click();
+  await expect(row).toContainText("正常");
+  await expect(download).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("install-complete.png") });
+  const calls = await page.evaluate(
+    () =>
+      (globalThis as unknown as { versionFixture: { calls: { action: string; hostId: string }[] } })
+        .versionFixture.calls,
+  );
+  expect(calls.filter((call) => call.action === "install").map((call) => call.hostId)).toEqual([
+    "local",
+    "local",
+  ]);
 });
 
 test("keeps installation guides for missing Harnesses and fits a narrow inspector", async ({

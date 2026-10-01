@@ -5,7 +5,7 @@ export const HARNESS_INSTALLATION_METHOD = "codexhost/harness/installation";
 export const harnessInstallationParamsSchema = z
   .object({
     harnessId: harnessIdSchema,
-    action: z.enum(["check", "update"]),
+    action: z.enum(["check", "update", "install"]),
   })
   .strict();
 export const harnessInstallationStateSchema = z

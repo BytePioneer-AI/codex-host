@@ -21,7 +21,7 @@
 - [x] 2.3 删除 `modern/*` 与顶层 Adapter 中的非 V4 分支（含 #412 的 `projectsPtcDispatches` 格式判断与 `settings/describe` 权限路径），默认 profile 改为 V4，去掉 modern adapter 默认的 `0.1.2-rc.1`。 完成于 `6b044e0f`；插件运行依赖同时去掉只供 V0/V3 权限解析使用的 `@deepseek-ai/schemastery`。
 - [x] 2.4 简化 Session 引用校验（design 决策 3）。测试覆盖：无 locator、`0.1.5-rc.2` locator、`0.2.0-rc.2` locator 可恢复；`turn-end:`、`v3-turn-end:` 以及版本不一致的 checkpoint 在 mutation 前拒绝。 完成于 `6b044e0f`；真实 CLI 探测另确认 `0.1.5-rc.2` locator 可恢复、版本不符的 checkpoint 返回 `invalidRequest`、`v3-turn-end:` 返回 `checkpointNotFound`，源会话均不变。
 - [x] 2.5 把依赖默认 V0/V3 的测试改写为 V4 数据（`history.test.ts`、`journal.test.ts`、`session.test.ts`、modern adapter 测试等），再删除 V0/V3 专用用例和 V3 夹具；共享的流式与 baseline 用例迁入 V4 测试。 完成于 `6b044e0f`；新增逐字节取自 `dsh-v0.2.0-rc.2` 的 V4 实录夹具。
-- [x] 2.6 运行 `npm run test:deepseek:coverage`，保持四项 80% 门槛；记录实际覆盖率。 25 个文件、876 项测试全部通过；语句 86.99%、分支 82.67%、函数 93.29%、行 89.78%。
+- [x] 2.6 运行 `npm run test:deepseek:coverage`，保持四项 80% 门槛；记录实际覆盖率。 25 个文件、876 项测试全部通过；语句 86.99%、分支 82.67%、函数 93.29%、行 89.78%。这是删除 V0/V3 时的统计；本 PR 最终代码上的统计见验证记录。
 
 ## 3. 界面与文档
 
@@ -31,5 +31,5 @@
 
 ## 4. 验证与提交
 
-- [x] 4.1 运行 `npm run build:typescript`、`npm run typecheck`、`npm run lint`、改动文件的 Prettier 检查、`git diff --check` 和 OpenSpec strict 校验；只在相关代码被触及时扩大到其他 Gate。 构建、Prettier、`cargo fmt`、包边界、改动文件 eslint、`git diff --check` 与 OpenSpec strict 通过；`typecheck`/`lint` 只报基线既有的 `tests/e2e/renderer-model-fast.spec.ts` 错误。另跑全量 Vitest：`tests/release` 需去掉环境中的 `CODEX_HOME`，此外只有 WorkBuddy 一个依赖目录权限的用例因本机以 root 运行而失败，两者均与本变更无关。
+- [x] 4.1 运行 `npm run build:typescript`、`npm run typecheck`、`npm run lint`、改动文件的 Prettier 检查、`git diff --check` 和 OpenSpec strict 校验；只在相关代码被触及时扩大到其他 Gate。 构建、Prettier、`cargo fmt`、包边界、改动文件 eslint、`git diff --check` 与 OpenSpec strict 通过；`typecheck`/`lint` 只报基线既有的 `tests/e2e/renderer-model-fast.spec.ts` 错误。另跑全量 Vitest：`tests/release` 需去掉环境中的 `CODEX_HOME`，此外只有 WorkBuddy 一个依赖目录权限的用例因本机以 root 运行而失败，两者均与本变更无关。之后本 PR 改为基于 upstream main `f813ba7b`（upstream 已在 `7c520d24` 修复该 e2e 文件），完整的 `npm run lint` 与 `npm run typecheck` 均通过；最终结果见验证记录。
 - [x] 4.2 按阶段写中文提交，推送 fork 分支 `feat/dsh-020rc-v4-only`，向 upstream main 提 draft PR。PR 写明整体与按业务代码、测试代码、文档分列的增删行数，纳入 #412 的说明与 CodeRabbit 结论，以及实际验证与未验证边界（真实模型、Desktop 端到端、其他平台）；Desktop 手测由用户完成后再转为 ready。 已推送并创建 draft PR；Desktop 手测完成后再转为 ready。

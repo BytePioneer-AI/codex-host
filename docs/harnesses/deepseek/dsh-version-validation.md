@@ -154,7 +154,7 @@ CodeRabbit 在 #412 上建议拒绝 catalog `options` 中的 `auto`，本变更�
 
 ## 自动化测试与覆盖率
 
-`npm run test:deepseek:coverage` 先构建 TypeScript，再运行整个 DSH Adapter：**25 个文件、882 项测试全部通过**。统计范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件，四项门槛均为 80%：
+`npm run test:deepseek:coverage` 先构建 TypeScript，再运行整个 DSH Adapter。下面的结果在第 11 个提交 `3ca7509b`（本 PR 的最终代码）上运行：**25 个文件、882 项测试全部通过**。它取代归档任务 2.6 在删除 V0/V3 时记录的 876 项及当时的覆盖率；之后的提交又补了测试。统计范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件，四项门槛均为 80%：
 
 | 指标 | 覆盖率 | 已覆盖 / 总数 |
 | --- | --- | --- |
@@ -172,12 +172,16 @@ HTML 与 JSON 摘要生成到 `coverage/deepseek-harness/`，不纳入 Git。本
 
 V4 回放夹具 `packages/adapters/deepseek-harness/test/fixtures/dsh-020rc2-tool-call-turn.v4.jsonl`，与 `dsh-v0.2.0-rc.2` 的 `snapshots/session/tool-call-turn/session.v4.jsonl` 逐字节相同（该文件最后修改于 DSH `fb79a944f5eed29cdce0833006ac55a2478cbec4`，`snapshot.yml` 标记 `recording: live`）。DSH 快照省略事件 `seq`/`time` 并替换环境工具目录，回放测试只补回连续序号、固定时间和一个最小工具声明。
 
-其他仓库检查：
+其他仓库检查，同样在 `3ca7509b` 上运行：
 
-- `npm run build:typescript`、`prettier --check .`、`cargo fmt --all --check`、包边界检查和 OpenSpec strict 校验通过；本变更改动的 41 个 TypeScript/JavaScript 文件 eslint 通过。
-- `npm run typecheck` 与 `npm run lint` 只报 `tests/e2e/renderer-model-fast.spec.ts` 的既有错误（1 个 TS2379、11 个 `no-non-null-assertion`）。该文件自基线 `94e795f8` 起未改动。
+- 完整的 `npm run format:check`（Prettier 与 `cargo fmt`）、`npm run lint`（ESLint 与包边界检查）、`npm run typecheck` 和 `git diff --check` 均通过。
+- 本变更改动的四份 OpenSpec 主规格 strict 校验通过。`openspec validate --all --strict` 有 23 项失败，与 `f813ba7b` 上的结果完全相同。
+- 基于旧基线 `94e795f8` 时，`npm run typecheck` 与 `npm run lint` 只报 `tests/e2e/renderer-model-fast.spec.ts` 的既有错误（1 个 TS2379、11 个 `no-non-null-assertion`），当时只能确认本变更改动的文件 eslint 通过。upstream 已在 `7c520d24` 修复该文件；本 PR 改为基于 `f813ba7b` 后，这两条命令完整通过。
 - `tests/release` 在设置了 `CODEX_HOME` 的环境中失败：测试只清除 `CODEXHOST_*` 与 `NODE_PATH`，模拟的官方 app-server 因此在真实 `CODEX_HOME` 中启动并退出。去掉该变量后 14 个文件全部通过，其中 DSH 插件运行依赖断言为 `diff`、`ws`、`zod`。
-- 去掉 `CODEX_HOME` 后运行全量 `vitest run --config tests/vitest.config.js`：457 个文件中 442 个通过、14 个跳过；5182 项测试中 5141 项通过、40 项跳过。唯一失败的是 WorkBuddy 的 “preserves the native failure when bridge cleanup also fails”：它依靠目录权限制造 `EACCES`，本机以 root 运行不受权限限制；该包自基线未改动。
+- 去掉 `CODEX_HOME` 后运行全量 `npm run test:typescript`（含 TypeScript 构建）：463 个文件中 447 个通过、14 个跳过、2 个失败；5243 项测试中 5201 项通过、40 项跳过、2 项失败。两项失败所在的包本变更没有改动，与 upstream main 相同：
+  - WorkBuddy 的 “preserves the native failure when bridge cleanup also fails” 依靠目录权限制造 `EACCES`，本机以 root 运行不受权限限制。
+  - Cursor CLI 的 “uses current WAL activity rather than only the checkpointed database timestamp”（随 upstream main 新增）在本机稳定失败，候选列表为空，原因未查。
+- Host Runtime 的 “gives later plugins a full timeout after earlier plugins finish” 偶发超时：之前一次全量运行失败，单独运行和本次全量运行都通过。
 
 ## 未验证的边界
 

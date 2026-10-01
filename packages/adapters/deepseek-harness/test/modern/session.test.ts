@@ -5159,6 +5159,20 @@ describe("DeepSeek Harness timed user questions", () => {
     await q.test.session.close();
   });
 
+  it("cancels an in-time answer whose ask DSH settled as failed", async () => {
+    const q = await openTimedQuestion();
+    const answered = q.answer({ pick: ["B"] });
+    expect(await isSettled(answered)).toBe(false);
+    expect(q.respond).toHaveBeenCalledWith(ANSWER);
+    // A Turn cancellation can abort the ask before the model receives the answer.
+    q.test.feed.push(askResult(5, "aborted", { failed: true }));
+    await expect(answered).resolves.toEqual(INVALID_STATE);
+    expect(q.answerCalls()).toEqual([]);
+    await vi.waitFor(() => expect(q.closed()).toMatchObject([{ reason: "cancelled" }]));
+    await q.endTurn(6);
+    await q.test.session.close();
+  });
+
   it.each([
     {
       name: "declines",

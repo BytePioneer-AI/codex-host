@@ -109,8 +109,8 @@ Gate 覆盖托管 Web 启动、inspect/create、流式增量、取消及 HTTP �
 - 回答返回 `true` 时按 `responded` 关闭；返回 `false` 或业务失败（例如已有回复在排队）时按 `superseded` 关闭并返回错误；传输失败时提问保持打开。
 - 原生结果未知时提交的回答先不返回。DSH 刚释放等待时会出现这种回答；及时回答恰好撞上到期时也会，因为 DSH 会静默丢弃这条回复。Adapter 等该调用的 `tool/result`（PTC 子调用为 `tool/ptc-dispatch`）后再处理：
   - 记录为 pending：改用 `userQuestions/answer` 送达，结果按上一条处理。
-  - DSH 已收下及时回答：按 `responded` 关闭。
-  - 释放后才提交，而调用已在别处回答或已失败：分别按 `superseded`、`cancelled` 关闭，并返回错误。
+  - 记录为回答：及时回答说明 DSH 已收下，按 `responded` 关闭；释放后才提交的回答说明调用已在别处回答，按 `superseded` 关闭并返回错误。
+  - 记录为失败（例如回合取消使提问以 `ASK_ABORTED` 结束）：模型没有收到回答，按 `cancelled` 关闭并返回错误。及时回答也是如此。
   - Session 故障或关闭时不再等待。
 - 这段等待很短：`ask_user_question` 是独占调用，DSH 在回答或到期后立即写入结果。它也必须短，因为 Host 逐条处理 Desktop 输入，并等待回复结果。
 - 跳过只在本地关闭，不写原生回复，与 DSH“关闭面板不产生回复”的语义一致。
@@ -154,19 +154,19 @@ CodeRabbit 在 #412 上建议拒绝 catalog `options` 中的 `auto`，本变更�
 
 ## 自动化测试与覆盖率
 
-`npm run test:deepseek:coverage` 先构建 TypeScript，再运行整个 DSH Adapter：**25 个文件、881 项测试全部通过**。统计范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件，四项门槛均为 80%：
+`npm run test:deepseek:coverage` 先构建 TypeScript，再运行整个 DSH Adapter：**25 个文件、882 项测试全部通过**。统计范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件，四项门槛均为 80%：
 
 | 指标 | 覆盖率 | 已覆盖 / 总数 |
 | --- | --- | --- |
 | 语句 | 87.07% | 5738 / 6590 |
-| 分支 | 82.72% | 4880 / 5899 |
+| 分支 | 82.73% | 4882 / 5901 |
 | 函数 | 93.42% | 909 / 973 |
 | 行 | 89.81% | 5326 / 5930 |
 
 HTML 与 JSON 摘要生成到 `coverage/deepseek-harness/`，不纳入 Git。本变更新增或改写的定向测试覆盖：
 
 - 补写工具结果：未启动/已启动 × `forked`/`interrupted` 的正例，以及 id、错误码、`sourceEventSeqs`、内容不符的负例；实时与冷历史的 Item 身份一致，PTC `run_code` 不生成 Item。
-- 限时提问：有无 `wait`、非法 `wait`、回放时 `wait` 不一致；continued、迟到回答的各种返回值；原生结果未知时先等结果再回复，覆盖补发被拒、传输失败后重试、故障与关闭；回合结束时 `expired`；`user-question-reply` 在实时与冷历史中都不投影为用户输入。
+- 限时提问：有无 `wait`、非法 `wait`、回放时 `wait` 不一致；continued、迟到回答的各种返回值；原生结果未知时先等结果再回复，覆盖补发被拒、传输失败后重试、及时回答遇到失败结果、故障与关闭；回合结束时 `expired`；`user-question-reply` 在实时与冷历史中都不投影为用户输入。
 - 版本门槛：`0.1.2-rc.1`、`0.1.5-rc.3`、`0.1.7-alpha.2`、`0.1.7-rc.0` 拒绝，并逐字校验中英文提示；`0.1.7-rc.1`、`0.2.0-rc.2`、`0.2.0`、`1.0.0` 接受。
 - Session Ref 与 checkpoint：无 locator、`0.1.5-rc.2` locator、`0.2.0-rc.2` locator 可恢复；`turn-end:`、`v3-turn-end:` 以及版本不一致的 checkpoint 在修改前拒绝。
 

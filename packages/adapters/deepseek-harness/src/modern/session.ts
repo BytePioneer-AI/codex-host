@@ -778,11 +778,12 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (outcome === "continued") {
       return this.#answerContinued(interactionId, pending, held.callId, held.answer);
     }
-    if (sent) {
+    if (sent && outcome === "answered") {
       this.#closeInteraction(interactionId, "responded");
       return { ok: true, value: { accepted: true } };
     }
-    // The call settled natively before this answer could reach it.
+    // The call settled natively without this answer: answered elsewhere, or failed
+    // (for example aborted by a Turn cancellation) even after an in-time answer.
     this.#closeInteraction(interactionId, outcome === "answered" ? "superseded" : "cancelled");
     return {
       ok: false,

@@ -17,6 +17,7 @@ export {
 } from "./acp-transport.js";
 export type {
   GrokAcpTransportOptions,
+  GrokExtensionRequest,
   GrokForkOpenInput,
   GrokNativeSessionLocation,
   GrokOpenInput,
@@ -25,6 +26,22 @@ export type {
   GrokRewindOpenInput,
   GrokTransportEvent,
 } from "./acp-transport.js";
+export {
+  GROK_ACP_CLIENT_CAPABILITIES,
+  GROK_ASK_USER_QUESTION_METHODS,
+  GROK_EXIT_PLAN_MODE_METHODS,
+  createGrokQuestionInteraction,
+  grokAskUserQuestionResponse,
+  grokSkipInterviewResponse,
+  parseGrokAskUserQuestionParams,
+} from "./grok-question.js";
+export {
+  GROK_PLAN_DECISION_ID,
+  createGrokPlanReview,
+  grokExitPlanModeResponse,
+  grokPlanRejectedResponse,
+  parseGrokExitPlanModeParams,
+} from "./grok-plan-review.js";
 export {
   GROK_SESSION_FORK_METHOD,
   buildGrokForkParams,

@@ -262,15 +262,12 @@ function createConnectionIdentityIcon(
   size: number,
 ): HTMLElement {
   const container = document.createElement("span");
-  container.className = item.agentSnapshot
-    ? "settings-connection-row__mark settings-connection-row__mark--logo"
-    : "settings-connection-row__mark";
+  container.className = "settings-connection-row__mark settings-connection-row__mark--logo";
   container.setAttribute("aria-hidden", "true");
-  if (item.agentSnapshot) {
-    container.append(createRendererAgentIcon(item.agentSnapshot.agent, size, document));
-  } else {
-    container.textContent = "CH";
-  }
+  // The pinned Renderer adapter row is the Codex runtime connection: use the
+  // Codex mark instead of the generic "CH" monogram.
+  const agent = item.agentSnapshot?.agent ?? "codex";
+  container.append(createRendererAgentIcon(agent, size, document));
   return container;
 }
 

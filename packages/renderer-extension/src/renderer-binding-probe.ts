@@ -51,6 +51,7 @@ import {
 } from "./renderer-harness-localization.js";
 import {
   installReasoningTranscriptSoftWrap,
+  installRecoveredTurnErrors,
   TRANSCRIPT_ITEM_SELECTOR,
 } from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
@@ -749,6 +750,7 @@ export function installRendererBindingProbe(
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
   const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
+  const disposeRecoveredTurnErrors = installRecoveredTurnErrors(document);
   let scanScheduled = false;
   let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
@@ -3052,6 +3054,7 @@ export function installRendererBindingProbe(
       modelControl = null;
       mutationObserver.disconnect();
       disposeReasoningSoftWrap();
+      disposeRecoveredTurnErrors();
       delegationMention?.dispose();
       sidebarAgentIcons.dispose();
       settingsLifecycle.dispose();

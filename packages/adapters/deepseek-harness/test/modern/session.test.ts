@@ -5088,52 +5088,149 @@ describe("DeepSeek Harness timed user questions", () => {
     await q.test.session.close();
   });
 
+  /** Let pending session work run, then report whether `answer` has settled. */
+  async function isSettled(answer: Promise<unknown>): Promise<boolean> {
+    let settled = false;
+    void answer.then(() => {
+      settled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    return settled;
+  }
+
+  const INVALID_STATE = { ok: false, error: expect.objectContaining({ code: "invalidState" }) };
+
   it.each([
-    ["the pending result", PENDING, false, 1],
-    ["an answer from another Client", ANSWER, false, 0],
-    ["a cancelled ask", "aborted", true, 0],
-  ] as const)(
-    "delivers an answer given after release only when DSH records %s",
-    async (_label, payload, failed, deliveries) => {
-      const q = await openTimedQuestion([() => ({ ok: true, value: true })]);
-      q.test.session.onCancel("event-timed");
-      await expect(q.answer({ pick: ["B"] })).resolves.toEqual({
-        ok: true,
-        value: { accepted: true },
-      });
-      expect(q.closed()).toMatchObject([{ reason: "responded" }]);
-      expect(q.answerCalls()).toEqual([]);
-      q.test.feed.push(askResult(5, payload, { failed }));
-      await q.settled();
-      await vi.waitFor(() => expect(q.answerCalls()).toHaveLength(deliveries));
-      if (deliveries) {
-        expect(q.answerCalls()[0]?.args).toEqual({
-          agentId: SESSION_ID,
-          callId: "call-ask",
-          answer: ANSWER,
-        });
-      }
-      await q.endTurn(6);
-      await q.test.session.close();
+    {
+      name: "the pending result",
+      payload: PENDING as unknown,
+      failed: false,
+      result: { ok: true, value: { accepted: true } } as unknown,
+      reason: "responded",
+      deliveries: 1,
     },
-  );
+    {
+      name: "an answer from another Client",
+      payload: ANSWER as unknown,
+      failed: false,
+      result: INVALID_STATE as unknown,
+      reason: "superseded",
+      deliveries: 0,
+    },
+    {
+      name: "a cancelled ask",
+      payload: "aborted" as unknown,
+      failed: true,
+      result: INVALID_STATE as unknown,
+      reason: "cancelled",
+      deliveries: 0,
+    },
+  ])("holds an answer given after release until DSH records $name", async (scenario) => {
+    const q = await openTimedQuestion([() => ({ ok: true, value: true })]);
+    q.test.session.onCancel("event-timed");
+    const answered = q.answer({ pick: ["B"] });
+    expect(await isSettled(answered)).toBe(false);
+    expect(q.closed()).toEqual([]);
+    q.test.feed.push(askResult(5, scenario.payload, { failed: scenario.failed }));
+    await expect(answered).resolves.toEqual(scenario.result);
+    expect(q.respond).not.toHaveBeenCalled();
+    expect(q.answerCalls().map(({ args }) => args)).toEqual(
+      scenario.deliveries ? [{ agentId: SESSION_ID, callId: "call-ask", answer: ANSWER }] : [],
+    );
+    await vi.waitFor(() => expect(q.closed()).toMatchObject([{ reason: scenario.reason }]));
+    await q.endTurn(6);
+    await q.test.session.close();
+  });
 
   it.each([
     ["re-sends an in-time answer DSH dropped after releasing the wait", PENDING, 1],
     ["keeps an in-time answer DSH accepted", ANSWER, 0],
   ] as const)("%s", async (_label, payload, deliveries) => {
     const q = await openTimedQuestion([() => ({ ok: true, value: true })]);
+    const answered = q.answer({ pick: ["B"] });
+    expect(await isSettled(answered)).toBe(false);
+    expect(q.respond).toHaveBeenCalledWith(ANSWER);
+    expect(q.closed()).toEqual([]);
+    q.test.feed.push(askResult(5, payload));
+    await expect(answered).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(q.answerCalls()).toHaveLength(deliveries);
+    await vi.waitFor(() => expect(q.closed()).toMatchObject([{ reason: "responded" }]));
+    await q.endTurn(6);
+    await q.test.session.close();
+  });
+
+  it.each([
+    {
+      name: "declines",
+      handler: (() => ({ ok: true, value: false })) as CallHandler,
+      code: "invalidState",
+    },
+    {
+      name: "rejects",
+      handler: (() => ({
+        ok: false,
+        error: { code: "gateway/internal", message: "a reply is already queued", details: {} },
+      })) as CallHandler,
+      code: "nativeFailure",
+    },
+  ])("reports an in-time answer whose re-send DSH $name", async (scenario) => {
+    const q = await openTimedQuestion([scenario.handler]);
+    const answered = q.answer({ pick: ["B"] });
+    expect(await isSettled(answered)).toBe(false);
+    q.test.feed.push(askResult(5, PENDING));
+    await expect(answered).resolves.toMatchObject({ ok: false, error: { code: scenario.code } });
+    expect(q.answerCalls()).toHaveLength(1);
+    await vi.waitFor(() => expect(q.closed()).toMatchObject([{ reason: "superseded" }]));
+    await q.endTurn(6);
+    await q.test.session.close();
+  });
+
+  it("keeps a question answerable when its held answer is lost in transport", async () => {
+    const q = await openTimedQuestion([
+      () => Promise.reject(new Error("socket closed")),
+      () => ({ ok: true, value: true }),
+    ]);
+    q.test.session.onCancel("event-timed");
+    const answered = q.answer({ pick: ["B"] });
+    expect(await isSettled(answered)).toBe(false);
+    q.test.feed.push(askResult(5, PENDING));
+    await expect(answered).resolves.toMatchObject({ ok: false, error: { code: "unavailable" } });
+    expect(q.closed()).toEqual([]);
     await expect(q.answer({ pick: ["B"] })).resolves.toEqual({
       ok: true,
       value: { accepted: true },
     });
-    expect(q.respond).toHaveBeenCalledWith(ANSWER);
-    q.test.feed.push(askResult(5, payload));
-    await q.settled();
-    await vi.waitFor(() => expect(q.answerCalls()).toHaveLength(deliveries));
+    expect(q.answerCalls()).toHaveLength(2);
+    await vi.waitFor(() => expect(q.closed()).toMatchObject([{ reason: "responded" }]));
     await q.endTurn(6);
-    expect(q.closed()).toMatchObject([{ reason: "responded" }]);
     await q.test.session.close();
+  });
+
+  it("stops holding an answer when the Session faults first", async () => {
+    const q = await openTimedQuestion();
+    q.test.session.onCancel("event-timed");
+    const answered = q.answer({ pick: ["B"] });
+    expect(await isSettled(answered)).toBe(false);
+    // A step cannot end while its ask has no recorded result.
+    q.test.feed.push(event(5, "step/end", { turn: 1, step: 1 }));
+    await expect(answered).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
+    expect(q.answerCalls()).toEqual([]);
+    await q.test.session.close().catch(() => undefined);
+  });
+
+  it("stops holding an answer when the Session closes", async () => {
+    const q = await openTimedQuestion();
+    const answered = q.answer({ pick: ["B"] });
+    expect(await isSettled(answered)).toBe(false);
+    const endNativeTurn = q.test.remote.onUnscriptedCancel;
+    q.test.remote.onUnscriptedCancel = () => {
+      // Native cancellation aborts the ask before it ends the Turn.
+      q.test.feed.push(askResult(5, "aborted", { failed: true }));
+      endNativeTurn?.();
+    };
+    await q.test.session.close();
+    await expect(answered).resolves.toEqual(INVALID_STATE);
+    expect(q.answerCalls()).toEqual([]);
   });
 
   it.each([

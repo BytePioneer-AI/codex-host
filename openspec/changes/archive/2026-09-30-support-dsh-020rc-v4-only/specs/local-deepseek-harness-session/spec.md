@@ -92,8 +92,14 @@ The Adapter SHALL map native prompt, cancellation, text, Reasoning, Tool, struct
 #### Scenario: User answers a timed question after its wait was released
 - **WHEN** the native tool result for an open timed question records the pending payload and the user answers before the Host Turn completes
 - **THEN** the Adapter SHALL deliver the answer through the native `userQuestions/answer` Remote and close the interaction as responded when DSH accepts it
-- **AND** an answer submitted while the native result is still unknown SHALL be retained and delivered only if that result records the pending payload
 - **AND** a reply DSH declines SHALL close the interaction as superseded without fabricating an answer, and skipping SHALL close it without writing a native reply
+
+#### Scenario: User answers a timed question while its native result is unknown
+- **WHEN** the user answers a timed question after DSH released its wait, or in time as DSH releases it, before the native tool result for that call is recorded
+- **THEN** the Adapter SHALL keep the interaction open and SHALL NOT acknowledge the answer until that result arrives
+- **AND** it SHALL deliver the answer through `userQuestions/answer` only if the result records the pending payload, and SHALL report that delivery as for a continued question
+- **AND** when DSH accepted the in-time answer it SHALL close the interaction as responded; when the call was answered elsewhere or failed before the answer reached it, it SHALL close the interaction as superseded or cancelled and return an error
+- **AND** a Session fault or close SHALL end the wait without delivering the answer
 
 #### Scenario: Host Turn ends with a continued timed question
 - **WHEN** the Host Turn completes while a continued timed question is still open

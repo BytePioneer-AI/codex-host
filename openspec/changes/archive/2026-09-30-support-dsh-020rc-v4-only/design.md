@@ -34,7 +34,8 @@ PR #412（omsd512，未合并）的 5 个提交以 cherry-pick 纳入本分支�
    - `user-questions/request` 允许可选的 `wait: { callId, timed? }`：`callId` 须为非空字符串，`timed` 须为布尔值，其他未知键仍拒绝。codexhost 不调用 `attachWait`、不设 `expiresAt`，所以 DSH 按自身期限计时，Desktop 不显示倒计时。
    - 对 `timed: true` 的提问，若 DSH 取消前台等待时同一 Host 回合仍在进行，Desktop 上的提问保持打开。之后以日志中该 callId 的原生结果为准：`tool/result`（PTC 时为 `tool/ptc-dispatch`）为 pending 载荷或 `TOOL_OUTCOME_UNKNOWN` 时，提问转为 continued；为回答、跳过、取消或其他失败时关闭提问。
    - continued 提问的回答调用 `userQuestions/answer`，参数为 `{ agentId: sessionId, callId, answer }`。返回 `true` 时按 `responded` 关闭；返回 `false` 或业务失败（例如已有回复在排队）时按 `superseded` 关闭并返回错误；传输失败时保持打开。跳过只在本地关闭，不写原生回复，与 DSH“关闭面板不产生回复”的语义一致。
-   - 竞态：DSH 对已结束事件的 `$events/result` 静默返回成功。所以回答在前台等待结束前后提交时，Adapter 保留该回答直到出现该 callId 的原生结果：结果是回答则丢弃保留值；是 pending 则用 `userQuestions/answer` 补发。
+   - 竞态：DSH 对已结束事件的 `$events/result` 静默返回成功。所以回答在前台等待结束前后提交时，Adapter 先不回复 Host，等该 callId 的原生结果：是 pending 则用 `userQuestions/answer` 送达，由回执决定关闭方式；及时回答已被收下则按 `responded` 关闭；释放后才提交、而调用已在别处回答或失败，则按 `superseded`/`cancelled` 关闭并返回错误。`ask_user_question` 是独占调用，DSH 在回答或到期后立即写入结果，所以等待很短。
+     最初的实现先回复成功，再在后台补发；补发失败时回答会被静默丢弃（PR #456 的 CodeRabbit 意见），因此改为等待结果。
    - Host 回合结束前，仍打开的 continued 提问以 `expired` 关闭。Host 在回合完成后不再接受该回合的输出，所以不支持跨回合回答；恢复 Session 时也不重建 continued 提问。
    - 迟到回答以 `user/message`（来源 `user-question-reply`）写入日志，Adapter 不把它投影为用户输入。
    备选一：只接受请求结构、到期即关闭（A 级）。模型继续工作后 Desktop 上的提问随之消失，用户无法回答，不采用。备选二：跨回合回答（C 级）。需要改 Host 的回合与交互生命周期，超出本变更范围。备选三：调用 `attachWait` 并显示倒计时。Desktop 的 `autoResolutionMs` 只显示时长、不会自动结束；持有 claim 还会让 DSH 停止计时，提问变成阻塞式，不采用。

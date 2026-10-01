@@ -1,5 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -41,8 +40,10 @@ describe("prepareGatewayDelegation bootstrap", () => {
     // The registered Skill file exists while the delegation is live.
     const match = /Path\("([^"]+)"\)/.exec(prepared.bootstrap);
     expect(match).not.toBeNull();
-    directories.push(path.dirname(match![1]));
-    const skill = await readFile(match![1], "utf8");
+    const skillFile = match ? match[1] : "";
+    expect(skillFile).not.toBe("");
+    directories.push(path.dirname(skillFile));
+    const skill = await readFile(skillFile, "utf8");
     expect(skill).toContain("name: delegation");
     await prepared.dispose();
   });

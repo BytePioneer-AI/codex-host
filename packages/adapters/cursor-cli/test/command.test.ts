@@ -1,6 +1,7 @@
 // Discovery regressions adapted from liki-0814/codex-host commit 93f45d18 (LGPL-3.0).
 import path from "node:path";
 import type * as HarnessDiscovery from "@codexhost/harness-discovery";
+import { resolveHarnessExecutable } from "@codexhost/harness-discovery";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cursorInvocation } from "../src/command.js";
 
@@ -12,11 +13,23 @@ vi.mock("@codexhost/harness-discovery", async (importOriginal) => {
     resolveHarnessExecutable: (
       spec: Parameters<typeof actual.resolveHarnessExecutable>[0],
       input: Parameters<typeof actual.resolveHarnessExecutable>[1],
-    ) => actual.resolveHarnessExecutable(spec, input, { isExecutable: (file) => files.has(file) }),
+    ) =>
+      actual.resolveHarnessExecutable(spec, input, {
+        isExecutable: (file) =>
+          (input.platform ?? process.platform) === "win32"
+            ? [...files].some((existing) => existing.toLowerCase() === file.toLowerCase())
+            : files.has(file),
+      }),
   };
 });
 
 afterEach(() => files.clear());
+
+function expectExecutable(actual: string, expected: string) {
+  expect(process.platform === "win32" ? actual.toLowerCase() : actual).toBe(
+    process.platform === "win32" ? expected.toLowerCase() : expected,
+  );
+}
 
 function fixture() {
   const home = path.resolve("synthetic-cursor-home");
@@ -65,16 +78,37 @@ describe("Cursor executable discovery", () => {
   it("falls back to the installed version when there is no rolling shim", () => {
     const { pinned, shim, environment } = fixture();
     files.delete(shim);
-    expect(cursorInvocation(environment, undefined, ["acp"]).command).toBe(pinned);
+    expectExecutable(cursorInvocation(environment, undefined, ["acp"]).command, pinned);
   });
 
   it("does not replace a normal PATH executable", () => {
     const { shim, environment } = fixture();
     const custom = path.join(path.dirname(environment.HOME), "custom", path.basename(shim));
     files.add(custom);
-    expect(
+    expectExecutable(
       cursorInvocation({ ...environment, PATH: path.dirname(custom) }, undefined, ["acp"]).command,
-    ).toBe(custom);
+      custom,
+    );
+  });
+
+  it("models Windows file checks as case-insensitive for uppercase PATHEXT", () => {
+    const directory = "C:\\cursor-discovery";
+    files.add(path.win32.join(directory, "cursor-agent.exe"));
+    const resolved = resolveHarnessExecutable(
+      { id: "cursor-cli", command: "cursor-agent" },
+      { environment: { PATH: directory, PATHEXT: ".EXE;.CMD" }, platform: "win32" },
+    );
+    expect(resolved?.executable).toBe(path.win32.join(directory, "cursor-agent.EXE"));
+  });
+
+  it("keeps POSIX file checks case-sensitive", () => {
+    files.add("/cursor-discovery/cursor-agent");
+    expect(
+      resolveHarnessExecutable(
+        { id: "cursor-cli", command: "CURSOR-AGENT" },
+        { environment: { PATH: "/cursor-discovery" }, platform: "linux" },
+      ),
+    ).toBeUndefined();
   });
 
   it("does not fall back when an explicit command is missing", () => {

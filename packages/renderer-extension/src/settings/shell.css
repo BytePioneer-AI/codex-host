@@ -1104,13 +1104,11 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
-  opacity: 0;
-  transition: opacity 120ms ease;
 }
 
-.settings-connection-row:hover .settings-connection-install-link,
-.settings-connection-install-link:focus-visible {
-  opacity: 1;
+.settings-connection-install-link:disabled {
+  opacity: 0.45;
+  cursor: wait;
 }
 
 .settings-connection-install-link:hover {

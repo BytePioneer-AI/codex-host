@@ -1,5 +1,6 @@
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
+import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { OpenCodeAdapter } from "./versioned-adapter.js";
 import { createOpenCodeInstallation } from "./installation.js";
 
@@ -12,6 +13,9 @@ export function createHarnessAdapter(context: HarnessPluginContext): OpenCodeAda
       ...(environment[OPENCODE_COMMAND_ENV] ? { command: environment[OPENCODE_COMMAND_ENV] } : {}),
       environment,
     }),
-    { installation: createOpenCodeInstallation(environment, environment[OPENCODE_COMMAND_ENV]) },
+    {
+      installation: createOpenCodeInstallation(environment, environment[OPENCODE_COMMAND_ENV]),
+      install: createHarnessInstaller(environment, { npm: "opencode-ai" }),
+    },
   );
 }

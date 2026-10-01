@@ -184,6 +184,7 @@ export interface RendererSettingsMessages {
   readonly connectionDeepSeekTestedVersions: string;
   readonly connectionInstall: string;
   readonly connectionInstallDescription: string;
+  readonly connectionInstallRunning: string;
   readonly harnessVersionTitle: string;
   readonly harnessVersionCurrent: string;
   readonly harnessVersionLatest: string;
@@ -453,6 +454,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "Supported DSH versions: 0.1.2-rc.1, 0.1.5-rc.1, 0.1.5-rc.2, 0.1.5-rc.3, 0.1.7-rc.1 and 0.1.7-rc.2. Other versions may connect after native protocol checks, but are not listed as supported.",
   connectionInstall: "Install",
   connectionInstallDescription: "This Harness was not detected.",
+  connectionInstallRunning:
+    "Installing on the selected Host. You can leave this page; login or setup may still be required afterward.",
   harnessVersionTitle: "Harness CLI version",
   harnessVersionCurrent: "Current version",
   harnessVersionLatest: "Latest version",
@@ -738,6 +741,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。其他版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
+  connectionInstallRunning: "正在所选 Host 上安装，离开页面不会中断。安装后可能仍需登录或配置。",
   harnessVersionTitle: "Harness CLI 版本",
   harnessVersionCurrent: "当前版本",
   harnessVersionLatest: "最新版本",

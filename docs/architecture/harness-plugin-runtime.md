@@ -117,11 +117,23 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 ## Harness CLI 版本与更新
 
-设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。首次选择详情时自动检查一次，不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。未安装时仍显示原有安装指引。未支持此能力的插件、旧 Host 和 Broker 路径显示不可用并提供官方安装说明，不回退更新本机的另一份安装。
+设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。首次选择详情时自动检查一次，不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。未安装时显示下载图标；点击显式发起 CLI 安装，点击行本身仍只打开安装指引。未支持此能力的插件、旧 Host 和 Broker 路径显示不可用并提供官方安装说明，不回退更新本机的另一份安装。
 
 可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message? }`。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
 
-当前支持：
+### 首次安装
+
+RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 `install` 传给旧插件的 `installation()`。Host 先刷新检查，只有 `notInstalled` 才安装，避免把未登录或不可用误认为未安装；安装后通过 `installation("check")` 回读 CLI 版本。安装失败或版本无法确认都不报告成功，原生异常脱敏后显示在右侧详情。
+
+- DeepSeek Harness（固定 `@deepseek-ai/dsh@0.1.5-rc.1`）、OpenCode、Grok、CodeBuddy 使用官方 npm 包；需要已有 Node.js/npm，Grok 保留 npm 安装脚本允许项。
+- Pi、Claude Code、OMP、Antigravity、Kiro CLI、Cursor CLI、Hermes、Qoder 两版和 Kimi Code 使用各自 Adapter 固定的官方 HTTPS 安装脚本，按 Host OS 选择 Shell/PowerShell。脚本下载到临时目录，执行后清理；安装命令最多 10 分钟，不自动提权，不自动安装系统依赖，安装器不能依赖交互输入。
+- WorkBuddy 仍引导安装桌面应用。旧插件、旧 Host 和未转发能力的 Broker 返回不支持，不回退到本机安装。
+- Host 按 Adapter 合并并发安装，安装期间的检查/更新等待同一结果。Renderer 按连接及 Host/Harness 保存安装状态：列表中显示安装中、检测中或错误，安装时禁用下载按钮，错误保留在右侧并允许重试。切换行、Host 或关闭再打开设置不会取消操作；Host/连接进程重启后不恢复任务。
+- 成功和失败后均重新诊断连接；CLI 安装完成不意味着登录、Provider 配置或所有 Adapter 能力可用。检测结果才决定最终连接状态。版本回读还可能依赖更新源网络；版本检查失败时应先重新诊断，不盲目重装。
+
+安装路径来自仓库维护的官方指引，并非所有系统/架构已通过真实安装验收。前置依赖、网络、官方安装器交互和平台支持仍影响结果；模拟测试不代表真实安装成功。
+
+当前检查与更新支持：
 
 | Harness | 检查与更新 |
 | --- | --- |

@@ -16,6 +16,7 @@ import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext }
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
+import { harnessInstallStore } from "./harness-install-store.js";
 import { createHarnessVersionPanel } from "./harness-version-panel.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
@@ -47,7 +48,7 @@ export interface RendererConnectionDiagnostics {
   installation?(
     hostId: string,
     agent: ExternalRendererAgent,
-    action: "check" | "update",
+    action: "check" | "update" | "install",
   ): Promise<HarnessInstallationState>;
   getLaunchSettings?(hostId: string, agent: ExternalRendererAgent): Promise<HarnessLaunchSettings>;
   setLaunchSettings?(
@@ -68,6 +69,8 @@ interface ConnectionListItem {
   readonly error: CodexhostError | null;
   readonly agentSnapshot?: RendererConnectionAgentSnapshot;
   readonly openWebUi?: () => Promise<void>;
+  readonly install?: () => void;
+  readonly installError?: string;
 }
 
 function connectionStatusLabel(
@@ -326,9 +329,14 @@ function createConnectionRow(
     install.addEventListener("click", (event) => {
       event.stopPropagation();
       select();
+      item.install?.();
     });
-    install.setAttribute("aria-label", `${messages.connectionOpenInstallation}: ${item.name}`);
-    install.title = messages.connectionOpenInstallation;
+    install.disabled = item.availability === "installing" || item.availability === "checking";
+    const installLabel = item.install
+      ? messages.connectionInstall
+      : messages.connectionOpenInstallation;
+    install.setAttribute("aria-label", `${installLabel}: ${item.name}`);
+    install.title = installLabel;
     install.append(createRendererSettingsIcon("download", 17));
     action.append(install);
   } else if (item.error) {
@@ -365,6 +373,7 @@ function createConnectionRow(
     select();
   });
   row.addEventListener("keydown", (event) => {
+    if ((event.target as Element | null)?.closest?.("button, a")) return;
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
     select();
@@ -415,6 +424,13 @@ function renderConnectionInspector(
   inspector.replaceChildren(createInspectorHeader(document, item, messages));
   const body = document.createElement("div");
   body.className = "settings-connection-inspector__body";
+  if (item.installError) {
+    const error = document.createElement("div");
+    error.className = "settings-connection-error-summary";
+    error.setAttribute("role", "alert");
+    error.textContent = item.installError;
+    body.append(error);
+  }
   if (item.agentSnapshot?.agent === "deepseek-harness") {
     const compatibility = document.createElement("p");
     compatibility.className = "settings-connection-compatibility";
@@ -430,9 +446,14 @@ function renderConnectionInspector(
     icon.append(createRendererSettingsIcon("download", 18));
     const copy = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = `${messages.connectionInstall} ${item.name}`;
+    const busy = item.availability === "installing" || item.availability === "checking";
+    title.textContent = busy
+      ? connectionStatusLabel(item.availability, messages)
+      : `${messages.connectionInstall} ${item.name}`;
     const description = document.createElement("p");
-    description.textContent = messages.connectionInstallDescription;
+    description.textContent = busy
+      ? messages.connectionInstallRunning
+      : messages.connectionInstallDescription;
     copy.append(title, description);
     callout.append(icon, copy);
     const install = createHarnessInstallationPanel(
@@ -678,6 +699,7 @@ export function createConnectionsSettingsPage(
       let disposeHostScroller = (): void => undefined;
 
       const diagnostics = getDiagnostics();
+      const installs = diagnostics ? harnessInstallStore(diagnostics) : null;
       const runRefresh = (): void => {
         if (pending || !diagnostics) return;
         pending = true;
@@ -688,6 +710,7 @@ export function createConnectionsSettingsPage(
         );
         void context.runLatest(() => diagnostics.refresh(), {
           success() {
+            installs?.clearErrors();
             pending = false;
             refresh.disabled = false;
             refresh.replaceChildren(
@@ -825,7 +848,25 @@ export function createConnectionsSettingsPage(
         const inspector = document.createElement("aside");
         inspector.className = "settings-connection-inspector";
         inspector.setAttribute("aria-live", "polite");
-        const items = connectionItems(snapshot, selectedHost, messages, diagnostics);
+        const items = connectionItems(snapshot, selectedHost, messages, diagnostics).map(
+          (item): ConnectionListItem => {
+            const agent = item.agentSnapshot?.agent;
+            if (!agent) return item;
+            const state = installs?.get(selectedHost.hostId, agent);
+            return {
+              ...item,
+              ...(state ? { availability: state.status } : {}),
+              ...(state?.error ? { installError: state.error } : {}),
+              ...(diagnostics?.installation && agent !== "workbuddy"
+                ? {
+                    install: () => {
+                      void installs?.install(selectedHost.hostId, agent);
+                    },
+                  }
+                : {}),
+            };
+          },
+        );
         if (!items.some((item) => item.key === selectedItemKey)) {
           const requestedFocus = pendingFocusAgent;
           pendingFocusAgent = null;
@@ -866,7 +907,8 @@ export function createConnectionsSettingsPage(
           const installation = diagnostics?.installation?.bind(diagnostics);
           if (
             agent &&
-            item.availability !== "notInstalled" &&
+            item.agentSnapshot?.availability !== "notInstalled" &&
+            item.availability !== "installing" &&
             item.availability !== "checking" &&
             installation
           ) {
@@ -907,7 +949,7 @@ export function createConnectionsSettingsPage(
           .list(
             new Set(
               groupableItems
-                .filter((item) => item.availability === "notInstalled")
+                .filter((item) => item.agentSnapshot.availability === "notInstalled")
                 .map((item) => item.agentSnapshot.agent),
             ),
           )
@@ -1102,8 +1144,10 @@ export function createConnectionsSettingsPage(
       }
       refresh.addEventListener("click", runRefresh);
       const unsubscribe = diagnostics.subscribe(() => render(diagnostics.snapshot()));
+      const unsubscribeInstalls = installs?.subscribe(() => render(diagnostics.snapshot()));
       return () => {
         disposeHostScroller();
+        unsubscribeInstalls?.();
         unsubscribe();
         unsubscribeGroup();
       };

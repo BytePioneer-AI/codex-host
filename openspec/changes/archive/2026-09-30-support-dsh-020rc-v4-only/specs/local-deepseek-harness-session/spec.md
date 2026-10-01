@@ -1,9 +1,4 @@
-# local-deepseek-harness-session Specification
-
-## Purpose
-定义已验证 DSH 版本（最低 `0.1.7-rc.1`，仅 Session Format V4）的托管 Web Remote、原生会话与生命周期保证；当前支持范围由 `docs/harnesses/deepseek/dsh-version-validation.md` 更新。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Local DSH Web profile is the runtime source of truth
 
@@ -28,32 +23,6 @@ The DeepSeek Harness Adapter SHALL use a managed authenticated loopback Web Remo
 - **WHEN** the configured endpoint responds without the recognized DSH fingerprint
 - **THEN** the Adapter MUST NOT terminate, replace, attach to, or send Session content to that service
 - **AND** any supported managed Web SHALL use its own ephemeral loopback port
-
-### Requirement: codexhost creates official DSH Native Sessions
-
-Every new DeepSeek Thread SHALL be backed by a Session created through the managed DSH Remote and persisted by the official DSH Session store. codexhost MUST NOT read or duplicate the native transcript files; it SHALL parse only the public history API.
-
-#### Scenario: New codexhost DeepSeek Thread is created
-- **WHEN** Host Runtime opens the Adapter with `kind=create`
-- **THEN** the Adapter SHALL call the native Session create API with the Thread cwd
-- **AND** SHALL publish the native Session ID as the stable Native Session reference
-
-#### Scenario: Official DSH lists Sessions
-- **WHEN** DSH Web lists its persisted Sessions after codexhost creates and uses a DeepSeek Thread
-- **THEN** the codexhost-created Native Session SHALL be present with the same Session ID and transcript
-
-### Requirement: Session visibility is one-way
-
-codexhost SHALL list and restore only DeepSeek Native Sessions referenced by its own persisted external Thread records. An existing Session SHALL enter this set only through explicit supported-version import, with fresh native candidate validation and a mapping-only transaction.
-
-#### Scenario: DSH contains older official Sessions
-- **WHEN** the local DSH store contains Sessions created outside codexhost
-- **THEN** those Sessions SHALL remain visible in official DSH Web
-- **AND** they SHALL NOT appear as codexhost Threads until explicitly imported
-
-#### Scenario: codexhost restarts
-- **WHEN** Mapping Store contains one DeepSeek Native Session reference and DSH contains additional Sessions
-- **THEN** codexhost SHALL restore only the mapped Session through its exact Native ID and selected version profile
 
 ### Requirement: Public history and live events are authoritative
 
@@ -141,16 +110,3 @@ The Adapter SHALL map native prompt, cancellation, text, Reasoning, Tool, struct
 #### Scenario: Native cancellation is accepted
 - **WHEN** codexhost cancels an active DeepSeek Turn and the Host accepts `session.cancel`
 - **THEN** the Adapter SHALL accept cancellation and complete the Turn exactly once from authoritative native state
-
-### Requirement: DSH Host lifecycle ownership is bounded
-
-The Adapter SHALL own only the managed Web process it started. It MUST NOT stop an externally owned Web, and SHALL preserve bounded cleanup and native execution-stop confirmation during shutdown.
-
-#### Scenario: External Web is detected
-- **WHEN** codexhost reports the external instance's missing authentication
-- **THEN** closing the Adapter SHALL NOT terminate the external DSH process
-
-#### Scenario: Adapter closes a managed Host
-- **WHEN** codexhost started DSH Web and later shuts down
-- **THEN** it SHALL stop native work and request bounded process termination after closing Sessions and connections
-- **AND** official persistence SHALL remain available on the next DSH start

@@ -42,55 +42,16 @@ export function validateBaseContent(value: unknown): void {
   }
 }
 
-export function validateChunk(value: unknown, validateContent: (value: unknown) => void): void {
-  if (!isRecord(value) || typeof value.type !== "string") {
-    fail("Modern history assistant/chunk is malformed");
-  }
-  switch (value.type) {
-    case "block-start":
-      exactKeys(value, ["type", "index", "blockType"]);
-      nonNegativeInteger(value.index, "block-start index");
-      requiredString(value.blockType, "block-start blockType");
-      return;
-    case "text-delta":
-    case "reasoning-delta":
-      exactKeys(value, ["type", "index", "text"]);
-      nonNegativeInteger(value.index, "delta index");
-      if (typeof value.text !== "string") fail("Modern history text delta is malformed");
-      return;
-    case "tool-call-delta":
-      requiredOptionalKeys(value, ["type", "index", "id", "argumentsDelta"], ["name"]);
-      nonNegativeInteger(value.index, "tool-call-delta index");
-      requiredString(value.id, "tool-call-delta id");
-      if (value.name !== undefined) requiredString(value.name, "tool-call-delta name");
-      if (typeof value.argumentsDelta !== "string") {
-        fail("Modern history tool-call delta is malformed");
-      }
-      return;
-    case "block-end":
-      exactKeys(value, ["type", "index", "block"]);
-      nonNegativeInteger(value.index, "block-end index");
-      validateContent([value.block]);
-      return;
-    case "usage":
-      exactKeys(value, ["type", "usage"]);
-      return;
-    case "finish":
-      requiredOptionalKeys(value, ["type", "reason"], ["replayState"]);
-      if (!isRecord(value.reason) || !requiredString(value.reason.kind, "finish reason kind")) {
-        fail("Modern history finish chunk is malformed");
-      }
-      enumValue(
-        value.reason.kind,
-        ["stop", "tool-calls", "max-tokens", "aborted", "error"],
-        "finish reason kind",
-      );
-      if (["aborted", "error"].includes(value.reason.kind as string)) {
-        validateLlmFailure(value.reason.failure, "finish failure");
-      }
-      return;
-    default:
-      fail("Modern history contains an unknown required chunk type");
+/** Validate the reason of an Assistant `finish` chunk. */
+export function validateFinishReason(value: Record<string, unknown>): void {
+  requiredString(value.kind, "finish reason kind");
+  enumValue(
+    value.kind,
+    ["stop", "tool-calls", "max-tokens", "aborted", "error"],
+    "finish reason kind",
+  );
+  if (["aborted", "error"].includes(value.kind as string)) {
+    validateLlmFailure(value.failure, "finish failure");
   }
 }
 

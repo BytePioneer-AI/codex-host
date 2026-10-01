@@ -480,6 +480,70 @@ describe("DeepSeek Harness Modern event gateway", () => {
     await gateway.close();
   });
 
+  it("keeps the DSH 0.2.0-rc.2 wait descriptor and reports native release as cancel", async () => {
+    const feed = new EventFeed();
+    const remote = new FakeRemote(feed);
+    const gateway = await startGateway(remote, feed);
+    const sink = sinkProbe();
+    gateway.attach("session-1", sink);
+    const questions = [{ id: "pick", question: "Which?", options: [{ label: "A" }] }];
+    feed.push({
+      ...question("event-timed"),
+      request: { questions, wait: { callId: "call-ask", timed: true } },
+    });
+    feed.push({
+      ...question("event-indefinite"),
+      request: { questions, wait: { callId: "call-ask-2" } },
+    });
+    await vi.waitFor(() => expect(sink.deliveries).toHaveLength(2));
+    expect(sink.deliveries.map(({ request }) => request)).toEqual([
+      { questions, wait: { callId: "call-ask", timed: true } },
+      { questions, wait: { callId: "call-ask-2" } },
+    ]);
+
+    // DSH releasing its foreground wait arrives as an ordinary cancel frame.
+    feed.push({ type: "cancel", eventId: "event-timed" });
+    await vi.waitFor(() => expect(sink.cancelled).toEqual(["event-timed"]));
+    const released = sink.deliveries[0];
+    if (released?.type !== "question") throw new Error("expected question delivery");
+    await released.respond({ answers: [{ id: "pick", selected: ["A"] }] });
+    expect(remote.calls).toEqual([]);
+    await gateway.close();
+  });
+
+  it("faults when a replay changes a question's wait descriptor", async () => {
+    const first = new EventFeed();
+    const second = new EventFeed();
+    const remote = new FakeRemote(first, second);
+    const lost: ModernEventGatewayError[] = [];
+    const gateway = await startGateway(remote, first, {
+      onGenerationLost: (error) => lost.push(error),
+    });
+    const sink = sinkProbe();
+    gateway.attach("session-1", sink);
+    const questions = [{ id: "pick", question: "Which?" }];
+    first.push({
+      ...question("event-wait-replay"),
+      request: { questions, wait: { callId: "call-ask", timed: true } },
+    });
+    await vi.waitFor(() => expect(sink.deliveries).toHaveLength(1));
+    first.finish();
+    await vi.waitFor(() => expect(lost).toHaveLength(1));
+    second.push(ready("client-2"));
+    await gateway.replace();
+    second.push({
+      ...question("event-wait-replay"),
+      request: { questions, wait: { callId: "call-ask" } },
+    });
+
+    await vi.waitFor(() => expect(sink.faults).toHaveLength(1));
+    expect(sink.faults[0]).toMatchObject({
+      code: "protocolError",
+      message: "DeepSeek Harness replay changed a pending event",
+    });
+    await gateway.close();
+  });
+
   it("rejects malformed owned question batches while delegating an unowned one", async () => {
     const feed = new EventFeed();
     const remote = new FakeRemote(feed);
@@ -515,6 +579,13 @@ describe("DeepSeek Harness Modern event gateway", () => {
           { id: "other", question: "Other?", options: [{ label: "Yes" }] },
         ],
       },
+      { questions: [validQuestion], wait: {} },
+      { questions: [validQuestion], wait: { callId: "" } },
+      { questions: [validQuestion], wait: { callId: "call-1", timed: "yes" } },
+      { questions: [validQuestion], wait: { callId: "call-1", timed: true, deadline: 1 } },
+      { questions: [validQuestion], wait: null },
+      { questions: [validQuestion], wait: "call-1" },
+      { questions: [validQuestion], expiresAt: 1 },
     ];
     const broken = malformedRequests.map((request, index) => {
       const sink = sinkProbe();

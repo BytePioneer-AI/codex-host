@@ -1,54 +1,4 @@
-# deepseek-versioned-web-protocol Specification
-
-## Purpose
-
-定义已验证 DSH 版本（最低 `0.1.7-rc.1`，仅 Session Format V4）的托管 Web Remote 协议、原生会话与 V4 checkpoint 要求，同时记录 Legacy 与 V0/V3 退役、文档同步及可复现覆盖率验证边界。
-
-## Requirements
-
-### Requirement: Streaming and control retain native semantics
-
-V4 follow SHALL 按原生能力请求 Assistant stream，校验 baseline/start/chunk/end 的身份与顺序，在 durable settlement 后去重。模型、命令、权限、审批、问题、队列、停止和关闭 MUST 继续以原生确认作为成功依据。Assistant start 的结算查找 SHALL 仅检查 startedAfterSeq 之后的事件，不重复遍历已排除的历史前缀。
-
-#### Scenario: Reconnect resumes an assistant attempt
-- **WHEN** V4 的 live 连接中断后恢复 baseline 和已有 durable 事件
-- **THEN** Adapter SHALL 恢复或明确结束对应尝试，且不重复完成 Host 回合或重复输出历史消息
-
-#### Scenario: Slash command executes
-- **WHEN** 用户提交已公开的原生命令或选择 permission mode
-- **THEN** Adapter SHALL 发送 V4 接受的参数形式，并保留文本输入校验
-- **AND** 是否成功 SHALL 由原生响应及所需状态读回决定
-
-#### Scenario: An assistant starts at the current durable tail
-- **WHEN** 新尝试的 startedAfterSeq 已指向当前历史末尾
-- **THEN** 结算查找 SHALL 不读取历史前缀，随后仍正常发布实时文本
-
-### Requirement: Documentation and verification match shipped support
-
-连接、导入、消息修订及打包文档 MUST 与实际已验证版本、最低版本和 V4 格式一致；OpenSpec delta 和 tasks MUST 包含文档改写。整个 DSH Adapter 的行、语句、函数、分支覆盖率 MUST 可复现且至少 80%。真实 CLI Gate、自动化测试和未验证边界 MUST 分别记录；不得因 SemVer 探测成功而宣称兼容。
-
-#### Scenario: Change is completed
-- **WHEN** 交付本变更
-- **THEN** 文档 SHALL 列出经真实 Gate 验证的 DSH 版本、最低版本、V4 格式及 checkpoint 边界，验证记录 SHALL 给出实际测试命令、覆盖率和限制
-- **AND** SHALL 完成 TypeScript、包边界、构建及受影响回归，不声明未执行的真实 Desktop、模型或平台验证
-
-### Requirement: DSH executable versions are selected by native format validation
-
-Adapter MUST 只接受单行规范 SemVer `--version` 输出，并以 `0.1.7-rc.1` 为最低版本：低于它的版本 MUST 在启动 Web 前以 `unsupported` 明确失败，提示 MUST 列出已验证版本、说明高于最新已验证版本的版本可以尝试连接但适配度可能有限，并给出升级方式；不低于它的版本 SHALL 使用 V4 profile 尝试托管 Web，且 MUST 经原生 Remote、历史和流式协议校验才能报告可用。版本号不是兼容证明；已验证版本列表 MUST 仅包含通过固定 tag 源码审计和真实 CLI 生命周期 Gate 的版本，当前为 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1` 与 `0.2.0-rc.2`。Legacy Host 协议不得恢复。
-
-#### Scenario: Exact supported RC is selected
-- **WHEN** `--version` 输出已验证的 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1` 或 `0.2.0-rc.2`
-- **THEN** Adapter SHALL 选择 V4 profile，并按原生协议完成连接诊断
-
-#### Scenario: Installed DSH is older than the V4 line
-- **WHEN** `--version` 输出低于 `0.1.7-rc.1` 的规范 SemVer，包括 `0.1.2`、`0.1.5` 系列及 `0.1.7` 的更早预发布版本
-- **THEN** Adapter SHALL 在启动 Web 前返回 `unsupported`，说明最低版本、已验证版本、高于最新已验证版本的版本可以尝试但适配度可能有限，以及升级方式
-- **AND** MUST NOT 启动托管 Web、读取 Session 或自动升级 CLI
-
-#### Scenario: Different version is installed
-- **WHEN** `--version` 输出不低于 `0.1.7-rc.1` 的其他规范 SemVer，或输出不符合单行规范 SemVer
-- **THEN** 规范 SemVer SHALL 进入有界的 V4 原生协议尝试，格式不兼容时明确失败；非法版本输出 SHALL 在启动 Web 前失败
-- **AND** 未经真实版本 Gate 的版本 MUST NOT 被列为“已验证”
+## ADDED Requirements
 
 ### Requirement: Journal parsing is strict V4
 
@@ -115,3 +65,75 @@ PTC 模式下 `run_code` 程序发出的每个嵌套 Tool 调用（`tool/ptc-dis
 #### Scenario: 子调用失败或未结束
 - **WHEN** V4 子调用以 `isError` 或合法的原生 `error` 结束，或回合结束时仍未结束
 - **THEN** 对应 Item SHALL 以失败或回合结果完成，历史 SHALL 仍可加载
+
+## MODIFIED Requirements
+
+### Requirement: Streaming and control retain native semantics
+
+V4 follow SHALL 按原生能力请求 Assistant stream，校验 baseline/start/chunk/end 的身份与顺序，在 durable settlement 后去重。模型、命令、权限、审批、问题、队列、停止和关闭 MUST 继续以原生确认作为成功依据。Assistant start 的结算查找 SHALL 仅检查 startedAfterSeq 之后的事件，不重复遍历已排除的历史前缀。
+
+#### Scenario: Reconnect resumes an assistant attempt
+- **WHEN** V4 的 live 连接中断后恢复 baseline 和已有 durable 事件
+- **THEN** Adapter SHALL 恢复或明确结束对应尝试，且不重复完成 Host 回合或重复输出历史消息
+
+#### Scenario: Slash command executes
+- **WHEN** 用户提交已公开的原生命令或选择 permission mode
+- **THEN** Adapter SHALL 发送 V4 接受的参数形式，并保留文本输入校验
+- **AND** 是否成功 SHALL 由原生响应及所需状态读回决定
+
+#### Scenario: An assistant starts at the current durable tail
+- **WHEN** 新尝试的 startedAfterSeq 已指向当前历史末尾
+- **THEN** 结算查找 SHALL 不读取历史前缀，随后仍正常发布实时文本
+
+### Requirement: Documentation and verification match shipped support
+
+连接、导入、消息修订及打包文档 MUST 与实际已验证版本、最低版本和 V4 格式一致；OpenSpec delta 和 tasks MUST 包含文档改写。整个 DSH Adapter 的行、语句、函数、分支覆盖率 MUST 可复现且至少 80%。真实 CLI Gate、自动化测试和未验证边界 MUST 分别记录；不得因 SemVer 探测成功而宣称兼容。
+
+#### Scenario: Change is completed
+- **WHEN** 交付本变更
+- **THEN** 文档 SHALL 列出经真实 Gate 验证的 DSH 版本、最低版本、V4 格式及 checkpoint 边界，验证记录 SHALL 给出实际测试命令、覆盖率和限制
+- **AND** SHALL 完成 TypeScript、包边界、构建及受影响回归，不声明未执行的真实 Desktop、模型或平台验证
+
+### Requirement: DSH executable versions are selected by native format validation
+
+Adapter MUST 只接受单行规范 SemVer `--version` 输出，并以 `0.1.7-rc.1` 为最低版本：低于它的版本 MUST 在启动 Web 前以 `unsupported` 明确失败，提示 MUST 列出已验证版本、说明高于最新已验证版本的版本可以尝试连接但适配度可能有限，并给出升级方式；不低于它的版本 SHALL 使用 V4 profile 尝试托管 Web，且 MUST 经原生 Remote、历史和流式协议校验才能报告可用。版本号不是兼容证明；已验证版本列表 MUST 仅包含通过固定 tag 源码审计和真实 CLI 生命周期 Gate 的版本，当前为 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1` 与 `0.2.0-rc.2`。Legacy Host 协议不得恢复。
+
+#### Scenario: Exact supported RC is selected
+- **WHEN** `--version` 输出已验证的 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1` 或 `0.2.0-rc.2`
+- **THEN** Adapter SHALL 选择 V4 profile，并按原生协议完成连接诊断
+
+#### Scenario: Installed DSH is older than the V4 line
+- **WHEN** `--version` 输出低于 `0.1.7-rc.1` 的规范 SemVer，包括 `0.1.2`、`0.1.5` 系列及 `0.1.7` 的更早预发布版本
+- **THEN** Adapter SHALL 在启动 Web 前返回 `unsupported`，说明最低版本、已验证版本、高于最新已验证版本的版本可以尝试但适配度可能有限，以及升级方式
+- **AND** MUST NOT 启动托管 Web、读取 Session 或自动升级 CLI
+
+#### Scenario: Different version is installed
+- **WHEN** `--version` 输出不低于 `0.1.7-rc.1` 的其他规范 SemVer，或输出不符合单行规范 SemVer
+- **THEN** 规范 SemVer SHALL 进入有界的 V4 原生协议尝试，格式不兼容时明确失败；非法版本输出 SHALL 在启动 Web 前失败
+- **AND** 未经真实版本 Gate 的版本 MUST NOT 被列为“已验证”
+
+## REMOVED Requirements
+
+### Requirement: Journal parsing preserves each supported format
+
+**Reason**: V0/V3 解析路径已移除，日志只按 V4 读取。
+
+**Migration**: 使用新增的“Journal parsing is strict V4”要求。
+
+### Requirement: Session operations isolate checkpoint formats
+
+**Reason**: 不再存在 V0/V3 操作路径及 V3 Fork 待办清理，checkpoint 只有 V4 一种有效格式。
+
+**Migration**: 使用新增的“Session operations use exact V4 checkpoints”要求；旧格式 checkpoint 按其中场景在 mutation 前拒绝。
+
+### Requirement: V3 persistence is confirmed before managed shutdown
+
+**Reason**: V3 支持已移除，持久化确认只针对 V4。
+
+**Migration**: 使用新增的“Native persistence is confirmed before managed shutdown”要求。
+
+### Requirement: PTC 子调用按原生 Tool 投影
+
+**Reason**: V0/V3 支持已移除，“V0/V3 PTC 会话保持原显示”不再适用。
+
+**Migration**: 使用新增的“PTC 子调用投影为原生 Tool Item”要求，其余场景原样保留。

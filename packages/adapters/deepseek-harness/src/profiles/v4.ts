@@ -1,14 +1,15 @@
 import { isDeepStrictEqual } from "node:util";
 import type { DeepSeekModernProfile } from "./profile.js";
-import { parseEvent } from "./journal-format.js";
+import { isRecord, parseEvent } from "./journal-format.js";
 import {
+  ModernHistoryError,
   exactKeys,
-  requiredOptionalKeys,
   fail,
   nonNegativeSafeInteger,
+  requiredOptionalKeys,
+  requiredString,
   validateBaseContent,
-  validateChunk,
-  ModernHistoryError,
+  validateFinishReason,
 } from "./validation.js";
 import type {
   ModernJournalEvent,
@@ -18,7 +19,10 @@ import type {
   ModernJournalOpenRequest,
 } from "../modern/journal.js";
 
-export const V015_JOURNAL_SNAPSHOT_KEYS = Object.freeze([
+/** First DSH release that writes Session Format V4. */
+export const DEEPSEEK_V4_FIRST_VERSION = "0.1.7-rc.1";
+
+export const V4_JOURNAL_SNAPSHOT_KEYS = Object.freeze([
   "type",
   "header",
   "cursor",
@@ -28,19 +32,12 @@ export const V015_JOURNAL_SNAPSHOT_KEYS = Object.freeze([
   "assistantStream",
 ]);
 
-export class DeepSeekV015ProtocolError extends ModernHistoryError {
-  constructor(message: string) {
-    super("protocolError", message);
-    this.name = "DeepSeekV015ProtocolError";
-  }
-}
-
-export interface DeepSeekV015TimedChunk {
+export interface DeepSeekTimedChunk {
   readonly time: number;
   readonly chunk: Readonly<Record<string, ModernJournalJson>>;
 }
 
-export interface DeepSeekV015AssistantAttempt {
+export interface DeepSeekAssistantAttempt {
   readonly attemptId: string;
   readonly startedAfterSeq: number;
   readonly turn: number;
@@ -49,12 +46,12 @@ export interface DeepSeekV015AssistantAttempt {
   readonly stream: readonly ModernJournalJson[];
 }
 
-export interface DeepSeekV015AssistantBaseline {
+export interface DeepSeekAssistantBaseline {
   readonly revision: number;
-  readonly activeAttempt?: DeepSeekV015AssistantAttempt;
+  readonly activeAttempt?: DeepSeekAssistantAttempt;
 }
 
-export type DeepSeekV015AssistantFrame =
+export type DeepSeekAssistantFrame =
   | {
       readonly type: "start";
       readonly attemptId: string;
@@ -85,7 +82,7 @@ export type DeepSeekV015AssistantFrame =
         | { readonly kind: "abandoned" };
     };
 
-export function parseV015JournalHeader(
+export function parseV4JournalHeader(
   value: unknown,
   expected: ModernJournalOpenRequest,
 ): ModernJournalHeader {
@@ -96,7 +93,7 @@ export function parseV015JournalHeader(
       ["version", "id", "createdAt", "isSeeded"],
       ["cwd", "parentSession", "origin", "delegationDepth", "agentPreset"],
     ) ||
-    value.version !== 3 ||
+    value.version !== 4 ||
     value.id !== expected.sessionId ||
     !isNonNegativeSafeInteger(value.createdAt) ||
     Object.hasOwn(value, "cwd") !== (expected.cwd !== undefined) ||
@@ -107,15 +104,18 @@ export function parseV015JournalHeader(
     (Object.hasOwn(value, "delegationDepth") && !isNonNegativeSafeInteger(value.delegationDepth)) ||
     (Object.hasOwn(value, "agentPreset") && typeof value.agentPreset !== "string")
   ) {
-    throw invalid("journal snapshot header");
+    throw invalid("journal header");
   }
-  return value as unknown as ModernJournalHeader;
+  // DSH omits the depth of a top-level Session.
+  return {
+    ...value,
+    delegationDepth: value.delegationDepth ?? 0,
+  } as unknown as ModernJournalHeader;
 }
 
-export function parseV015HistoryRecord(
+export function parseV4HistoryRecord(
   value: unknown,
   remainingEvents: number,
-  parseEvent: (value: unknown) => ModernJournalEvent,
 ): ModernJournalEvent[] {
   if (remainingEvents < 1) throw invalid("journal event bound");
   if (!isRecord(value) || !onlyKeys(value, ["type", "event"]) || value.type !== "event") {
@@ -124,21 +124,18 @@ export function parseV015HistoryRecord(
   return [parseEvent(value.event)];
 }
 
-export function parseV015LiveItem(
-  value: unknown,
-  parseEvent: (value: unknown) => ModernJournalEvent,
-): ModernJournalLiveItem {
+export function parseV4LiveItem(value: unknown): ModernJournalLiveItem {
   if (!isRecord(value)) throw invalid("journal live frame");
   if (onlyKeys(value, ["type", "event"]) && value.type === "event") {
     return parseEvent(value.event);
   }
   if (onlyKeys(value, ["type", "frame"]) && value.type === "assistant-stream") {
-    return { type: "assistant-stream", frame: parseV015AssistantFrame(value.frame) };
+    return { type: "assistant-stream", frame: parseAssistantFrame(value.frame) };
   }
   throw invalid("journal live frame");
 }
 
-export function parseV015AssistantBaseline(value: unknown): DeepSeekV015AssistantBaseline {
+export function parseAssistantBaseline(value: unknown): DeepSeekAssistantBaseline {
   if (!isRecord(value) || !onlyKeys(value, ["revision"], ["activeAttempt"])) {
     throw invalid("assistant stream baseline");
   }
@@ -152,7 +149,7 @@ export function parseV015AssistantBaseline(value: unknown): DeepSeekV015Assistan
   ) {
     throw invalid("assistant stream baseline attempt");
   }
-  const parsed: DeepSeekV015AssistantAttempt = {
+  const parsed: DeepSeekAssistantAttempt = {
     attemptId: identifier(attempt.attemptId, "assistant stream attemptId"),
     startedAfterSeq: cursor(attempt.startedAfterSeq, "assistant stream startedAfterSeq"),
     turn: positiveInteger(attempt.turn, "assistant stream turn"),
@@ -160,14 +157,14 @@ export function parseV015AssistantBaseline(value: unknown): DeepSeekV015Assistan
     nextIndex: nonNegativeInteger(attempt.nextIndex, "assistant stream nextIndex"),
     stream: jsonArray(attempt.stream, "assistant stream baseline stream"),
   };
-  const expanded = expandV015AssistantStream(parsed.stream);
+  const expanded = expandAssistantStream(parsed.stream);
   if (expanded.length !== parsed.nextIndex) {
     throw invalid("assistant stream baseline nextIndex");
   }
   return { revision, activeAttempt: parsed };
 }
 
-export function parseV015AssistantFrame(value: unknown): DeepSeekV015AssistantFrame {
+export function parseAssistantFrame(value: unknown): DeepSeekAssistantFrame {
   if (!isRecord(value) || typeof value.type !== "string") throw invalid("assistant stream frame");
   const attemptId = identifier(value.attemptId, "assistant stream attemptId");
   const revision = positiveInteger(value.revision, "assistant stream revision");
@@ -190,7 +187,7 @@ export function parseV015AssistantFrame(value: unknown): DeepSeekV015AssistantFr
       }
       if (!isRecord(value.chunk)) throw invalid("assistant stream chunk");
       assertJsonValue(value.chunk, "assistant stream chunk");
-      validateV015Chunk(value.chunk);
+      validateStreamChunk(value.chunk);
       return {
         type: "chunk",
         attemptId,
@@ -241,9 +238,10 @@ export function parseV015AssistantFrame(value: unknown): DeepSeekV015AssistantFr
   }
 }
 
-export function expandV015AssistantStream(value: unknown): readonly DeepSeekV015TimedChunk[] {
+/** Expand DSH's compact stream records into the chunks they encode, validating each one. */
+export function expandAssistantStream(value: unknown): readonly DeepSeekTimedChunk[] {
   if (!Array.isArray(value)) throw invalid("assistant stream");
-  const chunks: DeepSeekV015TimedChunk[] = [];
+  const chunks: DeepSeekTimedChunk[] = [];
   for (const candidate of value) {
     if (!isRecord(candidate) || typeof candidate.type !== "string") {
       throw invalid("assistant stream record");
@@ -253,7 +251,7 @@ export function expandV015AssistantStream(value: unknown): readonly DeepSeekV015
         throw invalid("assistant stream raw chunk record");
       }
       assertJsonValue(candidate.chunk, "assistant stream raw chunk");
-      validateV015Chunk(candidate.chunk);
+      validateStreamChunk(candidate.chunk);
       chunks.push({
         time: safeInteger(candidate.time, "assistant stream chunk time"),
         chunk: candidate.chunk as Readonly<Record<string, ModernJournalJson>>,
@@ -301,7 +299,8 @@ export function expandV015AssistantStream(value: unknown): readonly DeepSeekV015
   return chunks;
 }
 
-export function v015InheritedEventCount(
+/** The seq of the one `session/end-seed` marker a seeded Session carries, if any. */
+export function inheritedEventCount(
   isSeeded: boolean,
   events: readonly ModernJournalEvent[],
 ): number | undefined {
@@ -383,6 +382,10 @@ function onlyKeys(
   );
 }
 
+function requiredFields(value: Record<string, unknown>, fields: readonly string[]): void {
+  if (fields.some((field) => !Object.hasOwn(value, field))) throw invalid("required fields");
+}
+
 function assertJsonValue(value: unknown, label: string): void {
   const pending: Array<{ readonly value: unknown; readonly depth: number }> = [{ value, depth: 0 }];
   const seen = new Set<object>();
@@ -440,7 +443,8 @@ function assertJsonValue(value: unknown, label: string): void {
   }
 }
 
-function validateV015Chunk(value: Readonly<Record<string, unknown>>): void {
+function validateStreamChunk(value: unknown): void {
+  if (!isRecord(value)) throw invalid("assistant stream chunk");
   switch (value.type) {
     case "block-start":
       if (
@@ -451,7 +455,7 @@ function validateV015Chunk(value: Readonly<Record<string, unknown>>): void {
         throw invalid("assistant stream block-start chunk");
       }
       nonNegativeInteger(value.index, "assistant stream block-start index");
-      return;
+      break;
     case "text-delta":
     case "reasoning-delta":
       if (!onlyKeys(value, ["type", "index", "text"]) || typeof value.text !== "string") {
@@ -475,8 +479,8 @@ function validateV015Chunk(value: Readonly<Record<string, unknown>>): void {
         throw invalid("assistant stream block-end chunk");
       }
       nonNegativeInteger(value.index, "assistant stream block-end index");
-      validateV015ContentBlock(value.block);
-      return;
+      validateBlock(value.block);
+      break;
     case "usage":
       if (!onlyKeys(value, ["type", "usage"]) || !isRecord(value.usage)) {
         throw invalid("assistant stream usage chunk");
@@ -486,14 +490,24 @@ function validateV015Chunk(value: Readonly<Record<string, unknown>>): void {
       if (!onlyKeys(value, ["type", "reason"], ["replayState"]) || !isRecord(value.reason)) {
         throw invalid("assistant stream finish chunk");
       }
-      validateChunk(value, validateV015Content);
+      validateFinishReason(value.reason);
       return;
     default:
       throw invalid("assistant stream chunk kind");
   }
+  // Tool changes and results are never streamed as assistant blocks.
+  const blockType =
+    value.type === "block-start" ? value.blockType : (value.block as { type?: unknown }).type;
+  if (
+    blockType === "tool-result" ||
+    blockType === "tool-addition" ||
+    blockType === "tool-removal"
+  ) {
+    throw invalid("assistant tool-change block");
+  }
 }
 
-function validateV015ContentBlock(value: Readonly<Record<string, unknown>>): void {
+function validateBlock(value: Readonly<Record<string, unknown>>): void {
   if (value.type === "tool-result") {
     if (
       !onlyKeys(value, ["type", "toolCallId", "content"], ["isError"]) ||
@@ -501,7 +515,7 @@ function validateV015ContentBlock(value: Readonly<Record<string, unknown>>): voi
     )
       throw invalid("tool-result content");
     identifier(value.toolCallId, "tool-result toolCallId");
-    validateV015Content(value.content);
+    validateBlocks(value.content);
     return;
   }
   if (value.type !== "file") {
@@ -521,167 +535,237 @@ function validateV015ContentBlock(value: Readonly<Record<string, unknown>>): voi
     throw invalid("file attachment");
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function validateBlocks(value: unknown): void {
+  if (!Array.isArray(value)) throw invalid("message content");
+  for (const block of value) {
+    if (!isRecord(block)) throw invalid("content block");
+    validateBlock(block);
+  }
 }
 
-function invalid(area: string): DeepSeekV015ProtocolError {
-  return new DeepSeekV015ProtocolError(`DeepSeek Harness v0.1.5 ${area} is malformed`);
+/** Validate message content; V4 keeps producer extension fields on known blocks opaque. */
+function validateV4Content(value: unknown): void {
+  if (!Array.isArray(value)) throw invalid("content");
+  for (const block of value) {
+    if (!isRecord(block) || block.type === "tool-result") throw invalid("content block");
+    if (block.type === "tool-addition" || block.type === "tool-removal") {
+      requiredString(block.toolName, "tool change toolName");
+      continue;
+    }
+    if (block.type === "image" && block.offloaded !== undefined && block.offloaded !== true) {
+      throw invalid("image offloaded marker");
+    }
+    const ordinary = Object.fromEntries(
+      Object.entries(block).filter(([key]) => key !== "offloaded"),
+    );
+    const canonical =
+      block.type === "text" || block.type === "reasoning"
+        ? { type: block.type, text: block.text }
+        : block.type === "image" || block.type === "file"
+          ? { type: block.type, attachment: block.attachment }
+          : block.type === "tool-call"
+            ? { type: block.type, id: block.id, name: block.name, arguments: block.arguments }
+            : ordinary;
+    validateBlock(canonical);
+  }
 }
 
-export const DEEPSEEK_V015_PROFILE = Object.freeze<DeepSeekModernProfile>({
-  version: "0.1.5-rc.1",
-  checkpointPrefix: "v3-turn-end:",
-  matchesForkTail,
-  sessionFormatVersion: 3,
-  assistantStream: true,
-  snapshotKeys: V015_JOURNAL_SNAPSHOT_KEYS,
-  parseHeader: parseV015JournalHeader,
-  parseHistoryRecord: (value, remaining) =>
-    parseV015HistoryRecord(value, remaining, (event) => parseEvent(event, 3)),
-  parseLiveItem: (value) => parseV015LiveItem(value, (event) => parseEvent(event, 3)),
-  parseAssistantBaseline: parseV015AssistantBaseline,
-  inheritedEventCount: (header, events) =>
-    v015InheritedEventCount(header.isSeeded === true, events),
-  validateContent: validateV015Content,
-  validateChunk: (value) => {
-    if (!isRecord(value)) throw invalid("assistant stream chunk");
-    validateV015Chunk(value);
-  },
-  validateEvent(event) {
-    const data = event.data as Record<string, unknown>;
-    switch (event.type) {
-      case "assistant/chunk":
-      case "tool/code-dispatch":
-      case "tool/code-dispatch-start":
-        fail("Modern history contains an event from another DSH profile");
-      case "system/message": {
-        exactKeys(data, ["turn", "step", "message"]);
-        if (!isRecord(data.message)) throw invalid("system/message");
-        const message = data.message;
-        exactKeys(message, ["id", "role", "content", "source"]);
-        identifier(message.id, "system message id");
-        if (
-          message.role !== "system" ||
-          !isRecord(message.source) ||
-          message.source.kind !== "plugin"
-        )
-          throw invalid("system message source");
-        identifier(message.source.plugin, "system message source plugin");
-        validateV015Content(message.content);
-        break;
-      }
-      case "request/header":
-        if (!isRecord(data.header) || Object.hasOwn(data.header, "system"))
-          throw invalid("request/header retired system field");
-        break;
-      case "tool/result":
-        if (
-          data.error !== undefined &&
-          (!isRecord(data.message) ||
-            !Array.isArray(data.message.content) ||
-            !isRecord(data.message.content[0]) ||
-            data.message.content[0].isError !== true)
-        )
-          throw invalid("tool/result error marker");
-        break;
-      case "feedback/record":
-        requiredOptionalKeys(data, [], ["text", "category"]);
-        if (data.text !== undefined && (typeof data.text !== "string" || !data.text.trim()))
-          throw invalid("feedback text");
-        validateFeedbackCategory(data.category);
-        break;
-      case "feedback/message-put": {
-        exactKeys(data, ["sessionId", "item"]);
-        identifier(data.sessionId, "feedback sessionId");
-        if (!isRecord(data.item)) throw invalid("feedback item");
-        const item = data.item;
-        requiredOptionalKeys(
-          item,
-          ["messageId", "rating", "version", "createdAt", "updatedAt"],
-          ["note", "category"],
-        );
-        identifier(item.messageId, "feedback messageId");
-        identifier(item.version, "feedback version");
-        if (item.rating !== "positive" && item.rating !== "negative")
-          throw invalid("feedback rating");
-        if (item.note !== undefined && (typeof item.note !== "string" || !item.note.trim()))
-          throw invalid("feedback note");
-        validateFeedbackCategory(item.category);
-        nonNegativeInteger(item.createdAt, "feedback createdAt");
-        nonNegativeInteger(item.updatedAt, "feedback updatedAt");
-        break;
-      }
-      case "feedback/message-delete":
-        exactKeys(data, ["sessionId", "messageId"]);
-        identifier(data.sessionId, "feedback sessionId");
-        identifier(data.messageId, "feedback messageId");
-        break;
-      case "deliverables/presented":
-        exactKeys(data, ["turn", "callId", "files"]);
-        positiveInteger(data.turn, "deliverables turn");
-        identifier(data.callId, "deliverables callId");
-        if (!Array.isArray(data.files)) throw invalid("deliverables files");
-        for (const file of data.files) {
-          if (!isRecord(file)) throw invalid("delivered file");
-          requiredOptionalKeys(file, ["path"], ["description"]);
-          identifier(file.path, "delivered file path");
-          if (file.description !== undefined && typeof file.description !== "string")
-            throw invalid("delivered file description");
-        }
-        break;
-      case "subagent/catalog":
-        requiredOptionalKeys(data, ["version", "childId", "childCreatedAt", "mode"], ["label"]);
-        if (data.version !== 0 || (data.mode !== "one-shot" && data.mode !== "continuable"))
-          throw invalid("subagent catalog");
-        identifier(data.childId, "subagent catalog childId");
-        nonNegativeInteger(data.childCreatedAt, "subagent catalog childCreatedAt");
-        if (
-          data.mode === "continuable"
-            ? typeof data.label !== "string"
-            : data.label !== undefined && typeof data.label !== "string"
-        )
-          throw invalid("subagent catalog label");
-        break;
-      case "team/member":
-      case "team/task":
-      case "team/message/queued":
-        validateTeamPayload(event.type, data);
-        break;
-      case "assistant/message":
-        if (event.sourceEventSeqs !== undefined)
-          fail("DSH v0.1.5 assistant/message cannot carry sourceEventSeqs");
-        requiredOptionalKeys(data, ["turn", "step", "message", "stream"], ["usage", "interrupted"]);
-        expandV015AssistantStream(data.stream);
-        break;
-      case "assistant/attempt":
-        exactKeys(data, ["turn", "step", "stream"]);
-        expandV015AssistantStream(data.stream);
-        break;
-      case "session/end-seed":
-        exactKeys(data, Object.hasOwn(data, "inherited") ? ["inherited"] : []);
-        if (Object.hasOwn(data, "inherited") && data.inherited !== true)
-          fail("DSH v0.1.5 inherited marker is malformed");
-        break;
-      case "session-log-deepseek/delivery-accepted":
-        requiredOptionalKeys(data, ["sessionId", "throughSeq"], ["sessionFormatVersion"]);
-        if (
-          data.sessionFormatVersion !== undefined &&
-          !nonNegativeSafeInteger(data.sessionFormatVersion)
-        )
-          fail("delivery-accepted sessionFormatVersion is malformed");
-        break;
+function validateDeveloperMessage(event: ModernJournalEvent): void {
+  if (!isRecord(event.data)) throw invalid("developer/message data");
+  const data = event.data;
+  requiredFields(data, ["turn", "step", "message"]);
+  if (Object.hasOwn(data, "headerSeq") && !Number.isSafeInteger(data.headerSeq))
+    throw invalid("developer/message headerSeq");
+  positiveInteger(data.turn, "developer/message turn");
+  positiveInteger(data.step, "developer/message step");
+  if (!isRecord(data.message)) throw invalid("developer/message message");
+  const message = data.message;
+  requiredFields(message, ["id", "role", "content", "source"]);
+  requiredString(message.id, "developer/message id");
+  if (
+    message.role !== "developer" ||
+    !isRecord(message.source) ||
+    typeof message.source.kind !== "string" ||
+    !message.source.kind ||
+    message.source.kind === "plugin" ||
+    !Array.isArray(message.content)
+  ) {
+    throw invalid("developer/message role, source or content");
+  }
+  let additions = false;
+  for (const block of message.content) {
+    if (!isRecord(block)) throw invalid("developer content block");
+    if (block.type === "tool-addition" || block.type === "tool-removal") {
+      requiredString(block.toolName, "developer toolName");
+      additions ||= block.type === "tool-addition";
+    } else {
+      validateV4Content([block]);
     }
-  },
-  settlementUsage(data) {
-    if (data.usage !== undefined) return data.usage;
-    let usage: unknown;
-    for (const { chunk } of expandV015AssistantStream(data.stream)) {
-      if (chunk.type === "usage") usage = chunk.usage;
+  }
+  if (
+    additions !== Object.hasOwn(data, "headerSeq") ||
+    (additions &&
+      (!Number.isSafeInteger(data.headerSeq) ||
+        Object.is(data.headerSeq, -0) ||
+        (data.headerSeq as number) < 0 ||
+        (data.headerSeq as number) >= event.seq))
+  ) {
+    throw invalid("developer/message headerSeq");
+  }
+}
+
+function validateV4Event(event: ModernJournalEvent): void {
+  const data = event.data as Record<string, unknown>;
+  switch (event.type) {
+    case "developer/message":
+      validateDeveloperMessage(event);
+      break;
+    case "system/message": {
+      if (!isRecord(data) || !isRecord(data.message)) throw invalid("system/message");
+      exactKeys(data, ["turn", "step", "message"]);
+      const message = data.message;
+      requiredFields(message, ["id", "role", "content", "source"]);
+      requiredString(message.id, "system/message id");
+      if (
+        message.role !== "system" ||
+        !isRecord(message.source) ||
+        message.source.kind !== "system-prompt"
+      ) {
+        throw invalid("system/message source");
+      }
+      validateV4Content(message.content);
+      break;
     }
-    return usage;
-  },
-});
+    case "image/offload":
+      if (!isRecord(data)) throw invalid("image/offload");
+      exactKeys(data, ["targets"]);
+      if (!Array.isArray(data.targets) || data.targets.length === 0)
+        throw invalid("image/offload targets");
+      break;
+    case "workspace/changes":
+      if (!isRecord(data)) throw invalid("workspace/changes");
+      exactKeys(data, ["turn"]);
+      positiveInteger(data.turn, "workspace/changes turn");
+      break;
+    case "tool/result":
+      if (!isRecord(data)) throw invalid("tool/result");
+      if (data.error !== undefined && (!isRecord(data.message) || data.message.isError !== true)) {
+        throw invalid("tool/result error marker");
+      }
+      break;
+    case "request/header": {
+      if (!isRecord(data.header) || Object.hasOwn(data.header, "system"))
+        throw invalid("request/header retired system field");
+      const tools = data.header.tools;
+      if (
+        tools !== undefined &&
+        (!Array.isArray(tools) ||
+          tools.some(
+            (tool) =>
+              !isRecord(tool) || (tool.deferLoading !== undefined && tool.deferLoading !== true),
+          ))
+      ) {
+        throw invalid("request/header tools");
+      }
+      break;
+    }
+    case "feedback/record":
+      requiredOptionalKeys(data, [], ["text", "category"]);
+      if (data.text !== undefined && (typeof data.text !== "string" || !data.text.trim()))
+        throw invalid("feedback text");
+      validateFeedbackCategory(data.category);
+      break;
+    case "feedback/message-put": {
+      exactKeys(data, ["sessionId", "item"]);
+      identifier(data.sessionId, "feedback sessionId");
+      if (!isRecord(data.item)) throw invalid("feedback item");
+      const item = data.item;
+      requiredOptionalKeys(
+        item,
+        ["messageId", "rating", "version", "createdAt", "updatedAt"],
+        ["note", "category"],
+      );
+      identifier(item.messageId, "feedback messageId");
+      identifier(item.version, "feedback version");
+      if (item.rating !== "positive" && item.rating !== "negative")
+        throw invalid("feedback rating");
+      if (item.note !== undefined && (typeof item.note !== "string" || !item.note.trim()))
+        throw invalid("feedback note");
+      validateFeedbackCategory(item.category);
+      nonNegativeInteger(item.createdAt, "feedback createdAt");
+      nonNegativeInteger(item.updatedAt, "feedback updatedAt");
+      break;
+    }
+    case "feedback/message-delete":
+      exactKeys(data, ["sessionId", "messageId"]);
+      identifier(data.sessionId, "feedback sessionId");
+      identifier(data.messageId, "feedback messageId");
+      break;
+    case "deliverables/presented":
+      exactKeys(data, ["turn", "callId", "files"]);
+      positiveInteger(data.turn, "deliverables turn");
+      identifier(data.callId, "deliverables callId");
+      if (!Array.isArray(data.files)) throw invalid("deliverables files");
+      for (const file of data.files) {
+        if (!isRecord(file)) throw invalid("delivered file");
+        requiredOptionalKeys(file, ["path"], ["description"]);
+        identifier(file.path, "delivered file path");
+        if (file.description !== undefined && typeof file.description !== "string")
+          throw invalid("delivered file description");
+      }
+      break;
+    case "subagent/catalog":
+      requiredOptionalKeys(data, ["version", "childId", "childCreatedAt", "mode"], ["label"]);
+      if (data.version !== 0 || (data.mode !== "one-shot" && data.mode !== "continuable"))
+        throw invalid("subagent catalog");
+      identifier(data.childId, "subagent catalog childId");
+      nonNegativeInteger(data.childCreatedAt, "subagent catalog childCreatedAt");
+      if (
+        data.mode === "continuable"
+          ? typeof data.label !== "string"
+          : data.label !== undefined && typeof data.label !== "string"
+      )
+        throw invalid("subagent catalog label");
+      break;
+    case "team/member":
+    case "team/task":
+    case "team/message/queued":
+      validateTeamPayload(event.type, data);
+      break;
+    case "assistant/message":
+      if (event.sourceEventSeqs !== undefined)
+        fail("DSH V4 assistant/message cannot carry sourceEventSeqs");
+      requiredOptionalKeys(data, ["turn", "step", "message", "stream"], ["usage", "interrupted"]);
+      expandAssistantStream(data.stream);
+      break;
+    case "assistant/attempt":
+      exactKeys(data, ["turn", "step", "stream"]);
+      expandAssistantStream(data.stream);
+      break;
+    case "session/end-seed":
+      exactKeys(data, Object.hasOwn(data, "inherited") ? ["inherited"] : []);
+      if (Object.hasOwn(data, "inherited") && data.inherited !== true)
+        fail("DSH V4 inherited marker is malformed");
+      break;
+    case "session-log-deepseek/delivery-accepted":
+      requiredOptionalKeys(data, ["sessionId", "throughSeq"], ["sessionFormatVersion"]);
+      if (
+        data.sessionFormatVersion !== undefined &&
+        !nonNegativeSafeInteger(data.sessionFormatVersion)
+      )
+        fail("delivery-accepted sessionFormatVersion is malformed");
+      break;
+  }
+}
+
+function settlementUsage(data: Record<string, unknown>): unknown {
+  if (data.usage !== undefined) return data.usage;
+  let usage: unknown;
+  for (const { chunk } of expandAssistantStream(data.stream)) {
+    if (chunk.type === "usage") usage = chunk.usage;
+  }
+  return usage;
+}
 
 function validateFeedbackCategory(value: unknown): void {
   if (
@@ -738,19 +822,12 @@ function validateTeamPayload(type: string, data: Record<string, unknown>): void 
     exactKeys(value, ["id", "senderId", "senderName", "targetId", "content"]);
     for (const field of ["senderId", "senderName", "targetId"])
       identifier(value[field], `team message ${field}`);
-    validateV015Content(value.content);
+    validateBlocks(value.content);
   }
 }
 
-function validateV015Content(value: unknown): void {
-  if (!Array.isArray(value)) throw invalid("message content");
-  for (const block of value) {
-    if (!isRecord(block)) throw invalid("content block");
-    validateV015ContentBlock(block);
-  }
-}
-
-function matchesForkTail(
+/** A child owns one inherited marker and, for a source Turn still open at the cut, a forked closer. */
+function matchesV4ForkTail(
   expectedPrefix: readonly ModernJournalEvent[],
   childEvents: readonly ModernJournalEvent[],
 ): boolean {
@@ -762,11 +839,48 @@ function matchesForkTail(
     !isDeepStrictEqual(marker.data, { inherited: true }) ||
     marker.ignorable !== undefined ||
     marker.sourceEventSeqs !== undefined ||
-    marker.surfaceOp !== undefined
+    marker.surfaceOp !== undefined ||
+    childOwned.some((event) => event.type === "turn/start" || event.type === "session/end-seed")
   ) {
     return false;
   }
-  return childOwned.every(
-    (event) => event.type !== "turn/start" && event.type !== "session/end-seed",
+  const openTurn = expectedPrefix.reduce<number | null>(
+    (turn, event) =>
+      event.type === "turn/start"
+        ? (event.data as { turn: number }).turn
+        : event.type === "turn/end"
+          ? null
+          : turn,
+    null,
+  );
+  const closer = childOwned.find((event) => event.type === "turn/end");
+  if (openTurn === null)
+    return closer === undefined && !childOwned.some((event) => event.type === "step/end");
+  return (
+    closer !== undefined &&
+    isRecord(closer.data) &&
+    closer.data.turn === openTurn &&
+    isRecord(closer.data.reason) &&
+    closer.data.reason.kind === "forked"
   );
 }
+
+function invalid(label: string): ModernHistoryError {
+  return new ModernHistoryError("protocolError", `DSH V4 ${label} is malformed`);
+}
+
+export const DEEPSEEK_V4_PROFILE = Object.freeze<DeepSeekModernProfile>({
+  version: DEEPSEEK_V4_FIRST_VERSION,
+  checkpointPrefix: "v4-turn-end:",
+  matchesForkTail: matchesV4ForkTail,
+  snapshotKeys: V4_JOURNAL_SNAPSHOT_KEYS,
+  parseHeader: parseV4JournalHeader,
+  parseHistoryRecord: parseV4HistoryRecord,
+  parseLiveItem: parseV4LiveItem,
+  parseAssistantBaseline,
+  inheritedEventCount: (header, events) => inheritedEventCount(header.isSeeded === true, events),
+  validateEvent: validateV4Event,
+  validateContent: validateV4Content,
+  validateChunk: validateStreamChunk,
+  settlementUsage,
+});

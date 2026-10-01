@@ -73,14 +73,9 @@ function modelValue(
   return { lastUsed: null, next } as ModernControlJsonValue;
 }
 
+/** V4 projects only the current preset; its options come from the process catalog. */
 function permissionValue(currentValue: string): ModernControlJsonValue {
-  return {
-    options: [
-      { value: "ask", name: "Ask" },
-      { value: "danger-full-access", name: "Full Access" },
-    ],
-    currentValue,
-  };
+  return { currentValue };
 }
 
 interface PendingWait {
@@ -677,7 +672,7 @@ describe("DeepSeek Harness Modern Permission selection", () => {
       args: {
         agentId: SESSION_ID,
         line: "/permission danger-full-access",
-        images: [],
+        submittedAttachments: [],
       },
       options: { timeoutMs: null },
     });

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createHarnessInstaller } from "@codexhost/harness-discovery";
+import type * as HarnessDiscovery from "@codexhost/harness-discovery";
 import { DeepSeekHarnessAdapter } from "../src/deepseek-harness-adapter.js";
 import { createHarnessAdapter } from "../src/plugin.js";
 
@@ -9,7 +10,7 @@ vi.mock("../src/deepseek-harness-adapter.js", () => ({
 }));
 
 vi.mock("@codexhost/harness-discovery", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@codexhost/harness-discovery")>()),
+  ...(await importOriginal<typeof HarnessDiscovery>()),
   createHarnessInstaller: vi.fn(() => vi.fn(async () => undefined)),
 }));
 

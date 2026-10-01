@@ -46,9 +46,9 @@ const { outputFiles } = await build({
   write: false,
 });
 const bundle = outputFiles[0]?.text;
-if (!bundle) throw new Error("Fast picker bundle was not generated");
 
 async function mountFastFixture(page: Page, theme = "dark") {
+  if (!bundle) throw new Error("Fast picker bundle was not generated");
   await page.route("http://fast.test/", (route) =>
     route.fulfill({
       contentType: "text/html",
@@ -81,9 +81,10 @@ test("Fast lightning is per selected model, independent from Thinking and the Mo
   );
   const fastBounds = await fast.boundingBox();
   const triggerBounds = await trigger.boundingBox();
-  expect(fastBounds).not.toBeNull();
-  expect(triggerBounds).not.toBeNull();
-  expect(fastBounds!.x + fastBounds!.width).toBeLessThanOrEqual(triggerBounds!.x);
+  if (!fastBounds || !triggerBounds) {
+    throw new Error("Fast toggle or model trigger geometry is unavailable");
+  }
+  expect(fastBounds.x + fastBounds.width).toBeLessThanOrEqual(triggerBounds.x);
   await expect(trigger).toHaveCSS("padding-left", "2px");
   await expect(fast).toHaveCSS("color", "rgb(143, 143, 143)");
   await expect(fast).toHaveAttribute("aria-pressed", "false");
@@ -105,7 +106,9 @@ test("Fast lightning is per selected model, independent from Thinking and the Mo
   expect(await tooltip.isVisible()).toBe(true);
   await expect(tooltip).toContainText(offHint);
   await expect(tooltip).toContainText("Codex Fast 模式：优先处理请求，可能增加额度消耗。");
-  await expect(fast).toHaveAttribute("aria-describedby", (await tooltip.getAttribute("id"))!);
+  const tooltipId = await tooltip.getAttribute("id");
+  if (!tooltipId) throw new Error("Fast tooltip ID is unavailable");
+  await expect(fast).toHaveAttribute("aria-describedby", tooltipId);
   await expect(fast).toHaveCSS("cursor", "pointer");
   await expect(fast).toHaveCSS("background-color", "rgba(127, 127, 127, 0.08)");
   await page.screenshot({ path: "/tmp/codexhost-pi-fast-hover.png" });
@@ -167,10 +170,13 @@ for (const theme of ["dark", "light"]) {
     expect(await tooltip.isVisible()).toBe(true);
     const panel = await tooltip.boundingBox();
     const anchor = await fast.boundingBox();
-    expect(panel!.x).toBeGreaterThanOrEqual(12);
-    expect(panel!.x + panel!.width).toBeLessThanOrEqual(348);
-    expect(panel!.y).toBeGreaterThanOrEqual(12);
-    expect(panel!.y + panel!.height).toBeLessThan(anchor!.y);
+    if (!panel || !anchor) {
+      throw new Error("Fast tooltip or toggle geometry is unavailable");
+    }
+    expect(panel.x).toBeGreaterThanOrEqual(12);
+    expect(panel.x + panel.width).toBeLessThanOrEqual(348);
+    expect(panel.y).toBeGreaterThanOrEqual(12);
+    expect(panel.y + panel.height).toBeLessThan(anchor.y);
     await tooltip.hover();
     // Exercise the 140ms leave grace period while the pointer rests on the card.
     await page.waitForTimeout(200);

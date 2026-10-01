@@ -208,7 +208,7 @@ describe("Quota comparison columns", () => {
   it("uses period-independent headers in both display modes and locales", () => {
     expect(accountUsageColumnLabel("remaining", messages)).toBe("剩余额度");
     expect(accountUsageColumnLabel("used", messages)).toBe("已用额度");
-    const english = rendererSettingsMessages("en-US");
+    const english = rendererSettingsMessages("en");
     expect(accountUsageColumnLabel("remaining", english)).toBe("Remaining quota");
     expect(accountUsageColumnLabel("used", english)).toBe("Used quota");
   });
@@ -240,6 +240,7 @@ describe("Quota comparison columns", () => {
   it("retains the period on each scoped quota", () => {
     const result = columns({
       usedPercent: 10,
+      periodType: "five_hour",
       label: "Model group · 5-hour",
       productUsage: [{ product: "Model group · 7-day", usagePercent: 20 }],
     });

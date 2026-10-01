@@ -74,18 +74,19 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("checks and updates explicitly in Connections, with separate remote Host versions", async ({
+test("checks automatically and updates explicitly in Connections, with separate remote Host versions", async ({
   page,
 }, testInfo) => {
   await page.getByRole("row", { name: /^Pi 正常/ }).click();
   const panel = page.locator(".settings-harness-version");
   await expect(panel).toContainText("当前版本: 0.85.1");
+  await expect(panel.getByRole("button", { name: "检查更新" })).toHaveCount(0);
   const update = panel.getByRole("button", { name: "更新", exact: true });
   await expect(update).toBeEnabled();
   await page.screenshot({ path: testInfo.outputPath("versions-before.png") });
   await update.click();
   await expect(panel.getByRole("status")).toHaveText("正在更新…");
-  await expect(panel.getByRole("button", { name: "检查更新" })).toBeDisabled();
+  await expect(update).toBeDisabled();
   await expect(panel.getByRole("status")).toContainText("已确认更新成功");
   await expect(panel.getByRole("button", { name: "已是最新" })).toBeDisabled();
   await page.screenshot({ path: testInfo.outputPath("versions-updated.png") });
@@ -109,7 +110,7 @@ test("unsupported plugins show original instructions without disabling supported
   const panel = page.locator(".settings-harness-version");
   await expect(panel).toContainText("当前 Host 或插件不支持 CLI 版本管理");
   await expect(panel.getByRole("button", { name: "更新", exact: true })).toBeDisabled();
-  await expect(panel.getByRole("link", { name: "查看官方安装说明" })).toHaveAttribute(
+  await expect(panel.getByRole("link", { name: "查看安装指引" })).toHaveAttribute(
     "href",
     "https://code.claude.com/docs/en/quickstart",
   );

@@ -777,7 +777,7 @@ describe("Harness CLI version panel", () => {
     };
     return { panel, abort, button };
   };
-  it("checks once, updates explicitly, and prevents duplicate clicks", async () => {
+  it("checks automatically without a check button, updates explicitly, and prevents duplicate clicks", async () => {
     const updated = deferred<typeof state>();
     const run = vi.fn((action: "check" | "update") =>
       action === "check" ? Promise.resolve(state) : updated.promise,
@@ -786,27 +786,32 @@ describe("Harness CLI version panel", () => {
     expect(button("update").disabled).toBe(true);
     await vi.waitFor(() => expect(button("update").disabled).toBe(false));
     expect(visibleText(panel)).toContain("Current version: 1.0.0");
+    expect(
+      descendants(panel).find((element) => element.dataset.harnessVersionAction === "check"),
+    ).toBeUndefined();
     button("update").dispatch("click");
     button("update").dispatch("click");
-    button("check").dispatch("click");
     expect(run.mock.calls).toEqual([["check"], ["update"]]);
-    expect(button("check").disabled).toBe(true);
+    expect(button("update").disabled).toBe(true);
     updated.resolve({ ...state, currentVersion: "1.1.0", updateAvailable: false });
     await vi.waitFor(() => expect(visibleText(panel)).toContain("Update verified"));
     expect(button("update").disabled).toBe(true);
     abort.abort();
   });
-  it("keeps failures retryable and provides the original installer link", async () => {
+  it("shows check failures and the installer link, and checks again when the page reopens", async () => {
     const run = vi.fn(async () => state).mockRejectedValueOnce(new Error("secret-native-output"));
     const { panel, button, abort } = mount(run);
     await vi.waitFor(() => expect(visibleText(panel)).toContain("Could not complete"));
     expect(visibleText(panel)).not.toContain("secret-native-output");
-    button("check").dispatch("click");
-    await vi.waitFor(() => expect(button("update").disabled).toBe(false));
+    expect(button("update").disabled).toBe(true);
     expect(descendants(panel).find((element) => element.tagName === "a")?.href).toBe(
       "https://pi.dev/",
     );
     abort.abort();
+    const reopened = mount(run);
+    await vi.waitFor(() => expect(reopened.button("update").disabled).toBe(false));
+    expect(run.mock.calls).toEqual([["check"], ["check"]]);
+    reopened.abort.abort();
   });
   it("keeps unsupported plugins and manual installations from updating", async () => {
     const unsupported = mount(async () => {
@@ -851,7 +856,7 @@ describe("Harness CLI version panel", () => {
     result.resolve(state);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(visibleText(panel)).not.toContain("1.0.0");
-    expect(button("check").disabled).toBe(true);
+    expect(button("update").disabled).toBe(true);
   });
 });
 

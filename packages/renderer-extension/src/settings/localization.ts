@@ -187,7 +187,6 @@ export interface RendererSettingsMessages {
   readonly harnessVersionTitle: string;
   readonly harnessVersionCurrent: string;
   readonly harnessVersionLatest: string;
-  readonly harnessVersionCheck: string;
   readonly harnessVersionChecking: string;
   readonly harnessVersionUpdate: string;
   readonly harnessVersionUpdating: string;
@@ -457,14 +456,13 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessVersionTitle: "Harness CLI version",
   harnessVersionCurrent: "Current version",
   harnessVersionLatest: "Latest version",
-  harnessVersionCheck: "Check for updates",
   harnessVersionChecking: "Checking versions…",
   harnessVersionUpdate: "Update",
   harnessVersionUpdating: "Updating…",
   harnessVersionUpToDate: "Up to date",
   harnessVersionUpdated: "Update verified. New sessions will use the new version.",
   harnessVersionFailed:
-    "Could not complete the operation. Check the native installation and check for updates again.",
+    "Could not complete the operation. Check the network connection or native installation.",
   harnessVersionUnsupported: "This Host or plugin does not support CLI version management.",
   harnessVersionManual: "Use the original installer to update this installation.",
   harnessVersionNote:
@@ -743,13 +741,12 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessVersionTitle: "Harness CLI 版本",
   harnessVersionCurrent: "当前版本",
   harnessVersionLatest: "最新版本",
-  harnessVersionCheck: "检查更新",
   harnessVersionChecking: "正在检查版本…",
   harnessVersionUpdate: "更新",
   harnessVersionUpdating: "正在更新…",
   harnessVersionUpToDate: "已是最新",
   harnessVersionUpdated: "已确认更新成功，新会话将使用新版本。",
-  harnessVersionFailed: "操作未完成，请检查原生安装并重新检查更新。",
+  harnessVersionFailed: "操作未完成，请检查网络连接或原生安装。",
   harnessVersionUnsupported: "当前 Host 或插件不支持 CLI 版本管理。",
   harnessVersionManual: "请使用原安装方式更新此 Harness。",
   harnessVersionNote:

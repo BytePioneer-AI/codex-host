@@ -1,5 +1,5 @@
 import { runInNewContext } from "node:vm";
-import { expect, it, vi } from "vitest";
+import { assert, expect, it, vi } from "vitest";
 import {
   installRendererDraftPrewarmPolicy,
   installRendererDraftPrewarmPolicyDirect,
@@ -39,7 +39,12 @@ function setup(initialHostId: string) {
     memoizedState: { memoizedState: registry, next: { memoizedState: local, next: null } },
     return: null,
   };
-  const editor = { __reactFiber$host: fiber, parentElement: null };
+  const editor = {
+    __reactFiber$host: fiber,
+    parentElement: null,
+    matches: () => true,
+    querySelectorAll: () => [],
+  };
   const editors = [editor];
   const target: Record<string, unknown> = {};
   const renderer = {
@@ -116,6 +121,25 @@ it("keeps selections per Host rather than copying a carrier to the newly active 
     expect(remoteSend).toHaveBeenCalledWith("thread/start", { model: "native-model" });
     await fixture.local.requestClient.sendRequest("thread/start", { model: "native-model" });
     expect(localSend).toHaveBeenCalledWith("thread/start", { model: "codexhost/pi-native" });
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("does not unpublish the global policy when a scoped Composer cannot be read", async () => {
+  const fixture = setup("local");
+  await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+  const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+  try {
+    const policy = fixture.target.__codexhostDraftPrewarmPolicyV1;
+    const editor = fixture.editors[0];
+    assert(editor);
+    editor.matches = () => {
+      throw new Error("Composer was retired");
+    };
+    expect(routing.forComposer(editor)).toBeNull();
+    expect(fixture.target.__codexhostDraftPrewarmPolicyV1).toBe(policy);
+    expect(routing.forHost("local")?.policy).toBe(policy);
   } finally {
     routing.dispose();
   }
@@ -201,6 +225,71 @@ it("evaluates the same native Host router through the Inspector transport", asyn
     routing.dispose();
   }
 });
+
+it.each(["direct", "inspector"])(
+  "installs %s routing for co-mounted local and hidden remote Composers without a singleton",
+  async (transport) => {
+    const fixture = setup("local");
+    const localEditor = fixture.editors[0];
+    assert(localEditor);
+    const remoteEditor = {
+      ...localEditor,
+      hidden: true,
+      __reactFiber$host: {
+        ...fixture.fiber,
+        memoizedProps: { executionTargetHostId: fixture.remote.getHostId() },
+      },
+    };
+    fixture.editors.push(remoteEditor);
+    // Fail immediately on the baseline's ambiguous global installation gate,
+    // rather than waiting out the real Controller's 60-second mount retry.
+    const renderer = {
+      async evaluate<T>(expression: string): Promise<T> {
+        try {
+          return await fixture.renderer.evaluate<T>(expression);
+        } catch (error) {
+          throw new Error("Mixed Host installation failed", { cause: error });
+        }
+      },
+    };
+    const inspector = {
+      async evaluate<T>(expression: string): Promise<T> {
+        return await runInNewContext(expression, {
+          process: {
+            mainModule: {
+              require: () => ({
+                webContents: {
+                  fromId: () => ({
+                    isDestroyed: () => false,
+                    getType: () => "window",
+                    executeJavaScript: (script: string) => renderer.evaluate(script),
+                  }),
+                },
+              }),
+            },
+          },
+        });
+      },
+    };
+    try {
+      await expect(
+        transport === "direct"
+          ? installRendererDraftPrewarmPolicyDirect(renderer)
+          : installRendererDraftPrewarmPolicy(inspector, 17),
+      ).resolves.toEqual({ state: "ready", reason: "owned-request-bridge" });
+      const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+      expect(routing.forComposer()).toBeNull();
+      expect(fixture.target.__codexhostDraftPrewarmPolicyV1).toBeUndefined();
+      expect(routing.forComposer(fixture.editors[0])?.manager).toBe(fixture.local);
+      expect(routing.forComposer(remoteEditor)?.manager).toBe(fixture.remote);
+      expect(routing.forComposer(fixture.editors[0])).toBe(routing.forHost("local"));
+      expect(routing.forComposer(remoteEditor)).toBe(routing.forHost(fixture.remote.getHostId()));
+      expect(fixture.target.__codexhostDraftPrewarmPolicyV1).toBeUndefined();
+    } finally {
+      (fixture.target.__codexhostHostRoutingV1 as Routing | undefined)?.dispose();
+    }
+  },
+);
 
 it("rejects an unavailable Inspector-owned Renderer before executing code", async () => {
   const inspector = {

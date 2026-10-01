@@ -40,7 +40,7 @@ describe("prepareGatewayDelegation bootstrap", () => {
     // The registered Skill file exists while the delegation is live.
     const match = /Path\("([^"]+)"\)/.exec(prepared.bootstrap);
     expect(match).not.toBeNull();
-    const skillFile = match ? match[1] : "";
+    const skillFile = match?.[1] ?? "";
     expect(skillFile).not.toBe("");
     directories.push(path.dirname(skillFile));
     const skill = await readFile(skillFile, "utf8");

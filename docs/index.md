@@ -34,6 +34,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`harnesses/antigravity/antigravity-result-reconciliation.md`](harnesses/antigravity/antigravity-result-reconciliation.md) | 用当前原生回合证据核验 agy 历史错误汇总；修改结果状态处理时阅读。 |
 | [`harnesses/antigravity/antigravity-tool-approval.md`](harnesses/antigravity/antigravity-tool-approval.md) | agy 的危险跳过权限、旧模式拒绝和问题桥边界；修改权限或交互时阅读。 |
 | [`harnesses/antigravity/antigravity-subagents.md`](harnesses/antigravity/antigravity-subagents.md) | agy 原生 Subagent 生命周期、Transcript 和公共投影；修改 Subagent 支持时阅读。 |
 | [`harnesses/antigravity/antigravity-question-interaction-postmortem.md`](harnesses/antigravity/antigravity-question-interaction-postmortem.md) | Ask Question 失败历史、后续 Hook 桥实测和限制；排查 agy 提问交互时阅读。 |

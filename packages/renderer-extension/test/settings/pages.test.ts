@@ -925,7 +925,7 @@ describe("Renderer Connections page", () => {
   it.each([
     ["pi", "https://pi.dev/install.sh"],
     ["claude-code", "https://claude.ai/install.sh"],
-    ["deepseek-harness", "npm install -g @deepseek-ai/dsh@0.1.5-rc.1"],
+    ["deepseek-harness", "npm install -g @deepseek-ai/dsh@0.2.0-rc.2"],
     ["opencode", "opencode-ai"],
     ["grok", "@xai-official/grok"],
     ["omp", "https://omp.sh/install"],
@@ -975,7 +975,7 @@ describe("Renderer Connections page", () => {
     expect(visibleText(panel)).toContain(expected);
     expect(
       visibleText(content).includes(
-        "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。",
+        "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。",
       ),
     ).toBe(agent === "deepseek-harness");
     expect(visibleText(panel)).toContain("请在远程 Host 上安装。");
@@ -1171,9 +1171,9 @@ describe("Renderer Connections page", () => {
     );
     if (!dshRow) throw new Error("DeepSeek Harness row is not rendered");
     dshRow.dispatch("click", { target: null });
-    expect(visibleText(content)).toContain("0.1.7-rc.2");
+    expect(visibleText(content)).toContain("0.2.0-rc.2");
     expect(visibleText(content)).toContain(
-      "其他版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
+      "高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
     );
     const open = descendants(content).find(
       ({ dataset }) => dataset.connectionAction === "open-web-ui",

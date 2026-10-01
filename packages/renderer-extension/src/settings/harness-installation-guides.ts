@@ -47,11 +47,11 @@ const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
   },
   "deepseek-harness": {
     url: "https://github.com/deepseek-ai/deepseek-harness#run",
-    // Must match the Adapter's exact supported range, not npm's latest tag.
-    commands: npm("@deepseek-ai/dsh@0.1.5-rc.1"),
+    // Pin a Gate-verified version, not npm's moving latest tag.
+    commands: npm("@deepseek-ai/dsh@0.2.0-rc.2"),
     before: [
-      "Requires Node.js. Installs the compatible version 0.1.5-rc.1.",
-      "需先安装 Node.js。下方命令安装兼容版本 0.1.5-rc.1。",
+      "Requires Node.js. Installs the compatible version 0.2.0-rc.2.",
+      "需先安装 Node.js。下方命令安装兼容版本 0.2.0-rc.2。",
     ],
     after: [
       "Check again, then open Web UI to configure your provider. Stop any manually started dsh web first.",

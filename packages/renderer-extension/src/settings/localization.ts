@@ -450,7 +450,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOpenInstallation: "Show installation instructions",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "Supported DSH versions: 0.1.2-rc.1, 0.1.5-rc.1, 0.1.5-rc.2, 0.1.5-rc.3, 0.1.7-rc.1 and 0.1.7-rc.2. Other versions may connect after native protocol checks, but are not listed as supported.",
+    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1 and 0.2.0-rc.2. Versions newer than 0.2.0-rc.2 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
   connectionInstall: "Install",
   connectionInstallDescription: "This Harness was not detected.",
   harnessVersionTitle: "Harness CLI version",
@@ -735,7 +735,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOpenInstallation: "查看安装指引",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。其他版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
+    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
   harnessVersionTitle: "Harness CLI 版本",

@@ -250,7 +250,7 @@ interface ActiveTrigger {
 }
 
 export interface RendererDelegationMentionOptions {
-  readTargets(): readonly RendererDelegationTarget[];
+  readTargets(editor: HTMLElement): readonly RendererDelegationTarget[];
   /** Whether the editable element belongs to a Composer we manage. */
   isComposerEditor(editor: HTMLElement): boolean;
   readLocale(): RendererSettingsLocale;
@@ -530,7 +530,7 @@ export function installRendererDelegationMention(
       openedFor = { node: trigger.node, start: trigger.start };
       options.onOpen?.(trigger.editor);
     }
-    const allTargets = options.readTargets();
+    const allTargets = options.readTargets(trigger.editor);
     syncChipStyle(ownerDocument, allTargets, iconCache);
     const targets = filterDelegationTargets(allTargets, trigger.query);
     const source = options.readCommands(trigger.editor);

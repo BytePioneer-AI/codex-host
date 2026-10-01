@@ -1,4 +1,9 @@
-import { harnessIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  hostThreadIdSchema,
+  type HarnessModelRef,
+  type ThreadUsageInspection,
+} from "@codexhost/shared-contracts";
 import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +20,23 @@ import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapte
 
 const testState = vi.hoisted(() => ({
   composer: null as unknown as Element,
+  composers: [] as Element[],
+  composerForElement: new Map<Element, Element>(),
+  editorForComposer: new Map<Element, Element>(),
+  sendButtonForComposer: new Map<Element, HTMLButtonElement>(),
+  modelTargetForComposer: new Map<Element, readonly unknown[]>(),
+  selectModels: new Map<Element, (modelId: string) => void>(),
+  selectAgents: new Map<Element, (agent: string) => void>(),
+  renderedControls: new Map<
+    Element,
+    Array<{
+      selection: { agent: string; phase: string };
+      adapter: string;
+      availability: Record<string, string>;
+      modelView: RendererModelControlView;
+      usage: unknown;
+    }>
+  >(),
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as RendererModelControlView[],
@@ -33,18 +55,24 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
   const original = await importOriginal<typeof RendererComposerDom>();
   return {
     ...original,
-    composerForEditor: () => testState.composer,
-    composerForElement: () => testState.composer,
+    composerForEditor: (editor: Element) =>
+      testState.composerForElement.get(editor) ?? testState.composer,
+    composerForElement: (element: Element) =>
+      testState.composerForElement.get(element) ?? testState.composer,
     editorForElement: (element: Element) =>
-      element === testState.editor || element === testState.composer ? testState.editor : null,
-    eventElement: () => testState.composer,
+      testState.editorForComposer.get(testState.composerForElement.get(element) ?? element) ?? null,
+    eventElement: (event: Event) =>
+      event.target instanceof Element ? event.target : testState.composer,
     mountComposerAgentControl: (
       ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
     ) => {
+      const [composer, composerId, sendButton] = args;
       testState.selectModel = args[7];
+      testState.selectModels.set(composer, args[7]);
+      testState.selectAgents.set(composer, args[4] as (agent: string) => void);
       return {
-        composer: testState.composer,
-        composerId: "composer-1",
+        composer,
+        composerId,
         root: { isConnected: true, remove: vi.fn() },
         picker: { root: { isConnected: true } },
         modelPicker: { root: { isConnected: true }, trigger: {} },
@@ -62,23 +90,30 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
           placeBefore: vi.fn(),
           dispose: vi.fn(),
         },
-        sendButton: testState.sendButton,
+        sendButton,
         sendDisabledBeforeSwitch: null,
       };
     },
     renderComposerAgentControl: (
-      _control: unknown,
-      _selection: unknown,
-      _adapter: unknown,
-      _switching: unknown,
-      _availability: unknown,
-      modelView: RendererModelControlView,
+      ...args: Parameters<typeof RendererComposerDom.renderComposerAgentControl>
     ) => {
-      testState.renderedModelViews.push({ ...modelView });
+      const [control, selection, adapter, , availability, modelView, , usage] = args;
+      const view: RendererModelControlView = { ...(modelView ?? { status: "idle" }) };
+      testState.renderedModelViews.push(view);
+      const rendered = testState.renderedControls.get(control.composer) ?? [];
+      rendered.push({
+        selection: { ...selection },
+        adapter,
+        availability: { ...availability } as Record<string, string>,
+        modelView: view,
+        usage,
+      });
+      testState.renderedControls.set(control.composer, rendered);
     },
     reconcileComposerNativeControls: vi.fn(),
     disposeComposerAgentControl: vi.fn(),
-    sendButtonWithin: () => testState.sendButton,
+    sendButtonWithin: (composer: Element) =>
+      testState.sendButtonForComposer.get(composer) ?? testState.sendButton,
   };
 });
 
@@ -86,7 +121,8 @@ vi.mock("../src/versioned-renderer-adapter.js", async (importOriginal) => {
   const original = await importOriginal<typeof VersionedRendererAdapter>();
   return {
     ...original,
-    findComposerModelTarget: () => testState.modelTarget,
+    findComposerModelTarget: (composer: Element) =>
+      testState.modelTargetForComposer.get(composer) ?? testState.modelTarget,
     waitForRendererDraftPrewarmPolicy: async () => ({
       clear: async () => {
         testState.prewarmClears += 1;
@@ -159,7 +195,9 @@ function emptyInspection() {
   };
 }
 
-function installFakeBrowser(): void {
+function installFakeBrowser(
+  composers: Array<{ hidden?: boolean; target?: readonly unknown[] }> = [{}],
+): void {
   const listeners = new EventTarget();
   class FakeElement {
     readonly nodeType = 1;
@@ -170,21 +208,45 @@ function installFakeBrowser(): void {
       return null;
     }
   }
-  const composer = Object.assign(new FakeElement(), {
-    isConnected: true,
-    matches: (selector: string) => selector === "[data-codex-composer-root]",
-    querySelectorAll: (selector: string) => (selector === "button" ? [testState.sendButton] : []),
-    querySelector: (selector: string) => (selector.includes("textarea") ? testState.editor : null),
-  }) as unknown as Element;
-  const editor = Object.assign(new FakeElement(), {
-    closest: () => composer,
-  }) as unknown as Element;
-  const sendButton = {
-    type: "submit",
-    disabled: false,
-    parentElement: null,
-    getAttribute: () => null,
-  } as unknown as HTMLButtonElement;
+  testState.composers = [];
+  testState.composerForElement.clear();
+  testState.editorForComposer.clear();
+  testState.sendButtonForComposer.clear();
+  testState.modelTargetForComposer.clear();
+  testState.selectModels.clear();
+  testState.selectAgents.clear();
+  testState.renderedControls.clear();
+  for (const fixture of composers) {
+    const sendButton = {
+      type: "submit",
+      disabled: false,
+      parentElement: null,
+      getAttribute: () => null,
+    } as unknown as HTMLButtonElement;
+    const composer = Object.assign(new FakeElement(), {
+      isConnected: true,
+      hidden: fixture.hidden ?? false,
+      matches: (selector: string) => selector === "[data-codex-composer-root]",
+      querySelectorAll: (selector: string) => (selector === "button" ? [sendButton] : []),
+      querySelector: (selector: string) => (selector.includes("textarea") ? editor : null),
+    }) as unknown as Element;
+    const editor = Object.assign(new FakeElement(), {
+      closest: () => composer,
+    }) as unknown as Element;
+    testState.composers.push(composer);
+    for (const element of [composer, editor, sendButton]) {
+      testState.composerForElement.set(element, composer);
+    }
+    testState.editorForComposer.set(composer, editor);
+    testState.sendButtonForComposer.set(composer, sendButton);
+    if (fixture.target) testState.modelTargetForComposer.set(composer, fixture.target);
+  }
+  const composer = testState.composers[0];
+  assert(composer);
+  const editor = testState.editorForComposer.get(composer);
+  const sendButton = testState.sendButtonForComposer.get(composer);
+  assert(editor);
+  assert(sendButton);
   testState.composer = composer;
   testState.editor = editor;
   testState.sendButton = sendButton;
@@ -209,7 +271,8 @@ function installFakeBrowser(): void {
     documentElement: {},
     body: {},
     activeElement: null,
-    querySelectorAll: (selector: string) => (selector.includes("textarea") ? [editor] : []),
+    querySelectorAll: (selector: string) =>
+      selector.includes("textarea") ? [...testState.editorForComposer.values()] : [],
     querySelector: () => null,
     addEventListener: vi.fn((type: string, listener: EventListener) => {
       testState.documentListeners.set(type, listener);
@@ -1123,4 +1186,272 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       expect.objectContaining({ status: "error" }),
     );
   });
+});
+
+describe("Renderer binding mixed-Host composers", () => {
+  it.each(["disconnect", "replace"])(
+    "ignores pending ownership from a retired remote client after %s",
+    async (mode) => {
+      installFakeBrowser([
+        { target: ["conversation", "same-thread"] },
+        { hidden: true, target: ["conversation", "same-thread"] },
+      ]);
+      const [localComposer, remoteComposer] = testState.composers;
+      assert(localComposer);
+      assert(remoteComposer);
+      const ownership = Promise.withResolvers<{
+        owner: "external";
+        harnessId: "claude-code";
+        transportModelId: string;
+        locked: true;
+        history: { fork: true; forkAcrossCwd: false; rollbackLastTurn: true };
+      }>();
+      const local = {
+        inspectThread: vi.fn(async () => ({ owner: "codex" as const, locked: true })),
+        inspectHarness: vi.fn(async () => readyInspection()),
+        inspectThreadUsage: vi.fn(async () => ({
+          threadId: "same-thread",
+          usage: { inputTokens: 11 },
+        })),
+        subscribeThreadUsage: vi.fn(() => () => undefined),
+      };
+      const retired = { ...local, inspectThread: vi.fn(() => ownership.promise) };
+      const replacement = {
+        ...local,
+        inspectThread: vi.fn(async () => ({ owner: "codex" as const, locked: true })),
+      };
+      let remoteClient: typeof retired | typeof replacement | null = retired;
+      const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+      const probe = installRendererBindingProbe({ enabledAgents: ["codex", "claude-code"] });
+      const ready = {
+        state: "ready",
+        reason: "ready",
+        modelUpdates: 0,
+        hook: "request-bridge",
+      } as const;
+      probe.setAdapter(
+        ready,
+        undefined,
+        undefined,
+        {
+          currentHostId: (composer?: Element) =>
+            composer === localComposer ? "local" : composer === remoteComposer ? "remote" : null,
+          clientForHost: (hostId: string) => (hostId === "local" ? local : remoteClient),
+        } as never,
+        () => ready,
+      );
+      await vi.waitFor(() => {
+        expect(retired.inspectThread).toHaveBeenCalledOnce();
+        expect(testState.renderedControls.get(localComposer)?.at(-1)).toMatchObject({
+          selection: { agent: "codex", phase: "locked" },
+        });
+      });
+      const localOwnershipCalls = local.inspectThread.mock.calls.length;
+      remoteClient = mode === "disconnect" ? null : replacement;
+      window.dispatchEvent(new CustomEvent("codexhost:draft-prewarm-policy-changed"));
+      ownership.resolve({
+        owner: "external",
+        harnessId: "claude-code",
+        transportModelId: "codexhost/claude-code-native",
+        locked: true,
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+      });
+      await ownership.promise;
+      await Promise.resolve();
+      expect(testState.renderedControls.get(remoteComposer)).not.toContainEqual(
+        expect.objectContaining({
+          selection: expect.objectContaining({ agent: "claude-code" }),
+        }),
+      );
+      expect(local.inspectThread).toHaveBeenCalledTimes(localOwnershipCalls);
+      if (mode === "replace") {
+        await vi.waitFor(() =>
+          expect(testState.renderedControls.get(remoteComposer)?.at(-1)).toMatchObject({
+            selection: { agent: "codex", phase: "locked" },
+          }),
+        );
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "routes co-mounted ownership and Harness menus independently (remote hidden: %s)",
+    async (hidden) => {
+      installFakeBrowser([
+        { target: ["conversation", "same-thread"] },
+        { hidden, target: ["conversation", "same-thread"] },
+      ]);
+      const [localComposer, remoteComposer] = testState.composers;
+      assert(localComposer);
+      assert(remoteComposer);
+      const threadId = hostThreadIdSchema.parse("same-thread");
+      const usageListeners = new Map<string, (update: ThreadUsageInspection) => void>();
+      const usageDisposers = new Map<string, ReturnType<typeof vi.fn>>();
+      const subscribeForHost = (hostId: string) =>
+        vi.fn((listener: (update: ThreadUsageInspection) => void) => {
+          usageListeners.set(hostId, listener);
+          const dispose = vi.fn();
+          usageDisposers.set(hostId, dispose);
+          return dispose;
+        });
+      const local = {
+        hostId: "local",
+        currentHostId: () => "local",
+        inspectHarness: vi.fn(async () => readyInspection()),
+        inspectThread: vi.fn(async () => ({
+          owner: "external" as const,
+          harnessId: "claude-code",
+          transportModelId:
+            "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
+          effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" }),
+          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+          locked: true,
+          usage: { inputTokens: 11 },
+        })),
+        inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+        inspectThreadUsage: vi.fn(async () => ({
+          threadId: "same-thread",
+          usage: { inputTokens: 11 },
+        })),
+        subscribeThreadUsage: subscribeForHost("local"),
+        selectThreadModel: vi.fn(async (input: { model: HarnessModelRef }) => ({
+          effectiveModel: input.model,
+          resolvedModelLabel: "local-selection",
+        })),
+      };
+      const remote = {
+        hostId: "remote-host",
+        currentHostId: () => "remote-host",
+        inspectHarness: vi.fn(async () => ({
+          status: "notInstalled" as const,
+          error: {
+            code: "notInstalled",
+            message: "Harness is not installed on remote",
+            retryable: false,
+          },
+        })),
+        inspectThread: vi.fn(async () => ({ owner: "codex" as const, locked: true })),
+        inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+        inspectThreadUsage: vi.fn(async () => ({
+          threadId: "same-thread",
+          usage: { inputTokens: 22 },
+        })),
+        subscribeThreadUsage: subscribeForHost("remote-host"),
+      };
+      let remoteClient: typeof remote | null = remote;
+      const currentHostId = vi.fn((composer?: Element) =>
+        composer === localComposer ? "local" : composer === remoteComposer ? "remote-host" : null,
+      );
+      const modelControl = {
+        currentHostId,
+        clientForHost: vi.fn((hostId: string) =>
+          hostId === "local" ? local : hostId === "remote-host" ? remoteClient : null,
+        ),
+        inspectHarness: vi.fn(),
+        inspectThread: vi.fn(),
+        inspectThreadUsage: vi.fn(),
+        selectThreadModel: vi.fn(),
+        subscribeThreadUsage: vi.fn(() => () => undefined),
+      };
+      const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+      const probe = installRendererBindingProbe({
+        enabledAgents: ["codex", "pi", "claude-code"],
+        defaultAgent: "codex",
+      });
+      const ready = {
+        state: "ready",
+        reason: "ready",
+        modelUpdates: 0,
+        hook: "request-bridge",
+      } as const;
+      probe.setAdapter(
+        ready,
+        undefined,
+        vi.fn(() => true),
+        modelControl as never,
+        (composer) =>
+          composer === remoteComposer && !remoteClient
+            ? {
+                ...ready,
+                state: "installing",
+                reason: "draft-routing-policy-unavailable",
+                hook: null,
+              }
+            : ready,
+      );
+      await vi.waitFor(() => {
+        expect(local.inspectThread).toHaveBeenCalledWith({ threadId: "same-thread" });
+        expect(remote.inspectThread).toHaveBeenCalledWith({ threadId: "same-thread" });
+        expect(testState.renderedControls.get(localComposer)?.at(-1)).toMatchObject({
+          selection: { agent: "claude-code", phase: "locked" },
+          adapter: "ready",
+          availability: { pi: "ready", "claude-code": "ready" },
+          modelView: { status: "ready" },
+        });
+        expect(testState.renderedControls.get(remoteComposer)?.at(-1)).toMatchObject({
+          selection: { agent: "codex", phase: "locked" },
+          adapter: "ready",
+          availability: { pi: "notInstalled", "claude-code": "notInstalled" },
+        });
+      });
+      expect(probe.status().mountedComposers).toBe(2);
+      expect(currentHostId()).toBeNull();
+      expect(currentHostId(localComposer)).toBe("local");
+      expect(currentHostId(remoteComposer)).toBe("remote-host");
+      expect(modelControl.inspectHarness).not.toHaveBeenCalled();
+      expect(modelControl.inspectThread).not.toHaveBeenCalled();
+      expect(modelControl.inspectThreadUsage).not.toHaveBeenCalled();
+      expect(local.subscribeThreadUsage).toHaveBeenCalledOnce();
+      expect(remote.subscribeThreadUsage).toHaveBeenCalledOnce();
+      expect(modelControl.subscribeThreadUsage).not.toHaveBeenCalled();
+      usageListeners.get("local")?.({
+        threadId,
+        usage: { inputTokens: 111 },
+      });
+      usageListeners.get("remote-host")?.({
+        threadId,
+        usage: { inputTokens: 222 },
+      });
+      expect(testState.renderedControls.get(localComposer)?.at(-1)?.usage).toEqual({
+        inputTokens: 111,
+      });
+      expect(testState.renderedControls.get(remoteComposer)?.at(-1)?.usage).toEqual({
+        inputTokens: 222,
+      });
+      testState.selectModels.get(localComposer)?.("claude-model-v1.b3B1cw");
+      await vi.waitFor(() =>
+        expect(testState.renderedControls.get(localComposer)?.at(-1)?.modelView).toMatchObject({
+          status: "ready",
+          resolvedModelLabel: "local-selection",
+        }),
+      );
+      expect(local.selectThreadModel).toHaveBeenCalledWith({
+        threadId: "same-thread",
+        model: { id: "claude-model-v1.b3B1cw" },
+      });
+      expect(modelControl.selectThreadModel).not.toHaveBeenCalled();
+
+      const localOwnershipCalls = local.inspectThread.mock.calls.length;
+      const retiredUsage = usageListeners.get("remote-host");
+      remoteClient = null;
+      window.dispatchEvent(new CustomEvent("codexhost:draft-prewarm-policy-changed"));
+      expect(usageDisposers.get("remote-host")).toHaveBeenCalledOnce();
+      expect(usageDisposers.get("local")).not.toHaveBeenCalled();
+      expect(local.inspectThread).toHaveBeenCalledTimes(localOwnershipCalls);
+      expect(testState.renderedControls.get(localComposer)?.at(-1)).toMatchObject({
+        adapter: "ready",
+        modelView: { status: "ready", resolvedModelLabel: "local-selection" },
+        usage: { inputTokens: 111 },
+      });
+      expect(testState.renderedControls.get(remoteComposer)?.at(-1)).toMatchObject({
+        adapter: "installing",
+        usage: null,
+      });
+      retiredUsage?.({ threadId, usage: { inputTokens: 999 } });
+      expect(testState.renderedControls.get(remoteComposer)?.at(-1)?.usage).toBeNull();
+      expect(testState.renderedControls.get(localComposer)?.at(-1)?.usage).toEqual({
+        inputTokens: 111,
+      });
+    },
+  );
 });

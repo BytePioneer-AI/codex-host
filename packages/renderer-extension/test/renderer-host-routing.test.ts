@@ -53,7 +53,7 @@ function manager(hostId: string) {
   };
 }
 
-async function setup(initialHostId: string) {
+async function setup(initialHostId: string, coMountedHostIds: readonly string[] = []) {
   const local = manager("local");
   const remote = manager(remoteId);
   const managers = new Map([
@@ -70,7 +70,13 @@ async function setup(initialHostId: string) {
     memoizedState: { memoizedState: registry, next: { memoizedState: local } },
     return: null,
   };
-  const editor = { __reactFiber$host: fiber, parentElement: null, querySelectorAll: () => [] };
+  const editor = {
+    __reactFiber$host: fiber,
+    parentElement: null,
+    matches: () => true,
+    querySelectorAll: () => [],
+    hidden: false,
+  };
   const editors = [editor];
   const listeners = new EventTarget();
   vi.stubGlobal("window", {
@@ -93,6 +99,13 @@ async function setup(initialHostId: string) {
     },
   };
   await installRendererDraftPrewarmPolicyDirect(renderer);
+  for (const hostId of coMountedHostIds) {
+    editors.push({
+      ...editor,
+      hidden: true,
+      __reactFiber$host: { ...fiber, memoizedProps: { executionTargetHostId: hostId } },
+    });
+  }
   const adapter = installCurrentRendererAdapter();
   return { local, remote, managers, fiber, editors, adapter, renderer };
 }
@@ -198,11 +211,17 @@ it.each(["local", remoteId])(
       await adapter.modelControl
         ?.clientForHost?.(hostId)
         ?.inspectHarness(piRequest, { priority: "background" });
-      expect(replacement.nativeSend).toHaveBeenCalledExactlyOnceWith(
-        "codexhost/harness/inspect",
-        piRequest,
-        { priority: "background" },
-      );
+      expect(
+        replacement.nativeSend.mock.calls.filter(
+          ([method]) => method === "codexhost/harness/inspect",
+        ),
+      ).toEqual([["codexhost/harness/inspect", piRequest, { priority: "background" }]]);
+      if (hostId !== "local") {
+        expect(replacement.nativeSend).not.toHaveBeenCalledWith(
+          "codexhost/settings/idle-release/set",
+          expect.anything(),
+        );
+      }
     } finally {
       adapter.dispose();
     }
@@ -310,6 +329,141 @@ it("resets unsupported-method observations only when the native connection is re
       status: "ready",
     });
   } finally {
+    adapter.dispose();
+  }
+});
+
+it("is capability-ready with mixed mounted Hosts but never picks a global command route", async () => {
+  const { adapter, editors, local, remote } = await setup("local", [remoteId]);
+  const localComposer = editors[0] as unknown as Element;
+  const remoteComposer = editors[1] as unknown as Element;
+  try {
+    expect(adapter.status).toMatchObject({
+      state: "ready",
+      reason: "ready",
+      hook: "request-bridge",
+    });
+    const status = { ...adapter.status };
+    expect(adapter.modelControl?.currentHostId?.(localComposer)).toBe("local");
+    expect(adapter.modelControl?.currentHostId?.(remoteComposer)).toBe(remoteId);
+    expect(adapter.statusForComposer(localComposer)).toMatchObject({ state: "ready" });
+    expect(adapter.statusForComposer(remoteComposer)).toMatchObject({ state: "ready" });
+    expect(adapter.status).toEqual(status);
+    expect(adapter.modelControl?.currentHostId?.()).toBeNull();
+    expect(adapter.status.state).toBe("ready");
+    expect(adapter.applyAgent("pi")).toBe(false);
+    expect(() => adapter.modelControl?.inspectHarness(piRequest)).toThrow("unavailable");
+    expect(window.__codexhostDraftPrewarmPolicyV1).toBeUndefined();
+    expect(adapter.applyAgent("pi", undefined, undefined, undefined, localComposer)).toBe(true);
+    expect(adapter.applyAgent("codex", undefined, undefined, undefined, remoteComposer)).toBe(true);
+    await remote.requestClient.sendRequest("thread/start", { model: "native-model" });
+    await local.requestClient.sendRequest("thread/start", { model: "native-model" });
+    expect(remote.nativeSend).toHaveBeenCalledWith("thread/start", { model: "native-model" });
+    expect(local.nativeSend).toHaveBeenCalledWith("thread/start", { model: "codexhost/pi-native" });
+  } finally {
+    adapter.dispose();
+  }
+});
+
+it("shares a validated manager for same-Host main and side chat Composers", async () => {
+  const { adapter, editors } = await setup("local", ["local"]);
+  try {
+    const main = editors[0] as unknown as Element;
+    const side = editors[1] as unknown as Element;
+    const client = adapter.modelControl?.clientForHost?.("local");
+    expect(adapter.modelControl?.currentHostId?.(main)).toBe("local");
+    expect(adapter.modelControl?.currentHostId?.(side)).toBe("local");
+    expect(adapter.statusForComposer(main).state).toBe("ready");
+    expect(adapter.statusForComposer(side).state).toBe("ready");
+    expect(adapter.modelControl?.clientForHost?.("local")).toBe(client);
+    expect(adapter.modelControl?.currentHostId?.()).toBe("local");
+  } finally {
+    adapter.dispose();
+  }
+});
+
+it.each(["disconnect", "replace"])(
+  "rejects an actual Composer route retired by %s while retaining its Host identity",
+  async (mode) => {
+    const { adapter, editors, managers, local } = await setup("local");
+    const composer = editors[0] as unknown as Element;
+    const routing = window.__codexhostHostRoutingV1;
+    assert(routing);
+    const original = routing.forComposer(composer);
+    assert(original);
+    const oldSelect = vi.fn(original.policy.select);
+    const staleRoute = { ...original, policy: { ...original.policy, select: oldSelect } };
+    const capturedClient = adapter.modelControl?.clientForHost?.("local");
+    if (mode === "disconnect") managers.delete("local");
+    else managers.set("local", manager("local"));
+    // Model obsolete scoped discovery; the current global registry is still
+    // authoritative before reporting ready or selecting a carrier.
+    const forComposer = vi.spyOn(routing, "forComposer").mockReturnValue(staleRoute);
+    const before = { ...adapter.status };
+    try {
+      expect(adapter.modelControl?.currentHostId?.(composer)).toBe("local");
+      expect(adapter.statusForComposer(composer)).toMatchObject({
+        state: "installing",
+        reason: "draft-routing-policy-unavailable",
+        hook: null,
+      });
+      expect(adapter.applyAgent("pi", undefined, undefined, undefined, composer)).toBe(false);
+      expect(oldSelect).not.toHaveBeenCalled();
+      expect(adapter.status).toEqual(before);
+      await expect(capturedClient?.inspectHarness(piRequest)).rejects.toThrow("unavailable");
+      expect(local.nativeSend).not.toHaveBeenCalledWith("codexhost/harness/inspect", piRequest);
+    } finally {
+      forComposer.mockRestore();
+      adapter.dispose();
+    }
+  },
+);
+
+it("does not change global readiness or Usage ownership during scoped Composer lookups", async () => {
+  const { adapter, editors, remote, managers } = await setup(remoteId, ["local"]);
+  const composer = editors[1] as unknown as Element;
+  const routing = window.__codexhostHostRoutingV1;
+  assert(routing);
+  const forComposer = vi.spyOn(routing, "forComposer");
+  // Establish the global Usage owner before introducing a disconnected scoped
+  // Composer. Scoped identity/status reads must not reconnect that relay.
+  const callbacks = new Set<(notification: unknown) => void>();
+  const remove = vi.fn();
+  Object.assign(remote, {
+    addNotificationCallback: vi.fn(
+      (_methods: unknown, callback: (notification: unknown) => void) => {
+        callbacks.add(callback);
+        return () => {
+          callbacks.delete(callback);
+          remove();
+        };
+      },
+    ),
+  });
+  // Refresh the cached client after adding notifications.
+  remote.requestClient = { ...remote.requestClient };
+  forComposer.mockImplementation((target) => (target ? null : routing.forHost(remoteId)));
+  const update = vi.fn();
+  const unsubscribe = adapter.modelControl?.subscribeThreadUsage?.(update);
+  try {
+    await adapter.modelControl?.inspectThreadUsage(threadRequest);
+    expect(callbacks.size).toBe(1);
+    const status = { ...adapter.status };
+    managers.delete("local");
+    expect(adapter.modelControl?.currentHostId?.(composer)).toBe("local");
+    expect(adapter.statusForComposer(composer).state).toBe("installing");
+    expect(adapter.status).toEqual(status);
+    expect(remove).not.toHaveBeenCalled();
+    expect(callbacks.size).toBe(1);
+    for (const callback of callbacks) {
+      callback({ method: "turn/completed", params: threadRequest });
+    }
+    await vi.waitFor(() =>
+      expect(update).toHaveBeenCalledWith({ threadId: "thread-test", usage: null }),
+    );
+  } finally {
+    unsubscribe?.();
+    forComposer.mockRestore();
     adapter.dispose();
   }
 });

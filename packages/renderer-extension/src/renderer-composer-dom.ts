@@ -776,7 +776,9 @@ export function renderComposerAgentControl(
     (!isPermissionModeControlReady(permissionModeView) ||
       (permissionModeView.status !== "unsupported" &&
         !control.nativePermissionModeControlVerified));
-  const submissionBlocked = switching || ownershipError || modelBlocked || permissionModeBlocked;
+  const adapterBlocked = state.agent !== "codex" && adapterState !== "ready";
+  const submissionBlocked =
+    switching || ownershipError || adapterBlocked || modelBlocked || permissionModeBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     control.sendButton.disabled = true;

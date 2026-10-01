@@ -46,6 +46,10 @@
 <td width="180"><a href="https://aixlau.me/register?aff=HOST"><img src="../imgs/sponsors/xinglian-ai.png" alt="星链AI" width="160"></a></td>
 <td>感谢 <b>星链AI</b> 赞助本项目！星链AI 为 Codex、CodexHost 等 AI Coding 工具提供稳定、高效的 API 中转服务，支持主流 AI 模型快速接入：稳定线路 · 快速响应 · 多模型兼容 · 即开即用，减少 API 配置与切换成本，让你更专注于 Coding。<a href="https://aixlau.me/register?aff=HOST">点击立即体验 →</a></td>
 </tr>
+<tr>
+<td width="180"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="../imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="160"></a></td>
+<td>感谢 <b>VibeAPI</b> 赞助本项目！VibeAPI 主要面向重度开发者与团队，提供主流 AI 模型统一接入。主打 Codex 与 Claude 系列，坚持自建号池可溯源。首流响应极速，SLA 稳定性达 99.9%，缓存命中率高达 95%+。提供 7×24 小时人工技术支持，全面支持对公开票与企业合作。<a href="https://vibeapi.cc/sign-up?aff=AOYp">点此前往薅赛博鸡蛋</a></td>
+</tr>
 </table>
 </details>
 

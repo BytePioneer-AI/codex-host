@@ -46,6 +46,10 @@
 <td width="180"><a href="https://aixlau.me/register?aff=HOST"><img src="../imgs/sponsors/xinglian-ai.png" alt="Xinglian AI" width="160"></a></td>
 <td>이 프로젝트를 후원해 주신 <b>星链AI (Xinglian AI)</b>에 감사드립니다! Xinglian AI는 Codex, CodexHost 등 AI 코딩 도구를 위한 안정적이고 효율적인 API 중계 서비스를 제공하며, 주요 AI 모델에 빠르게 연결할 수 있습니다: 안정적인 회선 · 빠른 응답 · 다중 모델 호환 · 바로 사용 가능. API 설정과 전환 비용을 줄여 코딩에 더 집중할 수 있습니다. <a href="https://aixlau.me/register?aff=HOST">지금 체험하기 →</a></td>
 </tr>
+<tr>
+<td width="180"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="../imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="160"></a></td>
+<td>이 프로젝트를 후원해 주신 <b>VibeAPI</b>에 감사드립니다! VibeAPI는 AI를 집중적으로 활용하는 개발자와 팀을 위해 주요 AI 모델에 대한 통합 접근을 제공합니다. Codex와 Claude 시리즈를 중심으로, 출처를 추적할 수 있는 자체 구축 계정 풀을 운영합니다. 매우 빠른 첫 토큰 응답, 99.9% SLA 가용성, 95%+ 캐시 적중률을 제공하며, 연중무휴 24시간 전문 인력의 기술 지원과 법인 인보이스 발행 및 기업 협력을 지원합니다. <a href="https://vibeapi.cc/sign-up?aff=AOYp">사이버 혜택 받으러 가기 →</a></td>
+</tr>
 </table>
 </details>
 

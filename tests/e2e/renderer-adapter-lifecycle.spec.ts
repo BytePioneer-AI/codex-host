@@ -13,7 +13,7 @@ const { outputFiles } = await build({
     contents: `
       import { installCurrentRendererAdapter } from "./packages/renderer-extension/src/versioned-renderer-adapter.ts";
       import { installRendererDraftPrewarmPolicyDirect } from "./packages/desktop-control/src/renderer-draft-prewarm-policy.ts";
-      globalThis.setupHostRoutes = async (initialHostId) => {
+      globalThis.setupHostRoutes = async (initialHostId, coMountedHostId, hidden = true) => {
         const createManager = (hostId) => {
           const calls = [];
           const requestClient = {
@@ -56,9 +56,20 @@ const { outputFiles } = await build({
         };
         Object.defineProperty(editor, "__reactFiber$host", { value: fiber });
         document.body.replaceChildren(editor);
+        let secondEditor = null;
+        if (coMountedHostId) {
+          secondEditor = document.createElement("div");
+          secondEditor.setAttribute("data-codex-composer", "true");
+          secondEditor.setAttribute("data-codex-composer-root", "true");
+          secondEditor.hidden = hidden;
+          Object.defineProperty(secondEditor, "__reactFiber$host", {
+            value: { ...fiber, memoizedProps: { executionTargetHostId: coMountedHostId } },
+          });
+          document.body.append(secondEditor);
+        }
         await installRendererDraftPrewarmPolicyDirect({ evaluate: (source) => (0, eval)(source) });
         const adapter = installCurrentRendererAdapter();
-        globalThis.hostRoutes = { adapter, fiber, local, remote, managers, createManager, editor };
+        globalThis.hostRoutes = { adapter, fiber, local, remote, managers, createManager, editor, secondEditor };
       };
     `,
     resolveDir: path.resolve(import.meta.dirname, "../.."),
@@ -77,13 +88,22 @@ const bundle = outputFiles[0]?.text;
 if (!bundle) throw new Error("Host routing browser bundle was not generated");
 const browserBundle: string = bundle;
 
-async function setup(page: Page, hostId: string): Promise<void> {
+async function setup(
+  page: Page,
+  hostId: string,
+  coMountedHostId?: string,
+  hidden = true,
+): Promise<void> {
   await page.route("https://codexhost.test/**", (route) =>
     route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" }),
   );
   await page.goto("https://codexhost.test/");
   await page.addScriptTag({ content: browserBundle });
-  await page.evaluate((initial) => Reflect.get(globalThis, "setupHostRoutes")(initial), hostId);
+  await page.evaluate(
+    ({ initial, second, hidden }) =>
+      Reflect.get(globalThis, "setupHostRoutes")(initial, second, hidden),
+    { initial: hostId, second: coMountedHostId, hidden },
+  );
 }
 
 for (const hostId of ["local", "remote-ssh-discovered:linux"]) {
@@ -183,5 +203,111 @@ test("switching Hosts does not send a local external carrier to stock remote Cod
   expect(result).toEqual({
     remote: ["native-model"],
     local: ["codexhost/pi-native", "native-model"],
+  });
+});
+
+for (const first of ["local", "remote-ssh-discovered:linux"]) {
+  for (const hidden of [true, false]) {
+    test(`mixed Hosts cold start (${first} first, second hidden: ${hidden})`, async ({ page }) => {
+      const second = first === "local" ? "remote-ssh-discovered:linux" : "local";
+      await setup(page, first, second, hidden);
+      const result = await page.evaluate(async () => {
+        const state = Reflect.get(globalThis, "hostRoutes");
+        const { adapter, editor, secondEditor, managers } = state;
+        const routing = window.__codexhostHostRoutingV1;
+        if (!routing) throw new Error("Host routing was not installed");
+        const control = adapter.modelControl;
+        const firstHost = control.currentHostId(editor);
+        const secondHost = control.currentHostId(secondEditor);
+        const ready = [
+          adapter.statusForComposer(editor).state,
+          adapter.statusForComposer(secondEditor).state,
+        ];
+        const scoped = adapter.applyAgent("pi", undefined, undefined, undefined, editor);
+        const global = adapter.applyAgent("pi");
+        await state.local.requestClient.sendRequest("thread/start", { model: "native-model" });
+        await state.remote.requestClient.sendRequest("thread/start", { model: "native-model" });
+        managers.delete(secondHost);
+        const disconnected = adapter.statusForComposer(secondEditor).state;
+        const healthy = adapter.statusForComposer(editor).state;
+        await control.clientForHost(firstHost).inspectThreadUsage({ threadId: "thread-test" });
+        const answer = {
+          firstHost,
+          secondHost,
+          ready,
+          scoped,
+          global,
+          globalHost: control.currentHostId(),
+          globalRoute: routing.forComposer(),
+          singleton: window.__codexhostDraftPrewarmPolicyV1 !== undefined,
+          disconnected,
+          healthy,
+          localModels: state.local.calls
+            .filter((call: RecordedRequest) => call.method === "thread/start")
+            .map((call: RecordedRequest) => call.params.model),
+          remoteModels: state.remote.calls
+            .filter((call: RecordedRequest) => call.method === "thread/start")
+            .map((call: RecordedRequest) => call.params.model),
+        };
+        adapter.dispose();
+        return answer;
+      });
+      expect(result).toEqual({
+        firstHost: first,
+        secondHost: second,
+        ready: ["ready", "ready"],
+        scoped: true,
+        global: false,
+        globalHost: null,
+        globalRoute: null,
+        singleton: false,
+        disconnected: "installing",
+        healthy: "ready",
+        localModels: [first === "local" ? "codexhost/pi-native" : "native-model"],
+        remoteModels: [first === "local" ? "native-model" : "codexhost/pi-native"],
+      });
+    });
+  }
+}
+
+test("mixed Hosts publish scoped connection replacement without choosing a singleton", async ({
+  page,
+}) => {
+  await setup(page, "local", "remote-ssh-discovered:linux");
+  const result = await page.evaluate(async () => {
+    const { adapter, editor, secondEditor, managers, createManager } = Reflect.get(
+      globalThis,
+      "hostRoutes",
+    );
+    const routing = window.__codexhostHostRoutingV1;
+    if (!routing) throw new Error("Host routing was not installed");
+    const local = routing.forComposer(editor);
+    const remote = routing.forComposer(secondEditor);
+    let changes = 0;
+    const onChange = () => {
+      changes += 1;
+    };
+    window.addEventListener("codexhost:draft-prewarm-policy-changed", onChange);
+    managers.set("remote-ssh-discovered:linux", createManager("remote-ssh-discovered:linux"));
+    const status = adapter.statusForComposer(secondEditor).state;
+    const replacement = routing.forComposer(secondEditor);
+    await Promise.resolve();
+    const answer = {
+      status,
+      replaced: replacement !== remote,
+      localUnchanged: routing.forComposer(editor) === local,
+      changes,
+      singleton: window.__codexhostDraftPrewarmPolicyV1 !== undefined,
+    };
+    window.removeEventListener("codexhost:draft-prewarm-policy-changed", onChange);
+    adapter.dispose();
+    return answer;
+  });
+  expect(result).toEqual({
+    status: "ready",
+    replaced: true,
+    localUnchanged: true,
+    changes: 1,
+    singleton: false,
   });
 });

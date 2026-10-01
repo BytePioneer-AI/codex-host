@@ -891,6 +891,7 @@ export function modelSelectionForAgent(
 
 export function installCurrentRendererAdapter(): {
   status: RendererAdapterStatus;
+  statusForComposer(composer: Element): RendererAdapterStatus;
   modelControl: RendererModelClient | null;
   applyAgent(
     agent: RendererAgent,
@@ -935,6 +936,36 @@ export function installCurrentRendererAdapter(): {
     fiberWalkLimited = true;
   };
   window.addEventListener(REACT_FIBER_WALK_LIMIT_EVENT, onFiberWalkLimit);
+  const validatedComposerRoute = (composer?: Element): RendererHostRoute | null => {
+    if (disposed) return null;
+    const routing = window.__codexhostHostRoutingV1;
+    const route = routing?.forComposer(composer);
+    return route &&
+      isDraftPrewarmPolicyReady(route.policy) &&
+      route.policy.hostId === route.hostId &&
+      routing?.forHost(route.hostId) === route
+      ? route
+      : null;
+  };
+  const routeStatus = (ready: boolean): RendererAdapterStatus => ({
+    state: ready ? "ready" : "installing",
+    reason: ready
+      ? "ready"
+      : fiberWalkLimited
+        ? "react-fiber-walk-limit-exceeded"
+        : "draft-routing-policy-unavailable",
+    modelUpdates,
+    hook: ready ? "request-bridge" : null,
+  });
+  const statusForComposer = (composer: Element): RendererAdapterStatus => {
+    const previousWalkLimited = fiberWalkLimited;
+    fiberWalkLimited = false;
+    try {
+      return routeStatus(validatedComposerRoute(composer) !== null);
+    } finally {
+      fiberWalkLimited = previousWalkLimited;
+    }
+  };
   const currentRequestRoute = (): RendererHostRoute | null => {
     fiberWalkLimited = false;
     const route = disposed ? null : (window.__codexhostHostRoutingV1?.forComposer() ?? null);
@@ -945,15 +976,17 @@ export function installCurrentRendererAdapter(): {
     idleReleaseSync.connect(
       disposed ? null : route?.hostId === "local" ? client : clients.forHost("local"),
     );
-    updateStatus(
-      route ? "ready" : "installing",
-      route
-        ? "ready"
-        : fiberWalkLimited
-          ? "react-fiber-walk-limit-exceeded"
-          : "draft-routing-policy-unavailable",
-      route ? "request-bridge" : null,
-    );
+    // Installed capability need not have a single document-wide command owner.
+    const ready =
+      route !== null ||
+      (!disposed &&
+        Array.from(
+          document.querySelectorAll?.(
+            '[data-codex-composer], [contenteditable="true"][role="textbox"]',
+          ) ?? [],
+        ).some((composer) => validatedComposerRoute(composer) !== null));
+    const next = routeStatus(ready);
+    updateStatus(next.state, next.reason, next.hook);
     return route;
   };
   const currentModelClient = (): RendererModelClient => {
@@ -971,12 +1004,12 @@ export function installCurrentRendererAdapter(): {
     return client;
   };
   const modelControl: RendererModelClient = Object.freeze({
-    currentHostId: () => {
-      const route = currentRequestRoute();
+    currentHostId: (composer?: Element) => {
+      const route = composer ? validatedComposerRoute(composer) : currentRequestRoute();
       // Preserve known Host identity even when its native manager is disconnected.
       return disposed
         ? null
-        : (route?.hostId ?? window.__codexhostHostRoutingV1?.hostIdForComposer() ?? null);
+        : (route?.hostId ?? window.__codexhostHostRoutingV1?.hostIdForComposer(composer) ?? null);
     },
     clientForHost: (hostId: string) => (disposed ? null : clients.forHost(hostId)),
     listHarnessPlugins: async () => {
@@ -1101,7 +1134,7 @@ export function installCurrentRendererAdapter(): {
     );
     const carrier = selection?.model;
     if (carrier !== null && carrier !== undefined && typeof carrier !== "string") return false;
-    const route = window.__codexhostHostRoutingV1?.forComposer(composer);
+    const route = validatedComposerRoute(composer);
     if (!route) return false;
     try {
       if (route.policy.select(carrier ?? null)) {
@@ -1110,13 +1143,14 @@ export function installCurrentRendererAdapter(): {
       }
       selectedPolicies.set(route.hostId, route.policy);
     } catch {
-      updateStatus("installing", "draft-routing-policy-unavailable", null);
+      if (!composer) updateStatus("installing", "draft-routing-policy-unavailable", null);
       return false;
     }
     return true;
   };
   return {
     status: liveStatus,
+    statusForComposer,
     modelControl,
     applyAgent,
     dispose() {

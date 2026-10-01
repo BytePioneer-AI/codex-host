@@ -184,6 +184,14 @@ The remote native entrypoint SHALL use a dedicated Mapping Store data directory 
 
 Renderer draft routing SHALL accept any active non-empty Codex host ID, bind the selected carrier to that host's request manager, and reconcile the policy whenever the active composer changes hosts. On a supported current Desktop build, it SHALL classify draft versus bound Thread identity from the current Composer's scoped marker rather than unrelated page ancestors. It MUST NOT reuse a policy owned by another host.
 
+#### Scenario: Renderer starts with Composers from multiple Hosts
+
+- **GIVEN** local and remote Composers are already mounted when the Renderer Extension installs
+- **WHEN** at least one Composer resolves a reviewed, current request manager for its own Host
+- **THEN** installation SHALL allow that Composer's external capabilities to become ready
+- **AND** each unavailable or ambiguous Composer SHALL remain individually unavailable
+- **AND** no single global draft policy SHALL claim ownership of the mixed-Host document
+
 #### Scenario: User switches from local to remote workspace
 
 - **WHEN** the active composer changes from the local host to an SSH host

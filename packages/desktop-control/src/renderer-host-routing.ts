@@ -39,6 +39,25 @@ export function installRendererHostRouting(
   (target.__codexhostDraftPrewarmPolicyV1 as RendererDraftBridgePolicy | undefined)?.dispose?.();
   let disposed = false;
   let lastDiscovery: RendererHostDiscovery | null = null;
+  let routeChangeScheduled = false;
+  const scheduleRouteChange = (): void => {
+    if (
+      disposed ||
+      routeChangeScheduled ||
+      typeof target.dispatchEvent !== "function" ||
+      typeof CustomEvent !== "function"
+    )
+      return;
+    routeChangeScheduled = true;
+    // Scoped route changes do not publish a singleton. Notify after lookup
+    // completes so consumers can reconcile without re-entering route creation.
+    void Promise.resolve().then(() => {
+      routeChangeScheduled = false;
+      if (!disposed) {
+        target.dispatchEvent?.(new CustomEvent("codexhost:draft-prewarm-policy-changed"));
+      }
+    });
+  };
   const routes = new Map<
     string,
     {
@@ -76,6 +95,7 @@ export function installRendererHostRouting(
     const entry = routes.get(hostId);
     routes.delete(hostId);
     entry?.route.policy.dispose();
+    if (entry) scheduleRouteChange();
   };
   const routeFor = (
     hostId: string,
@@ -115,6 +135,7 @@ export function installRendererHostRouting(
     );
     const route = { hostId, manager, policy };
     routes.set(hostId, { route, bridge, prewarmed });
+    scheduleRouteChange();
     return route;
   };
   const publish = (route: RendererHostRoute | null): void => {
@@ -160,7 +181,7 @@ export function installRendererHostRouting(
       try {
         discovery = read(composer);
       } catch {
-        publish(null);
+        if (!composer) publish(null);
         return null;
       }
       // A switch does not retire a different Host. Only native owner replacement

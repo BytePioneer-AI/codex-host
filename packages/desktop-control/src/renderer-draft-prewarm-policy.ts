@@ -39,7 +39,13 @@ function directRendererInstaller(): string {
         manager, bridge, hostId, target, prewarmed, isCurrent, retainRendererHostResponses,
       ),
     );
-    if (!routing.forComposer()) throw new Error('Renderer request manager is ambiguous');
+    const ready = routing.forComposer() || Array.from(document.querySelectorAll(
+      '[data-codex-composer], [contenteditable="true"][role="textbox"]',
+    )).some((composer) => {
+      const route = routing.forComposer(composer);
+      return route && routing.forHost(route.hostId) === route;
+    });
+    if (!ready) throw new Error('Renderer request manager is ambiguous');
     return { state: 'ready', reason: 'owned-request-bridge' };
   })()`;
 }

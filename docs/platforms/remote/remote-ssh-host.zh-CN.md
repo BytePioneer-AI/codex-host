@@ -28,6 +28,8 @@ codexhost remote status
 2. 打开 SSH 工作区。
 3. 在输入框的 Agent / Model 选择器中选择目标 Harness。
 
+每个输入框都使用其所属 Host 的 Harness 可用状态和请求通道，即使本地与远程输入框同时保留在同一页面中。一个 Host 断开不会禁用另一 Host 的正常输入框；所属 Host 上未安装或不可用的 Harness 仍保持禁用。
+
 ## 常用命令
 
 ```bash

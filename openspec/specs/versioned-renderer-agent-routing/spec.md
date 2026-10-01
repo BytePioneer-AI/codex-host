@@ -601,6 +601,15 @@ The Renderer SHALL recognize `deepseek-harness` ownership records and display th
 
 The versioned Renderer Adapter SHALL bind Agent selection and draft prewarm routing to the currently active non-empty Codex host ID and the current Composer's scoped draft-or-Thread identity. It SHALL always inspect and retain the local Host's Harness availability independently of any remote Host, SHALL partition availability, errors, in-flight requests, and retries by host ID, and SHALL reconcile the displayed state when the active bridge or host changes. It SHALL preserve the selected carrier across that reconciliation. An empty host ID or ambiguous Composer identity SHALL be rejected.
 
+#### Scenario: Local and remote Composers remain mounted together
+
+- **GIVEN** a Renderer document contains local and remote Composers, including hidden retained Composers
+- **WHEN** either Composer inspects or selects an external Harness
+- **THEN** readiness, availability, ownership, configuration requests, and Usage updates SHALL remain scoped to that Composer's Host
+- **AND** an ambiguous document-wide Host SHALL NOT choose an arbitrary manager or disable a separately validated Composer
+- **AND** disconnection or replacement of one Host manager SHALL NOT overwrite another Host's Composer state
+- **AND** late results from a retired manager SHALL NOT overwrite the current Composer state
+
 #### Scenario: Startup restores an unavailable SSH Composer
 
 - **WHEN** the local Host is ready but the initially active SSH Host inspection remains pending or fails

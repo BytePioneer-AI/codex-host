@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import type * as filesystemPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,8 +14,14 @@ import {
 } from "../src/pi-fast-mode.js";
 import { decodePiModelRef, encodePiModelRef } from "../src/pi-model-catalog.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const filesystem = await importOriginal<typeof filesystemPromises>();
+  return { ...filesystem, rename: vi.fn(filesystem.rename) };
+});
+
 const homes: string[] = [];
 afterEach(async () => {
+  vi.mocked(rename).mockReset();
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
 function codexCredential() {
@@ -102,6 +109,41 @@ describe("Pi Host Fast", () => {
       await ensurePiFastExtension({ HOME: home, CODEXHOST_DATA_DIR: dataDirectory }),
     ).toContain(path.join(dataDirectory, "extensions", "pi-codex-fast"));
   });
+
+  it("accepts a concurrent publisher after Windows refuses the replacement and removes its temporary file", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "pi-fast-resource-race-"));
+    homes.push(home);
+    const failure = Object.assign(new Error("Windows refused replacement"), { code: "EPERM" });
+    vi.mocked(rename).mockImplementationOnce(async (_temporary, file) => {
+      await writeFile(file, PI_FAST_EXTENSION);
+      throw failure;
+    });
+
+    const file = await ensurePiFastExtension({ HOME: home });
+    expect(await readFile(file, "utf8")).toBe(PI_FAST_EXTENSION);
+    expect(await readdir(path.dirname(file))).toEqual([path.basename(file)]);
+    vi.mocked(rename).mockClear();
+    expect(await ensurePiFastExtension({ HOME: home })).toBe(file);
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "invalid"])(
+    "preserves rename errors when the published resource is %s and removes its temporary file",
+    async (state) => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "pi-fast-resource-failure-"));
+      homes.push(home);
+      const failure = Object.assign(new Error("Windows refused replacement"), { code: "EPERM" });
+      vi.mocked(rename).mockImplementationOnce(async (_temporary, file) => {
+        if (state === "invalid") await writeFile(file, "not the bundled extension");
+        throw failure;
+      });
+
+      await expect(ensurePiFastExtension({ HOME: home })).rejects.toBe(failure);
+      const files = await readdir(path.join(home, ".codexhost", "extensions", "pi-codex-fast"));
+      expect(files).toHaveLength(state === "invalid" ? 1 : 0);
+      expect(files.every((file) => file.endsWith(".mjs"))).toBe(true);
+    },
+  );
 
   it("is inert until enabled and decorates the existing Provider without replacing its authentication or reasoning", async () => {
     type Model = { provider: string; id: string; api: string };

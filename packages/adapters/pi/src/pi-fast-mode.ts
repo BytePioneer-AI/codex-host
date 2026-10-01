@@ -70,7 +70,13 @@ export async function ensurePiFastExtension(environment: NodeJS.ProcessEnv): Pro
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, PI_FAST_EXTENSION, { mode: 0o600 });
-    await rename(temporary, file);
+    try {
+      await rename(temporary, file);
+    } catch (error) {
+      // Windows may refuse to replace the file another start just published.
+      // Accept only the exact resource; do not hide an unsuccessful write.
+      if ((await readFile(file, "utf8").catch(() => "")) !== PI_FAST_EXTENSION) throw error;
+    }
   } finally {
     await rm(temporary, { force: true });
   }

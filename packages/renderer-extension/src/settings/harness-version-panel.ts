@@ -1,8 +1,6 @@
 import type { HarnessInstallationState } from "@codexhost/shared-contracts";
 
 import type { ExternalRendererAgent } from "../agent-selection-state.js";
-import { harnessInstallationGuide } from "./harness-installation-guides.js";
-import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 /** Owned by one Connections page, reused across diagnostic renders and row switches. */
@@ -31,19 +29,10 @@ export function createHarnessVersionPanel(
   update.type = "button";
   update.className = "settings-command-button settings-command-button--secondary";
   update.dataset.harnessVersionAction = "update";
-  const guide = document.createElement("a");
-  guide.className = update.className;
-  guide.href = harnessInstallationGuide(agent, messages.locale).url;
-  guide.target = "_blank";
-  guide.rel = "noopener noreferrer";
-  guide.append(
-    messages.connectionOpenInstallation,
-    createRendererSettingsIcon("external-link", 14),
-  );
   const note = document.createElement("p");
   note.className = "settings-connection-issue-note";
   note.textContent = messages.harnessVersionNote;
-  actions.append(update, guide);
+  actions.append(update);
   panel.append(heading, versions, status, actions, note);
   let state: HarnessInstallationState | undefined;
   let busy = false;

@@ -124,7 +124,7 @@ DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生�
 
 ## 连接页的手动安装指引
 
-未安装的 Harness 行打开右侧安装指引；下载图标显式请求所选 Host 安装 CLI，WorkBuddy 仍打开桌面应用安装引导。安装中及检测中状态显示在列表中，失败信息显示在右侧，详见[首次安装与版本管理](harness-plugin-runtime.md#首次安装)。Renderer 的 `settings/harness-installation-guides.ts` 保存官方来源、命令、前置条件与安装后步骤；`harness-installation-panel.ts` 只负责展示、复制及触发现有连接诊断，不执行安装、登录或 Shell 命令。实际安装来源由各 Adapter 定义，通过公共安装能力执行。
+所选 Harness 的详情卡片标题旁显示一个官网外链图标，列表行不重复展示，地址由 Renderer 的 `settings/harness-official-websites.ts` 保存；未安装时，详情正文保留手动安装命令、复制按钮及前后置提示，但不重复展示通用安装指南跳转链接。WorkBuddy 显示一个「下载」按钮，跳转官网首页，并提示下载安装桌面应用，不提供分系统的安装指南链接。命令与提示由 `settings/harness-installation-guides.ts` 保存，`harness-installation-panel.ts` 仅负责展示和复制，不执行命令。未安装且支持自动安装时，下载图标显式请求所选 Host 安装 CLI；WorkBuddy 无自动安装按钮，用户通过官网下载安装。右侧保留必要的接入提示、远程 Host 提示与「重新检测」。安装中及检测中状态显示在列表中，失败信息显示在右侧，详见[首次安装与版本管理](harness-plugin-runtime.md#首次安装)。实际安装来源由各 Adapter 定义，通过公共安装能力执行。
 
 - 命令明确区分 macOS/Linux 终端与 Windows PowerShell；npm 安装提示 Node.js 前置依赖。页面列出系统选项，不根据本机系统推断远程 Host 的系统。
 - 远程 Host 必须在目标机器操作；Windows 原生 Host 不会自动使用 WSL 中的安装。

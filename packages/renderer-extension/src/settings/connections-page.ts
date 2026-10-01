@@ -16,6 +16,7 @@ import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext }
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
+import { HARNESS_OFFICIAL_WEBSITES } from "./harness-official-websites.js";
 import { harnessInstallStore } from "./harness-install-store.js";
 import { createHarnessVersionPanel } from "./harness-version-panel.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -326,7 +327,7 @@ function createConnectionRow(
   const action = document.createElement("div");
   action.className = "settings-connection-row__action";
   action.setAttribute("role", "cell");
-  if (item.agentSnapshot?.availability === "notInstalled") {
+  if (item.agentSnapshot?.availability === "notInstalled" && item.install) {
     const install = document.createElement("button");
     install.type = "button";
     install.className = "settings-connection-install-link";
@@ -336,9 +337,7 @@ function createConnectionRow(
       item.install?.();
     });
     install.disabled = item.availability === "installing" || item.availability === "checking";
-    const installLabel = item.install
-      ? messages.connectionInstall
-      : messages.connectionOpenInstallation;
+    const installLabel = messages.connectionInstall;
     install.setAttribute("aria-label", `${installLabel}: ${item.name}`);
     install.title = installLabel;
     install.append(createRendererSettingsIcon("download", 17));
@@ -407,10 +406,25 @@ function createInspectorHeader(
   const title = document.createElement("strong");
   title.textContent = item.name;
   identity.append(createConnectionIdentityIcon(document, item, 20), title);
+  if (item.agentSnapshot) {
+    const website = document.createElement("a");
+    website.className = "settings-connection-website";
+    website.href = HARNESS_OFFICIAL_WEBSITES[item.agentSnapshot.agent];
+    website.target = "_blank";
+    website.rel = "noopener noreferrer";
+    website.title = messages.connectionOfficialWebsite;
+    website.setAttribute("aria-label", `${messages.connectionOfficialWebsite}: ${item.name}`);
+    website.append(createRendererSettingsIcon("external-link", 13));
+    website.addEventListener("click", (event) => event.stopPropagation());
+    identity.append(website);
+  }
   const status = document.createElement("span");
   status.className = "settings-connection-row__status";
   status.dataset.connectionTone = connectionStatusTone(item.availability, item.error !== null);
-  status.textContent = connectionStatusLabel(item.availability, messages, item.error !== null);
+  status.textContent =
+    item.agentSnapshot && item.availability === "ready" && !item.error
+      ? messages.connectionStatusConnected
+      : connectionStatusLabel(item.availability, messages, item.error !== null);
   header.append(identity, status);
   return header;
 }
@@ -443,33 +457,36 @@ function renderConnectionInspector(
   }
 
   if (item.agentSnapshot?.availability === "notInstalled") {
-    const callout = document.createElement("div");
-    callout.className = "settings-connection-install-callout";
-    const icon = document.createElement("span");
-    icon.className = "settings-connection-install-callout__icon";
-    icon.append(createRendererSettingsIcon("download", 18));
-    const copy = document.createElement("div");
-    const title = document.createElement("strong");
+    const zh = messages.locale === "zh-CN";
     const busy = item.availability === "installing" || item.availability === "checking";
-    title.textContent = busy
-      ? connectionStatusLabel(item.availability, messages)
-      : `${messages.connectionInstall} ${item.name}`;
-    const description = document.createElement("p");
-    description.textContent = busy
-      ? messages.connectionInstallRunning
-      : messages.connectionInstallDescription;
-    copy.append(title, description);
-    callout.append(icon, copy);
-    const install = createHarnessInstallationPanel(
-      document,
-      item.agentSnapshot.agent,
-      hostId,
-      messages,
-      (button, command, label) =>
-        copyDiagnosticsToClipboard(document, button, command, messages, label),
-      refresh,
+    const note = (text: string): void => {
+      const paragraph = document.createElement("p");
+      paragraph.textContent = text;
+      body.append(paragraph);
+    };
+    if (busy) note(messages.connectionInstallRunning);
+    body.append(
+      createHarnessInstallationPanel(
+        document,
+        item.agentSnapshot.agent,
+        hostId,
+        messages,
+        (button, command, label) =>
+          copyDiagnosticsToClipboard(document, button, command, messages, label),
+      ),
     );
-    body.append(callout, install);
+    const check = document.createElement("button");
+    check.type = "button";
+    check.className = "settings-command-button";
+    check.dataset.connectionAction = "check-install";
+    check.textContent = zh ? "重新检测" : "Check again";
+    check.disabled = busy;
+    check.addEventListener("click", () => {
+      check.disabled = true;
+      check.textContent = messages.connectionRefreshing;
+      refresh();
+    });
+    body.append(check);
   } else if (item.error) {
     const summary = document.createElement("div");
     summary.className = "settings-connection-error-summary";
@@ -540,7 +557,7 @@ function renderConnectionInspector(
           ? messages.connectionReadyDescription
           : messages.connectionUnavailableDescription;
     status.append(title, description);
-    body.append(status);
+    if (!item.agentSnapshot || item.availability !== "ready") body.append(status);
     if (item.openWebUi) {
       const open = document.createElement("button");
       open.type = "button";
@@ -767,12 +784,13 @@ export function createConnectionsSettingsPage(
         latestSnapshot = snapshot;
         disposeHostScroller();
         disposeHostScroller = () => undefined;
-        content.replaceChildren();
+        // Build the replacement off-DOM so installation status updates never
+        // temporarily collapse the page and clamp its scroll position.
         if (!snapshot) {
           const empty = document.createElement("div");
           empty.className = "settings-empty";
           empty.textContent = messages.connectionNoRuntime;
-          content.append(empty);
+          content.replaceChildren(empty);
           return;
         }
         const selectedHost =
@@ -1135,7 +1153,7 @@ export function createConnectionsSettingsPage(
         if (selectedItem) selectItem(selectedItem);
         list.append(hostStrip, tableHeader, rows);
         layout.append(list, inspector);
-        content.append(layout);
+        content.replaceChildren(layout);
         disposeHostScroller = configureHostScroller(
           document,
           hostStrip,
@@ -1143,10 +1161,19 @@ export function createConnectionsSettingsPage(
           scrollLeft,
           scrollRight,
         );
+        // Only move the horizontal Host strip; scrollIntoView also scrolls
+        // ancestor containers and pulls the page back to the top on every update.
         const selectedTab = [...tabs.children].find(
           (child) => child.getAttribute("aria-selected") === "true",
         ) as HTMLElement | undefined;
-        selectedTab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+        if (selectedTab) {
+          const left = selectedTab.offsetLeft;
+          const right = left + selectedTab.offsetWidth;
+          if (left < tabs.scrollLeft) tabs.scrollLeft = left;
+          else if (right > tabs.scrollLeft + tabs.clientWidth) {
+            tabs.scrollLeft = right - tabs.clientWidth;
+          }
+        }
       };
 
       render(diagnostics?.snapshot() ?? null);

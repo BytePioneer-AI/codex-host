@@ -157,6 +157,7 @@ export interface RendererSettingsMessages {
   readonly connectionDiagnostic: string;
   readonly connectionNoRuntime: string;
   readonly connectionStatusReady: string;
+  readonly connectionStatusConnected: string;
   readonly connectionStatusChecking: string;
   readonly connectionStatusNotInstalled: string;
   readonly connectionStatusUnavailable: string;
@@ -180,7 +181,7 @@ export interface RendererSettingsMessages {
   readonly launchPathLoading: string;
   readonly launchPathLoadError: string;
   readonly launchPathSaveError: string;
-  readonly connectionOpenInstallation: string;
+  readonly connectionOfficialWebsite: string;
   readonly connectionOpenHarnessWeb: string;
   readonly connectionDeepSeekTestedVersions: string;
   readonly connectionInstall: string;
@@ -424,6 +425,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionDiagnostic: "Diagnostic",
   connectionNoRuntime: "The renderer request bridge is not available yet.",
   connectionStatusReady: "Ready",
+  connectionStatusConnected: "Connected",
   connectionStatusChecking: "Checking",
   connectionStatusNotInstalled: "Not installed",
   connectionStatusUnavailable: "Unavailable",
@@ -450,7 +452,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathLoadError: "Could not load launch settings. Reopen this detail panel to retry.",
   launchPathSaveError:
     "Could not save. Enter an existing absolute installation folder on this Host and check configuration permissions.",
-  connectionOpenInstallation: "Show installation instructions",
+  connectionOfficialWebsite: "Visit official website",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
     "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1 and 0.2.0-rc.2. Versions newer than 0.2.0-rc.2 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
@@ -714,6 +716,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionDiagnostic: "诊断信息",
   connectionNoRuntime: "Renderer 请求桥尚未可用。",
   connectionStatusReady: "正常",
+  connectionStatusConnected: "已连接",
   connectionStatusChecking: "检查中",
   connectionStatusNotInstalled: "未安装",
   connectionStatusUnavailable: "不可用",
@@ -738,7 +741,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathLoading: "正在读取启动设置…",
   launchPathLoadError: "无法读取启动设置，请重新打开此详情面板重试。",
   launchPathSaveError: "保存失败。请填写此 Host 上实际存在的安装目录绝对路径，并确认配置目录可写。",
-  connectionOpenInstallation: "查看安装指引",
+  connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
     "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",

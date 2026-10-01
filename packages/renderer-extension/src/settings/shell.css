@@ -1093,6 +1093,27 @@
   font-size: 12px;
 }
 
+.settings-connection-website {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  color: var(--settings-muted);
+  border-radius: 4px;
+}
+
+.settings-connection-website:hover {
+  color: var(--settings-focus);
+  background: var(--settings-hover);
+}
+
+.settings-connection-website:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 1px;
+}
+
 .settings-connection-install-link {
   display: inline-flex;
   align-items: center;
@@ -1155,6 +1176,10 @@
   min-width: 0;
   gap: 12px;
   padding: 12px;
+}
+
+.settings-connection-inspector__body:empty {
+  display: none;
 }
 
 .settings-harness-version {

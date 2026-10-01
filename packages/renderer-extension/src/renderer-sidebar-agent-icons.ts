@@ -128,9 +128,7 @@ export interface RendererSidebarAgentIcons {
   dispose(): void;
 }
 
-export function rendererAgentForThreadOwnership(
-  ownership: ThreadOwnership,
-): RendererAgent | null {
+export function rendererAgentForThreadOwnership(ownership: ThreadOwnership): RendererAgent | null {
   if (ownership.owner === "codex") return "codex";
   if (ownership.harnessId === "pi") return "pi";
   if (ownership.harnessId === "claude-code") return "claude-code";

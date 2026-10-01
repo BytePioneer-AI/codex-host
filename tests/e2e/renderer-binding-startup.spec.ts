@@ -145,6 +145,9 @@ const { outputFiles } = await build({
           startUpdate: unavailable,
           readUpdateStatus: unavailable,
         },
+        () => globalThis.scopedAdapterReady === false
+          ? { state: "installing", reason: "draft-routing-policy-unavailable", modelUpdates: 0, hook: null }
+          : { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
       );
 
       setTimeout(() => {
@@ -258,6 +261,40 @@ test("a native Codex draft hides the external Harness command button", async ({ 
   await expect(root).toHaveAttribute("hidden", "");
   await expect(root).toBeHidden();
 });
+
+for (const agent of ["codex", "pi"]) {
+  test(`a disconnected Composer blocks external submission but preserves native ${agent} input`, async ({
+    page,
+  }) => {
+    await page.evaluate((value) => Reflect.set(globalThis, "startupAgent", value), agent);
+    await page.addScriptTag({ content: browserBundle });
+    if (agent === "pi") {
+      await expect(
+        page.locator('[data-codexhost-model-control] > button[aria-haspopup="menu"]'),
+      ).toContainText("Startup Model");
+    }
+    await expect
+      .poll(() => page.evaluate(() => typeof Reflect.get(globalThis, "prewarmTestDraft")))
+      .toBe("function");
+    await page.evaluate(() => {
+      Reflect.set(globalThis, "scopedAdapterReady", false);
+      window.dispatchEvent(new Event("codexhost:renderer-adapter-status"));
+    });
+    const send = page.locator('button[type="submit"]');
+    if (agent === "pi") {
+      await expect(send).toBeDisabled();
+      await page.locator('[contenteditable="true"]').press("Enter");
+      expect(await page.evaluate(() => Reflect.get(globalThis, "threadStartRequests"))).toEqual([]);
+    } else {
+      await page.locator('[contenteditable="true"]').fill("native input");
+      await expect(send).toBeEnabled();
+      await send.click();
+      await expect
+        .poll(() => page.evaluate(() => Reflect.get(globalThis, "threadStartRequests")))
+        .toHaveLength(1);
+    }
+  });
+}
 
 test("a remounted draft keeps explicit Fast through submission, but a new draft starts without it", async ({
   page,

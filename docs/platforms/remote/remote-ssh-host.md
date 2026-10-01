@@ -28,6 +28,8 @@ codexhost remote status
 2. Open the SSH workspace.
 3. Pick a Harness from the composer's Agent / Model selector.
 
+Each composer uses its own Host for Harness availability and requests, even when local and remote composers remain mounted on the same page. A disconnected Host does not disable a healthy composer on another Host. Harnesses reported as not installed or otherwise unavailable on the owning Host remain disabled.
+
 ## Commands
 
 ```bash

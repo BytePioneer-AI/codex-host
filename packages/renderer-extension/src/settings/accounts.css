@@ -213,7 +213,7 @@
 .settings-account-usage__meter {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: auto 20px 4px 17px;
+  grid-template-rows: 20px 4px 17px;
   align-items: center;
   gap: 6px 0;
   min-width: 0;
@@ -221,17 +221,19 @@
 }
 .settings-account-usage__title {
   display: block;
-  grid-column: 1 / -1;
+  grid-column: 1;
+  grid-row: 1;
+  margin-right: 8px;
   min-width: 0;
   color: var(--settings-muted);
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 .settings-account-usage__percent {
-  grid-column: 1 / -1;
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
   display: flex;
   align-items: baseline;

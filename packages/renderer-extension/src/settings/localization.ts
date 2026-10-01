@@ -114,6 +114,8 @@ export interface RendererSettingsMessages {
   readonly accountNativeManagementHint: string;
   readonly accountDefaultHint: string;
   readonly accountCreditsRemaining: string;
+  readonly accountCreditsRemainingQuota: string;
+  readonly accountCreditsUsedQuota: string;
   readonly accountBalanceRemaining: string;
   readonly accountCreditsLoading: string;
   readonly accountCreditsEmpty: string;
@@ -378,6 +380,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "This account comes from {harness}'s native authentication. This page only displays identity and limits; manage sign-in, sign-out and switching in the native client.",
   accountDefaultHint: "This is the current identity for all Codex Threads.",
   accountCreditsRemaining: "Remaining",
+  accountCreditsRemainingQuota: "Remaining quota",
+  accountCreditsUsedQuota: "Used quota",
   accountBalanceRemaining: "remaining balance",
   accountCreditsLoading: "Loading limits…",
   accountCreditsEmpty: "No limit data available",
@@ -664,6 +668,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "此账号来自 {harness} 的原生登录。这里只读展示身份与额度；登录、退出和切换请在其原生客户端中完成。",
   accountDefaultHint: "所有 Codex 会话当前使用此身份。",
   accountCreditsRemaining: "剩余",
+  accountCreditsRemainingQuota: "剩余额度",
+  accountCreditsUsedQuota: "已用额度",
   accountBalanceRemaining: "剩余余额",
   accountCreditsLoading: "正在读取额度…",
   accountCreditsEmpty: "暂无额度数据",

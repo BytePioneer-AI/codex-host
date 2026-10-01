@@ -139,15 +139,7 @@
   font-weight: 500;
   text-align: left;
 }
-.settings-account-table th:nth-child(1) {
-  width: 32%;
-}
-.settings-account-table th:nth-child(2),
-.settings-account-table th:nth-child(3) {
-  width: 24%;
-}
-.settings-account-table th:nth-child(4) {
-  width: 20%;
+.settings-account-table th:last-child {
   text-align: right;
 }
 .settings-account-table td {
@@ -221,34 +213,20 @@
 .settings-account-usage__meter {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: 20px 4px 17px;
+  grid-template-rows: auto 20px 4px 17px;
   align-items: center;
   gap: 6px 0;
   min-width: 0;
   font-variant-numeric: tabular-nums;
 }
 .settings-account-usage__title {
-  display: none;
+  display: block;
+  grid-column: 1 / -1;
   min-width: 0;
   color: var(--settings-muted);
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.settings-account-extra-usage {
-  display: grid;
-  gap: 12px;
-  margin-top: 14px;
-}
-.settings-account-extra-usage .settings-account-usage__meter,
-.settings-account-usage__meter--scoped {
-  grid-template-rows: auto 20px 4px 17px;
-}
-.settings-account-extra-usage .settings-account-usage__title,
-.settings-account-usage__meter--scoped .settings-account-usage__title {
-  display: block;
-  grid-column: 1 / -1;
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -459,7 +437,8 @@
   .settings-account-table tbody {
     display: block;
   }
-  .settings-account-table thead {
+  .settings-account-table thead,
+  .settings-account-table colgroup {
     display: none;
   }
   .settings-account-row {
@@ -501,18 +480,6 @@
   }
   .settings-account-email {
     font-size: 13px;
-  }
-  .settings-account-usage__title {
-    display: block;
-    grid-column: 1;
-  }
-  .settings-account-usage__percent,
-  .settings-account-usage__missing > span:not(.settings-account-usage__title) {
-    grid-column: 2;
-    text-align: right;
-  }
-  .settings-account-extra-usage .settings-account-usage__percent {
-    grid-column: 1 / -1;
   }
   .settings-account-table tr:not(.settings-account-row, [hidden]),
   .settings-account-table tr:not(.settings-account-row, [hidden]) > td {

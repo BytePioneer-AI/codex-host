@@ -6,6 +6,7 @@ vi.mock("../../src/settings/icons.js", () => ({
 }));
 
 import {
+  accountUsageColumnLabel,
   renderAccountResetCredits,
   renderAccountUsage as renderUsage,
   resetCreditDetailLine,
@@ -70,7 +71,7 @@ function renderAccountUsage(
   const result = renderUsage(document, state, messages, display, onRetry);
   const root = document.createElement("div");
   root.append(...result.cells);
-  if (result.additional) root.append(result.additional);
+  for (const cells of result.continuationCells) root.append(...cells);
   return root;
 }
 
@@ -204,6 +205,48 @@ describe("Account limit windows", () => {
 });
 
 describe("Quota comparison columns", () => {
+  it("uses period-independent headers in both display modes and locales", () => {
+    expect(accountUsageColumnLabel("remaining", messages)).toBe("剩余额度");
+    expect(accountUsageColumnLabel("used", messages)).toBe("已用额度");
+    const english = rendererSettingsMessages("en-US");
+    expect(accountUsageColumnLabel("remaining", english)).toBe("Remaining quota");
+    expect(accountUsageColumnLabel("used", english)).toBe("Used quota");
+  });
+
+  it("places monthly quotas side by side and wraps further products within the quota area", () => {
+    const result = columns({
+      usedPercent: 0,
+      periodType: "monthly",
+      label: "Auto · monthly",
+      resetsAt: credits.resetsAt,
+      productUsage: [
+        { product: "API · monthly", usagePercent: 2, resetsAt: credits.resetsAt },
+        { product: "Extra", usagePercent: 30 },
+      ],
+    });
+    expect(text(result.cells[0])).toContain("Auto · 月额度");
+    expect(text(result.cells[0])).toContain("100%");
+    expect(text(result.cells[1])).toContain("API · 月额度");
+    expect(text(result.cells[1])).toContain("98%");
+    expect(text(result.cells[0])).not.toContain("5 小时");
+    expect(text(result.cells[1])).not.toContain("7 天");
+    expect(result.continuationCells).toHaveLength(1);
+    const [first, second] = result.continuationCells[0] ?? [];
+    if (!first || !second) throw new Error("Expected continuation quota cells");
+    expect(text(first)).toContain("Extra");
+    expect(text(second)).toContain("—");
+  });
+
+  it("retains the period on each scoped quota", () => {
+    const result = columns({
+      usedPercent: 10,
+      label: "Model group · 5-hour",
+      productUsage: [{ product: "Model group · 7-day", usagePercent: 20 }],
+    });
+    expect(text(result.cells[0])).toContain("Model group · 5 小时");
+    expect(text(result.cells[1])).toContain("Model group · 7 天");
+  });
+
   function columns(credits: AccountCreditsSnapshot) {
     const result = renderUsage(
       document,
@@ -227,7 +270,7 @@ describe("Quota comparison columns", () => {
         .find((el) => el.attributes.get("role") === "meter")
         ?.attributes.get("aria-valuenow"),
     ).toBe("100");
-    expect(result.additional).toBeNull();
+    expect(result.continuationCells).toHaveLength(0);
   });
 
   it("places the exact secondary window in its column without merging duplicate reports", () => {
@@ -240,7 +283,10 @@ describe("Quota comparison columns", () => {
     });
     expect(text(result.cells[0])).toContain("9%");
     expect(text(result.cells[1])).toContain("80%");
-    expect(result.additional && text(result.additional)).toContain("65%");
+    expect(result.continuationCells).toHaveLength(1);
+    const duplicate = result.continuationCells[0]?.[0];
+    if (!duplicate) throw new Error("Expected duplicate quota cell");
+    expect(text(duplicate)).toContain("65%");
   });
 });
 

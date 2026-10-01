@@ -655,6 +655,17 @@ fn assert_macos_native_helper_routing(nested_cli: bool) {
             let nested =
                 bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
             fs::create_dir_all(nested.parent().unwrap()).unwrap();
+            // Model the official nested app identity used by CLI discovery.
+            fs::write(
+                bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/Info.plist"),
+                concat!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>",
+                    "<key>CFBundleIdentifier</key><string>com.openai.codex.cli</string>",
+                    "<key>CFBundleExecutable</key><string>codex</string>",
+                    "</dict></plist>"
+                ),
+            )
+            .unwrap();
             fs::rename(&cli, &nested).unwrap();
             cli = nested;
         }

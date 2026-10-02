@@ -45,7 +45,7 @@ export class HermesUsage {
   ) {}
   merge(usage: HostUsage): HostUsage {
     this.#revision++;
-    return (this.#latest = {...this.#latest, ...usage});
+    return (this.#latest = { ...this.#latest, ...usage });
   }
   observe(usage: HostUsage): void {
     if (this.available()) this.publish(this.merge(usage));
@@ -65,7 +65,9 @@ export class HermesUsage {
       } catch {
         // Optional metadata failures must not interrupt an otherwise healthy chat.
       }
-    })().finally(() => {this.#refresh = null;});
+    })().finally(() => {
+      this.#refresh = null;
+    });
     return this.#refresh;
   }
 }

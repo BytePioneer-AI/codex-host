@@ -31,13 +31,13 @@ export function parseOmpAvailableCommands(value: unknown): OmpAvailableCommand[]
 }
 
 /**
- * OMP built-ins drive its own UI and Session state (model, session, share,
- * browser, plugins, ...), so only skills and extension commands reach the
+ * `/context` is a local text report. Other built-ins drive OMP's terminal UI
+ * or Session state, so only skills and extension commands join it in the
  * Composer. `/compact` keeps its dedicated Adapter handling.
  */
 export function ompLiveCommands(native: readonly OmpAvailableCommand[]): LiveHarnessCommand[] {
   return native
-    .filter(({ source }) => source !== "builtin")
+    .filter(({ source, name }) => source !== "builtin" || name === "context")
     .map((command) => ({
       name: command.name,
       description: command.description,

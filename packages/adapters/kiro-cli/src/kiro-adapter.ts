@@ -88,6 +88,7 @@ import {
   readKiroSnapshot,
   type KiroNativeSessionLocation,
 } from "./history.js";
+import { KiroSessionImport } from "./session-import.js";
 import {
   confirmedKiroConfig,
   kiroConfigValue,
@@ -174,6 +175,7 @@ export class KiroAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = harnessIdSchema.parse("kiro-cli");
   readonly commandCatalog = KIRO_COMMAND_CATALOG;
   readonly liveCommandCatalog = true;
+  readonly sessionImport: KiroSessionImport;
 
   readonly #options: KiroAdapterOptions;
   readonly #deps: KiroAdapterDependencies;
@@ -187,6 +189,7 @@ export class KiroAdapter implements HarnessAdapter {
   constructor(options: KiroAdapterOptions = {}, deps: KiroAdapterDependencies = {}) {
     this.#options = options;
     this.#deps = deps;
+    this.sessionImport = new KiroSessionImport({ ...process.env, ...options.environment });
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -559,6 +562,7 @@ export class KiroAdapter implements HarnessAdapter {
   async close(): Promise<void> {
     try {
       await Promise.all([
+        this.sessionImport.close(),
         ...this.#inspectionInFlight.values(),
         ...[...this.#sessions].map((session) => session.close()),
       ]);

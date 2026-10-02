@@ -1,5 +1,9 @@
 import type { HarnessSessionImportSource } from "@codexhost/harness-adapter";
 import type { HarnessSessionImportCandidate, NativeSessionRef } from "@codexhost/shared-contracts";
+import {
+  sessionImportCandidate,
+  sessionImportTitle,
+} from "@codexhost/harness-adapter/session-import";
 import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import type { ClientSideConnection } from "@agentclientprotocol/sdk";
 
@@ -11,8 +15,18 @@ interface HermesSessionRow {
   running?: unknown;
 }
 
-interface HermesListSessionsResponse {
-  sessions?: HermesSessionRow[];
+/** Native rows are untrusted: anything that is not an object with a string ID is dropped. */
+function sessionRows(response: unknown): HermesSessionRow[] {
+  const sessions: unknown =
+    response && typeof response === "object" ? (response as { sessions?: unknown }).sessions : null;
+  return Array.isArray(sessions)
+    ? sessions.filter(
+        (row): row is HermesSessionRow =>
+          typeof row === "object" &&
+          row !== null &&
+          typeof (row as { sessionId?: unknown }).sessionId === "string",
+      )
+    : [];
 }
 
 function parseNativeRef(sessionId: string): NativeSessionRef {
@@ -23,39 +37,22 @@ function parseNativeRef(sessionId: string): NativeSessionRef {
   });
 }
 
-/**
- * candidate.updatedAt is a bounded epoch-ms integer and cwd is required; a
- * candidate that cannot satisfy both is skipped rather than fabricated.
- */
+/** A row that cannot satisfy the shared candidate contract is skipped, never fabricated. */
 function projectCandidate(row: HermesSessionRow): HarnessSessionImportCandidate | null {
-  const updatedAt =
-    typeof row.updatedAt === "number" ? row.updatedAt : Date.parse(String(row.updatedAt));
-  if (!Number.isFinite(updatedAt) || updatedAt < 0) return null;
-  if (typeof row.cwd !== "string" || row.cwd.trim().length === 0) return null;
-  return {
+  return sessionImportCandidate({
     nativeSessionId: row.sessionId,
-    title: typeof row.title === "string" && row.title.trim().length > 0 ? row.title : null,
-    updatedAt,
+    title: sessionImportTitle(row.title),
+    updatedAt: row.updatedAt,
     cwd: row.cwd,
-    running: typeof row.running === "boolean" ? row.running : null,
-  };
+    running: row.running,
+  });
 }
 
 export async function listHermesSessionCandidates(input: {
   connection: ClientSideConnection;
 }): Promise<HarnessSessionImportCandidate[]> {
   const response = (await input.connection.request("session/list", {})) as unknown;
-  const sessions =
-    response && typeof response === "object"
-      ? ((response as HermesListSessionsResponse).sessions ?? [])
-      : [];
-  const candidates: HarnessSessionImportCandidate[] = [];
-  for (const row of sessions) {
-    if (typeof row.sessionId !== "string" || row.sessionId.length === 0) continue;
-    const candidate = projectCandidate(row);
-    if (candidate) candidates.push(candidate);
-  }
-  return candidates;
+  return sessionRows(response).flatMap((row) => projectCandidate(row) ?? []);
 }
 
 export async function resolveHermesSessionCandidate(input: {
@@ -63,11 +60,7 @@ export async function resolveHermesSessionCandidate(input: {
   nativeSessionId: string;
 }): Promise<HarnessSessionImportSource | null> {
   const response = (await input.connection.request("session/list", {})) as unknown;
-  const sessions =
-    response && typeof response === "object"
-      ? ((response as HermesListSessionsResponse).sessions ?? [])
-      : [];
-  const row = sessions.find(({ sessionId }) => sessionId === input.nativeSessionId);
+  const row = sessionRows(response).find(({ sessionId }) => sessionId === input.nativeSessionId);
   if (!row) return null;
   const candidate = projectCandidate(row);
   if (!candidate) return null;

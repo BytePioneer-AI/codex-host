@@ -6,34 +6,19 @@ import { createInterface } from "node:readline";
 
 import type { HarnessSessionImportSource } from "@codexhost/harness-adapter";
 import {
-  HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH,
-  harnessSessionImportCandidateSchema,
-  nativeSessionRefSchema,
-} from "@codexhost/shared-contracts";
+  SessionImportChangedError,
+  isMissingFileError,
+  sameFileFingerprint,
+  sessionImportCandidate,
+  sessionImportTitle,
+} from "@codexhost/harness-adapter/session-import";
+import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
 
 // Pi's documented v3 JSONL format, not a second Transcript store. Discovery never opens an Agent.
-class PiSessionChangedError extends Error {
-  constructor() {
-    super("Pi Session changed during discovery; refresh and retry");
-  }
-}
-
-function sameFile(left: Stats, right: Stats): boolean {
-  return (
-    left.size === right.size &&
-    left.mtimeMs === right.mtimeMs &&
-    left.ctimeMs === right.ctimeMs &&
-    left.ino === right.ino &&
-    left.dev === right.dev
-  );
-}
+const PI_SESSION_CHANGED = "Pi Session changed during discovery; refresh and retry";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function missing(error: unknown): boolean {
-  return isRecord(error) && error.code === "ENOENT";
 }
 
 function expandDirectory(value: string, home: string): string {
@@ -74,7 +59,7 @@ async function sessionFiles(
   const visit = async (dir: string, projectLevel: boolean): Promise<void> => {
     signal.throwIfAborted();
     const entries = await opendir(dir).catch((error: unknown) => {
-      if (missing(error)) return null;
+      if (isMissingFileError(error)) return null;
       throw error;
     });
     if (!entries) return;
@@ -153,16 +138,13 @@ async function readCandidate(
                   .map((block) => block.text)
                   .join(" ")
               : "";
-        firstMessage =
-          text.replaceAll("\0", "").trim().slice(0, HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH) ||
-          null;
+        firstMessage = sessionImportTitle(text);
       }
       hasUser =
         (entry.type === "message" && message?.role === "user") ||
         (typeof entry.parentId === "string" && entries.get(entry.parentId) === true);
       entries.set(entry.id, hasUser);
-      if (entry.type === "session_info")
-        name = typeof entry.name === "string" ? entry.name.trim() || null : null;
+      if (entry.type === "session_info") name = sessionImportTitle(entry.name);
       if (entry.type === "message" && (message?.role === "user" || message?.role === "assistant")) {
         const time =
           typeof message.timestamp === "number"
@@ -180,7 +162,7 @@ async function readCandidate(
   if (!header) return null;
   if (!hasUser) return null;
   const after = await stat(file);
-  if (!sameFile(before, after)) throw new PiSessionChangedError();
+  if (!sameFileFingerprint(before, after)) throw new SessionImportChangedError(PI_SESSION_CHANGED);
   const cwd = await realpath(String(header.cwd));
   if (!(await stat(cwd)).isDirectory()) return null;
   const nativeRef = nativeSessionRefSchema.safeParse({
@@ -189,16 +171,13 @@ async function readCandidate(
     locator: { sessionFile: await realpath(file) },
     formatVersion: 1,
   });
-  const candidate = harnessSessionImportCandidateSchema.safeParse({
+  const candidate = sessionImportCandidate({
     nativeSessionId: header.id,
     cwd,
     title: name ?? firstMessage,
-    updatedAt: Math.floor(updatedAt),
-    running: null,
+    updatedAt,
   });
-  return candidate.success && nativeRef.success
-    ? { candidate: candidate.data, nativeRef: nativeRef.data }
-    : null;
+  return candidate && nativeRef.success ? { candidate, nativeRef: nativeRef.data } : null;
 }
 
 /** Read just the header when checking whether a new/changed file shares a selected identity. */
@@ -258,7 +237,7 @@ export class PiSessionImportIndex {
         const fingerprint = await stat(file);
         const cached = this.#cache.get(file);
         const source =
-          cached && sameFile(cached.fingerprint, fingerprint)
+          cached && sameFileFingerprint(cached.fingerprint, fingerprint)
             ? cached.source
             : await readCandidate(file, signal);
         if (!source) continue;
@@ -271,7 +250,8 @@ export class PiSessionImportIndex {
         sources.push(source);
       } catch (error) {
         // An actively changing or deleted Session must not block every other Session's listing.
-        if (!missing(error) && !(error instanceof PiSessionChangedError)) throw error;
+        if (!isMissingFileError(error) && !(error instanceof SessionImportChangedError))
+          throw error;
       }
     }
     this.#cache = next;
@@ -292,14 +272,14 @@ export class PiSessionImportIndex {
         const fingerprint = await stat(file);
         const cached = this.#cache.get(file);
         const id =
-          cached && sameFile(cached.fingerprint, fingerprint)
+          cached && sameFileFingerprint(cached.fingerprint, fingerprint)
             ? cached.source.nativeRef.nativeSessionId
             : await readIdentity(file, signal);
         if (id !== nativeSessionId) continue;
         if (selected) throw new Error("Pi Session identity is ambiguous across files");
         selected = file;
       } catch (error) {
-        if (!missing(error)) throw error;
+        if (!isMissingFileError(error)) throw error;
       }
     }
     if (!selected) return null;
@@ -308,7 +288,7 @@ export class PiSessionImportIndex {
       const source = await readCandidate(selected, signal);
       return source?.nativeRef.nativeSessionId === nativeSessionId ? source : null;
     } catch (error) {
-      if (missing(error)) return null;
+      if (isMissingFileError(error)) return null;
       throw error;
     }
   }

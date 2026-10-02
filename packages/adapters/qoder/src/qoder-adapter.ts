@@ -37,6 +37,7 @@ import type {
   SessionMessage,
 } from "./qoder-sdk-types.js";
 import { QoderSession } from "./qoder-sdk-transport.js";
+import { QoderSessionImport } from "./qoder-session-import.js";
 
 import { QODER_RUNTIMES, qoderAuthForEnvironment, type QoderVariant } from "./qoder-runtime.js";
 
@@ -55,6 +56,7 @@ export interface QoderAdapterOptions {
     sessionId: string,
     options?: GetSessionInfoOptions,
   ) => Promise<SDKSessionInfo | undefined>;
+  listSessions?: () => Promise<SDKSessionInfo[]>;
   getAvailableModels?: () => Promise<QoderModelInfo[]>;
   resolveExecutable?: typeof resolveQoderExecutable;
 }
@@ -64,6 +66,7 @@ export class QoderAdapter implements HarnessAdapter {
   readonly #variant: QoderVariant;
   readonly commandCatalog = QODER_FALLBACK_COMMAND_CATALOG;
   readonly liveCommandCatalog = true;
+  readonly sessionImport: QoderSessionImport;
 
   readonly #commandOverride: string | undefined;
   readonly #environment: Record<string, string | undefined>;
@@ -100,6 +103,12 @@ export class QoderAdapter implements HarnessAdapter {
     this.#forkSession = options.forkSession ?? runtime.sdk.forkSession;
     this.#getSessionMessages = options.getSessionMessages ?? runtime.sdk.getSessionMessages;
     this.#getSessionInfo = options.getSessionInfo ?? runtime.sdk.getSessionInfo;
+    this.sessionImport = new QoderSessionImport({
+      harnessId: this.harnessId,
+      displayName: this.#variant === "cn" ? "Qoder CN" : "Qoder",
+      listSessions: options.listSessions ?? (() => runtime.sdk.listSessions()),
+      getSessionInfo: this.#getSessionInfo,
+    });
     this.#getAvailableModels = options.getAvailableModels;
     this.#resolveExecutable =
       options.resolveExecutable ??
@@ -512,6 +521,6 @@ export class QoderAdapter implements HarnessAdapter {
     this.#sessions.clear();
     this.#inspections.clear();
     this.#inFlightInspections.clear();
-    await Promise.all(sessions.map((s) => s.close()));
+    await Promise.all([this.sessionImport.close(), ...sessions.map((s) => s.close())]);
   }
 }

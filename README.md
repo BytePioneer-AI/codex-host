@@ -333,6 +333,14 @@ Tip: point your coding Agent at the in-repo [codexhost-add-harness Skill](.agent
 - Thanks to the [LINUX DO](https://linux.do/) community for their ongoing support.
 - Thanks to [Paseo](https://github.com/getpaseo/paseo), whose approach to multi-Harness integration and architecture inspired ours.
 
+## Contributors
+
+Thanks to everyone who has contributed to CodexHost.
+
+<a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
+  <img alt="CodexHost contributors" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+</a>
+
 ## Star History
 
 <a href="https://www.star-history.com/?repos=bytepioneer-ai%2Fcodex-host&type=date&legend=top-left">

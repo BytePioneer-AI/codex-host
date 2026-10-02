@@ -2202,6 +2202,75 @@ describe("Renderer Session Import page", () => {
     scope.dispose();
   });
 
+  it("hides Harnesses the local Host already reported as not installed, without inspecting again", async () => {
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: ["pi", "kimi-code", "grok", "omp", "third-party"].map((id) => ({
+          harnessId: harnessIdSchema.parse(id),
+          name: id,
+        })),
+      })),
+      listHarnessSessions: vi.fn(async () => ({ total: 0, candidates: [] })),
+      importHarnessSession: vi.fn(),
+    };
+    const agent = (name: string, availability: string) => ({
+      agent: name,
+      availability,
+      error: null,
+    });
+    const diagnostics = {
+      snapshot: vi.fn(() => ({
+        adapter: {},
+        hosts: [
+          {
+            hostId: "local",
+            active: false,
+            agents: [
+              agent("pi", "notInstalled"),
+              agent("kimi-code", "notInstalled"),
+              // Still being checked, failing or incompatible: its own error is shown on use.
+              agent("grok", "checking"),
+              agent("omp", "error"),
+            ],
+          },
+          // Import always uses the local Host; a remote workspace's status is irrelevant.
+          { hostId: "remote-1", active: true, agents: [agent("grok", "notInstalled")] },
+        ],
+      })),
+      refresh: vi.fn(),
+      subscribe: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics as never,
+      () => null,
+      () => client,
+      vi.fn(async () => undefined),
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    // The first Harness that is not missing is selected, not the hidden one.
+    await vi.waitFor(() =>
+      expect(client.listHarnessSessions).toHaveBeenCalledWith(
+        expect.objectContaining({ harnessId: "grok" }),
+      ),
+    );
+    expect(
+      descendants(content)
+        .filter(({ dataset }) => dataset.sessionImportHarnessOption !== undefined)
+        .map(({ textContent }) => textContent),
+    ).toEqual(["grok", "omp", "third-party"]);
+    expect(diagnostics.refresh).not.toHaveBeenCalled();
+    scope.dispose();
+  });
+
   it("shows a scroll hint only while the Harness options overflow and scrolls them with the wheel", async () => {
     const client = {
       listSessionImportSources: vi.fn(async () => ({

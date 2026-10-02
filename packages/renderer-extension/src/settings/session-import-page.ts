@@ -10,6 +10,7 @@ import {
   type RendererSessionImportClient,
 } from "../renderer-session-import-client.js";
 export type { RendererSessionImportClient } from "../renderer-session-import-client.js";
+import type { RendererConnectionDiagnostics } from "./connections-page.js";
 import { createHorizontalScrollHint } from "./horizontal-scroll-hint.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
@@ -50,6 +51,8 @@ export function createSessionImportSettingsPage(
   getClient: () => RendererSessionImportClient | null,
   // Web imports end at a success message; Desktop supplies its native navigator.
   openImportedThread: RendererImportedThreadOpener | null,
+  // The connection status the Renderer already keeps; nothing is inspected for this page.
+  getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
     id: "session-import",
@@ -437,14 +440,26 @@ export function createSessionImportSettingsPage(
         const pageParams = listControls.params();
         void context.runLatest(
           async (signal) => {
-            const result = await client.listSessionImportSources();
+            // A Session of a Harness whose CLI is missing could be imported but never opened.
+            // Import always uses the local Host, so only its status counts; a Harness still
+            // being checked, failing or unknown to the Renderer stays listed.
+            const missing = new Set(
+              getDiagnostics()
+                ?.snapshot()
+                .hosts.find(({ hostId }) => hostId === "local")
+                ?.agents.filter(({ availability }) => availability === "notInstalled")
+                .map(({ agent }): string => agent),
+            );
+            const harnesses = (await client.listSessionImportSources()).harnesses.filter(
+              ({ harnessId }) => !missing.has(harnessId),
+            );
             const selected =
-              result.harnesses.find(({ harnessId }) => harnessId === requestedHarness)?.harnessId ??
-              result.harnesses[0]?.harnessId ??
+              harnesses.find(({ harnessId }) => harnessId === requestedHarness)?.harnessId ??
+              harnesses[0]?.harnessId ??
               null;
             if (signal.aborted) throw new Error("Session import selection changed");
             // Keep the selector available even if one Harness's current native protocol is unsupported.
-            sources = result.harnesses;
+            sources = harnesses;
             selectedHarness = selected;
             if (selected !== requestedHarness) {
               listControls.reset();

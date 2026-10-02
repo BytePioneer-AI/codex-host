@@ -1127,9 +1127,32 @@ describe("Renderer Connections page", () => {
     },
   );
 
-  it.each(["zh-CN", "en"] as const)(
-    "shows authentication errors as login required (%s)",
-    (locale) => {
+  it.each([
+    {
+      locale: "zh-CN",
+      agent: "qoder-cn",
+      nativeMessage: "Please run qoderclicn login to authenticate.",
+    },
+    {
+      locale: "en",
+      agent: "qoder-cn",
+      nativeMessage: "Please run qoderclicn login to authenticate.",
+    },
+    {
+      locale: "zh-CN",
+      agent: "antigravity",
+      nativeMessage:
+        "Fetching available models... Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+    },
+    {
+      locale: "en",
+      agent: "antigravity",
+      nativeMessage:
+        "Fetching available models... Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+    },
+  ] as const)(
+    "localizes authentication summaries and preserves native diagnostics ($agent, $locale)",
+    ({ locale, agent, nativeMessage }) => {
       const diagnostics: RendererConnectionDiagnostics = {
         snapshot: () => ({
           adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
@@ -1139,11 +1162,11 @@ describe("Renderer Connections page", () => {
               active: true,
               agents: [
                 {
-                  agent: "qoder-cn",
+                  agent,
                   availability: "unavailable",
                   error: {
                     code: "authenticationRequired",
-                    message: "Please run qoderclicn login to authenticate.",
+                    message: nativeMessage,
                     retryable: false,
                   },
                 },
@@ -1168,9 +1191,7 @@ describe("Renderer Connections page", () => {
         signal: scope.signal,
         runLatest: (op, handlers) => scope.runLatest(op, handlers),
       });
-      const row = descendants(content).find(
-        ({ dataset }) => dataset.connectionItem === "qoder-cn",
-      )!;
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent)!;
       expect(visibleText(row)).toContain(messages.connectionLoginRequired);
       row.dispatch("click", { target: null });
       expect(
@@ -1178,7 +1199,10 @@ describe("Renderer Connections page", () => {
       ).toContain(messages.connectionLoginRequired);
       const summary = elementWithClass(content, "settings-connection-error-summary");
       expect(visibleText(summary)).toContain(messages.connectionLoginDescription);
-      expect(visibleText(summary)).toContain("qoderclicn login");
+      expect(visibleText(summary)).not.toContain(nativeMessage);
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        nativeMessage,
+      );
       cleanup?.();
       scope.dispose();
     },
@@ -1235,7 +1259,10 @@ describe("Renderer Connections page", () => {
       ).toContain(messages.connectionConfigurationRequired);
       const summary = elementWithClass(content, "settings-connection-error-summary");
       expect(visibleText(summary)).toContain(messages.connectionConfigurationDescription);
-      expect(visibleText(summary)).toContain("hermes setup");
+      expect(visibleText(summary)).not.toContain("Run `hermes setup`.");
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        "Run `hermes setup`.",
+      );
       expect(visibleText(summary)).not.toContain(messages.connectionLoginRequired);
       cleanup?.();
       scope.dispose();
@@ -1292,7 +1319,10 @@ describe("Renderer Connections page", () => {
       expect(visibleText(header)).not.toContain(messages.connectionLoginRequired);
       const summary = elementWithClass(content, "settings-connection-error-summary");
       expect(visibleText(summary)).toContain(messages.connectionConfigurationDescription);
-      expect(visibleText(summary)).toContain("Provider API key");
+      expect(visibleText(summary)).not.toContain("Configure a Provider API key");
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        "Configure a Provider API key and select a model with /model.",
+      );
       expect(visibleText(summary)).not.toContain(messages.connectionLoginRequired);
       cleanup?.();
       scope.dispose();

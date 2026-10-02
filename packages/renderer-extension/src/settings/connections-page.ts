@@ -515,9 +515,9 @@ function renderConnectionInspector(
         : messages.connectionErrorTitle;
     const description = document.createElement("p");
     description.textContent = needsLogin
-      ? `${messages.connectionLoginDescription} ${item.error.message}`
+      ? messages.connectionLoginDescription
       : needsConfiguration
-        ? `${messages.connectionConfigurationDescription} ${item.error.message}`
+        ? messages.connectionConfigurationDescription
         : item.error.message;
     summary.append(title, description);
 

@@ -9,6 +9,17 @@ if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecut
 const { outputFiles } = await build({
   stdin: {
     contents: `
+      import { createHarnessVersionPanel } from "./packages/renderer-extension/src/settings/harness-version-panel.ts";
+      globalThis.setupLocalizedVersion = (locale, latestVersion, messageCode) => {
+        document.body.replaceChildren(createHarnessVersionPanel(
+          document, rendererSettingsMessages(locale), new AbortController().signal, "hermes",
+          { run: async () => ({
+            currentVersion: "0.21.5+5355.g357f51c.dirty @ 357f51c4",
+            latestVersion, messageCode, updateAvailable: true, canUpdate: false,
+            message: "Use the native updater manually.",
+          }) },
+        ));
+      };
       import { createConnectionsSettingsPage } from "./packages/renderer-extension/src/settings/connections-page.ts";
       import { createRendererSettingsPageRegistry } from "./packages/renderer-extension/src/settings/core.ts";
       import { rendererSettingsMessages } from "./packages/renderer-extension/src/settings/localization.ts";
@@ -80,6 +91,28 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() =>
     (globalThis as unknown as { setupHarnessVersions(): void }).setupHarnessVersions(),
   );
+});
+
+test("renders version hints and adapter notes in the selected language", async ({ page }) => {
+  for (const locale of ["zh-CN", "en"] as const) {
+    await page.evaluate((locale) => {
+      (
+        globalThis as unknown as {
+          setupLocalizedVersion(locale: string, latestVersion: string, messageCode: string): void;
+        }
+      ).setupLocalizedVersion(locale, "Tracking branch (new commits)", "hermes-manual-update");
+    }, locale);
+    const panel = page.locator(".settings-harness-version");
+    await expect(panel).toContainText("0.21.5+5355.g357f51c.dirty @ 357f51c4");
+    await expect(panel).toContainText(
+      locale === "zh-CN" ? "跟踪分支（有新提交）" : "Tracking branch (new commits)",
+    );
+    await expect(panel).toContainText(
+      locale === "zh-CN" ? "源码目录无未提交修改" : "clean source checkout",
+    );
+    if (locale === "zh-CN") await expect(panel).not.toContainText("Use the native updater");
+    else await expect(panel).not.toContainText("请手动");
+  }
 });
 
 test("checks automatically and updates explicitly in Connections, with separate remote Host versions", async ({

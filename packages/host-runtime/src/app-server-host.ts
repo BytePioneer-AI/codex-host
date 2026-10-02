@@ -1,4 +1,5 @@
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
+import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
 import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
 import {
@@ -276,6 +277,12 @@ import {
 } from "@codexhost/protocol-core";
 
 export interface AppServerHostOptions {
+  /** Private external-session owner: never forwards requests to native Codex. */
+  externalOnly?: boolean;
+  /** GUI connection to the single external-session owner. */
+  sharedThreads?: SharedThreadBridge;
+  /** In-process SSH fronts send external Delegations to the same owner as GUI requests. */
+  sharedDelegation?: DelegationControlRegistration;
   stockCodexPath: string;
   arguments: string[];
   defaultAgent: "codex" | "pi";
@@ -713,6 +720,7 @@ export class AppServerHost {
         })
       : undefined;
     this.#unsubscribeAccountState = this.#officialRuntimeScope.gate.subscribe(() => {
+      if (this.#options.externalOnly) return;
       const snapshot = this.#accountControl.snapshot();
       void this.#writer
         .json({ method: "codexhost/account/changed", params: jsonValueSchema.parse(snapshot) })
@@ -782,7 +790,18 @@ export class AppServerHost {
         this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
       inspect: (input) =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
-      start: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.start(input)),
+      start: (input) => {
+        if (options.sharedDelegation && input.harnessId !== "codex") {
+          const active = [...this.#activeOfficialTurns.keys()];
+          const parentThreadId =
+            input.parentThreadId ?? (active.length === 1 ? active[0] : undefined);
+          return options.sharedDelegation.start({
+            ...input,
+            ...(parentThreadId ? { parentThreadId } : {}),
+          });
+        }
+        return this.#waitForPlugins().then(() => this.#delegationCoordinator.start(input));
+      },
       send: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.send(input)),
       cancel: (input) =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.cancel(input)),
@@ -799,6 +818,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#options.sharedThreads?.close();
     this.#externalRuntime.idleRelease.disable();
     this.#pluginLoadAbort.abort();
     this.#externalSteering.close();
@@ -875,7 +895,7 @@ export class AppServerHost {
       return this.#closeRequested ? 0 : 1;
     }
     try {
-      await this.#officialRuntime.initialize();
+      if (!this.#options.externalOnly) await this.#officialRuntime.initialize();
     } catch (error) {
       this.#diagnose(`Official app-server connection failed: ${errorMessage(error)}`);
       // Keep the Desktop client attached for Host initialization and later recovery.
@@ -887,6 +907,9 @@ export class AppServerHost {
     }
     // Keep the existing whole-registry loading policy, but do not hold up Desktop initialization.
     void this.#waitForPlugins();
+    this.#options.sharedThreads?.start((message) => {
+      void this.#writer.json(message).catch((error: unknown) => this.#diagnose(error));
+    });
     if (this.#closeRequested) await this.#closeOfficialRuntime();
     try {
       // The Scope proves official exit (and optionally restarts it); this native
@@ -899,6 +922,7 @@ export class AppServerHost {
       await this.#closeOfficialRuntime();
       return this.#closeRequested ? 0 : 1;
     } finally {
+      this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
       // Stop replacement waiters before waiting for their tracked Host operations.
       this.#externalSteering.close();
@@ -1046,6 +1070,14 @@ export class AppServerHost {
   async #forwardDesktop(): Promise<void> {
     for await (const frame of readLfFrames(this.#options.desktopInput)) {
       const parsed = parseJsonFrame(frame);
+      try {
+        if (await this.#options.sharedThreads?.respond(parsed)) continue;
+      } catch (error) {
+        // An expired remote interaction must not tear down this GUI's native
+        // connection or its unrelated local Sessions.
+        this.#diagnose(error);
+        continue;
+      }
       if (isRecord(parsed) && parsed.method === "initialized" && !("id" in parsed)) {
         continue;
       }
@@ -1100,6 +1132,45 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
+      await this.#writer.json(
+        rpcEnvelope(request, {
+          result: jsonValueSchema.parse(await this.#repository.listSectionPlacements()),
+        }),
+      );
+      return;
+    }
+    if (
+      this.#options.sharedThreads &&
+      (request.method.startsWith("thread/") ||
+        request.method.startsWith("turn/") ||
+        request.method.startsWith("codexhost/thread/"))
+    ) {
+      try {
+        const reply = await this.#options.sharedThreads.route(request, this.#options.defaultAgent);
+        if (reply) {
+          await this.#writer.json(reply);
+          return;
+        }
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32090, errorMessage(error)));
+        return;
+      }
+    }
+    if (
+      this.#options.externalOnly &&
+      !(
+        request.method.startsWith("thread/") ||
+        request.method.startsWith("turn/") ||
+        request.method.startsWith("codexhost/thread/") ||
+        request.method.startsWith("codexhost/harness/")
+      )
+    ) {
+      await this.#writer.json(
+        rpcError(request, -32601, "Method is unavailable on the shared Thread service"),
+      );
+      return;
+    }
     if (
       request.method === HARNESS_DISPLAY_GET_METHOD ||
       request.method === HARNESS_DISPLAY_SET_METHOD
@@ -1787,6 +1858,7 @@ export class AppServerHost {
     value: JsonValue,
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
+    if (this.#options.externalOnly) return;
     const response = isRecord(value) ? value : null;
     const request =
       response && (typeof response.id === "string" || typeof response.id === "number")
@@ -1807,6 +1879,12 @@ export class AppServerHost {
     request: JsonRpcRequest,
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
+    if (this.#options.externalOnly) {
+      await this.#writer.json(
+        rpcError(request, -32601, "Shared Thread service only handles external Harness Threads"),
+      );
+      return;
+    }
     try {
       await this.#officialRuntime.sendFrame(frame);
     } catch {
@@ -1825,6 +1903,12 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>;
     value: JsonValue;
   }): Promise<void> {
+    if (this.#options.externalOnly) {
+      // Native children created through Delegation still have a native owner
+      // and lifecycle. Their rendering stays on the GUI's native connection.
+      await this.#observeOfficialTurnLifecycle(input.value);
+      return;
+    }
     const parsed = input.value;
     this.#observeOfficialTurnStartResponse(parsed);
     let forwarded: JsonValue = parsed;
@@ -1876,6 +1960,14 @@ export class AppServerHost {
   }
 
   async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
+    if (this.#options.externalOnly) {
+      // Project and section metadata remain owned by native Codex. This
+      // private client negotiates its own connection, never a GUI's session.
+      await this.#officialRuntime.initializeProtocol({
+        clientInfo: { name: "codexhost-shared-threads", version: "1" },
+        capabilities: { experimentalApi: true },
+      });
+    }
     return this.#officialRuntime.request(method, params);
   }
 
@@ -1964,6 +2056,12 @@ export class AppServerHost {
   }
 
   async #ownsDelegationThread(threadId: string): Promise<boolean> {
+    if (await this.#options.sharedDelegation?.ownsThread(threadId)) return false;
+    if (
+      this.#options.sharedThreads?.options.delegateCreates &&
+      (await this.#options.sharedThreads.ownership([threadId])).has(threadId)
+    )
+      return false;
     if (
       this.#externalRuntime.get(threadId) !== undefined ||
       this.#activeOfficialTurns.has(threadId)
@@ -2422,9 +2520,7 @@ export class AppServerHost {
         return thread ? { running: thread.running } : null;
       },
       requestOfficialPage: async (params) =>
-        officialThreadListPageFromResponse(
-          await this.#officialRuntime.request("thread/list", params),
-        ),
+        officialThreadListPageFromResponse(await this.#requestOfficial("thread/list", params)),
     });
     return {
       threads: result.data.flatMap((entry) => {
@@ -2466,12 +2562,19 @@ export class AppServerHost {
       const result = await aggregateThreadList({
         query: listRequest,
         records,
+        ...(this.#options.sharedThreads
+          ? {
+              sharedThreads: await this.#options.sharedThreads.list(listRequest.params),
+            }
+          : {}),
         runtimeFor: (threadId) => this.#listRuntimeState(threadId),
         placementOf: (threadId) => placementById.get(threadId),
         requestOfficialPage: async (params) =>
-          officialThreadListPageFromResponse(
-            await this.#officialRuntime.request("thread/list", params),
-          ),
+          this.#options.externalOnly
+            ? { data: [], nextCursor: null, backwardsCursor: null }
+            : officialThreadListPageFromResponse(
+                await this.#officialRuntime.request("thread/list", params),
+              ),
       });
       await this.#writer.json(rpcEnvelope(request, { result }));
     } catch (error) {
@@ -2498,10 +2601,17 @@ export class AppServerHost {
     query: DecodedThreadListRequest,
   ): Promise<void> {
     try {
-      const [records, placements] = await Promise.all([
+      const [records, localPlacements, sharedPlacements, sharedThreads] = await Promise.all([
         this.#repository.list(),
         this.#repository.listSectionPlacements(),
+        this.#options.sharedThreads?.placements() ?? [],
+        this.#options.sharedThreads?.list(query.params) ?? [],
       ]);
+      const sharedIds = new Set(sharedPlacements.map((p) => p.hostThreadId));
+      const placements = [
+        ...localPlacements.filter((p) => !sharedIds.has(p.hostThreadId)),
+        ...sharedPlacements,
+      ];
       const placementById = new Map(
         placements.map((entry) => [entry.hostThreadId as string, entry]),
       );
@@ -2516,7 +2626,10 @@ export class AppServerHost {
       const page = await listSectionThreads({
         query,
         placements,
-        externalRows,
+        externalRows: new Map([
+          ...externalRows,
+          ...sharedThreads.map((thread) => [String(thread.id), thread] as const),
+        ]),
         requestOfficial: (method, params) => this.#requestOfficial(method, params),
       });
       if (!page) {
@@ -2995,8 +3108,12 @@ export class AppServerHost {
       return;
     }
     try {
+      const shared = await this.#options.sharedThreads?.ownership(params.data.threadIds);
       const threads = await Promise.all(
         params.data.threadIds.map(async (threadId) => {
+          const sharedHarness = shared?.get(threadId);
+          if (sharedHarness)
+            return { threadId, owner: "external" as const, harnessId: sharedHarness };
           const record = await this.#repository.find(threadId);
           return record
             ? { threadId, owner: "external" as const, harnessId: record.harnessId }
@@ -4150,7 +4267,12 @@ export class AppServerHost {
       return;
     }
     try {
-      const started = await this.#beginExternalInputTurn(thread, text);
+      const started = await this.#beginExternalInputTurn(
+        thread,
+        text,
+        undefined,
+        typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
+      );
       try {
         await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));
       } finally {
@@ -4174,7 +4296,15 @@ export class AppServerHost {
       const started = await this.#externalSteering.run(
         thread,
         requestObject(request),
-        (text, assertActive) => this.#beginExternalInputTurn(thread, text, assertActive),
+        (text, assertActive) =>
+          this.#beginExternalInputTurn(
+            thread,
+            text,
+            assertActive,
+            typeof requestObject(request).clientUserMessageId === "string"
+              ? (requestObject(request).clientUserMessageId as string)
+              : undefined,
+          ),
       );
       try {
         await this.#writer.json(rpcEnvelope(request, { result: { turnId: started.turnId } }));
@@ -4201,12 +4331,13 @@ export class AppServerHost {
     thread: ExternalThread,
     inputText: string,
     assertActive?: () => void,
+    clientUserMessageId?: string,
   ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
     const text = restoreHarnessCommandMentions(inputText);
     const commands = thread.session.commands;
     if (!commands || !isExternalCommandCandidate(text)) {
       assertActive?.();
-      return this.#beginExternalTurn(thread, text);
+      return this.#beginExternalTurn(thread, text, clientUserMessageId);
     }
     this.#pendingExternalCommandRequests.add(thread.id);
     try {
@@ -4219,7 +4350,7 @@ export class AppServerHost {
       assertActive?.();
       if (!command) {
         this.#pendingExternalCommandRequests.delete(thread.id);
-        return await this.#beginExternalTurn(thread, text);
+        return await this.#beginExternalTurn(thread, text, clientUserMessageId);
       }
       return await this.#beginExternalCommand(thread, command.descriptor, command.arguments);
     } catch (error) {
@@ -4237,6 +4368,7 @@ export class AppServerHost {
   async #beginExternalTurn(
     thread: ExternalThread,
     text: string,
+    clientUserMessageId?: string,
   ): Promise<{
     turnId: HostTurnId;
     turn: JsonObject;
@@ -4260,6 +4392,12 @@ export class AppServerHost {
         turnId,
         cwd: thread.cwd,
         startedAtMs,
+        ...(this.#options.externalOnly
+          ? {
+              initialInput: [{ type: "text" as const, text }],
+              ...(clientUserMessageId ? { clientUserMessageId } : {}),
+            }
+          : {}),
       }),
     };
     const gate = turnProjectionGate();
@@ -4851,7 +4989,9 @@ export class AppServerHost {
         this.#externalRuntime.idleRelease.failure(pending.thread)
       )
         return true;
-      this.#pendingDesktopApprovals.delete(requestId);
+      if (this.#options.externalOnly)
+        await this.#resolveDesktopApproval(pending.interaction.interactionId);
+      else this.#pendingDesktopApprovals.delete(requestId);
 
       let response: HostApprovalResponse;
       try {
@@ -4999,7 +5139,9 @@ export class AppServerHost {
         this.#externalRuntime.idleRelease.failure(pending.thread)
       )
         return true;
-      this.#pendingDesktopQuestions.delete(requestId);
+      if (this.#options.externalOnly)
+        await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+      else this.#pendingDesktopQuestions.delete(requestId);
       if (pending.timeout) clearTimeout(pending.timeout);
 
       let response;

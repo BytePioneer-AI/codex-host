@@ -32,6 +32,7 @@ export function createCodeBuddyInstallation(environment: NodeJS.ProcessEnv) {
         canUpdate,
         ...(!canUpdate
           ? {
+              messageCode: "codebuddy-npm-required",
               message:
                 "Use CodeBuddy's native updater or original package manager for this installation. Latest-version checks here require an identified npm installation.",
             }

@@ -109,17 +109,13 @@ const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
     url: "https://www.workbuddy.ai/docs/workbuddy/Quickstart",
     commands: [],
     before: [
-      "Install the WorkBuddy desktop app. codexhost uses its bundled CLI, not the standalone CodeBuddy CLI.",
-      "请安装 WorkBuddy 桌面应用。codexhost 使用应用内置 CLI，不能用 CodeBuddy CLI 代替。",
+      "Download and install the WorkBuddy desktop app.",
+      "请下载并安装 WorkBuddy 桌面应用。",
     ],
     downloads: [
       {
-        label: "macOS",
-        url: "https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Mac-Guide",
-      },
-      {
-        label: "Windows",
-        url: "https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Win-Guide",
+        label: "WorkBuddy",
+        url: "https://www.workbuddy.ai/",
       },
     ],
     after: [

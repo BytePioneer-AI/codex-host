@@ -93,6 +93,29 @@ function directionalOfficialSource(rowsAscending: JsonObject[]) {
 }
 
 describe("aggregated Thread list", () => {
+  it("paginates shared and local external Threads together, keeping shared live status", async () => {
+    const records = [external("local", 4), external("shared", 2)];
+    const sharedThreads = [
+      { ...official("shared", 5), status: { type: "active" } },
+      official("shared-old", 1),
+    ];
+    const source = officialSource([official("native", 3)]);
+    let cursor: string | null = null;
+    const rows: JsonObject[] = [];
+    do {
+      const page = await aggregateThreadList({
+        query: query({ cursor, limit: 1 }),
+        records,
+        sharedThreads,
+        runtimeFor: () => null,
+        requestOfficialPage: source.request,
+      });
+      rows.push(...page.data);
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(rows.map((row) => row.id)).toEqual(["shared", "local", "native", "shared-old"]);
+    expect(rows[0]).toMatchObject({ status: { type: "active" } });
+  });
   it("paginates mixed Harness and single native pages through exact prefix queries", async () => {
     const source = officialSource([
       official("official-5", 5),

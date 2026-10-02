@@ -2372,7 +2372,18 @@ export class OmpAdapter implements HarnessAdapter {
       };
     } catch (error) {
       await transport.close().catch(() => undefined);
-      const normalized = normalizedError(error, "unavailable");
+      const normalized =
+        stage === "startup" &&
+        /No models available\.\s*Use \/login or set an API key environment variable\./i.test(
+          transport.stderrTail ?? "",
+        )
+          ? ({
+              code: "configurationRequired",
+              message:
+                "No models are configured for use in Oh My Pi. Configure a Provider and its API key or models.yml, then run `omp` and use `/model` to select a model. For Providers that support it, `/login` configures Provider authentication, not an Oh My Pi account.",
+              retryable: false,
+            } satisfies HarnessError)
+          : normalizedError(error, "unavailable");
       return {
         status: normalized.code === "notInstalled" ? "notInstalled" : "error",
         error: {

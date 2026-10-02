@@ -44,7 +44,10 @@ export function createOmpInstallation(environment: NodeJS.ProcessEnv, command?: 
         updateAvailable: newerInstallationVersion(currentVersion, latestVersion),
         canUpdate,
         ...(!canUpdate
-          ? { message: "Update this installation with its original package manager or launcher." }
+          ? {
+              messageCode: "original-installer",
+              message: "Update this installation with its original package manager or launcher.",
+            }
           : {}),
       };
     },

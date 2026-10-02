@@ -18,6 +18,7 @@ import {
 import { qoderEnvironment, resolveQoderExecutable } from "./qoder-command.js";
 import { projectQoderAccount } from "./qoder-account.js";
 import { mapQoderException } from "./qoder-errors.js";
+import { checkQoderLogin, qoderLoginRequired } from "./qoder-login-check.js";
 import { mapQoderSnapshot } from "./qoder-history.js";
 import { decodeQoderModelRef, parseQoderModelCatalog } from "./qoder-models.js";
 import {
@@ -184,11 +185,15 @@ export class QoderAdapter implements HarnessAdapter {
             // Keep fallback catalog on error
           }
         } else {
+          let stderr = "";
           try {
             const probeQuery = this.#queryFactory({
               prompt: "",
               options: {
                 cwd: input?.cwd ?? process.cwd(),
+                stderr: (chunk) => {
+                  stderr = (stderr + chunk).slice(-8192);
+                },
                 pathToQoderCLIExecutable: executable,
                 ...(this.#environment ? { env: this.#environment } : {}),
                 auth: qoderAuthForEnvironment(this.#variant, this.#environment),
@@ -206,9 +211,21 @@ export class QoderAdapter implements HarnessAdapter {
               }
             }
           } catch (error) {
+            const needsLogin =
+              qoderLoginRequired(stderr) ||
+              (error instanceof Error &&
+                error.message === "Transport closed" &&
+                qoderAuthForEnvironment(this.#variant, this.#environment).type === "qodercli" &&
+                (await checkQoderLogin(executable, this.#environment, input?.cwd)));
             const result: HarnessInspection = {
               status: "unavailable",
-              error: mapQoderException(error),
+              error: needsLogin
+                ? {
+                    code: "authenticationRequired",
+                    message: `Please run ${this.#variant === "cn" ? "qoderclicn" : "qodercli"} login to authenticate.`,
+                    retryable: false,
+                  }
+                : mapQoderException(error),
             };
             return result;
           }

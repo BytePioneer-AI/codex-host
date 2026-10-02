@@ -62,6 +62,7 @@ export function createDeepSeekInstallation(environment: NodeJS.ProcessEnv, comma
         canUpdate,
         ...(!canUpdate
           ? {
+              messageCode: "deepseek-original-installer",
               message:
                 "Update with the original installer. Python, desktop, and project-local installations are not upgraded through global npm.",
             }

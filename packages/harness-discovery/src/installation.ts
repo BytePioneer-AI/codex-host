@@ -9,6 +9,8 @@ export interface InstallationState {
   updateAvailable: boolean;
   canUpdate: boolean;
   message?: string;
+  messageCode?: string;
+  latestVersionKind?: "unknown" | "tracking-branch";
 }
 
 /** Fixed adapter-owned commands only. No shell, prompt input, or raw output in errors. */

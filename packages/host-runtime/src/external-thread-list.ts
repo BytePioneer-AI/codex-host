@@ -241,6 +241,8 @@ export function externalThreadListEntries(input: ExternalThreadListInput): Threa
 
 export function listExternalThreadMetadata(
   input: ExternalThreadListInput & {
+    /** Already filtered by the owning Host, merged before cursor slicing. */
+    sharedThreads?: readonly JsonObject[];
     anchor?: ThreadListExternalAnchor | null;
     limit?: number;
   },
@@ -248,7 +250,17 @@ export function listExternalThreadMetadata(
   if (!input.query.supportsExternal || input.query.sortKey === "section_position") {
     return { data: [], hasMore: false };
   }
-  const entries = externalThreadListEntries(input)
+  const sortKey = input.query.sortKey;
+  const shared = (input.sharedThreads ?? []).map((thread): ThreadListEntry => ({
+    source: "external",
+    thread,
+    timestamp: threadListTimestamp(thread, sortKey),
+  }));
+  const sharedIds = new Set(shared.map((entry) => entry.thread.id));
+  const entries = [
+    ...externalThreadListEntries(input).filter((entry) => !sharedIds.has(entry.thread.id)),
+    ...shared,
+  ]
     .sort((left, right) => compareThreadListEntries(left, right, input.query.sortDirection))
     .filter(
       (entry) =>

@@ -281,7 +281,7 @@ export class KiroAdapter implements HarnessAdapter {
             status: "error",
             error: {
               code: "authenticationRequired",
-              message: "Kiro CLI authentication is required",
+              message: "Kiro CLI authentication is required (run `kiro-cli login`)",
               retryable: false,
             },
           };

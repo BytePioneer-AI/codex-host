@@ -1,19 +1,20 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 
 import type { HarnessModelRef } from "@codexhost/shared-contracts";
+import { commandInvocation } from "@codexhost/harness-discovery";
 
 import { decodeHermesModelRefId, encodeHermesModelRef } from "./hermes-models.js";
 
 /**
- * The `hermes` launcher is a bash shim that execs the agent repository's
- * virtualenv interpreter:
+ * Legacy `hermes` launchers exec the agent repository's virtualenv interpreter:
  *   #!/usr/bin/env bash
  *   exec "<agentDir>/venv/bin/python" "<agentDir>/hermes" "$@"
- * The model inventory lives inside that virtualenv (hermes_cli.inventory), so
- * the same interpreter runs a read-only one-shot probe.
+ * New installers expose --print-runtime-command to retain the native bootstrap
+ * and dependency generation. Both paths run the same read-only inventory probe.
  */
 const POSIX_VENV_PYTHON_SHIM_PATTERN = /exec\s+"([^"]+?venv\/bin\/python)"/;
 const WINDOWS_VENV_HERMES_SHIM_PATTERN = /"([^"]+?[\\/]venv[\\/]Scripts[\\/]hermes\.exe)"/i;
@@ -104,7 +105,10 @@ for row in payload.get("providers") or []:
 current_provider = str(getattr(context, "current_provider", "") or "").strip()
 current_model = str(getattr(context, "current_model", "") or "").strip()
 current_model_id = current_provider + ":" + current_model if current_provider and current_model else None
-print(json.dumps({"models": rows, "currentModelId": current_model_id}))
+from hermes_cli import main as native_main
+check_configured = getattr(native_main, "_has_any_provider_configured", None)
+configured = bool(check_configured()) if callable(check_configured) else None
+print("codexhost_inventory=" + json.dumps({"models": rows, "currentModelId": current_model_id, "configured": configured}))
 `;
 
 export interface HermesInventoryModel {
@@ -122,9 +126,18 @@ export interface HermesInventory {
   models: HermesInventoryModel[];
   /** Native id of the configured default model, when discoverable. */
   currentModelId: string | null;
+  /** Absent for native versions that do not expose a configuration check. */
+  configured?: boolean;
 }
 
 export class HermesInventoryError extends Error {}
+export class HermesConfigurationRequiredError extends HermesInventoryError {
+  constructor() {
+    super(
+      "Hermes has no configured Provider or API key. Run `hermes setup`, then check the connection again.",
+    );
+  }
+}
 export class HermesInventoryTimeoutError extends HermesInventoryError {
   constructor() {
     super("Hermes model inventory probe timed out");
@@ -178,9 +191,10 @@ function runProbe(
   pythonExecutable: string,
   timeoutMs: number,
   environment?: NodeJS.ProcessEnv,
+  arguments_: string[] = ["-I", "-c", INVENTORY_PROBE_SCRIPT],
 ): Promise<HermesInventory> {
   return new Promise((resolve, reject) => {
-    const child = spawn(pythonExecutable, ["-I", "-c", INVENTORY_PROBE_SCRIPT], {
+    const child = spawn(pythonExecutable, arguments_, {
       cwd: path.dirname(pythonExecutable),
       env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
@@ -212,15 +226,22 @@ function runProbe(
         return;
       }
       try {
-        const parsed = JSON.parse(stdout.trim()) as {
+        const payload = stdout
+          .split(/\r?\n/)
+          .find((line) => line.startsWith("codexhost_inventory="));
+        const parsed = JSON.parse(
+          payload ? payload.slice("codexhost_inventory=".length) : stdout.trim(),
+        ) as {
           models?: HermesInventoryModel[];
           currentModelId?: unknown;
+          configured?: unknown;
         };
         const models = (parsed.models ?? []).filter(
           (model) => typeof model?.modelId === "string" && model.modelId.length > 0,
         );
         resolve({
           models,
+          ...(typeof parsed.configured === "boolean" ? { configured: parsed.configured } : {}),
           currentModelId:
             typeof parsed.currentModelId === "string" && parsed.currentModelId.length > 0
               ? parsed.currentModelId
@@ -244,6 +265,50 @@ export async function readHermesModelInventory(
   options: { environment?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {},
 ): Promise<HermesInventory> {
   const platform = options.platform ?? process.platform;
+  // New native installers own Python and dependency generations through bootstrap,
+  // not a fixed venv. Ask the selected launcher for its installation-bound command.
+  // timeit's setup runs our read-only probe once within native bootstrap.
+  // Its timing line is ignored using the probe's tagged JSON output. No native
+  // bootstrap code, selected dependency generations or Python paths are rewritten.
+  let command: string[] | null = null;
+  try {
+    const environment = { ...process.env, ...options.environment };
+    const invocation = commandInvocation(
+      hermesExecutable,
+      [
+        "--print-runtime-command",
+        "--module",
+        "timeit",
+        "--",
+        "-n",
+        "1",
+        "-r",
+        "1",
+        "-s",
+        `exec(${JSON.stringify(INVENTORY_PROBE_SCRIPT)})`,
+        "pass",
+      ],
+      environment,
+      platform,
+    );
+    const { stdout } = await promisify(execFile)(invocation.command, invocation.arguments, {
+      env: environment,
+      timeout: timeoutMs,
+      maxBuffer: 64 * 1024,
+      windowsHide: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    });
+    const value: unknown = JSON.parse(stdout.trim());
+    if (
+      Array.isArray(value) &&
+      value.length > 0 &&
+      value.every((entry) => typeof entry === "string")
+    )
+      command = value;
+  } catch {
+    // Older launchers do not expose this native interface; retain venv discovery.
+  }
+  if (command?.[0]) return runProbe(command[0], timeoutMs, options.environment, command.slice(1));
   const candidates = [
     (await venvPythonFromShim(hermesExecutable, platform)) ?? "",
     ...inventoryPythonCandidates(hermesExecutable, platform),

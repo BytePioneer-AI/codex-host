@@ -10,6 +10,42 @@ const state = {
 };
 
 describe("Host Harness CLI installation routing", () => {
+  it.each(["install", "check", "update"] as const)(
+    "allows console %s through the Host channel",
+    async (action) => {
+      const fixture = createFixture();
+      const installation = vi.fn(async () => state);
+      const install = vi.fn(async () => undefined);
+      Object.assign(fixture.adapter, {
+        installation,
+        install,
+        inspect: vi.fn(async () => ({ status: "notInstalled" })),
+      });
+      try {
+        await fixture.ready;
+        expect(
+          await fixture.host.handleConsoleRequest(HARNESS_INSTALLATION_METHOD, {
+            harnessId: "pi",
+            action,
+          }),
+        ).toEqual({ result: state });
+        expect(installation).toHaveBeenCalledWith(action === "install" ? "check" : action);
+        expect(install).toHaveBeenCalledTimes(action === "install" ? 1 : 0);
+        expect(
+          await fixture.host.handleConsoleRequest(HARNESS_INSTALLATION_METHOD, {
+            harnessId: "pi",
+            action,
+            command: "evil",
+          }),
+        ).toMatchObject({ error: { code: -32602 } });
+        expect(await fixture.host.handleConsoleRequest("thread/start", {})).toMatchObject({
+          error: { code: -32601 },
+        });
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
   it("routes checks and updates without starting a Session or blocking other Host requests", async () => {
     const fixture = createFixture();
     const update = Promise.withResolvers<typeof state>();

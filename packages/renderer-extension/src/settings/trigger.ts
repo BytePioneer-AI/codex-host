@@ -53,16 +53,13 @@ function hasDestination(element: Element): boolean {
 }
 
 /**
- * The rail's top column lists native destinations and ends with the More
- * button, which has no destination. The trigger goes directly above More.
+ * Append to the scrolling destination column, after More and pinned plugins.
+ * Stay outside the native plugin drag/reorder container. The column remains
+ * available even when Codex omits the empty plugin list and its divider.
  */
 function findRailInsertionPoint(rail: HTMLElement): RendererSettingsRailInsertionPoint | null {
   const column = [...rail.children].find(hasDestination) as HTMLElement | undefined;
-  if (!column) return null;
-  const last = [...column.children]
-    .filter((child) => !child.hasAttribute(SETTINGS_TRIGGER_ATTRIBUTE))
-    .at(-1);
-  return { parent: column, before: last && !hasDestination(last) ? last : null };
+  return column ? { parent: column, before: null } : null;
 }
 
 export function inspectRendererSettingsContract(

@@ -99,9 +99,9 @@ export class JsonLineCollector {
   waitFor(predicate: (message: JsonObject) => boolean): Promise<JsonObject> {
     const existing = this.messages.find(predicate);
     if (existing) return Promise.resolve(existing);
-    // Match the Windows test budget in tests/vitest.config.js: disk-backed Host
-    // requests can exceed two seconds under the runner's filesystem load.
-    const timeoutMs = process.platform === "win32" ? 20_000 : 2_000;
+    // Host responses can require Mapping Store fsync/rename operations.
+    // Allow for Windows disk latency, as in tests/vitest.config.js.
+    const timeoutMs = process.platform === "win32" ? 10_000 : 2_000;
     return new Promise<JsonObject>((resolve, reject) => {
       const waiter = {
         predicate,

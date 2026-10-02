@@ -16,13 +16,15 @@ const { outputFiles } = await build({
       globalThis.setupHarnessVersions = () => {
         const calls = [];
         let updated = false;
+        let installAttempts = 0;
+        const installedHosts = new Set();
         const diagnostics = {
           snapshot: () => ({
             adapter: { state:"ready", reason:"ready", modelUpdates:1, hook:"request-bridge" },
             hosts: ["local", "remote-test"].map(hostId => ({ hostId, active:hostId === "local", agents: [
               {agent:"pi",availability:"ready",error:null},
               {agent:"claude-code",availability:"ready",error:null},
-              {agent:"omp",availability:"notInstalled",error:null},
+              {agent:"omp",availability:installedHosts.has(hostId) ? "ready" : "notInstalled",error:null},
             ] })),
           }),
           subscribe: () => () => {},
@@ -30,8 +32,14 @@ const { outputFiles } = await build({
           installation: async (hostId, agent, action) => {
             calls.push({hostId,agent,action});
             if (agent === "claude-code") throw {code:-32078};
+            if (action === "install") {
+              installAttempts++;
+              await new Promise(resolve => setTimeout(resolve, 1200));
+              if (installAttempts === 1) throw new Error("Installation failed: check network and prerequisites.");
+              installedHosts.add(hostId);
+            }
             if (action === "update") {
-              await new Promise(resolve => setTimeout(resolve, 300));
+              await new Promise(resolve => setTimeout(resolve, 1200));
               updated = true;
             }
             return {
@@ -74,19 +82,30 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("checks and updates explicitly in Connections, with separate remote Host versions", async ({
+test("checks automatically and updates explicitly in Connections, with separate remote Host versions", async ({
   page,
 }, testInfo) => {
   await page.getByRole("row", { name: /^Pi 正常/ }).click();
   const panel = page.locator(".settings-harness-version");
   await expect(panel).toContainText("当前版本: 0.85.1");
+  await expect(panel.getByRole("button", { name: "检查更新" })).toHaveCount(0);
   const update = panel.getByRole("button", { name: "更新", exact: true });
   await expect(update).toBeEnabled();
   await page.screenshot({ path: testInfo.outputPath("versions-before.png") });
   await update.click();
   await expect(panel.getByRole("status")).toHaveText("正在更新…");
-  await expect(panel.getByRole("button", { name: "检查更新" })).toBeDisabled();
+  await expect(
+    page.locator('[data-connection-item="pi"] .settings-connection-row__status'),
+  ).toHaveText("更新中");
+  await expect(page.locator(".settings-connection-inspector__header")).toContainText("更新中");
+  await expect(
+    page.locator('[data-connection-item="claude-code"] .settings-connection-row__status'),
+  ).toHaveText("正常");
+  await expect(update).toBeDisabled();
   await expect(panel.getByRole("status")).toContainText("已确认更新成功");
+  await expect(
+    page.locator('[data-connection-item="pi"] .settings-connection-row__status'),
+  ).toHaveText("正常");
   await expect(panel.getByRole("button", { name: "已是最新" })).toBeDisabled();
   await page.screenshot({ path: testInfo.outputPath("versions-updated.png") });
   await page.getByRole("tab", { name: "remote-test" }).click();
@@ -109,7 +128,7 @@ test("unsupported plugins show original instructions without disabling supported
   const panel = page.locator(".settings-harness-version");
   await expect(panel).toContainText("当前 Host 或插件不支持 CLI 版本管理");
   await expect(panel.getByRole("button", { name: "更新", exact: true })).toBeDisabled();
-  await expect(panel.getByRole("link", { name: "查看官方安装说明" })).toHaveAttribute(
+  await expect(panel.getByRole("link", { name: "查看安装指引" })).toHaveAttribute(
     "href",
     "https://code.claude.com/docs/en/quickstart",
   );
@@ -117,6 +136,42 @@ test("unsupported plugins show original instructions without disabling supported
   await page.getByRole("row", { name: /^Pi 正常/ }).click();
   await expect(panel.getByRole("button", { name: "更新", exact: true })).toBeEnabled();
   await page.screenshot({ path: testInfo.outputPath("versions-supported.png") });
+});
+
+test("downloads explicitly, shows progress and errors, and retries on the selected Host", async ({
+  page,
+}, testInfo) => {
+  const row = page.locator('[data-connection-item="omp"]');
+  const download = row.getByRole("button", { name: "安装: Oh My Pi", exact: true });
+  await expect(download).toBeEnabled();
+  await page.screenshot({ path: testInfo.outputPath("install-before.png") });
+  await download.click();
+  await expect(row).toContainText("安装中");
+  await expect(download).toBeDisabled();
+  await page.screenshot({ path: testInfo.outputPath("install-running.png") });
+  await expect(page.locator('.settings-connection-inspector [role="alert"]')).toContainText(
+    "Installation failed",
+  );
+  await expect(row).toContainText("错误");
+  await expect(download).toBeEnabled();
+  await page.screenshot({ path: testInfo.outputPath("install-error.png") });
+  await download.click();
+  await expect(row).toContainText("安装中");
+  await page.getByRole("tab", { name: "remote-test" }).click();
+  await expect(row).toContainText("未安装");
+  await page.getByRole("tab", { name: "本地", exact: true }).click();
+  await expect(row).toContainText("正常");
+  await expect(download).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("install-complete.png") });
+  const calls = await page.evaluate(
+    () =>
+      (globalThis as unknown as { versionFixture: { calls: { action: string; hostId: string }[] } })
+        .versionFixture.calls,
+  );
+  expect(calls.filter((call) => call.action === "install").map((call) => call.hostId)).toEqual([
+    "local",
+    "local",
+  ]);
 });
 
 test("keeps installation guides for missing Harnesses and fits a narrow inspector", async ({

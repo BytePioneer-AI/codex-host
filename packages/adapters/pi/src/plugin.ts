@@ -1,5 +1,6 @@
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
+import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { PiAdapter } from "./pi-adapter.js";
 import { createPiInstallation } from "./installation.js";
 
@@ -12,6 +13,13 @@ export function createHarnessAdapter(context: HarnessPluginContext): PiAdapter {
       ...(environment[PI_COMMAND_ENV] ? { command: environment[PI_COMMAND_ENV] } : {}),
       environment,
     }),
-    { installation: createPiInstallation(environment, environment[PI_COMMAND_ENV]) },
+    {
+      installation: createPiInstallation(environment, environment[PI_COMMAND_ENV]),
+      install: createHarnessInstaller(environment, {
+        posix: "https://pi.dev/install.sh",
+        windows: "https://pi.dev/install.ps1",
+        shell: "sh",
+      }),
+    },
   );
 }

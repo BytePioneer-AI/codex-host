@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 8;
+const SKILL_VERSION = 9;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
@@ -16,6 +16,8 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   // v4, shipped in v0.4.0-v0.6.0.
   "fa7944cd1e72ffbaf932fca2074bdb78aad4670d8990b6711220dd83c39509a0",
   "b9c1cce41d2556e73a6514aa55618d7d3f2f9ef935f5ae50b0da5a04941514b4",
+  // v8, which ran a bare `codexhost` from PATH.
+  "ca06be59f0d47c9a54d05ed2d9588c9c737306cc155cb4dff3fe2a2a61891dde",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -32,9 +34,17 @@ description: >
 
 # Execute the task
 
-Before acting, run:
+Run the CLI through the executable in CODEXHOST_CLI_PATH. Before acting, run
+help with the form for your shell:
 
-\`codexhost delegate --help\`
+- POSIX: \`"$CODEXHOST_CLI_PATH" delegate --help\`
+- PowerShell: \`& $env:CODEXHOST_CLI_PATH delegate --help\`
+- cmd: \`"%CODEXHOST_CLI_PATH%" delegate --help\`
+
+If CODEXHOST_CLI_PATH is unset, try \`codexhost\`; if that also fails, tell the
+user to add CODEXHOST_CLI_PATH to shell_environment_policy.include_only.
+Commands shown by help and in \`next\` begin with \`codexhost\`; run them the
+same way.
 
 Use CLI help as the authoritative source for commands and behavior. Consult
 command-specific help for options and the Harness listing command when the

@@ -37,7 +37,7 @@ const { outputFiles } = await build({
           readCommands: () => {
             const snapshot = control.snapshot();
             const pendingNotice =
-              snapshot.source === "static" ? rendererLiveCommandsPendingNotice(locale, "Cursor CLI (Experimental)") : null;
+              snapshot.source === "static" ? rendererLiveCommandsPendingNotice(locale, "Cursor CLI") : null;
             if (snapshot.commands.length === 0 && pendingNotice === null) return null;
             return {
               commands: snapshot.commands,

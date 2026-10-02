@@ -77,6 +77,7 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import { resolvePiInspectCwd } from "./command.js";
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
 import {
   PiSubagents,
@@ -591,7 +592,7 @@ class PiHarnessSession implements HarnessSession {
   readonly #requestedModel: HarnessModelRef | undefined;
   readonly #requestedThinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #toolOutputLimit: number;
-  readonly #isFastSupported: (ref: HarnessModelRef) => boolean;
+  readonly #isFastSupported: (ref: HarnessModelRef, transport: PiTurnTransport) => Promise<boolean>;
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
@@ -616,7 +617,7 @@ class PiHarnessSession implements HarnessSession {
       thinkingOptionId?: HarnessThinkingOptionId;
       toolOutputLimit: number;
       supportsThinkingSelection: boolean;
-      isFastSupported: (ref: HarnessModelRef) => boolean;
+      isFastSupported: (ref: HarnessModelRef, transport: PiTurnTransport) => Promise<boolean>;
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
@@ -960,18 +961,17 @@ class PiHarnessSession implements HarnessSession {
         error: invalidState("Pi Model selection requires a started Native Session"),
       };
     }
-    let requested: PiNativeModelRef;
-    try {
-      requested = decodePiModelRef(command.model);
-      if (requested.fast && !this.#isFastSupported(command.model))
-        throw new Error("Fast is unavailable for this Pi Model");
-    } catch (error) {
-      return { ok: false, error: normalizedError(error, "invalidRequest") };
-    }
-
     const previousModel = this.#state.effectiveModel;
     this.#configuring = true;
     try {
+      let requested: PiNativeModelRef;
+      try {
+        requested = decodePiModelRef(command.model);
+        if (requested.fast && !(await this.#isFastSupported(command.model, transport)))
+          throw new Error("Fast is unavailable for this Pi Model");
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "invalidRequest") };
+      }
       let state: PiSessionState;
       let thinkingLevels: HarnessThinkingOptionId[] | null;
       try {
@@ -1286,7 +1286,10 @@ class PiHarnessSession implements HarnessSession {
             throw new Error("Pi did not activate the requested create Model");
           }
           if (requested.fast) {
-            if (!this.#isFastSupported(this.#requestedModel) || !transport.selectFastMode)
+            if (
+              !(await this.#isFastSupported(this.#requestedModel, transport)) ||
+              !transport.selectFastMode
+            )
               throw new Error("Fast is unavailable for this Pi Model");
             state = await transport.selectFastMode(true);
           }
@@ -2175,7 +2178,7 @@ export class PiAdapter implements HarnessAdapter {
         },
       };
     }
-    const cwd = input.cwd ?? process.cwd();
+    const cwd = resolvePiInspectCwd(input.cwd);
     const inFlight = this.#inspectionInFlight.get(cwd);
     if (inFlight) return inFlight;
     if (!input.refresh) {
@@ -2541,7 +2544,17 @@ export class PiAdapter implements HarnessAdapter {
         ...(options.thinkingOptionId ? { thinkingOptionId: options.thinkingOptionId } : {}),
         toolOutputLimit: this.#toolOutputLimit,
         supportsThinkingSelection: options.supportsThinkingSelection,
-        isFastSupported: (ref) => this.#isFastSupported(ref, cwd),
+        isFastSupported: async (ref, transport) => {
+          if (this.#inspectionCache.has(cwd)) return this.#isFastSupported(ref, cwd);
+          // The picker may have inspected another cwd. Check the live Session instead
+          // of treating a cache miss as unsupported or spawning another Pi process.
+          if (!(await transport.supportsFastMode?.())) return false;
+          const fastModels = await piFastModelKeys(
+            await transport.getAvailableModels(),
+            environment ?? this.#environment,
+          );
+          return fastModels.has(encodePiModelRef({ ...decodePiModelRef(ref), fast: false }).id);
+        },
         ...(options.startedTransport ? { startedTransport: options.startedTransport } : {}),
         ...(options.startedThinkingLevels !== undefined
           ? { startedThinkingLevels: options.startedThinkingLevels }

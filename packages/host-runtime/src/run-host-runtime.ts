@@ -16,6 +16,7 @@ import { startDelegationControlServer } from "./delegation-control-server.js";
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import {
+  DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
@@ -83,8 +84,18 @@ function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
   return { stockCodexPath, defaultAgent };
 }
 
-function delegationCliPath(environment: NodeJS.ProcessEnv): string | undefined {
-  return environment[DELEGATION_CLI_PATH_ENV] ?? environment.CODEXHOST_LAUNCHER_EXECUTABLE;
+/**
+ * The CLI stays the native Launcher. npm packages ship no Node, so the Launcher
+ * runs the delegation CLI with the Node that started this npm installation.
+ */
+export function delegationCliEnvironment(environment: NodeJS.ProcessEnv): Record<string, string> {
+  const cliPath =
+    environment[DELEGATION_CLI_PATH_ENV] ?? environment[UPDATE_RUNTIME_ENV.launcherExecutable];
+  const nodePath = environment[UPDATE_RUNTIME_ENV.npmNodePath];
+  return {
+    ...(cliPath ? { [DELEGATION_CLI_PATH_ENV]: cliPath } : {}),
+    ...(nodePath && path.isAbsolute(nodePath) ? { [DELEGATION_CLI_NODE_PATH_ENV]: nodePath } : {}),
+  };
 }
 
 async function prepareDelegationRuntime(input: {
@@ -103,10 +114,9 @@ async function prepareDelegationRuntime(input: {
   });
   const token = randomBytes(32).toString("hex");
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
-  const cliPath = delegationCliPath(input.environment);
   const environment = {
     ...input.environment,
-    ...(cliPath ? { [DELEGATION_CLI_PATH_ENV]: cliPath } : {}),
+    ...delegationCliEnvironment(input.environment),
     [DELEGATION_RUNTIME_ENDPOINT_ENV]: server.endpoint,
     [DELEGATION_RUNTIME_TOKEN_ENV]: token,
   };

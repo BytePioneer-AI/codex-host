@@ -99,7 +99,7 @@ class FakeRemote implements ModernJournalRemote {
 }
 
 function header(overrides: Readonly<Record<string, unknown>> = {}): Record<string, unknown> {
-  return { version: 0, id: SESSION_ID, createdAt: 1, cwd: CWD, ...overrides };
+  return { version: 4, id: SESSION_ID, createdAt: 1, cwd: CWD, isSeeded: false, ...overrides };
 }
 
 function event(
@@ -135,6 +135,7 @@ function snapshot(
     records: history,
     hasMore,
     projections: { asOfSeq: cursor, values: {} },
+    assistantStream: { revision: 0 },
     ...overrides,
   };
 }
@@ -166,27 +167,7 @@ async function openWith(
 describe("DeepSeek Harness Modern journal", () => {
   it("opens follow first and pages a fixed opening cut backwards to zero", async () => {
     const setup = await openWith(snapshot(5, records(4, 5), true), [
-      () =>
-        page(
-          [
-            {
-              type: "chunks",
-              event: {
-                type: "chunkrow/text-chunks",
-                seq: 1,
-                time: 1_001,
-                data: {
-                  turn: 1,
-                  step: 1,
-                  index: 0,
-                  dt: [1, 1],
-                  texts: ["a", "b", "c"],
-                },
-              },
-            },
-          ],
-          true,
-        ),
+      () => page(records(1, 3), true),
       () => page(records(0, 0), false),
     ]);
     try {
@@ -327,78 +308,6 @@ describe("DeepSeek Harness Modern journal", () => {
     await failure.journal.close();
   });
 
-  it("losslessly expands text, reasoning, and tool-call chunk rows", async () => {
-    const packed = [
-      {
-        type: "chunks",
-        event: {
-          type: "chunkrow/text-chunks",
-          seq: 0,
-          time: 100,
-          data: { turn: 1, step: 2, index: 0, dt: [2, -1], texts: ["a", "", "c"] },
-        },
-      },
-      {
-        type: "chunks",
-        event: {
-          type: "chunkrow/reasoning-chunks",
-          seq: 3,
-          time: 200,
-          data: { turn: 1, step: 2, index: 1, dt: [3], texts: ["r1", "r2"] },
-        },
-      },
-      {
-        type: "chunks",
-        event: {
-          type: "chunkrow/tool-call-chunks",
-          seq: 5,
-          time: 300,
-          data: {
-            turn: 1,
-            step: 2,
-            index: 2,
-            id: "call-1",
-            name: "write",
-            dt: [0, 4],
-            args: ["{", '"x":1', "}"],
-          },
-        },
-      },
-    ];
-    const setup = await openWith(snapshot(7, packed, false));
-    try {
-      expect(setup.journal.events.map(({ seq, time }) => [seq, time])).toEqual([
-        [0, 100],
-        [1, 102],
-        [2, 101],
-        [3, 200],
-        [4, 203],
-        [5, 300],
-        [6, 300],
-        [7, 304],
-      ]);
-      expect(setup.journal.events.map(({ data }) => data)).toMatchObject([
-        { chunk: { type: "text-delta", text: "a" } },
-        { chunk: { type: "text-delta", text: "" } },
-        { chunk: { type: "text-delta", text: "c" } },
-        { chunk: { type: "reasoning-delta", text: "r1" } },
-        { chunk: { type: "reasoning-delta", text: "r2" } },
-        {
-          chunk: {
-            type: "tool-call-delta",
-            id: "call-1",
-            name: "write",
-            argumentsDelta: "{",
-          },
-        },
-        { chunk: { argumentsDelta: '"x":1' } },
-        { chunk: { argumentsDelta: "}" } },
-      ]);
-    } finally {
-      await setup.journal.close();
-    }
-  });
-
   it("supports a blank opening cut and starts live delivery at sequence zero", async () => {
     const setup = await openWith(snapshot(-1, [], false));
     try {
@@ -463,7 +372,7 @@ describe("DeepSeek Harness Modern journal", () => {
       "protocolError",
     ],
     [
-      "malformed packed row",
+      "retired pre-V4 packed row",
       snapshot(
         1,
         [
@@ -511,31 +420,6 @@ describe("DeepSeek Harness Modern journal", () => {
   it.each([
     ["gap", () => page(records(0, 2), false), {}],
     ["overlap", () => page(records(3, 4), true), {}],
-    [
-      "packed partial overlap",
-      () =>
-        page(
-          [
-            {
-              type: "chunks",
-              event: {
-                type: "chunkrow/text-chunks",
-                seq: 2,
-                time: 1,
-                data: {
-                  turn: 1,
-                  step: 1,
-                  index: 0,
-                  dt: [1, 1],
-                  texts: ["a", "b", "c"],
-                },
-              },
-            },
-          ],
-          true,
-        ),
-      {},
-    ],
     ["no progress", () => page([], true), {}],
     ["page limit", () => page(records(2, 3), true), { maxPageRequests: 1 }],
   ] as const)("rejects paging %s without leaking follow", async (_label, handler, options) => {
@@ -661,7 +545,7 @@ describe("DeepSeek Harness Modern journal", () => {
   it.each([
     ["second snapshot", snapshot(0, [eventRecord(0)], false)],
     [
-      "packed live frame",
+      "retired pre-V4 packed live frame",
       {
         type: "chunks",
         event: {

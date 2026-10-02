@@ -2,7 +2,7 @@
 
 > 当前实现同时接入 OpenCode CLI v1 和 v2。v1 验证基线为 `1.18.25`，v2 为 `2.0.16`。下文原有 SDK/HTTP 调研以 v1 为基线，不能把旧包的 `/v2` 导出误读为 CLI 2.x 支持。
 
-> 下文 DeepSeek Host API 对比保留调研时的历史基线；当前 DSH Legacy 已移除，仅支持 `0.1.2-rc.1` / `0.1.5-rc.1` 托管 Web，现行范围见[连接流程](../../architecture/harness-executable-discovery.md#deepseek-harness-的特殊性)和[消息修订与恢复](../deepseek/dsh-edit-recovery.md)。
+> 下文 DeepSeek Host API 对比保留调研时的历史基线；当前 DSH Legacy 与 V0/V3 已移除，只通过托管 Web 对接 `0.1.7-rc.1` 及以上的 V4 版本，现行范围见[连接流程](../../architecture/harness-executable-discovery.md#deepseek-harness-的特殊性)和[消息修订与恢复](../deepseek/dsh-edit-recovery.md)。
 
 本文同时记录接入设计、官方能力证据和 `codex/opencode-harness` 分支的第一版实现。下文单独区分“官方接口存在”“当前已实现”“当前已对外声明”和“仍需真实 Gate”，避免把类型或 endpoint 的存在误报成平台能力。
 

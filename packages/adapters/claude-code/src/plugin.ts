@@ -5,6 +5,7 @@ import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 import { ClaudeCodeAdapter, claudeCommandCatalog } from "./claude-code-adapter.js";
 import { createClaudeInstallation } from "./installation.js";
 
+import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { withUserShellEnvironment } from "./user-shell-environment.js";
 
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
@@ -26,7 +27,13 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
         : {}),
       environment,
     }),
-    { installation: createClaudeInstallation(environment, environment[CLAUDE_CODE_COMMAND_ENV]) },
+    {
+      installation: createClaudeInstallation(environment, environment[CLAUDE_CODE_COMMAND_ENV]),
+      install: createHarnessInstaller(environment, {
+        posix: "https://claude.ai/install.sh",
+        windows: "https://claude.ai/install.ps1",
+      }),
+    },
   );
 }
 

@@ -83,6 +83,9 @@ const NPM_CLI_PATH_ENV: &str = "CODEXHOST_NPM_CLI_PATH";
 const NPM_LAUNCHER_PATH_ENV: &str = "CODEXHOST_NPM_LAUNCHER_PATH";
 const NPM_PACKAGE_ROOT_ENV: &str = "CODEXHOST_NPM_PACKAGE_ROOT";
 const CODEXHOST_CLI_PATH_ENV: &str = "CODEXHOST_CLI_PATH";
+/// Node used by the delegation CLI when the installation has no bundled Node
+/// (npm packages rely on the user's Node). Only this launcher reads it.
+const CODEXHOST_CLI_NODE_PATH_ENV: &str = "CODEXHOST_CLI_NODE_PATH";
 const NPM_UPDATE_RUNTIME_ENV: [&str; 4] = [
     NPM_NODE_PATH_ENV,
     NPM_CLI_PATH_ENV,
@@ -181,7 +184,8 @@ fn read_bounded_loopback_url(reader: impl Read) -> Result<String, Box<dyn Error>
 fn run_delegation_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let executable = env::current_exe()?.canonicalize()?;
     let resources = InstalledResources::from_executable(&executable)?;
-    let status = Command::new(&resources.node)
+    let node = delegation_node(&resources.node, env::var_os(CODEXHOST_CLI_NODE_PATH_ENV))?;
+    let status = Command::new(&node)
         .arg(node_entrypoint_path(&resources.host_runtime))
         .arg("--codexhost-delegation-cli")
         .args(arguments)
@@ -191,6 +195,21 @@ fn run_delegation_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         Ok(())
     } else {
         std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+/// Prefer the bundled Node; npm installations have none and use the Host's.
+/// A relative bundled path (source checkout) is resolved by the OS as before.
+fn delegation_node(bundled: &Path, host_node: Option<OsString>) -> Result<PathBuf, String> {
+    if !bundled.is_absolute() || bundled.is_file() {
+        return Ok(bundled.to_path_buf());
+    }
+    match host_node.map(PathBuf::from) {
+        Some(node) if node.is_absolute() => Ok(node),
+        _ => Err(format!(
+            "codexhost delegation cannot find Node: {} does not exist and {CODEXHOST_CLI_NODE_PATH_ENV} is not an absolute path. Run this command inside a codexhost-managed session; if a shell environment policy filters variables, keep {CODEXHOST_CLI_NODE_PATH_ENV}.",
+            bundled.display()
+        )),
     }
 }
 
@@ -1403,10 +1422,10 @@ mod tests {
         LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, NPM_CLI_PATH_ENV, NPM_LAUNCHER_PATH_ENV,
         NPM_NODE_PATH_ENV, NPM_PACKAGE_ROOT_ENV, RUNTIME_DESCRIPTOR_PATH_ENV,
         ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, absolute_directory,
-        allocate_runtime_control, desktop_controller_command, desktop_environment, emit_ready_line,
-        managed_desktop_data_directory, npm_update_runtime_environment, parse_inspect_options,
-        parse_launch_options, read_bounded_controller_line, read_bounded_loopback_url,
-        validate_loopback_root_url,
+        allocate_runtime_control, delegation_node, desktop_controller_command, desktop_environment,
+        emit_ready_line, managed_desktop_data_directory, npm_update_runtime_environment,
+        parse_inspect_options, parse_launch_options, read_bounded_controller_line,
+        read_bounded_loopback_url, validate_loopback_root_url,
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{DESKTOP_TREE_REFRESH_INTERVAL, desktop_tree_refresh_due};
@@ -1724,6 +1743,30 @@ mod tests {
             value(CONTROL_NONCE_ENV),
             Some(&OsString::from(&control.nonce))
         );
+    }
+
+    #[test]
+    fn delegation_node_falls_back_to_the_host_node_only_without_a_bundled_node() {
+        let bundled = std::env::current_exe().expect("resolve test executable");
+        let missing = bundled.with_file_name("missing-bundled-node");
+        let host_node = missing.with_file_name("host-node");
+
+        assert_eq!(
+            delegation_node(&bundled, Some(host_node.clone().into_os_string())),
+            Ok(bundled.clone())
+        );
+        assert_eq!(
+            delegation_node(&missing, Some(host_node.clone().into_os_string())),
+            Ok(host_node)
+        );
+        assert_eq!(
+            delegation_node(Path::new("node"), None),
+            Ok(PathBuf::from("node"))
+        );
+        let error = delegation_node(&missing, Some(OsString::from("node")))
+            .expect_err("a relative Host Node is rejected");
+        assert!(error.contains("CODEXHOST_CLI_NODE_PATH"), "{error}");
+        assert!(delegation_node(&missing, None).is_err());
     }
 
     #[test]

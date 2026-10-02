@@ -57,6 +57,42 @@ describe("console connection diagnostics", () => {
     expect(inspectHarness).toHaveBeenCalledWith({ harnessId: "pi", refresh: true });
   });
 
+  it.each(["install", "check", "update"] as const)(
+    "forwards %s to the local Host",
+    async (action) => {
+      const state = {
+        currentVersion: "1.0",
+        latestVersion: "1.0",
+        updateAvailable: false,
+        canUpdate: true,
+      };
+      const installation = vi.fn(async () => state);
+      const diagnostics = createConsoleConnectionDiagnostics(client({ installation }));
+      await expect(diagnostics.installation?.("local", "pi", action)).resolves.toEqual(state);
+      expect(installation).toHaveBeenCalledExactlyOnceWith({ harnessId: "pi", action });
+    },
+  );
+
+  it("does not advertise installation when the client lacks the interface", () => {
+    expect(createConsoleConnectionDiagnostics(client({})).installation).toBeUndefined();
+  });
+
+  it("rejects remote installation without invoking the local Host", async () => {
+    const installation = vi.fn();
+    const diagnostics = createConsoleConnectionDiagnostics(client({ installation }));
+    await expect(diagnostics.installation?.("remote-test", "pi", "install")).rejects.toThrow(
+      "only supports the local Host",
+    );
+    expect(installation).not.toHaveBeenCalled();
+  });
+
+  it("preserves Host installation errors", async () => {
+    const error = new Error("Installer failed");
+    const installation = vi.fn().mockRejectedValue(error);
+    const diagnostics = createConsoleConnectionDiagnostics(client({ installation }));
+    await expect(diagnostics.installation?.("local", "pi", "install")).rejects.toBe(error);
+  });
+
   it("uses the Host for launch settings and Web UI", async () => {
     const getHarnessLaunchSettings = vi.fn(async () => ({ path: null, restartRequired: false }));
     const setHarnessLaunchSettings = vi.fn(async () => ({

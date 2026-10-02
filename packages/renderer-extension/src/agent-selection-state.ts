@@ -65,7 +65,7 @@ export interface DraftComposerState {
 
 type MutableComposerState = DraftComposerState;
 
-interface ConversationState {
+interface TargetState {
   target: readonly unknown[];
   state: MutableComposerState;
 }
@@ -93,6 +93,15 @@ function isConversationTarget(target: readonly unknown[] | null): target is read
   return target?.[0] === "conversation";
 }
 
+function isIdentifiedTarget(target: readonly unknown[] | null): target is readonly unknown[] {
+  return (
+    target?.[0] === "conversation" ||
+    (target?.[0] === "default" &&
+      typeof target[1] === "string" &&
+      target[1].startsWith("client-new-thread:"))
+  );
+}
+
 function sameTarget(left: readonly unknown[], right: readonly unknown[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
@@ -101,7 +110,7 @@ export class DraftAgentController<Composer extends object> {
   readonly #idFactory: (sequence: number) => string;
   readonly #defaultAgent: RendererAgent;
   readonly #enabledAgents: ReadonlySet<RendererAgent>;
-  readonly #conversationStates: ConversationState[] = [];
+  readonly #targetStates: TargetState[] = [];
   readonly #modelRequestGenerations = new WeakMap<MutableComposerState, number>();
   readonly #ownershipRequestGenerations = new WeakMap<MutableComposerState, number>();
   readonly #states = new WeakMap<Composer, MutableComposerState>();
@@ -134,7 +143,7 @@ export class DraftAgentController<Composer extends object> {
     target: readonly unknown[] | null,
     preferredNewThreadAgent?: RendererAgent,
   ): Readonly<DraftComposerState> {
-    const bound = this.#conversationState(target);
+    const bound = this.#targetState(target);
     if (bound) {
       this.#states.set(composer, bound);
       return bound;
@@ -144,8 +153,10 @@ export class DraftAgentController<Composer extends object> {
         ? preferredNewThreadAgent
         : this.#lastSubmittedAgent;
     const state = this.#state(composer, isDefaultTarget(target) ? preferredAgent : "codex");
-    if (isConversationTarget(target)) {
-      this.#conversationStates.push({ target, state });
+    // A Desktop remount of the same draft is not a new Thread. Keep its explicit
+    // configuration even when DOM mutations cannot pair the old and new roots.
+    if (isIdentifiedTarget(target)) {
+      this.#targetStates.push({ target, state });
     }
     return state;
   }
@@ -190,14 +201,14 @@ export class DraftAgentController<Composer extends object> {
     this.#modelRequestGenerations.set(previous, ++this.#modelRequestSequence);
     this.#ownershipRequestGenerations.set(previous, ++this.#ownershipRequestSequence);
 
-    let state = this.#conversationState(target);
+    let state = this.#targetState(target);
     if (!state) {
       state = {
         agent: "codex",
         phase: "draft",
         composerId: this.#idFactory(++this.#composerSequence),
       };
-      this.#conversationStates.push({ target, state });
+      this.#targetStates.push({ target, state });
     }
     this.#states.set(composer, state);
     this.#modelRequestGenerations.set(state, ++this.#modelRequestSequence);
@@ -511,14 +522,14 @@ export class DraftAgentController<Composer extends object> {
   ): boolean {
     const state = this.#states.get(source);
     if (!state) return false;
-    const bound = this.#conversationState(target);
+    const bound = this.#targetState(target);
     if (bound && bound !== state) return false;
     if (source !== replacement) {
       if (this.#states.has(replacement)) return false;
       this.#states.set(replacement, state);
     }
-    if (isConversationTarget(target) && !bound) {
-      this.#conversationStates.push({ target, state });
+    if (isIdentifiedTarget(target) && !bound) {
+      this.#targetStates.push({ target, state });
     }
     if (isConversationTarget(target) && this.#pendingSubmissions.delete(state)) {
       state.phase = "locked";
@@ -558,11 +569,10 @@ export class DraftAgentController<Composer extends object> {
     }
   }
 
-  #conversationState(target: readonly unknown[] | null): MutableComposerState | null {
-    if (!isConversationTarget(target)) return null;
+  #targetState(target: readonly unknown[] | null): MutableComposerState | null {
+    if (!isIdentifiedTarget(target)) return null;
     return (
-      this.#conversationStates.find((candidate) => sameTarget(candidate.target, target))?.state ??
-      null
+      this.#targetStates.find((candidate) => sameTarget(candidate.target, target))?.state ?? null
     );
   }
 

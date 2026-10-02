@@ -2,50 +2,46 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JsonLineCollector, requestId, writeRequest } from "./app-server-host-fixture.js";
 
-afterEach(() => {
-  vi.useRealTimers();
-});
+const timeoutMs = process.platform === "win32" ? 10_000 : 2_000;
+
+afterEach(() => vi.useRealTimers());
 
 describe("JsonLineCollector", () => {
-  it.skipIf(process.platform !== "win32")(
-    "allows Windows Host responses after the former two-second limit",
-    async () => {
-      vi.useFakeTimers();
-      const stream = new PassThrough();
-      const collector = new JsonLineCollector(stream);
-      const response = { id: 42, result: { turn: { status: "inProgress" } } };
-      const pending = collector
-        .waitFor((message) => requestId(message, 42))
-        .then(
-          (message) => ({ message }),
-          (error: unknown) => ({ error }),
-        );
-
-      // Disk-backed Host requests may outlast two seconds on Windows CI.
-      await vi.advanceTimersByTimeAsync(2_500);
-      writeRequest(stream, response);
-
-      expect(await pending).toEqual({ message: response });
-      expect(vi.getTimerCount()).toBe(0);
-      stream.end();
-    },
-  );
-
-  it("still rejects missing output and retains a later response", async () => {
+  it("accepts output before the platform-specific deadline and clears the timer", async () => {
     vi.useFakeTimers();
-    const stream = new PassThrough();
-    const collector = new JsonLineCollector(stream);
-    const response = { id: 42, result: {} };
-    const rejected = expect(collector.waitFor((message) => requestId(message, 42))).rejects.toThrow(
-      "Timed out waiting for Host output",
-    );
+    const output = new PassThrough();
+    const collector = new JsonLineCollector(output);
+    const response = collector.waitFor((message) => requestId(message, 34));
 
-    await vi.runAllTimersAsync();
-    await rejected;
-    writeRequest(stream, response);
+    await vi.advanceTimersByTimeAsync(timeoutMs - 1);
+    output.write(`${JSON.stringify({ id: 34, result: {} })}\n`);
 
-    await expect(collector.waitFor((message) => requestId(message, 42))).resolves.toEqual(response);
+    await expect(response).resolves.toEqual({ id: 34, result: {} });
     expect(vi.getTimerCount()).toBe(0);
-    stream.end();
+    await expect(collector.waitFor((message) => requestId(message, 34))).resolves.toEqual({
+      id: 34,
+      result: {},
+    });
+    output.end();
+  });
+
+  it("rejects missing output at the platform-specific deadline and retains a later response", async () => {
+    vi.useFakeTimers();
+    const output = new PassThrough();
+    const collector = new JsonLineCollector(output);
+    const response = collector.waitFor((message) => requestId(message, 34));
+    const rejection = expect(response).rejects.toThrow("Timed out waiting for Host output");
+
+    await vi.advanceTimersByTimeAsync(timeoutMs);
+    await rejection;
+    expect(vi.getTimerCount()).toBe(0);
+
+    writeRequest(output, { id: 34, result: {} });
+    await expect(collector.waitFor((message) => requestId(message, 34))).resolves.toEqual({
+      id: 34,
+      result: {},
+    });
+    expect(vi.getTimerCount()).toBe(0);
+    output.end();
   });
 });

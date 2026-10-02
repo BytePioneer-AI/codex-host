@@ -1,8 +1,6 @@
 import type { HarnessInstallationState } from "@codexhost/shared-contracts";
 
 import type { ExternalRendererAgent } from "../agent-selection-state.js";
-import { harnessInstallationGuide } from "./harness-installation-guides.js";
-import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 /** Owned by one Connections page, reused across diagnostic renders and row switches. */
@@ -27,28 +25,14 @@ export function createHarnessVersionPanel(
   status.setAttribute("role", "status");
   const actions = document.createElement("div");
   actions.className = "settings-connection-error-actions";
-  const check = document.createElement("button");
-  check.type = "button";
-  check.className = "settings-command-button settings-command-button--secondary";
-  check.dataset.harnessVersionAction = "check";
-  check.textContent = messages.harnessVersionCheck;
   const update = document.createElement("button");
   update.type = "button";
-  update.className = check.className;
+  update.className = "settings-command-button settings-command-button--secondary";
   update.dataset.harnessVersionAction = "update";
-  const guide = document.createElement("a");
-  guide.className = check.className;
-  guide.href = harnessInstallationGuide(agent, messages.locale).url;
-  guide.target = "_blank";
-  guide.rel = "noopener noreferrer";
-  guide.append(
-    messages.connectionOpenInstallation,
-    createRendererSettingsIcon("external-link", 14),
-  );
   const note = document.createElement("p");
   note.className = "settings-connection-issue-note";
   note.textContent = messages.harnessVersionNote;
-  actions.append(check, update, guide);
+  actions.append(update);
   panel.append(heading, versions, status, actions, note);
   let state: HarnessInstallationState | undefined;
   let busy = false;
@@ -56,7 +40,6 @@ export function createHarnessVersionPanel(
   const render = (): void => {
     current.textContent = `${messages.harnessVersionCurrent}: ${state?.currentVersion ?? "—"}`;
     latest.textContent = `${messages.harnessVersionLatest}: ${state?.latestVersion ?? "—"}`;
-    check.disabled = busy || unsupported || signal.aborted;
     update.disabled = busy || signal.aborted || !state?.canUpdate || !state.updateAvailable;
     update.textContent =
       state?.canUpdate && state.latestVersion !== "Unknown" && !state.updateAvailable
@@ -100,7 +83,6 @@ export function createHarnessVersionPanel(
       if (!signal.aborted) render();
     }
   };
-  check.addEventListener("click", () => void run("check"));
   update.addEventListener("click", () => void run("update"));
   signal.addEventListener("abort", render, { once: true });
   render();

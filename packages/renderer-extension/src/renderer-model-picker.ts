@@ -738,6 +738,7 @@ export function renderRendererModelPicker(
   applyRendererTriggerChipSqueezeRoot(control.root, rendererModelTriggerMaxWidth());
   if (!visible) {
     control.close();
+    control.fast.close();
     return;
   }
   const presentation = rendererModelPickerPresentation(view);
@@ -773,9 +774,10 @@ export function renderRendererModelPicker(
   );
   control.trigger.disabled = isRendererModelPickerDisabled(view);
   control.fast.render(view.catalog, view.selected, control.trigger.disabled, locale === "zh-CN");
+  control.trigger.style.paddingLeft = control.fast.button.hidden ? "8px" : "2px";
   if (control.fast.button.hidden) control.fast.button.remove();
   else if (control.fast.button.parentElement !== control.root)
-    control.root.append(control.fast.button);
+    control.root.prepend(control.fast.button);
   if (shouldCloseRendererModelPicker(view) && !keepOpenMenu) control.close();
   control.modelButton.disabled = control.trigger.disabled;
   // The search input must not mirror the trigger's disabled state: disabling a

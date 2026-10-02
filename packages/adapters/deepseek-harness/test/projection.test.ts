@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   contentText,
-  deepSeekUsageKey,
   mergeDeepSeekUsage,
   parseArguments,
   parseDeepSeekContextWindow,
@@ -44,26 +43,18 @@ describe("DeepSeek native result projection", () => {
     ).toBe(" a\nb ");
   });
 
-  it("correlates tool output by call identity and truncates without hiding failure", () => {
+  it("projects V4 tool-role output by call identity and truncates without hiding failure", () => {
     const result = {
+      role: "tool",
+      toolCallId: "read-1",
+      isError: true,
       source: { kind: "tool", callId: "read-1" },
       content: [
         null,
-        { type: "text", text: "ignore" },
-        { type: "tool-result", toolCallId: "other", content: [{ type: "text", text: "wrong" }] },
-        { type: "tool-result", toolCallId: "read-1", content: "invalid" },
-        { type: "tool-result", toolCallId: "read-1", content: [{ type: "text", text: "abc" }] },
-        {
-          type: "tool-result",
-          toolCallId: "read-1",
-          isError: true,
-          content: [
-            null,
-            { type: "image", attachment: {} },
-            { type: "text", text: 1 },
-            { type: "text", text: "def" },
-          ],
-        },
+        { type: "image", attachment: {} },
+        { type: "text", text: 1 },
+        { type: "text", text: "abc" },
+        { type: "text", text: "def" },
       ],
     };
     expect(projectToolResult(result, 6)).toEqual({
@@ -78,29 +69,12 @@ describe("DeepSeek native result projection", () => {
     });
     expect(
       projectToolResult(
-        {
-          source: result.source,
-          content: [{ type: "tool-result", toolCallId: "read-1", content: [] }],
-        },
+        { role: "tool", toolCallId: "read-1", source: result.source, content: [] },
         10,
       ),
     ).toEqual({ callId: "read-1", failed: false });
-  });
-
-  it("projects V4 tool-role output and failure", () => {
-    const result = {
-      role: "tool",
-      toolCallId: "call-1",
-      isError: true,
-      source: { kind: "tool", callId: "call-1" },
-      content: [{ type: "text", text: "failed read" }],
-    };
-    expect(projectToolResult(result, 6)).toEqual({
-      callId: "call-1",
-      failed: true,
-      output: { content: [{ type: "text", text: "failed" }], truncated: true },
-    });
     expect(projectToolResult({ ...result, toolCallId: "other" }, 20)).toBeNull();
+    expect(projectToolResult({ ...result, isError: "yes" }, 20)).toBeNull();
   });
 
   it.each([
@@ -113,7 +87,12 @@ describe("DeepSeek native result projection", () => {
     { source: { kind: "tool", callId: 1 }, content: [] },
     { source: { kind: "tool", callId: "one" }, content: "bad" },
     { source: { kind: "tool", callId: "one" }, content: [] },
-  ])("rejects uncorrelated or malformed tool result %#", (value) => {
+    {
+      role: "user",
+      source: { kind: "tool", callId: "one" },
+      content: [{ type: "tool-result", toolCallId: "one", content: [{ type: "text", text: "x" }] }],
+    },
+  ])("rejects uncorrelated, malformed or pre-V4 tool result %#", (value) => {
     expect(projectToolResult(value, 20)).toBeNull();
   });
 
@@ -223,9 +202,6 @@ describe("DeepSeek usage and outcomes", () => {
     ]) {
       expect(parseDeepSeekOutputTokensPerSecond(value)).toBeUndefined();
     }
-    expect(deepSeekUsageKey({ turn: 2, step: 4 }, "event:1")).toBe("turn:2:step:4");
-    expect(deepSeekUsageKey({ turn: "2", step: 4 }, "event:1")).toBe("event:1");
-    expect(deepSeekUsageKey({ turn: 2, step: 1.5 }, "event:1")).toBe("event:1");
   });
 
   it("adds usage counters while carrying the latest complete context and rate", () => {

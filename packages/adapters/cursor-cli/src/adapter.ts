@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fetchCursorAccount } from "./account-usage.js";
+import { CursorSessionImport } from "./session-import.js";
 import {
   HarnessOutputChannel,
   sanitizeDiagnosticTail,
@@ -56,6 +57,7 @@ import {
   type CursorNativeTurn,
 } from "./native-history.js";
 import { CursorTurnOutput, cursorSnapshot } from "./projection.js";
+import { isCursorWritableIterableClosed } from "./stream-error.js";
 import { cursorThinking, cursorThinkingState } from "./thinking.js";
 import { CURSOR_COMMAND_CATALOG, cursorCommands, cursorCommandPrompt } from "./slash-commands.js";
 import { CursorInteractions } from "./interactions.js";
@@ -74,6 +76,13 @@ export function cursorError(error: unknown): HarnessError {
   const message = sanitizeDiagnosticTail(
     error instanceof Error ? error.message : "Cursor operation failed",
   );
+  if (isCursorWritableIterableClosed(message)) {
+    return {
+      code: "nativeFailure",
+      message: "Cursor stream closed (WritableIterable)",
+      retryable: true,
+    };
+  }
   const code = /not installed/iu.test(message)
     ? "notInstalled"
     : /auth|not logged in|login/iu.test(message)
@@ -134,7 +143,10 @@ export class CursorAdapter implements HarnessAdapter {
     { pending: boolean; result: Promise<HarnessInspection> }
   >();
   #closed = false;
-  constructor(readonly options: CursorAdapterOptions = {}) {}
+  readonly sessionImport: CursorSessionImport;
+  constructor(readonly options: CursorAdapterOptions = {}) {
+    this.sessionImport = new CursorSessionImport(options.environment ?? process.env);
+  }
   async inspectAccount() {
     if (this.#closed) return null;
     return fetchCursorAccount({ environment: this.options.environment ?? process.env });
@@ -422,8 +434,9 @@ export class CursorAdapter implements HarnessAdapter {
   }
   async close() {
     this.#closed = true;
+    const importing = this.sessionImport.close();
     for (const controller of this.#forks.keys()) controller.abort();
-    await Promise.allSettled(this.#forks.values());
+    await Promise.allSettled([importing, ...this.#forks.values()]);
     await Promise.allSettled([...this.#sessions].map((session) => session.close()));
     await Promise.allSettled(
       [...this.#inspections.values()].map((inspection) => inspection.result),
@@ -728,19 +741,31 @@ export class CursorSession implements HarnessSession {
           },
         },
       );
+      const streamClosed = output.sawWritableIterableClosed() && !output.hasVisibleAssistantText();
+      // Do not resubmit a prompt automatically: missing history does not prove
+      // that native tools or an outbound delegation did not already execute.
       outcome =
         this.#active?.cancelled || result.stopReason === "cancelled"
           ? { status: "cancelled" }
-          : result.stopReason === "end_turn"
-            ? { status: "succeeded" }
-            : {
+          : streamClosed
+            ? {
                 status: "failed",
                 error: {
                   code: "nativeFailure",
-                  message: `Cursor stopped: ${result.stopReason}`,
-                  retryable: false,
+                  message: "Cursor stream closed (WritableIterable)",
+                  retryable: true,
                 },
-              };
+              }
+            : result.stopReason === "end_turn"
+              ? { status: "succeeded" }
+              : {
+                  status: "failed",
+                  error: {
+                    code: "nativeFailure",
+                    message: `Cursor stopped: ${result.stopReason}`,
+                    retryable: false,
+                  },
+                };
     } catch (error) {
       fault = cursorError(error);
       outcome = this.#active?.cancelled

@@ -8,7 +8,7 @@
 
 七个既有 Adapter 通过同样的 `manifest.json` 和 `createHarnessAdapter` 工厂加载；`adapter-composition.ts` 已删除，Host 源码、包依赖和 TypeScript references 不再直接引用具体 Adapter 包。预装集合仅由发行清单 [`scripts/release/harness-plugins.json`](../../scripts/release/harness-plugins.json) 决定。原生构造参数、预取和 Claude Code 的直接/Broker 选择仍由相应插件负责。
 
-本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Claude Code、Pi、Hermes 和 DSH 已提供实际实现。DSH 通过本机托管 Web 接入；`0.1.2-rc.1` / `0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.5-rc.3` / `0.1.7-rc.1` 已通过对应验证，其他 SemVer 版本可尝试连接，但仍须通过原生协议校验。Legacy 协议已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。这不代表普通 Agent Picker 已完成动态接入。
+本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Claude Code、Pi、Hermes 和 DSH 已提供实际实现。DSH 通过本机托管 Web 接入，只对接 V4；`0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` 已通过对应验证，低于 `0.1.7-rc.1` 的版本明确拒绝，其他 SemVer 版本可尝试连接，但仍须通过原生协议校验。Legacy 协议与 V0/V3 已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。这不代表普通 Agent Picker 已完成动态接入。
 
 尚未实现的目标包括：
 
@@ -117,11 +117,25 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 ## Harness CLI 版本与更新
 
-设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本、检查更新与更新按钮。选择详情时检查一次；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。未安装时仍显示原有安装指引。未支持此能力的插件、旧 Host 和 Broker 路径显示不可用并提供官方安装说明，不回退更新本机的另一份安装。
+设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。首次选择详情时自动检查一次，不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。所选 Harness 的详情卡片标题旁提供官网外链图标，列表行及详情正文不重复提供通用官网或安装说明链接。未安装且有自动安装入口时显示下载图标；点击显式发起 CLI 安装，点击行本身查看手动安装命令、复制按钮、接入提示和「重新检测」，正文不提供额外的通用安装指南跳转入口。WorkBuddy 在详情正文提供一个「下载」按钮，跳转官网首页，并提示下载安装桌面应用，不提供分系统的安装指南链接。未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用，不回退更新本机的另一份安装。
 
 可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message? }`。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
 
-当前支持：
+DSH 的 npx 更新只在显式点击更新时执行 `npx --yes --prefer-online @deepseek-ai/dsh --version`，保留与普通离线启动相同的无版本包规格及 Host 环境（包括 npm 缓存配置），避免 `@latest` 或固定版本规格创建另一份缓存。先确认在线命令返回目标版本，再用原来的 `--offline --no-install @deepseek-ai/dsh --version` 回读，任一步失败或版本不匹配均不报告成功。版本查询失败不执行更新；普通诊断和启动仍保持离线，不改变现有会话或自动重启已运行的 Web 进程。npm 原生管理缓存，不直接编辑缓存目录，也不新增 Host 持久状态。
+
+### 首次安装
+
+RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 `install` 传给旧插件的 `installation()`。Host 先刷新检查，只有 `notInstalled` 才安装，避免把未登录或不可用误认为未安装；安装后通过 `installation("check")` 回读 CLI 版本。安装失败或版本无法确认都不报告成功，原生异常脱敏后显示在右侧详情。
+
+- DeepSeek Harness（`@deepseek-ai/dsh@latest`，安装时跟随 npm `latest` 标签；不代表该版本已验证兼容，连接仍须通过原生协议校验）、OpenCode、Grok、CodeBuddy 使用官方 npm 包；需要已有 Node.js/npm；npm 在 PATH 未命中时继续搜索版本管理器与标准安装位置，适配 Desktop 的精简 GUI 环境。Grok 保留 npm 安装脚本允许项。
+- Pi、Claude Code、OMP、Antigravity、Kiro CLI、Cursor CLI、Hermes、Qoder 两版和 Kimi Code 使用各自 Adapter 固定的官方 HTTPS 安装脚本，按 Host OS 选择 Shell/PowerShell。脚本下载到临时目录，执行后清理；安装命令最多 10 分钟，不自动提权，不自动安装系统依赖，安装器不能依赖交互输入。
+- WorkBuddy 仍引导安装桌面应用。旧插件、旧 Host 和未转发能力的 Broker 返回不支持，不回退到本机安装。
+- Host 按 Adapter 合并并发安装，安装期间的检查/更新等待同一结果。Renderer 按连接及 Host/Harness 保存安装状态：列表中显示安装中、检测中或错误，安装时禁用下载按钮，错误保留在右侧并允许重试。切换行、Host 或关闭再打开设置不会取消操作；Host/连接进程重启后不恢复任务。
+- 成功和失败后均只重新诊断所选 Host：先等待该 Host 已有诊断结束，再发起安装完成后的新诊断，不能复用安装前的结果；普通后台刷新仍合并并发请求。CLI 安装完成不意味着登录、Provider 配置或所有 Adapter 能力可用。检测结果才决定最终连接状态：即使版本回读失败，只要同一 Host/Harness 的本次重新诊断确认 `ready`，就清除安装失败覆盖状态；其他 Host 的状态或刷新失败后的旧快照不能清除错误。版本回读还可能依赖更新源网络；版本检查失败时应先重新诊断，不盲目重装。
+
+安装路径来自仓库维护的官方指引，并非所有系统/架构已通过真实安装验收。前置依赖、网络、官方安装器交互和平台支持仍影响结果；模拟测试不代表真实安装成功。
+
+当前检查与更新支持：
 
 | Harness | 检查与更新 |
 | --- | --- |
@@ -135,15 +149,15 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 | OpenCode | `--version`；npm 安装查询原包版本并更新其准确 prefix，标准 `~/.opencode/bin/opencode` 原生安装查询官方 GitHub Release 并执行 `upgrade <version> --method curl`。其他包管理器、自定义安装和 Windows 原生安装只检查，不进入交互式安装回退。 |
 | Claude Code | `--version` 和官方 stable/latest 版本源；读取用户及本机文件型受管设置，使用原生 `claude update` 保留策略执行。识别的全局 npm 安装固定 npm prefix，标准原生 launcher 允许更新；版本限制、其他安装渠道及 macOS 受管远程 Broker 保留手动更新。 |
 | CodeBuddy | `--version`；识别的 npm 安装查询 `@tencent-ai/codebuddy-code`，只有全局安装允许在原 prefix 更新。原生安装只显示已安装版本，最新版本和更新交给原安装器；macOS 受管远程 Broker 尚不转发该能力。 |
-| Kiro CLI | `--version`；macOS 读取配置/策略指定源的 `index.json`（默认官方 stable 源），筛选 OS/CPU 和已开始发布的版本，不调用不支持的 `--check`。其他平台使用原生 `update --check`。仅识别的应用或用户级原生安装可更新；支持时传 `--non-interactive`，不传 `--force`，系统包与自定义安装保留手动更新。 |
-| DeepSeek Harness | 原生 `--version`，保留离线 npx 参数；识别的 npm 安装查询 `@deepseek-ai/dsh`，只有全局安装更新原 prefix。离线 npx、Python wheel、桌面载体及项目安装不创建或更新另一份全局安装。 |
+| Kiro CLI | 只通过 `--version` 显示当前版本；最新版本未知，不检查更新源、不执行更新。Kiro 的更新策略与发布源选择交给原生安装器，设置页提示使用原生更新器或安装方式。 |
+| DeepSeek Harness | 原生 `--version`，独立查询 npm `@deepseek-ai/dsh` 的 `latest`，不受安装渠道限制。识别的全局安装更新原 prefix；npx 安装显式更新原缓存并验证离线启动版本。Python wheel、桌面载体及项目安装仍使用原安装方式更新，不创建或更新另一份全局安装。 |
 | Hermes | 原生 `--version`、`update --plan`、`update --check`；使用原生渠道判定和提交标识而非普通 SemVer 比较。仅可原地更新且能报告提交标识、支持非交互与 Gateway 重启延后的干净 Git 安装执行 `update --yes --no-gateway-restart`；桌面包、Docker、Nix 等仍由原生安装所有者更新。 |
 
 Qoder 检查遇到不认识的输出（包括尚未识别的本地化文本）会拒绝判断更新状态，并在 Adapter 错误及本地诊断日志中保留有长度上限、已脱敏的原生输出；Host 仍向页面返回统一失败信息，不转发插件异常正文，也不会据此执行更新。
 
 Grok 的 npm 更新明确信任官方包 `@xai-official/grok` 的 `postinstall`，由该原生脚本替换 `~/.grok/bin/grok`。仅在检测到 npm 安装且用户发起更新时，Adapter 在本次更新子进程的 `npm_config_allow_scripts` 中保留已有允许项并追加该包，同时调用 `update --force-reinstall`。它不修改用户的持久 npm 配置或进程全局环境；其他安装渠道继续使用原生 `update`。
 
-检查不发起 Model Turn、不安装任何内容。只有用户明确点击更新才调用原生安装器；并发更新合并为一次，检查不与更新后版本回读竞争，安装后版本未改变不报告成功。普通命令有 30 秒超时，更新命令最多 5 分钟，最新版本网络读取有 15 秒超时；失败后可重新检查。更新的是 Harness CLI，不是 Host 插件或 codexhost 自身，不降级较新安装，不主动重启已有 Session。关闭设置只停止页面更新，不取消已接受的原生更新；现有进程的升级行为遵循 Harness 本身。
+检查不发起 Model Turn、不安装任何内容。只有用户明确点击更新才调用原生安装器；并发更新合并为一次，检查不与更新后版本回读竞争，安装后版本未改变不报告成功。普通命令有 30 秒超时，更新命令最多 5 分钟，最新版本网络读取有 15 秒超时；失败后可重新打开连接页触发自动检查。更新的是 Harness CLI，不是 Host 插件或 codexhost 自身，不降级较新安装，不主动重启已有 Session。关闭设置只停止页面更新，不取消已接受的原生更新；现有进程的升级行为遵循 Harness 本身。
 
 无法安全检查最新版本的安装返回 `latestVersion: "Unknown"` 和手动更新说明，而非假称与已安装版本一致；Connections 详情显示 Adapter 的说明，不将这种安装标为「已是最新」。npm 识别包含确实指向对应包入口的 Windows shim；版本比较区分预发布标识并忽略 build metadata，避免预发布间更新被漏判或发生降级。
 
@@ -219,7 +233,7 @@ Renderer 的 `listHarnessPlugins()` 使用绑定的 RequestManager 发送此固�
 
 Host release Bundle 不再包含 Adapter 或 Harness SDK；Bundle 审计拒绝它们重新泄漏进核心。npm 和 Installer 的文件白名单包含每个插件的入口、Manifest、图标及根目录启用文件，现有第三方许可声明继续随发行版交付。
 
-DeepSeek 插件通过自身的 HTTP/WebSocket 实现连接受支持的本机 DSH，不打包 DSH CLI。Legacy 专用的 `@deepseek-ai/dsh-apiproxy`、`@deepseek-ai/dsh-session` SDK 及其打包项已移除；Modern 仍使用的 `schemastery` 随插件构建保留。V0/V3/V4 profile 和 Assistant 流解析属于插件，不进入 Host 或 Renderer；V4 的 `developer/message`、surface 引用和 Fork closer 也不会泄漏到公共契约。
+DeepSeek 插件通过自身的 HTTP/WebSocket 实现连接受支持的本机 DSH，不打包 DSH CLI。Legacy 专用的 `@deepseek-ai/dsh-apiproxy`、`@deepseek-ai/dsh-session` SDK 及其打包项已移除；只有 V0/V3 `settings/describe` 权限解析使用的 `schemastery` 也随这两个 profile 移除，插件运行依赖只剩 `diff`、`ws` 和 `zod`。V4 profile 和 Assistant 流解析属于插件，不进入 Host 或 Renderer；V4 的 `developer/message`、surface 引用和 Fork closer 也不会泄漏到公共契约。
 
 普通 Host、Remote Control 和 SSH listener 的每个连接都从该连接实际使用的 Runtime 旁查找插件。SSH 安装继续引用远端包中的 Host Runtime，不需要回退本机目录。手动复制 Runtime 时必须同时携带相邻 `plugins/`；仅复制 `host-runtime.mjs` 将得到没有预装 Harness 的核心，而不是隐式加载本机源码。macOS Aqua Broker 也经同一个 Loader 只创建其需要的插件，并使用直接模式和冷实例，避免递归创建 Broker 客户端。
 

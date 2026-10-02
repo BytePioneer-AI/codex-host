@@ -47,11 +47,10 @@ const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
   },
   "deepseek-harness": {
     url: "https://github.com/deepseek-ai/deepseek-harness#run",
-    // Must match the Adapter's exact supported range, not npm's latest tag.
-    commands: npm("@deepseek-ai/dsh@0.1.5-rc.1"),
+    commands: npm("@deepseek-ai/dsh@latest"),
     before: [
-      "Requires Node.js. Installs the compatible version 0.1.5-rc.1.",
-      "需先安装 Node.js。下方命令安装兼容版本 0.1.5-rc.1。",
+      "Requires Node.js. Installs npm's latest version; connection still requires native protocol validation.",
+      "需先安装 Node.js。安装 npm 最新版本；连接仍需通过原生协议校验。",
     ],
     after: [
       "Check again, then open Web UI to configure your provider. Stop any manually started dsh web first.",
@@ -110,17 +109,13 @@ const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
     url: "https://www.workbuddy.ai/docs/workbuddy/Quickstart",
     commands: [],
     before: [
-      "Install the WorkBuddy desktop app. codexhost uses its bundled CLI, not the standalone CodeBuddy CLI.",
-      "请安装 WorkBuddy 桌面应用。codexhost 使用应用内置 CLI，不能用 CodeBuddy CLI 代替。",
+      "Download and install the WorkBuddy desktop app.",
+      "请下载并安装 WorkBuddy 桌面应用。",
     ],
     downloads: [
       {
-        label: "macOS",
-        url: "https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Mac-Guide",
-      },
-      {
-        label: "Windows",
-        url: "https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Win-Guide",
+        label: "WorkBuddy",
+        url: "https://www.workbuddy.ai/",
       },
     ],
     after: [

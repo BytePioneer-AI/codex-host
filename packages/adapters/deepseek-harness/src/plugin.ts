@@ -1,5 +1,6 @@
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
+import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { DeepSeekHarnessAdapter } from "./deepseek-harness-adapter.js";
 import { createDeepSeekInstallation } from "./installation.js";
 
@@ -23,6 +24,7 @@ export function createHarnessAdapter(context: HarnessPluginContext): DeepSeekHar
         : {}),
     }),
     {
+      install: createHarnessInstaller(environment, { npm: "@deepseek-ai/dsh@latest" }),
       installation: createDeepSeekInstallation(
         environment,
         environment[DEEPSEEK_HARNESS_COMMAND_ENV],

@@ -855,7 +855,12 @@ if (${keepAlive}) {
       }
     });
 
-    it("passes a structured CLI result error through to the failed Turn", async () => {
+    it.each([
+      ["Synthetic native failure detail", true],
+      ["UNAVAILABLE (code 503): upstream temporarily unavailable", true],
+      ["FAILED_PRECONDITION (code 400): User location is not supported for the API use.", false],
+      ["Individual quota reached. Resets in 4h52m37s.", false],
+    ])("preserves native error %s with retryable=%s", async (nativeError, retryable) => {
       const streamLines = [
         JSON.stringify({
           event: "init",
@@ -867,8 +872,7 @@ if (${keepAlive}) {
           result: {
             conversation_id: "conv-err",
             status: "ERROR",
-            // Synthetic protocol fixture, not a captured agy error message.
-            error: "Synthetic native failure detail",
+            error: nativeError,
             num_turns: 1,
           },
         }),
@@ -905,11 +909,12 @@ if (${keepAlive}) {
             status: "failed",
             error: {
               code: "nativeFailure",
-              message: "Antigravity Turn ended with status ERROR: Synthetic native failure detail",
+              message: `Antigravity Turn ended with status ERROR: ${nativeError}`,
+              retryable,
             },
           },
         });
-        expect(JSON.stringify(completed)).toContain("Synthetic native failure detail");
+        expect(JSON.stringify(completed)).toContain(nativeError);
 
         await session.close();
       } finally {
@@ -917,6 +922,135 @@ if (${keepAlive}) {
         await cleanup();
       }
     });
+
+    it.each([
+      ["create", "ERROR"],
+      ["create", "SUCCESS"],
+      ["resume", "ERROR"],
+      ["resume", "SUCCESS"],
+    ] as const)(
+      "rejects another Conversation's result during %s (%s) before projecting it",
+      async (kind, status) => {
+        const conversationId = "conv-current";
+        const streamLines = [
+          ...(kind === "create"
+            ? [JSON.stringify({ event: "init", conversation_id: conversationId })]
+            : []),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-other",
+              status,
+              error: "User location is not supported for the API use.",
+              response: "Another Conversation's response",
+              usage: { input_tokens: 100 },
+              num_turns: 7,
+            },
+          }),
+        ];
+        const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+        const adapter = new AntigravityAdapter({
+          command,
+          environment: { ...process.env, CODEXHOST_DATA_DIR: cwd },
+        });
+        try {
+          const opened = await adapter.open(
+            kind === "create"
+              ? { kind, cwd }
+              : {
+                  kind,
+                  cwd,
+                  nativeRef: nativeSessionRefSchema.parse({
+                    harnessId: "antigravity",
+                    nativeSessionId: conversationId,
+                    formatVersion: 1,
+                  }),
+                },
+          );
+          if (!opened.ok) throw new Error(opened.error.message);
+          const session = opened.value;
+          const iterator = session.outputs[Symbol.asyncIterator]();
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-result-isolation"),
+            input: [{ type: "text", text: "Continue this Conversation" }],
+          });
+          const events: HostEvent[] = [];
+          let event: HostEvent;
+          do {
+            event = await nextEvent(iterator);
+            events.push(event);
+          } while (event.type !== "turn.completed");
+          expect(event).toMatchObject({
+            outcome: {
+              status: "failed",
+              error: { code: "protocolError", retryable: false },
+            },
+          });
+          expect(event).not.toHaveProperty("nativeTurnRef");
+          expect(
+            events.some(({ type }) => type === "item.started" || type === "session.usage.changed"),
+          ).toBe(false);
+          expect(JSON.stringify(events)).not.toContain("User location is not supported");
+          const snapshot = await session.readSnapshot();
+          if (!snapshot.ok) throw new Error(snapshot.error.message);
+          expect(snapshot.value.turns).toEqual([]);
+          expect(snapshot.value.state?.nativeRef?.nativeSessionId).toBe(conversationId);
+        } finally {
+          await adapter.close();
+          await cleanup();
+        }
+      },
+    );
+
+    it.each(["conv-success", ""])(
+      "does not turn a successful result for %s into an error based on its text",
+      async (resultConversationId) => {
+        const response =
+          "The previous request reported: User location is not supported for the API use.";
+        const { command, cwd, cleanup } = await fakeStreamingAgy([
+          JSON.stringify({ event: "init", conversation_id: "conv-success" }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: resultConversationId,
+              status: "SUCCESS",
+              response,
+              num_turns: 1,
+            },
+          }),
+        ]);
+        const adapter = new AntigravityAdapter({
+          command,
+          environment: { ...process.env, CODEXHOST_DATA_DIR: cwd },
+        });
+        try {
+          const opened = await adapter.open({ kind: "create", cwd });
+          if (!opened.ok) throw new Error(opened.error.message);
+          const iterator = opened.value.outputs[Symbol.asyncIterator]();
+          await opened.value.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-success-text"),
+            input: [{ type: "text", text: "Summarize the previous error" }],
+          });
+          let event: HostEvent;
+          do {
+            event = await nextEvent(iterator);
+          } while (event.type !== "turn.completed");
+          expect(event.outcome.status).toBe("succeeded");
+          expect(event.nativeTurnRef?.nativeSessionId).toBe("conv-success");
+          const snapshot = await opened.value.readSnapshot();
+          if (!snapshot.ok) throw new Error(snapshot.error.message);
+          expect(snapshot.value.turns[0]?.items[0]?.item).toMatchObject({
+            type: "agentMessage",
+            text: response,
+          });
+        } finally {
+          await adapter.close();
+          await cleanup();
+        }
+      },
+    );
 
     it("releases a completed Turn when its Subagent cannot be observed", async () => {
       const childId = "30dce1a0-bc56-4c5d-a50d-264f235f09a9";

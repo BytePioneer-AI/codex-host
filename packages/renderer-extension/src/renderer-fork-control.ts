@@ -135,6 +135,21 @@ function directForkAncestors(first: Record<string, unknown>): Record<string, unk
   return ancestors;
 }
 
+/** A component (not a DOM element) that owns a callback other than a plain click or Fork. */
+function ownsOtherCallback(
+  fiber: Record<string, unknown>,
+  props: Record<string, unknown>,
+): boolean {
+  if (typeof fiber.type === "string") return false;
+  return Object.keys(props).some(
+    (name) =>
+      /^on[A-Z]/.test(name) &&
+      name !== "onClick" &&
+      name !== "onFork" &&
+      typeof props[name] === "function",
+  );
+}
+
 function forkTargetFromAncestors(
   button: HTMLButtonElement,
   threadId: HostThreadId,
@@ -149,6 +164,12 @@ function forkTargetFromAncestors(
   for (const fiber of ancestors) {
     const props = fiber.memoizedProps;
     if (!isRecord(props)) continue;
+    // Copy and Fork share the same action-bar owner and button primitive. The
+    // Fork button reaches that owner directly; Copy passes through its own
+    // callback owner (onCopy) first, so it must not be treated as Fork.
+    if (!hasForkCallback && typeof props.onFork !== "function" && ownsOtherCallback(fiber, props)) {
+      return null;
+    }
     if (typeof props.conversationId === "string") conversationIds.add(props.conversationId);
     if (typeof props.turnId === "string") turnIds.add(props.turnId);
     if (typeof props.hostId === "string") hostIds.add(props.hostId);

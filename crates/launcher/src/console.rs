@@ -92,23 +92,34 @@ pub fn start_for_launch(command: ConsoleCommand) {
     let Some(presentation) = PRESENTATION.lock().ok().and_then(|slot| *slot) else {
         return;
     };
-    let ensure_command = command.clone();
-    let ensure = thread::spawn(move || {
-        if let Ok(mut process) = node_command(&ensure_command) {
-            let _ = process
-                .arg("ensure")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-    });
     if let Ok(mut slot) = LAUNCH_CONSOLE.lock() {
         *slot = Some(LaunchConsole {
-            command,
+            command: command.clone(),
             presentation,
-            ensure: Some(ensure),
+            ensure: None,
             shown: false,
         });
+    }
+    let ensure = thread::spawn(move || {
+        let Ok(mut process) = node_command(&command) else {
+            return;
+        };
+        let Ok(output) = process.arg("ensure").stderr(Stdio::null()).output() else {
+            return;
+        };
+        // A terminal launch prints the address as soon as the console serves,
+        // instead of after Codex Desktop becomes ready.
+        if presentation == Presentation::Print
+            && output.status.success()
+            && let Some(url) = parse_console_url(&output.stdout)
+        {
+            print_once(&url);
+        }
+    });
+    if let Ok(mut slot) = LAUNCH_CONSOLE.lock()
+        && let Some(console) = slot.as_mut()
+    {
+        console.ensure = Some(ensure);
     }
     // An installer launch shows the console first, then starts Codex Desktop.
     if presentation == Presentation::Browser {
@@ -123,6 +134,24 @@ fn parse_console_url(stdout: &[u8]) -> Option<String> {
         .find_map(|line| line.strip_prefix(CONSOLE_URL_PREFIX))
         .map(|url| url.trim().to_owned())
         .filter(|url| crate::validate_loopback_root_url(url).is_ok())
+}
+
+fn print_once(url: &str) {
+    let Ok(mut slot) = LAUNCH_CONSOLE.lock() else {
+        return;
+    };
+    let Some(console) = slot.as_mut() else {
+        return;
+    };
+    if !console.shown {
+        console.shown = true;
+        print_url(url);
+    }
+}
+
+/// Separated by a blank line from what the npm wrapper printed before it.
+fn print_url(url: &str) {
+    eprintln!("\n{CONSOLE_URL_PREFIX}{url}");
 }
 
 fn console_url(command: &ConsoleCommand) -> Result<String, Box<dyn Error>> {
@@ -239,7 +268,7 @@ fn show(reason: Option<&str>) -> bool {
     match presentation {
         Presentation::Browser => codexhost_platform::open_external_url(&url).is_ok(),
         Presentation::Print => {
-            eprintln!("{CONSOLE_URL_PREFIX}{url}");
+            print_url(&url);
             true
         }
     }
@@ -379,6 +408,54 @@ pub fn inspect_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_launch_uses_the_address_from_ensure_without_asking_again() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!("codexhost-console-early-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create fixture");
+        let console_server = root.join("console-server.mjs");
+        std::fs::write(&console_server, "fixture").expect("console entry");
+        let calls = root.join("calls");
+        let node = root.join("node");
+        std::fs::write(
+            &node,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$2\" >> '{}'\nif [ \"$2\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:26339/'; fi\n",
+                calls.display()
+            ),
+        )
+        .expect("fake Node");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("make executable");
+
+        set_presentation(Presentation::Print);
+        start_for_launch(ConsoleCommand {
+            node,
+            console_server,
+        });
+        let ensure = LAUNCH_CONSOLE
+            .lock()
+            .expect("console state")
+            .as_mut()
+            .and_then(|console| console.ensure.take())
+            .expect("ensure started");
+        ensure.join().expect("ensure finished");
+        let shown_early = LAUNCH_CONSOLE
+            .lock()
+            .expect("console state")
+            .as_ref()
+            .is_some_and(|console| console.shown);
+        let shown_at_ready = show_for_launch(None);
+        let calls = std::fs::read_to_string(&calls).unwrap_or_default();
+        std::fs::remove_dir_all(&root).expect("remove fixture");
+
+        assert!(shown_early);
+        assert!(shown_at_ready);
+        assert_eq!(calls, "ensure\n");
+    }
 
     #[test]
     fn console_is_enabled_unless_explicitly_disabled() {

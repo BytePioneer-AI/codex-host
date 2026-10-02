@@ -5,7 +5,7 @@
 Define strict, atomic, recoverable persistence for external Thread ownership, Native identity, Turn mappings, and Fork metadata without storing conversation content or credentials.
 ## Requirements
 ### Requirement: Mapping Store persists only external identity and management metadata
-Mapping Store SHALL persist one strict versioned record per external Host Thread containing ownership, Native Session identity, Native Turn mappings, optional Fork Anchors, Fork source, cwd, title, archive state, transport carrier, and required Desktop timeline metadata. It SHALL additionally persist Delegation relations that associate a parent Host Thread with a child Host Thread created for another Harness, together with their Harness identities, status, and optional originating Request ID. It MUST NOT persist conversation content or credentials.
+Mapping Store SHALL persist one strict versioned record per external Host Thread containing ownership, Native Session identity, Native Turn mappings, optional Fork Anchors, Fork source, cwd, title, archive state, optional Desktop organization metadata (project assignment, Git metadata, and Daybreak choice), transport carrier, and required Desktop timeline metadata. It SHALL additionally persist Delegation relations that associate a parent Host Thread with a child Host Thread created for another Harness, together with their Harness identities, status, and optional originating Request ID. It MUST NOT persist conversation content or credentials.
 
 #### Scenario: Ready external Thread is stored
 - **WHEN** Host commits an external Thread with Native identity and Turn mappings
@@ -57,16 +57,42 @@ Mapping Store SHALL acquire one exclusive process lock, serialize writes per Thr
 - **THEN** the prior valid record and indexes SHALL remain authoritative
 
 ### Requirement: Ready Session replacement is one atomic identity update
-Mapping Store SHALL support replacing a ready derived Thread's NativeSessionRef, complete retained Turn mapping set, and Fork source boundary in one validated atomic write. The replacement SHALL preserve the Host Thread ID and supplied retained Host Turn IDs, release the old Native indexes only after durable replacement, and leave the prior record and indexes authoritative on failure.
+
+Mapping Store SHALL support replacing a ready derived Thread's NativeSessionRef, complete retained Turn mapping set, and Fork source boundary in one validated atomic write. The replacement SHALL preserve the Host Thread ID and supplied retained Host Turn IDs, release the old Native indexes only after durable replacement, and leave the prior record and indexes authoritative on failure. Both Fork-derived and last-Turn replacement MUST require the expected target record Revision and complete source NativeSessionRef, including locator and format version, and MUST compare them with the current record inside the serialized update before writing. Host MUST retain the record used to prepare the replacement across asynchronous native work rather than substituting a newer Runtime record at commit time.
 
 #### Scenario: Post-Fork rollback replacement succeeds
-- **WHEN** Host commits an exact shorter derived Snapshot for an existing ready Thread
+
+- **WHEN** Host commits an exact shorter derived Snapshot for an existing ready Thread whose Revision and NativeSessionRef still match the preparation record
 - **THEN** restart SHALL recover only the final Native Session identity, retained Turn mappings, and selected Fork source boundary
 - **AND** no retained mapping SHALL refer to the temporary Native Session
 
 #### Scenario: Post-Fork rollback replacement fails
+
 - **WHEN** temp write, sync, backup, or atomic replacement fails during ready Session replacement
 - **THEN** the prior ready Native Session, full mapping set, Fork source, and indexes SHALL remain authoritative
+
+#### Scenario: A queued update makes history replacement stale
+
+- **WHEN** a queued metadata or configuration update changes the target Revision before a history replacement reaches its serialized update
+- **THEN** the replacement SHALL fail with `MAPPING_CONFLICT` even if the retained Host Turn prefix still matches
+- **AND** the newer durable record, in-memory record, Revision and indexes SHALL remain unchanged
+
+#### Scenario: Expected Native Session reference does not match
+
+- **WHEN** the expected source NativeSessionRef differs from the current reference, including its locator or format version, even with a matching expected Revision
+- **THEN** either replacement operation SHALL reject the write as `MAPPING_CONFLICT`
+- **AND** it SHALL preserve the authoritative record and indexes
+
+#### Scenario: Runtime record changes while the native candidate is prepared
+
+- **WHEN** native rollback or Fork preparation awaits and the loaded target record is updated
+- **THEN** Host SHALL commit using the original target record expectation
+- **AND** the Store SHALL reject the stale replacement instead of accepting the newer Runtime Revision as its preparation baseline
+
+#### Scenario: Existing same-identity last-Turn rollback succeeds
+
+- **WHEN** a last-Turn replacement retains the same Native Session identity, has the required shorter Host Turn prefix, and matches the expected Revision and source reference
+- **THEN** Mapping Store SHALL continue to accept it without requiring a new Adapter capability or persisted format
 
 ### Requirement: Startup recovers bounded incomplete state
 Initialization SHALL remove abandoned temp files and lock files superseded by an earlier run, recover a bad primary from its valid backup, isolate unrecoverable records, remove creating records without Native identity, and rebuild all indexes before serving Host operations.
@@ -132,6 +158,25 @@ Mapping Store SHALL provide an idempotent archive-state update for an existing E
 #### Scenario: Archive replacement fails
 - **WHEN** temp write, sync, backup, or atomic replacement fails while changing archive state
 - **THEN** the prior archive state, durable record, in-memory record, Revision, and indexes SHALL remain authoritative
+
+
+### Requirement: Mapping Store patches Desktop organization metadata atomically
+Mapping Store SHALL provide one patch update for an External Host Thread's optional project assignment, Git metadata (`branch`, `originUrl`, `sha`), and Daybreak choice. Omitted fields SHALL remain unchanged and a cleared field SHALL be removed from the record. A changed patch SHALL use the same per-Thread serialization, strict validation, backup, atomic replacement, Revision, and in-memory index commit rules as other record updates. Records written before these fields existed SHALL remain valid. The metadata SHALL be stored in a separate per-Thread metadata file rather than in the Thread record file, so that the record file keeps the shape accepted by releases without this metadata and a downgrade does not quarantine the Thread; metadata files of Threads that no longer exist SHALL be removed on startup, and an invalid metadata file SHALL be quarantined without blocking the Thread. A Git origin URL MUST be stored without embedded credentials: the password and any non-ssh user name SHALL be removed before the write, including when the value is not a parseable URL (for example a malformed port or scp-style remote), where any user information containing a password or preceding a non-ssh authority SHALL be removed. The patch MAY be conditioned on the currently stored project assignment, in which case a mismatch SHALL leave the record unchanged.
+
+#### Scenario: Metadata patch is applied and restarted
+- **WHEN** Host assigns a project, sets Git metadata, and later clears one Git field
+- **THEN** a subsequent restart SHALL recover the project assignment and remaining Git fields without the cleared field
+- **AND** Native Session identity, Turn mappings, Fork source, title, cwd, archive state, and Harness ownership SHALL remain unchanged
+
+#### Scenario: Requested metadata already matches
+- **WHEN** a patch leaves every stored field at its current value
+- **THEN** Mapping Store SHALL return the current valid record as success
+- **AND** it SHALL NOT perform an unnecessary durable replacement or Revision increment
+
+#### Scenario: A release without metadata support loads patched records
+- **WHEN** metadata has been patched so that both the primary record and its backup were rewritten, and a release without metadata support starts on the same store
+- **THEN** both record files SHALL satisfy that release's strict record schema and the Thread SHALL load without quarantine
+- **AND** returning to a release with metadata support SHALL recover the metadata from the metadata file
 
 ### Requirement: Mapping Store updates the transport carrier atomically
 

@@ -421,6 +421,34 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.permissionModeForAgent(replacement, "claude-code")).toBeUndefined();
   });
 
+  it("restores an identified draft across unpaired remounts without inheriting it in new drafts", () => {
+    const agents = controller();
+    const original = {};
+    const replacement = {};
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.fast" });
+    const target = ["default", "client-new-thread:first"];
+    agents.mount(original, target, "pi");
+    agents.setPiModel(original, model);
+    agents.markSubmissionPending(original);
+    agents.mount(replacement, [...target], "codex");
+    expect(agents.get(replacement)).toEqual(agents.get(original));
+    expect(agents.isSubmissionPending(replacement)).toBe(true);
+    expect(agents.transfer(replacement, replacement, ["conversation", "sent-thread"])).toBe(true);
+    expect(agents.get(replacement)).toMatchObject({ phase: "locked", piModel: model });
+    const newDraft = {};
+    agents.mount(newDraft, ["default", "client-new-thread:second"], "pi");
+    expect(agents.get(newDraft)).toMatchObject({ phase: "draft", agent: "pi" });
+    expect(agents.get(newDraft)).not.toHaveProperty("piModel");
+  });
+
+  it("does not share selection between drafts without a stable identity", () => {
+    const agents = controller();
+    const original = {};
+    agents.mount(original, ["default"], "pi");
+    agents.setPiModel(original, harnessModelRefSchema.parse({ id: "pi-model-v1.fast" }));
+    expect(agents.mount({}, ["default"], "pi")).not.toHaveProperty("piModel");
+  });
+
   it("transfers Pi Model state and request generations with logical Composer identity", () => {
     const draft = {};
     const conversation = {};

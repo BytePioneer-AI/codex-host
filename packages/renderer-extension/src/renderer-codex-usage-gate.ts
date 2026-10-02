@@ -99,7 +99,10 @@ function findSubmitOwner(composer: Element): Fiber | null {
   return owners.length === 1 ? (owners[0] ?? null) : null;
 }
 
-function findOuterAccountGateOwner(composer: Element, primary: Fiber): Fiber | null {
+function findOuterAccountGateOwner(
+  composer: Element,
+  primary: Fiber,
+): Fiber | null | undefined {
   const matches = submitOwnerCandidates(composer).filter((candidate) => {
     if (candidate === primary) return false;
 
@@ -108,7 +111,9 @@ function findOuterAccountGateOwner(composer: Element, primary: Fiber): Fiber | n
     return !gates.invalid && gates.reserve.length === 0 && gates.account.length === 1;
   });
 
-  return matches.length === 1 ? (matches[0] ?? null) : null;
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0] ?? null;
+  return undefined;
 }
 
 function subscriptionAt(hook: Hook): Subscription | null {
@@ -226,6 +231,7 @@ function gateKind({ store, atom }: Subscription): GateKind | "mixed" | null {
   // This remains a usage-only gate, but reserve.hardBlocked combinations stay ambiguous.
   if (account && read.has("reserve.hardBlocked")) return "mixed";
   if (accountReserveActive) return "accountReserveActive";
+  if (account && read.has("reserve.active")) return "mixed";
   if (reserve) return "reserve";
   if (account) return "account";
   return null;
@@ -429,6 +435,7 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
     }
 
     const outer = findOuterAccountGateOwner(composer, current);
+    if (outer === undefined) throw new Error("Outer Codex usage gate is ambiguous");
 
     if (outer) {
       const outerGates = gateSubscriptions(outer);

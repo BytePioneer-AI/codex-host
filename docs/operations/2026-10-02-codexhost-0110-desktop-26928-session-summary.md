@@ -57,11 +57,13 @@ CodexHost's prior semantic classifier intentionally rejected Account plus reserv
 
 ## Compatibility patch
 
-The final patch changes three implementation/test files:
+The final patch changes five implementation/test files:
 
 - `packages/renderer-extension/src/renderer-codex-usage-gate.ts`
 - `packages/renderer-extension/src/renderer-binding-probe.ts`
+- `packages/renderer-extension/src/renderer-composer-dom.ts`
 - `packages/renderer-extension/test/renderer-codex-usage-gate.test.ts`
+- `packages/renderer-extension/test/renderer-agent-picker.test.ts`
 
 Current patch diff size at documentation time:
 
@@ -192,7 +194,7 @@ Existing upgrade/diagnosis material used as continuity context:
 
 The final implementation, regression test, and documentation are present in the isolated 0.11.0 upgrade worktree. Temporary `.bak` files created during surgical edits remain untracked and are not part of the intended patch.
 
-No destructive cleanup or history rewrite is required for qualification. Before creating a permanent commit/PR, exclude/remove the temporary `.bak` files and commit only the three patch files plus the canonical documentation/handoff documents.
+No destructive cleanup or history rewrite is required for qualification. Before creating a permanent commit/PR, exclude/remove the temporary `.bak` files and commit only the five patch files plus the canonical documentation/handoff documents.
 
 ## Future upgrade acceptance rule
 

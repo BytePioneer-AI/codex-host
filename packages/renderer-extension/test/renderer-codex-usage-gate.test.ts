@@ -288,6 +288,36 @@ describe("Codex usage gate for external Harness Composers", () => {
     expect(external.blocked()).toBe(true);
   });
 
+  it("fails closed when more than one outer Account gate owner is present", () => {
+    const f = composerFixture();
+    const outerA = composerFixture(f.source, { omitReserve: true });
+    const outerB = composerFixture(f.source, { omitReserve: true });
+    (f.owner as { return: unknown }).return = outerA.owner;
+    (outerA.owner as { return: unknown }).return = outerB.owner;
+    (outerB.owner as { return: unknown }).return = null;
+
+    expect(f.blocked()).toBe(true);
+    expect(f.gate.update(true)).toBe("unsupported");
+    expect(f.blocked()).toBe(true);
+    expect(f.source.store.set).not.toHaveBeenCalled();
+  });
+
+  it("rejects incomplete Account selectors that also read reserve.active", () => {
+    const source = desktopStore();
+    const accountRead = source.accountGate.read;
+    source.accountGate.read = (get) => {
+      const blocked = accountRead(get);
+      const active = source.reserveActive.read(get);
+      return blocked === true && active === false;
+    };
+    const f = composerFixture(source, { snapshotWrapper: true, signalReserve: true });
+
+    expect(f.blocked()).toBe(true);
+    expect(f.gate.update(true)).toBe("unsupported");
+    expect(f.blocked()).toBe(true);
+    expect(source.store.set).not.toHaveBeenCalled();
+  });
+
   it("keeps unrelated or mismatched snapshot wrappers native", () => {
     const f = composerFixture(undefined, { snapshotWrapper: true, signalReserve: true });
     const subscriber = required(f.subscribers[1]);

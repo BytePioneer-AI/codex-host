@@ -16,4 +16,5 @@ export const HARNESS_OFFICIAL_WEBSITES: Readonly<Record<ExternalRendererAgent, s
   qoder: "https://qoder.com/",
   "qoder-cn": "https://qoder.cn/",
   "kimi-code": "https://code.kimi.com/",
+  zcode: "https://zcode.z.ai/",
 };

@@ -39,7 +39,9 @@ import {
   isComposerInputIntent,
   isComposerSubmissionKey,
   mountComposerAgentControl,
+  nativeModelIdForComposer,
   reconcileComposerNativeControls,
+  shouldBypassCodexUsageGateForNativeModel,
   renderComposerAgentControl,
   sendButtonWithin,
   type ComposerAgentControl,
@@ -990,7 +992,13 @@ export function installRendererBindingProbe(
       currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
     );
-    showCodexUsageGateStatus(mounted, mounted.codexUsageGate.update(externalSubmissionReady));
+    const nativeRouterSubmissionReady =
+      controller.get(mounted.composer).agent === "codex" &&
+      shouldBypassCodexUsageGateForNativeModel(nativeModelIdForComposer(mounted.composer));
+    showCodexUsageGateStatus(
+      mounted,
+      mounted.codexUsageGate.update(externalSubmissionReady || nativeRouterSubmissionReady),
+    );
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
         void refreshThreadUsage(
@@ -2939,6 +2947,17 @@ export function installRendererBindingProbe(
   document.addEventListener("submit", onSubmit, true);
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("click", onClick, true);
+  const onNativeModelSelectionClick = (event: MouseEvent): void => {
+    const element = eventElement(event.target);
+    if (!element?.closest('[role="menuitemradio"]')) return;
+    requestAnimationFrame(() => {
+      if (disposed) return;
+      for (const mounted of mountedByComposer.values()) {
+        if (mounted.composer.isConnected) renderMounted(mounted);
+      }
+    });
+  };
+  document.addEventListener("click", onNativeModelSelectionClick, true);
   const onWindowFocus = (): void => {
     reconcileHarnessAvailabilityHost();
     void loadCodexAccounts();
@@ -3160,6 +3179,7 @@ export function installRendererBindingProbe(
       document.removeEventListener("submit", onSubmit, true);
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("click", onClick, true);
+      document.removeEventListener("click", onNativeModelSelectionClick, true);
       window.removeEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
       window.removeEventListener("codexhost:draft-workspace", onDraftWorkspace);
       window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);

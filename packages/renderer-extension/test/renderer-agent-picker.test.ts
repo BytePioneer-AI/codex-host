@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { isNativeModelControlCandidate } from "../src/renderer-composer-dom.js";
+import {
+  isNativeModelControlCandidate,
+  nativeModelIdForComposer,
+  shouldBypassCodexUsageGateForNativeModel,
+} from "../src/renderer-composer-dom.js";
 import { codexAccountDisplayName } from "../src/renderer-codex-account-options.js";
 import {
   rendererAgentMenuPlacement,
@@ -157,6 +161,58 @@ describe("Renderer Agent picker presentation", () => {
       downloadVisible: { pi: false },
       errorVisible: { pi: false },
     });
+  });
+
+  it("reads the structured native Codex model and bypasses usage only for CLIProxy routes", () => {
+    const modelButton = {
+      getAttribute: () => null,
+      hasAttribute: () => false,
+      matches: () => true,
+    } as unknown as Element;
+    Object.defineProperty(modelButton, "__reactFiber$test", {
+      value: {
+        memoizedProps: {
+          onSelectModel: () => undefined,
+          onSelectReasoningEffort: () => undefined,
+          reasoningEffort: "high",
+          fallbackPowerSelection: { model: "cliproxy/gpt-6-sol", reasoningEffort: "high" },
+        },
+      },
+    });
+    const composer = {
+      querySelectorAll: () => [modelButton],
+    } as unknown as Element;
+
+    expect(nativeModelIdForComposer(composer)).toBe("cliproxy/gpt-6-sol");
+    expect(shouldBypassCodexUsageGateForNativeModel("cliproxy/gpt-6-sol")).toBe(true);
+    expect(shouldBypassCodexUsageGateForNativeModel("gpt-6-sol")).toBe(false);
+    expect(shouldBypassCodexUsageGateForNativeModel("openai/gpt-6-sol")).toBe(false);
+    expect(shouldBypassCodexUsageGateForNativeModel(null)).toBe(false);
+  });
+
+  it("reads the current Desktop selectedLabelCandidate model shape", () => {
+    const modelButton = {
+      getAttribute: () => null,
+      hasAttribute: () => false,
+      matches: () => true,
+    } as unknown as Element;
+    Object.defineProperty(modelButton, "__reactFiber$test", {
+      value: {
+        return: {
+          memoizedProps: {
+            selectedLabelCandidate: {
+              id: "cliproxy/gpt-5.6-sol:high",
+              model: "cliproxy/gpt-5.6-sol",
+              modelLabel: "GPT 5.6 Sol (CLIProxy)",
+              reasoningEffort: "high",
+            },
+          },
+        },
+      },
+    });
+    const composer = { querySelectorAll: () => [modelButton] } as unknown as Element;
+    expect(nativeModelIdForComposer(composer)).toBe("cliproxy/gpt-5.6-sol");
+    expect(shouldBypassCodexUsageGateForNativeModel(nativeModelIdForComposer(composer))).toBe(true);
   });
 
   it("recognizes only the native React Model menu as the Model candidate", () => {

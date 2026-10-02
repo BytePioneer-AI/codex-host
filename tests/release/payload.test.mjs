@@ -31,7 +31,7 @@ async function createPayload(root, target) {
 }
 
 describe("release Payload", () => {
-  it("accepts the ACP license actually written by third-party notice generation", async () => {
+  it("accepts the ACP and YAML licenses actually written by third-party notice generation", async () => {
     const root = await temporaryDirectory(),
       target = releaseTarget("macos-arm64");
     try {
@@ -43,7 +43,12 @@ describe("release Payload", () => {
       ).toContain("Apache License");
       await expect(
         validatePayload({ payloadRoot: root, target, root: "/repo/source" }),
-      ).resolves.toContain("licenses/Agent-Client-Protocol-SDK-LICENSE.txt");
+      ).resolves.toEqual(
+        expect.arrayContaining([
+          "licenses/Agent-Client-Protocol-SDK-LICENSE.txt",
+          "licenses/yaml-LICENSE.txt",
+        ]),
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -92,11 +97,12 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(26 + preinstalledHarnessPluginPaths().length);
+      expect(paths).toHaveLength(27 + preinstalledHarnessPluginPaths().length);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        28 + preinstalledHarnessPluginPaths().length,
+        29 + preinstalledHarnessPluginPaths().length,
       );
       expect(paths).toContain("licenses/tailwindcss-LICENSE.txt");
+      expect(paths).toContain("licenses/yaml-LICENSE.txt");
       expect(paths).toContain("app/plugins/enabled.json");
       expect(paths).toContain("app/console-server.mjs");
       expect(paths).toContain("app/console-web.js");

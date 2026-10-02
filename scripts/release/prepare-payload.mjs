@@ -267,6 +267,7 @@ export function expectedPayloadPaths(target) {
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",
     "licenses/ws-LICENSE.txt",
+    "licenses/yaml-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
     "THIRD_PARTY_NOTICES.txt",
   ];

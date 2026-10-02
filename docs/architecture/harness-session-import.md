@@ -90,6 +90,15 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 
 导入能力与 Claude CLI 的原生会话列表是两条边界：本页可以导入旧 `sdk-ts` 会话；codexhost 新建 SDK 会话另以 `codexhost-sdk` entrypoint 持久化，使当前 Claude CLI 版本的原生 picker 也能列出它们。
 
+## Hermes 原生规则
+
+- 使用所选 Hermes 运行环境中的 `SessionDB(read_only=True).list_sessions_rich`；与 Gateway 历史读取共用原生 launcher/bootstrap，不调用 ACP，不恢复会话，不发送 Turn。Gateway `session.list` 本身缺少导入要求的 cwd 和最近活动时间。
+- 范围是当前原生 home 的数据库，遵守原生归档、隐藏、内部来源及 `sessions.show_subagents` 过滤；不限制为旧 `source=acp` 记录，也没有固定 200／1,000 条总候选截断。超时或响应超出资源保护界限明确失败，不返回截断列表。
+- 压缩 lineage 使用原生 `_lineage_root_id` 保持稳定身份，标题、cwd 和最近活动时间取原生投影；避免与已映射根会话重复导入。cwd 列为空时仅回读原生 `model_config.cwd`，不以进程 cwd 或 `.` 填补；时间使用原生活动／开始时间，缺失或无效记录跳过。
+- `resolveCandidate` 在提交前只读地重新查询选中 ID，返回最新元数据；删除、归档、隐藏或身份已不可发现时返回 `sessionNotFound`。不缓存列表作为导入依据。查询无法可靠确认外部进程运行状态，`running` 为 null；导入前应关闭其他原生客户端。
+- 引用保存 Hermes 原生根 ID，不预先增加 Gateway locator。真正打开时由 `session.resume` 验证持久化身份和 cwd 后确认 Gateway 引用；不复制、迁移或改写 Transcript。
+- 关闭 Adapter 会取消读进程并拒绝迟到结果；存储损坏、协议错误和运行环境不可用明确失败。真实隔离环境验证超过 1,000 条候选、压缩根去重、历史恢复和查询前后数据库／配置不变；不代表 Desktop GUI 验收。
+
 ## Cursor CLI ACP 原生规则
 
 - 仅枚举 Cursor 配置根目录下的 `acp-sessions/<UUID>/`。默认是 `~/.cursor/acp-sessions`；与恢复会话共用 `cursorConfigDirectory()`，优先使用 `CURSOR_CONFIG_DIR`，其次是 `XDG_CONFIG_HOME/cursor`。不扫描 Cursor IDE 聊天或普通 CLI `chats`，不转换它们的存储格式。

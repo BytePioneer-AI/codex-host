@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HermesAdapter } from "../src/hermes-adapter.js";
-import { HermesImportTransport } from "../src/import-transport.js";
+import * as nativeSessions from "../src/gateway-session-list.js";
 import { HermesGatewayTransport } from "../src/gateway-transport.js";
 import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import * as gatewayOpen from "../src/gateway-open.js";
@@ -59,7 +59,7 @@ describe("Hermes Gateway-only chat routing", () => {
     const start = vi
       .spyOn(HermesGatewayTransport.prototype, "start")
       .mockRejectedValue(new Error("Unexpected gateway startup"));
-    const imports = vi.spyOn(HermesImportTransport.prototype, "probeConnection");
+    const imports = vi.spyOn(nativeSessions, "readHermesSessions");
     const adapter = new HermesAdapter({ command: process.execPath });
     const opening = adapter.open({ kind: "create", cwd: process.cwd() });
     expect(probe).toHaveBeenCalledOnce();
@@ -74,7 +74,7 @@ describe("Hermes Gateway-only chat routing", () => {
     "rejects non-Gateway references for %s rather than relabelling them",
     async (kind) => {
       const probe = vi.spyOn(HermesGatewayTransport, "probe");
-      const imports = vi.spyOn(HermesImportTransport.prototype, "probeConnection");
+      const imports = vi.spyOn(nativeSessions, "readHermesSessions");
       const adapter = new HermesAdapter({ command: process.execPath });
       const ref = nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -108,18 +108,16 @@ describe("Hermes Gateway-only chat routing", () => {
   );
   it("resumes an unmarked import identity through the actual Gateway without mutating the input reference", async () => {
     vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue("/supported/python");
-    const imports = vi.spyOn(HermesImportTransport.prototype, "probeConnection");
+    const imports = vi.spyOn(nativeSessions, "readHermesSessions");
     const ref = nativeSessionRefSchema.parse({
       harnessId: "hermes",
       nativeSessionId: "imported",
       formatVersion: 1,
     });
-    const open = vi
-      .spyOn(gatewayOpen, "openGatewaySession")
-      .mockResolvedValue({
-        initialState: {},
-        close: vi.fn(async () => undefined),
-      } as unknown as HermesSession);
+    const open = vi.spyOn(gatewayOpen, "openGatewaySession").mockResolvedValue({
+      initialState: {},
+      close: vi.fn(async () => undefined),
+    } as unknown as HermesSession);
     const adapter = new HermesAdapter({ command: process.execPath });
     try {
       expect(
@@ -133,10 +131,10 @@ describe("Hermes Gateway-only chat routing", () => {
     }
   });
   it.each(["create", "resume"] as const)(
-    "never starts ACP when Gateway is unavailable for %s",
+    "reports unavailable Gateway without import discovery for %s",
     async (kind) => {
       vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue(null);
-      const imports = vi.spyOn(HermesImportTransport.prototype, "probeConnection");
+      const imports = vi.spyOn(nativeSessions, "readHermesSessions");
       const adapter = new HermesAdapter({ command: process.execPath });
       const ref = nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -162,9 +160,9 @@ describe("Hermes Gateway-only chat routing", () => {
       }
     },
   );
-  it("creates through Gateway with the complete Thread environment and no ACP warm process", async () => {
+  it("creates through Gateway with the complete Thread environment and no import process", async () => {
     vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue("/supported/python");
-    const imports = vi.spyOn(HermesImportTransport.prototype, "probeConnection");
+    const imports = vi.spyOn(nativeSessions, "readHermesSessions");
     const session = {
       initialState: {},
       close: vi.fn(async () => undefined),

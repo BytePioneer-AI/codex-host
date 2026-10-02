@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { HermesAdapter } from "../src/hermes-adapter.js";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -58,7 +59,7 @@ describe.skipIf(!launcher)("Hermes managed runtime history and gateway", () => {
       await source.ensureCreated({ cwd: home, model: "test-model", provider: "custom" });
       const command = await hermesPythonCommand(
         runtime,
-        "from hermes_state import SessionDB\ndb=SessionDB()\ndb.append_message('test-source','user',content='first')\ndb.append_message('test-source','assistant',content='reply')\ndb.append_message('test-source','user',content='second')\ndb.append_message('test-source','assistant',content='second reply')\ndb.close()",
+        "from hermes_state import SessionDB\ndb=SessionDB()\ndb.append_message('test-source','user',content='first')\ndb.append_message('test-source','assistant',content='reply')\ndb.append_message('test-source','user',content='second')\ndb.append_message('test-source','assistant',content='second reply')\nfor i in range(1005): db.create_session(session_id=f'test-list-{i}',source='cli',cwd=str(db.db_path.parent))\ndb.create_session(session_id='test-legacy-native',source='acp',model_config={'cwd':str(db.db_path.parent)})\ndb.create_session(session_id='test-internal',source='kanban',cwd=str(db.db_path.parent))\ndb.create_session('test-compressed-root',source='cli',cwd=str(db.db_path.parent))\ndb.end_session('test-compressed-root','compression')\ndb.create_session('test-compressed-tip',source='cli',parent_session_id='test-compressed-root',cwd=str(db.db_path.parent))\ndb.close()",
         environment,
       );
       await promisify(execFile)(command.command, command.arguments, {
@@ -68,6 +69,44 @@ describe.skipIf(!launcher)("Hermes managed runtime history and gateway", () => {
       });
       const before = await source.readSnapshot();
       expect(before.turns).toHaveLength(2);
+      const databaseBefore = await readFile(path.join(home, "state.db"));
+      const configBefore = await readFile(path.join(home, "config.yaml"));
+      const adapter = new HermesAdapter({ command: launcher, environment });
+      try {
+        const listed = await adapter.sessionImport.listCandidates();
+        expect(listed.ok).toBe(true);
+        if (!listed.ok) throw new Error(listed.error.message);
+        expect(listed.value).toHaveLength(1008);
+        expect(listed.value.some((row) => row.nativeSessionId === "test-compressed-root")).toBe(
+          true,
+        );
+        expect(listed.value.some((row) => row.nativeSessionId === "test-compressed-tip")).toBe(
+          false,
+        );
+        expect(await adapter.sessionImport.resolveCandidate("test-compressed-root")).toMatchObject({
+          ok: true,
+          value: { nativeRef: { nativeSessionId: "test-compressed-root" } },
+        });
+        expect(listed.value.every((row) => row.running === null)).toBe(true);
+        expect(listed.value.find((row) => row.nativeSessionId === "test-legacy-native")?.cwd).toBe(
+          home,
+        );
+        expect(await adapter.sessionImport.resolveCandidate("test-source")).toMatchObject({
+          ok: true,
+          value: {
+            nativeRef: { harnessId: "hermes", nativeSessionId: "test-source", formatVersion: 1 },
+          },
+        });
+        expect(await adapter.sessionImport.resolveCandidate("test-missing")).toMatchObject({
+          ok: false,
+          error: { code: "sessionNotFound" },
+        });
+        expect(await readFile(path.join(home, "state.db"))).toEqual(databaseBefore);
+        expect(await readFile(path.join(home, "config.yaml"))).toEqual(configBefore);
+        expect(await source.readSnapshot()).toEqual(before);
+      } finally {
+        await adapter.close();
+      }
       const checkpoint = before.turns[0]?.checkpoint;
       expect(checkpoint).toBeDefined();
       if (!checkpoint) throw new Error("Missing exact Fork boundary");
@@ -116,5 +155,5 @@ describe.skipIf(!launcher)("Hermes managed runtime history and gateway", () => {
       await transport?.close();
       await rm(home, { recursive: true, force: true });
     }
-  }, 60_000);
+  }, 120_000);
 });

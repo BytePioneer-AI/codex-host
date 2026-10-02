@@ -1,5 +1,4 @@
 import { HERMES_COMMAND_CATALOG } from "./hermes-commands.js";
-import type { ClientSideConnection } from "@agentclientprotocol/sdk";
 import { createHash } from "node:crypto";
 import type {
   HarnessAdapter,
@@ -13,8 +12,8 @@ import type {
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
 import { harnessIdSchema, type HarnessId } from "@codexhost/shared-contracts";
-import { HermesImportTransport } from "./import-transport.js";
-import { HermesTransportError, withTimeout } from "./hermes-transport.js";
+import { HermesTransportError } from "./hermes-transport.js";
+import type { HermesSessionListOptions } from "./gateway-session-list.js";
 import {
   catalogModelsFromInventory,
   HermesInventoryTimeoutError,
@@ -41,7 +40,6 @@ export interface HermesAdapterOptions {
   command?: string;
   environment?: NodeJS.ProcessEnv;
   commandTimeoutMs?: number;
-  closeTimeoutMs?: number;
 }
 const IMPORT_TIMEOUT_MS = 20_000;
 
@@ -63,7 +61,7 @@ export class HermesAdapter implements HarnessAdapter {
   #inventoryRead: Promise<HermesInventory> | null = null;
   #inspectionCacheScope: string | null = null;
   #sessions = new Set<HermesSession>();
-  #importTransports = new Set<HermesImportTransport>();
+  #importReads = new Map<AbortController, Promise<void> | null>();
   #closed = false;
   #gatewayTransports = new Set<HermesGatewayTransport>();
   #gatewayProbes = new Map<string, Promise<HermesPythonRuntime | null>>();
@@ -265,13 +263,14 @@ export class HermesAdapter implements HarnessAdapter {
     this.#inspectionCache = null;
     this.#lastInventory = null;
     this.#gatewayProbes.clear();
+    const readers = [...this.#importReads];
+    for (const [controller] of readers) controller.abort();
+    await Promise.all(readers.map(([, settled]) => settled));
+    this.#importReads.clear();
     const sessions = [...this.#sessions];
     this.#sessions.clear();
     await Promise.all(sessions.map((session) => session.close().catch(() => undefined)));
-    await Promise.all(
-      [...this.#importTransports].map((transport) => transport.close().catch(() => undefined)),
-    );
-    this.#importTransports.clear();
+
     await Promise.all([...this.#gatewayTransports].map((transport) => transport.close()));
     this.#gatewayTransports.clear();
   }
@@ -279,29 +278,44 @@ export class HermesAdapter implements HarnessAdapter {
     return { ...(this.#options.environment ?? process.env), ...(environment ?? {}) };
   }
 
-  /** Import discovery alone retains initialize + session/list on a fresh ACP process. */
-  async #withProbeConnection<T>(
-    action: (connection: ClientSideConnection) => Promise<T>,
+  async #withImportReader<T>(
+    action: (options: HermesSessionListOptions) => Promise<T>,
   ): Promise<T> {
-    const { command, commandTimeoutMs, closeTimeoutMs } = this.#options;
-    const transport = new HermesImportTransport({
-      cwd: process.cwd(),
-      ...(command ? { command } : {}),
-      environment: Object.fromEntries(
+    const controller = new AbortController();
+    this.#importReads.set(controller, null);
+    let settle: (() => void) | undefined;
+    try {
+      const cwd = process.cwd();
+      const environment = Object.fromEntries(
         Object.entries(this.#effectiveEnvironment()).filter(
           ([key]) => key !== "CODEXHOST_THREAD_ID",
         ),
-      ),
-      ...(commandTimeoutMs !== undefined ? { commandTimeoutMs } : {}),
-      ...(closeTimeoutMs !== undefined ? { closeTimeoutMs } : {}),
-    });
-    this.#importTransports.add(transport);
-    try {
-      const connection = await transport.probeConnection();
-      return await withTimeout(action(connection), IMPORT_TIMEOUT_MS, "Hermes import discovery");
+      );
+      const runtime = await this.#gatewayRuntime(cwd, environment);
+      controller.signal.throwIfAborted();
+      if (!runtime)
+        throw new HermesTransportError(
+          "unavailable",
+          "Hermes requires an available Gateway runtime",
+        );
+      this.#importReads.set(
+        controller,
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+      );
+      const value = await action({
+        runtime,
+        cwd,
+        environment,
+        signal: controller.signal,
+        timeoutMs: this.#options.commandTimeoutMs ?? IMPORT_TIMEOUT_MS,
+      });
+      controller.signal.throwIfAborted();
+      return value;
     } finally {
-      this.#importTransports.delete(transport);
-      await transport.close().catch(() => undefined);
+      this.#importReads.delete(controller);
+      settle?.();
     }
   }
   async #listImportCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> {
@@ -309,11 +323,10 @@ export class HermesAdapter implements HarnessAdapter {
     try {
       return {
         ok: true,
-        value: await this.#withProbeConnection((connection) =>
-          listHermesSessionCandidates({ connection }),
-        ),
+        value: await this.#withImportReader((options) => listHermesSessionCandidates(options)),
       };
     } catch (error) {
+      if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
       return importFailure(error);
     }
   }
@@ -322,13 +335,14 @@ export class HermesAdapter implements HarnessAdapter {
   ): Promise<HarnessResult<HarnessSessionImportSource>> {
     if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
     try {
-      const source = await this.#withProbeConnection((connection) =>
-        resolveHermesSessionCandidate({ connection, nativeSessionId }),
+      const source = await this.#withImportReader((options) =>
+        resolveHermesSessionCandidate({ ...options, nativeSessionId }),
       );
       if (!source)
         return failure("sessionNotFound", `Hermes Session ${nativeSessionId} no longer exists`);
       return { ok: true, value: source };
     } catch (error) {
+      if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
       return importFailure(error);
     }
   }
@@ -366,6 +380,7 @@ function inspectionFromTransportError(error: unknown): HarnessInspection {
   };
 }
 function importFailure(error: unknown): HarnessResult<never> {
+  if (error instanceof HermesExecutableError) return failure("notInstalled", error.message);
   if (error instanceof HermesTransportError)
     return failure(
       error.kind === "notInstalled" ? "notInstalled" : "unavailable",

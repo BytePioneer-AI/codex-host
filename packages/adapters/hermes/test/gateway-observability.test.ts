@@ -5,7 +5,7 @@ import { hostTurnIdSchema, nativeSessionRefSchema } from "@codexhost/shared-cont
 import { HermesGatewayTransport, type GatewayRecord } from "../src/gateway-transport.js";
 import { HermesGatewaySessionTransport } from "../src/gateway-session-transport.js";
 import { HermesSession } from "../src/hermes-session.js";
-import {projectGatewayUsage, HermesUsage} from "../src/hermes-usage.js";
+import { projectGatewayUsage, HermesUsage } from "../src/hermes-usage.js";
 
 const pause = () => new Promise<void>((resolve) => setImmediate(resolve));
 function deferred<T>() {
@@ -156,15 +156,18 @@ describe("Hermes native Usage refresh", () => {
   });
   it("queues a fresh read after a model/turn boundary rather than accepting an old in-flight poll", async () => {
     const pending = deferred<ReturnType<typeof projectGatewayUsage>>();
-    const read = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce({contextWindowTokens: 200});
+    const read = vi
+      .fn()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce({ contextWindowTokens: 200 });
     const publish = vi.fn();
     const usage = new HermesUsage(read, () => true, publish);
     const first = usage.refresh();
     const fresh = usage.refresh(true);
-    pending.resolve({contextWindowTokens: 100});
+    pending.resolve({ contextWindowTokens: 100 });
     await Promise.all([first, fresh]);
     expect(read).toHaveBeenCalledTimes(2);
-    expect(publish).toHaveBeenCalledExactlyOnceWith({contextWindowTokens: 200});
+    expect(publish).toHaveBeenCalledExactlyOnceWith({ contextWindowTokens: 200 });
   });
   it("refreshes the runtime session and receives idle native pushes", async () => {
     const f = fixture();
@@ -315,7 +318,8 @@ describe("Hermes safe dynamic command directory", () => {
     const f = fixture();
     await pause();
     const pending = deferred<GatewayRecord>();
-    const request = f.request.getMockImplementation()!;
+    const request = f.request.getMockImplementation();
+    if (!request) throw new Error("request mock is not set");
     f.request.mockImplementation((method, ...args) =>
       method === "complete.slash" ? pending.promise : request(method, ...args),
     );
@@ -384,7 +388,8 @@ describe("Hermes automatic compaction phase", () => {
   );
   it("keeps manual compression tied solely to its structured result", async () => {
     const f = fixture();
-    const request = f.request.getMockImplementation()!;
+    const request = f.request.getMockImplementation();
+    if (!request) throw new Error("request mock is not set");
     f.request.mockImplementation(async (method, ...args) => {
       if (method === "session.compress") {
         f.emit("status.update", { kind: "compacting", text: "start" });

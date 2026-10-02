@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { HermesQuestions } from "./hermes-questions.js";
-import {HermesUsage} from "./hermes-usage.js";
+import { HermesUsage } from "./hermes-usage.js";
 import { HermesCompactionActivity } from "./hermes-compaction-activity.js";
 
 import {
@@ -445,9 +445,12 @@ export class HermesSession implements HarnessSession {
     this.#usage = new HermesUsage(
       this.#transport.readUsage?.bind(this.#transport),
       () => !this.#closed && !this.#faulted,
-      (usage) => this.#emit({type: "session.usage.changed", usage,
-        ...(this.#activeTurn ? {observedForTurnId: this.#activeTurn.turnId} : {}),
-      }),
+      (usage) =>
+        this.#emit({
+          type: "session.usage.changed",
+          usage,
+          ...(this.#activeTurn ? { observedForTurnId: this.#activeTurn.turnId } : {}),
+        }),
     );
     this.#transport.onFault = (error) => this.#fault(transportErrorToHarness(error));
     this.#transport.onUsage = (usage) => this.#usage.observe(usage);

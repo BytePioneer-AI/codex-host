@@ -1,4 +1,4 @@
-import type { AvailableCommand } from "@agentclientprotocol/sdk";
+import type { HermesNativeCommand } from "./hermes-transport.js";
 import {
   harnessCommandCatalogSchema,
   harnessCommandDescriptorSchema,
@@ -11,10 +11,12 @@ import {
 } from "@codexhost/harness-adapter";
 
 // The common exclusions cover Hermes' unsuitable commands: model changes use
-// session/set_model so the Host sees confirmed configuration, reset would
+// Gateway config.set so the Host sees confirmed configuration, reset would
 // invalidate Host history, and queue/steer need overlapping prompt streams.
 
-export function hermesCommandCatalog(commands: readonly AvailableCommand[]): HarnessCommandCatalog {
+export function hermesCommandCatalog(
+  commands: readonly HermesNativeCommand[],
+): HarnessCommandCatalog {
   const seen = new Set<string>();
   const descriptors = commands.flatMap((command) => {
     if (isExcludedLiveCommand(command.name, "command")) return [];
@@ -32,7 +34,7 @@ export function hermesCommandCatalog(commands: readonly AvailableCommand[]): Har
   return harnessCommandCatalogSchema.parse({ commands: descriptors });
 }
 
-export const HERMES_GATEWAY_COMMANDS: AvailableCommand[] = [
+export const HERMES_GATEWAY_COMMANDS: HermesNativeCommand[] = [
   ...["help", "tools", "context", "version"].map((name) => ({
     name,
     description: `Hermes /${name}`,
@@ -43,6 +45,11 @@ export const HERMES_GATEWAY_COMMANDS: AvailableCommand[] = [
     input: { hint: "Optional compression focus" },
   },
 ];
+export function hermesGatewayCommandName(text: string): string | null {
+  const commandText = text.trim();
+  if (/^\/compress(?:\s|$)/iu.test(commandText)) return "compress";
+  return /^\/(help|tools|context|version)$/iu.exec(commandText)?.[1]?.toLowerCase() ?? null;
+}
 // Static menu metadata; the Session validates its actual native command catalog at execution.
 export const HERMES_COMMAND_CATALOG = hermesCommandCatalog(HERMES_GATEWAY_COMMANDS);
 

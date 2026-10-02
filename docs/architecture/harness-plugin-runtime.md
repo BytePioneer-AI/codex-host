@@ -103,7 +103,7 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
 
 插件可以额外导出可选的 `warmup(adapter): Promise<void>`。Host 调用它进行尽力而为的后台预取，不等待其完成后才服务请求；失败只记录稳定诊断码。当前 Claude Code 和 Antigravity 使用这个入口，其他插件无需为统一形式添加空实现。预取创建的原生资源也由 Adapter 的幂等关闭负责。专用运行时可以请求不预取的冷实例。
 
-Context 包含环境变量快照、平台、是否为受管远程 Host，以及可选 Broker 描述符路径和本地 URL 打开服务。目录加载时环境快照被冻结；它不是凭据过滤器。受管远程 Host 不提供本地 URL 打开服务。已提供的本地服务继续经过 Native Launcher 的 loopback URL 校验，不暴露任意系统 URL 打开接口。
+Context 包含环境变量快照、平台、是否为受管远程 Host，以及可选 Broker 描述符路径和本地页面服务。目录加载时环境快照被冻结；它不是凭据过滤器。`openLocalUrl` 经过 Native Launcher 的 loopback URL 校验，在系统浏览器打开页面。`openLocalPage` 通过既有认证 Controller 连接打开 Codex 内置浏览器的后台页面，返回 `show/close` 句柄；插件按请求持有并关闭它，连接断开也会释放所属页。该页面接口仅接受带显式端口的 `http://127.0.0.1/` 根地址，不向聊天页注入第三方脚本；需要当前可见的本地任务及可用的内置浏览器。受管远程 Host 不提供这两项本机服务。
 
 ## 自定义启动路径设置
 

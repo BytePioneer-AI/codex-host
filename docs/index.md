@@ -65,7 +65,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/hermes/hermes-capabilities.md`](harnesses/hermes/hermes-capabilities.md) | Hermes gateway 提问、Thinking、精确派生、协作发现及旧 ACP 的原生能力边界；维护 Hermes Adapter 时阅读。 |
+| [`harnesses/hermes/hermes-capabilities.md`](harnesses/hermes/hermes-capabilities.md) | Hermes Gateway-only 会话、提问、Thinking、精确派生、协作发现及原生只读导入边界；维护 Hermes Adapter 时阅读。 |
 
 ### OpenCode 与 Pi
 
@@ -88,6 +88,12 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/grok/subagent-status-and-model.md`](harnesses/grok/subagent-status-and-model.md) | Grok Subagent 状态、Model、Transcript 与 Desktop 投影；修改 Grok Subagent 时阅读。 |
+
+### ZCode
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/zcode/zcode-harness-integration.md`](harnesses/zcode/zcode-harness-integration.md) | 直连已装 ZCode Desktop 的 Agent CLI、Start Plan 账号层与常驻验证页、独立会话和验证边界；安装或维护 ZCode Adapter 时阅读。 |
 
 ## 账号与 Desktop 产品接入
 

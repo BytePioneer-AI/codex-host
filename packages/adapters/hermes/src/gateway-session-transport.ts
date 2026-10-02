@@ -1,9 +1,4 @@
-import { HERMES_GATEWAY_COMMANDS } from "./hermes-commands.js";
-import type {
-  PermissionOption,
-  RequestPermissionResponse,
-  ToolCallContent,
-} from "@agentclientprotocol/sdk";
+import { HERMES_GATEWAY_COMMANDS, hermesGatewayCommandName } from "./hermes-commands.js";
 import type {
   HostQuestion,
   HostQuestionResponse,
@@ -21,7 +16,8 @@ import {
   type HermesQuestionRequest,
   type HermesSessionTransport,
   type HermesTransportEvent,
-} from "./acp-transport.js";
+  type HermesToolContent,
+} from "./hermes-transport.js";
 import {
   type HermesGatewayTransport,
   gatewayRecord,
@@ -44,7 +40,7 @@ export const hermesGatewayThinkingOptions: HarnessThinkingOption[] = [
 
 type Active = {
   emit(event: HermesTransportEvent): void;
-  permission(request: HermesPermissionRequest): Promise<RequestPermissionResponse>;
+  permission(request: HermesPermissionRequest): Promise<string | null>;
   question?: (request: HermesQuestionRequest) => Promise<HostQuestionResponse>;
   resolve(value: HermesPromptResponse): void;
   reject(error: Error): void;
@@ -73,9 +69,9 @@ function question(entry: GatewayRecord, fallbackId: string): HostQuestion {
     : { id, type: "text", prompt, multiline: true, secret: false, optional: false };
 }
 
-function gatewayDiff(text: string): ToolCallContent[] {
+function gatewayDiff(text: string): HermesToolContent[] {
   if (!text || text.length > 1024 * 1024) return [];
-  const result: ToolCallContent[] = [];
+  const result: HermesToolContent[] = [];
   let path = "";
   let inHunk = false;
   let oldLines: string[] = [],
@@ -139,7 +135,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
   ) {
     this.#info = info;
     this.history = new HermesGatewayHistory({
-      python: transport.python,
+      python: transport.runtime,
       cwd: transport.cwd,
       environment: transport.environment,
       nativeSessionId,
@@ -160,9 +156,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     const provider = gatewayString(this.#info.provider);
     const currentModelId = provider ? `${provider}:${model}` : model;
     return {
-      initialize: { protocolVersion: 1 },
       sessionId: this.nativeSessionId,
-      replay: [],
       session: {
         sessionId: this.nativeSessionId,
         models: currentModelId
@@ -245,9 +239,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       );
   }
   nativeCommandName(text: string): string | null {
-    const commandText = text.trim();
-    if (/^\/compress(?:\s|$)/iu.test(commandText)) return "compress";
-    return /^\/(help|tools|context|version)$/iu.exec(commandText)?.[1]?.toLowerCase() ?? null;
+    return hermesGatewayCommandName(text);
   }
   async runTurn(
     text: string,
@@ -417,7 +409,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
             ? payload.result
             : JSON.stringify(payload.result)
           : gatewayString(payload.result_text) || gatewayString(payload.summary);
-      const content: ToolCallContent[] = [
+      const content: HermesToolContent[] = [
         ...(output
           ? [{ type: "content" as const, content: { type: "text" as const, text: output } }]
           : []),
@@ -428,7 +420,6 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
           type: "tool.call",
           toolCallId,
           update: {
-            sessionUpdate: "tool_call",
             toolCallId,
             title: gatewayString(payload.name),
             rawInput: payload.args,
@@ -442,7 +433,6 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
               type: "tool.call",
               toolCallId,
               update: {
-                sessionUpdate: "tool_call",
                 toolCallId,
                 title: gatewayString(payload.name),
                 rawInput: payload.args,
@@ -453,7 +443,6 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
               type: "tool.update",
               toolCallId,
               update: {
-                sessionUpdate: "tool_call_update",
                 toolCallId,
                 status:
                   result.error || result.is_error === true || result.success === false
@@ -484,11 +473,14 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       else
         active.resolve({
           stopReason: payload.status === "interrupted" ? "cancelled" : "end_turn",
+          ...(payload.status === "complete" && text.trim() ? { finalAnswerText: text } : {}),
           usage: {
             inputTokens: Number(usage.input) || 0,
             outputTokens: Number(usage.output) || 0,
             totalTokens: Number(usage.total) || 0,
-            ...(typeof usage.reasoning === "number" ? { thoughtTokens: usage.reasoning } : {}),
+            ...(typeof usage.reasoning === "number"
+              ? { reasoningOutputTokens: usage.reasoning }
+              : {}),
           },
         });
     } else if (event.type === "error")
@@ -543,38 +535,30 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
         }
       } else if (method === "approval") {
         const choices = Array.isArray(params.choices) ? params.choices : ["once", "deny"];
-        const options = choices.flatMap<PermissionOption>((choice) =>
+        const options = choices.flatMap<HermesPermissionRequest["options"][number]>((choice) =>
           choice === "once"
-            ? [{ optionId: "once", kind: "allow_once" as const, name: "Allow once" }]
+            ? [{ id: "once", effect: "allowOnce", label: "Allow once" }]
             : choice === "session" || choice === "always"
               ? [
                   {
-                    optionId: choice,
-                    kind: "allow_always" as const,
-                    name: choice === "session" ? "Allow for this session" : "Always allow",
+                    id: choice,
+                    effect: choice === "session" ? "allowForSession" : "allowAlways",
+                    label: choice === "session" ? "Allow for this session" : "Always allow",
                   },
                 ]
               : choice === "deny"
-                ? [{ optionId: "deny", kind: "reject_once" as const, name: "Deny" }]
+                ? [{ id: "deny", effect: "deny", label: "Deny" }]
                 : [],
         );
         const response = await active.permission({
           signal: controller.signal,
-          effects: { session: "allowForSession", always: "allowAlways" },
+          title: gatewayString(params.description) || gatewayString(params.command),
           description: gatewayString(params.command) || gatewayString(params.description),
-          request: {
-            sessionId: this.nativeSessionId,
-            toolCall: {
-              toolCallId: gatewayString(params.request_id),
-              title: gatewayString(params.description) || gatewayString(params.command),
-            },
-            options,
-          },
           options,
         });
         if (!controller.signal.aborted)
           this.transport.respond(id, {
-            choice: response.outcome.outcome === "selected" ? response.outcome.optionId : "deny",
+            choice: response ?? "deny",
           });
       } else this.transport.rejectRequest(id);
     } finally {

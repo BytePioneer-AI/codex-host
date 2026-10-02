@@ -2,8 +2,52 @@ import { afterEach, expect, it, vi } from "vitest";
 import { HermesAdapter } from "../src/hermes-adapter.js";
 import { HermesGatewayTransport } from "../src/gateway-transport.js";
 import * as inventory from "../src/hermes-inventory.js";
+import * as command from "../src/command.js";
 
 afterEach(() => vi.restoreAllMocks());
+it("surfaces native runtime failures and does not silently create an ACP session", async () => {
+  vi.spyOn(HermesGatewayTransport, "probe").mockRejectedValue(
+    new Error("managed dependency activation failed"),
+  );
+  const read = vi.spyOn(inventory, "readHermesModelInventory");
+  const a = new HermesAdapter({ command: process.execPath });
+  try {
+    expect(await a.inspect()).toMatchObject({
+      status: "error",
+      error: { message: "managed dependency activation failed" },
+    });
+    expect(read).not.toHaveBeenCalled();
+    expect(await a.open({ kind: "create", cwd: process.cwd() })).toMatchObject({
+      ok: false,
+      error: {
+        code: "unavailable",
+        message: expect.stringContaining("managed dependency activation failed"),
+      },
+    });
+  } finally {
+    await a.close();
+  }
+});
+
+it("reports an absent Hermes executable without attempting an ACP chat connection", async () => {
+  vi.spyOn(command, "resolveHermesExecutable").mockImplementation(() => {
+    throw new command.HermesExecutableError("Hermes CLI is not installed");
+  });
+  const a = new HermesAdapter();
+  try {
+    expect(await a.inspect()).toMatchObject({
+      status: "notInstalled",
+      error: { code: "HERMES_NOT_FOUND" },
+    });
+    expect(await a.open({ kind: "create", cwd: process.cwd() })).toMatchObject({
+      ok: false,
+      error: { code: "notInstalled" },
+    });
+  } finally {
+    await a.close();
+  }
+});
+
 const first = {
   models: [{ modelId: "test:first", label: "first", provider: "Test" }],
   currentModelId: "test:first",

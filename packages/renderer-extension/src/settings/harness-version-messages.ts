@@ -20,6 +20,8 @@ export const harnessVersionEnglish: HarnessVersionMessages = Object.freeze({
       "Update with the original installer. Python, desktop, and project-local installations are not upgraded through global npm.",
     "kiro-native-updater":
       "Use Kiro CLI's original installer or native updater to check for and install updates.",
+    "zcode-desktop-updater":
+      "The CLI ships inside ZCode Desktop. Update ZCode Desktop itself to update it.",
     "qoder-check-unavailable":
       "This Qoder China release does not expose a non-installing update check. Use its original installer.",
     "hermes-update-plan-unavailable":
@@ -44,6 +46,7 @@ export const harnessVersionChinese: HarnessVersionMessages = Object.freeze({
     "deepseek-original-installer":
       "请使用原安装方式更新。Python、桌面应用及项目内安装不会通过全局 npm 更新。",
     "kiro-native-updater": "请使用 Kiro CLI 原安装程序或原生更新器检查并安装更新。",
+    "zcode-desktop-updater": "CLI 随 ZCode Desktop 一起发布，请直接更新 ZCode Desktop。",
     "qoder-check-unavailable":
       "此 Qoder 中国版尚不支持只检查、不安装的更新查询，请使用原安装方式更新。",
     "hermes-update-plan-unavailable": "此 Hermes 版本不提供安全的更新计划，请使用原安装方式更新。",

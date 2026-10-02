@@ -1,5 +1,4 @@
 import { HERMES_COMMAND_CATALOG } from "./hermes-commands.js";
-import type { ClientSideConnection } from "@agentclientprotocol/sdk";
 import { createHash } from "node:crypto";
 import type {
   HarnessAdapter,
@@ -12,19 +11,9 @@ import type {
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
-import {
-  harnessIdSchema,
-  harnessPermissionModeIdSchema,
-  type HarnessId,
-  type HarnessPermissionModeId,
-} from "@codexhost/shared-contracts";
-
-import {
-  HermesAcpTransport,
-  HermesTransportError,
-  withTimeout,
-  type HermesOpenInput,
-} from "./acp-transport.js";
+import { harnessIdSchema, type HarnessId } from "@codexhost/shared-contracts";
+import { HermesTransportError } from "./hermes-transport.js";
+import type { HermesSessionListOptions } from "./gateway-session-list.js";
 import {
   catalogModelsFromInventory,
   HermesInventoryTimeoutError,
@@ -33,15 +22,10 @@ import {
   type HermesInventory,
 } from "./hermes-inventory.js";
 import { listHermesSessionCandidates, resolveHermesSessionCandidate } from "./hermes-import.js";
-import {
-  decodeHermesModelRefId,
-  HERMES_MODE_DONT_ASK,
-  hermesPermissionModeCatalog,
-  isHermesModeId,
-} from "./hermes-models.js";
-import { HermesSession } from "./hermes-session.js";
-import { resolveHermesExecutable } from "./command.js";
+import type { HermesSession } from "./hermes-session.js";
+import { HermesExecutableError, resolveHermesExecutable } from "./command.js";
 import { HermesGatewayTransport } from "./gateway-transport.js";
+import type { HermesPythonRuntime } from "./hermes-runtime.js";
 import { HermesGatewayHistoryError } from "./gateway-history.js";
 import { hermesGatewayThinkingOptions } from "./gateway-session-transport.js";
 import {
@@ -52,29 +36,17 @@ import {
 } from "./gateway-open.js";
 
 const hermesHarnessId: HarnessId = harnessIdSchema.parse("hermes");
-
 export interface HermesAdapterOptions {
   command?: string;
   environment?: NodeJS.ProcessEnv;
   commandTimeoutMs?: number;
-  closeTimeoutMs?: number;
 }
-
 const IMPORT_TIMEOUT_MS = 20_000;
-
-/**
- * Host bookkeeping identity (DELEGATION_THREAD_ID_ENV) varies per Thread and
- * is not Hermes configuration — the Hermes ACP process never reads it.
- * Keeping it out of the spawn environment lets warm transports be reused
- * across Threads; forwarding it would shard the warm pool per Thread.
- */
-const HERMES_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
 
 export class HermesAdapter implements HarnessAdapter {
   readonly commandCatalog = HERMES_COMMAND_CATALOG;
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = hermesHarnessId;
-
   readonly sessionImport = {
     listCandidates: (): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> =>
       this.#listImportCandidates(),
@@ -83,99 +55,50 @@ export class HermesAdapter implements HarnessAdapter {
     ): Promise<HarnessResult<HarnessSessionImportSource>> =>
       this.#resolveImportCandidate(nativeSessionId),
   };
-
   #options: HermesAdapterOptions;
   #inspectionCache: HarnessInspection | null = null;
   #lastInventory: HermesInventory | null = null;
   #inventoryRead: Promise<HermesInventory> | null = null;
   #inspectionCacheScope: string | null = null;
   #sessions = new Set<HermesSession>();
-  #warmTransports = new Map<string, Promise<HermesAcpTransport | null>>();
-  #transports = new Set<HermesAcpTransport>();
+  #importReads = new Map<AbortController, Promise<void> | null>();
   #closed = false;
   #gatewayTransports = new Set<HermesGatewayTransport>();
-  #gatewayProbes = new Map<string, Promise<string | null>>();
+  #gatewayProbes = new Map<string, Promise<HermesPythonRuntime | null>>();
   #openingNativeIds = new Set<string>();
-
   constructor(options: HermesAdapterOptions = {}) {
     this.#options = options;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     const cwd = input.cwd ?? process.cwd();
-    if (!input.refresh && this.#inspectionCache && this.#inspectionCacheScope === cwd) {
-      // Inspection caches the model catalog and capability advertisement,
-      // neither of which depends on the cwd; a different-cwd hit is fine.
+    if (!input.refresh && this.#inspectionCache && this.#inspectionCacheScope === cwd)
       return this.#inspectionCache;
-    }
-    const environment = this.#effectiveEnvironment();
     if (input.refresh) this.#gatewayProbes.clear();
-    const gatewayPython = await this.#gatewayPython(cwd, environment);
-    if (gatewayPython) {
-      try {
-        const catalog = catalogModelsFromInventory(await this.#readInventory());
-        const inspection: HarnessInspection = {
-          status: "ready",
-          catalog: {
-            models: catalog.models.map(({ ref, label }) => ({ ref, label })),
-            thinkingOptions: hermesGatewayThinkingOptions,
-            ...(catalog.defaultModel ? { defaultModel: catalog.defaultModel } : {}),
-          },
-          permissionModes: gatewayPermissionModes(),
-          capabilities: gatewayCapabilities,
-        };
-        this.#inspectionCache = inspection;
-        this.#inspectionCacheScope = cwd;
-        return inspection;
-      } catch (error) {
-        return inspectionFromTransportError(error);
-      }
-    }
-    const transport = await this.#takeTransport(cwd, environment);
-    let retainedForOpen = false;
     try {
-      await transport.inspect();
-      // Hermes only exposes models through a live SessionState, and every
-      // created Session is persisted immediately, so the ACP probe stays
-      // sessionless. The catalog instead comes from the real Hermes model
-      // inventory (same substrate as `hermes model`), read via a read-only
-      // one-shot against the agent virtualenv — never fabricated.
-      const inventory = await this.#readInventory();
-      const catalog = catalogModelsFromInventory(inventory);
+      if (!(await this.#gatewayRuntime(cwd, this.#effectiveEnvironment())))
+        throw new HermesTransportError(
+          "unavailable",
+          "Hermes requires a Gateway with exclusive turn support; ACP chat fallback is not supported",
+        );
+      const catalog = catalogModelsFromInventory(await this.#readInventory());
       const inspection: HarnessInspection = {
         status: "ready",
         catalog: {
-          models: catalog.models.map((model) => ({
-            ref: model.ref,
-            label: model.label,
-          })),
-          thinkingOptions: [],
+          models: catalog.models.map(({ ref, label }) => ({ ref, label })),
+          thinkingOptions: hermesGatewayThinkingOptions,
           ...(catalog.defaultModel ? { defaultModel: catalog.defaultModel } : {}),
         },
-        permissionModes: hermesPermissionModeCatalog(),
-        capabilities: {
-          configuration: {
-            selectModel: true,
-            selectThinkingOption: false,
-            selectPermissionMode: true,
-            permissionModeScope: "live",
-          },
-          history: {
-            fork: false,
-            forkAcrossCwd: false,
-            rollbackLastTurn: false,
-          },
-        },
+        permissionModes: gatewayPermissionModes(),
+        capabilities: gatewayCapabilities,
       };
-      this.#inspectionCache = inspection;
-      this.#inspectionCacheScope = cwd;
-      this.#keepWarmTransport(cwd, environment, transport);
-      retainedForOpen = true;
+      if (!this.#closed) {
+        this.#inspectionCache = inspection;
+        this.#inspectionCacheScope = cwd;
+      }
       return inspection;
     } catch (error) {
       return inspectionFromTransportError(error);
-    } finally {
-      if (!retainedForOpen) await this.#releaseTransport(transport);
     }
   }
 
@@ -200,7 +123,6 @@ export class HermesAdapter implements HarnessAdapter {
       })
       .catch((error: unknown) => {
         // A slow catalog refresh does not invalidate a previously read native catalog.
-        // Other failures, including invalid output, must still reach the caller.
         if (error instanceof HermesInventoryTimeoutError && this.#lastInventory)
           return this.#lastInventory;
         throw error;
@@ -212,179 +134,65 @@ export class HermesAdapter implements HarnessAdapter {
   }
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
-    if (this.#closed) {
-      return failure("invalidState", "Hermes Adapter is closed");
-    }
-    const cwd = input.cwd;
-    if (typeof cwd !== "string" || cwd.trim().length === 0) {
+    if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
+    if (typeof input.cwd !== "string" || input.cwd.trim().length === 0)
       return failure("invalidRequest", "open requires a cwd");
-    }
     const nativeRef =
       input.kind === "create" ? null : input.kind === "resume" ? input.nativeRef : input.sourceRef;
-    const gatewayEnvironment = {
-      ...(this.#options.environment ?? process.env),
-      ...(input.environment ?? {}),
-    };
+    if (nativeRef && nativeRef.harnessId !== this.harnessId)
+      return failure("invalidRequest", "Native Ref does not belong to Hermes");
+    // Import discovery still returns an unmarked native SessionDB identity.
+    // Resume it through the real Gateway; never invent a Gateway locator before confirmation.
+    if (nativeRef && !isGatewayRef(nativeRef) && !(input.kind === "resume" && !nativeRef.locator))
+      return failure(
+        "unsupported",
+        "Hermes chat Sessions require a supported Gateway native reference",
+      );
     const environment = this.#effectiveEnvironment(input.environment);
-    if (
-      input.kind === "resume" &&
-      (this.#openingNativeIds.has(input.nativeRef.nativeSessionId) ||
-        [...this.#sessions].some(
-          (s) => s.initialState.nativeRef?.nativeSessionId === input.nativeRef.nativeSessionId,
-        ))
-    )
-      return failure("sessionBusy", "This Hermes Session already has an owner", true);
-    // A saved ACP Session always stays ACP, even when a newer gateway is installed.
-    if (!nativeRef || isGatewayRef(nativeRef)) {
-      const python = await this.#gatewayPython(cwd, gatewayEnvironment);
+    try {
+      const runtime = await this.#gatewayRuntime(input.cwd, environment);
       if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
-      if (python) return this.#openGateway(input, python, gatewayEnvironment);
-      if (nativeRef)
+      if (!runtime)
         return failure(
           "unavailable",
-          "Hermes gateway Session requires an available gateway with exclusive turn support",
+          "Hermes requires a Gateway with exclusive turn support; ACP chat fallback is not supported",
         );
-    }
-    let transportOpen: HermesOpenInput;
-    let permissionModeId: HarnessPermissionModeId | undefined;
-    if (input.kind === "create") {
-      transportOpen = { kind: "create" };
-      permissionModeId = input.permissionModeId;
-      if (input.executionPolicy === "unattended-full-access") {
-        if (permissionModeId && permissionModeId !== HERMES_MODE_DONT_ASK) {
-          return failure(
-            "invalidRequest",
-            "unattended-full-access requires the Hermes dont_ask Permission Mode",
-          );
-        }
-        permissionModeId = harnessPermissionModeIdSchema.parse(HERMES_MODE_DONT_ASK);
-      }
-    } else if (input.kind === "resume") {
-      permissionModeId = input.permissionModeId;
-      if (!input.nativeRef || input.nativeRef.harnessId !== this.harnessId) {
-        return failure("invalidRequest", "Native Ref does not belong to Hermes");
-      }
-      transportOpen = { kind: "resume", sessionId: input.nativeRef.nativeSessionId };
-    } else {
-      return failure("unsupported", `Hermes does not support ${input.kind}`);
-    }
-
-    if (permissionModeId && !isHermesModeId(permissionModeId)) {
-      return failure("invalidRequest", "Permission Mode does not belong to Hermes");
-    }
-    const transport = await this.#takeTransport(cwd, environment);
-    if (this.#closed) {
-      await this.#releaseTransport(transport);
-      return failure("invalidState", "Hermes Adapter is closed");
-    }
-    try {
-      const open = await transport.open(transportOpen);
-      if (this.#closed) {
-        await this.#releaseTransport(transport);
-        return failure("invalidState", "Hermes Adapter is closed");
-      }
-      if (input.kind === "create" && input.model) {
-        const nativeModelId = decodeHermesModelRefId(input.model.id);
-        if (!nativeModelId) {
-          await this.#releaseTransport(transport);
-          return failure("invalidRequest", "Model Ref does not belong to Hermes");
-        }
-        if (open.session.models?.currentModelId !== nativeModelId) {
-          await transport.setModel(nativeModelId);
-        }
-        const availableModels = open.session.models?.availableModels ?? [];
-        const selected = availableModels.find((model) => model.modelId === nativeModelId) ?? {
-          modelId: nativeModelId,
-          name: nativeModelId,
-        };
-        open.session.models = {
-          availableModels: availableModels.some((model) => model.modelId === nativeModelId)
-            ? availableModels
-            : [...availableModels, selected],
-          currentModelId: nativeModelId,
-        };
-      }
-      if (permissionModeId) {
-        if (open.session.modes?.currentModeId !== permissionModeId) {
-          await transport.setPermissionMode(permissionModeId);
-        }
-        open.session.modes = {
-          currentModeId: permissionModeId,
-          availableModes: open.session.modes?.availableModes ?? [],
-        };
-      }
-      const session = new HermesSession({
-        nativeRef: {
-          harnessId: hermesHarnessId,
-          nativeSessionId: open.sessionId,
-          formatVersion: 1,
-        },
-        transport,
-        open,
-        ...(input.kind === "resume" && input.knownTurnRefs
-          ? { knownTurnRefs: input.knownTurnRefs }
-          : {}),
-        onSettle: (settled) => {
-          this.#sessions.delete(settled);
-          this.#transports.delete(transport);
-        },
-      });
-      this.#sessions.add(session);
-      // Host bookkeeping identity does not reach the Hermes process (see
-      // #effectiveEnvironment), so it alone must not block warming. Any other
-      // Thread-specific environment key still forbids a warm process: such a
-      // process cannot be reused safely by another Thread.
-      const threadSpecificKeys = Object.keys(input.environment ?? {}).filter(
-        (key) => key !== HERMES_THREAD_ID_ENV,
-      );
-      if (threadSpecificKeys.length === 0) {
-        this.#primeTransport(cwd, environment);
-      }
-      return { ok: true, value: session };
+      return this.#openGateway(input, runtime, environment);
     } catch (error) {
-      await this.#releaseTransport(transport);
-      if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
-      if (error instanceof HermesTransportError) {
-        if (error.kind === "notInstalled") {
-          return failure("notInstalled", error.message);
-        }
-        if (error.kind === "authenticationRequired") {
-          return failure("authenticationRequired", error.message);
-        }
-        return failure("unavailable", error.message, true);
-      }
+      if (error instanceof HermesExecutableError) return failure("notInstalled", error.message);
       return failure(
-        "nativeFailure",
-        error instanceof Error ? error.message : "Hermes Session open failed",
+        "unavailable",
+        `Hermes gateway runtime failed: ${error instanceof Error ? error.message : String(error)}`,
+        true,
       );
     }
   }
 
-  async #gatewayPython(cwd: string, environment: NodeJS.ProcessEnv): Promise<string | null> {
-    const key = `${cwd}:${this.#transportScope(cwd, environment)}`;
+  async #gatewayRuntime(
+    cwd: string,
+    environment: NodeJS.ProcessEnv,
+  ): Promise<HermesPythonRuntime | null> {
+    const serialized = JSON.stringify(
+      Object.entries(environment).sort(([left], [right]) => left.localeCompare(right)),
+    );
+    const key = `${cwd}:${createHash("sha256").update(serialized).digest("hex")}`;
     let pending = this.#gatewayProbes.get(key);
     if (!pending) {
-      pending = (async () => {
-        try {
-          return await HermesGatewayTransport.probe(
-            resolveHermesExecutable({
-              ...(this.#options.command ? { command: this.#options.command } : {}),
-              environment,
-            }),
-            cwd,
-            environment,
-          );
-        } catch {
-          return null;
-        }
-      })();
+      pending = HermesGatewayTransport.probe(
+        resolveHermesExecutable({
+          ...(this.#options.command ? { command: this.#options.command } : {}),
+          environment,
+        }),
+        cwd,
+        environment,
+      );
       this.#gatewayProbes.set(key, pending);
     }
     return pending;
   }
   async #openGateway(
     input: OpenSessionInput,
-    python: string,
+    runtime: HermesPythonRuntime,
     environment: NodeJS.ProcessEnv,
   ): Promise<HarnessResult<HarnessSession>> {
     if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
@@ -407,7 +215,7 @@ export class HermesAdapter implements HarnessAdapter {
       return failure("sessionBusy", "This Hermes Session already has an owner", true);
     if (ref) this.#openingNativeIds.add(ref.nativeSessionId);
     const transport = new HermesGatewayTransport(
-      python,
+      runtime,
       input.cwd,
       environment,
       this.#options.commandTimeoutMs,
@@ -454,183 +262,113 @@ export class HermesAdapter implements HarnessAdapter {
     this.#closed = true;
     this.#inspectionCache = null;
     this.#lastInventory = null;
+    this.#gatewayProbes.clear();
+    const readers = [...this.#importReads];
+    for (const [controller] of readers) controller.abort();
+    await Promise.all(readers.map(([, settled]) => settled));
+    this.#importReads.clear();
     const sessions = [...this.#sessions];
     this.#sessions.clear();
-    this.#warmTransports.clear();
     await Promise.all(sessions.map((session) => session.close().catch(() => undefined)));
-    await Promise.all([...this.#transports].map((transport) => this.#releaseTransport(transport)));
+
     await Promise.all([...this.#gatewayTransports].map((transport) => transport.close()));
     this.#gatewayTransports.clear();
   }
-
   #effectiveEnvironment(environment?: Record<string, string | undefined>): NodeJS.ProcessEnv {
-    const merged = { ...(this.#options.environment ?? process.env), ...(environment ?? {}) };
-    return Object.fromEntries(
-      Object.entries(merged).filter(([key]) => key !== HERMES_THREAD_ID_ENV),
-    );
+    return { ...(this.#options.environment ?? process.env), ...(environment ?? {}) };
   }
 
-  #transportScope(_cwd: string, environment: NodeJS.ProcessEnv): string {
-    // The cwd deliberately does not participate: warm transports are retargeted
-    // to the requesting directory on reuse (see #takeTransport), because Hermes
-    // derives session cwd behavior from the session/new parameter rather than
-    // the process cwd. Environment still scopes the pool.
-    const serialized = JSON.stringify(
-      Object.entries(environment).sort(([left], [right]) => left.localeCompare(right)),
-    );
-    return createHash("sha256").update(serialized).digest("hex");
-  }
-
-  async #takeTransport(cwd: string, environment: NodeJS.ProcessEnv): Promise<HermesAcpTransport> {
-    const scope = this.#transportScope(cwd, environment);
-    const pending = this.#warmTransports.get(scope);
-    if (!pending) return this.#createTransport(cwd, environment);
-    this.#warmTransports.delete(scope);
-    const warmed = await pending;
-    if (!warmed) return this.#createTransport(cwd, environment);
-    // A warm transport may have been spawned for another directory. Hermes
-    // binds session cwd behavior to the session/new parameter, not the
-    // process cwd, so retargeting before opening is sufficient.
-    warmed.retarget(cwd);
-    return warmed;
-  }
-
-  #keepWarmTransport(
-    cwd: string,
-    environment: NodeJS.ProcessEnv,
-    transport: HermesAcpTransport,
-  ): void {
-    if (this.#closed) {
-      void this.#releaseTransport(transport);
-      return;
-    }
-    const scope = this.#transportScope(cwd, environment);
-    const previous = this.#warmTransports.get(scope);
-    const entry = Promise.resolve(transport);
-    this.#watchWarmTransport(scope, entry, transport);
-    this.#warmTransports.set(scope, entry);
-    if (previous) {
-      void previous.then((losing) => {
-        if (losing && losing !== transport) return this.#releaseTransport(losing);
-      });
-    }
-  }
-
-  #primeTransport(cwd: string, environment: NodeJS.ProcessEnv): void {
-    const scope = this.#transportScope(cwd, environment);
-    if (this.#closed || this.#warmTransports.has(scope)) return;
-    const transport = this.#createTransport(cwd, environment);
-    const pending = transport
-      .inspect()
-      .then(() => transport)
-      .catch(async () => {
-        await this.#releaseTransport(transport);
-        return null;
-      });
-    this.#watchWarmTransport(scope, pending, transport);
-    this.#warmTransports.set(scope, pending);
-  }
-
-  #watchWarmTransport(
-    scope: string,
-    entry: Promise<HermesAcpTransport | null>,
-    transport: HermesAcpTransport,
-  ): void {
-    transport.onFault = () => {
-      if (this.#warmTransports.get(scope) !== entry) return;
-      this.#warmTransports.delete(scope);
-      void this.#releaseTransport(transport);
-    };
-  }
-
-  #createTransport(cwd: string, environment = this.#effectiveEnvironment()): HermesAcpTransport {
-    const { command, commandTimeoutMs, closeTimeoutMs } = this.#options;
-    const transport = new HermesAcpTransport({
-      cwd,
-      ...(command !== undefined && command.length > 0 ? { command } : {}),
-      ...(environment !== undefined ? { environment } : {}),
-      ...(commandTimeoutMs !== undefined ? { commandTimeoutMs } : {}),
-      ...(closeTimeoutMs !== undefined ? { closeTimeoutMs } : {}),
-    });
-    this.#transports.add(transport);
-    return transport;
-  }
-
-  async #releaseTransport(transport: HermesAcpTransport): Promise<void> {
-    this.#transports.delete(transport);
-    await transport.close().catch(() => undefined);
-  }
-
-  /**
-   * Run a one-shot query against a fresh Hermes ACP process (initialize +
-   * session/list, no user Session creation).
-   */
-  async #withProbeConnection<T>(
-    action: (connection: ClientSideConnection) => Promise<T>,
+  async #withImportReader<T>(
+    action: (options: HermesSessionListOptions) => Promise<T>,
   ): Promise<T> {
-    const transport = this.#createTransport(process.cwd());
+    const controller = new AbortController();
+    this.#importReads.set(controller, null);
+    let settle: (() => void) | undefined;
     try {
-      const connection = await transport.probeConnection();
-      return await withTimeout(action(connection), IMPORT_TIMEOUT_MS, "Hermes import discovery");
+      const cwd = process.cwd();
+      const environment = Object.fromEntries(
+        Object.entries(this.#effectiveEnvironment()).filter(
+          ([key]) => key !== "CODEXHOST_THREAD_ID",
+        ),
+      );
+      const runtime = await this.#gatewayRuntime(cwd, environment);
+      controller.signal.throwIfAborted();
+      if (!runtime)
+        throw new HermesTransportError(
+          "unavailable",
+          "Hermes requires an available Gateway runtime",
+        );
+      this.#importReads.set(
+        controller,
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+      );
+      const value = await action({
+        runtime,
+        cwd,
+        environment,
+        signal: controller.signal,
+        timeoutMs: this.#options.commandTimeoutMs ?? IMPORT_TIMEOUT_MS,
+      });
+      controller.signal.throwIfAborted();
+      return value;
     } finally {
-      await this.#releaseTransport(transport);
+      this.#importReads.delete(controller);
+      settle?.();
     }
   }
-
   async #listImportCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> {
     if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
     try {
-      const candidates = await this.#withProbeConnection((connection) =>
-        listHermesSessionCandidates({ connection }),
-      );
-      return { ok: true, value: candidates };
+      return {
+        ok: true,
+        value: await this.#withImportReader((options) => listHermesSessionCandidates(options)),
+      };
     } catch (error) {
+      if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
       return importFailure(error);
     }
   }
-
   async #resolveImportCandidate(
     nativeSessionId: string,
   ): Promise<HarnessResult<HarnessSessionImportSource>> {
     if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
     try {
-      const source = await this.#withProbeConnection((connection) =>
-        resolveHermesSessionCandidate({ connection, nativeSessionId }),
+      const source = await this.#withImportReader((options) =>
+        resolveHermesSessionCandidate({ ...options, nativeSessionId }),
       );
-      if (!source) {
+      if (!source)
         return failure("sessionNotFound", `Hermes Session ${nativeSessionId} no longer exists`);
-      }
       return { ok: true, value: source };
     } catch (error) {
+      if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
       return importFailure(error);
     }
   }
 }
-
 function inspectionFromTransportError(error: unknown): HarnessInspection {
-  if (error instanceof HermesConfigurationRequiredError) {
+  if (error instanceof HermesExecutableError)
+    return {
+      status: "notInstalled",
+      error: { code: "HERMES_NOT_FOUND", message: error.message, retryable: false },
+    };
+  if (error instanceof HermesConfigurationRequiredError)
     return {
       status: "unavailable",
       error: { code: "configurationRequired", message: error.message, retryable: false },
     };
-  }
   if (error instanceof HermesTransportError) {
-    if (error.kind === "notInstalled") {
+    if (error.kind === "notInstalled")
       return {
         status: "notInstalled",
         error: { code: "HERMES_NOT_FOUND", message: error.message, retryable: false },
       };
-    }
-    if (error.kind === "authenticationRequired") {
+    if (error.kind === "authenticationRequired")
       return {
         status: "unavailable",
         error: { code: "HERMES_AUTH_REQUIRED", message: error.message, retryable: true },
       };
-    }
-    return {
-      status: "error",
-      error: { code: "HERMES_UNAVAILABLE", message: error.message, retryable: true },
-    };
   }
   return {
     status: "error",
@@ -641,21 +379,19 @@ function inspectionFromTransportError(error: unknown): HarnessInspection {
     },
   };
 }
-
 function importFailure(error: unknown): HarnessResult<never> {
-  if (error instanceof HermesTransportError) {
+  if (error instanceof HermesExecutableError) return failure("notInstalled", error.message);
+  if (error instanceof HermesTransportError)
     return failure(
       error.kind === "notInstalled" ? "notInstalled" : "unavailable",
       error.message,
       error.kind !== "notInstalled",
     );
-  }
   return failure(
     "nativeFailure",
     error instanceof Error ? error.message : "Hermes import discovery failed",
   );
 }
-
 function failure(
   code: HarnessError["code"],
   message: string,

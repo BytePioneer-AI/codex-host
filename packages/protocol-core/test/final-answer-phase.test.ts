@@ -110,6 +110,36 @@ describe("final answer phase inference", () => {
     });
   });
 
+  it("preserves a native final answer even when terminal reasoning arrives after it", () => {
+    const reasoning: HostItemSnapshot = {
+      item: { type: "reasoning", itemId: itemId("late-reasoning"), text: "Late reasoning." },
+      outcome: succeeded,
+    };
+    // Live order cannot infer what historical reasoning-before-answer order can.
+    expect(liveTurn([answer, reasoning]).completedTurn).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ id: "answer", phase: null })]),
+    });
+    const nativeAnswer: HostItemSnapshot = {
+      item: {
+        type: "agentMessage",
+        itemId: itemId("answer"),
+        text: "Done.",
+        phase: "final_answer",
+      },
+      outcome: succeeded,
+    };
+    expect(liveTurn([nativeAnswer, reasoning]).completedTurn).toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: "answer", phase: "final_answer" }),
+      ]),
+    });
+    expect(historicalTurn([reasoning, nativeAnswer])).toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: "answer", phase: "final_answer" }),
+      ]),
+    });
+  });
+
   it("does not infer when visible work follows the last reply", () => {
     const live = liveTurn([progress, command]);
 

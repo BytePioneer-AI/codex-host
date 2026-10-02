@@ -176,6 +176,8 @@ export interface RendererSettingsMessages {
   readonly launchPathLabel: string;
   readonly launchPathPlaceholder: string;
   readonly launchPathWorkbuddyHelp: string;
+  readonly launchPathZcodePlaceholder: string;
+  readonly launchPathZcodeHelp: string;
   readonly launchPathSave: string;
   readonly launchPathReset: string;
   readonly launchPathRestart: string;
@@ -447,6 +449,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathPlaceholder: "Installation folder, e.g. D:\\program\\WorkBuddy",
   launchPathWorkbuddyHelp:
     "This integration requires the WorkBuddy app. If it is not detected automatically, enter its installation folder. codexhost locates the required files inside it. Restart codexhost after saving to apply.",
+  launchPathZcodePlaceholder:
+    "Application path, e.g. /Applications/ZCode.app or D:\\program\\ZCode",
+  launchPathZcodeHelp:
+    "This integration requires the ZCode Desktop app. If it is not detected automatically, enter its application path (the .app bundle on macOS, the installation folder on Windows and Linux). codexhost locates the required files inside it. Restart codexhost after saving to apply.",
   launchPathSave: "Save path",
   launchPathReset: "Clear override",
   launchPathRestart: "Saved. Restart codexhost to apply; running sessions are unchanged.",
@@ -739,6 +745,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathPlaceholder: "填写安装目录，例如 D:\\program\\WorkBuddy",
   launchPathWorkbuddyHelp:
     "此接入依赖 WorkBuddy 应用。若未自动识别，请填写应用安装目录，codexhost 会自动定位所需文件。保存后重启 codexhost 生效。",
+  launchPathZcodePlaceholder: "填写应用路径，例如 /Applications/ZCode.app 或 D:\\program\\ZCode",
+  launchPathZcodeHelp:
+    "此接入依赖 ZCode Desktop 应用。若未自动识别，请填写应用路径（macOS 为 .app，Windows 和 Linux 为安装目录），codexhost 会自动定位所需文件。保存后重启 codexhost 生效。",
   launchPathSave: "保存路径",
   launchPathReset: "清除自定义路径",
   launchPathRestart: "已保存，重启 codexhost 后生效；当前运行中的会话不受影响。",

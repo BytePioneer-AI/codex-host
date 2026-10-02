@@ -39,7 +39,7 @@ interface HarnessSessionImportSource {
 
 ### Adapter 侧公共机制
 
-`@codexhost/harness-adapter/session-import`（`packages/harness-adapter/src/session-import.ts`）提供与具体 Harness 无关的导入机制，Claude Code、Pi、Cursor 和 Hermes 已使用。新接入的 Harness 应直接复用，不再各写一份：
+`@codexhost/harness-adapter/session-import`（`packages/harness-adapter/src/session-import.ts`）提供与具体 Harness 无关的导入机制，Claude Code、Pi、Cursor 以及下文“其他 Harness”一节的各插件已使用；Hermes 走自己的 SessionDB 读取器，逐行用公共 Schema 校验。新接入的 Harness 应直接复用，不再各写一份：
 
 - `SessionImportScope`：一个 Adapter 的发现读取生命周期。关闭后不再启动读取，进行中的读取被取消并等待结束；读取失败返回固定文案的 `unavailable`，不外泄原生错误；`resolve` 把“选中的会话已不存在”统一为 `sessionNotFound`。
 - `sessionImportCandidate`：构造单条候选并用公共 Schema 校验，不合格返回 `null`。Host 对整页列表做整体校验，未经此步的坏行会让该 Harness 的全部会话不可见。时间接受毫秒数或日期字符串，小数取整；`running` 只有明确的布尔值才保留，其余为 `null`。
@@ -101,6 +101,15 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 - 每个 Adapter 实例按文件指纹缓存候选元数据；翻页、搜索和刷新不会重复解析未变化的完整 Transcript。重复 Session ID 明确失败，不静默选择其中一个。
 
 导入能力与 Claude CLI 的原生会话列表是两条边界：本页可以导入旧 `sdk-ts` 会话；codexhost 新建 SDK 会话另以 `codexhost-sdk` entrypoint 持久化，使当前 Claude CLI 版本的原生 picker 也能列出它们。
+
+## Hermes 原生规则
+
+- 使用所选 Hermes 运行环境中的 `SessionDB(read_only=True).list_sessions_rich`；与 Gateway 历史读取共用原生 launcher/bootstrap，不调用 ACP，不恢复会话，不发送 Turn。Gateway `session.list` 本身缺少导入要求的 cwd 和最近活动时间。
+- 范围是当前原生 home 的数据库，遵守原生归档、隐藏、内部来源及 `sessions.show_subagents` 过滤；不限制为旧 `source=acp` 记录，也没有固定 200／1,000 条总候选截断。超时或响应超出资源保护界限明确失败，不返回截断列表。
+- 压缩 lineage 使用原生 `_lineage_root_id` 保持稳定身份，标题、cwd 和最近活动时间取原生投影；避免与已映射根会话重复导入。cwd 列为空时仅回读原生 `model_config.cwd`，不以进程 cwd 或 `.` 填补；时间使用原生活动／开始时间，缺失或无效记录跳过。
+- `resolveCandidate` 在提交前只读地重新查询选中 ID，返回最新元数据；删除、归档、隐藏或身份已不可发现时返回 `sessionNotFound`。不缓存列表作为导入依据。查询无法可靠确认外部进程运行状态，`running` 为 null；导入前应关闭其他原生客户端。
+- 引用保存 Hermes 原生根 ID，不预先增加 Gateway locator。真正打开时由 `session.resume` 验证持久化身份和 cwd 后确认 Gateway 引用；不复制、迁移或改写 Transcript。
+- 关闭 Adapter 会取消读进程并拒绝迟到结果；存储损坏、协议错误和运行环境不可用明确失败。真实隔离环境验证超过 1,000 条候选、压缩根去重、历史恢复和查询前后数据库／配置不变；不代表 Desktop GUI 验收。
 
 ## Cursor CLI ACP 原生规则
 

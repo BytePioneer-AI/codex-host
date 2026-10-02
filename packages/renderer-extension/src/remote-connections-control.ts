@@ -18,7 +18,7 @@ export interface RemoteConnectionsControl {
   ssh: CodexSshClient;
   setup(
     connection: CodexSshConnection,
-    action: "inspect" | "install" | "repair",
+    action: RemoteSshSetupParams["action"],
     version?: string,
   ): Promise<RemoteSshSetupResult>;
   runtime(hostId: string): Promise<RuntimeStatus>;

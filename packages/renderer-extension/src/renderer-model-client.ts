@@ -113,6 +113,7 @@ import {
 
 import {
   createRendererRequestSender,
+  isUnsupportedMethod,
   RendererMethodUnavailableError,
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
@@ -512,7 +513,14 @@ export function createRendererModelClient(
       );
     },
     async runtimeStatus() {
-      return runtimeStatusSchema.parse(await manager.sendRequest(RUNTIME_STATUS_METHOD, {}));
+      // Asked directly rather than through the remembering sender: an outdated remote
+      // service can be updated in place, after which this method starts answering.
+      try {
+        return runtimeStatusSchema.parse(await source.sendRequest(RUNTIME_STATUS_METHOD, {}));
+      } catch (error) {
+        if (!isUnsupportedMethod(error, RUNTIME_STATUS_METHOD)) throw error;
+        throw new RendererMethodUnavailableError(RUNTIME_STATUS_METHOD, error);
+      }
     },
     async updateRemote(version: string) {
       return runtimeStatusSchema.parse(

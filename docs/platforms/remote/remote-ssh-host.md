@@ -57,8 +57,10 @@ Each computer shows its own available actions. Operations run only when you clic
 
 - **Install and connect** installs the remote service, then connects.
 - **Match local version** appears for older remote versions. Click to update and restart immediately.
+- **Update remote service** appears when the remote end is too old to report its version. Click to install the local version over SSH, then reconfigure and start the remote service.
 - **Restart and connect** appears when a newer build is installed but an older build is running. Click to restart immediately.
-- **Repair remote service** stops the service, removes its connection setup, configures it again and starts it. It does not uninstall or update the codexhost package.
+- **Reconnect** appears when a connection fails. It disconnects and connects again right away.
+- **Repair remote service** appears only when remote status is unavailable, the connection failed, or an update failed. It stops the service, removes its connection setup, configures it again and starts it. It does not uninstall or update the codexhost package.
 - **Check again** retries an unavailable remote status. A failed check does not mean the service is missing.
 
 Updates, restarts and repairs run immediately and may interrupt active conversations. There is no task-completion wait.
@@ -67,9 +69,9 @@ The page does not install or update in the background. These actions update code
 
 If the remote version is newer, update the local computer first. Reconnect if the connection does not recover after an update.
 
-### When the page asks you to update manually
+### When you need to update manually
 
-Older remote installations may not show version information or support updates from this page. In that case:
+Older remote installations cannot report their version; the page shows **Update remote service**, which is usually all you need. If the button is unavailable (the local build is not a published release) or the update fails:
 
 1. Update local codexhost to the latest version.
 2. Run these commands in order in a terminal on the remote computer:
@@ -103,7 +105,7 @@ This applies to external Harness conversations created in SSH projects. Other lo
 | --- | --- |
 | The connection fails or disconnects shortly afterward | Check that SSH login works, then choose **Check again**. If the service is missing, choose **Install and connect**. If needed, follow the manual update steps and reconnect. |
 | A Harness is missing | Confirm the tool is installed and signed in on the remote computer, then click **Run connection diagnostics** on codexhost's **Connections** page. |
-| Remote version information is missing or an update is required | Follow **When the page asks you to update manually** above. |
+| Remote version information is missing or the service is outdated | Choose **Update remote service**. If it is unavailable or fails, follow **When you need to update manually** above. |
 | An update fails | Check the remote computer's internet connection and retry. If it still fails, follow the manual update steps. |
 | The other computer does not show the same conversation | Check that both computers launched Desktop through codexhost, use the same version, and use the same remote user account. If you use a custom data directory, use the same directory for both launch methods. |
 | Installation fails on a Mac | Make sure the remote Mac's desktop user is logged in, then run `codexhost remote install` again. |

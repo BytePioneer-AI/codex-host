@@ -30,6 +30,8 @@ codexhost remote status
 
 本地通过 codexhost 启动时，也可以连接仅运行原生 Codex 的远程 Host：原生对话不要求远程实现 `codexhost/*` 接口，外部 Harness 才需要远程 codexhost。对话归属、Harness 可用性、模型配置请求及用量通知按输入框所属 Host 隔离；隐藏的其他 Host 输入框不能阻止当前输入框加载模型，也不能改变其 Harness 选择。原生模型的版本要求由实际运行的远程 app-server 决定，安装在磁盘上的 CLI 版本不代表运行中服务已升级。
 
+Renderer 集成就绪表示至少有一个经过原生注册表验证的 Host 连接可用，不要求整个窗口只有一个 Composer Host。本地与远程输入框同时存在时，安装和就绪检查仍可通过；没有明确目标 Host 的请求仍被拒绝，不会任意选择连接。若所有连接都不可用，安装继续等待并在超时后报告失败。
+
 ## 常用命令
 
 ```bash

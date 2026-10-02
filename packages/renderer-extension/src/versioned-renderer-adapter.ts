@@ -942,17 +942,29 @@ export function installCurrentRendererAdapter(): {
     usageSubscription.connect(client);
     // A ready local route already validated this connection in this operation.
     // Remote routes still resolve the local settings owner independently.
-    idleReleaseSync.connect(
-      disposed ? null : route?.hostId === "local" ? client : clients.forHost("local"),
-    );
+    const localClient = disposed
+      ? null
+      : route?.hostId === "local"
+        ? client
+        : clients.forHost("local");
+    idleReleaseSync.connect(localClient);
+    // Adapter readiness describes native connections, not a unique global
+    // Composer route. Never use this aggregate readiness to choose a request Host.
+    const connected =
+      !disposed &&
+      (client !== null ||
+        localClient !== null ||
+        (window.__codexhostHostRoutingV1?.knownHostIds?.() ?? []).some(
+          (hostId) => window.__codexhostHostRoutingV1?.forHost(hostId) != null,
+        ));
     updateStatus(
-      route ? "ready" : "installing",
-      route
+      connected ? "ready" : "installing",
+      connected
         ? "ready"
         : fiberWalkLimited
           ? "react-fiber-walk-limit-exceeded"
           : "draft-routing-policy-unavailable",
-      route ? "request-bridge" : null,
+      connected ? "request-bridge" : null,
     );
     return route;
   };

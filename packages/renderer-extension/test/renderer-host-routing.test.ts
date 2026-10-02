@@ -135,7 +135,7 @@ it.each(["local", remoteId])(
 );
 
 it("resolves each Composer independently when local and remote editors coexist", async () => {
-  const { adapter, editors, fiber } = await setup("local");
+  const { adapter, editors, fiber, managers } = await setup("local");
   const localEditor = editors[0];
   assert(localEditor);
   const remoteEditor = {
@@ -150,8 +150,17 @@ it("resolves each Composer independently when local and remote editors coexist",
   const remoteComposer = { querySelectorAll: () => [remoteEditor] } as unknown as Element;
   try {
     expect(adapter.modelControl?.currentHostId?.()).toBeNull();
+    expect(adapter.status).toMatchObject({ state: "ready", reason: "ready" });
+    // A ready integration does not license an unscoped request to pick a Host.
+    expect(() => adapter.modelControl?.inspectThreadUsage(threadRequest)).toThrow("unavailable");
     expect(adapter.modelControl?.currentHostId?.(localComposer)).toBe("local");
     expect(adapter.modelControl?.currentHostId?.(remoteComposer)).toBe(remoteId);
+    managers.delete("local");
+    expect(adapter.modelControl?.currentHostId?.()).toBeNull();
+    expect(adapter.status.state).toBe("ready");
+    managers.delete(remoteId);
+    expect(adapter.modelControl?.currentHostId?.()).toBeNull();
+    expect(adapter.status.state).toBe("installing");
     editors.pop();
     expect(adapter.modelControl?.currentHostId?.(localComposer)).toBe("local");
   } finally {
@@ -178,7 +187,7 @@ it.each(["local", remoteId])(
       managers.delete(hostId);
       expect(adapter.modelControl?.currentHostId?.()).toBe(hostId);
       expect(hostIdForComposer).toHaveBeenCalledTimes(1);
-      expect(adapter.status.state).toBe("installing");
+      expect(adapter.status.state).toBe(hostId === "local" ? "installing" : "ready");
 
       managers.set(hostId, manager(hostId));
       expect(adapter.modelControl?.currentHostId?.()).toBe(hostId);

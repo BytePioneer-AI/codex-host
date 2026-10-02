@@ -30,6 +30,8 @@ codexhost remote status
 
 A local Desktop launched through codexhost can also connect to a stock Codex remote Host: native conversations do not require remote `codexhost/*` methods; external Harnesses require remote codexhost. Thread ownership, Harness availability, configuration requests, and usage notifications are scoped to each composer's Host. Hidden composers on other Hosts must not block model loading or change its Harness selection. Native Model version requirements depend on the running remote app-server, not merely the CLI version installed on disk.
 
+Renderer integration readiness means at least one validated native Host connection is available; it does not require a single Composer Host across the window. Installation and readiness checks can succeed with local and remote composers present together. Requests without an unambiguous target Host still fail rather than choosing a connection arbitrarily. If no connections are available, installation waits and reports failure on timeout.
+
 ## Commands
 
 ```bash

@@ -34,10 +34,10 @@ export function usesIndependentNativeInference(value: unknown, modelProvider?: s
  * @param sendRequest Sends a Desktop app-server request.
  * @param threadId The Thread identity being checked.
  */
-export async function verifyNativeCodexThread(
+export async function readNativeCodexThread(
   sendRequest: (method: string, params: unknown) => Promise<unknown> | unknown,
   threadId: string,
-): Promise<string> {
+): Promise<{ modelProvider: string; cwd: string | null; idle: boolean }> {
   const native = await sendRequest("thread/read", { threadId, includeTurns: false });
   const thread = isRecord(native) ? native.thread : null;
   // External projections reserve both markers, so a stock RPC failure cannot
@@ -54,5 +54,16 @@ export async function verifyNativeCodexThread(
   ) {
     throw new Error("Native Thread response cannot establish Codex ownership");
   }
-  return thread.modelProvider;
+  return {
+    modelProvider: thread.modelProvider,
+    cwd: typeof thread.cwd === "string" && thread.cwd ? thread.cwd : null,
+    idle: isRecord(thread.status) && ["idle", "notLoaded"].includes(String(thread.status.type)),
+  };
+}
+
+export async function verifyNativeCodexThread(
+  sendRequest: (method: string, params: unknown) => Promise<unknown> | unknown,
+  threadId: string,
+): Promise<string> {
+  return (await readNativeCodexThread(sendRequest, threadId)).modelProvider;
 }

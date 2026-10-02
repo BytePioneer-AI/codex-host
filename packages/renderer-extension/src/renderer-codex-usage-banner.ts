@@ -17,7 +17,14 @@ function isCodexUsageBanner(element: HTMLElement, composer: Element): boolean {
     const type = props.banner.banner_type;
     return typeof type === "string" && /^(?:[a-z0-9]+_)*rate_limit_reached$/u.test(type);
   }
+
   return false;
+}
+
+export function hasCodexUsageBanner(composer: Element): boolean {
+  return [...composer.querySelectorAll<HTMLElement>('aside[role="status"]')].some((element) =>
+    isCodexUsageBanner(element, composer),
+  );
 }
 
 interface BannerState {

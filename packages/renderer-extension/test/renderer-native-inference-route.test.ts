@@ -99,4 +99,25 @@ describe("native custom inference has a separate Billing Source", () => {
     );
     expect(sendRequest).toHaveBeenCalledTimes(1);
   });
+
+  it("uses the historical Thread's workspace config rather than another project's credentials", async () => {
+    const threadId = hostThreadIdSchema.parse("synthetic-native-route-thread");
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce({
+        thread: {
+          id: threadId,
+          modelProvider: "custom",
+          cliVersion: "0.159.2",
+          cwd: "/work/history",
+        },
+      })
+      .mockResolvedValueOnce({ config: { ...config, model_providers: {} } });
+    const client = createRendererModelClient([{ sendRequest }]);
+    expect(await client?.usesIndependentNativeInference?.({ threadId })).toBe(false);
+    expect(sendRequest).toHaveBeenLastCalledWith("config/read", {
+      includeLayers: false,
+      cwd: "/work/history",
+    });
+  });
 });

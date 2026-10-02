@@ -62,12 +62,14 @@ import {
 } from "./renderer-codex-usage-gate.js";
 import {
   createRendererCodexUsageBanner,
+  hasCodexUsageBanner,
   type RendererCodexUsageBanner,
 } from "./renderer-codex-usage-banner.js";
 import {
   createRendererNativeInferenceRoute,
   type RendererNativeInferenceRoute,
 } from "./renderer-native-inference-route.js";
+import { createRendererNativeProviderControl } from "./renderer-native-provider-control.js";
 import {
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
@@ -608,6 +610,7 @@ interface MountedComposer {
   usageRequestGeneration: number;
   commandRequestGeneration: number;
   nativeInferenceRoute: RendererNativeInferenceRoute;
+  nativeProviderControl: ReturnType<typeof createRendererNativeProviderControl>;
 }
 
 interface MountedCatalogRequest {
@@ -1009,11 +1012,17 @@ export function installRendererBindingProbe(
     const nativeSubmissionReady = mounted.nativeInferenceRoute.update(
       composerClient(mounted),
       threadIdFromComposerModelTarget(mounted.modelTarget),
-      nativeEligible,
+      nativeEligible && !mounted.nativeProviderControl.blocked,
     );
     showCodexUsageGateStatus(
       mounted,
       mounted.codexUsageGate.update(externalSubmissionReady || nativeSubmissionReady),
+    );
+    mounted.nativeProviderControl.update(
+      composerClient(mounted),
+      threadIdFromComposerModelTarget(mounted.modelTarget),
+      nativeEligible && !nativeSubmissionReady && hasCodexUsageBanner(mounted.composer),
+      settingsLifecycle.locale,
     );
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
@@ -2647,6 +2656,12 @@ export function installRendererBindingProbe(
           renderMounted(mounted);
         }
       }),
+      nativeProviderControl: createRendererNativeProviderControl(composer, () => {
+        if (!disposed && mountedByComposer.get(composer) === mounted && composer.isConnected) {
+          mounted.nativeInferenceRoute.update(null, null, false);
+          renderMounted(mounted);
+        }
+      }),
       modelTarget,
       modelView: inherited?.modelView ?? { status: "idle" },
       permissionModeView: inherited?.permissionModeView ?? { status: "idle" },
@@ -2727,6 +2742,7 @@ export function installRendererBindingProbe(
         }
         mounted.codexUsageGate.dispose();
         mounted.codexUsageBanner.dispose();
+        mounted.nativeProviderControl.dispose();
         mounted.nativeInferenceRoute.dispose();
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
@@ -3209,6 +3225,7 @@ export function installRendererBindingProbe(
         usageRefreshAttempts.delete(mounted.composer);
         mounted.codexUsageGate.dispose();
         mounted.codexUsageBanner.dispose();
+        mounted.nativeProviderControl.dispose();
         mounted.nativeInferenceRoute.dispose();
         disposeComposerAgentControl(mounted.control);
       }

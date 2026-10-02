@@ -119,8 +119,13 @@ import {
 } from "./renderer-request-sender.js";
 import {
   usesIndependentNativeInference,
+  readNativeCodexThread,
   verifyNativeCodexThread,
 } from "./renderer-native-thread.js";
+import {
+  inspectNativeProviderContinuation,
+  continueNativeWithConfiguredProvider,
+} from "./renderer-native-provider-continuation.js";
 import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
@@ -222,6 +227,11 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   usesIndependentNativeInference?(input?: ThreadInspectionParams): Promise<boolean>;
+  inspectNativeProviderContinuation?(input: ThreadInspectionParams): Promise<string | null>;
+  continueNativeWithConfiguredProvider?(
+    input: ThreadInspectionParams,
+    providerId: string,
+  ): Promise<void>;
   inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
@@ -379,16 +389,32 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async inspectNativeProviderContinuation(input: ThreadInspectionParams) {
+      return inspectNativeProviderContinuation(
+        manager.sendRequest,
+        threadInspectionParamsSchema.parse(input).threadId,
+      );
+    },
+    async continueNativeWithConfiguredProvider(input: ThreadInspectionParams, providerId: string) {
+      return continueNativeWithConfiguredProvider(
+        manager.sendRequest,
+        threadInspectionParamsSchema.parse(input).threadId,
+        providerId,
+      );
+    },
     async usesIndependentNativeInference(input?: ThreadInspectionParams): Promise<boolean> {
-      const modelProvider = input
-        ? await verifyNativeCodexThread(
+      const thread = input
+        ? await readNativeCodexThread(
             manager.sendRequest,
             threadInspectionParamsSchema.parse(input).threadId,
           )
         : undefined;
       return usesIndependentNativeInference(
-        await manager.sendRequest("config/read", { includeLayers: false }),
-        modelProvider,
+        await manager.sendRequest("config/read", {
+          includeLayers: false,
+          ...(thread?.cwd ? { cwd: thread.cwd } : {}),
+        }),
+        thread?.modelProvider,
       );
     },
     async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {

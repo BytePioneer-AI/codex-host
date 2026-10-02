@@ -11,6 +11,10 @@ import {
   type RendererMessageTarget,
 } from "./renderer-manual-compaction.js";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Model clients follow native connection identities, never the active Composer.
  * A captured client may finish an in-flight request after replacement, but may
  * not dispatch another request through a retired manager. */
@@ -49,6 +53,29 @@ export function createRendererHostClients(
         sendRequest(method, params, options) {
           if (disposed || readRouting()?.forHost(route.hostId) !== route) {
             throw new Error(`Renderer request manager is unavailable for Host ${route.hostId}`);
+          }
+          if (method === "thread/resume" && options === undefined && target.resumeThread) {
+            return target.resumeThread(params).then((result) => {
+              if (
+                !disposed &&
+                readRouting()?.forHost(route.hostId) === route &&
+                isRecord(params) &&
+                isRecord(result) &&
+                isRecord(result.thread) &&
+                result.thread.id === params.threadId &&
+                typeof result.thread.id === "string" &&
+                typeof result.modelProvider === "string" &&
+                result.modelProvider !== "codexhost"
+              ) {
+                // Resume reports the effective runtime Provider separately from
+                // its historical metadata, which Desktop's converter may retain.
+                const modelProvider = result.modelProvider;
+                target.updateConversationState?.(result.thread.id, (conversation) => {
+                  conversation.modelProvider = modelProvider;
+                });
+              }
+              return result;
+            });
           }
           return options === undefined
             ? target.sendRequest(method, params)

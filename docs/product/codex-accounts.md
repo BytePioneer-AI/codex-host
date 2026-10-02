@@ -33,6 +33,8 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 已有 Thread 先通过同一 Host 的 `thread/read` 核验真实 `modelProvider`，避免把新 Thread 的默认 custom 配置用于历史官方 Thread。判定缓存绑定 Host 客户端与 Thread。就绪的原生 Composer 每 5 秒自动复核；同一 Host/Thread 的已确认结果在最多 5 秒的复核期间保持，避免周期性撤销额度隔离而闪烁。返回官方配置、读取失败或复核超时立即撤销；Host/Thread 切换、ownership 加载/错误及切换中不复用旧结果。Composer 移除和扩展卸载清除定时器，过期响应不能恢复旧投影。Renderer 状态只保留布尔判定，不保存凭据。空输入、附件等其他提交限制不变。独立 Provider 自身的额度或认证失败仍由真实后端处理。
 
+历史官方 Thread 不会因为默认 Provider 已改为 custom 而自动迁移。存在官方额度横幅、Thread 已验证且空闲、其工作目录的有效配置明确选择独立 Provider 时，Composer 提供「使用已配置的 Provider 继续」入口。只有点击后才解除该 Thread 的原生订阅，再以明确的 `modelProvider` 续接同一历史；已订阅的 `thread/resume` 仅重新加入，不能切换 Provider。迁移保留 Thread ID、历史、模型、工作目录、权限与推理设置，不发送草稿、不改登录或全局配置。运行中、配置改变或原生确认失败时保留额度限制并显示错误；可恢复时重新加入原来的 Provider。原生 `thread/loaded/list` 在退订后仍可列出空闲 Thread，不能把它当作 Provider 是否切换的证据；以 resume 的实际返回和同一 Host 的 Thread 核验为准。成功后由现有核验链确认实际 Provider，再解除此 Composer 的额度门并隐藏横幅。Desktop 的 native resume/store 契约同时接纳顶层有效 `modelProvider`，避免其历史 metadata 转换器保留旧的 Provider。
+
 额度隔离成功的 Composer 同时隐藏其原生「Codex 和工作使用额度已用完」横幅。`renderer-codex-usage-banner.ts` 只识别该 Composer 内 `aside[role="status"]` 的已提交 React 祖先中明确的 `banner.banner_type`（`rate_limit_reached` 及套餐前缀），不按翻译文案、模型名或 CSS 压缩类名隐藏。局部 MutationObserver 在绘制前处理原生节点替换及样式重写，不等待下一 animation frame。其他警告与未知横幅保持原样；隔离撤销、Composer 移除或扩展卸载时恢复原来的可见性与样式。账号设置与额度入口继续展示真实官方余额。
 
 使用独立代理凭据时可保留 `requires_openai_auth=true` 和官方账号展示，官方已用额度不会因此变成可用。此判定复用已有组件局部额度门适配；Desktop 26.928 的新 selector / outer owner 兼容由独立的 [PR #467](https://github.com/BytePioneer-AI/codex-host/pull/467) 处理，不能仅凭独立 Provider 判定绕过未知门控形态。

@@ -7,6 +7,12 @@ import type {
 
 export interface RendererNativeRequestManager extends RendererHostRequestManager {
   sendRequest(method: string, params: unknown, options?: unknown): unknown;
+  /** Native resume also adopts the returned Thread metadata in Desktop's store. */
+  resumeThread?(params: unknown): Promise<unknown>;
+  updateConversationState?(
+    threadId: string,
+    update: (conversation: { modelProvider?: string }) => void,
+  ): unknown;
   getHostId?(): unknown;
   requestClient: RendererHostRequestBridge & { hostId?: unknown };
   prewarmedThreadManager: RendererPrewarmedThreadManager;

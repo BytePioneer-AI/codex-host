@@ -80,6 +80,31 @@ it.each(["local", "remote-ssh-discovered:linux"])(
   },
 );
 
+it("lists both Composer Hosts despite ambiguous routing and retains them in Settings", async () => {
+  const fixture = setup("local");
+  await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+  const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+  try {
+    fixture.editors.push({
+      __reactFiber$host: {
+        ...fixture.fiber,
+        memoizedProps: { executionTargetHostId: fixture.remote.getHostId() },
+      },
+      parentElement: null,
+    });
+    expect(routing.forComposer()).toBeNull();
+    expect(routing.knownHostIds?.()).toEqual(["local", fixture.remote.getHostId()]);
+    fixture.editors.length = 0;
+    fixture.managers.delete(fixture.remote.getHostId());
+    expect(routing.knownHostIds?.()).toEqual(["local", fixture.remote.getHostId()]);
+    expect(routing.forHost(fixture.remote.getHostId())).toBeNull();
+    expect(routing.forHost("local")?.manager).toBe(fixture.local);
+  } finally {
+    routing.dispose();
+  }
+  expect(routing.knownHostIds?.()).toEqual([]);
+});
+
 it("invalidates only the replaced Host and never revives its direct stale manager", async () => {
   const fixture = setup("local");
   await installRendererDraftPrewarmPolicyDirect(fixture.renderer);

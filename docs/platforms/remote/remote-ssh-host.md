@@ -28,6 +28,8 @@ codexhost remote status
 2. Open the SSH workspace.
 3. Pick a Harness from the composer's Agent / Model selector.
 
+A local Desktop launched through codexhost can also connect to a stock Codex remote Host: native conversations do not require remote `codexhost/*` methods; external Harnesses require remote codexhost. Thread ownership, Harness availability, configuration requests, and usage notifications are scoped to each composer's Host. Hidden composers on other Hosts must not block model loading or change its Harness selection. Native Model version requirements depend on the running remote app-server, not merely the CLI version installed on disk.
+
 ## Commands
 
 ```bash

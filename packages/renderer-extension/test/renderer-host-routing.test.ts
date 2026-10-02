@@ -134,6 +134,31 @@ it.each(["local", remoteId])(
   },
 );
 
+it("resolves each Composer independently when local and remote editors coexist", async () => {
+  const { adapter, editors, fiber } = await setup("local");
+  const localEditor = editors[0];
+  assert(localEditor);
+  const remoteEditor = {
+    ...localEditor,
+    __reactFiber$host: {
+      ...fiber,
+      memoizedProps: { executionTargetHostId: remoteId },
+    },
+  };
+  editors.push(remoteEditor);
+  const localComposer = { querySelectorAll: () => [localEditor] } as unknown as Element;
+  const remoteComposer = { querySelectorAll: () => [remoteEditor] } as unknown as Element;
+  try {
+    expect(adapter.modelControl?.currentHostId?.()).toBeNull();
+    expect(adapter.modelControl?.currentHostId?.(localComposer)).toBe("local");
+    expect(adapter.modelControl?.currentHostId?.(remoteComposer)).toBe(remoteId);
+    editors.pop();
+    expect(adapter.modelControl?.currentHostId?.(localComposer)).toBe("local");
+  } finally {
+    adapter.dispose();
+  }
+});
+
 it.each(["local", remoteId])(
   "reuses the validated %s route when reading current Host identity",
   async (hostId) => {

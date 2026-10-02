@@ -28,6 +28,8 @@ codexhost remote status
 2. 打开 SSH 工作区。
 3. 在输入框的 Agent / Model 选择器中选择目标 Harness。
 
+本地通过 codexhost 启动时，也可以连接仅运行原生 Codex 的远程 Host：原生对话不要求远程实现 `codexhost/*` 接口，外部 Harness 才需要远程 codexhost。对话归属、Harness 可用性、模型配置请求及用量通知按输入框所属 Host 隔离；隐藏的其他 Host 输入框不能阻止当前输入框加载模型，也不能改变其 Harness 选择。原生模型的版本要求由实际运行的远程 app-server 决定，安装在磁盘上的 CLI 版本不代表运行中服务已升级。
+
 ## 常用命令
 
 ```bash

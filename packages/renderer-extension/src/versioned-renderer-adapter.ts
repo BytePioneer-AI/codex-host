@@ -971,13 +971,19 @@ export function installCurrentRendererAdapter(): {
     return client;
   };
   const modelControl: RendererModelClient = Object.freeze({
-    currentHostId: () => {
+    currentHostId: (composer?: Element) => {
+      if (composer) {
+        return disposed
+          ? null
+          : (window.__codexhostHostRoutingV1?.hostIdForComposer(composer) ?? null);
+      }
       const route = currentRequestRoute();
       // Preserve known Host identity even when its native manager is disconnected.
       return disposed
         ? null
         : (route?.hostId ?? window.__codexhostHostRoutingV1?.hostIdForComposer() ?? null);
     },
+    knownHostIds: () => (disposed ? [] : (window.__codexhostHostRoutingV1?.knownHostIds?.() ?? [])),
     clientForHost: (hostId: string) => (disposed ? null : clients.forHost(hostId)),
     listHarnessPlugins: async () => {
       const client = settingsModelClient();

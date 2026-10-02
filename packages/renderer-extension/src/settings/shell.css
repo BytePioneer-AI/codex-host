@@ -2187,3 +2187,68 @@
     transition-duration: 0s !important;
   }
 }
+
+.settings-remote {
+  display: grid;
+  gap: 16px;
+  max-width: 860px;
+}
+.settings-remote h2,
+.settings-remote h3,
+.settings-remote p {
+  margin: 0;
+}
+.settings-remote > p,
+.settings-remote__card > p,
+.settings-remote__versions {
+  color: var(--text-secondary, #808080);
+}
+.settings-remote__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.settings-remote__list {
+  display: grid;
+  gap: 16px;
+}
+.settings-remote__card,
+.settings-remote__editor {
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid var(--border-default, #8884);
+  border-radius: 16px;
+}
+.settings-remote__versions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  font-size: 13px;
+}
+.settings-remote__versions strong,
+.settings-remote__versions p {
+  flex-basis: 100%;
+}
+.settings-remote__editor label {
+  display: grid;
+  gap: 6px;
+}
+.settings-remote__editor input {
+  border: 1px solid var(--border-default, #8884);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.settings-remote__auto {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.settings-remote [role="status"] {
+  overflow-wrap: anywhere;
+}

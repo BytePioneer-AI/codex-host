@@ -402,15 +402,18 @@ describe("Renderer fixed Model request client", () => {
       "openHarnessWebUi",
       "readUpdateStatus",
       "refreshCodexAccounts",
+      "runtimeStatus",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
       "setHarnessDisplaySettings",
       "setHarnessLaunchSettings",
       "setIdleReleaseSettings",
+      "setupSsh",
       "startUpdate",
       "subscribeCodexAccounts",
       "subscribeThreadUsage",
+      "updateRemote",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(

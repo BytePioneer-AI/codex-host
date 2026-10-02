@@ -1,3 +1,4 @@
+import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { homedir } from "node:os";
@@ -178,7 +179,16 @@ export async function runHostRuntime(input: {
   updateCoordinator?: HostUpdateCoordinator;
 }): Promise<number> {
   const { stockCodexPath, defaultAgent } = requiredRuntimeConfiguration(input.environment);
-  const hostRuntimePath = input.hostRuntimeUrl ? fileURLToPath(input.hostRuntimeUrl) : undefined;
+  const hostRuntimePath = input.hostRuntimeUrl
+    ? fileURLToPath(input.hostRuntimeUrl)
+    : input.environment.CODEXHOST_HOST_RUNTIME_PATH;
+  const runtimeMaintenance = hostRuntimePath
+    ? new RuntimeMaintenance({
+        runtimePath: hostRuntimePath,
+        remote: isRemoteUnixListenerInvocation(input.arguments),
+        environment: input.environment,
+      })
+    : undefined;
   const updateCoordinator =
     input.updateCoordinator ??
     (hostRuntimePath && hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
@@ -224,6 +234,7 @@ export async function runHostRuntime(input: {
         if (!remoteControlPlan) {
           try {
             const host = new AppServerHost({
+              ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
               ...(process.platform !== "win32"
                 ? {
                     sharedThreads: new SharedThreadBridge({
@@ -269,6 +280,7 @@ export async function runHostRuntime(input: {
             ...(consoleOpener ? { consoleOpener } : {}),
           };
           const host = new AppServerHost({
+            ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
             ...common,
             arguments: input.arguments,
             onDelegationApi,
@@ -278,6 +290,7 @@ export async function runHostRuntime(input: {
             diagnosticOutput: process.stderr,
             createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) =>
               new AppServerHost({
+                ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
                 ...common,
                 arguments: [],
                 desktopInput,
@@ -348,6 +361,7 @@ export async function runHostRuntime(input: {
       const sharedOwner = new SharedThreadOwner();
       let sharedDelegation: DelegationControlRegistration | undefined;
       const externalHost = new AppServerHost({
+        ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
         stockCodexPath,
         arguments: [],
         defaultAgent,
@@ -377,6 +391,7 @@ export async function runHostRuntime(input: {
         diagnosticOutput: process.stderr,
         createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
           return new AppServerHost({
+            ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
             ...(sharedDelegation ? { sharedDelegation } : {}),
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),

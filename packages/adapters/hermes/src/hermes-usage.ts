@@ -61,7 +61,7 @@ export class HermesUsage {
     const revision = this.#revision;
     this.#refresh = (async () => {
       try {
-        const usage = await read.call(this);
+        const usage = await read();
         if (usage && revision === this.#revision) this.observe(usage);
       } catch {
         // Optional metadata failures must not interrupt an otherwise healthy chat.

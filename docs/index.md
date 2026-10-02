@@ -108,6 +108,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`architecture/native-codex-cli-selection.md`](architecture/native-codex-cli-selection.md) | 原生 Codex CLI 的独立选择、优先级、平台默认值和诊断；修改 Desktop 启动的 CLI 转发目标时阅读。 |
 | [`platforms/linux/linux.zh-CN.md`](platforms/linux/linux.zh-CN.md) | Linux 安装、兼容性、进程所有权和诊断的中文说明；维护 Linux 支持时阅读。 |
 | [`platforms/linux/linux.md`](platforms/linux/linux.md) | Linux 安装与诊断的英文说明；修改对应中文说明时同步核对。 |
 | [`platforms/remote/remote-ssh-host.zh-CN.md`](platforms/remote/remote-ssh-host.zh-CN.md) | SSH 远程 Harness 用户指南：安装、双端会话操作、升级和常见问题。 |

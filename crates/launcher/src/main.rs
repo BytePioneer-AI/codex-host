@@ -37,10 +37,10 @@ use codexhost_platform::{
     APPX_RESUME_ARGUMENT, DesktopProcess, launch_desktop, resume_packaged_application,
 };
 use codexhost_platform::{
-    DesktopIdentity, DesktopInstallation, DesktopLaunchMode, SupervisedChild,
+    CodexCliOverride, DesktopIdentity, DesktopInstallation, DesktopLaunchMode, SupervisedChild,
     canonical_existing_file, configure_background_command,
-    desktop_root_process_ids_for_installation, discover_codex_desktop, node_entrypoint_path,
-    spawn_supervised,
+    desktop_root_process_ids_for_installation, discover_codex_desktop_with_cli,
+    node_entrypoint_path, resolve_codex_cli_override, spawn_supervised,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use codexhost_platform::{DesktopSession, launch_desktop_session};
@@ -130,7 +130,7 @@ impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
+        "usage:\n  codexhost\n  codexhost inspect [--json] [--codex-cli <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--codex-cli <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
     );
 }
 
@@ -287,6 +287,10 @@ fn print_installation(installation: &DesktopInstallation, process_ids: &[u32]) {
         "executable_codex_cli={}",
         installation.executable_codex_cli.display()
     );
+    println!(
+        "codex_cli_source={}",
+        installation.codex_cli_source.as_str()
+    );
     let process_list = process_ids
         .iter()
         .map(u32::to_string)
@@ -303,23 +307,40 @@ fn print_installation(installation: &DesktopInstallation, process_ids: &[u32]) {
 /// PackageManager.
 fn discover_desktop(
     custom_install_root: Option<&Path>,
+    selected_cli: Option<&CodexCliOverride>,
 ) -> Result<DesktopInstallation, Box<dyn Error>> {
     match custom_install_root {
         #[cfg(target_os = "windows")]
-        Some(root) => Ok(codexhost_platform::discover_codex_desktop_from_root(root)?),
+        Some(root) => {
+            Ok(codexhost_platform::discover_codex_desktop_from_root_with_cli(root, selected_cli)?)
+        }
         #[cfg(not(target_os = "windows"))]
         Some(_) => Err("--custom-install is supported on Windows only".into()),
-        None => Ok(discover_codex_desktop()?),
+        None => Ok(discover_codex_desktop_with_cli(selected_cli)?),
     }
 }
 
-fn inspect(custom_install_root: Option<&Path>, json: bool) -> Result<(), Box<dyn Error>> {
+fn inspect(
+    custom_install_root: Option<&Path>,
+    codex_cli: Option<&Path>,
+    json: bool,
+) -> Result<(), Box<dyn Error>> {
+    let discovered = (|| {
+        let installed = InstalledResources::from_current_executable()?;
+        let selected_cli = resolve_codex_cli_override(
+            codex_cli,
+            env::var_os(codexhost_platform::CODEX_CLI_PATH_ENV).as_deref(),
+            env::var_os(codexhost_platform::STOCK_CODEX_PATH_ENV).as_deref(),
+            installed.shim.is_file().then_some(installed.shim.as_path()),
+        )?;
+        discover_desktop(custom_install_root, selected_cli.as_ref())
+    })();
     if json {
-        let document = console::inspect_json(discover_desktop(custom_install_root))?;
+        let document = console::inspect_json(discovered)?;
         println!("{}", serde_json::to_string(&document)?);
         return Ok(());
     }
-    let installation = discover_desktop(custom_install_root)?;
+    let installation = discovered?;
     let process_ids = codexhost_platform::desktop_process_ids_for_installation(&installation)?;
     print_installation(&installation, &process_ids);
     Ok(())
@@ -334,6 +355,7 @@ struct LaunchOptions {
     renderer_extension: Option<PathBuf>,
     pi: Option<PathBuf>,
     custom_install_root: Option<PathBuf>,
+    codex_cli: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -345,6 +367,7 @@ struct ResolvedLaunchOptions {
     renderer_extension: PathBuf,
     pi: Option<PathBuf>,
     custom_install_root: Option<PathBuf>,
+    codex_cli: Option<CodexCliOverride>,
 }
 
 fn required_path(arguments: &[String], index: &mut usize, option: &str) -> Result<PathBuf, String> {
@@ -363,6 +386,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     let mut renderer_extension = None;
     let mut pi = None;
     let mut custom_install_root = None;
+    let mut codex_cli = None;
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -382,6 +406,12 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
                 renderer_extension = Some(required_path(arguments, &mut index, "--renderer")?)
             }
             "--pi" => pi = Some(required_path(arguments, &mut index, "--pi")?),
+            "--codex-cli" => {
+                if codex_cli.is_some() {
+                    return Err("--codex-cli may only be provided once".into());
+                }
+                codex_cli = Some(required_path(arguments, &mut index, "--codex-cli")?);
+            }
             "--custom-install" => {
                 custom_install_root =
                     Some(required_path(arguments, &mut index, "--custom-install")?)
@@ -398,6 +428,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
         renderer_extension,
         pi,
         custom_install_root,
+        codex_cli,
     })
 }
 
@@ -405,6 +436,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct InspectOptions {
     custom_install_root: Option<PathBuf>,
+    codex_cli: Option<PathBuf>,
     json: bool,
 }
 
@@ -416,6 +448,12 @@ fn parse_inspect_options(arguments: &[String]) -> Result<InspectOptions, String>
             "--custom-install" => {
                 options.custom_install_root =
                     Some(required_path(arguments, &mut index, "--custom-install")?)
+            }
+            "--codex-cli" => {
+                if options.codex_cli.is_some() {
+                    return Err("--codex-cli may only be provided once".into());
+                }
+                options.codex_cli = Some(required_path(arguments, &mut index, "--codex-cli")?);
             }
             "--json" => options.json = true,
             unknown => return Err(format!("unknown inspect option: {unknown}")),
@@ -458,8 +496,16 @@ fn resolve_resource_path(
 impl LaunchOptions {
     fn resolve(self) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
         let installed = InstalledResources::from_current_executable()?;
+        let shim = resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?;
+        let codex_cli = resolve_codex_cli_override(
+            self.codex_cli.as_deref(),
+            env::var_os(codexhost_platform::CODEX_CLI_PATH_ENV).as_deref(),
+            env::var_os(codexhost_platform::STOCK_CODEX_PATH_ENV).as_deref(),
+            Some(&shim),
+        )?;
         Ok(ResolvedLaunchOptions {
-            shim: resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?,
+            shim,
+            codex_cli,
             node: resolve_resource_path(
                 self.node,
                 &installed.node,
@@ -1026,7 +1072,10 @@ fn launch(
     start_launch_console(&options);
     let options = options.resolve()?;
     startup_trace("resources resolved");
-    let installation = discover_desktop(options.custom_install_root.as_deref())?;
+    let installation = discover_desktop(
+        options.custom_install_root.as_deref(),
+        options.codex_cli.as_ref(),
+    )?;
     startup_record::desktop(
         &installation.version,
         &installation.build,
@@ -1163,7 +1212,10 @@ fn launch(
     start_launch_console(&options);
     let options = options.resolve()?;
     startup_trace("resources resolved");
-    let installation = discover_desktop(options.custom_install_root.as_deref())?;
+    let installation = discover_desktop(
+        options.custom_install_root.as_deref(),
+        options.codex_cli.as_ref(),
+    )?;
     startup_record::desktop(
         &installation.version,
         &installation.build,
@@ -1290,6 +1342,7 @@ fn default_launch_options() -> LaunchOptions {
         renderer_extension: None,
         pi: None,
         custom_install_root: None,
+        codex_cli: None,
     }
 }
 
@@ -1307,7 +1360,11 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 .custom_install_root
                 .map(|path| absolute_directory(&path, "--custom-install"))
                 .transpose()?;
-            inspect(custom_install_root.as_deref(), options.json)
+            inspect(
+                custom_install_root.as_deref(),
+                options.codex_cli.as_deref(),
+                options.json,
+            )
         }
         Some("console") if arguments.len() == 1 => open_console(),
         Some("console") => Err("console accepts no arguments".into()),
@@ -1607,6 +1664,38 @@ mod tests {
     }
 
     #[test]
+    fn native_cli_option_is_accepted_by_launch_and_inspect() {
+        let path = std::env::temp_dir().join("native-codex");
+        let arguments = ["--codex-cli".into(), path.display().to_string()];
+        assert_eq!(
+            parse_launch_options(&arguments)
+                .unwrap()
+                .codex_cli
+                .as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(
+            parse_inspect_options(&arguments)
+                .unwrap()
+                .codex_cli
+                .as_deref(),
+            Some(path.as_path())
+        );
+        assert!(parse_launch_options(&[]).unwrap().codex_cli.is_none());
+        assert!(parse_inspect_options(&[]).unwrap().codex_cli.is_none());
+        assert!(parse_launch_options(&["--codex-cli".into()]).is_err());
+        assert!(parse_inspect_options(&["--codex-cli".into()]).is_err());
+        let duplicate = [
+            "--codex-cli".into(),
+            path.display().to_string(),
+            "--codex-cli".into(),
+            path.display().to_string(),
+        ];
+        assert!(parse_launch_options(&duplicate).is_err());
+        assert!(parse_inspect_options(&duplicate).is_err());
+    }
+
+    #[test]
     fn custom_install_root_must_be_an_existing_absolute_directory() {
         assert!(absolute_directory(Path::new("relative/path"), "--custom-install").is_err());
         assert!(
@@ -1628,6 +1717,7 @@ mod tests {
             renderer_extension: PathBuf::from("/opt/renderer-extension.js"),
             pi: None,
             custom_install_root: None,
+            codex_cli: None,
         }
     }
 

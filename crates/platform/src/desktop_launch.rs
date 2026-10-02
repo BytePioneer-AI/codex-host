@@ -149,6 +149,7 @@ mod node_repl_override_tests {
             desktop_executable: directory.join("Desktop.exe"),
             packaged_codex_cli: directory.join("codex.exe"),
             executable_codex_cli: directory.join("codex.exe"),
+            codex_cli_source: crate::CodexCliSource::Packaged,
         };
         let environment = managed_desktop_environment(&installation, &shim, &[]).unwrap();
         let block = super::super::windows_desktop::windows_environment_block(&environment)
@@ -976,6 +977,7 @@ mod tests {
             desktop_executable: "/usr/lib/chatgpt/ChatGPT".into(),
             packaged_codex_cli: "/usr/lib/chatgpt/resources/codex".into(),
             executable_codex_cli: "/usr/lib/chatgpt/resources/codex".into(),
+            codex_cli_source: crate::CodexCliSource::Packaged,
         }
     }
 
@@ -1030,6 +1032,36 @@ mod tests {
         assert_ne!(
             installation.desktop_launcher,
             installation.desktop_executable
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_launch_routes_desktop_through_shim_and_native_requests_to_selected_cli() {
+        let mut installation = linux_installation();
+        installation.executable_codex_cli = "/independent/codex".into();
+        installation.codex_cli_source = crate::CodexCliSource::CommandLine;
+        let shim = Path::new("/usr/bin/true").canonicalize().unwrap();
+        let command = desktop_launch_command(
+            &installation,
+            &shim,
+            DesktopLaunchMode::DirectExecutable,
+            &[],
+            &[],
+        )
+        .unwrap();
+        let environment = command.get_envs().collect::<Vec<_>>();
+        assert!(environment.contains(&(
+            std::ffi::OsStr::new("CODEX_CLI_PATH"),
+            Some(shim.as_os_str())
+        )));
+        assert!(environment.contains(&(
+            std::ffi::OsStr::new("CODEXHOST_STOCK_CODEX_PATH"),
+            Some(installation.executable_codex_cli.as_os_str())
+        )));
+        assert_ne!(
+            installation.packaged_codex_cli,
+            installation.executable_codex_cli
         );
     }
 
@@ -1247,6 +1279,7 @@ mod tests {
             desktop_executable: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT".into(),
             packaged_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),
             executable_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),
+            codex_cli_source: crate::CodexCliSource::Packaged,
         };
         let command = desktop_launch_command(
             &installation,

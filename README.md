@@ -298,7 +298,7 @@ CodexHost does it differently:
       <sub><strong>Contributions are welcome.</strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="WeChat group QR code" src="docs/imgs/wechat-qrcode.jpg" />
+      <img width="230" alt="WeChat group QR code" src="docs/imgs/wechat-group-4-qrcode.jpg" />
     </td>
   </tr>
 </table>

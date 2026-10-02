@@ -298,7 +298,7 @@ CodexHost 的做法不同：
       <sub><strong>欢迎一起贡献~ </strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="微信群二维码" src="../imgs/wechat-qrcode.jpg" />
+      <img width="230" alt="微信群二维码" src="../imgs/wechat-group-4-qrcode.jpg" />
     </td>
   </tr>
 </table>

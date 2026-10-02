@@ -1,3 +1,4 @@
+import type { RuntimeMaintenance } from "../src/runtime-maintenance.js";
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -276,6 +277,7 @@ export function createFixture(
     createOfficialConnection?: () =>
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
+    runtimeMaintenance?: RuntimeMaintenance;
     consoleOpener?: HostConsoleOpener;
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
@@ -332,6 +334,7 @@ export function createFixture(
         }
       : {}),
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
+    ...(options.runtimeMaintenance ? { runtimeMaintenance: options.runtimeMaintenance } : {}),
     ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),

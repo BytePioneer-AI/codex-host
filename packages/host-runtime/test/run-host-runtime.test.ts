@@ -1,4 +1,5 @@
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -7,6 +8,7 @@ import {
   delegationCliEnvironment,
   hasLauncherManagedUpdateRuntime,
   MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE,
+  resolveHostRuntimePaths,
 } from "../src/run-host-runtime.js";
 
 describe("Host Runtime composition", () => {
@@ -65,6 +67,31 @@ describe("Host Runtime composition", () => {
         CODEXHOST_LAUNCHER_PID: "4321",
       }),
     ).toBe(true);
+  });
+
+  it("keeps application updates off for a source launch while runtime maintenance stays on", () => {
+    const sourceRuntime = path.resolve("repo", "packages", "host-runtime", "dist", "main.js");
+    const environment = {
+      CODEXHOST_LAUNCHER_PID: "4321",
+      CODEXHOST_HOST_RUNTIME_PATH: sourceRuntime,
+    };
+
+    expect(resolveHostRuntimePaths({ environment })).toEqual({
+      packaged: undefined,
+      maintenance: sourceRuntime,
+    });
+
+    const packagedRuntime = path.resolve("opt", "codexhost", "app", "host-runtime.mjs");
+    expect(
+      resolveHostRuntimePaths({
+        environment,
+        hostRuntimeUrl: pathToFileURL(packagedRuntime).href,
+      }),
+    ).toEqual({ packaged: packagedRuntime, maintenance: packagedRuntime });
+    expect(resolveHostRuntimePaths({ environment: {} })).toEqual({
+      packaged: undefined,
+      maintenance: undefined,
+    });
   });
 
   it("disables npm updates when a copied remote Host Runtime is outside the npm package root", () => {

@@ -155,11 +155,23 @@ export async function recoverUpdateOperationLock(stateDirectory: string): Promis
   if (!(await regularFile(lockPath))) return;
   let ownerPid: unknown;
   let statusPath: unknown;
+  let remoteUpdate = false;
   try {
     const value = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
     ownerPid = value.ownerPid;
     statusPath = value.statusPath;
+    remoteUpdate = value.remoteUpdate === true;
   } catch {
+    return;
+  }
+  if (
+    remoteUpdate &&
+    typeof ownerPid === "number" &&
+    Number.isSafeInteger(ownerPid) &&
+    ownerPid > 0 &&
+    !processIsAlive(ownerPid)
+  ) {
+    await rm(lockPath, { force: true });
     return;
   }
   if (typeof statusPath !== "string" || !path.isAbsolute(statusPath)) return;

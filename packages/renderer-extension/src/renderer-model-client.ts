@@ -1,4 +1,15 @@
 import {
+  REMOTE_SSH_SETUP_METHOD,
+  remoteSshSetupResultSchema,
+  remoteSshSetupParamsSchema,
+  type RemoteSshSetupParams,
+  type RemoteSshSetupResult,
+  RUNTIME_STATUS_METHOD,
+  REMOTE_UPDATE_METHOD,
+  runtimeStatusSchema,
+  type RuntimeStatus,
+} from "@codexhost/shared-contracts";
+import {
   HARNESS_INSTALLATION_METHOD,
   harnessInstallationParamsSchema,
   harnessInstallationStateSchema,
@@ -102,6 +113,7 @@ import {
 
 import {
   createRendererRequestSender,
+  isUnsupportedMethod,
   RendererMethodUnavailableError,
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
@@ -217,6 +229,9 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   selectThreadPermissionMode(
     input: ThreadPermissionModeSelectParams,
   ): Promise<HarnessConfigurationState>;
+  setupSsh?(input: RemoteSshSetupParams): Promise<RemoteSshSetupResult>;
+  runtimeStatus?(): Promise<RuntimeStatus>;
+  updateRemote?(version: string): Promise<RuntimeStatus>;
   checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
@@ -492,6 +507,26 @@ export function createRendererModelClient(
     selectThreadModel,
     selectThreadThinking,
     selectThreadPermissionMode,
+    async setupSsh(input: RemoteSshSetupParams) {
+      return remoteSshSetupResultSchema.parse(
+        await manager.sendRequest(REMOTE_SSH_SETUP_METHOD, remoteSshSetupParamsSchema.parse(input)),
+      );
+    },
+    async runtimeStatus() {
+      // Asked directly rather than through the remembering sender: an outdated remote
+      // service can be updated in place, after which this method starts answering.
+      try {
+        return runtimeStatusSchema.parse(await source.sendRequest(RUNTIME_STATUS_METHOD, {}));
+      } catch (error) {
+        if (!isUnsupportedMethod(error, RUNTIME_STATUS_METHOD)) throw error;
+        throw new RendererMethodUnavailableError(RUNTIME_STATUS_METHOD, error);
+      }
+    },
+    async updateRemote(version: string) {
+      return runtimeStatusSchema.parse(
+        await manager.sendRequest(REMOTE_UPDATE_METHOD, { version }),
+      );
+    },
     async checkUpdate(): Promise<UpdateCheckResult | null> {
       const result = await manager.sendRequest(
         UPDATE_CHECK_METHOD,

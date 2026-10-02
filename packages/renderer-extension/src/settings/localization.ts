@@ -572,6 +572,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleFailed: "The console could not be opened",
   pageLabels: Object.freeze({
     connections: "Connections",
+    "remote-connections": "Remote connections",
     appearance: "General",
     accounts: "Accounts",
     "session-import": "Session Import",
@@ -858,6 +859,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleFailed: "控制台打开失败",
   pageLabels: Object.freeze({
     connections: "连接",
+    "remote-connections": "远程连接",
     appearance: "通用",
     accounts: "账号",
     "session-import": "会话导入",

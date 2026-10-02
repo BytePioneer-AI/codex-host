@@ -1,3 +1,4 @@
+import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { homedir } from "node:os";
@@ -75,6 +76,22 @@ export function hasLauncherManagedUpdateRuntime(
   if (!path.isAbsolute(npmPackageRoot) || !path.isAbsolute(hostRuntimePath)) return false;
   const runtimePackageRoot = path.dirname(path.dirname(path.normalize(hostRuntimePath)));
   return path.relative(path.normalize(npmPackageRoot), runtimePackageRoot) === "";
+}
+
+/**
+ * Only a packaged entry passes its own URL, so only it has distribution metadata
+ * for application updates. Runtime maintenance also works from a source launch,
+ * where the Launcher exports the path instead.
+ */
+export function resolveHostRuntimePaths(input: {
+  environment: NodeJS.ProcessEnv;
+  hostRuntimeUrl?: string;
+}): { packaged: string | undefined; maintenance: string | undefined } {
+  const packaged = input.hostRuntimeUrl ? fileURLToPath(input.hostRuntimeUrl) : undefined;
+  return {
+    packaged,
+    maintenance: packaged ?? input.environment.CODEXHOST_HOST_RUNTIME_PATH,
+  };
 }
 
 function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
@@ -178,7 +195,15 @@ export async function runHostRuntime(input: {
   updateCoordinator?: HostUpdateCoordinator;
 }): Promise<number> {
   const { stockCodexPath, defaultAgent } = requiredRuntimeConfiguration(input.environment);
-  const hostRuntimePath = input.hostRuntimeUrl ? fileURLToPath(input.hostRuntimeUrl) : undefined;
+  const { packaged: hostRuntimePath, maintenance: maintenanceRuntimePath } =
+    resolveHostRuntimePaths(input);
+  const runtimeMaintenance = maintenanceRuntimePath
+    ? new RuntimeMaintenance({
+        runtimePath: maintenanceRuntimePath,
+        remote: isRemoteUnixListenerInvocation(input.arguments),
+        environment: input.environment,
+      })
+    : undefined;
   const updateCoordinator =
     input.updateCoordinator ??
     (hostRuntimePath && hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
@@ -224,6 +249,7 @@ export async function runHostRuntime(input: {
         if (!remoteControlPlan) {
           try {
             const host = new AppServerHost({
+              ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
               ...(process.platform !== "win32"
                 ? {
                     sharedThreads: new SharedThreadBridge({
@@ -269,6 +295,7 @@ export async function runHostRuntime(input: {
             ...(consoleOpener ? { consoleOpener } : {}),
           };
           const host = new AppServerHost({
+            ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
             ...common,
             arguments: input.arguments,
             onDelegationApi,
@@ -278,6 +305,7 @@ export async function runHostRuntime(input: {
             diagnosticOutput: process.stderr,
             createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) =>
               new AppServerHost({
+                ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
                 ...common,
                 arguments: [],
                 desktopInput,
@@ -348,6 +376,7 @@ export async function runHostRuntime(input: {
       const sharedOwner = new SharedThreadOwner();
       let sharedDelegation: DelegationControlRegistration | undefined;
       const externalHost = new AppServerHost({
+        ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
         stockCodexPath,
         arguments: [],
         defaultAgent,
@@ -377,6 +406,7 @@ export async function runHostRuntime(input: {
         diagnosticOutput: process.stderr,
         createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
           return new AppServerHost({
+            ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
             ...(sharedDelegation ? { sharedDelegation } : {}),
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),

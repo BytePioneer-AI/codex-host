@@ -111,6 +111,26 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).not.toHaveBeenCalled();
   });
 
+  it("asks an outdated remote for its runtime status again after it was updated", async () => {
+    const status = {
+      runningVersion: "0.12.0",
+      installedVersion: "0.12.0",
+      restartRequired: false,
+      remote: true,
+      updateSupported: true,
+      update: { phase: "idle", targetVersion: null, error: null },
+    };
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Method not found"), { code: -32601 }))
+      .mockResolvedValueOnce(status);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.runtimeStatus) throw new Error("Missing runtime status client");
+    await expect(client.runtimeStatus()).rejects.toMatchObject({ code: -32601 });
+    await expect(client.runtimeStatus()).resolves.toEqual(status);
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("validates launch setting requests and responses on the selected request client", async () => {
     const harnessId = harnessIdSchema.parse("workbuddy");
     const result = { path: "D:\\Apps\\WorkBuddy", restartRequired: true };
@@ -402,15 +422,18 @@ describe("Renderer fixed Model request client", () => {
       "openHarnessWebUi",
       "readUpdateStatus",
       "refreshCodexAccounts",
+      "runtimeStatus",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
       "setHarnessDisplaySettings",
       "setHarnessLaunchSettings",
       "setIdleReleaseSettings",
+      "setupSsh",
       "startUpdate",
       "subscribeCodexAccounts",
       "subscribeThreadUsage",
+      "updateRemote",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(

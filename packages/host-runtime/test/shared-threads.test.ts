@@ -98,6 +98,76 @@ async function rpc(
 }
 
 describe("shared external Threads", () => {
+  it("broadcasts user item lifecycles on every alternating GUI turn", async () => {
+    const { front, adapter, open } = setup();
+    const viewers = [front(true), front(false)] as const;
+    const threadId = await startPiThread(viewers[0]);
+    for (const [index, sender] of [viewers[0], viewers[1], viewers[0]].entries()) {
+      const text = `message ${index}`;
+      const clientId = `client-message-${index}`;
+      const reply = await rpc(sender, 100 + index, "turn/start", {
+        threadId,
+        clientUserMessageId: clientId,
+        input: [{ type: "text", text }],
+      });
+      expect(reply).not.toHaveProperty("error");
+      const turnId = ((reply.result as JsonObject).turn as JsonObject).id;
+      for (const viewer of viewers) {
+        const events = [];
+        for (const method of ["turn/started", "item/started", "item/completed"]) {
+          events.push(
+            await viewer.collector.waitFor((message) => {
+              const params = message.params as JsonObject | undefined;
+              return (
+                message.method === method &&
+                (method === "turn/started"
+                  ? (params?.turn as JsonObject | undefined)?.id === turnId
+                  : params?.turnId === turnId &&
+                    (params?.item as JsonObject | undefined)?.type === "userMessage")
+              );
+            }),
+          );
+        }
+        for (const event of events.slice(1)) {
+          expect(event).toMatchObject({
+            params: {
+              threadId,
+              turnId,
+              item: {
+                id: `${turnId}-user`,
+                type: "userMessage",
+                clientId,
+                content: [{ type: "text", text }],
+              },
+            },
+          });
+        }
+        let previousPosition = -1;
+        for (const event of events) {
+          const position = viewer.collector.messages.indexOf(event);
+          expect(position).toBeGreaterThan(previousPosition);
+          previousPosition = position;
+        }
+      }
+      session(adapter).succeedTurn();
+      for (const viewer of viewers) {
+        await viewer.collector.waitFor(
+          (message) =>
+            message.method === "turn/completed" &&
+            ((message.params as JsonObject).turn as JsonObject).id === turnId,
+        );
+        expect(
+          viewer.collector.messages.filter(
+            (message) =>
+              message.method === "item/started" &&
+              ((message.params as JsonObject).item as JsonObject).id === `${turnId}-user`,
+          ),
+        ).toHaveLength(1);
+      }
+    }
+    expect(open).toHaveBeenCalledOnce();
+  });
+
   it("steers from the other GUI through the same cancellation and replacement sequence", async () => {
     const { front, adapter, open } = setup();
     const ssh = front(true);

@@ -933,6 +933,21 @@ export class CodexTurnProjector {
             turn: this.pendingTurn(this.#startedAt),
           },
         },
+        // Connected viewers consume item events; turn snapshots alone do not
+        // insert later user messages into an already-open conversation.
+        ...this.#projectInput().flatMap((item) =>
+          ["item/started", "item/completed"].map((method) => ({
+            method,
+            emittedAtMs: this.#startedAtMs,
+            params: {
+              threadId: this.#threadId,
+              turnId: this.#turnId,
+              startedAtMs: this.#startedAtMs,
+              ...(method === "item/completed" ? { completedAtMs: this.#startedAtMs } : {}),
+              item,
+            },
+          })),
+        ),
       ],
     };
   }

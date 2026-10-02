@@ -95,19 +95,16 @@ fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&request.lock_directory)?;
     let lock = request.lock_directory.join("active-update-v1.lock");
     // Same lock as Desktop's updater; never install into one npm prefix concurrently.
-    if let Ok(bytes) = fs::read(&lock) {
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            if value["remoteUpdate"].as_bool() == Some(true) {
-                if let Some(pid) = value["ownerPid"]
-                    .as_u64()
-                    .and_then(|pid| u32::try_from(pid).ok())
-                {
-                    if pid > 0 && !codexhost_platform::process_exists(pid) {
-                        let _ = fs::remove_file(&lock);
-                    }
-                }
-            }
-        }
+    if let Ok(bytes) = fs::read(&lock)
+        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && value["remoteUpdate"].as_bool() == Some(true)
+        && let Some(pid) = value["ownerPid"]
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+        && pid > 0
+        && !codexhost_platform::process_exists(pid)
+    {
+        let _ = fs::remove_file(&lock);
     }
     let file = fs::OpenOptions::new()
         .write(true)

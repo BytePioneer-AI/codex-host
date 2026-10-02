@@ -411,6 +411,7 @@ describe("Renderer fixed Model request client", () => {
       "startUpdate",
       "subscribeCodexAccounts",
       "subscribeThreadUsage",
+      "usesIndependentNativeInference",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(

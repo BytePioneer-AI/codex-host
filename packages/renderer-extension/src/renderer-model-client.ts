@@ -105,7 +105,10 @@ import {
   RendererMethodUnavailableError,
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
-import { verifyNativeCodexThread } from "./renderer-native-thread.js";
+import {
+  usesIndependentNativeInference,
+  verifyNativeCodexThread,
+} from "./renderer-native-thread.js";
 import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
@@ -206,6 +209,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   ): Promise<HarnessInspection>;
   openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
+  usesIndependentNativeInference?(input?: ThreadInspectionParams): Promise<boolean>;
   inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
@@ -360,6 +364,18 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async usesIndependentNativeInference(input?: ThreadInspectionParams): Promise<boolean> {
+      const modelProvider = input
+        ? await verifyNativeCodexThread(
+            manager.sendRequest,
+            threadInspectionParamsSchema.parse(input).threadId,
+          )
+        : undefined;
+      return usesIndependentNativeInference(
+        await manager.sendRequest("config/read", { includeLayers: false }),
+        modelProvider,
+      );
+    },
     async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
       return harnessInstallationStateSchema.parse(
         await manager.sendRequest(

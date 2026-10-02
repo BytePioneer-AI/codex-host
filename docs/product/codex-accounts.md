@@ -27,6 +27,14 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
 
+### 原生 Codex 的独立 Provider
+
+原生 Codex 也可以使用与官方订阅额度无关的 custom Provider。Renderer 通过同一 Host 的 `config/read` 核验有效配置，要求非官方 HTTP(S) endpoint，以及显式独立 bearer、环境 Key 或 `requires_openai_auth=false`。`openai`、`cc-switch-official`、Host 的外部投影 Provider、官方 endpoint 和未知配置保留原生额度门。不根据 `gpt-*` 模型名或 ChatGPT 登录状态猜测 Billing Source，也不重置或伪造官方额度。
+
+已有 Thread 先通过同一 Host 的 `thread/read` 核验真实 `modelProvider`，避免把新 Thread 的默认 custom 配置用于历史官方 Thread。判定缓存绑定 Host 客户端与 Thread；目标切换、重新核验或读取失败时不沿用旧目标的投影。Renderer 状态只保留布尔判定，不保存凭据。未就绪、归属加载失败、空输入、附件等其他提交限制不变。独立 Provider 自身的额度或认证失败仍由真实后端处理。
+
+使用独立代理凭据时可保留 `requires_openai_auth=true` 和官方账号展示，官方已用额度不会因此变成可用。此判定复用已有组件局部额度门适配；Desktop 26.928 的新 selector / outer owner 兼容由独立的 [PR #467](https://github.com/BytePioneer-AI/codex-host/pull/467) 处理，不能仅凭独立 Provider 判定绕过未知门控形态。
+
 ## 其他 Harness 的只读账号额度
 
 统一列表中展示 Grok Build、agy（Antigravity）、Claude Code、Cursor、Kimi Code、Qoder 和 Pi 当前原生认证可读取的真实额度或预付费余额。原管理列改为目标 Harness 图标；原生管理边界保留在账号信息的说明中。这不是多账号管理：不提供添加、删除、切换、设为默认或重置卡操作，也不修改 Codex 当前账号。搜索和已用/剩余切换作用于所有行，刷新按钮重新查询两类额度。各 Harness 独立并行查询，任一有效结果返回后立即显示，不等待其他 Harness；全局刷新期间同样逐项恢复。

@@ -597,6 +597,13 @@ interface MountedComposer {
   hostId: string | null;
   usageRequestGeneration: number;
   commandRequestGeneration: number;
+  nativeInferenceRoute: {
+    client: RendererModelClient;
+    threadId: string | null;
+    checkedAt: number;
+    independent: boolean;
+    pending: boolean;
+  } | null;
 }
 
 interface MountedCatalogRequest {
@@ -987,7 +994,19 @@ export function installRendererBindingProbe(
       currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
     );
-    showCodexUsageGateStatus(mounted, mounted.codexUsageGate.update(externalSubmissionReady));
+    const nativeSubmissionReady =
+      controller.get(mounted.composer).agent === "codex" &&
+      mounted.ownershipStatus !== "loading" &&
+      mounted.ownershipStatus !== "error" &&
+      !controller.isSwitching(mounted.composer) &&
+      mounted.nativeInferenceRoute?.client === composerClient(mounted) &&
+      mounted.nativeInferenceRoute.threadId ===
+        threadIdFromComposerModelTarget(mounted.modelTarget) &&
+      mounted.nativeInferenceRoute.independent;
+    showCodexUsageGateStatus(
+      mounted,
+      mounted.codexUsageGate.update(externalSubmissionReady || nativeSubmissionReady),
+    );
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
         void refreshThreadUsage(
@@ -996,6 +1015,49 @@ export function installRendererBindingProbe(
         );
       };
     }
+    refreshNativeInferenceRoute(mounted);
+  };
+
+  const refreshNativeInferenceRoute = (mounted: MountedComposer): void => {
+    const client = composerClient(mounted);
+    if (controller.get(mounted.composer).agent !== "codex" || !client) return;
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    const previous = mounted.nativeInferenceRoute;
+    if (
+      previous?.client === client &&
+      previous.threadId === threadId &&
+      (previous.pending || Date.now() - previous.checkedAt < 5000)
+    ) {
+      return;
+    }
+    const route = { client, threadId, checkedAt: Date.now(), independent: false, pending: true };
+    mounted.nativeInferenceRoute = route;
+    renderMounted(mounted);
+    void (async () => {
+      try {
+        route.independent =
+          (await client.usesIndependentNativeInference?.(threadId ? { threadId } : undefined)) ===
+          true;
+      } catch (error) {
+        console.warn(
+          "codexhost native inference route could not be verified; retaining Codex usage gate",
+          error instanceof Error ? error.name : "UnknownError",
+        );
+      } finally {
+        route.pending = false;
+        route.checkedAt = Date.now();
+        if (
+          !disposed &&
+          mountedByComposer.get(mounted.composer) === mounted &&
+          mounted.composer.isConnected &&
+          mounted.nativeInferenceRoute === route &&
+          threadIdFromComposerModelTarget(mounted.modelTarget) === threadId &&
+          composerClient(mounted) === client
+        ) {
+          renderMounted(mounted);
+        }
+      }
+    })();
   };
 
   let delegationMention: RendererDelegationMentionControl | null = null;
@@ -2614,6 +2676,7 @@ export function installRendererBindingProbe(
       composerId: state.composerId,
       control,
       codexUsageGate: createRendererCodexUsageGate(composer),
+      nativeInferenceRoute: null,
       modelTarget,
       modelView: inherited?.modelView ?? { status: "idle" },
       permissionModeView: inherited?.permissionModeView ?? { status: "idle" },

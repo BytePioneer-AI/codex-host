@@ -1009,6 +1009,12 @@ export function installCurrentRendererAdapter(): {
     inspectHarness: (...args: Parameters<RendererModelClient["inspectHarness"]>) =>
       currentModelClient().inspectHarness(...args),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
+    usesIndependentNativeInference: async (input?: ThreadInspectionParams) => {
+      const client = currentModelClient();
+      return client.usesIndependentNativeInference
+        ? client.usesIndependentNativeInference(input)
+        : false;
+    },
     inspectHarnessCommands: (input: HarnessCommandsInspectParams) =>
       currentModelClient().inspectHarnessCommands(input),
     inspectThreadCommands: (input: ThreadCommandsInspectParams) =>

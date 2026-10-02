@@ -1530,6 +1530,7 @@ describe("Renderer Connections page", () => {
                   retryable: true,
                   stage: "startup",
                   durationMs: 120,
+                  diagnostic: "Native process stopped during startup",
                   stderrTail: "check ~/.pi/agent/settings.json",
                 },
               },
@@ -1580,7 +1581,18 @@ describe("Renderer Connections page", () => {
     expect(visibleText(content)).toContain("公司");
     expect(visibleText(content)).toContain("pi exited with code 1");
     expect(visibleText(content)).toContain("~/.pi/agent/settings.json");
-    expect(visibleText(content)).toContain("startup");
+    expect(
+      descendants(content).some(
+        ({ className }) => className === "settings-connection-error-metadata",
+      ),
+    ).toBe(false);
+    const report = visibleText(elementWithClass(content, "settings-connection-stderr"));
+    expect(report).toContain("error.code: processExited");
+    expect(report).toContain("retryable: true");
+    expect(report).toContain("stage: startup");
+    expect(report).toContain("durationMs: 120");
+    expect(report).toContain("diagnostic: Native process stopped during startup");
+    expect(report).toContain("stderr:\ncheck ~/.pi/agent/settings.json");
     const issueLink = descendants(content).find(
       ({ tagName, href }) =>
         tagName === "a" && href === "https://github.com/BytePioneer-AI/codex-host/issues/new",
@@ -1592,9 +1604,7 @@ describe("Renderer Connections page", () => {
     if (!copyButton) throw new Error("Copy error log button is not rendered");
     copyButton.dispatch("click");
     await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledOnce());
-    expect(document.clipboardWriteText).toHaveBeenCalledWith(
-      expect.stringContaining("host: local"),
-    );
+    expect(document.clipboardWriteText).toHaveBeenCalledWith(report);
     await vi.waitFor(() => expect(visibleNotesText(content)).toContain("已复制"));
     const refresh = descendants(content).find(
       ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "refresh",

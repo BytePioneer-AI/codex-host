@@ -132,17 +132,6 @@ function diagnosticText(
   ].join("\n");
 }
 
-function detailLine(document: Document, label: string, value: string): HTMLElement {
-  const line = document.createElement("div");
-  line.className = "settings-connection-detail-line";
-  const name = document.createElement("span");
-  name.textContent = label;
-  const content = document.createElement("code");
-  content.textContent = value;
-  line.append(name, content);
-  return line;
-}
-
 function setCopyButtonLabel(button: HTMLButtonElement, label: string): void {
   button.replaceChildren(createRendererSettingsIcon("copy", 16), label);
 }
@@ -521,24 +510,6 @@ function renderConnectionInspector(
         : item.error.message;
     summary.append(title, description);
 
-    const metadata = document.createElement("div");
-    metadata.className = "settings-connection-error-metadata";
-    metadata.append(
-      detailLine(document, messages.connectionErrorCode, item.error.code),
-      detailLine(document, messages.connectionRetryable, String(item.error.retryable)),
-    );
-    if (item.error.stage) {
-      metadata.append(detailLine(document, messages.connectionFailureStage, item.error.stage));
-    }
-    if (item.error.durationMs !== undefined) {
-      metadata.append(
-        detailLine(document, messages.connectionDuration, `${item.error.durationMs} ms`),
-      );
-    }
-    if (item.error.diagnostic) {
-      metadata.append(detailLine(document, messages.connectionDiagnostic, item.error.diagnostic));
-    }
-
     const logHeader = document.createElement("div");
     logHeader.className = "settings-connection-error-log-header";
     const logTitle = document.createElement("strong");
@@ -554,7 +525,7 @@ function renderConnectionInspector(
     logHeader.append(logTitle, copy);
     const log = document.createElement("pre");
     log.className = "settings-connection-stderr";
-    log.textContent = item.error.stderrTail ?? item.error.diagnostic ?? report;
+    log.textContent = report;
 
     const actions = document.createElement("div");
     actions.className = "settings-connection-error-actions";
@@ -568,7 +539,7 @@ function renderConnectionInspector(
     const issueNote = document.createElement("p");
     issueNote.className = "settings-connection-issue-note";
     issueNote.textContent = messages.connectionIssueDescription;
-    body.append(summary, metadata, logHeader, log, actions, issueNote);
+    body.append(summary, logHeader, log, actions, issueNote);
   } else {
     const status = document.createElement("div");
     status.className = "settings-connection-state-summary";

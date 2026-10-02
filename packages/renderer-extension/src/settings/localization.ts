@@ -154,12 +154,7 @@ export interface RendererSettingsMessages {
   readonly connectionCopyDetails: string;
   readonly connectionCopied: string;
   readonly connectionCopyFailed: string;
-  readonly connectionErrorCode: string;
   readonly connectionErrorMessage: string;
-  readonly connectionRetryable: string;
-  readonly connectionFailureStage: string;
-  readonly connectionDuration: string;
-  readonly connectionDiagnostic: string;
   readonly connectionNoRuntime: string;
   readonly connectionStatusReady: string;
   readonly connectionStatusConnected: string;
@@ -427,12 +422,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionCopyDetails: "Copy diagnostics",
   connectionCopied: "Copied",
   connectionCopyFailed: "Copy failed",
-  connectionErrorCode: "Error code",
   connectionErrorMessage: "Error message",
-  connectionRetryable: "Retryable",
-  connectionFailureStage: "Failure stage",
-  connectionDuration: "Duration",
-  connectionDiagnostic: "Diagnostic",
   connectionNoRuntime: "The renderer request bridge is not available yet.",
   connectionStatusReady: "Ready",
   connectionStatusConnected: "Connected",
@@ -725,12 +715,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionCopyDetails: "复制诊断信息",
   connectionCopied: "已复制",
   connectionCopyFailed: "复制失败",
-  connectionErrorCode: "错误码",
   connectionErrorMessage: "错误信息",
-  connectionRetryable: "可重试",
-  connectionFailureStage: "失败阶段",
-  connectionDuration: "检查耗时",
-  connectionDiagnostic: "诊断信息",
   connectionNoRuntime: "Renderer 请求桥尚未可用。",
   connectionStatusReady: "正常",
   connectionStatusConnected: "已连接",

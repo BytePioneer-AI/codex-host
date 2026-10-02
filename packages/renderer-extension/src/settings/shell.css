@@ -1312,33 +1312,6 @@
   border-radius: 10px;
 }
 
-.settings-connection-error-metadata {
-  display: grid;
-  gap: 7px;
-  padding: 12px;
-  background: var(--settings-inset);
-  border: 1px solid var(--settings-border);
-  border-radius: 9px;
-}
-
-.settings-connection-detail-line {
-  display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  gap: 10px;
-  min-width: 0;
-  color: var(--settings-muted);
-  font-size: 10px;
-  line-height: 16px;
-}
-
-.settings-connection-detail-line code {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--settings-text);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  white-space: pre-wrap;
-}
-
 .settings-connection-error-log-header {
   display: flex;
   align-items: center;

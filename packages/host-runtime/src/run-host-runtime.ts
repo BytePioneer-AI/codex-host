@@ -78,6 +78,22 @@ export function hasLauncherManagedUpdateRuntime(
   return path.relative(path.normalize(npmPackageRoot), runtimePackageRoot) === "";
 }
 
+/**
+ * Only a packaged entry passes its own URL, so only it has distribution metadata
+ * for application updates. Runtime maintenance also works from a source launch,
+ * where the Launcher exports the path instead.
+ */
+export function resolveHostRuntimePaths(input: {
+  environment: NodeJS.ProcessEnv;
+  hostRuntimeUrl?: string;
+}): { packaged: string | undefined; maintenance: string | undefined } {
+  const packaged = input.hostRuntimeUrl ? fileURLToPath(input.hostRuntimeUrl) : undefined;
+  return {
+    packaged,
+    maintenance: packaged ?? input.environment.CODEXHOST_HOST_RUNTIME_PATH,
+  };
+}
+
 function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
   stockCodexPath: string;
   defaultAgent: "codex" | "pi";
@@ -179,12 +195,11 @@ export async function runHostRuntime(input: {
   updateCoordinator?: HostUpdateCoordinator;
 }): Promise<number> {
   const { stockCodexPath, defaultAgent } = requiredRuntimeConfiguration(input.environment);
-  const hostRuntimePath = input.hostRuntimeUrl
-    ? fileURLToPath(input.hostRuntimeUrl)
-    : input.environment.CODEXHOST_HOST_RUNTIME_PATH;
-  const runtimeMaintenance = hostRuntimePath
+  const { packaged: hostRuntimePath, maintenance: maintenanceRuntimePath } =
+    resolveHostRuntimePaths(input);
+  const runtimeMaintenance = maintenanceRuntimePath
     ? new RuntimeMaintenance({
-        runtimePath: hostRuntimePath,
+        runtimePath: maintenanceRuntimePath,
         remote: isRemoteUnixListenerInvocation(input.arguments),
         environment: input.environment,
       })

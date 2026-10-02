@@ -53,13 +53,17 @@ fn script(request: &Request) -> Result<String, Box<dyn Error>> {
     // each other's listener for a while, outlasting the start command's own wait. What matters
     // is that a managed service ends up running, so look again before reporting a failed start.
     let started = "{ sleep 20; codexhost remote status 2>/dev/null | grep -q '\"protocol\": \"codexhost\"'; } || { sleep 20; codexhost remote status 2>/dev/null | grep -q '\"protocol\": \"codexhost\"'; }";
+    // One installation at a time. A dropped connection can kill the script before it releases
+    // the lock, and nothing else would ever remove it, so a lock older than any run can last
+    // (runs are limited to five minutes) is taken over.
+    let lock = "mkdir -p \"$HOME/.codexhost\"; L=\"$HOME/.codexhost/ssh-setup.lock\"; mkdir \"$L\" 2>/dev/null || { [ -n \"$(find \"$L\" -maxdepth 0 -mmin +15 2>/dev/null)\" ] && rmdir \"$L\" 2>/dev/null && mkdir \"$L\" 2>/dev/null; } || exit 49; trap 'rmdir \"$L\"' EXIT; ";
     let probe = "if [ -f \"$HOME/.codexhost/remote/manifest.json\" ]; then printf installed; else printf not-installed; fi";
     match request.action.as_str() {
         "inspect" => Ok(probe.into()),
         "install" => {
             let version = release_version(request)?;
             Ok(format!(
-                "{node}set -e; mkdir -p \"$HOME/.codexhost\"; mkdir \"$HOME/.codexhost/ssh-setup.lock\" 2>/dev/null || exit 49; trap 'rmdir \"$HOME/.codexhost/ssh-setup.lock\"' EXIT; [ ! -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 43; case $(uname -s) in Darwin|Linux) ;; *) exit 44;; esac; command -v node >/dev/null && command -v npm >/dev/null && command -v codex >/dev/null || exit 45; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || exit 46; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf installed"
+                "{node}set -e; {lock}[ ! -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 43; case $(uname -s) in Darwin|Linux) ;; *) exit 44;; esac; command -v node >/dev/null && command -v npm >/dev/null && command -v codex >/dev/null || exit 45; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || exit 46; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf installed"
             ))
         }
         // For services too old to update themselves. A newer CLI refuses to stop an installation
@@ -68,13 +72,13 @@ fn script(request: &Request) -> Result<String, Box<dyn Error>> {
         "update" => {
             let version = release_version(request)?;
             Ok(format!(
-                "{node}set -e; mkdir -p \"$HOME/.codexhost\"; mkdir \"$HOME/.codexhost/ssh-setup.lock\" 2>/dev/null || exit 49; trap 'rmdir \"$HOME/.codexhost/ssh-setup.lock\"' EXIT; [ -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 52; command -v node >/dev/null && command -v npm >/dev/null || exit 45; npm view @codexhost/cli@{version} version --fetch-retries=0 --fetch-timeout=30000 >/dev/null 2>&1 || exit 53; if command -v codexhost >/dev/null; then codexhost remote stop >/dev/null 2>&1 || true; fi; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || {{ codexhost remote start >/dev/null 2>&1 || true; exit 46; }}; command -v codexhost >/dev/null || exit 54; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf installed"
+                "{node}set -e; {lock}[ -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 52; command -v node >/dev/null && command -v npm >/dev/null || exit 45; npm view @codexhost/cli@{version} version --fetch-retries=0 --fetch-timeout=30000 >/dev/null 2>&1 || exit 53; if command -v codexhost >/dev/null; then codexhost remote stop >/dev/null 2>&1 || true; fi; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || {{ codexhost remote start >/dev/null 2>&1 || true; exit 46; }}; command -v codexhost >/dev/null || exit 54; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf installed"
             ))
         }
         // A damaged installation is exactly what the CLI refuses to stop, so the first stop is
         // best effort; once the installation is rewritten, the second one must succeed.
         "repair" => Ok(format!(
-            "{node}set -e; command -v codexhost >/dev/null || exit 45; mkdir -p \"$HOME/.codexhost\"; mkdir \"$HOME/.codexhost/ssh-setup.lock\" 2>/dev/null || exit 49; trap 'rmdir \"$HOME/.codexhost/ssh-setup.lock\"' EXIT; codexhost remote stop >/dev/null 2>&1 || true; codexhost remote uninstall >/dev/null 2>&1 || exit 51; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf installed"
+            "{node}set -e; command -v codexhost >/dev/null || exit 45; {lock}codexhost remote stop >/dev/null 2>&1 || true; codexhost remote uninstall >/dev/null 2>&1 || exit 51; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf installed"
         )),
         _ => Err("Unknown SSH action".into()),
     }
@@ -244,6 +248,34 @@ mod tests {
             .output()
             .unwrap();
         assert!(loaded.status.success());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn takes_over_a_lock_left_by_an_interrupted_run() {
+        let root = std::env::temp_dir().join(format!("codexhost-ssh-lock-{}", std::process::id()));
+        let lock = root.join(".codexhost/ssh-setup.lock");
+        std::fs::create_dir_all(&lock).unwrap();
+        let mut r = request();
+        r.action = "repair".into();
+        let mocks = "codexhost(){ :; }; ";
+        let run = || {
+            Command::new("/bin/sh")
+                .args(["-c", &format!("{mocks}{}", script(&r).unwrap())])
+                .env("HOME", &root)
+                .output()
+                .unwrap()
+        };
+        // A lock that could belong to a run still in progress is respected.
+        assert_eq!(run().status.code(), Some(49));
+        assert!(lock.exists());
+        let stale = std::time::SystemTime::now() - Duration::from_secs(20 * 60);
+        std::fs::File::open(&lock)
+            .unwrap()
+            .set_modified(stale)
+            .unwrap();
+        assert!(run().status.success());
+        assert!(!lock.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

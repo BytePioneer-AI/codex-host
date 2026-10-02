@@ -22,7 +22,9 @@ export async function resolveDesktopEndpoint(
   if (mode === "auto") {
     // The Desktop-installed public CLI resolves through its installation symlink.
     const resolved = await realpath(command).catch(() => "");
-    if (!/\.app\/Contents\/Resources\/runtime\/cli\/bin\/dsh$/u.test(resolved)) {
+    if (
+      !/\.app\/Contents\/Resources\/runtime\/cli\/bin\/dsh$/u.test(resolved.replaceAll("\\", "/"))
+    ) {
       return undefined;
     }
   }

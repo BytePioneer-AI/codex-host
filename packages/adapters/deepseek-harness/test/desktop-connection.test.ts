@@ -1,5 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import type * as FileSystemPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +8,11 @@ import { stringify } from "yaml";
 
 import { desktopCookieSigner, resolveDesktopEndpoint } from "../src/desktop-connection.js";
 import { ModernRemoteConnection } from "../src/modern/remote-connection.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FileSystemPromises>();
+  return { ...actual, realpath: vi.fn(actual.realpath) };
+});
 
 const endpoint = "http://127.0.0.1:19387/";
 const secret = Buffer.alloc(32, 7);
@@ -32,6 +38,13 @@ async function writeGrant(payload: unknown = { version: 1, secret: secret.toStri
 }
 
 describe("DeepSeek Desktop connection", () => {
+  it("recognizes a Desktop CLI resolved with Windows path separators", async () => {
+    vi.mocked(realpath).mockResolvedValueOnce(
+      String.raw`C:\Apps\DeepSeek Harness.app\Contents\Resources\runtime\cli\bin\dsh`,
+    );
+    expect(await resolveDesktopEndpoint("dsh")).toBe(endpoint);
+  });
+
   it("recognizes the Desktop-installed CLI through its symlink and respects web override", async () => {
     const cli = path.join(home, "DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh");
     await mkdir(path.dirname(cli), { recursive: true });

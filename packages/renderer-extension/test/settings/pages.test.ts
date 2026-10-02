@@ -11,7 +11,7 @@ import {
   type UpdateCheckResult,
   type UpdateStatus,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/settings/icons.js", () => ({
   createRendererSettingsIcon: () => ({ classList: { add() {} } }),
@@ -825,7 +825,7 @@ describe("Harness CLI version panel", () => {
     expect(manual.button("update").disabled).toBe(true);
     manual.abort.abort();
   });
-  it("shows native manual-update guidance without claiming an unknown latest version is current", async () => {
+  it("shows localized manual-update guidance without claiming an unknown latest version is current", async () => {
     const { panel, button, abort } = mount(async () => ({
       ...state,
       latestVersion: "Unknown",
@@ -833,7 +833,8 @@ describe("Harness CLI version panel", () => {
       canUpdate: false,
       message: "This installation belongs to its desktop app.",
     }));
-    await vi.waitFor(() => expect(visibleText(panel)).toContain("belongs to its desktop app"));
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("original installer"));
+    expect(visibleText(panel)).not.toContain("belongs to its desktop app");
     expect(button("update").textContent).toBe("Update");
     expect(button("update").disabled).toBe(true);
     abort.abort();
@@ -878,7 +879,8 @@ describe("Harness installation actions", () => {
         ({ dataset }) => dataset.connectionAction === "install",
       );
       expect(installs).toHaveLength(1);
-      const install = installs[0]!;
+      const install = installs[0];
+      assert(install);
       expect(install.textContent).toBe("一键安装");
       if (agent === "codebuddy") {
         const actions = elementWithClass(panel, "settings-harness-installation-actions");
@@ -911,7 +913,8 @@ describe("Harness installation actions", () => {
       ) as unknown as FakeElement;
       const install = descendants(panel).find(
         ({ dataset }) => dataset.connectionAction === "install",
-      )!;
+      );
+      assert(install);
       expect(install.disabled).toBe(true);
       install.dispatch("click");
       expect(run).not.toHaveBeenCalled();
@@ -1182,7 +1185,8 @@ describe("Renderer Connections page", () => {
         messages,
         () => null,
         () => diagnostics,
-      ).find(({ id }) => id === "connections")!;
+      ).find(({ id }) => id === "connections");
+      assert(page);
       const document = new FakeDocument();
       const content = document.createElement("main");
       const scope = new RendererSettingsPageScope();
@@ -1191,7 +1195,8 @@ describe("Renderer Connections page", () => {
         signal: scope.signal,
         runLatest: (op, handlers) => scope.runLatest(op, handlers),
       });
-      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent)!;
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      assert(row);
       expect(visibleText(row)).toContain(messages.connectionLoginRequired);
       row.dispatch("click", { target: null });
       expect(
@@ -1301,7 +1306,8 @@ describe("Renderer Connections page", () => {
         messages,
         () => null,
         () => diagnostics,
-      ).find(({ id }) => id === "connections")!;
+      ).find(({ id }) => id === "connections");
+      assert(page);
       const document = new FakeDocument();
       const content = document.createElement("main");
       const scope = new RendererSettingsPageScope();
@@ -1310,7 +1316,8 @@ describe("Renderer Connections page", () => {
         signal: scope.signal,
         runLatest: (op, handlers) => scope.runLatest(op, handlers),
       });
-      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "omp")!;
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "omp");
+      assert(row);
       expect(visibleText(row)).toContain(messages.connectionConfigurationRequired);
       expect(visibleText(row)).not.toContain(messages.connectionLoginRequired);
       row.dispatch("click", { target: null });

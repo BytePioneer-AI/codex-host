@@ -9,9 +9,10 @@ import * as globalSdk from "@qoder-ai/qoder-agent-sdk";
 import * as cnSdk from "@qodercn-ai/qodercn-agent-sdk";
 import { QoderAdapter } from "../src/qoder-adapter.js";
 import { checkQoderLogin } from "../src/qoder-login-check.js";
+import type * as QoderLoginCheck from "../src/qoder-login-check.js";
 
 vi.mock("../src/qoder-login-check.js", async (original) => ({
-  ...(await original<typeof import("../src/qoder-login-check.js")>()),
+  ...(await original<typeof QoderLoginCheck>()),
   checkQoderLogin: vi.fn(async () => false),
 }));
 import { resolveQoderExecutable } from "../src/qoder-command.js";

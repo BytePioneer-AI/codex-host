@@ -322,7 +322,12 @@ function createConnectionRow(
   status.className = "settings-connection-row__status";
   status.dataset.connectionTone = connectionStatusTone(item.availability, item.error !== null);
   status.setAttribute("role", "cell");
-  status.textContent = connectionStatusLabel(item.availability, messages, item.error !== null);
+  status.textContent =
+    item.error?.code === "authenticationRequired"
+      ? messages.connectionLoginRequired
+      : item.error?.code === "configurationRequired"
+        ? messages.connectionConfigurationRequired
+        : connectionStatusLabel(item.availability, messages, item.error !== null);
 
   const action = document.createElement("div");
   action.className = "settings-connection-row__action";
@@ -422,9 +427,13 @@ function createInspectorHeader(
   status.className = "settings-connection-row__status";
   status.dataset.connectionTone = connectionStatusTone(item.availability, item.error !== null);
   status.textContent =
-    item.agentSnapshot && item.availability === "ready" && !item.error
-      ? messages.connectionStatusConnected
-      : connectionStatusLabel(item.availability, messages, item.error !== null);
+    item.error?.code === "authenticationRequired"
+      ? messages.connectionLoginRequired
+      : item.error?.code === "configurationRequired"
+        ? messages.connectionConfigurationRequired
+        : item.agentSnapshot && item.availability === "ready" && !item.error
+          ? messages.connectionStatusConnected
+          : connectionStatusLabel(item.availability, messages, item.error !== null);
   header.append(identity, status);
   return header;
 }
@@ -491,9 +500,19 @@ function renderConnectionInspector(
     const summary = document.createElement("div");
     summary.className = "settings-connection-error-summary";
     const title = document.createElement("strong");
-    title.textContent = messages.connectionErrorTitle;
+    const needsLogin = item.error.code === "authenticationRequired";
+    const needsConfiguration = item.error.code === "configurationRequired";
+    title.textContent = needsLogin
+      ? messages.connectionLoginRequired
+      : needsConfiguration
+        ? messages.connectionConfigurationRequired
+        : messages.connectionErrorTitle;
     const description = document.createElement("p");
-    description.textContent = item.error.message;
+    description.textContent = needsLogin
+      ? `${messages.connectionLoginDescription} ${item.error.message}`
+      : needsConfiguration
+        ? `${messages.connectionConfigurationDescription} ${item.error.message}`
+        : item.error.message;
     summary.append(title, description);
 
     const metadata = document.createElement("div");

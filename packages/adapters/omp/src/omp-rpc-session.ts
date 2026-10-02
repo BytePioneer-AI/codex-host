@@ -534,6 +534,10 @@ export class OmpRpcSession {
   #manualCompaction: ManualCompaction | null = null;
   #stderrTail = "";
   #frameDecoder = new OmpFrameDecoder();
+  #startupFaultResolve: ((error: OmpRpcFaultError) => void) | null = null;
+  readonly #startupFault = new Promise<OmpRpcFaultError>((resolve) => {
+    this.#startupFaultResolve = resolve;
+  });
   #readyResolve: (() => void) | null = null;
   readonly #ready = new Promise<void>((resolve) => {
     this.#readyResolve = resolve;
@@ -623,15 +627,23 @@ export class OmpRpcSession {
         ),
       ),
     ]);
-    await Promise.race([
-      this.#ready,
-      new Promise<never>((_resolve, reject) =>
-        setTimeout(
-          () => reject(new Error("Omp RPC ready signal timed out")),
-          this.#options.commandTimeoutMs,
-        ),
-      ),
-    ]);
+    let readyTimeout: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.#ready,
+        this.#startupFault.then((error) => {
+          throw error;
+        }),
+        new Promise<never>((_resolve, reject) => {
+          readyTimeout = setTimeout(
+            () => reject(new Error("Omp RPC ready signal timed out")),
+            this.#options.commandTimeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(readyTimeout);
+    }
     await this.#send("negotiate_protocol", { protocolVersion: 2 }).catch(() => undefined);
     // OMP servers gate subagent lifecycle/progress/event frames behind an explicit
     // subscription that defaults to "off". Subscribe during startup so native
@@ -1723,6 +1735,8 @@ export class OmpRpcSession {
   #fail(error: OmpRpcFaultError): void {
     if (this.#closed || this.#failed) return;
     this.#failed = true;
+    this.#startupFaultResolve?.(error);
+    this.#startupFaultResolve = null;
     this.#rejectAll(error);
     this.#options.onFault?.(error);
   }

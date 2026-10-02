@@ -8,6 +8,12 @@ import {
 import * as globalSdk from "@qoder-ai/qoder-agent-sdk";
 import * as cnSdk from "@qodercn-ai/qodercn-agent-sdk";
 import { QoderAdapter } from "../src/qoder-adapter.js";
+import { checkQoderLogin } from "../src/qoder-login-check.js";
+
+vi.mock("../src/qoder-login-check.js", async (original) => ({
+  ...(await original<typeof import("../src/qoder-login-check.js")>()),
+  checkQoderLogin: vi.fn(async () => false),
+}));
 import { resolveQoderExecutable } from "../src/qoder-command.js";
 import type { QoderQuery, SDKMessage, SessionMessage } from "../src/qoder-sdk-types.js";
 
@@ -107,6 +113,50 @@ for (const v of variants)
       adapters.push(adapter);
       return { adapter, query, resolveExecutable };
     }
+    it.each([
+      ["Not logged in. Run login to authenticate.", "authenticationRequired"],
+      ["connection reset by peer", "nativeFailure"],
+      ["", "nativeFailure"],
+    ])("classifies inspection stderr %j as %s", async (stderr, code) => {
+      const { adapter, query } = setup();
+      query.getAvailableModels.mockRejectedValue(new Error("Transport closed"));
+      vi.mocked(v.sdk.query).mockImplementation((input) => {
+        input.options?.stderr?.(stderr.slice(0, 5));
+        input.options?.stderr?.(stderr.slice(5));
+        return query as unknown as ReturnType<typeof v.sdk.query>;
+      });
+      const result = await adapter.inspect();
+      expect(result).toMatchObject({ status: "unavailable", error: { code } });
+      if (code === "authenticationRequired") {
+        expect(result).toMatchObject({
+          error: { message: `Please run ${v.command} login to authenticate.` },
+        });
+      }
+      expect(query.close).toHaveBeenCalledOnce();
+    });
+
+    it("uses a native login diagnostic after an ambiguous transport failure", async () => {
+      const { adapter, query } = setup();
+      query.getAvailableModels.mockRejectedValue(new Error("Transport closed"));
+      vi.mocked(checkQoderLogin).mockResolvedValue(true);
+      expect(await adapter.inspect()).toMatchObject({
+        status: "unavailable",
+        error: { code: "authenticationRequired" },
+      });
+      expect(checkQoderLogin).toHaveBeenCalledWith(
+        v.command,
+        { QODER_SDK_CUSTOM_BASE_URL_BYOK: "1" },
+        undefined,
+      );
+    });
+
+    it("does not use CLI login state to diagnose token authentication", async () => {
+      const { adapter, query } = setup({ [v.token]: "test-token" });
+      query.getAvailableModels.mockRejectedValue(new Error("Transport closed"));
+      expect(await adapter.inspect()).toMatchObject({ error: { code: "nativeFailure" } });
+      expect(checkQoderLogin).not.toHaveBeenCalled();
+    });
+
     const ref = (id = v.id as string) =>
       nativeSessionRefSchema.parse({ harnessId: id, nativeSessionId: "source", formatVersion: 1 });
     const checkpoint = (id = v.id as string) =>

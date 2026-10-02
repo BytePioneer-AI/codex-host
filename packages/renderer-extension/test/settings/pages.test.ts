@@ -1066,6 +1066,178 @@ describe("Renderer Connections page", () => {
     },
   );
 
+  it.each(["zh-CN", "en"] as const)(
+    "shows authentication errors as login required (%s)",
+    (locale) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent: "qoder-cn",
+                  availability: "unavailable",
+                  error: {
+                    code: "authenticationRequired",
+                    message: "Please run qoderclicn login to authenticate.",
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections")!;
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(
+        ({ dataset }) => dataset.connectionItem === "qoder-cn",
+      )!;
+      expect(visibleText(row)).toContain(messages.connectionLoginRequired);
+      row.dispatch("click", { target: null });
+      expect(
+        visibleText(elementWithClass(content, "settings-connection-inspector__header")),
+      ).toContain(messages.connectionLoginRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionLoginDescription);
+      expect(visibleText(summary)).toContain("qoderclicn login");
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["zh-CN", "en"] as const)(
+    "shows missing Hermes configuration separately from login (%s)",
+    (locale) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent: "hermes",
+                  availability: "unavailable",
+                  error: {
+                    code: "configurationRequired",
+                    message: "Run `hermes setup`.",
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      if (!page) throw new Error("Expected connections page");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "hermes");
+      if (!row) throw new Error("Expected Hermes row");
+      expect(visibleText(row)).toContain(messages.connectionConfigurationRequired);
+      row.dispatch("click", { target: null });
+      expect(
+        visibleText(elementWithClass(content, "settings-connection-inspector__header")),
+      ).toContain(messages.connectionConfigurationRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionConfigurationDescription);
+      expect(visibleText(summary)).toContain("hermes setup");
+      expect(visibleText(summary)).not.toContain(messages.connectionLoginRequired);
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["zh-CN", "en"] as const)(
+    "shows OMP model setup errors without a login status (%s)",
+    (locale) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent: "omp",
+                  availability: "error",
+                  error: {
+                    code: "configurationRequired",
+                    message: "Configure a Provider API key and select a model with /model.",
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections")!;
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "omp")!;
+      expect(visibleText(row)).toContain(messages.connectionConfigurationRequired);
+      expect(visibleText(row)).not.toContain(messages.connectionLoginRequired);
+      row.dispatch("click", { target: null });
+      const header = elementWithClass(content, "settings-connection-inspector__header");
+      expect(visibleText(header)).toContain(messages.connectionConfigurationRequired);
+      expect(visibleText(header)).not.toContain(messages.connectionLoginRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionConfigurationDescription);
+      expect(visibleText(summary)).toContain("Provider API key");
+      expect(visibleText(summary)).not.toContain(messages.connectionLoginRequired);
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
   it.each(["workbuddy"] as const)(
     "edits %s launch settings in the local right-side inspector",
     async (agent) => {

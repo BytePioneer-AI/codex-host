@@ -158,6 +158,10 @@ export interface RendererSettingsMessages {
   readonly connectionNoRuntime: string;
   readonly connectionStatusReady: string;
   readonly connectionStatusConnected: string;
+  readonly connectionLoginRequired: string;
+  readonly connectionConfigurationRequired: string;
+  readonly connectionConfigurationDescription: string;
+  readonly connectionLoginDescription: string;
   readonly connectionStatusChecking: string;
   readonly connectionStatusNotInstalled: string;
   readonly connectionStatusUnavailable: string;
@@ -426,6 +430,12 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionNoRuntime: "The renderer request bridge is not available yet.",
   connectionStatusReady: "Ready",
   connectionStatusConnected: "Connected",
+  connectionLoginRequired: "Login required",
+  connectionConfigurationRequired: "Setup required",
+  connectionConfigurationDescription:
+    "Configure a Provider and its required credentials in this Harness on the selected Host, then check the connection again.",
+  connectionLoginDescription:
+    "Complete login or authentication setup in this Harness on the selected Host, then check the connection again.",
   connectionStatusChecking: "Checking",
   connectionStatusNotInstalled: "Not installed",
   connectionStatusUnavailable: "Unavailable",
@@ -717,6 +727,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionNoRuntime: "Renderer 请求桥尚未可用。",
   connectionStatusReady: "正常",
   connectionStatusConnected: "已连接",
+  connectionLoginRequired: "需要登录",
+  connectionConfigurationRequired: "需要配置",
+  connectionConfigurationDescription:
+    "请在所选 Host 上配置该 Harness 的 Provider 及所需认证信息，然后重新检测连接。",
+  connectionLoginDescription: "请在所选 Host 上完成该 Harness 的登录或认证配置，然后重新检测连接。",
   connectionStatusChecking: "检查中",
   connectionStatusNotInstalled: "未安装",
   connectionStatusUnavailable: "不可用",

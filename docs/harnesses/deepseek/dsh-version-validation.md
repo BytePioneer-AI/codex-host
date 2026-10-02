@@ -2,6 +2,22 @@
 
 本文记录 codexhost 支持哪些 DSH（`@deepseek-ai/dsh`）版本、每个版本的验证证据，以及尚未验证的边界。协议与显示行为见[消息修订、恢复与原生停止确认](dsh-edit-recovery.md)。
 
+## DeepSeek Desktop 连接
+
+macOS 上，Adapter 解析 `dsh` 的真实路径。指向桌面安装包 `*.app/Contents/Resources/runtime/cli/bin/dsh` 时，默认连接已经运行的 DeepSeek Desktop Host（`http://127.0.0.1:19387/`），不再启动单独的 `web` profile。因此使用 Desktop 原生的插件、权限、模型配置、登录状态和 Session Store。桌面应用须先启动；连接失败会明确报错，不回退到 Web profile。
+
+`CODEXHOST_DEEPSEEK_HARNESS_CONNECTION_MODE` 可设置为 `auto`（默认）、`desktop` 或 `web`。普通 npm/npx CLI 在 `auto` 下继续使用托管 Web；其他平台或非标准安装可显式选择 `desktop`。`CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT` 在 Desktop 模式覆盖本机端点，仍只允许无凭据、无查询参数的 loopback 根地址。命令覆盖仍由 `CODEXHOST_DEEPSEEK_HARNESS_COMMAND` 提供。
+
+本地连接页的 DeepSeek 详情提供 `auto`、`desktop`、`web` 连接模式，默认显示 `auto`，选择后按 Host 数据目录自动保存，重启 codexhost 生效；当前运行中的会话保持原连接。已保存的连接模式优先于上述模式环境变量，未保存时沿用环境变量或默认自动识别。此设置经插件公开构造上下文传入 Adapter，Host 不参与原生连接策略。
+
+Desktop 连接使用 DSH `client-connection` 的原生签名 Cookie 协议：只读 `$DSH_HOME/.credentials.yaml`（默认 `~/.dsh/.credentials.yaml`）中的 `client-connection/browser-session` grant，校验文件权限、文档版本与 32 字节签名密钥。每次 HTTP 请求或 WebSocket 握手签发绑定目标 authority 的一小时 Cookie；不提取或使用模型 API Key，不改写 credential store，也不使用 Desktop 的一次性启动 token。自定义 credential provider/path 不在当前自动认证范围内。Cookie 和签名密钥仅保留在 Adapter 内存，不进入 Renderer、Session Ref 或诊断。
+
+Desktop 项目分组使用原生 `workspace/create({ request: { path: cwd } })` 按真实目录解析已有 Workspace，或在不存在时创建。保留已有标题，不按项目显示名匹配。新 Session 通过 `session/create` 的 `workspaceId` 参数关联分组，不能同时传 `cwd`；会话 journal 使用原生返回的规范路径。恢复旧的未分组会话时，先验证其原生 journal，再检查 Workspace 成员；缺少关联时用原生 `session/create` 的既有身份 adopt 语义补关联，不传新的 agent preset，不替换历史。已经属于分组的会话跳过 adopt，保留顺序。Fork 延续原生 Workspace 继承规则。
+
+原生依据为本机 DeepSeek Desktop `0.2.0-rc.2`（build commit `5e9e301d`）的 `dsh-desktop-host`、`dsh-client-connection` 与 `dsh-credentials-local`。CLI 不允许直接启动 `desktop` profile；连接现有 Desktop Host 保留这个所有权限制。Adapter 关闭时只关闭自己的流，不停止桌面应用或它的 Host。Desktop 的“打开 Web UI”启动 token 不对外发布，故此连接不提供 Web UI handoff。
+
+本机已验证 Desktop 认证、模型目录、`$events` 原生流与已加载插件的 Host `inspect()`；重启后 Codex Renderer 状态为 installed。未调用真实计费模型，也未验证 Desktop GUI 中发送消息的完整流程。聚焦测试覆盖 CLI symlink 识别、显式模式、端点约束、签名与续期、非法 grant、文件权限、原生 RPC、认证拒绝以及不启动/终止 Desktop 进程。其他 Desktop 版本及 Windows/Linux 桌面安装的自动识别尚未验证。
+
 ## 自动压缩链路
 
 自动压缩的阈值、工具结果修剪、摘要、上下文替换和溢出重试由 DSH 原生 `compaction-basic` 所有，Host 不发送额外 `/compact`，也不调用 Codex 的远程压缩接口。

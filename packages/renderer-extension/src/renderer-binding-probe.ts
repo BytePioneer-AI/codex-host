@@ -2523,10 +2523,14 @@ export function installRendererBindingProbe(
       if (!client?.getHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
       return client.getHarnessLaunchSettings({ harnessId: externalHarnessIds[agent] });
     },
-    async setLaunchSettings(hostId, agent, path) {
+    async setLaunchSettings(hostId, agent, path, connectionMode) {
       const client = hostId === "local" ? modelClientForHost(hostId) : null;
       if (!client?.setHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
-      return client.setHarnessLaunchSettings({ harnessId: externalHarnessIds[agent], path });
+      return client.setHarnessLaunchSettings({
+        harnessId: externalHarnessIds[agent],
+        ...(path === undefined ? {} : { path }),
+        ...(connectionMode ? { connectionMode } : {}),
+      });
     },
     async openWebUi(hostId: string, agent: ExternalRendererAgent): Promise<void> {
       const state = hostHarnessAvailabilityState(hostId);

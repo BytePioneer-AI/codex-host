@@ -19,6 +19,7 @@ vi.mock("../../src/settings/icons.js", () => ({
 }));
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
+import { createHarnessConnectionControls } from "../../src/settings/harness-connection-controls.js";
 import {
   RENDERER_UPDATE_REQUEST_TIMEOUT_MS,
   RendererUpdateRequestTimeoutError,
@@ -923,6 +924,118 @@ describe("Harness installation actions", () => {
 });
 
 describe("Renderer Connections page", () => {
+  it.each(["zh-CN", "en"] as const)(
+    "saves DeepSeek connection modes and restores the last value after failure (%s)",
+    async (locale) => {
+      const messages = rendererSettingsMessages(locale);
+      const document = new FakeDocument();
+      const get = vi.fn(async () => ({ path: null, restartRequired: false }));
+      const set = vi.fn(async (connectionMode: "auto" | "desktop" | "web") => ({
+        path: null,
+        connectionMode,
+        restartRequired: true,
+      }));
+      const section = createHarnessConnectionControls(document as unknown as Document, messages, {
+        get,
+        set,
+      }) as unknown as FakeElement;
+      const select = descendants(section).find(({ tagName }) => tagName === "select");
+      assert(select);
+      expect(select.value).toBe("auto");
+      expect(select.disabled).toBe(true);
+      expect(
+        descendants(select)
+          .filter(({ tagName }) => tagName === "option")
+          .map(({ value }) => value),
+      ).toEqual(["auto", "desktop", "web"]);
+      await vi.waitFor(() => expect(select.disabled).toBe(false));
+      for (const mode of ["desktop", "web", "auto"] as const) {
+        select.value = mode;
+        select.dispatch("change");
+        select.dispatch("change");
+        expect(select.disabled).toBe(true);
+        await vi.waitFor(() => expect(select.disabled).toBe(false));
+        expect(set).toHaveBeenLastCalledWith(mode);
+        expect(visibleText(section)).toContain(messages.launchPathRestart);
+      }
+      expect(set).toHaveBeenCalledTimes(3);
+      set.mockRejectedValueOnce(new Error("not writable"));
+      select.value = "desktop";
+      select.dispatch("change");
+      await vi.waitFor(() => expect(select.disabled).toBe(false));
+      expect(select.value).toBe("auto");
+      expect(visibleText(section)).toContain(messages.connectionModeSaveError);
+    },
+  );
+
+  it("mounts connection controls only in the local DeepSeek inspector", async () => {
+    const messages = rendererSettingsMessages("zh-CN");
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: ["local", "remote-test"].map((hostId) => ({
+          hostId,
+          active: hostId === "local",
+          agents: [{ agent: "deepseek-harness", availability: "ready", error: null }],
+        })),
+      }),
+      refresh: vi.fn(async () => undefined),
+      getLaunchSettings: vi.fn(async () => ({
+        path: null,
+        connectionMode: "web" as const,
+        restartRequired: false,
+      })),
+      setLaunchSettings: vi.fn(async (_host, _agent, _path, connectionMode) => ({
+        path: null,
+        connectionMode,
+        restartRequired: true,
+      })),
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      messages,
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    assert(page);
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    try {
+      const row = descendants(content).find(
+        ({ dataset }) => dataset.connectionItem === "deepseek-harness",
+      );
+      assert(row);
+      row.dispatch("click", { target: null });
+      const select = descendants(content).find(({ tagName }) => tagName === "select");
+      assert(select);
+      await vi.waitFor(() => expect(select.disabled).toBe(false));
+      expect(select.value).toBe("web");
+      select.value = "desktop";
+      select.dispatch("change");
+      await vi.waitFor(() => expect(select.disabled).toBe(false));
+      expect(diagnostics.setLaunchSettings).toHaveBeenCalledWith(
+        "local",
+        "deepseek-harness",
+        undefined,
+        "desktop",
+      );
+      const remote = descendants(content).find(
+        ({ dataset }) => dataset.connectionHostTab === "remote-test",
+      );
+      assert(remote);
+      remote.dispatch("click");
+      expect(descendants(content).filter(({ tagName }) => tagName === "select")).toHaveLength(0);
+    } finally {
+      cleanup?.();
+      scope.dispose();
+    }
+  });
   it("places version controls in the selected Host's inspector and preserves them across diagnostics", async () => {
     const installation = vi.fn(async () => ({
       currentVersion: "1.0.0",

@@ -1,4 +1,6 @@
 import path from "node:path";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -99,6 +101,7 @@ class FakeConnection implements ModernConnectionLike {
     ok: true,
     value: { sessionId: "session-forked" },
   };
+  workspaceResult: ModernRemoteResult<unknown> | undefined;
   sessionListResult: ModernRemoteResult<unknown> = { ok: true, value: { items: [] } };
   forkResponse: Promise<ModernRemoteResult<unknown>> | undefined;
   cancelResponse: Promise<ModernRemoteResult<unknown>> | undefined;
@@ -148,6 +151,18 @@ class FakeConnection implements ModernConnectionLike {
                 details: {},
               },
             }) as ModernRemoteResult<T>,
+      );
+    }
+    if (endpoint === "workspace/create") {
+      const request = args.request as { path: string };
+      return Promise.resolve(
+        (this.workspaceResult ?? {
+          ok: true,
+          value: {
+            created: false,
+            workspace: { workspaceId: "existing-workspace", path: request.path, sessionIds: [] },
+          },
+        }) as ModernRemoteResult<T>,
       );
     }
     if (endpoint === "session/create") {
@@ -1459,6 +1474,269 @@ describe("Modern DeepSeek Harness Adapter", () => {
       "$events",
     ]);
     await opened.value.close();
+    await adapter.close();
+  });
+
+  it("creates Desktop Sessions in the native project Workspace instead of using a bare cwd", async () => {
+    const { adapter, connection } = setup(["created"], {
+      desktopEndpoint: "http://127.0.0.1:19387/",
+    });
+    const cwd = path.resolve("fixture-desktop-project");
+    connection.expectedCwds.set("session-created", cwd);
+    const opened = await adapter.open({ kind: "create", cwd });
+    expect(opened.ok).toBe(true);
+    expect(connection.calls).toContainEqual({
+      endpoint: "workspace/create",
+      args: { request: { path: cwd } },
+    });
+    expect(connection.calls).toContainEqual({
+      endpoint: "session/create",
+      args: { request: { sessionId: "session-created", workspaceId: "existing-workspace" } },
+    });
+    expect(
+      connection.calls.find(({ endpoint }) => endpoint === "session/create")?.args.request,
+    ).not.toHaveProperty("cwd");
+    if (opened.ok) await opened.value.close();
+    await adapter.close();
+  });
+
+  it.each([false, true])(
+    "restores Desktop grouping only when membership is missing: grouped=%s",
+    async (grouped) => {
+      const { adapter, connection } = setup([], { desktopEndpoint: "http://127.0.0.1:19387/" });
+      const cwd = path.resolve("fixture-desktop-resume");
+      const sessionId = "session-resumed";
+      connection.expectedCwds.set(sessionId, cwd);
+      connection.workspaceResult = {
+        ok: true,
+        value: {
+          created: false,
+          workspace: {
+            workspaceId: "existing-workspace",
+            path: cwd,
+            sessionIds: grouped ? [sessionId] : [],
+          },
+        },
+      };
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "deepseek-harness",
+          nativeSessionId: sessionId,
+          formatVersion: 1,
+          locator: { dshVersion: DSH_VERSION },
+        }),
+      });
+      expect(opened.ok).toBe(true);
+      const creations = connection.calls.filter(({ endpoint }) => endpoint === "session/create");
+      expect(creations).toHaveLength(grouped ? 0 : 1);
+      if (!grouped) {
+        expect(creations[0]?.args.request).toMatchObject({
+          sessionId,
+          workspaceId: "existing-workspace",
+        });
+        expect(connection.timeline.indexOf("session/follow")).toBeLessThan(
+          connection.timeline.indexOf("workspace/create"),
+        );
+      }
+      if (opened.ok) await opened.value.close();
+      await adapter.close();
+    },
+  );
+
+  it("uses the canonical Workspace path for a newly created Desktop Session journal", async () => {
+    const { adapter, connection } = setup(["created"], {
+      desktopEndpoint: "http://127.0.0.1:19387/",
+    });
+    const cwd = path.resolve("fixture-project-link");
+    const canonical = path.resolve("fixture-project-real");
+    connection.workspaceResult = {
+      ok: true,
+      value: {
+        created: true,
+        workspace: { workspaceId: "workspace-real", path: canonical, sessionIds: [] },
+      },
+    };
+    connection.expectedCwds.set("session-created", canonical);
+    const opened = await adapter.open({ kind: "create", cwd });
+    expect(opened.ok).toBe(true);
+    expect(connection.calls).toContainEqual({
+      endpoint: "workspace/create",
+      args: { request: { path: cwd } },
+    });
+    if (opened.ok) await opened.value.close();
+    await adapter.close();
+  });
+
+  it.each(["canonical", "alias"] as const)(
+    "resumes a Desktop Session through a directory alias with a %s journal path",
+    async (storedPath) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "dsh-resume-cwd-"));
+      const { adapter, connection } = setup(["created"], {
+        desktopEndpoint: "http://127.0.0.1:19387/",
+      });
+      try {
+        const project = path.join(directory, "project");
+        const cwd = path.join(directory, "alias");
+        await mkdir(project);
+        await symlink(project, cwd, process.platform === "win32" ? "junction" : "dir");
+        const canonical = await realpath(project);
+        connection.workspaceResult = {
+          ok: true,
+          value: {
+            created: false,
+            workspace: { workspaceId: "project", path: canonical, sessionIds: ["session-created"] },
+          },
+        };
+        connection.expectedCwds.set("session-created", canonical);
+        const created = await adapter.open({ kind: "create", cwd });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const nativeRef = created.value.initialState.nativeRef;
+        if (!nativeRef) throw new Error("missing created Session reference");
+        await created.value.close();
+        connection.expectedCwds.set(
+          "session-created",
+          storedPath === "canonical" ? canonical : cwd,
+        );
+        const resumed = await adapter.open({ kind: "resume", cwd, nativeRef });
+        expect(resumed.ok).toBe(true);
+        if (resumed.ok) await resumed.value.close();
+        expect(
+          connection.calls.filter(({ endpoint }) => endpoint === "session/create"),
+        ).toHaveLength(1);
+      } finally {
+        await adapter.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["fork", "rollbackLastTurn"] as const)(
+    "opens Desktop %s journals through a directory alias",
+    async (kind) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "dsh-fork-cwd-"));
+      const { adapter, connection } = setup([], { desktopEndpoint: "http://127.0.0.1:19387/" });
+      try {
+        const project = path.join(directory, "project");
+        const cwd = path.join(directory, "alias");
+        await mkdir(project);
+        await symlink(project, cwd, process.platform === "win32" ? "junction" : "dir");
+        const canonical = await realpath(project);
+        const sourceSessionId = "session-source";
+        const events = [
+          ...forkSourceEvents(),
+          ...(kind === "rollbackLastTurn"
+            ? [exactJournalEvent(7, "turn/end", { turn: 2, reason: { kind: "completed" } })]
+            : []),
+        ];
+        connection.journalSnapshots.set(
+          sourceSessionId,
+          exactJournalSnapshot({
+            sessionId: sourceSessionId,
+            cwd: canonical,
+            events,
+            headerAgentPreset: "minimal",
+            agentPreset: "minimal",
+          }),
+        );
+        connection.journalSnapshots.set(
+          "session-forked",
+          exactJournalSnapshot({
+            sessionId: "session-forked",
+            cwd: canonical,
+            parentSession: sourceSessionId,
+            headerAgentPreset: "minimal",
+            agentPreset: "minimal",
+            events: [
+              ...events.slice(0, 3),
+              exactJournalEvent(3, "session/end-seed", { inherited: true }),
+              exactJournalEvent(4, "sandbox/mode", { mode: "workspace-write" }),
+            ],
+          }),
+        );
+        const refs = forkRefs(sourceSessionId, 2);
+        const opened = await adapter.open(
+          kind === "fork" ? { kind, cwd, ...refs } : { kind, cwd, sourceRef: refs.sourceRef },
+        );
+        expect(opened.ok).toBe(true);
+        if (opened.ok) await opened.value.close();
+      } finally {
+        await adapter.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("rejects a Desktop journal from a different real directory before grouping it", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "dsh-mismatched-cwd-"));
+    const { adapter, connection } = setup([], { desktopEndpoint: "http://127.0.0.1:19387/" });
+    try {
+      const cwd = path.join(directory, "project");
+      const other = path.join(directory, "other");
+      await mkdir(cwd);
+      await mkdir(other);
+      connection.expectedCwds.set("session-other", other);
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "deepseek-harness",
+          nativeSessionId: "session-other",
+          formatVersion: 1,
+          locator: { dshVersion: DSH_VERSION },
+        }),
+      });
+      expect(opened.ok).toBe(false);
+      expect(
+        connection.calls.some(
+          ({ endpoint }) => endpoint === "workspace/create" || endpoint === "session/create",
+        ),
+      ).toBe(false);
+    } finally {
+      await adapter.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not adopt or group a resume whose native journal could not be verified", async () => {
+    const { adapter, connection } = setup([], {
+      desktopEndpoint: "http://127.0.0.1:19387/",
+      recoveryOpenTimeoutMs: 10,
+    });
+    connection.autoOpenJournal = false;
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: path.resolve("fixture-missing-desktop-session"),
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "deepseek-harness",
+        nativeSessionId: "missing-session",
+        formatVersion: 1,
+        locator: { dshVersion: DSH_VERSION },
+      }),
+    });
+    expect(opened.ok).toBe(false);
+    expect(
+      connection.calls.some(
+        ({ endpoint }) => endpoint === "workspace/create" || endpoint === "session/create",
+      ),
+    ).toBe(false);
+    await adapter.close();
+  });
+
+  it("does not create an ungrouped Desktop Session when native Workspace resolution fails", async () => {
+    const { adapter, connection } = setup(["created"], {
+      desktopEndpoint: "http://127.0.0.1:19387/",
+    });
+    connection.workspaceResult = {
+      ok: false,
+      error: { code: "workspace/invalid-path", message: "invalid project directory", details: {} },
+    };
+    expect(
+      await adapter.open({ kind: "create", cwd: path.resolve("fixture-invalid-project") }),
+    ).toMatchObject({ ok: false });
+    expect(connection.calls.some(({ endpoint }) => endpoint === "session/create")).toBe(false);
     await adapter.close();
   });
 

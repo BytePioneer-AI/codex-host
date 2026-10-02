@@ -17,6 +17,25 @@ vi.mock("@codexhost/harness-discovery", async (importOriginal) => ({
 beforeEach(() => vi.clearAllMocks());
 
 describe("DeepSeek plugin construction policy", () => {
+  it.each(["auto", "desktop", "web"] as const)(
+    "applies saved %s mode ahead of the environment override",
+    (connectionMode) => {
+      const environment = { CODEXHOST_DEEPSEEK_HARNESS_CONNECTION_MODE: "desktop" };
+      createHarnessAdapter({
+        environment,
+        platform: "darwin",
+        managedRemoteHost: false,
+        connectionMode,
+      });
+      expect(DeepSeekHarnessAdapter).toHaveBeenCalledWith({ environment, connectionMode });
+    },
+  );
+
+  it("uses the environment mode when no saved preference exists", () => {
+    const environment = { CODEXHOST_DEEPSEEK_HARNESS_CONNECTION_MODE: "web" };
+    createHarnessAdapter({ environment, platform: "darwin", managedRemoteHost: false });
+    expect(DeepSeekHarnessAdapter).toHaveBeenCalledWith({ environment, connectionMode: "web" });
+  });
   it("installs the npm latest tag instead of pinning an older release", () => {
     const environment = { PATH: "/synthetic/bin" };
     createHarnessAdapter({ environment, platform: "darwin", managedRemoteHost: false });

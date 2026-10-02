@@ -191,6 +191,7 @@ describe("release Host and independent plugin Bundles", () => {
       expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toEqual([
         "diff",
         "ws",
+        "yaml",
         "zod",
       ]);
       const source = await readFile(path.join(app, "host-runtime.mjs"), "utf8");

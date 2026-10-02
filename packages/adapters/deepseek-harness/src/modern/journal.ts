@@ -11,6 +11,7 @@ import {
 /** Strict, single-generation DeepSeek Harness Modern Session journal reader. */
 
 import { ModernRemoteConnectionError } from "./remote-connection.js";
+import { matchesModernCwd } from "./workspace.js";
 import { DEEPSEEK_V4_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import {
   expandAssistantStream,
@@ -107,6 +108,8 @@ export interface ModernJournalOpenRequest {
 }
 
 export interface ModernJournalOptions {
+  /** Desktop Workspace paths use realpath; older journals may retain a directory alias. */
+  readonly allowCanonicalCwd?: boolean;
   readonly profile?: DeepSeekModernProfile;
   readonly pageMaxMessages?: number;
   readonly maxRecordsPerPage?: number;
@@ -191,11 +194,17 @@ export async function openModernJournal(
   const returnFollow = onceAsync(async () => {
     await iterator.return?.();
   });
-  let opening: ReturnType<typeof parseOpeningSnapshot>;
+  let opening: Awaited<ReturnType<typeof parseOpeningSnapshot>>;
   try {
     const first = await nextBeforeAbort(iterator, openingSignal);
     if (first.done) throw protocolError("journal follow ended before its opening snapshot");
-    opening = parseOpeningSnapshot(first.value, request, limits, profile);
+    opening = await parseOpeningSnapshot(
+      first.value,
+      request,
+      limits,
+      profile,
+      options.allowCanonicalCwd,
+    );
   } catch (error) {
     controller.abort(error);
     await Promise.allSettled([returnFollow()]);
@@ -383,12 +392,13 @@ export async function openModernJournal(
   }
 }
 
-function parseOpeningSnapshot(
+async function parseOpeningSnapshot(
   value: unknown,
   request: ModernJournalOpenRequest,
   limits: ResolvedOptions,
   profile: DeepSeekModernProfile,
-): {
+  allowCanonicalCwd = false,
+): Promise<{
   readonly header: ModernJournalHeader;
   readonly cursor: number;
   readonly events: ModernJournalEvent[];
@@ -396,7 +406,7 @@ function parseOpeningSnapshot(
   readonly projections: ModernJournalProjections;
   readonly retainedBytes: number;
   readonly assistantStream: DeepSeekAssistantBaseline;
-} {
+}> {
   const expectedKeys = profile.snapshotKeys;
   if (
     !isRecord(value) ||
@@ -411,7 +421,18 @@ function parseOpeningSnapshot(
     throw limitError("journal opening cursor exceeded maxEvents");
   }
   assertWireBytes(value.header, limits.maxRecordBytes, "journal header");
-  const header = profile.parseHeader(value.header, request);
+  const header = profile.parseHeader(value.header, {
+    ...request,
+    ...(allowCanonicalCwd &&
+    request.cwd !== undefined &&
+    isRecord(value.header) &&
+    typeof value.header.cwd === "string"
+      ? { cwd: value.header.cwd }
+      : {}),
+  });
+  if (allowCanonicalCwd && !(await matchesModernCwd(header.cwd, request.cwd))) {
+    throw protocolError("journal header cwd does not match the project directory");
+  }
   const projections = parseProjections(value.projections, value.cursor, limits.maxRecordBytes);
   const window = parseWindow(
     value.records,

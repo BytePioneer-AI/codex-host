@@ -36,6 +36,7 @@
     "json-schema-traverse",
     "smol-toml",
     "ws",
+    "yaml",
     "zod",
     "zod-to-json-schema"
   ]

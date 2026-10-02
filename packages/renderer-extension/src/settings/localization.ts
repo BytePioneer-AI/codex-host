@@ -174,6 +174,9 @@ export interface RendererSettingsMessages {
   readonly connectionHostsScrollLeft: string;
   readonly connectionHostsScrollRight: string;
   readonly launchPathLabel: string;
+  readonly connectionModeLabel: string;
+  readonly connectionModeHelp: string;
+  readonly connectionModeSaveError: string;
   readonly launchPathPlaceholder: string;
   readonly launchPathWorkbuddyHelp: string;
   readonly launchPathZcodePlaceholder: string;
@@ -446,6 +449,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionHostsScrollLeft: "Show previous Hosts",
   connectionHostsScrollRight: "Show more Hosts",
   launchPathLabel: "Installed application path",
+  connectionModeLabel: "Connection mode",
+  connectionModeHelp:
+    "auto detects the selected CLI source; desktop connects to DeepSeek Desktop (start it first); web starts a managed Web instance. Changes are saved automatically and apply after restarting codexhost.",
+  connectionModeSaveError:
+    "Could not save the connection mode. Check configuration permissions and try again.",
   launchPathPlaceholder: "Installation folder, e.g. D:\\program\\WorkBuddy",
   launchPathWorkbuddyHelp:
     "This integration requires the WorkBuddy app. If it is not detected automatically, enter its installation folder. codexhost locates the required files inside it. Restart codexhost after saving to apply.",
@@ -742,6 +750,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionHostsScrollLeft: "查看前面的 Host",
   connectionHostsScrollRight: "查看更多 Host",
   launchPathLabel: "应用安装路径",
+  connectionModeLabel: "连接模式",
+  connectionModeHelp:
+    "auto 按所选 CLI 来源自动识别；desktop 连接 DeepSeek Desktop（需先启动）；web 启动托管 Web 实例。选择后自动保存，重启 codexhost 生效。",
+  connectionModeSaveError: "无法保存连接模式，请确认配置目录可写后重试。",
   launchPathPlaceholder: "填写安装目录，例如 D:\\program\\WorkBuddy",
   launchPathWorkbuddyHelp:
     "此接入依赖 WorkBuddy 应用。若未自动识别，请填写应用安装目录，codexhost 会自动定位所需文件。保存后重启 codexhost 生效。",

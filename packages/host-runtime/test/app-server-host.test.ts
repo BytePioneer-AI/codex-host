@@ -904,6 +904,7 @@ describe("AppServerHost installed Harness plugins", () => {
     const location = path.join(directory, "sample-agent");
     const entrypoint = path.join(directory, "installed-app");
     const received = path.join(directory, "received.json");
+    const receivedMode = path.join(directory, "received-mode.json");
     mkdirSync(location);
     mkdirSync(entrypoint);
     writeFileSync(
@@ -920,6 +921,7 @@ describe("AppServerHost installed Harness plugins", () => {
         adapterApiVersion: 1,
         entry: "plugin.mjs",
         launchCommand: true,
+        connectionMode: true,
       }),
     );
     writeFileSync(
@@ -929,6 +931,7 @@ describe("AppServerHost installed Harness plugins", () => {
       import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
       export function createHarnessAdapter(context) {
         writeFileSync(${JSON.stringify(received)}, JSON.stringify(context.launchCommand ?? null));
+        writeFileSync(${JSON.stringify(receivedMode)}, JSON.stringify(context.connectionMode ?? null));
         return new FakeHarnessAdapter("sample-agent");
       }
     `,
@@ -954,12 +957,20 @@ describe("AppServerHost installed Harness plugins", () => {
         result: { path: entrypoint, restartRequired: true },
       });
       expect(JSON.parse(readFileSync(received, "utf8"))).toBeNull();
+      expect(
+        await request(set, { harnessId: "sample-agent", connectionMode: "web" }),
+      ).toMatchObject({
+        result: { path: entrypoint, connectionMode: "web", restartRequired: true },
+      });
+      expect(JSON.parse(readFileSync(receivedMode, "utf8"))).toBeNull();
       for (const params of [
         { harnessId: "pi", path: entrypoint },
         { harnessId: "missing-agent", path: entrypoint },
         { harnessId: "../escape", path: entrypoint },
         { harnessId: "sample-agent", path: "relative.cjs" },
         { harnessId: "sample-agent", path: entrypoint, extra: true },
+        { harnessId: "sample-agent", connectionMode: "invalid" },
+        { harnessId: "pi", connectionMode: "desktop" },
       ])
         expect(await request(set, params)).toMatchObject({ error: { code: -32602 } });
       expect(fixture.official.stdin.readableLength).toBe(0);
@@ -969,8 +980,9 @@ describe("AppServerHost installed Harness plugins", () => {
         result: { path: entrypoint, restartRequired: false },
       });
       expect(JSON.parse(readFileSync(received, "utf8"))).toBe(entrypoint);
+      expect(JSON.parse(readFileSync(receivedMode, "utf8"))).toBe("web");
       expect(await request(set, { harnessId: "sample-agent", path: null })).toMatchObject({
-        result: { path: null, restartRequired: true },
+        result: { path: null, connectionMode: "web", restartRequired: true },
       });
     } finally {
       await stopFixture(fixture);

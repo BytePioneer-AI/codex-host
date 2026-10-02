@@ -18,6 +18,8 @@ AppImage 格式因没有固定安装路径而不作自动检测；用户可自�
 
 可以在连接设置中保存应用位置（插件启动路径），或设置 `CODEXHOST_ZCODE_APP`，保存的路径优先。Windows 和 Linux 的支持遵循 ZCode 的打包结构（Packaging Layout），但尚未在真实 Windows/Linux 机器上进行验证。
 
+连接页不提供自动安装或更新：CLI 随 ZCode Desktop 发布，未安装时只给出下载链接和本机的应用路径输入框（保存后重启 codexhost 生效）；已安装时版本面板只显示 `app.asar` 中的 App 版本，最新版本为未知，更新由 ZCode Desktop 自己完成。插件因此只实现 `installation("check")`，不实现 `install`。
+
 检测统一从 `<resources>/app.asar` 的 `package.json` 中读取 `productName` 和 `version`。缺少 `app.asar`、对应的 CLI 运行时可执行文件（macOS 为 `<app>/Contents/Frameworks/<productName> Helper.app/Contents/MacOS/<productName> Helper`，Windows 为 `<dir>\<productName>.exe`，Linux 为小写连字符命名的 `<dir>/<linuxExecutableName>`，如 `zcode` 或 `zcode-preview`）、`<resources>/glm/zcode.cjs` 或内置 Provider 配置时，检测结果为未安装。对 Host 的 Node 版本没有额外要求。
 
 检测会建立一个 deferred 草稿会话读取模型目录后立即关闭；草稿在首条输入前不落库，检测不会留下会话，也不发送 Prompt。

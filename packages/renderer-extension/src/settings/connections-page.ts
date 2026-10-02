@@ -15,6 +15,7 @@ import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
+import { harnessHasInstallCommands } from "./harness-installation-guides.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
 import { HARNESS_OFFICIAL_WEBSITES } from "./harness-official-websites.js";
 import { harnessInstallStore } from "./harness-install-store.js";
@@ -581,7 +582,12 @@ function renderConnectionInspector(
   const agent = item.agentSnapshot?.agent;
   const getLaunchSettings = diagnostics?.getLaunchSettings?.bind(diagnostics);
   const setLaunchSettings = diagnostics?.setLaunchSettings?.bind(diagnostics);
-  if (hostId === "local" && agent === "workbuddy" && getLaunchSettings && setLaunchSettings) {
+  if (
+    hostId === "local" &&
+    (agent === "zcode" || agent === "workbuddy") &&
+    getLaunchSettings &&
+    setLaunchSettings
+  ) {
     launchControls =
       existingLaunchControls ??
       createHarnessLaunchControls(document, messages, agent, {
@@ -881,7 +887,7 @@ export function createConnectionsSettingsPage(
                 ? { availability: "updating" as const }
                 : {}),
               ...(state?.error ? { installError: state.error } : {}),
-              ...(diagnostics?.installation && agent !== "workbuddy"
+              ...(diagnostics?.installation && harnessHasInstallCommands(agent)
                 ? {
                     install: () => {
                       void installs?.install(selectedHost.hostId, agent);

@@ -37,6 +37,7 @@ const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
       "Install ZCode Desktop and sign in with a Start Plan account. If ZCode is not in the default location (/Applications/ZCode.app on macOS, %LOCALAPPDATA%\\Programs\\ZCode on Windows, /opt/ZCode on Linux), set its path in the connection settings.",
       "请安装 ZCode Desktop 并登录 Start Plan 账号。ZCode 不在默认安装位置（macOS 为 /Applications/ZCode.app，Windows 为 %LOCALAPPDATA%\\Programs\\ZCode，Linux 为 /opt/ZCode）时，可在连接设置中填写其路径。",
     ],
+    downloads: [{ label: "ZCode", url: "https://zcode.z.ai/" }],
     after: [
       "Check again after signing in. The ZCode Desktop window does not need to stay open.",
       "登录后重新检测；使用时不需要保持 ZCode 窗口打开。",
@@ -182,6 +183,11 @@ const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
     after: start("kimi"),
   },
 };
+
+/** Desktop-app Harnesses have no install command: the user downloads the app instead. */
+export function harnessHasInstallCommands(agent: ExternalRendererAgent): boolean {
+  return guides[agent].commands.length > 0;
+}
 
 export function harnessInstallationGuide(
   agent: ExternalRendererAgent,

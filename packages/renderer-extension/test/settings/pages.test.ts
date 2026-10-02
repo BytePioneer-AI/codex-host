@@ -1000,6 +1000,7 @@ describe("Renderer Connections page", () => {
     ["qoder", "https://qoder.com/"],
     ["qoder-cn", "https://qoder.cn/"],
     ["kimi-code", "https://code.kimi.com/"],
+    ["zcode", "https://zcode.z.ai/"],
   ] as const)(
     "shows manual commands and supported download guides for %s",
     async (agent, expected) => {
@@ -1062,12 +1063,13 @@ describe("Renderer Connections page", () => {
         descendants(content).some(({ className }) => className === "settings-harness-installation"),
       ).toBe(true);
       const guides = descendants(panel).filter(({ tagName }) => tagName === "a");
-      expect(guides).toHaveLength(agent === "workbuddy" ? 1 : 0);
-      if (agent === "workbuddy") {
+      const desktopApp = agent === "workbuddy" || agent === "zcode";
+      expect(guides).toHaveLength(desktopApp ? 1 : 0);
+      if (desktopApp) {
         expect(guides).toMatchObject([
           {
             textContent: "下载",
-            href: "https://www.workbuddy.ai/",
+            href: expected,
             target: "_blank",
             rel: "noopener noreferrer",
           },
@@ -1077,6 +1079,7 @@ describe("Renderer Connections page", () => {
         expect(visibleText(panel)).toContain("请下载并安装 WorkBuddy 桌面应用。");
         expect(visibleText(panel)).not.toContain("下载与安装指南");
       }
+      if (agent === "zcode") expect(visibleText(panel)).toContain("请安装 ZCode Desktop");
       expect(
         visibleText(content).includes(
           "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。",
@@ -1091,7 +1094,7 @@ describe("Renderer Connections page", () => {
         ({ className }) => className === "settings-harness-installation-command",
       );
       expect(blocks).toHaveLength(
-        agent === "workbuddy"
+        desktopApp
           ? 0
           : ["deepseek-harness", "opencode", "grok", "codebuddy"].includes(agent)
             ? 1
@@ -1336,7 +1339,7 @@ describe("Renderer Connections page", () => {
     },
   );
 
-  it.each(["workbuddy"] as const)(
+  it.each(["workbuddy", "zcode"] as const)(
     "edits %s launch settings in the local right-side inspector",
     async (agent) => {
       const messages = rendererSettingsMessages("zh-CN");
@@ -1381,6 +1384,9 @@ describe("Renderer Connections page", () => {
       const panel = elementWithClass(content, "settings-connection-inspector__body");
       const input = descendants(panel).find(({ tagName }) => tagName === "input");
       if (!input) throw new Error("Expected launch path input");
+      expect(visibleText(panel)).toContain(
+        agent === "zcode" ? messages.launchPathZcodeHelp : messages.launchPathWorkbuddyHelp,
+      );
       await vi.waitFor(() => expect(input.disabled).toBe(false));
       expect(diagnostics.getLaunchSettings).toHaveBeenCalledWith("local", agent);
       const save = descendants(panel).find(
@@ -1425,6 +1431,57 @@ describe("Renderer Connections page", () => {
       scope.dispose();
     },
   );
+  it("offers automatic installation only for Harnesses with an install command", () => {
+    const installation = vi.fn(async () => {
+      throw new Error("not expected");
+    });
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: (["kiro-cli", "workbuddy", "zcode"] as const).map((agent) => ({
+              agent,
+              availability: "notInstalled" as const,
+              error: null,
+            })),
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      installation,
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected connections page");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const offersInstall = (agent: string): boolean => {
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      if (!row) throw new Error("Expected Harness row");
+      return descendants(row).some(
+        ({ className }) => className === "settings-connection-install-link",
+      );
+    };
+    expect(offersInstall("kiro-cli")).toBe(true);
+    // Desktop apps are downloaded by the user; their plugins expose no installer.
+    expect(offersInstall("workbuddy")).toBe(false);
+    expect(offersInstall("zcode")).toBe(false);
+    expect(installation).not.toHaveBeenCalled();
+    cleanup?.();
+    scope.dispose();
+  });
   it("opens managed DSH Web only for the local Host and coalesces repeated clicks", async () => {
     const opened = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {

@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveInstallation } from "../src/installation.js";
+import { createZcodeInstallation, resolveInstallation } from "../src/installation.js";
 
 function createFakeAsar(pkg: { productName: string; version: string }): Buffer {
   const pkgContent = Buffer.from(JSON.stringify(pkg), "utf8");
@@ -263,5 +263,29 @@ describe("ZCode installation discovery", () => {
     await expect(resolveInstallation({}, appDir, "darwin")).rejects.toMatchObject({
       code: "notInstalled",
     });
+  });
+
+  it("reports the installed App version and leaves updates to ZCode Desktop", async () => {
+    const create =
+      process.platform === "darwin"
+        ? createDarwinInstall
+        : process.platform === "win32"
+          ? createWindowsInstall
+          : createLinuxInstall;
+    const installation = createZcodeInstallation({ HOME: root }, await create(root));
+
+    await expect(installation("check")).resolves.toEqual({
+      currentVersion: "3.14.4",
+      latestVersion: "Unknown",
+      latestVersionKind: "unknown",
+      updateAvailable: false,
+      canUpdate: false,
+      messageCode: "zcode-desktop-updater",
+      message: expect.stringContaining("ZCode Desktop"),
+    });
+    await expect(installation("update")).rejects.toThrow("Update ZCode Desktop");
+    await expect(
+      createZcodeInstallation({ HOME: root }, path.join(root, "missing"))("check"),
+    ).rejects.toMatchObject({ code: "notInstalled" });
   });
 });

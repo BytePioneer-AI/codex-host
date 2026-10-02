@@ -1,6 +1,7 @@
 import { open, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import type { HarnessInstallationState } from "@codexhost/shared-contracts";
 import { ZcodeError } from "./errors.js";
 
 const DEFAULT_DARWIN_APP = "/Applications/ZCode.app";
@@ -157,5 +158,25 @@ export async function resolveInstallation(
       environment.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE ||
       path.join(dataRoot, "provider_config.json"),
     dataRoot,
+  };
+}
+
+/**
+ * The CLI ships inside ZCode Desktop, so codexhost only reports the installed App's version.
+ * Updating belongs to Desktop's own updater; there is no CLI to install or update separately.
+ */
+export function createZcodeInstallation(environment: NodeJS.ProcessEnv, app?: string) {
+  return async (action: "check" | "update"): Promise<HarnessInstallationState> => {
+    if (action === "update") throw new Error("Update ZCode Desktop to update its bundled CLI");
+    const { version } = await resolveInstallation(environment, app);
+    return {
+      currentVersion: version,
+      latestVersion: "Unknown",
+      latestVersionKind: "unknown",
+      updateAvailable: false,
+      canUpdate: false,
+      messageCode: "zcode-desktop-updater",
+      message: "The CLI ships inside ZCode Desktop. Update ZCode Desktop itself to update it.",
+    };
   };
 }

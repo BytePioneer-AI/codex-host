@@ -1,3 +1,4 @@
+import { createRemoteConnectionsControl } from "./remote-connections-control.js";
 import {
   catalogModelForRef,
   decodeHarnessPluginRoute,
@@ -817,7 +818,9 @@ export function installRendererBindingProbe(
     getLocalAgent: localAgentForSidebarThread,
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
+  const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
+    getRemoteConnections: () => remoteConnections,
     getUpdateClient: () => modelControl,
     getAccountClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,

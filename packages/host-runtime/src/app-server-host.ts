@@ -1,3 +1,11 @@
+import {
+  REMOTE_SSH_SETUP_METHOD,
+  remoteSshSetupParamsSchema,
+  RUNTIME_STATUS_METHOD,
+  REMOTE_UPDATE_METHOD,
+  remoteUpdateParamsSchema,
+} from "@codexhost/shared-contracts";
+import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
@@ -307,6 +315,7 @@ export interface AppServerHostOptions {
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
+  runtimeMaintenance?: RuntimeMaintenance;
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
@@ -785,24 +794,30 @@ export class AppServerHost {
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
       externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
     });
+    const maintenanceOperation = <T>(run: () => Promise<T>): Promise<T> =>
+      options.runtimeMaintenance ? options.runtimeMaintenance.operation(run) : run();
     const unregisterDelegationApi = options.onDelegationApi?.({
       listHarnesses: () =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
       inspect: (input) =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
-      start: (input) => {
-        if (options.sharedDelegation && input.harnessId !== "codex") {
-          const active = [...this.#activeOfficialTurns.keys()];
-          const parentThreadId =
-            input.parentThreadId ?? (active.length === 1 ? active[0] : undefined);
-          return options.sharedDelegation.start({
-            ...input,
-            ...(parentThreadId ? { parentThreadId } : {}),
-          });
-        }
-        return this.#waitForPlugins().then(() => this.#delegationCoordinator.start(input));
-      },
-      send: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.send(input)),
+      start: (input) =>
+        maintenanceOperation(async () => {
+          if (options.sharedDelegation && input.harnessId !== "codex") {
+            const active = [...this.#activeOfficialTurns.keys()];
+            const parentThreadId =
+              input.parentThreadId ?? (active.length === 1 ? active[0] : undefined);
+            return options.sharedDelegation.start({
+              ...input,
+              ...(parentThreadId ? { parentThreadId } : {}),
+            });
+          }
+          return this.#waitForPlugins().then(() => this.#delegationCoordinator.start(input));
+        }),
+      send: (input) =>
+        maintenanceOperation(() =>
+          this.#waitForPlugins().then(() => this.#delegationCoordinator.send(input)),
+        ),
       cancel: (input) =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.cancel(input)),
       read: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.read(input)),
@@ -1132,6 +1147,33 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    if (
+      request.method === RUNTIME_STATUS_METHOD ||
+      request.method === REMOTE_UPDATE_METHOD ||
+      request.method === REMOTE_SSH_SETUP_METHOD
+    ) {
+      const maintenance = this.#options.runtimeMaintenance;
+      try {
+        if (!maintenance)
+          throw new Error("Runtime version management is unavailable in this build");
+        const result =
+          request.method === RUNTIME_STATUS_METHOD
+            ? await maintenance.status()
+            : request.method === REMOTE_SSH_SETUP_METHOD
+              ? await maintenance.setupSsh(remoteSshSetupParamsSchema.parse(request.params))
+              : await maintenance.start(remoteUpdateParamsSchema.parse(request.params).version);
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32090, errorMessage(error)));
+      }
+      return;
+    }
+    if (this.#options.runtimeMaintenance?.blocked) {
+      await this.#writer.json(
+        rpcError(request, -32090, "Remote service is updating; reconnect shortly"),
+      );
+      return;
+    }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
       await this.#writer.json(
         rpcEnvelope(request, {
@@ -5268,8 +5310,12 @@ export class AppServerHost {
   }
 
   #dispatchDesktopRequest(run: () => Promise<void>, threadId?: string): void {
-    const task = threadId ? this.#externalRuntime.idleRelease.runOperation(threadId, run) : run();
-    void task.catch((error) => this.#diagnose(error));
+    try {
+      const task = threadId ? this.#externalRuntime.idleRelease.runOperation(threadId, run) : run();
+      void task.catch((error) => this.#diagnose(error));
+    } catch (error) {
+      this.#diagnose(error);
+    }
   }
 
   #diagnose(error: unknown): void {

@@ -331,6 +331,14 @@ Harness를 추가할 때는 코딩 Agent가 저장소의 [codexhost-add-harness 
 - 지속적인 지원을 보내 주신 [LINUX DO](https://linux.do/) 커뮤니티에 감사드립니다.
 - 멀티 Harness 통합 방식과 아키텍처에 영감을 주고 참고가 된 [Paseo](https://github.com/getpaseo/paseo) 프로젝트에 감사드립니다.
 
+## 기여자
+
+CodexHost에 기여해 주신 모든 분께 감사드립니다.
+
+<a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
+  <img alt="CodexHost 기여자" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+</a>
+
 ## Star History
 
 <a href="https://www.star-history.com/?repos=bytepioneer-ai%2Fcodex-host&type=date&legend=top-left">

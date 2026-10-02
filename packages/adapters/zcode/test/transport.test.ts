@@ -29,7 +29,13 @@ beforeEach(() => {
 });
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  // Windows keeps a just-exited fake CLI's executable locked for a moment; retry instead of
+  // failing the test on EBUSY.
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })),
+  );
 });
 
 function encrypt(value: string) {

@@ -318,7 +318,8 @@ describe("Hermes safe dynamic command directory", () => {
     const f = fixture();
     await pause();
     const pending = deferred<GatewayRecord>();
-    const request = f.request.getMockImplementation()!;
+    const request = f.request.getMockImplementation();
+    if (!request) throw new Error("Missing request mock implementation");
     f.request.mockImplementation((method, ...args) =>
       method === "complete.slash" ? pending.promise : request(method, ...args),
     );
@@ -387,7 +388,8 @@ describe("Hermes automatic compaction phase", () => {
   );
   it("keeps manual compression tied solely to its structured result", async () => {
     const f = fixture();
-    const request = f.request.getMockImplementation()!;
+    const request = f.request.getMockImplementation();
+    if (!request) throw new Error("Missing request mock implementation");
     f.request.mockImplementation(async (method, ...args) => {
       if (method === "session.compress") {
         f.emit("status.update", { kind: "compacting", text: "start" });

@@ -26,6 +26,34 @@ const IMPORT = "codexhost/harness/session-import/import";
 const LEGACY_LIST = "codexhost/deepseek/modern-session/list";
 const LEGACY_IMPORT = "codexhost/deepseek/modern-session/import";
 
+/** A missing CLI is reported quickly; a present one may take seconds to start for inspection. */
+const INSTALLATION_CHECK_TIMEOUT_MS = 1_500;
+
+/**
+ * True only when the Adapter positively reports its native CLI as absent: a Session of a Harness
+ * that cannot start could be imported but never opened. A slow, failing or incompatible
+ * inspection keeps the Harness listed so its own error stays visible.
+ */
+async function notInstalled(adapter: HarnessAdapter): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const inspection = adapter.inspect().then(
+      ({ status }) => status === "notInstalled",
+      () => false,
+    );
+    return await Promise.race([
+      inspection,
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), INSTALLATION_CHECK_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function isSessionImportRequest(method: string): boolean {
   return [SOURCES, LIST, IMPORT, LEGACY_LIST, LEGACY_IMPORT].includes(method);
 }
@@ -55,8 +83,12 @@ export class SessionImportRequests {
     if (request.method === SOURCES) {
       if (!harnessSessionImportSourcesParamsSchema.safeParse(request.params).success)
         return invalid();
-      const harnesses = [...this.input.adapters]
-        .filter(([, adapter]) => Boolean(adapter.sessionImport?.resolveCandidate))
+      const importable = [...this.input.adapters].filter(([, adapter]) =>
+        Boolean(adapter.sessionImport?.resolveCandidate),
+      );
+      const missing = await Promise.all(importable.map(([, adapter]) => notInstalled(adapter)));
+      const harnesses = importable
+        .filter((_, index) => !missing[index])
         .map(([harnessId]) => ({
           harnessId,
           name: this.input.descriptors().find(({ id }) => id === harnessId)?.name ?? harnessId,

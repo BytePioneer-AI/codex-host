@@ -50,6 +50,11 @@ it("exposes Cursor's public import capability and persists its resolved policy w
     .spyOn(adapter.sessionImport, "resolveCandidate")
     .mockResolvedValue({ ok: true, value: { candidate, nativeRef } });
   const open = vi.spyOn(adapter, "open");
+  // The isolated home has no Cursor CLI; a Harness positively not installed is not offered.
+  vi.spyOn(adapter, "inspect").mockResolvedValue({
+    status: "unavailable",
+    error: { code: "unavailable", message: "not inspected in this test", retryable: true },
+  });
   const directory = path.join(root, "mappings");
   const repository = new ExternalThreadRepository(new MappingStore({ directory }));
   await repository.initialize();

@@ -148,6 +148,24 @@ describe.skipIf(!launcher)("Hermes managed runtime history and gateway", () => {
       });
       expect(imported.locator).toBeUndefined();
       expect(await session.readSnapshot()).toMatchObject({ ok: true, value: before });
+      const commands = await session.commands.list();
+      expect(commands.ok).toBe(true);
+      if (!commands.ok) throw new Error(commands.error.message);
+      expect(commands.value.commands.some(({ invocation }) => invocation === "/compress")).toBe(
+        true,
+      );
+      expect(
+        commands.value.commands.some(({ invocation }) =>
+          ["/model", "/hb", "/skills", "/undo"].includes(invocation),
+        ),
+      ).toBe(false);
+      await session.refreshUsage();
+      const usage = await session.outputs[Symbol.asyncIterator]().next();
+      expect(usage.value).toMatchObject({
+        kind: "event",
+        event: { type: "session.usage.changed" },
+      });
+      expect(await source.readSnapshot()).toEqual(before);
       await session.close();
       expect(await source.readSnapshot()).toEqual(before);
     } finally {

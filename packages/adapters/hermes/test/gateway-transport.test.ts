@@ -160,6 +160,28 @@ describe("Hermes gateway process ownership", () => {
     await f.transport.close();
     if (process.platform !== "win32") expect(f.kill).toHaveBeenCalledWith(-678901, "SIGKILL");
   });
+  it("keeps read-only query deadlines nonfatal while still dropping late replies", async () => {
+    vi.useFakeTimers();
+    const f = childFixture();
+    const started = f.transport.start();
+    f.frame({ id: "codexhost-1", result: { per_session_exclusive_submit: true } });
+    await started;
+    const fault = vi.fn();
+    f.transport.onFault = fault;
+    const reading = f.transport.request("session.usage", { session_id: "s" }, 50, false);
+    const rejected = expect(reading).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(50);
+    await rejected;
+    f.frame({ id: "codexhost-2", result: { input: 900 } });
+    expect(fault).not.toHaveBeenCalled();
+    const submitting = f.transport.request("prompt.submit", { session_id: "s", text: "go" });
+    f.frame({ id: "codexhost-3", result: { status: "streaming" } });
+    await expect(submitting).resolves.toEqual({ status: "streaming" });
+    f.child.exitCode = 0;
+    f.child.emit("close", 0);
+    await f.transport.close();
+  });
+
   it("closes on an unanswered RPC deadline instead of allowing an uncertain second turn", async () => {
     vi.useFakeTimers();
     const f = childFixture();

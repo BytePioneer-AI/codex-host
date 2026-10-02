@@ -1,8 +1,14 @@
-import { HERMES_GATEWAY_COMMANDS, hermesGatewayCommandName } from "./hermes-commands.js";
+import {
+  HERMES_GATEWAY_COMMANDS,
+  hermesGatewayCommandName,
+  hermesCommandsFromCompletion,
+} from "./hermes-commands.js";
+import { projectGatewayUsage } from "./hermes-usage.js";
 import type {
   HostQuestion,
   HostQuestionResponse,
   HostThreadSnapshot,
+  HostUsage,
 } from "@codexhost/harness-adapter";
 import {
   harnessThinkingOptionIdSchema,
@@ -11,6 +17,7 @@ import {
 import {
   HermesTransportError,
   type HermesOpenResult,
+  type HermesNativeCommand,
   type HermesPermissionRequest,
   type HermesPromptResponse,
   type HermesQuestionRequest,
@@ -121,7 +128,54 @@ function gatewayDiff(text: string): HermesToolContent[] {
 
 export class HermesGatewaySessionTransport implements HermesSessionTransport {
   onFault: (error: HermesTransportError) => void = () => undefined;
-  readonly availableCommands = HERMES_GATEWAY_COMMANDS;
+  #commands: readonly HermesNativeCommand[] = HERMES_GATEWAY_COMMANDS;
+  onUsage?: (usage: HostUsage) => void;
+  #knownCommands = new Set<string>();
+  rejectsCommand(text: string): boolean {
+    const name = /^\/([\w-]+)(?:\s|$)/u.exec(text.trim())?.[1]?.toLowerCase();
+    return !!name && this.#knownCommands.has(name) && !this.nativeCommandName(text);
+  }
+  get availableCommands(): readonly HermesNativeCommand[] {
+    return this.#commands;
+  }
+  async getCommands(): Promise<readonly HermesNativeCommand[]> {
+    const params = { session_id: this.sessionId, cwd: this.transport.cwd };
+    const [response, catalog] = await Promise.all([
+      this.transport.request(
+        "complete.slash",
+        { ...params, text: "/" },
+        this.transport.timeoutMs,
+        false,
+      ),
+      this.transport.request("commands.catalog", params, this.transport.timeoutMs, false),
+    ]);
+    this.#commands = hermesCommandsFromCompletion(response.items, catalog);
+    this.#knownCommands = new Set(
+      Object.keys(gatewayRecord(catalog.commands)).map((key) =>
+        key.replace(/^\//u, "").toLowerCase(),
+      ),
+    );
+    for (const category of Array.isArray(catalog.categories) ? catalog.categories : []) {
+      const pairs = gatewayRecord(category).pairs;
+      if (Array.isArray(pairs))
+        for (const pair of pairs)
+          if (Array.isArray(pair) && typeof pair[0] === "string")
+            this.#knownCommands.add(pair[0].replace(/^\//u, "").toLowerCase());
+    }
+    return this.#commands;
+  }
+  async readUsage(): Promise<HostUsage | null> {
+    return projectGatewayUsage(
+      await this.transport.request(
+        "session.usage",
+        {
+          session_id: this.sessionId,
+        },
+        this.transport.timeoutMs,
+        false,
+      ),
+    );
+  }
   readonly history: HermesGatewayHistory;
   #active: Active | null = null;
   #requests = new Map<string, AbortController>();
@@ -239,7 +293,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       );
   }
   nativeCommandName(text: string): string | null {
-    return hermesGatewayCommandName(text);
+    return hermesGatewayCommandName(text, this.#commands);
   }
   async runTurn(
     text: string,
@@ -314,9 +368,14 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       } else if (nativeCommand) {
         const response = await this.transport.request("slash.exec", {
           session_id: this.sessionId,
-          command: `/${nativeCommand}`,
+          command: commandText,
         });
-        emit({ type: "agent.text", text: gatewayString(response.output) });
+        if (typeof response.output !== "string")
+          throw new HermesTransportError(
+            "protocolError",
+            "Hermes slash.exec did not return terminal command output",
+          );
+        emit({ type: "agent.text", text: response.output });
         active.resolve({ stopReason: "end_turn" });
       } else {
         const submitted = await this.transport.request("prompt.submit", {
@@ -375,6 +434,10 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       this.#info = payload;
       return;
     }
+    if (event.type === "session.usage") {
+      this.#usage(gatewayRecord(payload.usage));
+      return;
+    }
     if (event.type === "request.cancel") {
       const controller = this.#requests.get(gatewayString(payload.id));
       controller?.abort(payload.reason === "timeout" ? "expired" : "cancelled");
@@ -398,8 +461,11 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       if (payload.already_streamed !== true) active.emit({ type: "agent.text", text });
       active.streamed = "";
       active.reasoning = "";
-    } else if (event.type === "session.usage") this.#usage(gatewayRecord(payload.usage));
-    else if (event.type === "tool.start" || event.type === "tool.complete") {
+    } else if (event.type === "status.update") {
+      if (payload.kind === "compacting") active.emit({ type: "compaction.started", text });
+      else if (payload.kind === "compacted") active.emit({ type: "compaction.finished", text });
+      else if (payload.kind === "warning") active.emit({ type: "status.warning", text });
+    } else if (event.type === "tool.start" || event.type === "tool.complete") {
       const toolCallId = gatewayString(payload.tool_id);
       if (!toolCallId) return;
       const result = gatewayRecord(payload.result);
@@ -461,6 +527,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       else if (reasoning.startsWith(active.reasoning) && reasoning.length > active.reasoning.length)
         active.emit({ type: "agent.thought", text: reasoning.slice(active.reasoning.length) });
       const usage = gatewayRecord(payload.usage);
+      const terminalUsage = projectGatewayUsage(usage);
       this.#usage(usage);
       if (payload.status === "error")
         active.reject(
@@ -474,24 +541,16 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
         active.resolve({
           stopReason: payload.status === "interrupted" ? "cancelled" : "end_turn",
           ...(payload.status === "complete" && text.trim() ? { finalAnswerText: text } : {}),
-          usage: {
-            inputTokens: Number(usage.input) || 0,
-            outputTokens: Number(usage.output) || 0,
-            totalTokens: Number(usage.total) || 0,
-            ...(typeof usage.reasoning === "number"
-              ? { reasoningOutputTokens: usage.reasoning }
-              : {}),
-          },
+          ...(terminalUsage ? { usage: terminalUsage } : {}),
         });
     } else if (event.type === "error")
       active.reject(new Error(gatewayString(payload.message) || "Hermes gateway failed"));
   }
   #usage(usage: GatewayRecord): void {
-    this.#active?.emit({
-      type: "usage",
-      ...(typeof usage.context_used === "number" ? { used: usage.context_used } : {}),
-      ...(typeof usage.context_max === "number" ? { size: usage.context_max } : {}),
-    });
+    const projected = projectGatewayUsage(usage);
+    if (!projected) return;
+    if (this.#active) this.#active.emit({ type: "usage", usage: projected });
+    else this.onUsage?.(projected);
   }
   async #request(id: string, method: string, params: GatewayRecord): Promise<void> {
     const active = this.#active;

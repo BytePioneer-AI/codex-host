@@ -80,17 +80,19 @@ async function fixture() {
 
 describe("OMP native Session import discovery", () => {
   it("follows OMP's storage variables", () => {
-    expect(ompSessionImportDirectory({ HOME: "/home/u" })).toEqual({
+    // Windows reads USERPROFILE, so both home variables point at the same fake home.
+    const home = { HOME: "/home/u", USERPROFILE: "/home/u" };
+    expect(ompSessionImportDirectory(home)).toEqual({
       directory: path.join("/home/u", ".omp", "agent", "sessions"),
       flat: false,
     });
-    expect(ompSessionImportDirectory({ HOME: "/home/u", PI_CODING_AGENT_DIR: "~/alt" })).toEqual({
-      directory: path.join("/home/u", "alt", "sessions"),
+    expect(ompSessionImportDirectory({ ...home, PI_CODING_AGENT_DIR: "~/alt" })).toEqual({
+      directory: path.resolve("/home/u", "alt", "sessions"),
       flat: false,
     });
     expect(
       ompSessionImportDirectory({
-        HOME: "/home/u",
+        ...home,
         PI_CODING_AGENT_DIR: "/ignored",
         PI_CODING_AGENT_SESSION_DIR: "/flat/sessions",
       }),

@@ -169,7 +169,7 @@ describe("HermesSession text projection", () => {
     const transport = {
       onFault: () => undefined,
       runTurn: async (_text: string, onEvent: (event: HermesTransportEvent) => void) => {
-        onEvent({ type: "usage", used: 120, size: 1_000 });
+        onEvent({ type: "usage", usage: { contextUsedTokens: 120, contextWindowTokens: 1_000 } });
         return {
           stopReason: "end_turn" as const,
           usage: { inputTokens: 80, outputTokens: 40, totalTokens: 120 },

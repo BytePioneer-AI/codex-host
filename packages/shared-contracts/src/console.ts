@@ -1,5 +1,18 @@
 import { z } from "zod";
 
+/** A validated, visible project announcement; disabled documents become null. */
+export const consoleAnnouncementSchema = z.strictObject({
+  title: z.string().trim().min(1).max(200),
+  type: z.enum(["info", "warning", "danger"]),
+  body: z
+    .string()
+    .trim()
+    .min(1)
+    .max(16 * 1024),
+});
+
+export type ConsoleAnnouncement = z.infer<typeof consoleAnnouncementSchema>;
+
 /** Opens the local codexhost console in the default browser. Local Host only. */
 export const CONSOLE_OPEN_METHOD = "codexhost/console/open";
 
@@ -24,6 +37,7 @@ export const CONSOLE_HOST_METHODS = Object.freeze([
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",
   "codexhost/harness/inspect",
+  "codexhost/harness/installation",
   "codexhost/harness/launch-settings/get",
   "codexhost/harness/launch-settings/set",
   "codexhost/harness/web-ui/open",

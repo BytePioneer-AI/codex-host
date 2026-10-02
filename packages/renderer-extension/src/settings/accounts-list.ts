@@ -62,19 +62,25 @@ export function createAccountsTable(document: Document, messages: RendererSettin
   const table = document.createElement("table");
   table.className = "settings-account-table";
   table.setAttribute("aria-label", messages.pageLabels.accounts);
+  const columns = document.createElement("colgroup");
+  for (const width of [32, 24, 24, 20]) {
+    const column = document.createElement("col");
+    column.style.width = `${width}%`;
+    columns.append(column);
+  }
   const head = document.createElement("thead");
   const row = document.createElement("tr");
-  const headers = Array.from({ length: 4 }, () => {
+  const headers = Array.from({ length: 3 }, (_, index) => {
     const cell = document.createElement("th");
-    cell.scope = "col";
+    cell.scope = index === 1 ? "colgroup" : "col";
+    if (index === 1) cell.colSpan = 2;
     row.append(cell);
     return cell;
   });
   const updateDisplay = (display: AccountUsageDisplay): void => {
     const labels = [
       messages.accountColumnAccount,
-      accountUsageColumnLabel("five_hour", display, messages),
-      accountUsageColumnLabel("seven_day", display, messages),
+      accountUsageColumnLabel(display, messages),
       messages.credentialImports.column,
     ];
     headers.forEach((cell, index) => {
@@ -84,7 +90,7 @@ export function createAccountsTable(document: Document, messages: RendererSettin
   updateDisplay("remaining");
   head.append(row);
   const body = document.createElement("tbody");
-  table.append(head, body);
+  table.append(columns, head, body);
   return { table, body, updateDisplay };
 }
 
@@ -159,6 +165,30 @@ function createTargetCell(
   return cell;
 }
 
+function renderAccountBalance(
+  document: Document,
+  messages: RendererSettingsMessages,
+  balance: HarnessAccountListResult["accounts"][number]["balance"],
+): ReturnType<typeof renderAccountUsage> {
+  const cell = document.createElement("td");
+  cell.colSpan = 2;
+  cell.className = "settings-account-usage-cell settings-account-balance-cell";
+  const root = document.createElement("div");
+  root.className = "settings-account-balance";
+  if (balance) {
+    const amount = document.createElement("strong");
+    amount.textContent = `${balance.currency} ${balance.amount.toFixed(2)}`;
+    const caption = document.createElement("span");
+    caption.className = "settings-account-balance__caption";
+    caption.textContent = balance.label
+      ? `${balance.label} · ${messages.accountBalanceRemaining}`
+      : messages.accountBalanceRemaining;
+    root.append(amount, caption);
+  }
+  cell.append(root);
+  return { cells: [cell], continuationCells: [] };
+}
+
 export function renderAccountRows(
   document: Document,
   account: CodexAccountSummary,
@@ -207,7 +237,6 @@ export function renderAccountRows(
     input.onRetry,
     account.planType === "pro" ? "weekly-only" : "all",
   );
-  if (usage.additional) personCell.append(usage.additional);
   const actionsCell = createTargetCell(document, input.importAction);
   if (input.importAction) row.className += " settings-account-row--targets";
   const continuationRows = usage.continuationCells.map((cells) => {
@@ -277,15 +306,16 @@ export function renderHarnessAccountRows(
       mark: logo,
     }),
   );
-  const usage = renderAccountUsage(
-    document,
-    { status: "ready", credits: account.credits, freshness: "live", observedAt: null },
-    messages,
-    display,
-    () => undefined,
-    account.harnessId === "grok" ? "weekly-only" : "all",
-  );
-  if (usage.additional) personCell.append(usage.additional);
+  const usage = account.credits
+    ? renderAccountUsage(
+        document,
+        { status: "ready", credits: account.credits, freshness: "live", observedAt: null },
+        messages,
+        display,
+        () => undefined,
+        account.harnessId === "grok" ? "weekly-only" : "all",
+      )
+    : renderAccountBalance(document, messages, account.balance);
   const managementCell = createTargetCell(document, importAction);
   if (importAction) row.className += " settings-account-row--targets";
   personCell.title = messages.accountNativeManagementHint.replace("{harness}", account.harnessName);

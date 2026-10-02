@@ -6,6 +6,8 @@ export {
   CONSOLE_OPEN_METHOD,
   isConsoleHostMethod,
   type ConsoleHostMethod,
+  consoleAnnouncementSchema,
+  type ConsoleAnnouncement,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
   type ConsoleOpenResult,
@@ -24,8 +26,14 @@ export {
   loadedSessionsSchema,
   type LoadedSession,
 } from "./loaded-sessions.js";
+export {
+  THREAD_MANUAL_COMPACTION_STARTED_METHOD,
+  threadManualCompactionStartedSchema,
+  type ThreadManualCompactionStarted,
+} from "./manual-compaction.js";
 
 export {
+  accountBalanceSnapshotSchema,
   harnessAccountSnapshotSchema,
   harnessAccountSourceSchema,
   harnessAccountSourceListParamsSchema,
@@ -36,6 +44,7 @@ export {
   harnessAccountListResultSchema,
 } from "./harness-accounts.js";
 export type {
+  AccountBalanceSnapshot,
   HarnessAccountSnapshot,
   HarnessAccountSource,
   HarnessAccountSourceListResult,
@@ -72,6 +81,7 @@ export type {
   HarnessPluginManifest,
 } from "./harness-plugins.js";
 export * from "./harness-launch-settings.js";
+export * from "./harness-installation.js";
 export { codexhostErrorSchema } from "./errors.js";
 export {
   codexAccountUsageParamsSchema,
@@ -167,6 +177,7 @@ export {
   harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelCatalogSchema,
+  catalogModelForRef,
   harnessModelRefIdSchema,
   harnessModelRefSchema,
   harnessModelSchema,

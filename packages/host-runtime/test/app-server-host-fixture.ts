@@ -16,6 +16,7 @@ import { type ExternalHarnessId, type JsonObject } from "@codexhost/protocol-cor
 import { harnessIdSchema, type DeepSeekModernSessionCandidate } from "@codexhost/shared-contracts";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import { AppServerHost } from "../src/app-server-host.js";
+import type { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import type { CodexAccountControl } from "../src/account/codex-account-control.js";
 import type { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
 import type { OfficialAppServerConnection } from "../src/official-app-server-connection.js";
@@ -99,6 +100,9 @@ export class JsonLineCollector {
   waitFor(predicate: (message: JsonObject) => boolean): Promise<JsonObject> {
     const existing = this.messages.find(predicate);
     if (existing) return Promise.resolve(existing);
+    // Host responses can require Mapping Store fsync/rename operations.
+    // Allow for Windows disk latency, as in tests/vitest.config.js.
+    const timeoutMs = process.platform === "win32" ? 10_000 : 2_000;
     return new Promise<JsonObject>((resolve, reject) => {
       const waiter = {
         predicate,
@@ -107,7 +111,7 @@ export class JsonLineCollector {
           const index = this.#waiters.indexOf(waiter);
           if (index >= 0) this.#waiters.splice(index, 1);
           reject(new Error("Timed out waiting for Host output"));
-        }, 2_000),
+        }, timeoutMs),
       };
       this.#waiters.push(waiter);
     });
@@ -260,6 +264,7 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 
 export function createFixture(
   options: {
+    sharedThreads?: SharedThreadBridge;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
@@ -297,6 +302,7 @@ export function createFixture(
   const createOfficialConnection = options.createOfficialConnection;
   if (options.officialRuntimeScope) startup.resolve(undefined);
   const host = new AppServerHost({
+    ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
     defaultAgent: "codex",

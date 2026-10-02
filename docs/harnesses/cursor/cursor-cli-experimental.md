@@ -12,6 +12,7 @@ The adapter launches `cursor-agent acp` and uses the official ACP SDK over stdio
 This preserves Cursor's existing CLI authentication, native tools and interactive
 approval requests. Cursor-specific translation remains inside `adapter-cursor-cli`.
 Host Runtime, Protocol Core and Renderer do not import the adapter.
+Each transport still owns its native process; no ACP connection pool is enabled.
 
 The [TypeScript SDK](https://cursor.com/docs/sdk/typescript) is suitable for
 headless runs, but its local execution model does not offer the same interactive
@@ -22,6 +23,15 @@ integration. [CLI ACP](https://cursor.com/docs/cli/acp) is the selected interfac
 ## Implemented boundary
 
 - Native create, text prompt, streaming text/reasoning, tool progress and cancellation.
+  Cursor can stream `Error: RetriableError: WritableIterable is closed` (also the
+  `T:` and unqualified variants) as assistant text and still return `end_turn`.
+  The adapter buffers a possible trailing diagnostic until the terminal response,
+  preserves ordinary continuations, and removes the confirmed diagnostic from live
+  output and history replay. A nonempty answer still requires verified native Turn
+  identity before success. An error-only response fails with retryable `nativeFailure`
+  without faulting the Session; cancellation and unattended approval refusal retain
+  precedence. The adapter never automatically resubmits the prompt: missing native
+  history does not prove tools or delegation had no side effects.
 - Structured Edit Diff for successful tools carrying native ACP diff content,
   including new files and updates, in live output and native history replay.
 - Dynamic native parameterized model catalog and Thinking selection. Native
@@ -41,6 +51,11 @@ integration. [CLI ACP](https://cursor.com/docs/cli/acp) is the selected interfac
 - Native tool approvals and Cursor's blocking question/plan extensions, with
   exact interaction correlation, response validation and cancellation cleanup.
 - Session resume and read-only snapshots, with strict native turn identity checks.
+- Local ACP Session import through the existing Settings import page. Discovery reads
+  only the configured `acp-sessions` store and validates native identity without
+  starting Cursor. Ordinary CLI/IDE chats are not converted. Imports use the default
+  execution policy, and unknown native activity remains unknown; close the native
+  client before importing. See [Session import boundaries](../../architecture/harness-session-import.md#cursor-cli-acp-原生规则).
 - Historical and tail Fork, plus revision of the last turn, on macOS/Linux using
   native CLI `/fork` and conversation-only `/rewind`, followed by ACP resume.
   Historical boundaries require native rewind anchors.
@@ -49,6 +64,10 @@ integration. [CLI ACP](https://cursor.com/docs/cli/acp) is the selected interfac
 - Direct Windows bundle invocation avoids leaving a PowerShell/cmd launcher owner
   in between Host and the ACP process. Configuration may select an executable via
   `CODEXHOST_CURSOR_COMMAND`. User authentication is never copied into the plugin.
+  When automatic PATH discovery finds a pinned `cursor-agent/versions/...` binary,
+  discovery prefers an available rolling launcher so native updates are visible to
+  subsequent launches and version checks. Explicit command settings remain authoritative;
+  without a rolling launcher, the discovered pinned binary remains usable.
 
 ## Experimental history gate
 
@@ -81,8 +100,9 @@ contract investigation before release acceptance.
 - The Desktop Agent Picker is still based on a static Harness list. This integration
   adds Cursor explicitly and uses the shared plugin carrier. Its independent model
   and mode preferences do not inherit another Harness's Thinking selection.
-- Context compaction, usage/account reporting and native session import are not
-  advertised. Historical Fork/revision require the native CLI bridge described below.
+- Context compaction and per-Session usage reporting are not advertised. Native
+  Session import covers only local ACP stores, not IDE or ordinary CLI chats.
+  Historical Fork/revision require the native CLI bridge described below.
   Inbound unattended delegation is a native Run Everything request, not an
   ACP-confirmed approval policy. Image/audio prompt inputs are outside the current Host
   text contract.

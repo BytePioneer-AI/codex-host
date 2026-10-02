@@ -33,101 +33,149 @@ export const storedTurnMappingV1Schema = z
 
 export type StoredTurnMappingV1 = z.infer<typeof storedTurnMappingV1Schema>;
 
-export const storedThreadRecordV1Schema = z
+const storedGitInfoV1Schema = z
+  .object({
+    branch: nonBlankTextSchema.max(4_096).optional(),
+    originUrl: nonBlankTextSchema.max(16_384).optional(),
+    sha: nonBlankTextSchema.max(1_024).optional(),
+  })
+  .strict();
+
+/** Fields of the Thread record file; must stay readable by releases without Desktop metadata. */
+const storedThreadCoreV1Shape = {
+  formatVersion: z.literal(1),
+  revision: z.number().int().positive(),
+  hostThreadId: storedHostThreadIdSchema,
+  createRequestId: nonBlankTextSchema.max(1_024),
+  harnessId: harnessIdSchema,
+  state: z.enum(["creating", "ready"]),
+  nativeSessionRef: nativeSessionRefSchema.optional(),
+  cwd: nonBlankTextSchema.max(16_384),
+  title: z.string().max(4_096),
+  archived: z.boolean(),
+  transportModelId: nonBlankTextSchema.max(1_024),
+  ephemeral: z.boolean(),
+  historyMode: z.enum(["legacy", "paginated"]),
+  forkSource: z
+    .object({
+      hostThreadId: hostThreadIdSchema,
+      hostTurnId: hostTurnIdSchema,
+    })
+    .strict()
+    .optional(),
+  subagent: z
+    .object({
+      parentHostThreadId: hostThreadIdSchema,
+      nativeSubagentId: nonBlankTextSchema.max(1_024),
+      role: z.string().max(1_024).optional(),
+    })
+    .strict()
+    .optional(),
+  turnMappings: z.array(storedTurnMappingV1Schema),
+  createdAt: isoDateSchema,
+  updatedAt: isoDateSchema,
+};
+
+/**
+ * Desktop organization metadata. It lives in a separate per-Thread file so that the
+ * strict Thread record keeps its pre-metadata shape and an older release can still load it.
+ */
+const storedThreadMetadataFieldsShape = {
+  projectId: nonBlankTextSchema.max(1_024).optional(),
+  daybreakEnabled: z.boolean().optional(),
+  gitInfo: storedGitInfoV1Schema.optional(),
+};
+
+export const THREAD_METADATA_FIELDS = ["projectId", "daybreakEnabled", "gitInfo"] as const;
+
+export const storedThreadMetadataV1Schema = z
   .object({
     formatVersion: z.literal(1),
-    revision: z.number().int().positive(),
     hostThreadId: storedHostThreadIdSchema,
-    createRequestId: nonBlankTextSchema.max(1_024),
-    harnessId: harnessIdSchema,
-    state: z.enum(["creating", "ready"]),
-    nativeSessionRef: nativeSessionRefSchema.optional(),
-    cwd: nonBlankTextSchema.max(16_384),
-    title: z.string().max(4_096),
-    archived: z.boolean(),
-    transportModelId: nonBlankTextSchema.max(1_024),
-    ephemeral: z.boolean(),
-    historyMode: z.enum(["legacy", "paginated"]),
-    forkSource: z
-      .object({
-        hostThreadId: hostThreadIdSchema,
-        hostTurnId: hostTurnIdSchema,
-      })
-      .strict()
-      .optional(),
-    subagent: z
-      .object({
-        parentHostThreadId: hostThreadIdSchema,
-        nativeSubagentId: nonBlankTextSchema.max(1_024),
-        role: z.string().max(1_024).optional(),
-      })
-      .strict()
-      .optional(),
-    turnMappings: z.array(storedTurnMappingV1Schema),
-    createdAt: isoDateSchema,
-    updatedAt: isoDateSchema,
+    ...storedThreadMetadataFieldsShape,
   })
+  .strict();
+
+export type StoredThreadMetadataV1 = z.infer<typeof storedThreadMetadataV1Schema>;
+
+function refineThreadRecord(
+  record: z.infer<z.ZodObject<typeof storedThreadCoreV1Shape>>,
+  context: z.RefinementCtx,
+): void {
+  if (record.state === "ready" && !record.nativeSessionRef) {
+    context.addIssue({
+      code: "custom",
+      path: ["nativeSessionRef"],
+      message: "Ready Thread must have a Native Session Ref",
+    });
+  }
+  if (record.nativeSessionRef && record.nativeSessionRef.harnessId !== record.harnessId) {
+    context.addIssue({
+      code: "custom",
+      path: ["nativeSessionRef", "harnessId"],
+      message: "Native Session Harness must match the Thread Harness",
+    });
+  }
+  const hostTurnIds = new Set<string>();
+  const nativeTurnKeys = new Set<string>();
+  for (const [index, mapping] of record.turnMappings.entries()) {
+    if (hostTurnIds.has(mapping.hostTurnId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["turnMappings", index, "hostTurnId"],
+        message: "Host Turn IDs must be unique in a Thread",
+      });
+    }
+    hostTurnIds.add(mapping.hostTurnId);
+    const nativeKey = `${mapping.nativeTurnRef.harnessId}\u0000${mapping.nativeTurnRef.nativeSessionId}\u0000${mapping.nativeTurnRef.nativeTurnKey}`;
+    if (nativeTurnKeys.has(nativeKey)) {
+      context.addIssue({
+        code: "custom",
+        path: ["turnMappings", index, "nativeTurnRef"],
+        message: "Native Turn Refs must be unique in a Thread",
+      });
+    }
+    nativeTurnKeys.add(nativeKey);
+    for (const [name, ref] of [
+      ["nativeTurnRef", mapping.nativeTurnRef],
+      ["nativeCheckpointRef", mapping.nativeCheckpointRef],
+    ] as const) {
+      if (!ref) continue;
+      if (ref.harnessId !== record.harnessId) {
+        context.addIssue({
+          code: "custom",
+          path: ["turnMappings", index, name, "harnessId"],
+          message: "Turn Ref Harness must match the Thread Harness",
+        });
+      }
+      if (
+        record.nativeSessionRef &&
+        ref.nativeSessionId !== record.nativeSessionRef.nativeSessionId
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["turnMappings", index, name, "nativeSessionId"],
+          message: "Turn Ref Native Session must match the Thread Native Session",
+        });
+      }
+    }
+  }
+}
+
+/** The on-disk Thread record, exactly as releases before Desktop metadata wrote it. */
+export const storedThreadCoreV1Schema = z
+  .object(storedThreadCoreV1Shape)
   .strict()
-  .superRefine((record, context) => {
-    if (record.state === "ready" && !record.nativeSessionRef) {
-      context.addIssue({
-        code: "custom",
-        path: ["nativeSessionRef"],
-        message: "Ready Thread must have a Native Session Ref",
-      });
-    }
-    if (record.nativeSessionRef && record.nativeSessionRef.harnessId !== record.harnessId) {
-      context.addIssue({
-        code: "custom",
-        path: ["nativeSessionRef", "harnessId"],
-        message: "Native Session Harness must match the Thread Harness",
-      });
-    }
-    const hostTurnIds = new Set<string>();
-    const nativeTurnKeys = new Set<string>();
-    for (const [index, mapping] of record.turnMappings.entries()) {
-      if (hostTurnIds.has(mapping.hostTurnId)) {
-        context.addIssue({
-          code: "custom",
-          path: ["turnMappings", index, "hostTurnId"],
-          message: "Host Turn IDs must be unique in a Thread",
-        });
-      }
-      hostTurnIds.add(mapping.hostTurnId);
-      const nativeKey = `${mapping.nativeTurnRef.harnessId}\u0000${mapping.nativeTurnRef.nativeSessionId}\u0000${mapping.nativeTurnRef.nativeTurnKey}`;
-      if (nativeTurnKeys.has(nativeKey)) {
-        context.addIssue({
-          code: "custom",
-          path: ["turnMappings", index, "nativeTurnRef"],
-          message: "Native Turn Refs must be unique in a Thread",
-        });
-      }
-      nativeTurnKeys.add(nativeKey);
-      for (const [name, ref] of [
-        ["nativeTurnRef", mapping.nativeTurnRef],
-        ["nativeCheckpointRef", mapping.nativeCheckpointRef],
-      ] as const) {
-        if (!ref) continue;
-        if (ref.harnessId !== record.harnessId) {
-          context.addIssue({
-            code: "custom",
-            path: ["turnMappings", index, name, "harnessId"],
-            message: "Turn Ref Harness must match the Thread Harness",
-          });
-        }
-        if (
-          record.nativeSessionRef &&
-          ref.nativeSessionId !== record.nativeSessionRef.nativeSessionId
-        ) {
-          context.addIssue({
-            code: "custom",
-            path: ["turnMappings", index, name, "nativeSessionId"],
-            message: "Turn Ref Native Session must match the Thread Native Session",
-          });
-        }
-      }
-    }
-  });
+  .superRefine(refineThreadRecord);
+
+/**
+ * A Thread record together with its Desktop metadata. Also accepts metadata written inline
+ * by pre-release builds, which is moved to the metadata file on the next write.
+ */
+export const storedThreadRecordV1Schema = z
+  .object({ ...storedThreadCoreV1Shape, ...storedThreadMetadataFieldsShape })
+  .strict()
+  .superRefine(refineThreadRecord);
 
 export type StoredThreadRecordV1 = z.infer<typeof storedThreadRecordV1Schema>;
 
@@ -180,6 +228,20 @@ export interface FindRecentDelegationInput {
   targetHarnessId: HarnessId;
   taskDigest: string;
   since: Date;
+}
+
+/**
+ * Desktop organization metadata for an External Thread. Omitted fields stay
+ * unchanged; `null` clears the stored value.
+ */
+export interface ThreadMetadataPatch {
+  projectId?: string | null;
+  daybreakEnabled?: boolean;
+  gitInfo?: {
+    branch?: string | null;
+    originUrl?: string | null;
+    sha?: string | null;
+  };
 }
 
 export interface CreateProvisionalThreadInput {

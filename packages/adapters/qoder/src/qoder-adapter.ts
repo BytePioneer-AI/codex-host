@@ -16,7 +16,9 @@ import {
   type HarnessId,
 } from "@codexhost/shared-contracts";
 import { qoderEnvironment, resolveQoderExecutable } from "./qoder-command.js";
+import { projectQoderAccount } from "./qoder-account.js";
 import { mapQoderException } from "./qoder-errors.js";
+import { checkQoderLogin, qoderLoginRequired } from "./qoder-login-check.js";
 import { mapQoderSnapshot } from "./qoder-history.js";
 import { decodeQoderModelRef, parseQoderModelCatalog } from "./qoder-models.js";
 import {
@@ -30,6 +32,7 @@ import type {
   GetSessionInfoOptions,
   GetSessionMessagesOptions,
   QoderModelInfo,
+  QoderQuery,
   QoderQueryFactory,
   SDKSessionInfo,
   SessionMessage,
@@ -105,6 +108,44 @@ export class QoderAdapter implements HarnessAdapter {
         resolveQoderExecutable({ ...input, variant: this.#variant }, dependencies));
   }
 
+  async inspectAccount() {
+    let probe: QoderQuery | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const executable = this.#resolveExecutable({
+        ...(this.#commandOverride ? { command: this.#commandOverride } : {}),
+        environment: this.#environment as NodeJS.ProcessEnv,
+        platform: this.#platform,
+      });
+      probe = this.#queryFactory({
+        prompt: "",
+        options: {
+          cwd: process.cwd(),
+          pathToQoderCLIExecutable: executable,
+          ...(this.#environment ? { env: this.#environment } : {}),
+          auth: qoderAuthForEnvironment(this.#variant, this.#environment),
+        },
+      });
+      return await Promise.race([
+        Promise.all([probe.getUsageInfo?.(), probe.accountInfo?.().catch(() => undefined)]).then(
+          ([usage, identity]) => projectQoderAccount(usage, identity),
+        ),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), 10_000);
+        }),
+      ]);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+      try {
+        await probe?.close();
+      } catch {
+        // The quota probe must not leak a query process.
+      }
+    }
+  }
+
   async inspect(input?: InspectHarnessInput): Promise<HarnessInspection> {
     const cacheKey = input?.cwd ?? "";
 
@@ -135,11 +176,15 @@ export class QoderAdapter implements HarnessAdapter {
             // Keep fallback catalog on error
           }
         } else {
+          let stderr = "";
           try {
             const probeQuery = this.#queryFactory({
               prompt: "",
               options: {
                 cwd: input?.cwd ?? process.cwd(),
+                stderr: (chunk) => {
+                  stderr = (stderr + chunk).slice(-8192);
+                },
                 pathToQoderCLIExecutable: executable,
                 ...(this.#environment ? { env: this.#environment } : {}),
                 auth: qoderAuthForEnvironment(this.#variant, this.#environment),
@@ -157,9 +202,21 @@ export class QoderAdapter implements HarnessAdapter {
               }
             }
           } catch (error) {
+            const needsLogin =
+              qoderLoginRequired(stderr) ||
+              (error instanceof Error &&
+                error.message === "Transport closed" &&
+                qoderAuthForEnvironment(this.#variant, this.#environment).type === "qodercli" &&
+                (await checkQoderLogin(executable, this.#environment, input?.cwd)));
             const result: HarnessInspection = {
               status: "unavailable",
-              error: mapQoderException(error),
+              error: needsLogin
+                ? {
+                    code: "authenticationRequired",
+                    message: `Please run ${this.#variant === "cn" ? "qoderclicn" : "qodercli"} login to authenticate.`,
+                    retryable: false,
+                  }
+                : mapQoderException(error),
             };
             return result;
           }

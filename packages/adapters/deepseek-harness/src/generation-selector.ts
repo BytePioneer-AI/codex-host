@@ -9,7 +9,11 @@ import {
   type DeepSeekCommandInvocation,
 } from "./executable.js";
 
-import type { DeepSeekModernVersion } from "./profiles/profile.js";
+import {
+  DEEPSEEK_MINIMUM_VERSION,
+  isSupportedDeepSeekVersion,
+  type DeepSeekModernVersion,
+} from "./profiles/profile.js";
 
 export type DeepSeekProtocolGeneration = "modern";
 
@@ -25,7 +29,8 @@ export type DeepSeekGenerationProbeErrorCode =
   | "unavailable"
   | "protocolError"
   | "processExited"
-  | "cancelled";
+  | "cancelled"
+  | "unsupported";
 
 export class DeepSeekGenerationProbeError extends Error {
   readonly retryable: boolean;
@@ -86,6 +91,18 @@ const SEMVER_PATTERN = new RegExp(
     String.raw`(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`,
   "u",
 );
+
+const DEEPSEEK_NEWEST_VERIFIED_VERSION = "0.2.0-rc.2";
+/** Releases that passed the fixed-tag audit and the real CLI Gate, oldest first. */
+const DEEPSEEK_VERIFIED_VERSIONS = [
+  "0.1.7-rc.1",
+  "0.1.7-rc.2",
+  "0.2.0-rc.1",
+  DEEPSEEK_NEWEST_VERIFIED_VERSION,
+] as const;
+
+/** Install command offered when the local CLI predates Session Format V4. */
+export const DEEPSEEK_UPGRADE_COMMAND = `npm install -g @deepseek-ai/dsh@${DEEPSEEK_NEWEST_VERIFIED_VERSION}`;
 
 export const DEFAULT_DEEPSEEK_ENDPOINT = "http://127.0.0.1:3080/";
 const MODERN_AUTHENTICATION_FINGERPRINT = Buffer.from(
@@ -230,17 +247,49 @@ function singleOutputLine(output: string): string | null {
   return line.length > 0 && !line.includes("\r") && !line.includes("\n") ? line : null;
 }
 
+/** Syntax-only check for one normative SemVer; support is decided separately. */
+export function isDeepSeekSemVer(value: string): boolean {
+  return SEMVER_PATTERN.test(value);
+}
+
 export function classifyDeepSeekVersionOutput(
   output: string,
 ): Pick<DeepSeekExecutableGeneration, "generation" | "version"> {
   const version = singleOutputLine(output);
-  if (version === null || !SEMVER_PATTERN.test(version)) {
+  if (version === null || !isDeepSeekSemVer(version)) {
     throw probeError(
       "protocolError",
       "DeepSeek Harness --version did not return exactly one semantic version",
     );
   }
+  if (!isSupportedDeepSeekVersion(version)) {
+    throw probeError("unsupported", olderThanMinimumMessage(version), { retryable: false });
+  }
   return { generation: "modern", version };
+}
+
+// Older CLIs are refused; newer unverified releases are still attempted, so the
+// message names both the verified list and the caveat for newer versions.
+function olderThanMinimumMessage(version: string): string {
+  const newest = DEEPSEEK_NEWEST_VERIFIED_VERSION;
+  return (
+    `当前 DeepSeek Harness 版本 ${version} 低于最低版本 ${DEEPSEEK_MINIMUM_VERSION}，不受支持。` +
+    `codexhost 支持的 DSH 版本为 ${verifiedVersionList("、", " 和 ")}；` +
+    `高于 ${newest} 的版本可以尝试连接，但适配度可能有限。` +
+    `请运行 \`${DEEPSEEK_UPGRADE_COMMAND}\` 升级，然后重新运行连接诊断。\n` +
+    `DeepSeek Harness ${version} is older than the minimum version ${DEEPSEEK_MINIMUM_VERSION} and is not supported. ` +
+    `Supported DSH versions are ${verifiedVersionList(", ", " and ")}; ` +
+    `versions newer than ${newest} can be tried, but compatibility may be limited. ` +
+    `Run \`${DEEPSEEK_UPGRADE_COMMAND}\` to upgrade, then run connection diagnostics again.`
+  );
+}
+
+function verifiedVersionList(separator: string, lastSeparator: string): string {
+  return (
+    DEEPSEEK_VERIFIED_VERSIONS.slice(0, -1).join(separator) +
+    lastSeparator +
+    DEEPSEEK_NEWEST_VERIFIED_VERSION
+  );
 }
 
 interface CapturedVersionOutput {

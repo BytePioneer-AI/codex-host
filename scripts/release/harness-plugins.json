@@ -20,8 +20,6 @@
   "runtimePackages": [
     "@agentclientprotocol/sdk",
     "@anthropic-ai/claude-agent-sdk",
-    "@deepseek-ai/cosmokit",
-    "@deepseek-ai/schemastery",
     "@hono/node-server",
     "@modelcontextprotocol/sdk",
     "@opencode-ai/sdk",

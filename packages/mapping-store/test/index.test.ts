@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   MappingStore,
   packageMetadata,
+  storedThreadCoreV1Schema,
   storedThreadRecordV1Schema,
   type MappingStoreError,
   type StoredThreadRecordV1,
@@ -702,6 +703,184 @@ describe("mapping-store package", () => {
     await third.initialize();
     await expect(third.getThread(threadId)).resolves.toMatchObject({ archived: false });
     await third.close();
+  });
+
+  it("patches Thread metadata, clears fields with null, and skips no-op writes", async () => {
+    const directory = await temporaryStoreDirectory();
+    let replacements = 0;
+    const first = new MappingStore({
+      directory,
+      beforeReplace() {
+        replacements += 1;
+      },
+    });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, {
+      projectId: "project-a",
+      daybreakEnabled: true,
+      gitInfo: { branch: "main", sha: "abc123" },
+    });
+    const patched = await first.updateMetadata(threadId, { gitInfo: { sha: null } });
+    expect(patched).toMatchObject({
+      projectId: "project-a",
+      daybreakEnabled: true,
+      gitInfo: { branch: "main" },
+    });
+    expect(patched.gitInfo).not.toHaveProperty("sha");
+    const afterChangeReplacements = replacements;
+    await expect(first.updateMetadata(threadId, { projectId: "project-a" })).resolves.toEqual(
+      patched,
+    );
+    expect(replacements).toBe(afterChangeReplacements);
+    await first.updateMetadata(threadId, { projectId: null, gitInfo: { branch: null } });
+    await first.close();
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    const reloaded = await second.getThread(threadId);
+    expect(reloaded).toMatchObject({ daybreakEnabled: true });
+    expect(reloaded).not.toHaveProperty("projectId");
+    expect(reloaded).not.toHaveProperty("gitInfo");
+    await second.close();
+  });
+
+  it("keeps Thread record files readable by releases without Desktop metadata", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, {
+      projectId: "project-a",
+      daybreakEnabled: true,
+      gitInfo: { branch: "main" },
+    });
+    // A second write makes the backup a post-metadata copy too.
+    await first.updateMetadata(threadId, { gitInfo: { sha: "abc123" } });
+    await first.close();
+
+    // storedThreadCoreV1Schema is the strict record shape older releases accept.
+    for (const file of ["threads", "backups"].map((name) =>
+      path.join(directory, name, `${threadId}.json`),
+    )) {
+      const onDisk = JSON.parse(await readFile(file, "utf8"));
+      expect(storedThreadCoreV1Schema.safeParse(onDisk).success).toBe(true);
+    }
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toMatchObject({
+      projectId: "project-a",
+      daybreakEnabled: true,
+      gitInfo: { branch: "main", sha: "abc123" },
+    });
+    await second.removeThread(threadId);
+    await expect(readdir(path.join(directory, "thread-metadata"))).resolves.toEqual([]);
+    await second.close();
+  });
+
+  it("leaves the record unchanged on disk and in memory when the metadata write fails", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    const before = await first.getThread(threadId);
+    const recordFile = path.join(directory, "threads", `${threadId}.json`);
+    const onDiskBefore = await readFile(recordFile, "utf8");
+    // A non-empty directory at the metadata path makes the atomic rename fail.
+    const blocker = path.join(directory, "thread-metadata", `${threadId}.json`);
+    await mkdir(blocker);
+    await writeFile(path.join(blocker, "block"), "");
+
+    await expect(first.updateMetadata(threadId, { projectId: "project-a" })).rejects.toMatchObject({
+      code: "IO_ERROR",
+    });
+    await expect(first.getThread(threadId)).resolves.toEqual(before);
+    await expect(readFile(recordFile, "utf8")).resolves.toBe(onDiskBefore);
+    await first.close();
+
+    await rm(blocker, { recursive: true });
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toEqual(before);
+    await second.close();
+  });
+
+  it("moves inline metadata out of the record and drops metadata of removed Threads", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.close();
+    const recordFile = path.join(directory, "threads", `${threadId}.json`);
+    const inline = { ...JSON.parse(await readFile(recordFile, "utf8")), projectId: "project-a" };
+    await writeFile(recordFile, `${JSON.stringify(inline)}\n`);
+    // Left behind when an older release removed its Thread.
+    await writeFile(
+      path.join(directory, "thread-metadata", "thread-gone.json"),
+      `${JSON.stringify({ formatVersion: 1, hostThreadId: "thread-gone", projectId: "p" })}\n`,
+    );
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toMatchObject({ projectId: "project-a" });
+    expect(
+      storedThreadCoreV1Schema.safeParse(JSON.parse(await readFile(recordFile, "utf8"))).success,
+    ).toBe(true);
+    await expect(readdir(path.join(directory, "thread-metadata"))).resolves.toEqual([
+      `${threadId}.json`,
+    ]);
+    await second.close();
+  });
+
+  it("never persists credentials embedded in a Git origin URL", async () => {
+    const store = new MappingStore({ directory: await temporaryStoreDirectory() });
+    await store.initialize();
+    await createReady(store);
+    const origin = async (originUrl: string) =>
+      (await store.updateMetadata(threadId, { gitInfo: { originUrl } })).gitInfo?.originUrl;
+    await expect(origin("https://ghp_secret@github.com/o/r.git")).resolves.toBe(
+      "https://github.com/o/r.git",
+    );
+    await expect(origin("https://user:pass@example.com/r.git")).resolves.toBe(
+      "https://example.com/r.git",
+    );
+    await expect(origin("ssh://git@github.com/o/r.git")).resolves.toBe(
+      "ssh://git@github.com/o/r.git",
+    );
+    await expect(origin("git@github.com:o/r.git")).resolves.toBe("git@github.com:o/r.git");
+    // Values the URL parser rejects must not bypass credential removal.
+    await expect(origin("https://user:tok@example.com:bad/r.git")).resolves.toBe(
+      "https://example.com:bad/r.git",
+    );
+    await expect(origin("https://ghp_secret@example.com:bad/r.git")).resolves.toBe(
+      "https://example.com:bad/r.git",
+    );
+    await expect(origin("ssh://git:tok@example.com:bad/r.git")).resolves.toBe(
+      "ssh://example.com:bad/r.git",
+    );
+    await expect(origin("ssh://git@example.com:bad/r.git")).resolves.toBe(
+      "ssh://git@example.com:bad/r.git",
+    );
+    await expect(origin("user:tok@example.com:o/r.git")).resolves.toBe("example.com:o/r.git");
+    await store.close();
+  });
+
+  it("applies a conditional project clear only while the assignment still matches", async () => {
+    const store = new MappingStore({ directory: await temporaryStoreDirectory() });
+    await store.initialize();
+    await createReady(store);
+    await store.updateMetadata(threadId, { projectId: "project-b" });
+    await expect(
+      store.updateMetadata(threadId, { projectId: null }, { ifProjectId: "project-a" }),
+    ).resolves.toMatchObject({ projectId: "project-b" });
+    const cleared = await store.updateMetadata(
+      threadId,
+      { projectId: null },
+      { ifProjectId: "project-b" },
+    );
+    expect(cleared).not.toHaveProperty("projectId");
+    await store.close();
   });
 
   it("keeps prior archive state and Revision when archive replacement fails", async () => {

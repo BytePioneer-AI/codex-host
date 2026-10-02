@@ -28,6 +28,7 @@ import {
 import {
   catalogModelsFromInventory,
   HermesInventoryTimeoutError,
+  HermesConfigurationRequiredError,
   readHermesModelInventory,
   type HermesInventory,
 } from "./hermes-inventory.js";
@@ -188,6 +189,12 @@ export class HermesAdapter implements HarnessAdapter {
       ...(this.#options.environment ? { environment: this.#options.environment } : {}),
     })
       .then((inventory) => {
+        if (inventory.configured === false) {
+          this.#lastInventory = null;
+          this.#inspectionCache = null;
+          this.#inspectionCacheScope = null;
+          throw new HermesConfigurationRequiredError();
+        }
         if (!this.#closed) this.#lastInventory = inventory;
         return inventory;
       })
@@ -601,6 +608,12 @@ export class HermesAdapter implements HarnessAdapter {
 }
 
 function inspectionFromTransportError(error: unknown): HarnessInspection {
+  if (error instanceof HermesConfigurationRequiredError) {
+    return {
+      status: "unavailable",
+      error: { code: "configurationRequired", message: error.message, retryable: false },
+    };
+  }
   if (error instanceof HermesTransportError) {
     if (error.kind === "notInstalled") {
       return {

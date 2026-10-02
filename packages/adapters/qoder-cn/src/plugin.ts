@@ -1,10 +1,9 @@
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
-import { QoderAdapter } from "@codexhost/adapter-qoder";
+import {
+  createHarnessAdapter as createQoderAdapter,
+  type QoderAdapter,
+} from "@codexhost/adapter-qoder";
 
 export function createHarnessAdapter(context: HarnessPluginContext): QoderAdapter {
-  return new QoderAdapter({
-    variant: "cn",
-    environment: { ...context.environment },
-    platform: context.platform as NodeJS.Platform,
-  });
+  return createQoderAdapter(context, "cn");
 }

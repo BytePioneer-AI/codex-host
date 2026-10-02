@@ -36,6 +36,41 @@
 
 </div>
 
+## 赞助
+
+<details open>
+<summary>点击收起</summary>
+
+<table>
+<tr>
+<td width="180"><a href="https://aixlau.me/register?aff=HOST"><img src="../imgs/sponsors/xinglian-ai.png" alt="星链AI" width="160"></a></td>
+<td>感谢 <b>星链AI</b> 赞助本项目！星链AI 为 Codex、CodexHost 等 AI Coding 工具提供稳定、高效的 API 中转服务，支持主流 AI 模型快速接入：稳定线路 · 快速响应 · 多模型兼容 · 即开即用，减少 API 配置与切换成本，让你更专注于 Coding。<a href="https://aixlau.me/register?aff=HOST">点击立即体验 →</a></td>
+</tr>
+<tr>
+<td width="180"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="../imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="160"></a></td>
+<td>感谢 <b>VibeAPI</b> 赞助本项目！VibeAPI 主要面向重度开发者与团队，提供主流 AI 模型统一接入。主打 Codex 与 Claude 系列，坚持自建号池可溯源。首流响应极速，SLA 稳定性达 99.9%，缓存命中率高达 95%+。提供 7×24 小时人工技术支持，全面支持对公开票与企业合作。<a href="https://vibeapi.cc/sign-up?aff=AOYp">点此前往薅赛博鸡蛋</a></td>
+</tr>
+</table>
+</details>
+
+<a name="support"></a>
+<details>
+<summary><strong>☕ 如果愿意支持 CodexHost 的持续开发，欢迎请我喝杯咖啡</strong></summary>
+
+<p align="center">
+  <img src="../imgs/sponsor-wechat.png" width="200" alt="WeChat Pay" /><br />
+  <sub>微信扫码 · 金额不限，每一份支持都意义重大</sub>
+</p>
+
+CodexHost 是免费开源的项目。赞助将用于维持项目运行的实际成本：
+
+- 🛠️ **开发时间**：新功能、问题修复，以及审核社区提交的 PR
+- 🤖 **AI 订阅**：CodexHost 接入的各个 Harness 与 AI 服务的付费订阅，确保每个集成都能被实际测试并保持最新
+
+<p align="center">❤️ 感谢每一份支持 ❤️</p>
+
+</details>
+
 ## 界面预览
 
 无需切换应用，**Pi、Claude Code、Grok Build 等十余个 Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
@@ -88,7 +123,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 </details>
 
-### 亮点功能
+### 功能介绍
 
 <table>
   <tr>

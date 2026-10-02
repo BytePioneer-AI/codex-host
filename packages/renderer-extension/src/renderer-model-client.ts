@@ -1,4 +1,9 @@
 import {
+  HARNESS_INSTALLATION_METHOD,
+  harnessInstallationParamsSchema,
+  harnessInstallationStateSchema,
+  type HarnessInstallationParams,
+  type HarnessInstallationState,
   HARNESS_DISPLAY_GET_METHOD,
   HARNESS_DISPLAY_SET_METHOD,
   harnessDisplaySettingsSchema,
@@ -100,6 +105,7 @@ import {
   RendererMethodUnavailableError,
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
+import { verifyNativeCodexThread } from "./renderer-native-thread.js";
 import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
@@ -182,13 +188,15 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
   getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
   setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
   setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
   listLoadedSessions?(): Promise<LoadedSession[]>;
-  currentHostId?(): string | null;
+  currentHostId?(composer?: Element): string | null;
+  knownHostIds?(): readonly string[];
   listHarnessPlugins?(): Promise<HarnessPluginListResult>;
   clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
@@ -352,6 +360,15 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
+      return harnessInstallationStateSchema.parse(
+        await manager.sendRequest(
+          HARNESS_INSTALLATION_METHOD,
+          harnessInstallationParamsSchema.parse(input),
+          { priority: "interactive" },
+        ),
+      );
+    },
     async getHarnessDisplaySettings() {
       return harnessDisplaySettingsSchema.parse(
         await manager.sendRequest(HARNESS_DISPLAY_GET_METHOD, {}),
@@ -421,23 +438,7 @@ export function createRendererModelClient(
         // Stock Codex has no Host inspection API. Verify its native Thread on
         // this same connection; neither an RPC failure nor a missing Account
         // establishes ownership. Match the external markers used by the Host.
-        const native = await manager.sendRequest("thread/read", {
-          threadId: params.threadId,
-          includeTurns: false,
-        });
-        const thread = isRecord(native) ? native.thread : null;
-        if (
-          !isRecord(thread) ||
-          thread.id !== params.threadId ||
-          typeof thread.modelProvider !== "string" ||
-          !thread.modelProvider ||
-          thread.modelProvider === "codexhost" ||
-          typeof thread.cliVersion !== "string" ||
-          !thread.cliVersion ||
-          thread.cliVersion === "codexhost"
-        ) {
-          throw new Error("Native Thread response cannot establish Codex ownership");
-        }
+        await verifyNativeCodexThread(manager.sendRequest, params.threadId);
         return { owner: "codex", locked: true };
       }
       return threadInspectionSchema.parse(result);

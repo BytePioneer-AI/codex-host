@@ -156,6 +156,42 @@ describe("Renderer connection diagnostics", () => {
     expect(completed).toBe(true);
   });
 
+  it.each([false, true])(
+    "starts a new target Host inspection after pending diagnostics settle (failure=%s)",
+    async (failed) => {
+      const pending = Promise.withResolvers<undefined>();
+      const fresh = Promise.withResolvers<undefined>();
+      let observed = "notInstalled";
+      const refreshHost = vi.fn(async () => {
+        await fresh.promise;
+        observed = "ready";
+      });
+      const pendingHost = vi.fn(() => pending.promise);
+      const refresh = refreshConnectionHosts(["remote"], refreshHost, pendingHost);
+      expect(pendingHost).toHaveBeenCalledExactlyOnceWith("remote");
+      expect(refreshHost).not.toHaveBeenCalled();
+      if (failed) pending.reject(new Error("old inspection failed"));
+      else pending.resolve(undefined);
+      await vi.waitFor(() => expect(refreshHost).toHaveBeenCalledExactlyOnceWith("remote"));
+      expect(observed).toBe("notInstalled");
+      fresh.resolve(undefined);
+      await refresh;
+      expect(observed).toBe("ready");
+    },
+  );
+
+  it("propagates fresh inspection failure after draining the old request", async () => {
+    await expect(
+      refreshConnectionHosts(
+        ["local"],
+        async () => {
+          throw new Error("fresh failure");
+        },
+        () => Promise.resolve(),
+      ),
+    ).rejects.toThrow("fresh failure");
+  });
+
   it("rejects when one Host refresh fails", async () => {
     await expect(
       refreshConnectionHosts(["local", "remote"], (hostId) =>
@@ -741,28 +777,31 @@ describe("Renderer Composer DOM behavior", () => {
     expect(placeCredits).not.toHaveBeenCalled();
   });
 
-  it("anchors credits to the permission-mode picker's own root", () => {
+  it.each([true, false])("anchors credits only in a verified permission slot (%s)", (verified) => {
     const permissionModeRoot = { parentElement: {} } as HTMLElement;
     const control = {
       permissionModePicker: { root: permissionModeRoot },
+      nativePermissionModeControlVerified: verified,
     } as unknown as ComposerAgentControl;
 
-    expect(creditsPlacementAnchor(control)).toBe(permissionModeRoot);
+    expect(creditsPlacementAnchor(control)).toBe(verified ? permissionModeRoot : null);
   });
 
   it("does not anchor credits until the permission-mode picker has been inserted into the DOM", () => {
     const permissionModeRoot = { parentElement: null } as unknown as HTMLElement;
     const control = {
       permissionModePicker: { root: permissionModeRoot },
+      nativePermissionModeControlVerified: true,
     } as unknown as ComposerAgentControl;
 
     expect(creditsPlacementAnchor(control)).toBeNull();
   });
 
-  it("places credits immediately before the permission-mode picker, independent of Usage", () => {
+  it("removes credits when the native permission slot is unavailable", () => {
     const permissionModeRoot = { parentElement: {} } as HTMLElement;
     const placeUsage = vi.fn();
     const placeCredits = vi.fn();
+    const removeCredits = vi.fn();
     const control = {
       composer: { querySelectorAll: () => [] },
       modelPicker: { root: {}, trigger: {} },
@@ -771,9 +810,9 @@ describe("Renderer Composer DOM behavior", () => {
       nativeContextUsageControl: null,
       permissionModePicker: { root: permissionModeRoot },
       credits: {
-        anchor: null,
+        anchor: permissionModeRoot,
         place: placeCredits,
-        root: { remove: vi.fn() },
+        root: { remove: removeCredits },
       },
       usage: {
         anchor: null,
@@ -784,7 +823,9 @@ describe("Renderer Composer DOM behavior", () => {
 
     reconcileComposerNativeControls(control, true, false);
 
-    expect(placeCredits).toHaveBeenCalledWith(permissionModeRoot);
+    expect(placeCredits).not.toHaveBeenCalled();
+    expect(removeCredits).toHaveBeenCalledOnce();
+    expect(control.credits.anchor).toBeNull();
   });
 
   it("does not treat codexhost Usage controls as native anchors", () => {

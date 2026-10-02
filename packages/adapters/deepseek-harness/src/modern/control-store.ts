@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
 
-import type { DeepSeekModernProfile } from "../profiles/profile.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
 import { redactModernCredential } from "./wire.js";
 
@@ -55,7 +54,6 @@ export class ModernControlStoreError extends Error {
 }
 
 export interface ModernControlStoreOptions {
-  readonly profile?: DeepSeekModernProfile;
   readonly maxSessions?: number;
   readonly maxKeysPerSession?: number;
   readonly maxWaiters?: number;
@@ -109,9 +107,7 @@ type ParsedControlFrame =
       readonly value: ModernControlJsonValue;
       readonly seq: number;
       readonly bytes: number;
-    }
-  | { readonly type: "queue"; readonly sessionId: string }
-  | { readonly type: "jobs"; readonly sessionId: string };
+    };
 
 const DEFAULT_MAX_SESSIONS = 1_024;
 const DEFAULT_MAX_KEYS_PER_SESSION = 256;
@@ -183,18 +179,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Reflect.ownKeys(value);
   return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
-}
-
-function hasExactOptionalKeys(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[],
-): boolean {
-  const allowed = new Set([...required, ...optional]);
-  return (
-    required.every((key) => Object.hasOwn(value, key)) &&
-    Reflect.ownKeys(value).every((key) => typeof key === "string" && allowed.has(key))
-  );
 }
 
 function positiveInteger(value: number, name: string, maximum = Number.MAX_SAFE_INTEGER): number {
@@ -420,87 +404,14 @@ function parseProjectionBaseline(value: unknown, maxKeys: number): ParsedProject
   return { asOfSeq: value.asOfSeq, values, rowBytes };
 }
 
-function parseQueueItem(value: unknown): void {
-  if (
-    !isRecord(value) ||
-    !hasExactOptionalKeys(value, ["id", "placement", "message"], ["rpcId"]) ||
-    !validIdentifier(value.id) ||
-    (value.placement !== "queued" &&
-      value.placement !== "steering" &&
-      value.placement !== "context") ||
-    (value.rpcId !== undefined && !validIdentifier(value.rpcId)) ||
-    !isRecord(value.message) ||
-    !hasExactKeys(value.message, ["id", "content"]) ||
-    !validIdentifier(value.message.id) ||
-    !Array.isArray(value.message.content)
-  ) {
-    throw storeError("protocolError", "DeepSeek Harness control frame has an invalid queue");
-  }
-  void measureJson(value.message.content);
-}
-
-function parseJob(value: unknown): void {
-  if (
-    !isRecord(value) ||
-    !hasExactOptionalKeys(
-      value,
-      ["id", "kind", "label", "status", "startedAt"],
-      ["detail", "finishedAt"],
-    ) ||
-    !validIdentifier(value.id) ||
-    !validIdentifier(value.kind) ||
-    typeof value.label !== "string" ||
-    (value.status !== "running" &&
-      value.status !== "stopping" &&
-      value.status !== "completed" &&
-      value.status !== "killed" &&
-      value.status !== "failed") ||
-    typeof value.startedAt !== "number" ||
-    !Number.isSafeInteger(value.startedAt) ||
-    (value.detail !== undefined && typeof value.detail !== "string") ||
-    (value.finishedAt !== undefined &&
-      (typeof value.finishedAt !== "number" || !Number.isSafeInteger(value.finishedAt)))
-  ) {
-    throw storeError("protocolError", "DeepSeek Harness control frame has invalid jobs");
-  }
-}
-
-function parseSessionCollection(
-  value: unknown,
-  kind: "jobs" | "queues",
-  sessions: Set<string>,
-  maxSessions: number,
-): void {
-  if (!isPlainRecord(value)) {
-    throw storeError("protocolError", `DeepSeek Harness control baseline has invalid ${kind}`);
-  }
-  for (const [sessionId, items] of Object.entries(value)) {
-    if (!validIdentifier(sessionId) || !Array.isArray(items)) {
-      throw storeError("protocolError", `DeepSeek Harness control baseline has invalid ${kind}`);
-    }
-    sessions.add(sessionId);
-    if (sessions.size > maxSessions || items.length > MAX_COLLECTION_ITEMS) {
-      throw storeError("resourceLimit", "DeepSeek Harness control baseline exceeded its bound");
-    }
-    for (const item of items) {
-      if (kind === "queues") parseQueueItem(item);
-      else parseJob(item);
-    }
-  }
-}
-
 function parseBaseline(
   value: unknown,
   maxSessions: number,
   maxKeys: number,
-  formatVersion: DeepSeekModernProfile["sessionFormatVersion"],
 ): ParsedControlBaseline {
   if (
     !isRecord(value) ||
-    !hasExactKeys(
-      value,
-      formatVersion === 4 ? ["projections"] : ["queues", "jobs", "projections"],
-    ) ||
+    !hasExactKeys(value, ["projections"]) ||
     !isPlainRecord(value.projections)
   ) {
     throw storeError(
@@ -509,10 +420,6 @@ function parseBaseline(
     );
   }
   const sessions = new Set<string>();
-  if (formatVersion !== 4) {
-    parseSessionCollection(value.queues, "queues", sessions, maxSessions);
-    parseSessionCollection(value.jobs, "jobs", sessions, maxSessions);
-  }
   const projections: Record<string, ParsedProjectionBaseline> = Object.create(null) as Record<
     string,
     ParsedProjectionBaseline
@@ -537,7 +444,6 @@ function parseControlFrame(
   value: unknown,
   maxSessions: number,
   maxKeys: number,
-  formatVersion: DeepSeekModernProfile["sessionFormatVersion"],
 ): ParsedControlFrame {
   if (!isRecord(value) || typeof value.type !== "string") {
     throw storeError("protocolError", "DeepSeek Harness control stream emitted an invalid frame");
@@ -545,7 +451,7 @@ function parseControlFrame(
   if (value.type === "baseline" && hasExactKeys(value, ["type", "value"])) {
     return {
       type: "baseline",
-      value: parseBaseline(value.value, maxSessions, maxKeys, formatVersion),
+      value: parseBaseline(value.value, maxSessions, maxKeys),
     };
   }
   if (
@@ -565,28 +471,6 @@ function parseControlFrame(
       bytes: projection.bytes,
     };
   }
-  if (
-    formatVersion !== 4 &&
-    value.type === "queue" &&
-    hasExactKeys(value, ["type", "sessionId", "items"]) &&
-    validIdentifier(value.sessionId) &&
-    Array.isArray(value.items) &&
-    value.items.length <= MAX_COLLECTION_ITEMS
-  ) {
-    for (const item of value.items) parseQueueItem(item);
-    return { type: "queue", sessionId: value.sessionId };
-  }
-  if (
-    formatVersion !== 4 &&
-    value.type === "jobs" &&
-    hasExactKeys(value, ["type", "sessionId", "jobs"]) &&
-    validIdentifier(value.sessionId) &&
-    Array.isArray(value.jobs) &&
-    value.jobs.length <= MAX_COLLECTION_ITEMS
-  ) {
-    for (const job of value.jobs) parseJob(job);
-    return { type: "jobs", sessionId: value.sessionId };
-  }
   throw storeError("protocolError", "DeepSeek Harness control stream emitted an invalid frame");
 }
 
@@ -597,7 +481,6 @@ function parseSeed(value: ModernProjectionSeed, maxKeys: number): ParsedProjecti
 /** Projection-only owner for the Modern Adapter-wide `session/control` stream. */
 export class ModernControlStore {
   readonly #lifetime = new AbortController();
-  readonly #formatVersion: DeepSeekModernProfile["sessionFormatVersion"];
   readonly #maxKeys: number;
   readonly #maxSessions: number;
   readonly #maxWaiters: number;
@@ -619,7 +502,6 @@ export class ModernControlStore {
 
   constructor(source: ModernControlStreamSource, options: ModernControlStoreOptions = {}) {
     this.#source = source;
-    this.#formatVersion = options.profile?.sessionFormatVersion ?? 3;
     this.#maxSessions = positiveInteger(options.maxSessions ?? DEFAULT_MAX_SESSIONS, "maxSessions");
     this.#maxKeys = positiveInteger(
       options.maxKeysPerSession ?? DEFAULT_MAX_KEYS_PER_SESSION,
@@ -820,12 +702,7 @@ export class ModernControlStore {
   replaceBaseline(frame: unknown): void {
     this.#assertUsable();
     try {
-      const parsed = parseControlFrame(
-        frame,
-        this.#maxSessions,
-        this.#maxKeys,
-        this.#formatVersion,
-      );
+      const parsed = parseControlFrame(frame, this.#maxSessions, this.#maxKeys);
       if (parsed.type !== "baseline") {
         throw storeError("protocolError", "Control baseline replacement requires a baseline frame");
       }
@@ -881,12 +758,7 @@ export class ModernControlStore {
                 : "DeepSeek Harness control stream ended before its baseline",
             );
           }
-          const frame = parseControlFrame(
-            next.value,
-            this.#maxSessions,
-            this.#maxKeys,
-            this.#formatVersion,
-          );
+          const frame = parseControlFrame(next.value, this.#maxSessions, this.#maxKeys);
           if (!generationOpened && frame.type !== "baseline") {
             throw storeError(
               "protocolError",
@@ -906,11 +778,10 @@ export class ModernControlStore {
               this.#opened = true;
               this.#readyResolve?.();
             }
-          } else if (frame.type === "projection") {
+          } else {
             this.#apply(frame.sessionId, frame.key, frame.value, frame.seq, frame.bytes);
             if (this.#fault) return;
           }
-          // queue/jobs are validated transport facts but this store deliberately owns no such state.
         }
       } catch (error) {
         if (this.#closing) return;

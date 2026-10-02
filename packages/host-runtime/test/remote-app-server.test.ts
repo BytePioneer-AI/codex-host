@@ -594,9 +594,30 @@ describe("remote SSH app-server transport", () => {
         firstClosing = first.close();
         await firstClientClosed;
 
+        // Exercise the reset race deterministically on every platform.
+        const probeConnection = vi.spyOn(net, "createConnection");
+        probeConnection.mockImplementationOnce(() => {
+          probeConnection.mockRestore();
+          const connection = new net.Socket();
+          queueMicrotask(() => {
+            const error = new Error("fixture shutdown reset") as NodeJS.ErrnoException;
+            error.code = "ECONNRESET";
+            connection.destroy(error);
+          });
+          return connection;
+        });
+
         let inactive = false;
         for (let attempt = 0; attempt < 100; attempt += 1) {
-          if (!(await socketAcceptsConnections(socketPath))) {
+          // A probe racing server.close() can be reset before connecting.
+          // Retry that transient result; only absence/refusal proves inactivity.
+          const active = await socketAcceptsConnections(socketPath).catch(
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === "ECONNRESET") return true;
+              throw error;
+            },
+          );
+          if (!active) {
             inactive = true;
             break;
           }
@@ -620,6 +641,91 @@ describe("remote SSH app-server transport", () => {
       }
     },
   );
+
+  it.skipIf(process.platform === "win32")(
+    "releases a socket bound by a listen that was in flight when close started",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-close-listen-"));
+      const socketPath = path.join(root, "control.sock");
+      const listener = createRemoteAppServerWebSocketListener({
+        socketPath,
+        diagnosticOutput: new PassThrough(),
+        createSession: () => ({
+          run: async () => 0,
+          disconnect: () => undefined,
+          close: () => undefined,
+        }),
+      });
+
+      try {
+        // Supervisor loss can request shutdown while startup is still binding.
+        const listening = listener.listen();
+        const closing = listener.close();
+        await listening;
+        await closing;
+        await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(listener.listen()).rejects.toThrow("listener is closed");
+        await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await listener.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "shares one bind between concurrent listen calls",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-listen-twice-"));
+      const socketPath = path.join(root, "control.sock");
+      const listener = createRemoteAppServerWebSocketListener({
+        socketPath,
+        diagnosticOutput: new PassThrough(),
+        createSession: () => ({
+          run: async () => 0,
+          disconnect: () => undefined,
+          close: () => undefined,
+        }),
+      });
+
+      try {
+        const first = listener.listen();
+        const second = listener.listen();
+        const closing = listener.close();
+        await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+        await closing;
+        await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await listener.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("retries listen after a failed attempt", async () => {
+    const root = await mkdtemp(path.join("/tmp", "ch-listen-retry-"));
+    const socketPath = path.join(root, "control.sock");
+    const listener = createRemoteAppServerWebSocketListener({
+      socketPath,
+      diagnosticOutput: new PassThrough(),
+      createSession: () => ({
+        run: async () => 0,
+        disconnect: () => undefined,
+        close: () => undefined,
+      }),
+    });
+
+    try {
+      await writeFile(socketPath, "not a socket");
+      await expect(listener.listen()).rejects.toThrow("is not a socket");
+      await rm(socketPath);
+      await listener.listen();
+      expect((await lstat(socketPath)).isSocket()).toBe(true);
+    } finally {
+      await listener.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it.skipIf(process.platform === "win32")(
     "makes an existing control-socket directory private",

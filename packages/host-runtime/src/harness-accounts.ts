@@ -5,6 +5,7 @@ import {
   harnessAccountSourceListResultSchema,
   type HarnessAccountInspectResult,
   type HarnessAccountListResult,
+  type HarnessAccountSnapshot,
   type HarnessAccountSourceListResult,
   type HarnessId,
   type HarnessPluginDescriptor,
@@ -27,7 +28,7 @@ export function listHarnessAccountSources(
 ): HarnessAccountSourceListResult {
   return harnessAccountSourceListResultSchema.parse({
     sources: [...adapters].flatMap((adapter) =>
-      adapter.inspectAccount
+      adapter.inspectAccount || adapter.inspectAccounts
         ? [
             {
               harnessId: adapter.harnessId,
@@ -49,27 +50,55 @@ export async function inspectHarnessAccount(
     harnessId: adapter.harnessId,
     harnessName: harnessName(adapter.harnessId, descriptors),
   };
-  if (!adapter.inspectAccount) {
+  if (!adapter.inspectAccount && !adapter.inspectAccounts) {
     return harnessAccountInspectResultSchema.parse({ ...identity, account: null });
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const value = await Promise.race([
-      Promise.resolve().then(() => adapter.inspectAccount?.()),
+      Promise.resolve().then(async (): Promise<unknown> =>
+        adapter.inspectAccounts ? adapter.inspectAccounts() : adapter.inspectAccount?.(),
+      ),
       new Promise<null>((resolve) => {
         timer = setTimeout(() => resolve(null), timeoutMs);
       }),
     ]);
-    const parsed = harnessAccountSnapshotSchema.safeParse(value);
+    const accounts = projectAccountSnapshots(value);
     return harnessAccountInspectResultSchema.parse({
       ...identity,
-      account: parsed.success ? parsed.data : null,
+      account: accounts[0] ?? null,
+      ...(accounts.length > 1 ? { accounts } : {}),
     });
   } catch {
     return harnessAccountInspectResultSchema.parse({ ...identity, account: null });
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+const MAX_HARNESS_ACCOUNT_SNAPSHOTS = 8;
+
+function projectAccountSnapshots(value: unknown): HarnessAccountSnapshot[] {
+  const candidates = Array.isArray(value) ? value : value == null ? [] : [value];
+  const accounts: HarnessAccountSnapshot[] = [];
+  for (const candidate of candidates) {
+    if (accounts.length >= MAX_HARNESS_ACCOUNT_SNAPSHOTS) break;
+    const parsed = harnessAccountSnapshotSchema.safeParse(candidate);
+    if (parsed.success) accounts.push(parsed.data);
+  }
+  return accounts;
+}
+
+/** Rows exposed to settings, including every Billing Source from one inspection. */
+export function listedHarnessAccounts(
+  result: HarnessAccountInspectResult,
+): HarnessAccountListResult["accounts"] {
+  const rows = result.accounts ?? (result.account ? [result.account] : []);
+  return rows.map((account) => ({
+    ...account,
+    harnessId: result.harnessId,
+    harnessName: result.harnessName,
+  }));
 }
 
 interface CachedHarnessAccountInspection {
@@ -126,8 +155,6 @@ export async function inspectHarnessAccounts(
     [...adapters].map((adapter) => inspectHarnessAccount(adapter, descriptors, timeoutMs)),
   );
   return {
-    accounts: inspections.flatMap(({ harnessId, harnessName, account }) =>
-      account ? [{ ...account, harnessId, harnessName }] : [],
-    ),
+    accounts: inspections.flatMap((result) => listedHarnessAccounts(result)),
   };
 }

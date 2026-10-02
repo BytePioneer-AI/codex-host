@@ -446,6 +446,36 @@ describe("OMP Adapter Session environment", () => {
 });
 
 describe("OMP Adapter inspection", () => {
+  it.each([
+    [
+      "No models available. Use /login or set an API key environment variable. Then use /model to select a model.",
+      "configurationRequired",
+    ],
+    ["No models available.", "unavailable"],
+    ["Connection timed out", "unavailable"],
+  ])("classifies startup diagnostic %j as %s", async (stderr, code) => {
+    const transport = new FakeOmpTransport();
+    Object.defineProperty(transport, "stderrTail", { value: stderr });
+    vi.spyOn(transport, "start").mockRejectedValue(new Error("Omp RPC ready signal timed out"));
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const inspection = await adapter.inspect({ cwd: "/synthetic", refresh: true });
+      expect(inspection).toMatchObject({
+        status: "error",
+        error: { code, stage: "startup", stderrTail: stderr },
+      });
+      if (code === "configurationRequired") {
+        expect(inspection).toMatchObject({
+          error: { message: expect.stringContaining("`/login`"), retryable: false },
+        });
+        expect(inspection).toMatchObject({
+          error: { message: expect.stringContaining("API key") },
+        });
+      }
+    } finally {
+      await adapter.close();
+    }
+  });
   it("reports a missing executable as not installed", async () => {
     const transport = new FakeOmpTransport();
     vi.spyOn(transport, "start").mockRejectedValueOnce(

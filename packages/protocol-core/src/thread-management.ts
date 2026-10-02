@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { JsonObject, JsonRpcRequest, JsonValue } from "@codexhost/shared-contracts";
 
 const HOST_CURSOR_PREFIX = "codexhost:thread-list:v1:";
+const SECTION_CURSOR_PREFIX = "codexhost:thread-section-list:v1:";
 const MAX_CURSOR_LENGTH = 65_536;
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
@@ -17,7 +18,9 @@ const THREAD_LIST_FIELDS = new Set([
   "limit",
   "modelProviders",
   "parentThreadId",
+  "projectId",
   "searchTerm",
+  "sectionId",
   "sortDirection",
   "sortKey",
   "sourceKinds",
@@ -64,14 +67,25 @@ export interface DecodedThreadListRequest {
   modelProviders: string[] | null;
   parentThreadId: string | null;
   ancestorThreadId: string | null;
+  /** Undefined includes every project; `null` selects unassigned Threads. */
+  projectId: string | null | undefined;
   searchTerm: string | null;
+  /** Omitted (`undefined`) matches every section; `null` matches unsectioned Threads. */
+  sectionId: string | null | undefined;
   sortDirection: ThreadListSortDirection;
   sortKey: OfficialThreadListSortKey;
   sourceKinds: string[] | null;
   useStateDbOnly: boolean;
   queryFingerprint: string;
   cursor: HostThreadListCursor | null;
+  /** Offset into a Host-merged `section_position` list; null for its first or an official page. */
+  sectionOffset: number | null;
   supportsExternal: boolean;
+}
+
+export interface DecodedThreadSectionMoveRequest extends DecodedThreadManagementRequest {
+  sectionId: string | null;
+  beforeThreadId: string | null;
 }
 
 export interface DecodedThreadManagementRequest {
@@ -79,12 +93,16 @@ export interface DecodedThreadManagementRequest {
 }
 
 export interface DecodedThreadMetadataUpdateRequest extends DecodedThreadManagementRequest {
-  isPinned?: boolean | null;
+  /** Omitted leaves the project unchanged; `null` clears the assignment. */
+  projectId?: string | null;
+  daybreakEnabled?: boolean;
   gitInfo?: {
     branch?: string | null;
     originUrl?: string | null;
     sha?: string | null;
-  } | null;
+  };
+  /** Request fields outside the current Codex metadata update contract. */
+  unsupportedFields: string[];
 }
 
 export interface OfficialThreadListPage {
@@ -137,8 +155,12 @@ function decodeLimit(value: unknown): number {
   return Math.min(value as number, MAX_PAGE_SIZE);
 }
 
-function decodeSortDirection(value: unknown): ThreadListSortDirection {
-  if (value === undefined || value === null) return "desc";
+function decodeSortDirection(
+  value: unknown,
+  sortKey: OfficialThreadListSortKey,
+): ThreadListSortDirection {
+  // Official section order defaults to its stored (ascending) position.
+  if (value === undefined || value === null) return sortKey === "section_position" ? "asc" : "desc";
   if (value !== "asc" && value !== "desc") {
     throw new Error("thread/list params.sortDirection must be 'asc', 'desc', or null");
   }
@@ -265,9 +287,17 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
   if (parentThreadId !== null && ancestorThreadId !== null) {
     throw new Error("thread/list cannot combine parentThreadId and ancestorThreadId");
   }
+  const projectId =
+    params.projectId === undefined
+      ? undefined
+      : nullableText(params.projectId, "thread/list params.projectId");
   const searchTerm = nullableText(params.searchTerm, "thread/list params.searchTerm");
-  const sortDirection = decodeSortDirection(params.sortDirection);
+  const sectionId =
+    params.sectionId === undefined
+      ? undefined
+      : nullableText(params.sectionId, "thread/list params.sectionId");
   const sortKey = decodeSortKey(params.sortKey);
+  const sortDirection = decodeSortDirection(params.sortDirection, sortKey);
   const sourceKinds = nullableTextArray(params.sourceKinds, "thread/list params.sourceKinds");
   if (sourceKinds?.some((kind) => !THREAD_SOURCE_KINDS.has(kind))) {
     throw new Error("thread/list params.sourceKinds contains an unsupported value");
@@ -282,7 +312,10 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
     isPinned,
     modelProviders,
     parentThreadId,
+    ...(projectId === undefined ? {} : { projectId }),
     searchTerm,
+    ...(sectionId === undefined ? {} : { sectionId }),
+    ...(sortKey === "section_position" ? { sortDirection } : {}),
     sortKey,
     sourceKinds,
     useStateDbOnly: params.useStateDbOnly === true,
@@ -290,18 +323,26 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
   const cursorText = nullableText(params.cursor, "thread/list params.cursor");
   const hasUnknownFields = Object.keys(params).some((name) => !THREAD_LIST_FIELDS.has(name));
   const isHostCursor = cursorText?.startsWith(HOST_CURSOR_PREFIX) === true;
+  const isSectionCursor = cursorText?.startsWith(SECTION_CURSOR_PREFIX) === true;
   if (sortKey === "section_position" && isHostCursor) {
     throw new Error("thread/list Host cursor cannot be used with section_position sorting");
   }
+  if (sortKey !== "section_position" && isSectionCursor) {
+    throw new Error("thread/list section cursor requires section_position sorting");
+  }
+  // An official cursor continues an official-only listing, so later pages stay official.
   const supportsExternal =
-    sortKey !== "section_position" && !hasUnknownFields && (cursorText === null || isHostCursor);
+    !hasUnknownFields &&
+    (cursorText === null || (sortKey === "section_position" ? isSectionCursor : isHostCursor));
   const cursor =
-    supportsExternal && cursorText
+    supportsExternal && isHostCursor && cursorText
       ? decodeHostThreadListCursor(cursorText, {
           queryFingerprint: fingerprint,
           sortDirection,
         })
       : null;
+  const sectionOffset =
+    isSectionCursor && cursorText ? decodeSectionCursor(cursorText, fingerprint) : null;
   return {
     params: { ...(params as JsonObject) },
     archived,
@@ -311,15 +352,68 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
     modelProviders,
     parentThreadId,
     ancestorThreadId,
+    projectId,
     searchTerm,
+    sectionId,
     sortDirection,
     sortKey,
     sourceKinds,
     useStateDbOnly: params.useStateDbOnly === true,
     queryFingerprint: fingerprint,
     cursor,
+    sectionOffset,
     supportsExternal,
   };
+}
+
+/** Cursor for a `section_position` list whose order the Host merged across Thread owners. */
+export function encodeSectionThreadListCursor(queryFingerprint: string, offset: number): string {
+  if (!Number.isSafeInteger(offset) || offset <= 0) throw new Error("Section cursor is invalid");
+  return `${SECTION_CURSOR_PREFIX}${Buffer.from(
+    JSON.stringify({ formatVersion: 1, queryFingerprint, offset }),
+  ).toString("base64url")}`;
+}
+
+function decodeSectionCursor(value: string, queryFingerprint: string): number {
+  if (value.length > MAX_CURSOR_LENGTH) throw new Error("thread/list cursor is invalid");
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(
+      Buffer.from(value.slice(SECTION_CURSOR_PREFIX.length), "base64url").toString("utf8"),
+    );
+  } catch {
+    throw new Error("thread/list cursor is invalid");
+  }
+  if (
+    !isRecord(decoded) ||
+    decoded.formatVersion !== 1 ||
+    !Number.isSafeInteger(decoded.offset) ||
+    (decoded.offset as number) <= 0
+  ) {
+    throw new Error("thread/list cursor is invalid");
+  }
+  if (decoded.queryFingerprint !== queryFingerprint) {
+    throw new Error("thread/list cursor does not match the current query");
+  }
+  return decoded.offset as number;
+}
+
+export function decodeThreadSectionMoveRequest(
+  request: JsonRpcRequest,
+): DecodedThreadSectionMoveRequest | null {
+  if (request.method !== "thread/section/move") return null;
+  const params = paramsObject(request, request.method);
+  if (typeof params.threadId !== "string" || params.threadId.length === 0) {
+    throw new Error("thread/section/move params.threadId must be non-empty text");
+  }
+  if (params.sectionId !== null && typeof params.sectionId !== "string") {
+    throw new Error("thread/section/move params.sectionId must be text or null");
+  }
+  const beforeThreadId = nullableText(
+    params.beforeThreadId,
+    "thread/section/move params.beforeThreadId",
+  );
+  return { threadId: params.threadId, sectionId: params.sectionId, beforeThreadId };
 }
 
 export function decodeThreadArchiveRequest(
@@ -333,6 +427,22 @@ export function decodeThreadArchiveRequest(
   return { threadId: params.threadId };
 }
 
+const THREAD_METADATA_UPDATE_FIELDS = new Set([
+  "threadId",
+  "projectId",
+  "daybreakEnabled",
+  "gitInfo",
+]);
+const GIT_INFO_FIELDS = new Set(["branch", "originUrl", "sha"]);
+
+function nonBlankTextOrNull(value: unknown, name: string): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${name} must be non-empty text or null`);
+  }
+  return value;
+}
+
 export function decodeThreadMetadataUpdateRequest(
   request: JsonRpcRequest,
 ): DecodedThreadMetadataUpdateRequest | null {
@@ -341,27 +451,53 @@ export function decodeThreadMetadataUpdateRequest(
   if (typeof params.threadId !== "string" || params.threadId.length === 0) {
     throw new Error("thread/metadata/update params.threadId must be non-empty text");
   }
-  const isPinned = nullableBoolean(params.isPinned, "thread/metadata/update params.isPinned");
-  let gitInfo: DecodedThreadMetadataUpdateRequest["gitInfo"];
-  if (params.gitInfo === null) {
-    gitInfo = null;
-  } else if (params.gitInfo !== undefined) {
+  const decoded: DecodedThreadMetadataUpdateRequest = {
+    threadId: params.threadId,
+    unsupportedFields: Object.keys(params)
+      .filter((name) => !THREAD_METADATA_UPDATE_FIELDS.has(name))
+      .sort(),
+  };
+  // Codex treats an omitted or null field as unchanged; an empty projectId clears it.
+  const projectId = nullableText(params.projectId, "thread/metadata/update params.projectId");
+  if (projectId !== null) {
+    decoded.projectId =
+      projectId.length === 0
+        ? null
+        : nonBlankTextOrNull(projectId, "thread/metadata/update params.projectId");
+  }
+  const daybreakEnabled = nullableBoolean(
+    params.daybreakEnabled,
+    "thread/metadata/update params.daybreakEnabled",
+  );
+  if (daybreakEnabled !== null) decoded.daybreakEnabled = daybreakEnabled;
+  if (params.gitInfo !== undefined && params.gitInfo !== null) {
     if (!isRecord(params.gitInfo)) {
       throw new Error("thread/metadata/update params.gitInfo must be an object or null");
     }
-    gitInfo = {};
+    const gitInfo: NonNullable<DecodedThreadMetadataUpdateRequest["gitInfo"]> = {};
     for (const name of ["branch", "originUrl", "sha"] as const) {
       const value = params.gitInfo[name];
-      if (value !== undefined && value !== null && typeof value !== "string") {
-        throw new Error(`thread/metadata/update params.gitInfo.${name} must be text or null`);
+      if (value !== undefined) {
+        gitInfo[name] = nonBlankTextOrNull(value, `thread/metadata/update params.gitInfo.${name}`);
       }
-      if (value !== undefined) gitInfo[name] = value as string | null;
     }
+    decoded.gitInfo = gitInfo;
+    for (const name of Object.keys(params.gitInfo)) {
+      if (!GIT_INFO_FIELDS.has(name)) decoded.unsupportedFields.push(`gitInfo.${name}`);
+    }
+    decoded.unsupportedFields.sort();
   }
-  const decoded: DecodedThreadMetadataUpdateRequest = { threadId: params.threadId };
-  if (params.isPinned !== undefined) decoded.isPinned = isPinned;
-  if (params.gitInfo !== undefined) decoded.gitInfo = gitInfo ?? null;
   return decoded;
+}
+
+/** Return the project ID of an official `project/changed` deletion notification. */
+export function observeDeletedProject(value: unknown): string | null {
+  if (!isRecord(value) || value.method !== "project/changed" || "id" in value) return null;
+  const params = value.params;
+  if (!isRecord(params) || params.changeType !== "deleted") return null;
+  return typeof params.projectId === "string" && params.projectId.length > 0
+    ? params.projectId
+    : null;
 }
 
 function optionalCursor(value: unknown, name: string): string | null {

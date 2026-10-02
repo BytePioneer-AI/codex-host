@@ -158,6 +158,7 @@ export function mapExternalThreadHarnessError(
     case "notInstalled":
     case "unavailable":
     case "authenticationRequired":
+    case "configurationRequired":
       return { code: -32077, message: "External Harness is unavailable" };
     case "nativeFailure":
     case "protocolError":

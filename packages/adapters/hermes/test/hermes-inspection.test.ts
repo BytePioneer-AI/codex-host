@@ -58,6 +58,58 @@ it("does not hide a first-load timeout or a non-timeout failure", async () => {
   }
 });
 
+it("reports missing Provider configuration and recovers after setup", async () => {
+  vi.spyOn(inventory, "readHermesModelInventory")
+    .mockResolvedValueOnce({ models: [], currentModelId: null, configured: false })
+    .mockResolvedValueOnce({ ...first, configured: true });
+  const a = adapter();
+  try {
+    expect(await a.inspect()).toMatchObject({
+      status: "unavailable",
+      error: {
+        code: "configurationRequired",
+        message: expect.stringContaining("hermes setup"),
+        retryable: false,
+      },
+    });
+    expect(await a.inspect({ refresh: true })).toMatchObject({ status: "ready" });
+  } finally {
+    await a.close();
+  }
+});
+
+it("does not infer missing configuration from an empty catalog on older Hermes", async () => {
+  vi.spyOn(inventory, "readHermesModelInventory").mockResolvedValue({
+    models: [],
+    currentModelId: null,
+  });
+  const a = adapter();
+  try {
+    expect(await a.inspect()).toMatchObject({ status: "ready" });
+  } finally {
+    await a.close();
+  }
+});
+
+it("clears the previous inventory when native configuration is removed", async () => {
+  vi.spyOn(inventory, "readHermesModelInventory")
+    .mockResolvedValueOnce(first)
+    .mockResolvedValueOnce({ models: [], currentModelId: null, configured: false })
+    .mockRejectedValueOnce(new inventory.HermesInventoryTimeoutError());
+  const a = adapter();
+  try {
+    expect((await a.inspect()).status).toBe("ready");
+    expect(await a.inspect({ refresh: true })).toMatchObject({
+      error: { code: "configurationRequired" },
+    });
+    expect(await a.inspect({ refresh: true })).toMatchObject({
+      error: { code: "HERMES_UNAVAILABLE" },
+    });
+  } finally {
+    await a.close();
+  }
+});
+
 it("coalesces concurrent inventory reads, including refresh requests", async () => {
   let resolve!: (value: inventory.HermesInventory) => void;
   const read = vi.spyOn(inventory, "readHermesModelInventory").mockReturnValue(

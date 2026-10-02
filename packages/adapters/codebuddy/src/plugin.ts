@@ -1,6 +1,8 @@
+import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { CODEBUDDY_COMMAND_CATALOG } from "./slash-commands.js";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import { CodeBuddyAdapter } from "./codebuddy-adapter.js";
+import { createCodeBuddyInstallation } from "./installation.js";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 
 export function createHarnessAdapter(context: HarnessPluginContext) {
@@ -12,5 +14,9 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
       liveCommandCatalog: true,
       environment: { ...context.environment },
     });
-  return new CodeBuddyAdapter({ environment: { ...context.environment } });
+  const environment = { ...context.environment };
+  return Object.assign(new CodeBuddyAdapter({ environment }), {
+    installation: createCodeBuddyInstallation(environment),
+    install: createHarnessInstaller(environment, { npm: "@tencent-ai/codebuddy-code" }),
+  });
 }

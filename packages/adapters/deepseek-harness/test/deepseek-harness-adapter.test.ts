@@ -33,7 +33,7 @@ const readyInspection: HarnessInspection = {
 
 const modernExecutable: DeepSeekExecutableGeneration = {
   generation: "modern",
-  version: "0.1.2-rc.1",
+  version: "0.2.0-rc.2",
   command: { command: "resolved-dsh", arguments: ["--offline"], kind: "npx" },
 };
 
@@ -126,7 +126,7 @@ describe("DeepSeek public generation selector", () => {
     await adapter.close();
   });
 
-  it.each(["0.1.2-rc.1", "0.1.5-rc.1", "0.1.5-rc.2", "0.1.5-rc.3"] as const)(
+  it.each(["0.1.7-rc.1", "0.1.7-rc.2", "0.2.0-rc.1", "0.2.0-rc.2"] as const)(
     "revalidates import metadata and preserves %s native identity",
     async (version) => {
       const modern = new FakeAdapter();
@@ -166,7 +166,7 @@ describe("DeepSeek public generation selector", () => {
             harnessId: "deepseek-harness",
             nativeSessionId: "native",
             formatVersion: 1,
-            ...(version === "0.1.2-rc.1" ? {} : { locator: { dshVersion: version } }),
+            locator: { dshVersion: version },
           },
         },
       });
@@ -179,7 +179,7 @@ describe("DeepSeek public generation selector", () => {
     },
   );
 
-  it.each(["0.1.2-rc.1", "0.1.5-rc.1", "0.1.5-rc.2", "0.1.5-rc.3"] as const)(
+  it.each(["0.1.7-rc.1", "0.1.7-rc.2", "0.2.0-rc.1", "0.2.0-rc.2"] as const)(
     "passes exact %s through the managed Modern Adapter factory",
     async (version) => {
       const executable = { ...modernExecutable, version };
@@ -239,7 +239,7 @@ describe("DeepSeek public generation selector", () => {
       {},
       {
         probeExecutable: async () => ({
-          ...classifyDeepSeekVersionOutput("0.1.5-rc.3"),
+          ...classifyDeepSeekVersionOutput("0.2.1"),
           command: modernExecutable.command,
         }),
         createModernAdapter,
@@ -247,9 +247,39 @@ describe("DeepSeek public generation selector", () => {
     );
 
     await expect(adapter.inspect()).resolves.toBe(readyInspection);
-    expect(createModernAdapter).toHaveBeenCalledWith(
-      expect.objectContaining({ version: "0.1.5-rc.3" }),
-    );
+    expect(createModernAdapter).toHaveBeenCalledWith(expect.objectContaining({ version: "0.2.1" }));
+    await adapter.close();
+  });
+
+  it("refuses a CLI older than the V4 line before starting its Web", async () => {
+    const createModernAdapter = vi.fn(() => new FakeAdapter());
+    const probeExecutable = vi.fn(async () => ({
+      ...classifyDeepSeekVersionOutput("0.1.5-rc.2\n"),
+      command: modernExecutable.command,
+    }));
+    const adapter = new DeepSeekHarnessAdapter({}, { probeExecutable, createModernAdapter });
+
+    const expected = {
+      code: "unsupported",
+      message: expect.stringContaining("npm install -g @deepseek-ai/dsh@0.2.0-rc.2"),
+      retryable: false,
+      diagnostic: "unsupported",
+      stage: "version",
+    };
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "unavailable",
+      error: expected,
+    });
+    await expect(adapter.open({} as never)).resolves.toMatchObject({ ok: false, error: expected });
+    await expect(adapter.sessionImport.listCandidates()).resolves.toMatchObject({
+      ok: false,
+      error: expected,
+    });
+    expect(probeExecutable).toHaveBeenCalledOnce();
+
+    await expect(adapter.inspect({ refresh: true })).resolves.toMatchObject({ error: expected });
+    expect(probeExecutable).toHaveBeenCalledTimes(2);
+    expect(createModernAdapter).not.toHaveBeenCalled();
     await adapter.close();
   });
 

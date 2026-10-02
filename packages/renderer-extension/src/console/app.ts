@@ -1,4 +1,5 @@
 import { hostRequestManager, consoleUpdateClient } from "./api.js";
+import { mountConsoleAnnouncement } from "./announcement.js";
 import { startAgentGroupSync } from "../agent-group-sync.js";
 import { getSharedAgentGroupPreferenceStore } from "../agent-group-preference.js";
 import { createConsoleConnectionDiagnostics } from "./connection-diagnostics.js";
@@ -228,6 +229,7 @@ export function startConsoleApp(document: Document): void {
       h(document, "span", { className: "console-brand__subtitle" }, messages.title),
     ),
   );
+  const announcement = h(document, "aside", { className: "console-announcement", hidden: true });
   const content = h(document, "div", { className: "settings-page__content" });
   const offlineBanner = h(
     document,
@@ -249,9 +251,17 @@ export function startConsoleApp(document: Document): void {
         navigation,
         statusCard(document, messages, state),
       ),
-      h(document, "main", { className: "settings-page console-main" }, offlineBanner, content),
+      h(
+        document,
+        "main",
+        { className: "settings-page console-main" },
+        announcement,
+        offlineBanner,
+        content,
+      ),
     ),
   );
+  void mountConsoleAnnouncement(announcement);
   state.subscribe(() => {
     offlineBanner.hidden = !state.offline;
   });

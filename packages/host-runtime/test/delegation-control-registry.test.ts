@@ -72,6 +72,26 @@ function registration(threadId: string): DelegationControlRegistration {
 }
 
 describe("DelegationControlRegistry", () => {
+  it("uses the shared SSH catalog with multiple GUI sessions while keeping command ownership", async () => {
+    const registry = new DelegationControlRegistry();
+    const owner = registration("shared");
+    const native = registration("native");
+    const unregister = registry.register(owner, { harnessCatalog: true });
+    registry.register(native);
+    await registry.listHarnesses();
+    await registry.inspect({ harnessId: "pi" });
+    await registry.list({ sort: "updated-desc", limit: 20 });
+    expect(owner.listHarnesses).toHaveBeenCalledOnce();
+    expect(owner.inspect).toHaveBeenCalledOnce();
+    expect(owner.list).toHaveBeenCalledOnce();
+    expect(native.list).not.toHaveBeenCalled();
+    await registry.send({ threadId: "native", message: "continue" });
+    expect(native.send).toHaveBeenCalledOnce();
+    expect(owner.send).not.toHaveBeenCalled();
+    unregister();
+    await registry.listHarnesses();
+    expect(native.listHarnesses).toHaveBeenCalledOnce();
+  });
   it("discovers targets from the active session without inspecting Models", async () => {
     const registry = new DelegationControlRegistry();
     const session = registration("parent");

@@ -20,7 +20,7 @@ codexhost remote start
 codexhost remote status
 ```
 
-`remote install` adds a clearly marked block to your shell profile that only applies to SSH sessions, and backs up the profile first. Your local shells and existing `codex` command are left alone. On macOS, it also installs a per-user LaunchAgent that starts Claude Code in your logged-in session. It never reads the Keychain or any credentials.
+Installation automatically backs up any shell configuration it needs to change. On macOS, keep a user logged in to the remote desktop so Claude Code can start normally.
 
 ## Usage
 
@@ -28,9 +28,21 @@ codexhost remote status
 2. Open the SSH workspace.
 3. Pick a Harness from the composer's Agent / Model selector.
 
-A local Desktop launched through codexhost can also connect to a stock Codex remote Host: native conversations do not require remote `codexhost/*` methods; external Harnesses require remote codexhost. Thread ownership, Harness availability, configuration requests, and usage notifications are scoped to each composer's Host. Hidden composers on other Hosts must not block model loading or change its Harness selection. Native Model version requirements depend on the running remote app-server, not merely the CLI version installed on disk.
+You can use local and SSH workspaces at the same time, choosing the Harnesses and models available on each machine. If you only use native Codex remotely, the remote machine does not need codexhost.
 
-Renderer integration readiness means at least one validated native Host connection is available; it does not require a single Composer Host across the window. Installation and readiness checks can succeed with local and remote composers present together. Requests without an unambiguous target Host still fail rather than choosing a connection arbitrarily. If no connections are available, installation waits and reports failure on timeout.
+## Viewing and operating the same conversation on both computers
+
+Install Codex Desktop on the remote machine too, and launch it through codexhost. While the remote service is running, external Harness conversations created in the SSH workspace automatically appear in the remote machine's conversation list. They may take a few seconds to appear initially.
+
+Both computers need the same codexhost version. On the remote machine, use the same user account for the desktop and SSH login. If you customized the Codex data directory (`CODEX_HOME`), both launch methods must use that directory.
+
+- **See updates on both computers**: both show user messages, replies as they arrive, tool activity, and task status.
+- **Act from either computer**: send or insert messages, interrupt a task, or answer approvals and questions without switching control.
+- **Act at the same time**: use the insert-message feature to add input during a running task; starting another task may return a busy message. When both computers answer the same approval or question, the first processed answer applies.
+- **Recover after disconnecting**: as long as the remote service stays running, disconnecting one computer does not stop the task. Reconnect and reopen the conversation to see what happened while you were away. Stopping the remote service ends running tasks.
+- **Check before resending**: if a disconnection leaves you unsure whether a message was sent, reconnect and check the conversation before sending it again.
+
+This feature applies to external Harness conversations created in the SSH workspace. Local conversations created separately on the remote machine and native Codex conversations continue to work as before.
 
 ## Commands
 
@@ -38,7 +50,7 @@ Renderer integration readiness means at least one validated native Host connecti
 codexhost remote status     # Check whether it is running and installed correctly
 codexhost remote start      # Start it (safe to run more than once)
 codexhost remote stop       # Stop it without touching other Codex processes
-codexhost remote uninstall  # Uninstall it but keep your Thread mapping data
+codexhost remote uninstall  # Uninstall it but keep conversation associations
 ```
 
 After you start, stop, or uninstall, reconnect the SSH workspace in Codex Desktop.
@@ -49,10 +61,11 @@ Upgrade both machines to the same version using the same package manager. Then r
 
 ## Troubleshooting
 
-- **Inserting a message into a running native Codex task reports unsupported `codexhost/thread/ownership/list`**: the client verifies the native Thread on the same connection and then uses Desktop's native steering. This fallback does not apply to external Harness Threads or connection failures.
+- **You cannot insert a message into a running native Codex task**: make sure your local codexhost is up to date, then reconnect the SSH workspace and try again.
 - **`codexhost/harness/inspect is unsupported on this Host connection`**: the SSH connection isn't going through codexhost. Make sure the same codexhost version is installed and running on the remote machine, then reconnect the SSH workspace.
 - **`remote status` says degraded or asks you to reinstall**: run `codexhost remote install`, then `codexhost remote start`.
-- **Native Codex requests fail with `Official request failed; retry explicitly`**: if the official Codex process on the remote machine exits, codexhost restarts it automatically with backoff, and reconnecting the SSH workspace retries immediately. If it keeps failing, run `codexhost remote stop` and then `codexhost remote start`.
-- **After reconnecting, the workspace connects for a few seconds, drops, and only the next reconnect works**: when a previous listener left its control socket behind on the remote machine (for example after being force-killed), older versions misjudged the new listener as not ready and terminated it after 10 seconds. Upgrade to a version with the fix. As a workaround, reconnecting once more usually recovers, because the terminated listener removes the socket when it exits normally. If the problem persists, confirm that no listener is running on the remote machine (`pgrep -f '^codexhost remote app-server listener'` prints nothing), then delete `~/.codex/app-server-control/app-server-control.sock` (under `CODEX_HOME` when it is set) and reconnect.
+- **Native Codex requests fail with `Official request failed; retry explicitly`**: reconnect the SSH workspace and try again. If it keeps failing, run `codexhost remote stop` and then `codexhost remote start` on the remote machine, then reconnect.
+- **After reconnecting, the workspace briefly connects and then drops**: upgrade both computers to the same latest codexhost version, follow the upgrade steps above to reinstall and start the remote service, then connect the SSH workspace again.
+- **The remote machine's GUI does not show SSH conversations**: check that both computers launched Desktop through codexhost, the remote service is running, and the user account and Codex data directory match the requirements above. Wait a few seconds, then check the conversation list again.
 - **A Harness is missing**: make sure it is installed and signed in on the remote machine, then click **Run connection diagnostics** in Settings.
 - **Install fails on macOS with a launchd / `gui/$UID` error**: the remote Mac needs someone logged in to the desktop. Log in, then run `codexhost remote install` again.

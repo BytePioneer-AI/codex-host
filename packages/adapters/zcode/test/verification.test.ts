@@ -590,7 +590,10 @@ describe("ZCode verification page", () => {
       const pending = zcode.verify(new AbortController().signal);
       const page = await host.page(0);
       const task = await page.next();
-      await page.post("started", { id: task.id, instance: 1 });
+      // Fetch needs a timer tick under fake timers; advancing by 0 does not move the clock.
+      const started = page.post("started", { id: task.id, instance: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      await started;
       await vi.advanceTimersByTimeAsync(DEFAULT_TIMING.tracelessTimeoutMs - 1);
       expect(host.handle(0).show).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);

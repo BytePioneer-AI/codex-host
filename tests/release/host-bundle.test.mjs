@@ -190,9 +190,12 @@ describe("release Host and independent plugin Bundles", () => {
       expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toEqual(
         expect.arrayContaining(["@opencode-ai/sdk", "@opencode/client"]),
       );
-      expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toContain(
-        "@deepseek-ai/schemastery",
-      );
+      expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toEqual([
+        "diff",
+        "ws",
+        "yaml",
+        "zod",
+      ]);
       const source = await readFile(path.join(app, "host-runtime.mjs"), "utf8");
       expect(source).not.toContain("class ClaudeCodeAdapter");
       expect(source).not.toContain("Claude Code is not installed");

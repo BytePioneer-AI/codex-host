@@ -19,6 +19,8 @@ export interface RendererHostRoute {
 
 export interface RendererHostRouting {
   forHost(hostId: string): RendererHostRoute | null;
+  /** Observed native Host identities, independent of Composer route ambiguity. */
+  knownHostIds?(): readonly string[];
   hostIdForComposer(composer?: RendererHostRoot): string | null;
   forComposer(composer?: RendererHostRoot): RendererHostRoute | null;
   dispose(): void;
@@ -143,6 +145,14 @@ export function installRendererHostRouting(
     return typeof hostId === "string" && hostId ? hostId : null;
   };
   const routing: RendererHostRouting = {
+    knownHostIds() {
+      if (disposed) return [];
+      try {
+        return [...read().hostIds];
+      } catch {
+        return [];
+      }
+    },
     forHost(hostId) {
       return hostId ? routeFor(hostId) : null;
     },

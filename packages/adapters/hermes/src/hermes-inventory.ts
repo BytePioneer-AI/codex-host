@@ -4,16 +4,16 @@ import os from "node:os";
 import path from "node:path";
 
 import type { HarnessModelRef } from "@codexhost/shared-contracts";
+import { nativeHermesPythonCommand } from "./hermes-runtime.js";
 
 import { decodeHermesModelRefId, encodeHermesModelRef } from "./hermes-models.js";
 
 /**
- * The `hermes` launcher is a bash shim that execs the agent repository's
- * virtualenv interpreter:
+ * Legacy `hermes` launchers exec the agent repository's virtualenv interpreter:
  *   #!/usr/bin/env bash
  *   exec "<agentDir>/venv/bin/python" "<agentDir>/hermes" "$@"
- * The model inventory lives inside that virtualenv (hermes_cli.inventory), so
- * the same interpreter runs a read-only one-shot probe.
+ * New installers expose --print-runtime-command to retain the native bootstrap
+ * and dependency generation. Both paths run the same read-only inventory probe.
  */
 const POSIX_VENV_PYTHON_SHIM_PATTERN = /exec\s+"([^"]+?venv\/bin\/python)"/;
 const WINDOWS_VENV_HERMES_SHIM_PATTERN = /"([^"]+?[\\/]venv[\\/]Scripts[\\/]hermes\.exe)"/i;
@@ -63,6 +63,34 @@ except Exception:
     # A virtual preset is unsafe to advertise when its backing providers
     # cannot be verified. Normal providers remain available.
     moa_availability = {}
+# Keep configuration interpretation in Hermes. Its resolver understands built-in
+# aliases, keyed providers, legacy custom entries and endpoint-specific routes.
+from hermes_cli import providers as native_providers
+from hermes_cli import models as native_models
+resolve_provider = getattr(native_providers, "resolve_provider_full", None)
+custom_slug = getattr(native_providers, "custom_provider_slug", None)
+
+def provider_identity(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if value.lower() == "custom":
+        # Direct model.base_url routing is not the first named custom provider.
+        return "custom"
+    # Old configs may store a display name after custom:, including spaces.
+    # Apply only Hermes's provider normalization; model identifiers stay opaque.
+    if value.lower().startswith("custom:") and callable(custom_slug):
+        value = custom_slug(value)
+    if callable(resolve_provider):
+        resolved = resolve_provider(
+            value,
+            user_providers=getattr(context, "user_providers", {}),
+            custom_providers=getattr(context, "custom_providers", []),
+        )
+        if resolved is not None:
+            return str(resolved.id)
+    return value
+
 rows = []
 for row in payload.get("providers") or []:
     slug = str(row.get("slug") or "").strip()
@@ -74,21 +102,19 @@ for row in payload.get("providers") or []:
             else str(entry).strip()
         )
         if slug and model_id:
-            available = slug.lower() != "moa" or bool(moa_availability.get(model_id, False))
+            available = (
+                row.get("authenticated") is not False
+                and row.get("available") is not False
+                and (slug.lower() != "moa" or bool(moa_availability.get(model_id, False)))
+            )
             aliases = [
                 alias.strip()
                 for alias in row.get("aliases") or []
                 if isinstance(alias, str) and alias.strip()
             ]
-            # Hermes names configured custom endpoints as custom:<key>.
-            # The inventory row slug is the bare config key (pi-openai),
-            # which is useful for display but is not a valid native model route.
-            # Prefer the native custom identity for the actual model ref and
-            # retain the bare slug as an alias for matching older snapshots.
-            native_slug = next(
-                (alias for alias in aliases if alias.lower().startswith("custom:")),
-                slug,
-            )
+            # The row slug is the native --provider route. Resolve it against
+            # the same configuration snapshot, never choose a historical alias.
+            native_slug = provider_identity(slug)
             native_model_id = native_slug + ":" + model_id
             rows.append({
                 "modelId": native_model_id,
@@ -103,8 +129,17 @@ for row in payload.get("providers") or []:
             })
 current_provider = str(getattr(context, "current_provider", "") or "").strip()
 current_model = str(getattr(context, "current_model", "") or "").strip()
+parse_model = getattr(native_models, "parse_model_input", None)
+if current_model and callable(parse_model):
+    current_provider, current_model = parse_model(
+        current_model, provider_identity(current_provider),
+    )
+current_provider = provider_identity(current_provider)
 current_model_id = current_provider + ":" + current_model if current_provider and current_model else None
-print(json.dumps({"models": rows, "currentModelId": current_model_id}))
+from hermes_cli import main as native_main
+check_configured = getattr(native_main, "_has_any_provider_configured", None)
+configured = bool(check_configured()) if callable(check_configured) else None
+print("codexhost_inventory=" + json.dumps({"models": rows, "currentModelId": current_model_id, "configured": configured}))
 `;
 
 export interface HermesInventoryModel {
@@ -114,7 +149,7 @@ export interface HermesInventoryModel {
   modelIdAliases?: string[];
   label: string;
   provider: string;
-  /** False when a virtual model depends on providers Hermes cannot currently use. */
+  /** False when Hermes reports unavailable credentials/routes or virtual dependencies. */
   available?: boolean;
 }
 
@@ -122,9 +157,18 @@ export interface HermesInventory {
   models: HermesInventoryModel[];
   /** Native id of the configured default model, when discoverable. */
   currentModelId: string | null;
+  /** Absent for native versions that do not expose a configuration check. */
+  configured?: boolean;
 }
 
 export class HermesInventoryError extends Error {}
+export class HermesConfigurationRequiredError extends HermesInventoryError {
+  constructor() {
+    super(
+      "Hermes has no configured Provider or API key. Run `hermes setup`, then check the connection again.",
+    );
+  }
+}
 export class HermesInventoryTimeoutError extends HermesInventoryError {
   constructor() {
     super("Hermes model inventory probe timed out");
@@ -178,9 +222,10 @@ function runProbe(
   pythonExecutable: string,
   timeoutMs: number,
   environment?: NodeJS.ProcessEnv,
+  arguments_: string[] = ["-I", "-c", INVENTORY_PROBE_SCRIPT],
 ): Promise<HermesInventory> {
   return new Promise((resolve, reject) => {
-    const child = spawn(pythonExecutable, ["-I", "-c", INVENTORY_PROBE_SCRIPT], {
+    const child = spawn(pythonExecutable, arguments_, {
       cwd: path.dirname(pythonExecutable),
       env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
@@ -212,15 +257,22 @@ function runProbe(
         return;
       }
       try {
-        const parsed = JSON.parse(stdout.trim()) as {
+        const payload = stdout
+          .split(/\r?\n/)
+          .find((line) => line.startsWith("codexhost_inventory="));
+        const parsed = JSON.parse(
+          payload ? payload.slice("codexhost_inventory=".length) : stdout.trim(),
+        ) as {
           models?: HermesInventoryModel[];
           currentModelId?: unknown;
+          configured?: unknown;
         };
         const models = (parsed.models ?? []).filter(
           (model) => typeof model?.modelId === "string" && model.modelId.length > 0,
         );
         resolve({
           models,
+          ...(typeof parsed.configured === "boolean" ? { configured: parsed.configured } : {}),
           currentModelId:
             typeof parsed.currentModelId === "string" && parsed.currentModelId.length > 0
               ? parsed.currentModelId
@@ -244,6 +296,14 @@ export async function readHermesModelInventory(
   options: { environment?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {},
 ): Promise<HermesInventory> {
   const platform = options.platform ?? process.platform;
+  const command = await nativeHermesPythonCommand(
+    hermesExecutable,
+    INVENTORY_PROBE_SCRIPT,
+    { ...process.env, ...options.environment },
+    timeoutMs,
+    platform,
+  );
+  if (command) return runProbe(command.command, timeoutMs, options.environment, command.arguments);
   const candidates = [
     (await venvPythonFromShim(hermesExecutable, platform)) ?? "",
     ...inventoryPythonCandidates(hermesExecutable, platform),
@@ -279,11 +339,10 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
 } {
   const models: HermesCatalogModel[] = [];
   let defaultModel: HarnessModelRef | null = null;
+  const seen = new Set<string>();
   for (const model of inventory.models) {
     if (model.available === false) continue;
-    const nativeModelId =
-      model.modelIdAliases?.find((alias) => alias.toLowerCase().startsWith("custom:")) ??
-      model.modelId;
+    const nativeModelId = model.modelId;
     const ref = encodeHermesModelRef(nativeModelId);
     if (!ref) continue;
     if (
@@ -292,13 +351,21 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
         nativeModelId === inventory.currentModelId ||
         model.modelIdAliases?.includes(inventory.currentModelId))
     ) {
+      if (defaultModel && defaultModel.id !== ref.id) {
+        throw new HermesInventoryError("Hermes configured Model matches multiple Provider routes");
+      }
       defaultModel = ref;
     }
+    if (seen.has(ref.id)) continue;
+    seen.add(ref.id);
     models.push({
       ref,
       label: `${model.provider} / ${model.label}`,
       description: `Provider: ${model.provider}`,
     });
+  }
+  if (inventory.currentModelId && models.length > 0 && !defaultModel) {
+    throw new HermesInventoryError("Hermes configured Model is absent from its available catalog");
   }
   return { models, defaultModel };
 }

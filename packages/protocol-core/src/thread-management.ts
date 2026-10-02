@@ -18,6 +18,7 @@ const THREAD_LIST_FIELDS = new Set([
   "limit",
   "modelProviders",
   "parentThreadId",
+  "projectId",
   "searchTerm",
   "sectionId",
   "sortDirection",
@@ -66,6 +67,8 @@ export interface DecodedThreadListRequest {
   modelProviders: string[] | null;
   parentThreadId: string | null;
   ancestorThreadId: string | null;
+  /** Undefined includes every project; `null` selects unassigned Threads. */
+  projectId: string | null | undefined;
   searchTerm: string | null;
   /** Omitted (`undefined`) matches every section; `null` matches unsectioned Threads. */
   sectionId: string | null | undefined;
@@ -90,12 +93,16 @@ export interface DecodedThreadManagementRequest {
 }
 
 export interface DecodedThreadMetadataUpdateRequest extends DecodedThreadManagementRequest {
-  isPinned?: boolean | null;
+  /** Omitted leaves the project unchanged; `null` clears the assignment. */
+  projectId?: string | null;
+  daybreakEnabled?: boolean;
   gitInfo?: {
     branch?: string | null;
     originUrl?: string | null;
     sha?: string | null;
-  } | null;
+  };
+  /** Request fields outside the current Codex metadata update contract. */
+  unsupportedFields: string[];
 }
 
 export interface OfficialThreadListPage {
@@ -280,6 +287,10 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
   if (parentThreadId !== null && ancestorThreadId !== null) {
     throw new Error("thread/list cannot combine parentThreadId and ancestorThreadId");
   }
+  const projectId =
+    params.projectId === undefined
+      ? undefined
+      : nullableText(params.projectId, "thread/list params.projectId");
   const searchTerm = nullableText(params.searchTerm, "thread/list params.searchTerm");
   const sectionId =
     params.sectionId === undefined
@@ -301,6 +312,7 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
     isPinned,
     modelProviders,
     parentThreadId,
+    ...(projectId === undefined ? {} : { projectId }),
     searchTerm,
     ...(sectionId === undefined ? {} : { sectionId }),
     ...(sortKey === "section_position" ? { sortDirection } : {}),
@@ -340,6 +352,7 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
     modelProviders,
     parentThreadId,
     ancestorThreadId,
+    projectId,
     searchTerm,
     sectionId,
     sortDirection,
@@ -414,6 +427,22 @@ export function decodeThreadArchiveRequest(
   return { threadId: params.threadId };
 }
 
+const THREAD_METADATA_UPDATE_FIELDS = new Set([
+  "threadId",
+  "projectId",
+  "daybreakEnabled",
+  "gitInfo",
+]);
+const GIT_INFO_FIELDS = new Set(["branch", "originUrl", "sha"]);
+
+function nonBlankTextOrNull(value: unknown, name: string): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${name} must be non-empty text or null`);
+  }
+  return value;
+}
+
 export function decodeThreadMetadataUpdateRequest(
   request: JsonRpcRequest,
 ): DecodedThreadMetadataUpdateRequest | null {
@@ -422,27 +451,53 @@ export function decodeThreadMetadataUpdateRequest(
   if (typeof params.threadId !== "string" || params.threadId.length === 0) {
     throw new Error("thread/metadata/update params.threadId must be non-empty text");
   }
-  const isPinned = nullableBoolean(params.isPinned, "thread/metadata/update params.isPinned");
-  let gitInfo: DecodedThreadMetadataUpdateRequest["gitInfo"];
-  if (params.gitInfo === null) {
-    gitInfo = null;
-  } else if (params.gitInfo !== undefined) {
+  const decoded: DecodedThreadMetadataUpdateRequest = {
+    threadId: params.threadId,
+    unsupportedFields: Object.keys(params)
+      .filter((name) => !THREAD_METADATA_UPDATE_FIELDS.has(name))
+      .sort(),
+  };
+  // Codex treats an omitted or null field as unchanged; an empty projectId clears it.
+  const projectId = nullableText(params.projectId, "thread/metadata/update params.projectId");
+  if (projectId !== null) {
+    decoded.projectId =
+      projectId.length === 0
+        ? null
+        : nonBlankTextOrNull(projectId, "thread/metadata/update params.projectId");
+  }
+  const daybreakEnabled = nullableBoolean(
+    params.daybreakEnabled,
+    "thread/metadata/update params.daybreakEnabled",
+  );
+  if (daybreakEnabled !== null) decoded.daybreakEnabled = daybreakEnabled;
+  if (params.gitInfo !== undefined && params.gitInfo !== null) {
     if (!isRecord(params.gitInfo)) {
       throw new Error("thread/metadata/update params.gitInfo must be an object or null");
     }
-    gitInfo = {};
+    const gitInfo: NonNullable<DecodedThreadMetadataUpdateRequest["gitInfo"]> = {};
     for (const name of ["branch", "originUrl", "sha"] as const) {
       const value = params.gitInfo[name];
-      if (value !== undefined && value !== null && typeof value !== "string") {
-        throw new Error(`thread/metadata/update params.gitInfo.${name} must be text or null`);
+      if (value !== undefined) {
+        gitInfo[name] = nonBlankTextOrNull(value, `thread/metadata/update params.gitInfo.${name}`);
       }
-      if (value !== undefined) gitInfo[name] = value as string | null;
     }
+    decoded.gitInfo = gitInfo;
+    for (const name of Object.keys(params.gitInfo)) {
+      if (!GIT_INFO_FIELDS.has(name)) decoded.unsupportedFields.push(`gitInfo.${name}`);
+    }
+    decoded.unsupportedFields.sort();
   }
-  const decoded: DecodedThreadMetadataUpdateRequest = { threadId: params.threadId };
-  if (params.isPinned !== undefined) decoded.isPinned = isPinned;
-  if (params.gitInfo !== undefined) decoded.gitInfo = gitInfo ?? null;
   return decoded;
+}
+
+/** Return the project ID of an official `project/changed` deletion notification. */
+export function observeDeletedProject(value: unknown): string | null {
+  if (!isRecord(value) || value.method !== "project/changed" || "id" in value) return null;
+  const params = value.params;
+  if (!isRecord(params) || params.changeType !== "deleted") return null;
+  return typeof params.projectId === "string" && params.projectId.length > 0
+    ? params.projectId
+    : null;
 }
 
 function optionalCursor(value: unknown, name: string): string | null {

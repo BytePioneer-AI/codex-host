@@ -1,4 +1,4 @@
-# SSH 远程 Harness Host
+# 通过 SSH 使用远程 Harness
 
 通过 Codex Desktop 原生 SSH 工作区，在本机使用只安装、只登录在被控机器上的 Harness（包括 Claude Code）。凭据始终留在被控机器上，不会通过 SSH 转发。
 
@@ -20,7 +20,7 @@ codexhost remote start
 codexhost remote status
 ```
 
-`remote install` 只在 SSH 会话的 Shell 配置中加入一段带标记的配置（修改前会自动备份），不影响本地 Shell 和原有 `codex` 命令。在 macOS 上还会安装一个当前用户的 LaunchAgent，用于在登录会话中启动 Claude Code；它不读取 Keychain 或任何凭据。
+安装会自动备份需要修改的 Shell 配置。在 macOS 上，被控机器还需要保持用户已登录桌面，才能正常启动 Claude Code。
 
 ## 使用
 
@@ -28,13 +28,29 @@ codexhost remote status
 2. 打开 SSH 工作区。
 3. 在输入框的 Agent / Model 选择器中选择目标 Harness。
 
+本地和 SSH 工作区可以同时使用，各自选择对应机器上可用的 Harness 和模型。如果只使用远程原生 Codex，无需在被控机器上安装 codexhost。
+
+## 在两端查看和操作同一外部会话
+
+在被控机器上也安装 Codex Desktop，并通过 codexhost 启动。远程服务运行期间，从 SSH 工作区创建的外部 Harness 会话会自动出现在被控机器的会话列表中，首次出现可能需要几秒。
+
+两端需使用相同版本的 codexhost。被控机器上的桌面登录用户应与 SSH 登录用户一致；如果自定义了 Codex 数据目录（`CODEX_HOME`），两种启动方式也应使用同一目录。
+
+- **同步查看**：两端都能看到用户消息、逐步生成的回复、工具操作和任务状态。
+- **随时操作**：任意一端都可以发送、插入消息、中断任务或回答审批与提问，无需切换控制权。
+- **同时操作**：任务执行中追加消息使用插入功能；另行启动任务可能提示忙碌。两端回答同一个审批或提问时，以先处理的回答为准。
+- **断线恢复**：只要远程服务仍在运行，单端断开不会停止任务。重连后重新打开会话，可以查看期间产生的内容。停止远程服务会结束正在运行的任务。
+- **发送失败**：若断线时无法确认消息是否发送成功，重连后先查看会话，再决定是否重发。
+
+此功能适用于从 SSH 工作区创建的外部 Harness 会话。被控机器上单独创建的本地会话和原生 Codex 会话仍按原有方式使用。
+
 ## 常用命令
 
 ```bash
 codexhost remote status     # 查看运行状态和安装完整性
 codexhost remote start      # 启动（可重复执行）
 codexhost remote stop       # 停止，不影响其他 Codex 进程
-codexhost remote uninstall  # 卸载，保留 Thread 映射数据
+codexhost remote uninstall  # 卸载，保留会话关联数据
 ```
 
 启动、停止或卸载后，需要在 Desktop 中重新连接 SSH 工作区。
@@ -45,9 +61,11 @@ codexhost remote uninstall  # 卸载，保留 Thread 映射数据
 
 ## 常见问题
 
+- **运行中的原生 Codex 任务无法插入消息**：确认本机 codexhost 已升级，然后重新连接 SSH 工作区再试。
 - **`codexhost/harness/inspect is unsupported on this Host connection`**：当前 SSH 连接没有接入 codexhost。确认被控机器已安装并启动相同版本的 codexhost，然后重新连接 SSH 工作区。
 - **`remote status` 提示 degraded 或需要重新安装**：重新执行 `codexhost remote install`，再执行 `codexhost remote start`。
-- **原生 Codex 请求返回 `Official request failed; retry explicitly`**：被控机器上的官方 Codex 进程退出后，codexhost 会自动按退避重新拉起它，重新连接 SSH 工作区会立即重试。若持续失败，执行 `codexhost remote stop` 和 `codexhost remote start`。
-- **重连后几秒显示已连接、随即断开，再连一次才成功**：被控机器上残留了上一个 listener 的控制 socket（例如 listener 被强制结束）时，旧版本的启动检查会把新 listener 误判为未就绪，并在 10 秒后将其结束。升级到包含修复的版本即可。临时处理：通常再重连一次就能恢复，因为被结束的 listener 正常退出时会删除这个 socket；如果仍然反复出现，先确认被控机器上没有 listener 进程（`pgrep -f '^codexhost remote app-server listener'` 无输出），再删除 `~/.codex/app-server-control/app-server-control.sock`（设置了 `CODEX_HOME` 时位于其下）后重连。
+- **原生 Codex 请求返回 `Official request failed; retry explicitly`**：重新连接 SSH 工作区后再试。若持续失败，在被控机器上执行 `codexhost remote stop` 和 `codexhost remote start`，然后重连。
+- **重连后短暂显示已连接，随即断开**：将两端 codexhost 升级到同一最新版本，按上面的升级步骤重新安装并启动远程服务，再连接 SSH 工作区。
+- **被控机器的 GUI 看不到 SSH 会话**：确认两端都通过 codexhost 启动，远程服务正在运行，且登录用户和 Codex 数据目录符合上述要求。等待几秒后重新查看会话列表。
 - **看不到某个 Harness**：在被控机器上检查该 Harness 是否已安装并登录，然后在设置中点击「重新诊断连接」。
 - **macOS 上安装失败，提示 launchd / `gui/$UID` 错误**：被控机器需要有已登录的图形会话，登录后重新执行 `codexhost remote install`。

@@ -28,7 +28,6 @@ import {
   readModernPermissionModeState,
 } from "./permission-modes.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
-import { DEEPSEEK_V012_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import {
   redactModernCredential,
   sanitizeModernRemoteFailure,
@@ -261,7 +260,6 @@ export function readModernConfigurationSnapshot(input: {
   readonly nativeRef: NativeSessionRef;
   readonly modelCatalog: ModernModelCatalogSnapshot;
   readonly permissionModes: HarnessPermissionModeCatalog | null;
-  readonly profile?: DeepSeekModernProfile;
 }): ModernConfigurationSnapshot {
   const rows = input.control.snapshot(input.sessionId);
   if (!rows) {
@@ -274,7 +272,6 @@ export function readModernConfigurationSnapshot(input: {
   const permission = readModernPermissionModeState(
     rows[MODERN_PERMISSION_PROJECTION_KEY],
     input.permissionModes,
-    input.profile,
   );
   return {
     model,
@@ -420,7 +417,6 @@ export async function selectModernPermissionMode(
   catalog: HarnessPermissionModeCatalog | null,
   permissionModeId: HarnessPermissionModeId,
   signal: AbortSignal,
-  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
 ): Promise<{ readonly projectionSeq: number; readonly changed: boolean }> {
   const requested = harnessPermissionModeIdSchema.safeParse(permissionModeId);
   if (!requested.success || !catalog?.modes.some(({ id }) => id === requested.data)) {
@@ -441,7 +437,6 @@ export async function selectModernPermissionMode(
       sessionId,
       `/permission ${requested.data}`,
       signal,
-      profile,
     );
   } catch (error) {
     if (!isUncertainTransportFailure(error)) {

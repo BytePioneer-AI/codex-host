@@ -10,9 +10,9 @@ import { loadHarnessPlugins, type HarnessPluginDiagnostic } from "../src/harness
 /**
  * Real-loader acceptance for the Hermes harness plugin:
  * a temp isolated plugin root (never the user's ~/.codexhost), the real
- * packaged entry, and a real `hermes acp` child process. Follows the
+ * packaged entry, and the real Hermes Gateway. Follows the
  * "development acceptance uses temporary isolated roots" rule.
- * This stays read-only because Hermes ACP does not expose Session deletion.
+ * Inspection creates no persisted native Session.
  */
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const pluginSource = path.join(repoRoot, "packages/host-runtime/dist/plugins/hermes");
@@ -37,7 +37,7 @@ async function installHermesPlugin(): Promise<string> {
 // Local acceptance only: standard CI intentionally has no Hermes installation
 // or user credentials. Run explicitly with CODEXHOST_RUN_HERMES_LIVE=1.
 describe.skipIf(process.env.CODEXHOST_RUN_HERMES_LIVE !== "1")(
-  "Hermes harness plugin (real loader + real hermes acp)",
+  "Hermes harness plugin (real loader + real Hermes Gateway)",
   () => {
     it(
       "loads through loadHarnessPlugins and reports the real read-only inventory",
@@ -71,7 +71,6 @@ describe.skipIf(process.env.CODEXHOST_RUN_HERMES_LIVE !== "1")(
         expect(inspection.catalog.models.every(({ label }) => label.includes(" / "))).toBe(true);
         expect(inspection.permissionModes?.modes.map((mode) => mode.id)).toEqual([
           "default",
-          "accept_edits",
           "dont_ask",
         ]);
 

@@ -41,6 +41,7 @@ export interface LoadHarnessPluginsOptions {
   context: HarnessPluginContext;
   /** Local, persisted entrypoints; requested only for opted-in plugins. */
   launchCommandForPlugin?: (id: string) => Promise<string | undefined>;
+  connectionModeForPlugin?: (id: string) => Promise<HarnessPluginContext["connectionMode"]>;
   /** Prevent conflicts with explicitly injected Adapters, e.g. test fixtures. */
   reservedIds?: ReadonlySet<string>;
   /** Bound for one plugin's asynchronous import and factory. Defaults to 10s. */
@@ -231,6 +232,9 @@ export async function loadHarnessPlugins(
           ? { launchCommand: true }
           : {}),
         ...(manifest.links ? { links: manifest.links } : {}),
+        ...(manifest.connectionMode && !options.context.managedRemoteHost
+          ? { connectionMode: true }
+          : {}),
       });
       let adapter: HarnessAdapter;
       let failure: HarnessPluginDiagnosticCode | undefined;
@@ -243,9 +247,16 @@ export async function loadHarnessPlugins(
           const launchCommand = descriptor.launchCommand
             ? await options.launchCommandForPlugin?.(manifest.id)
             : undefined;
+          const connectionMode = descriptor.connectionMode
+            ? await options.connectionModeForPlugin?.(manifest.id)
+            : undefined;
           adapter = await loadAdapter(
             candidate,
-            { ...options.context, ...(launchCommand ? { launchCommand } : {}) },
+            {
+              ...options.context,
+              ...(launchCommand ? { launchCommand } : {}),
+              ...(connectionMode ? { connectionMode } : {}),
+            },
             timeoutMs,
             diagnose,
             options.warmup !== false,

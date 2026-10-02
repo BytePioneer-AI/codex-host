@@ -1006,17 +1006,30 @@ fn discover_from_candidates(
 }
 
 #[cfg(target_os = "macos")]
-pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
-    let mut candidates = vec![
-        PathBuf::from("/Applications/Codex.app"),
-        PathBuf::from("/Applications/ChatGPT.app"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        let applications = PathBuf::from(home).join("Applications");
-        candidates.push(applications.join("Codex.app"));
-        candidates.push(applications.join("ChatGPT.app"));
+fn discover_with_custom_root(
+    custom_root: Option<PathBuf>,
+    candidates: impl FnOnce() -> Vec<PathBuf>,
+) -> Result<DesktopInstallation, PlatformError> {
+    match custom_root {
+        Some(root) => inspect_bundle(&root),
+        None => discover_from_candidates(candidates()),
     }
-    discover_from_candidates(candidates)
+}
+
+#[cfg(target_os = "macos")]
+pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
+    discover_with_custom_root(custom_install_root(env::var_os), || {
+        let mut candidates = vec![
+            PathBuf::from("/Applications/Codex.app"),
+            PathBuf::from("/Applications/ChatGPT.app"),
+        ];
+        if let Some(home) = std::env::var_os("HOME") {
+            let applications = PathBuf::from(home).join("Applications");
+            candidates.push(applications.join("Codex.app"));
+            candidates.push(applications.join("ChatGPT.app"));
+        }
+        candidates
+    })
 }
 
 /// Resolve a helper's official CLI from a validated Desktop bundle, never PATH.
@@ -1049,7 +1062,9 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::PathBuf;
 
-    use super::{DesktopIdentity, PlatformError, discover_from_candidates};
+    use super::{
+        DesktopIdentity, PlatformError, discover_from_candidates, discover_with_custom_root,
+    };
     use crate::temporary_directory;
 
     fn temporary_bundle(name: &str, bundle_identifier: &str, include_cli: bool) -> PathBuf {
@@ -1131,6 +1146,34 @@ mod tests {
             assert_eq!(installation.packaged_codex_cli, expected);
             assert_eq!(installation.executable_codex_cli, expected);
         }
+    }
+
+    #[test]
+    fn explicit_install_root_is_authoritative_over_default_candidates() {
+        let default = temporary_bundle("ChatGPT.app", "com.openai.codex", true);
+        let custom = temporary_bundle("CodexSide.app", "com.openai.codex", true);
+
+        let installation = discover_with_custom_root(Some(custom.clone()), || {
+            panic!("default candidates must not be consulted")
+        })
+        .expect("custom bundle");
+        assert_eq!(
+            installation.install_root,
+            custom.canonicalize().expect("bundle")
+        );
+
+        let installation =
+            discover_with_custom_root(None, || vec![default.clone()]).expect("default bundle");
+        assert_eq!(
+            installation.install_root,
+            default.canonicalize().expect("bundle")
+        );
+
+        let invalid = temporary_bundle("Wrong.app", "example.invalid", true);
+        assert!(matches!(
+            discover_with_custom_root(Some(invalid), || vec![default]),
+            Err(PlatformError::Invalid(_))
+        ));
     }
 
     #[test]

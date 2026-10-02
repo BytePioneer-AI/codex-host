@@ -360,7 +360,7 @@ function transportEvent(
   }
 }
 
-function grokHomeDir(options: Pick<GrokAcpTransportOptions, "environment">): string {
+export function grokHomeDir(options: Pick<GrokAcpTransportOptions, "environment">): string {
   const environment = { ...process.env, ...options.environment };
   const home = environment.HOME ?? environment.USERPROFILE ?? os.homedir();
   return environment.GROK_HOME ?? path.join(home, ".grok");

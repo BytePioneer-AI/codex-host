@@ -1,4 +1,4 @@
-/** Managed DeepSeek Harness Modern Web Remote transport. */
+/** DeepSeek Harness Modern Web Remote transport for managed Web or an existing Desktop Host. */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -7,6 +7,7 @@ import { StringDecoder } from "node:string_decoder";
 
 import WebSocket from "ws";
 
+import { desktopCookieSigner } from "../desktop-connection.js";
 import { deepSeekProcessInvocation, killDeepSeekProcessTree } from "../executable.js";
 
 import {
@@ -50,6 +51,8 @@ export class ModernRemoteConnectionError extends Error {
 }
 
 export interface ModernRemoteConnectionOptions {
+  /** Existing native Desktop Host; no child process is owned in this mode. */
+  readonly desktopEndpoint?: string;
   /** Raw resolved executable; `.cmd`/`.bat` wrapping happens after Web args are complete. */
   readonly command: string;
   /** Raw arguments placed before the exact managed Web invocation, such as the npx prefix. */
@@ -237,6 +240,7 @@ export class ModernRemoteConnection {
   #closePromise: Promise<void> | undefined;
   #connectPromise: Promise<void> | undefined;
   #cookie: string | undefined;
+  #desktopCookie: (() => string) | undefined;
   #fault: ModernRemoteConnectionError | undefined;
   #launchUrl: string | undefined;
   #openWebUiPromise: Promise<void> | undefined;
@@ -361,7 +365,7 @@ export class ModernRemoteConnection {
     assertModernUnaryEndpoint(endpoint);
     await this.connect();
     const origin = this.#origin as URL;
-    const cookie = this.#cookie as string;
+    const cookie = this.#desktopCookie?.() ?? (this.#cookie as string);
     const rpcId = this.#dependencies.randomUUID();
     const timeoutMs =
       options.timeoutMs === undefined
@@ -502,7 +506,7 @@ export class ModernRemoteConnection {
       const response = await this.#dependencies.fetch(url, {
         method: "HEAD",
         redirect: "manual",
-        headers: { cookie: this.#cookie as string },
+        headers: { cookie: this.#desktopCookie?.() ?? (this.#cookie as string) },
         signal: requestSignal,
       });
       try {
@@ -596,9 +600,9 @@ export class ModernRemoteConnection {
     if (callerSignal?.aborted || this.#closing) return;
     if (this.#fault) throw this.#fault;
     const origin = this.#origin as URL;
-    const cookie = this.#cookie as string;
+    const cookie = this.#desktopCookie?.() ?? (this.#cookie as string);
     const url = new URL(MODERN_REMOTE_MUX_PATH, origin);
-    url.protocol = "ws:";
+    url.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
     const streamId = this.#dependencies.randomUUID();
     let socket: ModernWebSocket;
     try {
@@ -826,6 +830,38 @@ export class ModernRemoteConnection {
   }
 
   async #performConnect(): Promise<void> {
+    if (this.#options.desktopEndpoint) {
+      try {
+        const signer = await desktopCookieSigner(this.#options.desktopEndpoint, this.#environment);
+        const origin = new URL(this.#options.desktopEndpoint);
+        const response = await this.#dependencies.fetch(origin, {
+          headers: { cookie: signer() },
+          redirect: "manual",
+          signal: AbortSignal.any([
+            this.#lifetime.signal,
+            AbortSignal.timeout(this.#startupTimeoutMs),
+          ]),
+        });
+        await response.body?.cancel();
+        if (response.status === 401 || response.status === 403) {
+          throw new ModernRemoteConnectionError(
+            "authenticationRequired",
+            "DeepSeek Desktop rejected its local browser-session grant",
+          );
+        }
+        if (response.status !== 200) throw new Error("Desktop Host is not ready");
+        if (this.#lifetime.signal.aborted) throw new Error("Connection closed");
+        this.#origin = origin;
+        this.#desktopCookie = signer;
+        return;
+      } catch (error) {
+        if (error instanceof ModernRemoteConnectionError) throw error;
+        throw new ModernRemoteConnectionError(
+          "unavailable",
+          "无法连接 DeepSeek Desktop。请先启动 DeepSeek Harness 桌面应用，并确认使用相同的 DSH_HOME。\nCould not connect to DeepSeek Desktop. Start the desktop application with the same DSH_HOME first.",
+        );
+      }
+    }
     const rawArguments = [
       ...(this.#options.commandArguments ?? []),
       "web",
@@ -1085,6 +1121,7 @@ export class ModernRemoteConnection {
     this.#launchUrl = undefined;
     this.#origin = undefined;
     this.#cookie = undefined;
+    this.#desktopCookie = undefined;
     this.#lifetime.abort(new Error("DeepSeek Harness connection closed"));
     const socketClosures = [...this.#sockets.keys()].map((socket) =>
       this.#closeTrackedSocket(socket),
@@ -1108,6 +1145,7 @@ export class ModernRemoteConnection {
     this.#launchUrl = undefined;
     this.#origin = undefined;
     this.#cookie = undefined;
+    this.#desktopCookie = undefined;
     if (stopped?.status === "rejected") throw stopped.reason;
     const socketFailure = socketResults.find((result) => result.status === "rejected");
     if (socketFailure?.status === "rejected") throw socketFailure.reason;
@@ -1163,6 +1201,7 @@ export class ModernRemoteConnection {
     this.#launchUrl = undefined;
     this.#origin = undefined;
     this.#cookie = undefined;
+    this.#desktopCookie = undefined;
     this.#lifetime.abort(error);
     for (const socket of this.#sockets.keys()) socket.close();
     for (const listener of [...this.#faultListeners]) {

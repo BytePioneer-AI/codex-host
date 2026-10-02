@@ -47,6 +47,10 @@ But **Codex** isn't the only great **Agent Harness** — **Claude Code** and **P
 <td width="180"><a href="https://aixlau.me/register?aff=HOST"><img src="docs/imgs/sponsors/xinglian-ai.png" alt="Xinglian AI" width="160"></a></td>
 <td>Thanks to <b>星链AI (Xinglian AI)</b> for sponsoring this project! Xinglian AI provides a stable, efficient API relay service for AI coding tools such as Codex and CodexHost, with quick access to mainstream AI models: stable routes · fast responses · multi-model compatibility · ready to use out of the box. It cuts the cost of configuring and switching APIs, so you can focus on coding. <a href="https://aixlau.me/register?aff=HOST">Try it now →</a></td>
 </tr>
+<tr>
+<td width="180"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="docs/imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="160"></a></td>
+<td>Thanks to <b>VibeAPI</b> for sponsoring this project! Built for power developers and teams, VibeAPI provides unified access to mainstream AI models, focusing on the Codex and Claude series with a self-managed, traceable account pool. It offers ultra-fast time to first token, 99.9% SLA availability, and cache hit rates of 95%+. Human technical support is available 24/7, with corporate invoicing and enterprise partnerships fully supported. <a href="https://vibeapi.cc/sign-up?aff=AOYp">Grab some cyber goodies →</a></td>
+</tr>
 </table>
 </details>
 

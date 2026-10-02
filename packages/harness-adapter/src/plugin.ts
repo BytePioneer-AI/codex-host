@@ -1,14 +1,24 @@
 import type { HarnessAdapter } from "./text-session.js";
+import type { HarnessConnectionMode } from "@codexhost/shared-contracts";
+
+export interface HarnessLocalPage {
+  show(): Promise<void>;
+  close(): Promise<void>;
+}
 
 /** Per Host/connection construction context; never contains Host or Renderer internals. */
 export interface HarnessPluginContext {
   readonly environment: Readonly<Record<string, string | undefined>>;
   /** Persisted installation directory or legacy entrypoint; only for plugins declaring launchCommand. */
   readonly launchCommand?: string;
+  /** Persisted preference; only for plugins declaring connectionMode. Native semantics belong to the plugin. */
+  readonly connectionMode?: HarnessConnectionMode;
   readonly platform: string;
   readonly managedRemoteHost: boolean;
   readonly brokerDescriptorPath?: string;
   readonly openLocalUrl?: (url: string) => Promise<void>;
+  /** Opens a background page in the local Desktop browser; owner must close it. */
+  readonly openLocalPage?: (url: string) => Promise<HarnessLocalPage>;
 }
 
 /** A loaded module supplies a factory, not a global registration side effect. */

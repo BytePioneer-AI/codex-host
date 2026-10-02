@@ -37,7 +37,7 @@ describe("Hermes model catalog", () => {
       models: [
         { modelId: "other:gpt-5.6-sol", label: "gpt-5.6-sol", provider: "Other" },
         {
-          modelId: "pi-openai:gpt-5.6-sol",
+          modelId: "custom:pi-openai:gpt-5.6-sol",
           modelIdAliases: ["custom:pi-openai:gpt-5.6-sol", "pi openai:gpt-5.6-sol"],
           label: "gpt-5.6-sol",
           provider: "Pi OpenAI",
@@ -50,6 +50,53 @@ describe("Hermes model catalog", () => {
     expect(catalog.models.map(({ ref }) => ref)).toContainEqual(
       encodeHermesModelRef("custom:pi-openai:gpt-5.6-sol"),
     );
+  });
+
+  it("never substitutes a historical alias for the native route", () => {
+    const catalog = catalogModelsFromInventory({
+      models: [
+        {
+          modelId: "custom:sol-gateway:Model:Beta",
+          modelIdAliases: ["custom:custom:sol-gateway:Model:Beta"],
+          label: "Model:Beta",
+          provider: "Sol Gateway",
+        },
+      ],
+      currentModelId: "custom:custom:sol-gateway:Model:Beta",
+    });
+    expect(catalog.defaultModel).toEqual(encodeHermesModelRef("custom:sol-gateway:Model:Beta"));
+  });
+
+  it("rejects ambiguous defaults instead of choosing the last provider", () => {
+    expect(() =>
+      catalogModelsFromInventory({
+        models: ["first", "second"].map((provider) => ({
+          modelId: `${provider}:Model`,
+          modelIdAliases: ["legacy:Model"],
+          label: "Model",
+          provider,
+        })),
+        currentModelId: "legacy:Model",
+      }),
+    ).toThrow("multiple Provider routes");
+  });
+
+  it("reports a missing configured model without selecting the first model", () => {
+    expect(() =>
+      catalogModelsFromInventory({
+        models: [{ modelId: "zai:Model", label: "Model", provider: "Z.AI" }],
+        currentModelId: "other:Model",
+      }),
+    ).toThrow("absent from its available catalog");
+  });
+
+  it("deduplicates native routes without merging providers with the same model", () => {
+    const model = { modelId: "first:Model", label: "Model", provider: "First" };
+    const catalog = catalogModelsFromInventory({
+      models: [model, model, { ...model, modelId: "second:Model", provider: "Second" }],
+      currentModelId: "first:Model",
+    });
+    expect(catalog.models).toHaveLength(2);
   });
 
   it("does not invent a default when Hermes reports no configured model", () => {

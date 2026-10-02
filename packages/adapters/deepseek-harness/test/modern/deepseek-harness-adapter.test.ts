@@ -1,8 +1,8 @@
 import path from "node:path";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 import { describe, expect, it, vi } from "vitest";
-
-import Schema from "@deepseek-ai/schemastery";
 
 import { nativeCheckpointRefSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
 
@@ -12,6 +12,9 @@ import {
 } from "../../src/modern/deepseek-harness-adapter.js";
 import { ModernRemoteConnectionError } from "../../src/modern/remote-connection.js";
 import type { ModernRemoteFailure, ModernRemoteResult } from "../../src/modern/wire.js";
+
+/** The CLI release the install guide pins; every profile binds its probed version. */
+const DSH_VERSION = "0.2.0-rc.2";
 
 class Feed implements AsyncIterable<unknown>, AsyncIterator<unknown> {
   readonly #items: IteratorResult<unknown>[] = [];
@@ -98,13 +101,14 @@ class FakeConnection implements ModernConnectionLike {
     ok: true,
     value: { sessionId: "session-forked" },
   };
+  workspaceResult: ModernRemoteResult<unknown> | undefined;
   sessionListResult: ModernRemoteResult<unknown> = { ok: true, value: { items: [] } };
   forkResponse: Promise<ModernRemoteResult<unknown>> | undefined;
   cancelResponse: Promise<ModernRemoteResult<unknown>> | undefined;
   closeError: Error | undefined;
 
-  constructor(readonly formatVersion = 0) {
-    this.control.push(controlBaseline(formatVersion));
+  constructor() {
+    this.control.push(controlBaseline());
     this.events.push({
       type: "ready",
       clientId: "client-1",
@@ -135,11 +139,31 @@ class FakeConnection implements ModernConnectionLike {
     if (endpoint === "session/list") {
       return Promise.resolve(this.sessionListResult as ModernRemoteResult<T>);
     }
-    if (endpoint === "settings/describe") {
-      return Promise.resolve({
-        ok: true,
-        value: settingsValue(this.permissionModesEnabled, this.formatVersion),
-      } as ModernRemoteResult<T>);
+    if (endpoint === "permissionPresets/catalog") {
+      return Promise.resolve(
+        (this.permissionModesEnabled
+          ? { ok: true, value: permissionCatalog() }
+          : {
+              ok: false,
+              error: {
+                code: "gateway/service-unavailable",
+                message: 'active Service "permissionPresets" is unavailable',
+                details: {},
+              },
+            }) as ModernRemoteResult<T>,
+      );
+    }
+    if (endpoint === "workspace/create") {
+      const request = args.request as { path: string };
+      return Promise.resolve(
+        (this.workspaceResult ?? {
+          ok: true,
+          value: {
+            created: false,
+            workspace: { workspaceId: "existing-workspace", path: request.path, sessionIds: [] },
+          },
+        }) as ModernRemoteResult<T>,
+      );
     }
     if (endpoint === "session/create") {
       const request = args.request as { sessionId: string; agentPreset?: string };
@@ -343,40 +367,18 @@ class FakeConnection implements ModernConnectionLike {
   }
 }
 
-function settingsValue(withPermissions = false, formatVersion = 0): Record<string, unknown> {
-  if (!withPermissions) return { writable: true, hasDocument: true, namespaces: [] };
-  const choices = ["workspace-write", "danger-full-access"].map((id) => Schema.const(id));
-  return {
-    writable: true,
-    hasDocument: true,
-    namespaces: [
-      {
-        ns: "permission",
-        schema: JSON.parse(
-          JSON.stringify(
-            Schema.object({ defaultPreset: Schema.union(choices).required() }).toJSON(),
-          ),
-        ),
-        value: { defaultPreset: "workspace-write" },
-        base: { defaultPreset: "workspace-write" },
-        user: {},
-        applies: "live",
-        ...(formatVersion === 4 ? { autoGenerate: false } : {}),
-        secrets: [],
-        revision: 0,
-      },
-    ],
-  };
+/** DSH's process-level preset catalog. */
+function permissionCatalog(): Record<string, unknown> {
+  const options = ["workspace-write", "danger-full-access"].map((value) => ({
+    value,
+    name: value,
+  }));
+  return { options, defaultOptions: options, defaultPreset: "workspace-write" };
 }
 
+/** V4 projects only the current value; its options come from the catalog. */
 function permissionProjection(currentValue: string): Record<string, unknown> {
-  return {
-    options: ["workspace-write", "danger-full-access"].map((value) => ({
-      value,
-      name: value,
-    })),
-    currentValue,
-  };
+  return { currentValue };
 }
 
 function catalogValue(): Record<string, unknown> {
@@ -403,11 +405,8 @@ function catalogValue(): Record<string, unknown> {
   };
 }
 
-function controlBaseline(formatVersion = 0): Record<string, unknown> {
-  return {
-    type: "baseline",
-    value: formatVersion === 4 ? { projections: {} } : { queues: {}, jobs: {}, projections: {} },
-  };
+function controlBaseline(): Record<string, unknown> {
+  return { type: "baseline", value: { projections: {} } };
 }
 
 function journalSnapshot(
@@ -456,10 +455,12 @@ function journalSnapshot(
   return {
     type: "snapshot",
     header: {
-      version: 0,
+      version: 4,
       id: sessionId,
       createdAt: 1,
       ...(cwd === undefined ? {} : { cwd }),
+      isSeeded: false,
+      delegationDepth: 0,
     },
     cursor,
     records: events.map((event) => ({ type: "event", event })),
@@ -471,6 +472,7 @@ function journalSnapshot(
         ...(permissionModeId ? { permissions: permissionProjection(permissionModeId) } : {}),
       },
     },
+    assistantStream: { revision: 0 },
   };
 }
 
@@ -479,7 +481,6 @@ function exactJournalSnapshot(input: {
   readonly cwd: string;
   readonly events: readonly Record<string, unknown>[];
   readonly parentSession?: string;
-  readonly seedLength?: number;
   readonly headerAgentPreset?: string;
   readonly agentPreset?: string | null;
 }): Record<string, unknown> {
@@ -487,12 +488,13 @@ function exactJournalSnapshot(input: {
   return {
     type: "snapshot",
     header: {
-      version: 0,
+      version: 4,
       id: input.sessionId,
       createdAt: 1,
       cwd: input.cwd,
+      isSeeded: input.parentSession !== undefined,
+      delegationDepth: 0,
       ...(input.parentSession ? { parentSession: input.parentSession } : {}),
-      ...(input.seedLength === undefined ? {} : { seedLength: input.seedLength }),
       ...(input.headerAgentPreset === undefined ? {} : { agentPreset: input.headerAgentPreset }),
     },
     cursor,
@@ -505,6 +507,7 @@ function exactJournalSnapshot(input: {
         ...(input.agentPreset === undefined ? {} : { agentPreset: input.agentPreset }),
       },
     },
+    assistantStream: { revision: 0 },
   };
 }
 
@@ -529,12 +532,14 @@ function forkRefs(sourceSessionId: string, seq: number) {
       harnessId: "deepseek-harness",
       nativeSessionId: sourceSessionId,
       formatVersion: 1,
+      locator: { dshVersion: DSH_VERSION },
     }),
     checkpoint: nativeCheckpointRefSchema.parse({
       harnessId: "deepseek-harness",
       nativeSessionId: sourceSessionId,
-      checkpointId: `turn-end:${seq}`,
+      checkpointId: `v4-turn-end:${seq}`,
       formatVersion: 1,
+      locator: { dshVersion: DSH_VERSION },
     }),
   };
 }
@@ -594,10 +599,10 @@ function setup(
   readonly adapter: ModernDeepSeekHarnessAdapter;
   readonly connection: FakeConnection;
 } {
-  const connection = new FakeConnection(adapterOptions.version === "0.1.7-rc.1" ? 4 : 0);
+  const connection = new FakeConnection();
   const values = [...uuids];
   const adapter = new ModernDeepSeekHarnessAdapter(
-    { command: "dsh", ...adapterOptions },
+    { command: "dsh", version: DSH_VERSION, ...adapterOptions },
     {
       randomUUID: () => values.shift() ?? "fallback",
       now: () => 1_000,
@@ -607,45 +612,26 @@ function setup(
   return { adapter, connection };
 }
 
-function v015Snapshot(input: Parameters<typeof exactJournalSnapshot>[0]): Record<string, unknown> {
-  const snapshot = exactJournalSnapshot(input);
-  const header = { ...(snapshot.header as Record<string, unknown>) };
-  delete header.seedLength;
-  return {
-    ...snapshot,
-    header: { ...header, version: 3, isSeeded: input.parentSession !== undefined },
-    assistantStream: { revision: 0 },
-  };
-}
-
-function v017Snapshot(input: Parameters<typeof exactJournalSnapshot>[0]): Record<string, unknown> {
-  const snapshot = v015Snapshot(input);
-  return {
-    ...snapshot,
-    header: { ...(snapshot.header as Record<string, unknown>), version: 4, delegationDepth: 0 },
-  };
-}
-
 describe("DSH V4 session operations", () => {
   const locator = { dshVersion: "0.1.7-rc.1" };
 
   it("creates and resumes a V4 Session with an exact versioned reference", async () => {
-    const cwd = path.resolve("fixture-v017-create");
-    const { adapter, connection } = setup(["v017"], { version: "0.1.7-rc.1" });
+    const cwd = path.resolve("fixture-v4-create");
+    const { adapter, connection } = setup(["v4"], { version: "0.1.7-rc.1" });
     connection.journalSnapshots.set(
-      "session-v017",
-      v017Snapshot({ sessionId: "session-v017", cwd, events: [] }),
+      "session-v4",
+      exactJournalSnapshot({ sessionId: "session-v4", cwd, events: [] }),
     );
     const created = await adapter.open({ kind: "create", cwd });
     expect(created).toMatchObject({ ok: true });
     if (!created.ok) throw new Error(created.error.message);
     const ref = created.value.initialState.nativeRef;
-    expect(ref).toMatchObject({ nativeSessionId: "session-v017", locator });
+    expect(ref).toMatchObject({ nativeSessionId: "session-v4", locator });
     expect(connection.streams).toContainEqual({
       endpoint: "session/follow",
       args: {
         request: {
-          address: { kind: "session", sessionId: "session-v017" },
+          address: { kind: "session", sessionId: "session-v4" },
           maxMessages: 200,
           assistantStream: true,
         },
@@ -660,11 +646,123 @@ describe("DSH V4 session operations", () => {
     expect(connection.flushSession).toHaveBeenCalledTimes(2);
   });
 
+  it("inspects, applies and resumes V4 Permission presets from the process catalog", async () => {
+    const cwd = path.resolve("fixture-v4-permissions");
+    const { adapter, connection } = setup(["v4"], { version: "0.1.7-rc.1" });
+    connection.permissionModesEnabled = true;
+    const snapshot = (events: Record<string, unknown>[], preset?: string) => ({
+      ...exactJournalSnapshot({ sessionId: "session-v4", cwd, events }),
+      projections: {
+        asOfSeq: events.length - 1,
+        values: {
+          modelSelection: { lastUsed: null, next: null },
+          ...(preset ? { permissions: { currentValue: preset } } : {}),
+        },
+      },
+    });
+    connection.journalSnapshots.set("session-v4", snapshot([]));
+
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "ready",
+      permissionModes: {
+        modes: [{ id: "workspace-write" }, { id: "danger-full-access" }],
+        defaultModeId: "workspace-write",
+      },
+      capabilities: { configuration: { selectPermissionMode: true } },
+    });
+    const endpoints = connection.calls.map(({ endpoint }) => endpoint);
+    expect(endpoints).toContain("permissionPresets/catalog");
+    expect(endpoints).not.toContain("settings/describe");
+
+    const created = await adapter.open({
+      kind: "create",
+      cwd,
+      permissionModeId: "danger-full-access" as never,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    expect(connection.calls).toContainEqual({
+      endpoint: "commands/execute",
+      args: {
+        agentId: "session-v4",
+        line: "/permission danger-full-access",
+        submittedAttachments: [],
+      },
+    });
+    expect(created.value.initialState.effectivePermissionModeId).toBe("danger-full-access");
+    const ref = created.value.initialState.nativeRef;
+    if (!ref) throw new Error("missing V4 Native Session reference");
+    await created.value.close();
+
+    connection.journalSnapshots.set(
+      "session-v4",
+      snapshot(
+        [exactJournalEvent(0, "permission/preset", { preset: "danger-full-access" })],
+        "danger-full-access",
+      ),
+    );
+    const resumed = await adapter.open({ kind: "resume", nativeRef: ref, cwd });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    expect(resumed.value.initialState.effectivePermissionModeId).toBe("danger-full-access");
+    await resumed.value.close();
+    await adapter.close();
+  });
+
+  it("delegates V4 unattended work only through the full-access preset", async () => {
+    const cwd = path.resolve("fixture-v4-unattended");
+    const { adapter, connection } = setup(["v4"], { version: "0.1.7-rc.1" });
+    connection.permissionModesEnabled = true;
+    const events = [
+      exactJournalEvent(0, "permission/preset", { preset: "danger-full-access" }),
+      exactJournalEvent(1, "sandbox/mode", { mode: "danger-full-access" }),
+      exactJournalEvent(2, "approval/policy", { policy: "never" }),
+    ];
+    connection.journalSnapshots.set("session-v4", {
+      ...exactJournalSnapshot({ sessionId: "session-v4", cwd, events }),
+      projections: {
+        asOfSeq: 2,
+        values: {
+          modelSelection: { lastUsed: null, next: null },
+          permissions: { currentValue: "danger-full-access" },
+        },
+      },
+    });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd,
+      executionPolicy: "unattended-full-access",
+    });
+    expect(opened).toMatchObject({ ok: true });
+    if (opened.ok) await opened.value.close();
+    await adapter.close();
+  });
+
+  it("hides V4 Permission control when DSH composes no permission presets", async () => {
+    const { adapter, connection } = setup(["v4"], { version: "0.1.7-rc.1" });
+    const inspection = await adapter.inspect();
+    expect(inspection).toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectPermissionMode: false } },
+    });
+    expect(inspection).not.toHaveProperty("permissionModes");
+    expect(connection.calls.map(({ endpoint }) => endpoint)).toContain("permissionPresets/catalog");
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: path.resolve("fixture-v4-no-permissions"),
+        permissionModeId: "workspace-write" as never,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await adapter.close();
+  });
+
   it("accepts a migrated V3 Session ref but rejects its old checkpoint before Fork", async () => {
-    const cwd = path.resolve("fixture-v017-migrated");
+    const cwd = path.resolve("fixture-v4-migrated");
     const { adapter, connection } = setup([], { version: "0.1.7-rc.1" });
     const sessionId = "session-migrated";
-    connection.journalSnapshots.set(sessionId, v017Snapshot({ sessionId, cwd, events: [] }));
+    connection.journalSnapshots.set(
+      sessionId,
+      exactJournalSnapshot({ sessionId, cwd, events: [] }),
+    );
     const oldRef = nativeSessionRefSchema.parse({
       harnessId: "deepseek-harness",
       nativeSessionId: sessionId,
@@ -693,18 +791,18 @@ describe("DSH V4 session operations", () => {
   });
 
   it("forks only the V4 checkpoint's exact inherited prefix", async () => {
-    const cwd = path.resolve("fixture-v017-fork");
+    const cwd = path.resolve("fixture-v4-fork");
     const { adapter, connection } = setup([], { version: "0.1.7-rc.1" });
-    const sourceSessionId = "session-v017-source";
+    const sourceSessionId = "session-v4-source";
     const sourceEvents = forkSourceEvents();
     const inherited = sourceEvents.slice(0, 3);
     connection.journalSnapshots.set(
       sourceSessionId,
-      v017Snapshot({ sessionId: sourceSessionId, cwd, events: sourceEvents }),
+      exactJournalSnapshot({ sessionId: sourceSessionId, cwd, events: sourceEvents }),
     );
     connection.journalSnapshots.set(
       "session-forked",
-      v017Snapshot({
+      exactJournalSnapshot({
         sessionId: "session-forked",
         cwd,
         parentSession: sourceSessionId,
@@ -732,25 +830,22 @@ describe("DSH V4 session operations", () => {
     }
     await adapter.close();
   });
-});
 
-describe("DSH V3 session operations", () => {
-  const locator = { dshVersion: "0.1.5-rc.1" };
-
-  it("fails closed on an untested CLI whose journal does not match the chosen profile", async () => {
-    const cwd = path.resolve("fixture-untested-journal");
-    const { adapter, connection } = setup([], { version: "0.1.5-rc.3" });
-    connection.journalSnapshots.set(
-      "session-untested",
-      exactJournalSnapshot({ sessionId: "session-untested", cwd, events: [] }),
-    );
+  it("fails closed when a resumed journal is not Session Format V4", async () => {
+    const cwd = path.resolve("fixture-pre-v4-journal");
+    const { adapter, connection } = setup([], { version: "0.2.1" });
+    const snapshot = exactJournalSnapshot({ sessionId: "session-pre-v4", cwd, events: [] });
+    connection.journalSnapshots.set("session-pre-v4", {
+      ...snapshot,
+      header: { version: 3, id: "session-pre-v4", createdAt: 1, cwd, isSeeded: false },
+    });
     await expect(
       adapter.open({
         kind: "resume",
         cwd,
         nativeRef: nativeSessionRefSchema.parse({
           harnessId: "deepseek-harness",
-          nativeSessionId: "session-untested",
+          nativeSessionId: "session-pre-v4",
           formatVersion: 1,
           locator: { dshVersion: "0.1.5-rc.3" },
         }),
@@ -760,14 +855,83 @@ describe("DSH V3 session operations", () => {
     await adapter.close();
   });
 
+  it("resumes any SemVer-located Session but forks only this version's V4 checkpoints", async () => {
+    const cwd = path.resolve("fixture-v4-locators");
+    const { adapter, connection } = setup();
+    const sessionId = "session-located";
+    connection.journalSnapshots.set(
+      sessionId,
+      exactJournalSnapshot({ sessionId, cwd, events: forkSourceEvents().slice(0, 3) }),
+    );
+    const ref = (locator?: Record<string, unknown>) =>
+      nativeSessionRefSchema.parse({
+        harnessId: "deepseek-harness",
+        nativeSessionId: sessionId,
+        formatVersion: 1,
+        ...(locator === undefined ? {} : { locator }),
+      });
+    // V0-era refs carry no locator; V3 and earlier V4 refs name the CLI that wrote them.
+    for (const locator of [
+      undefined,
+      { dshVersion: "0.1.5-rc.2" },
+      { dshVersion: "0.1.7-rc.2" },
+      { dshVersion: DSH_VERSION },
+    ]) {
+      const resumed = await adapter.open({ kind: "resume", nativeRef: ref(locator), cwd });
+      expect(resumed, JSON.stringify(locator)).toMatchObject({
+        ok: true,
+        value: { initialState: { nativeRef: { locator: { dshVersion: DSH_VERSION } } } },
+      });
+      if (resumed.ok) await resumed.value.close();
+    }
+    for (const locator of [
+      {},
+      { dshVersion: "not-a-version" },
+      { dshVersion: DSH_VERSION, extra: true },
+    ]) {
+      await expect(
+        adapter.open({ kind: "resume", nativeRef: ref(locator), cwd }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    }
+
+    const checkpoint = (checkpointId: string, locator?: Record<string, unknown>) =>
+      nativeCheckpointRefSchema.parse({
+        harnessId: "deepseek-harness",
+        nativeSessionId: sessionId,
+        checkpointId,
+        formatVersion: 1,
+        ...(locator === undefined ? {} : { locator }),
+      });
+    for (const rejected of [
+      checkpoint("turn-end:2"),
+      checkpoint("v3-turn-end:2", { dshVersion: "0.1.5-rc.2" }),
+      checkpoint("v4-turn-end:2"),
+      checkpoint("v4-turn-end:2", { dshVersion: "0.1.7-rc.2" }),
+    ]) {
+      await expect(
+        adapter.open({ kind: "fork", cwd, sourceRef: ref(), checkpoint: rejected }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    }
+    await expect(
+      adapter.open({
+        kind: "fork",
+        cwd,
+        sourceRef: ref(),
+        checkpoint: checkpoint("turn-end:2", { dshVersion: DSH_VERSION }),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    expect(connection.calls.some(({ endpoint }) => endpoint === "session/fork")).toBe(false);
+    await adapter.close();
+  });
+
   it.each(["session", "adapter"] as const)(
-    "reports failed V3 persistence confirmation during %s close",
+    "reports failed persistence confirmation during %s close",
     async (owner) => {
-      const cwd = path.resolve("fixture-v015-persistence");
-      const { adapter, connection } = setup(["durability"], { version: "0.1.5-rc.1" });
+      const cwd = path.resolve("fixture-v4-persistence");
+      const { adapter, connection } = setup(["durability"]);
       connection.journalSnapshots.set(
         "session-durability",
-        v015Snapshot({ sessionId: "session-durability", cwd, events: [] }),
+        exactJournalSnapshot({ sessionId: "session-durability", cwd, events: [] }),
       );
       const opened = await adapter.open({ kind: "create", cwd });
       if (!opened.ok) throw new Error(opened.error.message);
@@ -786,25 +950,27 @@ describe("DSH V3 session operations", () => {
   );
 
   it.each(["confirmed", "remove-failed", "not-cleared", "flush-failed"] as const)(
-    "requires durable inherited inbox cleanup before adopting a V3 Fork: %s",
+    "requires durable inherited inbox cleanup before adopting a Fork: %s",
     async (outcome) => {
-      const cwd = path.resolve("fixture-v015-inbox");
-      const { adapter, connection } = setup([], { version: "0.1.5-rc.1" });
+      const cwd = path.resolve("fixture-v4-inbox");
+      const { adapter, connection } = setup();
       const pending = {
         id: "later-input",
         role: "user",
         content: [{ type: "text", text: "discard this" }],
         source: { kind: "user", rpcId: "later-request" },
       };
+      // Input queued for the next Turn before the checkpoint is part of the seeded prefix.
       const prefix = [
-        ...forkSourceEvents().slice(0, 3),
-        exactJournalEvent(3, "agent/inbox/spliced", {
+        ...forkSourceEvents().slice(0, 2),
+        exactJournalEvent(2, "agent/inbox/spliced", {
           target: "next-turn",
           start: 0,
           inserted: [pending],
         }),
+        exactJournalEvent(3, "turn/end", { turn: 1, reason: { kind: "completed" } }),
       ];
-      const source = v015Snapshot({
+      const source = exactJournalSnapshot({
         sessionId: "session-source",
         cwd,
         events: [...prefix, exactJournalEvent(4, "turn/start", { turn: 2 })],
@@ -825,7 +991,7 @@ describe("DSH V3 session operations", () => {
             ]
           : seeded;
         return {
-          ...v015Snapshot({
+          ...exactJournalSnapshot({
             sessionId: "session-forked",
             cwd,
             parentSession: "session-source",
@@ -851,13 +1017,7 @@ describe("DSH V3 session operations", () => {
         };
       if (outcome === "flush-failed")
         connection.flushSession.mockRejectedValue(new Error("persistence failed"));
-      const refs = forkRefs("session-source", 2);
-      const opened = await adapter.open({
-        kind: "fork",
-        cwd,
-        sourceRef: { ...refs.sourceRef, locator },
-        checkpoint: { ...refs.checkpoint, checkpointId: "v3-turn-end:2", locator },
-      });
+      const opened = await adapter.open({ kind: "fork", cwd, ...forkRefs("session-source", 3) });
       expect(opened.ok).toBe(outcome === "confirmed");
       expect(connection.calls.filter(({ endpoint }) => endpoint === "session/updateQueue")).toEqual(
         [
@@ -882,112 +1042,18 @@ describe("DSH V3 session operations", () => {
     },
   );
 
-  it.each(["0.1.5-rc.1", "0.1.5-rc.2", "0.1.5-rc.3"] as const)(
-    "creates, selects native permissions and resumes a %s V3 Session",
-    async (version) => {
-      const cwd = path.resolve("fixture-v015-create");
-      const { adapter, connection } = setup(["v015"], { version });
-      connection.permissionModesEnabled = true;
-      connection.journalSnapshots.set("session-v015", {
-        ...v015Snapshot({ sessionId: "session-v015", cwd, events: [] }),
-        projections: {
-          asOfSeq: -1,
-          values: { modelSelection: { lastUsed: null, next: null } },
-        },
-      });
-      const created = await adapter.open({
-        kind: "create",
-        cwd,
-        permissionModeId: "danger-full-access" as never,
-      });
-      expect(created).toMatchObject({ ok: true });
-      if (!created.ok) throw new Error(created.error.message);
-      const ref = created.value.initialState.nativeRef;
-      if (!ref) throw new Error("missing native Session reference");
-      expect(ref).toMatchObject({
-        nativeSessionId: "session-v015",
-        locator: { dshVersion: version },
-      });
-      expect(connection.streams).toContainEqual({
-        endpoint: "session/follow",
-        args: {
-          request: {
-            address: { kind: "session", sessionId: "session-v015" },
-            maxMessages: 200,
-            assistantStream: true,
-          },
-        },
-      });
-      expect(connection.calls).toContainEqual({
-        endpoint: "commands/execute",
-        args: {
-          agentId: "session-v015",
-          line: "/permission danger-full-access",
-          submittedAttachments: [],
-        },
-      });
-      await created.value.close();
-      connection.journalSnapshots.set("session-v015", {
-        ...v015Snapshot({
-          sessionId: "session-v015",
-          cwd,
-          events: [exactJournalEvent(0, "permission/preset", { preset: "danger-full-access" })],
-        }),
-        projections: {
-          asOfSeq: 0,
-          values: {
-            modelSelection: { lastUsed: null, next: null },
-            permissions: permissionProjection("danger-full-access"),
-          },
-        },
-      });
-      const mismatched = await adapter.open({
-        kind: "resume",
-        nativeRef: {
-          ...ref,
-          locator: { dshVersion: version === "0.1.5-rc.1" ? "0.1.5-rc.2" : "0.1.5-rc.1" },
-        },
-        cwd,
-      });
-      expect(mismatched).toMatchObject({ ok: true });
-      if (mismatched.ok) await mismatched.value.close();
-      await expect(
-        adapter.open({
-          kind: "resume",
-          nativeRef: { ...ref, locator: { dshVersion: "0.1.2-rc.1" } },
-          cwd,
-        }),
-      ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
-      await expect(
-        adapter.open({
-          kind: "resume",
-          nativeRef: { ...ref, locator: { dshVersion: "not-a-version" } },
-          cwd,
-        }),
-      ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
-      const resumed = await adapter.open({ kind: "resume", nativeRef: ref, cwd });
-      if (!resumed.ok) throw new Error(resumed.error.message);
-      expect(resumed).toMatchObject({ ok: true });
-      expect(connection.calls.filter(({ endpoint }) => endpoint === "session/create")).toHaveLength(
-        1,
-      );
-      if (resumed.ok) await resumed.value.close();
-      await adapter.close();
-    },
-  );
-
   it.each(["fork", "rollbackLastTurn"] as const)(
-    "uses the V3 checkpoint and inherited marker for %s",
+    "uses the V4 checkpoint and inherited marker for %s",
     async (kind) => {
-      const cwd = path.resolve("fixture-v015-fork");
-      const { adapter, connection } = setup([], { version: "0.1.5-rc.1" });
+      const cwd = path.resolve("fixture-v4-fork-kinds");
+      const { adapter, connection } = setup([], { version: "0.1.7-rc.1" });
       const sourceEvents = [
         ...forkSourceEvents(),
         exactJournalEvent(7, "turn/end", { turn: 2, reason: { kind: "completed" } }),
       ];
       connection.journalSnapshots.set(
         "session-source",
-        v015Snapshot({
+        exactJournalSnapshot({
           sessionId: "session-source",
           cwd,
           events: sourceEvents,
@@ -997,15 +1063,15 @@ describe("DSH V3 session operations", () => {
       );
       connection.journalSnapshots.set(
         "session-forked",
-        v015Snapshot({
+        exactJournalSnapshot({
           sessionId: "session-forked",
           cwd,
           parentSession: "session-source",
           headerAgentPreset: "standard",
           agentPreset: "standard",
           events: [
-            ...sourceEvents.slice(0, 5),
-            exactJournalEvent(5, "session/end-seed", { inherited: true }),
+            ...sourceEvents.slice(0, 3),
+            exactJournalEvent(3, "session/end-seed", { inherited: true }),
           ],
         }),
       );
@@ -1013,12 +1079,7 @@ describe("DSH V3 session operations", () => {
       const sourceRef = { ...refs.sourceRef, locator };
       const opened = await adapter.open(
         kind === "fork"
-          ? {
-              kind,
-              sourceRef,
-              cwd,
-              checkpoint: { ...refs.checkpoint, checkpointId: "v3-turn-end:2", locator },
-            }
+          ? { kind, sourceRef, cwd, checkpoint: { ...refs.checkpoint, locator } }
           : { kind, sourceRef, cwd },
       );
       expect(opened).toMatchObject({ ok: true });
@@ -1029,47 +1090,12 @@ describe("DSH V3 session operations", () => {
       });
       await expect(opened.value.readSnapshot()).resolves.toMatchObject({
         ok: true,
-        value: { turns: [{ checkpoint: { checkpointId: "v3-turn-end:2", locator } }] },
+        value: { turns: [{ checkpoint: { checkpointId: "v4-turn-end:2", locator } }] },
       });
       await opened.value.close();
       await adapter.close();
     },
   );
-
-  it("rejects V0 checkpoints before native mutation and V3 refs on 012", async () => {
-    const cwd = path.resolve("fixture-v015-references");
-    const { adapter, connection } = setup([], { version: "0.1.5-rc.1" });
-    await expect(
-      adapter.open({ kind: "fork", ...forkRefs("session-old", 2), cwd }),
-    ).resolves.toMatchObject({
-      ok: false,
-      error: { code: "invalidRequest" },
-    });
-    await expect(
-      adapter.open({
-        kind: "fork",
-        cwd,
-        sourceRef: { ...forkRefs("session-old", 2).sourceRef, locator },
-        checkpoint: {
-          ...forkRefs("session-old", 2).checkpoint,
-          checkpointId: "v3-turn-end:2",
-          locator: { dshVersion: "0.1.5-rc.2" },
-        },
-      }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
-    expect(connection.calls.some(({ endpoint }) => endpoint === "session/fork")).toBe(false);
-    await adapter.close();
-    const older = setup();
-    await expect(
-      older.adapter.open({
-        kind: "resume",
-        cwd,
-        nativeRef: { ...forkRefs("session-new", 2).sourceRef, locator },
-      }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
-    expect(older.connection.calls).toEqual([]);
-    await older.adapter.close();
-  });
 });
 
 describe("Modern DeepSeek Harness Adapter", () => {
@@ -1085,6 +1111,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
             updatedAt: 42,
             running: false,
             blank: false,
+            agentAvailable: false,
             cwd: sessionCwd,
           },
         ],
@@ -1422,10 +1449,11 @@ describe("Modern DeepSeek Harness Adapter", () => {
       harnessId: "deepseek-harness",
       nativeSessionId: "session-created",
       formatVersion: 1,
+      locator: { dshVersion: DSH_VERSION },
     });
     expect(connection.calls.slice(0, 3)).toEqual([
       { endpoint: "session/modelCatalog", args: {} },
-      { endpoint: "settings/describe", args: {} },
+      { endpoint: "permissionPresets/catalog", args: {} },
       {
         endpoint: "session/create",
         args: { request: { sessionId: "session-created", cwd } },
@@ -1439,13 +1467,276 @@ describe("Modern DeepSeek Harness Adapter", () => {
     expect(connection.timeline).toEqual([
       "connect",
       "session/modelCatalog",
-      "settings/describe",
+      "permissionPresets/catalog",
       "session/control",
       "session/create",
       "session/follow",
       "$events",
     ]);
     await opened.value.close();
+    await adapter.close();
+  });
+
+  it("creates Desktop Sessions in the native project Workspace instead of using a bare cwd", async () => {
+    const { adapter, connection } = setup(["created"], {
+      desktopEndpoint: "http://127.0.0.1:19387/",
+    });
+    const cwd = path.resolve("fixture-desktop-project");
+    connection.expectedCwds.set("session-created", cwd);
+    const opened = await adapter.open({ kind: "create", cwd });
+    expect(opened.ok).toBe(true);
+    expect(connection.calls).toContainEqual({
+      endpoint: "workspace/create",
+      args: { request: { path: cwd } },
+    });
+    expect(connection.calls).toContainEqual({
+      endpoint: "session/create",
+      args: { request: { sessionId: "session-created", workspaceId: "existing-workspace" } },
+    });
+    expect(
+      connection.calls.find(({ endpoint }) => endpoint === "session/create")?.args.request,
+    ).not.toHaveProperty("cwd");
+    if (opened.ok) await opened.value.close();
+    await adapter.close();
+  });
+
+  it.each([false, true])(
+    "restores Desktop grouping only when membership is missing: grouped=%s",
+    async (grouped) => {
+      const { adapter, connection } = setup([], { desktopEndpoint: "http://127.0.0.1:19387/" });
+      const cwd = path.resolve("fixture-desktop-resume");
+      const sessionId = "session-resumed";
+      connection.expectedCwds.set(sessionId, cwd);
+      connection.workspaceResult = {
+        ok: true,
+        value: {
+          created: false,
+          workspace: {
+            workspaceId: "existing-workspace",
+            path: cwd,
+            sessionIds: grouped ? [sessionId] : [],
+          },
+        },
+      };
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "deepseek-harness",
+          nativeSessionId: sessionId,
+          formatVersion: 1,
+          locator: { dshVersion: DSH_VERSION },
+        }),
+      });
+      expect(opened.ok).toBe(true);
+      const creations = connection.calls.filter(({ endpoint }) => endpoint === "session/create");
+      expect(creations).toHaveLength(grouped ? 0 : 1);
+      if (!grouped) {
+        expect(creations[0]?.args.request).toMatchObject({
+          sessionId,
+          workspaceId: "existing-workspace",
+        });
+        expect(connection.timeline.indexOf("session/follow")).toBeLessThan(
+          connection.timeline.indexOf("workspace/create"),
+        );
+      }
+      if (opened.ok) await opened.value.close();
+      await adapter.close();
+    },
+  );
+
+  it("uses the canonical Workspace path for a newly created Desktop Session journal", async () => {
+    const { adapter, connection } = setup(["created"], {
+      desktopEndpoint: "http://127.0.0.1:19387/",
+    });
+    const cwd = path.resolve("fixture-project-link");
+    const canonical = path.resolve("fixture-project-real");
+    connection.workspaceResult = {
+      ok: true,
+      value: {
+        created: true,
+        workspace: { workspaceId: "workspace-real", path: canonical, sessionIds: [] },
+      },
+    };
+    connection.expectedCwds.set("session-created", canonical);
+    const opened = await adapter.open({ kind: "create", cwd });
+    expect(opened.ok).toBe(true);
+    expect(connection.calls).toContainEqual({
+      endpoint: "workspace/create",
+      args: { request: { path: cwd } },
+    });
+    if (opened.ok) await opened.value.close();
+    await adapter.close();
+  });
+
+  it.each(["canonical", "alias"] as const)(
+    "resumes a Desktop Session through a directory alias with a %s journal path",
+    async (storedPath) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "dsh-resume-cwd-"));
+      const { adapter, connection } = setup(["created"], {
+        desktopEndpoint: "http://127.0.0.1:19387/",
+      });
+      try {
+        const project = path.join(directory, "project");
+        const cwd = path.join(directory, "alias");
+        await mkdir(project);
+        await symlink(project, cwd, process.platform === "win32" ? "junction" : "dir");
+        const canonical = await realpath(project);
+        connection.workspaceResult = {
+          ok: true,
+          value: {
+            created: false,
+            workspace: { workspaceId: "project", path: canonical, sessionIds: ["session-created"] },
+          },
+        };
+        connection.expectedCwds.set("session-created", canonical);
+        const created = await adapter.open({ kind: "create", cwd });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const nativeRef = created.value.initialState.nativeRef;
+        if (!nativeRef) throw new Error("missing created Session reference");
+        await created.value.close();
+        connection.expectedCwds.set(
+          "session-created",
+          storedPath === "canonical" ? canonical : cwd,
+        );
+        const resumed = await adapter.open({ kind: "resume", cwd, nativeRef });
+        expect(resumed.ok).toBe(true);
+        if (resumed.ok) await resumed.value.close();
+        expect(
+          connection.calls.filter(({ endpoint }) => endpoint === "session/create"),
+        ).toHaveLength(1);
+      } finally {
+        await adapter.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["fork", "rollbackLastTurn"] as const)(
+    "opens Desktop %s journals through a directory alias",
+    async (kind) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "dsh-fork-cwd-"));
+      const { adapter, connection } = setup([], { desktopEndpoint: "http://127.0.0.1:19387/" });
+      try {
+        const project = path.join(directory, "project");
+        const cwd = path.join(directory, "alias");
+        await mkdir(project);
+        await symlink(project, cwd, process.platform === "win32" ? "junction" : "dir");
+        const canonical = await realpath(project);
+        const sourceSessionId = "session-source";
+        const events = [
+          ...forkSourceEvents(),
+          ...(kind === "rollbackLastTurn"
+            ? [exactJournalEvent(7, "turn/end", { turn: 2, reason: { kind: "completed" } })]
+            : []),
+        ];
+        connection.journalSnapshots.set(
+          sourceSessionId,
+          exactJournalSnapshot({
+            sessionId: sourceSessionId,
+            cwd: canonical,
+            events,
+            headerAgentPreset: "minimal",
+            agentPreset: "minimal",
+          }),
+        );
+        connection.journalSnapshots.set(
+          "session-forked",
+          exactJournalSnapshot({
+            sessionId: "session-forked",
+            cwd: canonical,
+            parentSession: sourceSessionId,
+            headerAgentPreset: "minimal",
+            agentPreset: "minimal",
+            events: [
+              ...events.slice(0, 3),
+              exactJournalEvent(3, "session/end-seed", { inherited: true }),
+              exactJournalEvent(4, "sandbox/mode", { mode: "workspace-write" }),
+            ],
+          }),
+        );
+        const refs = forkRefs(sourceSessionId, 2);
+        const opened = await adapter.open(
+          kind === "fork" ? { kind, cwd, ...refs } : { kind, cwd, sourceRef: refs.sourceRef },
+        );
+        expect(opened.ok).toBe(true);
+        if (opened.ok) await opened.value.close();
+      } finally {
+        await adapter.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("rejects a Desktop journal from a different real directory before grouping it", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "dsh-mismatched-cwd-"));
+    const { adapter, connection } = setup([], { desktopEndpoint: "http://127.0.0.1:19387/" });
+    try {
+      const cwd = path.join(directory, "project");
+      const other = path.join(directory, "other");
+      await mkdir(cwd);
+      await mkdir(other);
+      connection.expectedCwds.set("session-other", other);
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "deepseek-harness",
+          nativeSessionId: "session-other",
+          formatVersion: 1,
+          locator: { dshVersion: DSH_VERSION },
+        }),
+      });
+      expect(opened.ok).toBe(false);
+      expect(
+        connection.calls.some(
+          ({ endpoint }) => endpoint === "workspace/create" || endpoint === "session/create",
+        ),
+      ).toBe(false);
+    } finally {
+      await adapter.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not adopt or group a resume whose native journal could not be verified", async () => {
+    const { adapter, connection } = setup([], {
+      desktopEndpoint: "http://127.0.0.1:19387/",
+      recoveryOpenTimeoutMs: 10,
+    });
+    connection.autoOpenJournal = false;
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: path.resolve("fixture-missing-desktop-session"),
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "deepseek-harness",
+        nativeSessionId: "missing-session",
+        formatVersion: 1,
+        locator: { dshVersion: DSH_VERSION },
+      }),
+    });
+    expect(opened.ok).toBe(false);
+    expect(
+      connection.calls.some(
+        ({ endpoint }) => endpoint === "workspace/create" || endpoint === "session/create",
+      ),
+    ).toBe(false);
+    await adapter.close();
+  });
+
+  it("does not create an ungrouped Desktop Session when native Workspace resolution fails", async () => {
+    const { adapter, connection } = setup(["created"], {
+      desktopEndpoint: "http://127.0.0.1:19387/",
+    });
+    connection.workspaceResult = {
+      ok: false,
+      error: { code: "workspace/invalid-path", message: "invalid project directory", details: {} },
+    };
+    expect(
+      await adapter.open({ kind: "create", cwd: path.resolve("fixture-invalid-project") }),
+    ).toMatchObject({ ok: false });
+    expect(connection.calls.some(({ endpoint }) => endpoint === "session/create")).toBe(false);
     await adapter.close();
   });
 
@@ -1543,7 +1834,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
           turns: [
             {
               input: [{ type: "text", text: "repaired" }],
-              checkpoint: { checkpointId: `turn-end:${String(turnEndSeq)}` },
+              checkpoint: { checkpointId: `v4-turn-end:${String(turnEndSeq)}` },
             },
           ],
           state: { effectivePermissionModeId: "danger-full-access" },
@@ -1743,11 +2034,11 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const cwd = path.resolve("fixture-fork");
     const sourceSessionId = "session-source";
     const sourceEvents = forkSourceEvents();
-    const inherited = sourceEvents.slice(0, 5);
+    const inherited = sourceEvents.slice(0, 3);
     const childEvents = [
       ...inherited,
-      exactJournalEvent(5, "session/end-seed", {}),
-      exactJournalEvent(6, "sandbox/mode", { mode: "workspace-write" }),
+      exactJournalEvent(3, "session/end-seed", { inherited: true }),
+      exactJournalEvent(4, "sandbox/mode", { mode: "workspace-write" }),
     ];
     const sourceSnapshot = exactJournalSnapshot({
       sessionId: sourceSessionId,
@@ -1761,7 +2052,6 @@ describe("Modern DeepSeek Harness Adapter", () => {
         sessionId: "session-forked",
         cwd,
         parentSession: sourceSessionId,
-        seedLength: inherited.length,
         events: childEvents,
       }),
     );
@@ -1799,7 +2089,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
               },
               checkpoint: {
                 nativeSessionId: "session-forked",
-                checkpointId: "turn-end:2",
+                checkpointId: "v4-turn-end:2",
               },
               input: [{ type: "text", text: "first" }],
             },
@@ -1819,7 +2109,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       ...forkSourceEvents(),
       exactJournalEvent(7, "turn/end", { turn: 2, reason: { kind: "completed" } }),
     ];
-    const inherited = sourceEvents.slice(0, 5);
+    const inherited = sourceEvents.slice(0, 3);
     const sourceSnapshot = exactJournalSnapshot({
       sessionId: sourceSessionId,
       cwd,
@@ -1834,10 +2124,9 @@ describe("Modern DeepSeek Harness Adapter", () => {
         sessionId: "session-forked",
         cwd,
         parentSession: sourceSessionId,
-        seedLength: inherited.length,
         headerAgentPreset: "minimal",
         agentPreset: "minimal",
-        events: [...inherited, exactJournalEvent(5, "session/end-seed", {})],
+        events: [...inherited, exactJournalEvent(3, "session/end-seed", { inherited: true })],
       }),
     );
 
@@ -1931,7 +2220,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       ...forkSourceEvents(),
       exactJournalEvent(7, "turn/end", { turn: 2, reason: { kind: "completed" } }),
     ];
-    const inherited = sourceEvents.slice(0, 5);
+    const inherited = sourceEvents.slice(0, 3);
     connection.journalSnapshots.set(
       sourceSessionId,
       exactJournalSnapshot({
@@ -1948,10 +2237,9 @@ describe("Modern DeepSeek Harness Adapter", () => {
         sessionId: "session-forked",
         cwd,
         parentSession: sourceSessionId,
-        seedLength: inherited.length,
         headerAgentPreset: "standard",
         agentPreset: "standard",
-        events: [...inherited, exactJournalEvent(5, "session/end-seed", {})],
+        events: [...inherited, exactJournalEvent(3, "session/end-seed", { inherited: true })],
       }),
     );
 
@@ -2097,27 +2385,23 @@ describe("Modern DeepSeek Harness Adapter", () => {
     }
   });
 
-  it("uses child seedLength when cold promotion and concurrent configuration extend the source", async () => {
+  it("verifies a Fork against its exact seed while concurrent configuration extends the source", async () => {
     const { adapter, connection } = setup();
     const cwd = path.resolve("fixture-fork-growing-source");
-    const sourceSessionId = "session-cold-source";
-    const initial = forkSourceEvents().slice(0, 3);
-    const inherited = [
-      ...initial,
-      exactJournalEvent(3, "session/end-seed", {}),
-      exactJournalEvent(4, "model/selection", {
+    const sourceSessionId = "session-growing-source";
+    const inherited = forkSourceEvents().slice(0, 3);
+    const sourceAfterFork = [
+      ...inherited,
+      exactJournalEvent(3, "model/selection", {
         provider: "provider",
         model: "model",
         reasoningEffort: "high",
       }),
-    ];
-    const sourceAfterFork = [
-      ...inherited,
-      exactJournalEvent(5, "permission/preset", { preset: "workspace-write" }),
-      exactJournalEvent(6, "turn/start", { turn: 2 }),
+      exactJournalEvent(4, "permission/preset", { preset: "workspace-write" }),
+      exactJournalEvent(5, "turn/start", { turn: 2 }),
     ];
     connection.journalSnapshotQueues.set(sourceSessionId, [
-      exactJournalSnapshot({ sessionId: sourceSessionId, cwd, events: initial }),
+      exactJournalSnapshot({ sessionId: sourceSessionId, cwd, events: inherited }),
       exactJournalSnapshot({ sessionId: sourceSessionId, cwd, events: sourceAfterFork }),
     ]);
     connection.journalSnapshots.set(
@@ -2126,8 +2410,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
         sessionId: "session-forked",
         cwd,
         parentSession: sourceSessionId,
-        seedLength: inherited.length,
-        events: [...inherited, exactJournalEvent(5, "session/end-seed", {})],
+        events: [...inherited, exactJournalEvent(3, "session/end-seed", { inherited: true })],
       }),
     );
 
@@ -2202,7 +2485,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const sourceSessionId = "session-source-invalid";
     const cwd = path.resolve("fixture-fork-invalid");
 
-    for (const checkpointId of ["turn-end:02", "turn-end:4"]) {
+    for (const checkpointId of ["v4-turn-end:02", "v4-turn-end:4"]) {
       const { adapter, connection } = setup();
       connection.journalSnapshots.set(
         sourceSessionId,
@@ -2244,14 +2527,14 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const sourceSessionId = "session-source-failure";
     const cwd = path.resolve("fixture-fork-failure");
     const sourceEvents = forkSourceEvents();
-    const inherited = sourceEvents.slice(0, 5);
+    const inherited = sourceEvents.slice(0, 3);
+    const marker = exactJournalEvent(3, "session/end-seed", { inherited: true });
     const validChild = () =>
       exactJournalSnapshot({
         sessionId: "session-forked",
         cwd,
         parentSession: sourceSessionId,
-        seedLength: inherited.length,
-        events: [...inherited, exactJournalEvent(5, "session/end-seed", {})],
+        events: [...inherited, marker],
       });
     const cases: Array<{
       readonly name: string;
@@ -2356,8 +2639,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
               sessionId: "session-forked",
               cwd: path.resolve("other-fork-cwd"),
               parentSession: sourceSessionId,
-              seedLength: inherited.length,
-              events: [...inherited, exactJournalEvent(5, "session/end-seed", {})],
+              events: [...inherited, marker],
             }),
           );
         },
@@ -2366,9 +2648,19 @@ describe("Modern DeepSeek Harness Adapter", () => {
       {
         name: "wrong seed length",
         configure: (connection) => {
-          const snapshot = validChild();
-          (snapshot.header as Record<string, unknown>).seedLength = inherited.length - 1;
-          connection.journalSnapshots.set("session-forked", snapshot);
+          connection.journalSnapshots.set(
+            "session-forked",
+            exactJournalSnapshot({
+              sessionId: "session-forked",
+              cwd,
+              parentSession: sourceSessionId,
+              events: [
+                ...inherited,
+                exactJournalEvent(3, "sandbox/mode", { mode: "workspace-write" }),
+                exactJournalEvent(4, "session/end-seed", { inherited: true }),
+              ],
+            }),
+          );
         },
         code: "protocolError",
       },
@@ -2393,8 +2685,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
               sessionId: "session-forked",
               cwd,
               parentSession: sourceSessionId,
-              seedLength: inherited.length,
-              events: [...changed, exactJournalEvent(5, "session/end-seed", {})],
+              events: [...changed, marker],
             }),
           );
         },
@@ -2409,7 +2700,6 @@ describe("Modern DeepSeek Harness Adapter", () => {
               sessionId: "session-forked",
               cwd,
               parentSession: sourceSessionId,
-              seedLength: inherited.length,
               events: inherited,
             }),
           );
@@ -2422,10 +2712,10 @@ describe("Modern DeepSeek Harness Adapter", () => {
           const snapshot = validChild();
           (snapshot.records as Record<string, unknown>[]).push({
             type: "event",
-            event: exactJournalEvent(6, "turn/start", { turn: 2 }),
+            event: exactJournalEvent(4, "turn/start", { turn: 2 }),
           });
-          snapshot.cursor = 6;
-          (snapshot.projections as Record<string, unknown>).asOfSeq = 6;
+          snapshot.cursor = 4;
+          (snapshot.projections as Record<string, unknown>).asOfSeq = 4;
           connection.journalSnapshots.set("session-forked", snapshot);
         },
         code: "protocolError",
@@ -2570,7 +2860,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     expect(opened.ok).toBe(true);
     expect(connection.calls.map(({ endpoint }) => endpoint)).toEqual([
       "session/modelCatalog",
-      "settings/describe",
+      "permissionPresets/catalog",
     ]);
     if (opened.ok) await opened.value.close();
     await adapter.close();
@@ -2706,7 +2996,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       args: {
         agentId: "session-created",
         line: "/permission danger-full-access",
-        images: [],
+        submittedAttachments: [],
       },
     });
     expect(opened.value.initialState.effectivePermissionModeId).toBe("danger-full-access");
@@ -2817,7 +3107,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       args: {
         agentId: "session-created",
         line: "/permission danger-full-access",
-        images: [],
+        submittedAttachments: [],
       },
     });
     if (opened.ok) {
@@ -2853,8 +3143,11 @@ describe("Modern DeepSeek Harness Adapter", () => {
       if (endpoint === "session/modelCatalog") {
         return Promise.resolve({ ok: true, value: catalogValue() } as ModernRemoteResult<T>);
       }
-      if (endpoint === "settings/describe") {
-        return Promise.resolve({ ok: true, value: settingsValue() } as ModernRemoteResult<T>);
+      if (endpoint === "permissionPresets/catalog") {
+        return Promise.resolve({
+          ok: false,
+          error: { code: "gateway/service-unavailable", message: "unavailable", details: {} },
+        } as ModernRemoteResult<T>);
       }
       const failure: ModernRemoteFailure = {
         code: "session/agent-busy",

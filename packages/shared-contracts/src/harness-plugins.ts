@@ -41,6 +41,8 @@ const pluginPresentationShape = {
   version: z.string().min(1).max(128),
   /** The factory accepts a persisted local entrypoint through its construction context. */
   launchCommand: z.literal(true).optional(),
+  /** The factory accepts a persisted connection preference through its construction context. */
+  connectionMode: z.literal(true).optional(),
   links: z
     .object({
       documentation: documentationUrlSchema.optional(),

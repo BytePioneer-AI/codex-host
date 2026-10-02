@@ -17,11 +17,13 @@ import {
   type StoredSectionPlacementV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
+  type ThreadMetadataPatch,
 } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type HarnessId,
   type HostThreadId,
   type NativeCheckpointRef,
   type NativeSessionRef,
@@ -52,6 +54,8 @@ export interface ExternalThreadStore {
   commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1>;
   rebindSubagentSession(input: RebindSubagentSessionInput): Promise<StoredThreadRecordV1>;
   replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1>;
+  /** Optional so a Store without this knowledge simply filters nothing. */
+  supersededNativeSessionIds?(harnessId: HarnessId): string[];
   replaceReadySessionAfterLastTurn(
     input: ReplaceReadySessionAfterLastTurnInput,
   ): Promise<StoredThreadRecordV1>;
@@ -69,6 +73,11 @@ export interface ExternalThreadStore {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1>;
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
+  updateMetadata(
+    hostThreadId: HostThreadId,
+    patch: ThreadMetadataPatch,
+    options?: { ifProjectId?: string },
+  ): Promise<StoredThreadRecordV1>;
   removeProvisional(hostThreadId: HostThreadId): Promise<void>;
   removeThread(hostThreadId: HostThreadId): Promise<void>;
   listSectionPlacements(): Promise<StoredSectionPlacementV1[]>;
@@ -114,6 +123,11 @@ export class ExternalThreadRepository {
 
   close(): Promise<void> {
     return this.store.close();
+  }
+
+  /** Native Sessions a Thread of this Harness left behind when a message was edited or rolled back. */
+  supersededNativeSessionIds(harnessId: HarnessId): ReadonlySet<string> {
+    return new Set(this.store.supersededNativeSessionIds?.(harnessId) ?? []);
   }
 
   async find(threadId: string): Promise<StoredThreadRecordV1 | null> {
@@ -203,6 +217,14 @@ export class ExternalThreadRepository {
 
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
     return this.store.setArchived(hostThreadId, archived);
+  }
+
+  updateMetadata(
+    hostThreadId: HostThreadId,
+    patch: ThreadMetadataPatch,
+    options?: { ifProjectId?: string },
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.updateMetadata(hostThreadId, patch, options);
   }
 
   removeProvisional(hostThreadId: HostThreadId): Promise<void> {
@@ -579,13 +601,21 @@ export function externalThreadValue(input: {
     turns: input.turns,
     preview: previewText,
     name: record.title || null,
-    gitInfo: null,
+    gitInfo: record.gitInfo
+      ? {
+          branch: record.gitInfo.branch ?? null,
+          originUrl: record.gitInfo.originUrl ?? null,
+          sha: record.gitInfo.sha ?? null,
+        }
+      : null,
     forkedFromId: record.forkSource?.hostThreadId ?? null,
     parentThreadId: record.subagent?.parentHostThreadId ?? null,
     ephemeral: record.ephemeral,
     canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,
     historyMode: record.historyMode,
     isPinned: false,
+    projectId: record.projectId ?? null,
+    daybreakEnabled: record.daybreakEnabled ?? null,
     ...threadSectionFields(input.placement),
     agentNickname: record.subagent ? record.title || null : null,
     agentRole: record.subagent?.role ?? null,

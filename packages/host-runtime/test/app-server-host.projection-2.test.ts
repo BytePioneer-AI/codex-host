@@ -2187,43 +2187,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("fails External current and future metadata updates closed without official fallback", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-    for (const [id, patch] of [
-      [53, { isPinned: true }],
-      [54, { gitInfo: { branch: "main", sha: null } }],
-    ] as const) {
-      writeRequest(fixture.desktopInput, {
-        id,
-        method: "thread/metadata/update",
-        params: { threadId, ...patch },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, id)),
-      ).resolves.toMatchObject({
-        error: { code: -32078, message: "External Thread metadata updates are unsupported" },
-      });
-    }
-    writeRequest(fixture.desktopInput, {
-      id: 58,
-      method: "thread/future/manage",
-      params: { threadId, futureMetadata: true },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 58)),
-    ).resolves.toMatchObject({
-      error: { code: -32076, message: "External Thread does not support thread/future/manage" },
-    });
-    expect(officialWrite).not.toHaveBeenCalled();
-    const stored = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
-    expect(stored).not.toHaveProperty("isPinned");
-    expect(stored).not.toHaveProperty("gitInfo");
-    await stopFixture(fixture);
-  });
-
   it("forwards official Archive, Unarchive, and metadata updates unchanged", async () => {
     const fixture = createFixture();
     await bindOfficialThread(fixture, "official-thread");

@@ -75,7 +75,7 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
-  it.each(["check", "update"] as const)(
+  it.each(["check", "update", "install"] as const)(
     "routes Harness installation %s through the fixed Host method",
     async (action) => {
       const params = { harnessId: piHarnessId, action };
@@ -100,7 +100,7 @@ describe("Renderer fixed Model request client", () => {
   );
 
   it.each([
-    { harnessId: "pi", action: "install" },
+    { harnessId: "pi", action: "uninstall" },
     { harnessId: "", action: "check" },
     { harnessId: "pi", action: "update", command: "evil" },
   ])("rejects invalid Harness installation params before sending: %j", async (params) => {

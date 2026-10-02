@@ -11,13 +11,13 @@ import {
 /** Strict, single-generation DeepSeek Harness Modern Session journal reader. */
 
 import { ModernRemoteConnectionError } from "./remote-connection.js";
-import { DEEPSEEK_V012_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
+import { matchesModernCwd } from "./workspace.js";
+import { DEEPSEEK_V4_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import {
-  DeepSeekV015ProtocolError,
-  expandV015AssistantStream,
-  type DeepSeekV015AssistantBaseline,
-  type DeepSeekV015AssistantFrame,
-} from "../profiles/v015.js";
+  expandAssistantStream,
+  type DeepSeekAssistantBaseline,
+  type DeepSeekAssistantFrame,
+} from "../profiles/v4.js";
 import { sanitizeModernRemoteFailure, type ModernRemoteResult } from "./wire.js";
 
 export const MODERN_JOURNAL_PAGE_MAX_MESSAGES = 200;
@@ -39,12 +39,11 @@ export type ModernJournalJson =
   | { readonly [key: string]: ModernJournalJson };
 
 export interface ModernJournalHeader {
-  readonly version: 0 | 3 | 4;
+  readonly version: 4;
   readonly id: string;
   readonly createdAt: number;
   readonly cwd?: string;
   readonly parentSession?: string;
-  readonly seedLength?: number;
   readonly isSeeded?: boolean;
   readonly origin?: "subagent";
   readonly delegationDepth?: number;
@@ -53,15 +52,13 @@ export interface ModernJournalHeader {
 
 export interface ModernJournalAssistantStream {
   readonly type: "assistant-stream";
-  readonly frame: DeepSeekV015AssistantFrame;
+  readonly frame: DeepSeekAssistantFrame;
 }
 
 export type ModernJournalLiveItem = ModernJournalEvent | ModernJournalAssistantStream;
 
 export type ModernJournalSurfaceOp =
-  | "append"
-  | { readonly op: "replace"; readonly start: number; readonly end: number }
-  | { readonly op: "replace"; readonly startSeq: number; readonly endSeq: number };
+  "append" | { readonly op: "replace"; readonly startSeq: number; readonly endSeq: number };
 
 /** Generic event envelope; unknown event names remain available to the projector. */
 export interface ModernJournalEvent {
@@ -70,7 +67,7 @@ export interface ModernJournalEvent {
   readonly time: number;
   readonly data: ModernJournalJson;
   readonly ignorable?: true;
-  /** V3 unknown ignorable events retain opaque JSON metadata without surface meaning. */
+  /** Unknown ignorable events retain opaque JSON metadata without surface meaning. */
   readonly sourceEventSeqs?: ModernJournalJson;
   readonly surfaceOp?: ModernJournalJson;
 }
@@ -111,6 +108,8 @@ export interface ModernJournalOpenRequest {
 }
 
 export interface ModernJournalOptions {
+  /** Desktop Workspace paths use realpath; older journals may retain a directory alias. */
+  readonly allowCanonicalCwd?: boolean;
   readonly profile?: DeepSeekModernProfile;
   readonly pageMaxMessages?: number;
   readonly maxRecordsPerPage?: number;
@@ -163,7 +162,7 @@ export async function openModernJournal(
     throw new TypeError("cwd must be a string when present");
   }
   const limits = resolveOptions(options);
-  const profile = options.profile ?? DEEPSEEK_V012_PROFILE;
+  const profile = options.profile ?? DEEPSEEK_V4_PROFILE;
   const address = { kind: "session" as const, sessionId: request.sessionId };
   const controller = new AbortController();
   const signal = options.signal
@@ -182,7 +181,7 @@ export async function openModernJournal(
           request: {
             address,
             maxMessages: limits.pageMaxMessages,
-            ...(profile.assistantStream ? { assistantStream: true } : {}),
+            assistantStream: true,
           },
         },
         signal,
@@ -195,11 +194,17 @@ export async function openModernJournal(
   const returnFollow = onceAsync(async () => {
     await iterator.return?.();
   });
-  let opening: ReturnType<typeof parseOpeningSnapshot>;
+  let opening: Awaited<ReturnType<typeof parseOpeningSnapshot>>;
   try {
     const first = await nextBeforeAbort(iterator, openingSignal);
     if (first.done) throw protocolError("journal follow ended before its opening snapshot");
-    opening = parseOpeningSnapshot(first.value, request, limits, profile);
+    opening = await parseOpeningSnapshot(
+      first.value,
+      request,
+      limits,
+      profile,
+      options.allowCanonicalCwd,
+    );
   } catch (error) {
     controller.abort(error);
     await Promise.allSettled([returnFollow()]);
@@ -215,9 +220,9 @@ export async function openModernJournal(
   };
   const liveBuffer = new LiveBuffer(limits.maxBufferedLiveEvents, limits.maxBufferedLiveBytes);
   try {
-    if (opening.assistantStream?.activeAttempt) {
+    if (opening.assistantStream.activeAttempt) {
       const attempt = opening.assistantStream.activeAttempt;
-      const openingFrames: DeepSeekV015AssistantFrame[] = [
+      const openingFrames: DeepSeekAssistantFrame[] = [
         {
           type: "start",
           attemptId: attempt.attemptId,
@@ -226,11 +231,11 @@ export async function openModernJournal(
           turn: attempt.turn,
           step: attempt.step,
         },
-        ...expandV015AssistantStream(attempt.stream).map(
-          ({ time, chunk }, index): DeepSeekV015AssistantFrame => ({
+        ...expandAssistantStream(attempt.stream).map(
+          ({ time, chunk }, index): DeepSeekAssistantFrame => ({
             type: "chunk",
             attemptId: attempt.attemptId,
-            revision: opening.assistantStream?.revision as number,
+            revision: opening.assistantStream.revision,
             index,
             time,
             chunk,
@@ -250,7 +255,7 @@ export async function openModernJournal(
   let closing = false;
   let pumpFailure: ModernJournalError | undefined;
   let expectedLiveSeq = opening.cursor + 1;
-  let assistantRevision = opening.assistantStream?.revision;
+  let assistantRevision = opening.assistantStream.revision;
   const pump = (async (): Promise<void> => {
     try {
       while (!closing) {
@@ -261,7 +266,7 @@ export async function openModernJournal(
         }
         const parsed = parseLiveItem(item.value, limits, profile);
         if ("frame" in parsed.item) {
-          const expectedRevision = (assistantRevision ?? 0) + 1;
+          const expectedRevision = assistantRevision + 1;
           const restartsLifecycle =
             parsed.item.frame.type === "start" && parsed.item.frame.revision === 1;
           if (!restartsLifecycle && parsed.item.frame.revision !== expectedRevision) {
@@ -387,20 +392,21 @@ export async function openModernJournal(
   }
 }
 
-function parseOpeningSnapshot(
+async function parseOpeningSnapshot(
   value: unknown,
   request: ModernJournalOpenRequest,
   limits: ResolvedOptions,
   profile: DeepSeekModernProfile,
-): {
+  allowCanonicalCwd = false,
+): Promise<{
   readonly header: ModernJournalHeader;
   readonly cursor: number;
   readonly events: ModernJournalEvent[];
   readonly hasMore: boolean;
   readonly projections: ModernJournalProjections;
   readonly retainedBytes: number;
-  readonly assistantStream?: DeepSeekV015AssistantBaseline;
-} {
+  readonly assistantStream: DeepSeekAssistantBaseline;
+}> {
   const expectedKeys = profile.snapshotKeys;
   if (
     !isRecord(value) ||
@@ -415,9 +421,17 @@ function parseOpeningSnapshot(
     throw limitError("journal opening cursor exceeded maxEvents");
   }
   assertWireBytes(value.header, limits.maxRecordBytes, "journal header");
-  const header = profile.parseHeader(value.header, request);
-  if (header.seedLength !== undefined && header.seedLength > value.cursor + 1) {
-    throw protocolError("journal snapshot seedLength is past its opening cursor");
+  const header = profile.parseHeader(value.header, {
+    ...request,
+    ...(allowCanonicalCwd &&
+    request.cwd !== undefined &&
+    isRecord(value.header) &&
+    typeof value.header.cwd === "string"
+      ? { cwd: value.header.cwd }
+      : {}),
+  });
+  if (allowCanonicalCwd && !(await matchesModernCwd(header.cwd, request.cwd))) {
+    throw protocolError("journal header cwd does not match the project directory");
   }
   const projections = parseProjections(value.projections, value.cursor, limits.maxRecordBytes);
   const window = parseWindow(
@@ -428,16 +442,10 @@ function parseOpeningSnapshot(
     limits,
     profile,
   );
-  let assistantStream: DeepSeekV015AssistantBaseline | undefined;
-  if (profile.parseAssistantBaseline) {
-    assertWireBytes(value.assistantStream, limits.maxRecordBytes, "assistant stream baseline");
-    assistantStream = profile.parseAssistantBaseline(value.assistantStream);
-    if (
-      assistantStream.activeAttempt &&
-      assistantStream.activeAttempt.startedAfterSeq > value.cursor
-    )
-      throw protocolError("assistant stream baseline starts after the durable cursor");
-  }
+  assertWireBytes(value.assistantStream, limits.maxRecordBytes, "assistant stream baseline");
+  const assistantStream = profile.parseAssistantBaseline(value.assistantStream);
+  if (assistantStream.activeAttempt && assistantStream.activeAttempt.startedAfterSeq > value.cursor)
+    throw protocolError("assistant stream baseline starts after the durable cursor");
   return {
     header,
     cursor: value.cursor,
@@ -445,7 +453,7 @@ function parseOpeningSnapshot(
     hasMore: window.hasMore,
     projections,
     retainedBytes: window.retainedBytes,
-    ...(assistantStream === undefined ? {} : { assistantStream }),
+    assistantStream,
   };
 }
 
@@ -606,9 +614,6 @@ function remoteResultError(
 
 function normalizeError(error: unknown, context: string): ModernJournalError {
   if (error instanceof ModernJournalError) return error;
-  if (error instanceof DeepSeekV015ProtocolError) {
-    return new ModernJournalError("protocolError", `${context}: ${error.message}`);
-  }
   const remoteFailure =
     typeof error === "object" && error !== null ? Reflect.get(error, "remoteFailure") : undefined;
   if (

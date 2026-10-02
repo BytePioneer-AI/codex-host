@@ -381,6 +381,40 @@ describe("OMP RPC session", () => {
     ).toMatchObject({ arguments: ["--mode", "rpc-ui", "--fork", "/tmp/omp.jsonl"] });
   });
 
+  it("reports native exit before readiness instead of waiting for the ready timeout", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: null as number | null,
+      signalCode: null,
+    });
+    const adapter: OmpRpcProcessAdapter = {
+      spawn: () => {
+        queueMicrotask(() => {
+          child.emit("spawn");
+          child.stderr.write(
+            "No models available. Use /login or set an API key environment variable.",
+          );
+          child.exitCode = 1;
+          child.stdout.end();
+          child.stderr.end();
+          child.emit("exit", 1, null);
+        });
+        return child as never;
+      },
+    };
+    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2000 }, adapter);
+    try {
+      await expect(session.start()).rejects.toMatchObject({
+        kind: "processExited",
+        diagnostic: expect.stringContaining("No models available"),
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
   it("starts through ready/negotiation and settles a streamed text turn on agent_end", async () => {
     const process = new FakeOmpProcess();
     const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };

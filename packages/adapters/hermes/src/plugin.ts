@@ -1,5 +1,6 @@
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
+import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { HermesAdapter } from "./hermes-adapter.js";
 import { createHermesInstallation } from "./installation.js";
 
@@ -12,6 +13,12 @@ export function createHarnessAdapter(context: HarnessPluginContext): HermesAdapt
       ...(environment[HERMES_COMMAND_ENV] ? { command: environment[HERMES_COMMAND_ENV] } : {}),
       environment,
     }),
-    { installation: createHermesInstallation(environment, environment[HERMES_COMMAND_ENV]) },
+    {
+      installation: createHermesInstallation(environment, environment[HERMES_COMMAND_ENV]),
+      install: createHarnessInstaller(environment, {
+        posix: "https://hermes-agent.nousresearch.com/install.sh",
+        windows: "https://hermes-agent.nousresearch.com/install.ps1",
+      }),
+    },
   );
 }

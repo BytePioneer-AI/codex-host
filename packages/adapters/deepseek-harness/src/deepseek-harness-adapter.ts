@@ -1,3 +1,4 @@
+import { resolveDesktopEndpoint, type DeepSeekConnectionMode } from "./desktop-connection.js";
 import { deepSeekHarnessCommandCatalog } from "./harness-commands.js";
 
 import type {
@@ -31,13 +32,13 @@ import {
   ModernDeepSeekHarnessAdapter,
   type ModernDeepSeekHarnessAdapterOptions,
 } from "./modern/deepseek-harness-adapter.js";
-import { deepSeekModernProfile, hasDeepSeekModernStream } from "./profiles/profile.js";
 
 const DEEPSEEK_HARNESS_ID = harnessIdSchema.parse("deepseek-harness");
 const EXTERNAL_MODERN_WEB_MESSAGE =
   "检测到配置的端点上已有 DeepSeek Harness Modern Web 实例，但当前 codexhost 实例没有其认证凭据。请关闭该 DSH Web 实例，然后重新运行连接诊断。\nA DeepSeek Harness Modern Web instance is listening at the configured endpoint, but this codexhost instance does not have its authentication credentials. Close that DSH Web instance, then run connection diagnostics again.";
 
 export interface DeepSeekHarnessAdapterOptions {
+  readonly connectionMode?: DeepSeekConnectionMode;
   readonly command?: string;
   readonly endpoint?: string;
   readonly environment?: NodeJS.ProcessEnv;
@@ -79,7 +80,7 @@ class DelegateSelectionError extends Error {
   }
 }
 
-/** Public DeepSeek Adapter that selects a native journal profile for its executable. */
+/** Public DeepSeek Adapter that gates the local CLI version and delegates to the managed Web. */
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
@@ -108,10 +109,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             harnessId: this.harnessId,
             nativeSessionId,
             formatVersion: 1,
-            ...(this.#delegate &&
-            hasDeepSeekModernStream(deepSeekModernProfile(this.#delegate.version))
-              ? { locator: { dshVersion: this.#delegate.version } }
-              : {}),
+            ...(this.#delegate ? { locator: { dshVersion: this.#delegate.version } } : {}),
           }),
         },
       };
@@ -278,7 +276,14 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         durationMs: Math.max(0, Date.now() - startedAt),
       };
     }
-    if (await hasDeepSeekModernAuthenticationFingerprint(endpoint, signal)) {
+    const desktopEndpoint = executable
+      ? await resolveDesktopEndpoint(
+          executable.command.command,
+          this.#options.connectionMode,
+          this.#options.endpoint,
+        )
+      : undefined;
+    if (!desktopEndpoint && (await hasDeepSeekModernAuthenticationFingerprint(endpoint, signal))) {
       throw new DelegateSelectionError({
         code: "authenticationRequired",
         message: EXTERNAL_MODERN_WEB_MESSAGE,
@@ -304,7 +309,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       );
     }
     try {
-      return await this.#modernCandidate(executable, signal);
+      return await this.#modernCandidate(executable, signal, desktopEndpoint);
     } catch (error) {
       throw new DelegateSelectionError(this.#withSelectionDiagnostics(error, "startup", startedAt));
     }
@@ -313,9 +318,11 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
   async #modernCandidate(
     executable: DeepSeekExecutableGeneration,
     signal: AbortSignal,
+    desktopEndpoint?: string,
   ): Promise<DelegateOwner> {
     const adapter = this.#createModernAdapter({
       ...modernOptions(this.#options),
+      ...(desktopEndpoint ? { desktopEndpoint } : {}),
       version: executable.version,
       command: executable.command.command,
       commandArguments: executable.command.arguments,

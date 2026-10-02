@@ -126,6 +126,33 @@ describe("Generic native Session import", () => {
     expect(f.createTransport).not.toHaveBeenCalled();
   });
 
+  it("neither lists nor imports a Native Session an existing Thread was edited away from", async () => {
+    const f = await fixture();
+    expect(await f.importer.list()).toMatchObject({
+      ok: true,
+      total: 1,
+      candidates: [{ nativeSessionId: "same-native-id" }],
+    });
+    const superseded = vi
+      .spyOn(f.repository, "supersededNativeSessionIds")
+      .mockReturnValue(new Set(["same-native-id"]));
+
+    expect(await f.importer.list()).toEqual({ ok: true, candidates: [], total: 0 });
+    // A page loaded before the edit must not create a duplicate of the Thread either.
+    expect(await f.importer.import("same-native-id")).toEqual({
+      ok: false,
+      error: { code: -32079, message: "Native Session is no longer available" },
+    });
+    expect(await f.repository.list()).toEqual([]);
+    expect(superseded).toHaveBeenCalledWith("pi");
+
+    // The record is per Harness: the same ID elsewhere stays importable.
+    superseded.mockImplementation((harnessId) =>
+      harnessId === "omp" ? new Set(["same-native-id"]) : new Set(),
+    );
+    expect(await f.importer.import("same-native-id")).toMatchObject({ ok: true });
+  });
+
   it("separates same native IDs across Harnesses and shares DSH legacy RPC aliases with the generic transaction", async () => {
     const f = await fixture();
     const dsh = dshAdapter(f.cwd);

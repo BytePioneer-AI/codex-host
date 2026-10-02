@@ -14,10 +14,17 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-import type { HostThreadId, HostTurnId } from "@codexhost/shared-contracts";
+import type {
+  HarnessId,
+  HostThreadId,
+  HostTurnId,
+  NativeSessionRef,
+} from "@codexhost/shared-contracts";
 
 import {
+  THREAD_METADATA_FIELDS,
   storedDelegationRecordV1Schema,
+  storedThreadMetadataV1Schema,
   storedThreadRecordV1Schema,
   type CommitReadyThreadInput,
   type CreateDelegationInput,
@@ -28,14 +35,21 @@ import {
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
+  type StoredThreadMetadataV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
+  type ThreadMetadataPatch,
 } from "./records.js";
 import {
   readSectionPlacementsFile,
   writeSectionPlacementsFile,
   type StoredSectionPlacementV1,
 } from "./section-placements.js";
+import {
+  readSupersededSessionsFile,
+  writeSupersededSessionsFile,
+  type StoredSupersededSessionV1,
+} from "./superseded-sessions.js";
 
 export type MappingStoreErrorCode =
   | "STORE_LOCKED"
@@ -96,6 +110,100 @@ function nativeTurnKey(mapping: StoredTurnMappingV1): string {
 
 function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Records must not persist credentials, such as a token embedded in a Git remote URL. */
+function withoutUrlCredentials(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return withoutUnparsedUrlCredentials(value);
+  }
+  // `user:token@host:path` parses as an opaque `user:` URL with no host; treat it as unparsed.
+  if (!url.host) return withoutUnparsedUrlCredentials(value);
+  // An ssh user name (usually `git`) identifies the account, not a secret.
+  const keepUser = url.protocol === "ssh:" || url.protocol === "git+ssh:";
+  if (!url.password && (keepUser || !url.username)) return value;
+  url.password = "";
+  if (!keepUser) url.username = "";
+  return url.toString();
+}
+
+/**
+ * Fallback for text the URL parser rejects (a malformed port, or an scp-style remote such as
+ * git@host:path). A user name alone is kept for ssh and scp-style remotes; any other user info
+ * in front of the authority is dropped so a malformed value cannot smuggle a token into storage.
+ */
+function withoutUnparsedUrlCredentials(value: string): string {
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value);
+  const authorityStart = scheme ? scheme[0].length : 0;
+  const authorityEnd = value.slice(authorityStart).search(scheme ? /[/?#]/ : /\//);
+  const authority =
+    authorityEnd === -1
+      ? value.slice(authorityStart)
+      : value.slice(authorityStart, authorityStart + authorityEnd);
+  // A URL password may itself contain "@"; an scp-style path may too, after the host.
+  const at = scheme ? authority.lastIndexOf("@") : authority.indexOf("@");
+  if (at === -1) return value;
+  const userInfo = authority.slice(0, at);
+  const protocol = scheme?.[1]?.toLowerCase();
+  const keepUser = scheme ? protocol === "ssh" || protocol === "git+ssh" : true;
+  const kept = keepUser && !userInfo.includes(":") ? `${userInfo}@` : "";
+  return value.slice(0, authorityStart) + kept + value.slice(authorityStart + at + 1);
+}
+
+/** The Desktop metadata file content for a record, or null when it carries none. */
+function threadMetadataOf(record: StoredThreadRecordV1): StoredThreadMetadataV1 | null {
+  const fields = Object.fromEntries(
+    THREAD_METADATA_FIELDS.filter((name) => record[name] !== undefined).map((name) => [
+      name,
+      record[name],
+    ]),
+  );
+  if (Object.keys(fields).length === 0) return null;
+  return { formatVersion: 1, hostThreadId: record.hostThreadId, ...fields };
+}
+
+/** The record as written to the Thread file, which older releases must still accept. */
+function withoutThreadMetadata(record: StoredThreadRecordV1): StoredThreadRecordV1 {
+  const { projectId, daybreakEnabled, gitInfo, ...core } = record;
+  void [projectId, daybreakEnabled, gitInfo];
+  return core;
+}
+
+function withThreadMetadata(
+  record: StoredThreadRecordV1,
+  metadata: StoredThreadMetadataV1,
+): StoredThreadRecordV1 {
+  const core = withoutThreadMetadata(record);
+  for (const name of THREAD_METADATA_FIELDS) {
+    if (metadata[name] !== undefined) Object.assign(core, { [name]: metadata[name] });
+  }
+  return core;
+}
+
+function applyThreadMetadataPatch(
+  current: StoredThreadRecordV1,
+  patch: ThreadMetadataPatch,
+): StoredThreadRecordV1 {
+  const next = { ...current };
+  if (patch.projectId !== undefined) {
+    if (patch.projectId === null) delete next.projectId;
+    else next.projectId = patch.projectId;
+  }
+  if (patch.daybreakEnabled !== undefined) next.daybreakEnabled = patch.daybreakEnabled;
+  if (patch.gitInfo !== undefined) {
+    const gitInfo: NonNullable<StoredThreadRecordV1["gitInfo"]> = {};
+    for (const name of ["branch", "originUrl", "sha"] as const) {
+      const value =
+        patch.gitInfo[name] === undefined ? current.gitInfo?.[name] : patch.gitInfo[name];
+      if (value) gitInfo[name] = name === "originUrl" ? withoutUrlCredentials(value) : value;
+    }
+    if (Object.keys(gitInfo).length === 0) delete next.gitInfo;
+    else next.gitInfo = gitInfo;
+  }
+  return next;
 }
 
 function systemErrorCode(error: unknown): string | null {
@@ -221,6 +329,7 @@ export class MappingStore {
   readonly #directory: string;
   readonly #instanceId: string;
   readonly #lockPath: string;
+  readonly #metadataDirectory: string;
   readonly #now: () => Date;
   readonly #quarantineDirectory: string;
   readonly #sectionsDirectory: string;
@@ -234,6 +343,7 @@ export class MappingStore {
   readonly #hostTurns = new Map<HostTurnId, HostThreadId>();
   readonly #nativeTurns = new Map<string, HostTurnId>();
   #sectionPlacements: StoredSectionPlacementV1[] = [];
+  #supersededSessions: StoredSupersededSessionV1[] = [];
   // ponytail: A Store-wide queue caps write concurrency at one; shard only if measured throughput requires it.
   #writeTail: Promise<void> = Promise.resolve();
   #initialized = false;
@@ -246,6 +356,7 @@ export class MappingStore {
     this.#backupsDirectory = path.join(this.#directory, "backups");
     this.#quarantineDirectory = path.join(this.#directory, "quarantine");
     this.#sectionsDirectory = path.join(this.#directory, "sections");
+    this.#metadataDirectory = path.join(this.#directory, "thread-metadata");
     this.#lockPath = path.join(this.#directory, "store.lock");
     this.#instanceId = options.instanceId ?? randomUUID();
     this.#now = options.now ?? (() => new Date());
@@ -260,6 +371,7 @@ export class MappingStore {
       mkdir(this.#backupsDirectory, { recursive: true }),
       mkdir(this.#quarantineDirectory, { recursive: true }),
       mkdir(this.#sectionsDirectory, { recursive: true }),
+      mkdir(this.#metadataDirectory, { recursive: true }),
     ]);
     await this.#acquireLock();
     try {
@@ -291,10 +403,28 @@ export class MappingStore {
         if (record.state === "creating" && !record.nativeSessionRef) {
           await rm(primary, { force: true });
           await rm(backup, { force: true });
+          await rm(this.#metadataPath(record.hostThreadId), { force: true });
           continue;
+        }
+        const metadata = await this.#readMetadata(record.hostThreadId);
+        if (metadata) {
+          record = withThreadMetadata(record, metadata);
+        } else if (threadMetadataOf(record)) {
+          // Pre-release builds wrote metadata inline; move it out so older releases can load the record.
+          await this.#writeMetadataFile(record.hostThreadId, threadMetadataOf(record));
+          await this.#replaceFile(primary, record, false);
         }
         this.#records.set(record.hostThreadId, record);
       }
+      // An older release may have removed a Thread without knowing about its metadata file.
+      await Promise.all(
+        (await readdir(this.#metadataDirectory))
+          .filter(
+            (name) =>
+              name.endsWith(".json") && !this.#records.has(name.slice(0, -5) as HostThreadId),
+          )
+          .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
+      );
       const delegationNames = (await readdir(this.#delegationsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
@@ -326,6 +456,19 @@ export class MappingStore {
           ),
         ).catch(() => undefined);
         this.#sectionPlacements = [];
+      }
+      try {
+        this.#supersededSessions = await readSupersededSessionsFile(this.#supersededSessionsPath);
+      } catch {
+        // Only import suggestions depend on this; losing it must not block Thread access.
+        await rename(
+          this.#supersededSessionsPath,
+          path.join(
+            this.#quarantineDirectory,
+            `superseded-sessions.json.${this.#now().getTime()}.invalid`,
+          ),
+        ).catch(() => undefined);
+        this.#supersededSessions = [];
       }
       this.#rebuildIndexes();
       this.#initialized = true;
@@ -559,6 +702,12 @@ export class MappingStore {
   }
 
   async replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1> {
+    const replaced = await this.#replaceReadySession(input);
+    await this.#recordSuperseded(input.expectedNativeSessionRef, replaced);
+    return replaced;
+  }
+
+  #replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1> {
     return this.#update(input.hostThreadId, (current) => {
       if (
         current.state !== "ready" ||
@@ -589,6 +738,14 @@ export class MappingStore {
   }
 
   async replaceReadySessionAfterLastTurn(
+    input: ReplaceReadySessionAfterLastTurnInput,
+  ): Promise<StoredThreadRecordV1> {
+    const replaced = await this.#replaceReadySessionAfterLastTurn(input);
+    await this.#recordSuperseded(input.expectedNativeSessionRef, replaced);
+    return replaced;
+  }
+
+  #replaceReadySessionAfterLastTurn(
     input: ReplaceReadySessionAfterLastTurnInput,
   ): Promise<StoredThreadRecordV1> {
     return this.#update(input.hostThreadId, (current) => {
@@ -691,6 +848,24 @@ export class MappingStore {
     );
   }
 
+  /**
+   * Patch Desktop metadata. With `ifProjectId`, the patch applies only while the
+   * stored assignment still equals it; otherwise the current record is returned.
+   */
+  async updateMetadata(
+    hostThreadId: HostThreadId,
+    patch: ThreadMetadataPatch,
+    options: { ifProjectId?: string } = {},
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) => {
+      if (options.ifProjectId !== undefined && current.projectId !== options.ifProjectId) {
+        return null;
+      }
+      const next = applyThreadMetadataPatch(current, patch);
+      return sameJson(next, current) ? null : next;
+    });
+  }
+
   /** Section placements of stored External Threads, in insertion order. */
   async listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {
     this.#requireInitialized();
@@ -757,6 +932,42 @@ export class MappingStore {
     });
   }
 
+  /** Native Sessions that an existing or former Thread of this Harness moved on from. */
+  supersededNativeSessionIds(harnessId: HarnessId): string[] {
+    this.#requireInitialized();
+    return this.#supersededSessions
+      .filter((session) => session.harnessId === harnessId)
+      .map(({ nativeSessionId }) => nativeSessionId);
+  }
+
+  /**
+   * Remember the Native Session a Thread just left. Best effort by design: the replacement is
+   * already committed, and a lost entry only lets the old Session reappear as an import candidate.
+   */
+  async #recordSuperseded(
+    previous: NativeSessionRef,
+    replaced: StoredThreadRecordV1,
+  ): Promise<void> {
+    const current = replaced.nativeSessionRef?.nativeSessionId;
+    if (!current || current === previous.nativeSessionId) return;
+    const same = (session: StoredSupersededSessionV1, nativeSessionId: string) =>
+      session.harnessId === previous.harnessId && session.nativeSessionId === nativeSessionId;
+    await this.#enqueue(async () => {
+      this.#supersededSessions = await writeSupersededSessionsFile(this.#supersededSessionsPath, [
+        // A Session a Thread returned to is current again, and a repeated entry moves to the end.
+        ...this.#supersededSessions.filter(
+          (session) => !same(session, current) && !same(session, previous.nativeSessionId),
+        ),
+        {
+          harnessId: previous.harnessId,
+          nativeSessionId: previous.nativeSessionId,
+          hostThreadId: replaced.hostThreadId,
+          supersededAt: this.#now().toISOString(),
+        },
+      ]);
+    }).catch(() => undefined);
+  }
+
   async removeThread(hostThreadId: HostThreadId): Promise<void> {
     this.#requireInitialized();
     await this.#enqueue(() => this.#remove(hostThreadId));
@@ -767,6 +978,7 @@ export class MappingStore {
     await Promise.all([
       rm(this.#recordPath(hostThreadId), { force: true }),
       rm(this.#backupPath(hostThreadId), { force: true }),
+      rm(this.#metadataPath(hostThreadId), { force: true }),
     ]);
     this.#records.delete(hostThreadId);
     this.#rebuildIndexes();
@@ -808,6 +1020,20 @@ export class MappingStore {
       }) as StoredThreadRecordV1;
       this.#validateGlobal(next, hostThreadId);
       await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
+      const metadata = threadMetadataOf(next);
+      if (!sameJson(threadMetadataOf(current), metadata)) {
+        // Only a metadata patch changes metadata, and it changes nothing else in the record
+        // besides Revision and updatedAt. Restoring the previous record therefore makes a failed
+        // metadata write leave disk equal to memory; the metadata file itself is replaced atomically.
+        try {
+          await this.#writeMetadataFile(hostThreadId, metadata);
+        } catch (error) {
+          await this.#replaceFile(this.#recordPath(hostThreadId), current, false).catch(
+            () => undefined,
+          );
+          throw error;
+        }
+      }
       this.#records.set(hostThreadId, next);
       this.#rebuildIndexes();
       result = cloneRecord(next);
@@ -870,7 +1096,7 @@ export class MappingStore {
     try {
       await this.#beforeReplace?.(cloneRecord(record));
       handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
-      await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+      await handle.writeFile(`${JSON.stringify(withoutThreadMetadata(record), null, 2)}\n`, "utf8");
       await handle.sync();
       await handle.close();
       handle = null;
@@ -885,6 +1111,60 @@ export class MappingStore {
       throw new MappingStoreError("IO_ERROR", "Mapping Store atomic replacement failed", {
         cause: error,
       });
+    }
+  }
+
+  /** Atomically writes, or with null removes, a Thread's Desktop metadata file. */
+  async #writeMetadataFile(
+    hostThreadId: HostThreadId,
+    metadata: StoredThreadMetadataV1 | null,
+  ): Promise<void> {
+    const target = this.#metadataPath(hostThreadId);
+    const temp = `${target}.tmp-${randomUUID()}`;
+    let handle: FileHandle | null = null;
+    try {
+      if (!metadata) {
+        await rm(target, { force: true });
+        return;
+      }
+      handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
+      await handle.writeFile(`${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      await rename(temp, target);
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      await rm(temp, { force: true }).catch(() => undefined);
+      throw new MappingStoreError("IO_ERROR", "Thread metadata atomic replacement failed", {
+        cause: error,
+      });
+    }
+  }
+
+  /** Reads a Thread's metadata file; an invalid file is quarantined rather than blocking the Thread. */
+  async #readMetadata(hostThreadId: HostThreadId): Promise<StoredThreadMetadataV1 | null> {
+    const file = this.#metadataPath(hostThreadId);
+    let text: string;
+    try {
+      text = await readFile(file, "utf8");
+    } catch (error) {
+      if (systemErrorCode(error) === "ENOENT") return null;
+      throw error;
+    }
+    try {
+      const parsed = storedThreadMetadataV1Schema.parse(JSON.parse(text));
+      if (parsed.hostThreadId !== hostThreadId) throw new Error("Thread ID mismatch");
+      return parsed;
+    } catch {
+      await rename(
+        file,
+        path.join(
+          this.#quarantineDirectory,
+          `${hostThreadId}.json.${this.#now().getTime()}.invalid-metadata`,
+        ),
+      ).catch(() => undefined);
+      return null;
     }
   }
 
@@ -926,12 +1206,14 @@ export class MappingStore {
   }
 
   async #cleanupResidue(): Promise<void> {
-    const [threadNames, delegationNames, sectionNames, rootNames] = await Promise.all([
-      readdir(this.#threadsDirectory),
-      readdir(this.#delegationsDirectory),
-      readdir(this.#sectionsDirectory),
-      readdir(this.#directory),
-    ]);
+    const [threadNames, delegationNames, sectionNames, rootNames, metadataNames] =
+      await Promise.all([
+        readdir(this.#threadsDirectory),
+        readdir(this.#delegationsDirectory),
+        readdir(this.#sectionsDirectory),
+        readdir(this.#directory),
+        readdir(this.#metadataDirectory),
+      ]);
     await Promise.all([
       ...threadNames
         .filter((name) => name.includes(".tmp-"))
@@ -942,6 +1224,9 @@ export class MappingStore {
       ...sectionNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#sectionsDirectory, name), { force: true })),
+      ...metadataNames
+        .filter((name) => name.includes(".tmp-"))
+        .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
       // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
       ...rootNames
         .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
@@ -1061,6 +1346,14 @@ export class MappingStore {
 
   get #sectionPlacementsPath(): string {
     return path.join(this.#sectionsDirectory, "placements.json");
+  }
+
+  get #supersededSessionsPath(): string {
+    return path.join(this.#directory, "superseded-sessions", "sessions.json");
+  }
+
+  #metadataPath(hostThreadId: HostThreadId): string {
+    return path.join(this.#metadataDirectory, `${hostThreadId}.json`);
   }
 
   #backupPath(hostThreadId: HostThreadId): string {

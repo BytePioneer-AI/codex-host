@@ -1,4 +1,4 @@
-import type { CodexhostError } from "@codexhost/shared-contracts";
+import { harnessIdSchema, type CodexhostError } from "@codexhost/shared-contracts";
 
 import {
   KNOWN_RENDERER_AGENTS,
@@ -85,7 +85,18 @@ export function createConsoleConnectionDiagnostics(
   };
 
   let started = false;
+  const installation = client.installation?.bind(client);
   return {
+    ...(installation
+      ? ({
+          installation: async (hostId, agent, action) => {
+            if (hostId !== "local") {
+              throw new Error("Web console installation only supports the local Host");
+            }
+            return installation({ harnessId: harnessIdSchema.parse(agent), action });
+          },
+        } satisfies Pick<RendererConnectionDiagnostics, "installation">)
+      : {}),
     snapshot(): RendererConnectionSnapshot {
       if (!started) {
         started = true;
@@ -116,9 +127,13 @@ export function createConsoleConnectionDiagnostics(
       if (!client.getHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
       return client.getHarnessLaunchSettings({ harnessId: agent as never });
     },
-    async setLaunchSettings(_hostId, agent, path) {
+    async setLaunchSettings(_hostId, agent, path, connectionMode) {
       if (!client.setHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
-      return client.setHarnessLaunchSettings({ harnessId: agent as never, path });
+      return client.setHarnessLaunchSettings({
+        harnessId: agent as never,
+        ...(path === undefined ? {} : { path }),
+        ...(connectionMode ? { connectionMode } : {}),
+      });
     },
     subscribe(listener) {
       listeners.add(listener);

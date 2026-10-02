@@ -46,6 +46,7 @@ export {
   decodeThreadArchiveRequest,
   decodeThreadListRequest,
   decodeThreadMetadataUpdateRequest,
+  observeDeletedProject,
   decodeThreadSectionMoveRequest,
   encodeHostThreadListCursor,
   encodeSectionThreadListCursor,

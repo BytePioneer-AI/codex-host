@@ -34,3 +34,4 @@ export {
   type InstallationState,
 } from "./installation.js";
 export { npmInstallation } from "./npm-installation.js";
+export { createHarnessInstaller, type HarnessInstallerSource } from "./installer.js";

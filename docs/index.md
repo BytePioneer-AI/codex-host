@@ -58,14 +58,14 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/deepseek/dsh-edit-recovery.md`](harnesses/deepseek/dsh-edit-recovery.md) | DSH 原生停止确认、消息修订、V0/V3/V4 Fork 和版本化 checkpoint；修改恢复流程时阅读。 |
-| [`harnesses/deepseek/dsh-015rc1-validation.md`](harnesses/deepseek/dsh-015rc1-validation.md) | DSH 012/015/017 版本、真实 CLI 生命周期和协议验证证据；变更版本范围或 Gate 时阅读。 |
+| [`harnesses/deepseek/dsh-edit-recovery.md`](harnesses/deepseek/dsh-edit-recovery.md) | DSH 原生停止确认、消息修订、V4 Fork、版本化 checkpoint 和补写工具结果的显示；修改恢复流程时阅读。 |
+| [`harnesses/deepseek/dsh-version-validation.md`](harnesses/deepseek/dsh-version-validation.md) | DSH Desktop 连接与认证、支持范围与最低版本、0.2.0 源码审计、真实 CLI Gate 与探测证据、限时提问的迟到回答边界；变更版本范围或 Gate 时阅读。 |
 
 ### Hermes
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/hermes/hermes-capabilities.md`](harnesses/hermes/hermes-capabilities.md) | Hermes gateway 提问、Thinking、精确派生、协作发现及旧 ACP 的原生能力边界；维护 Hermes Adapter 时阅读。 |
+| [`harnesses/hermes/hermes-capabilities.md`](harnesses/hermes/hermes-capabilities.md) | Hermes Gateway-only 会话、提问、Thinking、精确派生、协作发现及原生只读导入边界；维护 Hermes Adapter 时阅读。 |
 
 ### OpenCode 与 Pi
 
@@ -89,6 +89,12 @@
 | --- | --- |
 | [`harnesses/grok/subagent-status-and-model.md`](harnesses/grok/subagent-status-and-model.md) | Grok Subagent 状态、Model、Transcript 与 Desktop 投影；修改 Grok Subagent 时阅读。 |
 
+### ZCode
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/zcode/zcode-harness-integration.md`](harnesses/zcode/zcode-harness-integration.md) | 直连已装 ZCode Desktop 的 Agent CLI、Start Plan 账号层与常驻验证页、独立会话和验证边界；安装或维护 ZCode Adapter 时阅读。 |
+
 ## 账号与 Desktop 产品接入
 
 | 文档 | 内容与阅读时机 |
@@ -104,7 +110,7 @@
 | --- | --- |
 | [`platforms/linux/linux.zh-CN.md`](platforms/linux/linux.zh-CN.md) | Linux 安装、兼容性、进程所有权和诊断的中文说明；维护 Linux 支持时阅读。 |
 | [`platforms/linux/linux.md`](platforms/linux/linux.md) | Linux 安装与诊断的英文说明；修改对应中文说明时同步核对。 |
-| [`platforms/remote/remote-ssh-host.zh-CN.md`](platforms/remote/remote-ssh-host.zh-CN.md) | 通过 Desktop 原生 SSH 工作流使用远程 Harness；修改 SSH Host 时阅读。 |
+| [`platforms/remote/remote-ssh-host.zh-CN.md`](platforms/remote/remote-ssh-host.zh-CN.md) | SSH 远程 Harness 用户指南：安装、双端会话操作、升级和常见问题。 |
 | [`platforms/remote/remote-ssh-host.md`](platforms/remote/remote-ssh-host.md) | Remote SSH Harness Host 的英文说明；修改对应中文说明时同步核对。 |
 | [`platforms/remote/remote-control-host.zh-CN.md`](platforms/remote/remote-control-host.zh-CN.md) | 在被控 Windows 主机运行 Harness 的 Remote Control 说明；修改该链路时阅读。 |
 | [`platforms/remote/remote-control-host.md`](platforms/remote/remote-control-host.md) | Remote Control Harness Host 的英文说明；修改对应中文说明时同步核对。 |

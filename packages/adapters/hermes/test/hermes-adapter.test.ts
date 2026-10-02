@@ -9,11 +9,11 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type {
-  HermesAcpTransport,
+  HermesSessionTransport,
   HermesOpenResult,
   HermesTransportEvent,
-} from "../src/acp-transport.js";
-import { HermesTransportError } from "../src/acp-transport.js";
+} from "../src/hermes-transport.js";
+import { HermesTransportError } from "../src/hermes-transport.js";
 import { encodeHermesModelRef } from "../src/hermes-models.js";
 import { HermesSession } from "../src/hermes-session.js";
 
@@ -39,17 +39,12 @@ class FakeTurnTransport {
 
 function openResult(): HermesOpenResult {
   return {
-    initialize: {
-      protocolVersion: 1,
-      agentCapabilities: { loadSession: true },
-    },
     session: {
       sessionId: "native-session-1",
       models: null,
       modes: null,
     },
     sessionId: "native-session-1",
-    replay: [],
   };
 }
 
@@ -72,7 +67,7 @@ describe("HermesSession text projection", () => {
         nativeSessionId: "native-session-1",
         formatVersion: 1,
       }),
-      transport: new FakeTurnTransport() as unknown as HermesAcpTransport,
+      transport: new FakeTurnTransport() as unknown as HermesSessionTransport,
       open: openResult(),
       onSettle: () => undefined,
     });
@@ -118,7 +113,6 @@ describe("HermesSession text projection", () => {
           type: "tool.call",
           toolCallId: "tool-between-text",
           update: {
-            sessionUpdate: "tool_call",
             toolCallId: "tool-between-text",
             title: "Run command",
             status: "completed",
@@ -131,7 +125,7 @@ describe("HermesSession text projection", () => {
       cancel: async () => undefined,
       setModel: async () => undefined,
       setPermissionMode: async () => undefined,
-    } as unknown as HermesAcpTransport;
+    } as unknown as HermesSessionTransport;
     const session = new HermesSession({
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -175,7 +169,7 @@ describe("HermesSession text projection", () => {
     const transport = {
       onFault: () => undefined,
       runTurn: async (_text: string, onEvent: (event: HermesTransportEvent) => void) => {
-        onEvent({ type: "usage", used: 120, size: 1_000 });
+        onEvent({ type: "usage", usage: { contextUsedTokens: 120, contextWindowTokens: 1_000 } });
         return {
           stopReason: "end_turn" as const,
           usage: { inputTokens: 80, outputTokens: 40, totalTokens: 120 },
@@ -185,7 +179,7 @@ describe("HermesSession text projection", () => {
       cancel: async () => undefined,
       setModel: async () => undefined,
       setPermissionMode: async () => undefined,
-    } as unknown as HermesAcpTransport;
+    } as unknown as HermesSessionTransport;
     const session = new HermesSession({
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -220,144 +214,48 @@ describe("HermesSession text projection", () => {
   });
 });
 
-describe("HermesSession recovery", () => {
-  it("accumulates replayed user chunks into one restored prompt", async () => {
-    const session = new HermesSession({
-      nativeRef: nativeSessionRefSchema.parse({
-        harnessId: "hermes",
-        nativeSessionId: "native-session-1",
-        formatVersion: 1,
-      }),
-      transport: new FakeTurnTransport() as unknown as HermesAcpTransport,
-      open: {
-        ...openResult(),
-        replay: [
-          { type: "user.text", text: "first " },
-          { type: "user.text", text: "second" },
-          { type: "agent.text", text: "answer" },
-        ],
-      },
-      onSettle: () => undefined,
-    });
-
-    const snapshot = await session.readSnapshot();
-    expect(snapshot.ok).toBe(true);
-    if (snapshot.ok) {
-      expect(snapshot.value.turns).toHaveLength(1);
-      expect(snapshot.value.turns[0]?.input).toEqual([{ type: "text", text: "first second" }]);
-    }
-    await session.close();
-  });
-
-  it("restores replayed Turns with an unknown outcome", async () => {
-    const session = new HermesSession({
-      nativeRef: nativeSessionRefSchema.parse({
-        harnessId: "hermes",
-        nativeSessionId: "native-session-1",
-        formatVersion: 1,
-      }),
-      transport: new FakeTurnTransport() as unknown as HermesAcpTransport,
-      open: {
-        ...openResult(),
-        replay: [
-          { type: "user.text", text: "hello" },
-          { type: "agent.text", text: "partial answer" },
-        ],
-      },
-      onSettle: () => undefined,
-    });
-
-    const snapshot = await session.readSnapshot();
-    expect(snapshot.ok).toBe(true);
-    if (snapshot.ok) {
-      expect(snapshot.value.turns[0]?.outcome).toMatchObject({ status: "unknown" });
-    }
-    await session.close();
-  });
-
-  it("reuses known native Turn refs when replaying the same history", async () => {
-    const knownTurnRef = nativeTurnRefSchema.parse({
+describe("HermesSession native recovery", () => {
+  it("uses the native snapshot without rebuilding history from protocol events", async () => {
+    const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: "hermes",
       nativeSessionId: "native-session-1",
-      nativeTurnKey: "stable-native-turn-1",
+      nativeTurnKey: "real-row-1",
       formatVersion: 1,
     });
-    const session = new HermesSession({
-      nativeRef: nativeSessionRefSchema.parse({
-        harnessId: "hermes",
-        nativeSessionId: "native-session-1",
-        formatVersion: 1,
-      }),
-      transport: new FakeTurnTransport() as unknown as HermesAcpTransport,
-      open: {
-        ...openResult(),
-        replay: [
-          { type: "user.text", text: "hello" },
-          { type: "agent.text", text: "world" },
-        ],
-      },
-      knownTurnRefs: [knownTurnRef],
-      onSettle: () => undefined,
-    });
-
-    const snapshot = await session.readSnapshot();
-    expect(snapshot.ok).toBe(true);
-    if (snapshot.ok) expect(snapshot.value.turns[0]?.nativeTurnRef).toEqual(knownTurnRef);
-    await session.close();
-  });
-
-  it("restores terminal tool output and failure from replay updates", async () => {
-    const session = new HermesSession({
-      nativeRef: nativeSessionRefSchema.parse({
-        harnessId: "hermes",
-        nativeSessionId: "native-session-1",
-        formatVersion: 1,
-      }),
-      transport: new FakeTurnTransport() as unknown as HermesAcpTransport,
-      open: {
-        ...openResult(),
-        replay: [
-          { type: "user.text", text: "run it" },
-          {
-            type: "tool.call",
-            toolCallId: "tool-1",
-            update: {
-              sessionUpdate: "tool_call",
-              toolCallId: "tool-1",
-              title: "Run command",
-              status: "pending",
-              rawInput: { command: "false" },
-            },
-          },
-          {
-            type: "tool.update",
-            toolCallId: "tool-1",
-            update: {
-              sessionUpdate: "tool_call_update",
-              toolCallId: "tool-1",
-              status: "failed",
-              rawOutput: "exit code 1",
-            },
-          },
-        ] as HermesTransportEvent[],
-      },
-      onSettle: () => undefined,
-    });
-
-    const snapshot = await session.readSnapshot();
-
-    expect(snapshot.ok).toBe(true);
-    if (snapshot.ok) {
-      expect(snapshot.value.turns[0]?.items[0]).toMatchObject({
-        item: {
-          type: "toolExecution",
-          toolName: "Run command",
-          output: { content: [{ type: "text", text: "exit code 1" }] },
+    const history = {
+      turns: [
+        {
+          nativeTurnRef,
+          input: [{ type: "text" as const, text: "original prompt" }],
+          items: [],
+          outcome: { status: "unknown" as const, reason: "native history" },
         },
-        outcome: { status: "failed" },
+      ],
+    };
+    const transport = new FakeTurnTransport();
+    const readNativeSnapshot = vi.fn(async () => history);
+    const session = new HermesSession({
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "native-session-1",
+        formatVersion: 1,
+      }),
+      transport: Object.assign(transport, {
+        readNativeSnapshot,
+      }) as unknown as HermesSessionTransport,
+      open: openResult(),
+      onSettle: () => undefined,
+    });
+    try {
+      expect(await session.readSnapshot()).toMatchObject({ ok: true, value: history });
+      readNativeSnapshot.mockRejectedValueOnce(new Error("native DB unavailable"));
+      expect(await session.readSnapshot()).toMatchObject({
+        ok: false,
+        error: { message: "native DB unavailable" },
       });
+    } finally {
+      await session.close();
     }
-    await session.close();
   });
 });
 
@@ -370,7 +268,6 @@ describe("HermesSession terminal events", () => {
           type: "tool.call",
           toolCallId: "partial-tool-call",
           update: {
-            sessionUpdate: "tool_call",
             toolCallId: "partial-tool-call",
             title: "Long command",
             status: "in_progress",
@@ -380,7 +277,6 @@ describe("HermesSession terminal events", () => {
           type: "tool.update",
           toolCallId: "partial-tool-call",
           update: {
-            sessionUpdate: "tool_call_update",
             toolCallId: "partial-tool-call",
             status: "in_progress",
             rawOutput: "partial output",
@@ -392,7 +288,7 @@ describe("HermesSession terminal events", () => {
       close: async () => undefined,
       setModel: async () => undefined,
       setPermissionMode: async () => undefined,
-    } as unknown as HermesAcpTransport;
+    } as unknown as HermesSessionTransport;
     const session = new HermesSession({
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -440,7 +336,7 @@ describe("HermesSession terminal events", () => {
       close: async () => undefined,
       setModel: async () => undefined,
       setPermissionMode: async () => undefined,
-    } as unknown as HermesAcpTransport;
+    } as unknown as HermesSessionTransport;
     const session = new HermesSession({
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -473,7 +369,6 @@ describe("HermesSession terminal events", () => {
           type: "tool.call",
           toolCallId: "terminal-tool-call",
           update: {
-            sessionUpdate: "tool_call",
             toolCallId: "terminal-tool-call",
             title: "Run command",
             status: "failed",
@@ -486,7 +381,7 @@ describe("HermesSession terminal events", () => {
       close: async () => undefined,
       setModel: async () => undefined,
       setPermissionMode: async () => undefined,
-    } as unknown as HermesAcpTransport;
+    } as unknown as HermesSessionTransport;
     const session = new HermesSession({
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -531,7 +426,6 @@ describe("HermesSession terminal events", () => {
           type: "tool.call",
           toolCallId: "tool-1",
           update: {
-            sessionUpdate: "tool_call",
             toolCallId: "tool-1",
             title: "Read file",
             status: "pending",
@@ -541,7 +435,6 @@ describe("HermesSession terminal events", () => {
           type: "tool.update",
           toolCallId: "tool-1",
           update: {
-            sessionUpdate: "tool_call_update",
             toolCallId: "tool-1",
             status: "completed",
             rawOutput: "done",
@@ -553,7 +446,7 @@ describe("HermesSession terminal events", () => {
       close: async () => undefined,
       setModel: async () => undefined,
       setPermissionMode: async () => undefined,
-    } as unknown as HermesAcpTransport;
+    } as unknown as HermesSessionTransport;
     const session = new HermesSession({
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -591,7 +484,6 @@ describe("HermesSession terminal events", () => {
           type: "tool.call",
           toolCallId: "tool-during-fault",
           update: {
-            sessionUpdate: "tool_call",
             toolCallId: "tool-during-fault",
             title: "Long-running command",
             status: "in_progress",
@@ -603,7 +495,7 @@ describe("HermesSession terminal events", () => {
       close: async () => undefined,
       setModel: async () => undefined,
       setPermissionMode: async () => undefined,
-    } as unknown as HermesAcpTransport;
+    } as unknown as HermesSessionTransport;
     const session = new HermesSession({
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -672,7 +564,7 @@ describe("HermesSession cancellation", () => {
       close: async () => undefined,
       setModel: async () => undefined,
       setPermissionMode: async () => undefined,
-    } as unknown as HermesAcpTransport;
+    } as unknown as HermesSessionTransport;
     const session = new HermesSession({
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -719,7 +611,7 @@ describe("HermesSession live configuration errors", () => {
         nativeSessionId: "native-session-1",
         formatVersion: 1,
       }),
-      transport: transport as unknown as HermesAcpTransport,
+      transport: transport as unknown as HermesSessionTransport,
       open: openResult(),
       onSettle: () => undefined,
     });
@@ -752,7 +644,7 @@ describe("HermesSession live configuration errors", () => {
         nativeSessionId: "native-session-1",
         formatVersion: 1,
       }),
-      transport: transport as unknown as HermesAcpTransport,
+      transport: transport as unknown as HermesSessionTransport,
       open: openResult(),
       onSettle: () => undefined,
     });

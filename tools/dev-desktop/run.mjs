@@ -399,6 +399,10 @@ export async function runDevelopmentDesktop({
     );
   }
 
+  const startedAt = performance.now();
+  const logElapsed = (label, since) => {
+    console.log(`codexhost dev: ${label}: ${((performance.now() - since) / 1000).toFixed(2)}s`);
+  };
   const cleanupInvocation = runningDesktopCleanupInvocation(platform);
   if (cleanupInvocation) {
     console.log("codexhost dev: stopping any running Codex Desktop");
@@ -411,16 +415,23 @@ export async function runDevelopmentDesktop({
     }
   }
 
+  if (cleanupInvocation) logElapsed("stop previous Desktop", startedAt);
+
   if (options.build) {
+    const buildStartedAt = performance.now();
     console.log("codexhost dev: building workspace");
     const buildResult = await runChild(
       npmBuildInvocation(environment, platform, nodePath),
       root,
       spawnImplementation,
     );
+    logElapsed("build elapsed", buildStartedAt);
     if (buildResult.code !== 0) {
+      logElapsed("total elapsed (build failed)", startedAt);
       return buildResult.code ?? 1;
     }
+  } else {
+    console.log("codexhost dev: build skipped (--no-build)");
   }
 
   const artifacts = developmentArtifacts(root, platform, nodePath);
@@ -429,11 +440,22 @@ export async function runDevelopmentDesktop({
   if (piPath) console.log(`codexhost dev: using Pi at ${piPath}`);
   else console.warn("codexhost dev: Pi was not found on PATH and will be unavailable");
 
+  const launchStartedAt = performance.now();
   const launchResult = await runLauncher(
     launcherInvocation(artifacts, piPath),
     root,
     spawnImplementation,
   );
+  logElapsed(
+    launchResult.ready ? "Launcher ready" : "Launcher exited before ready",
+    launchStartedAt,
+  );
+  logElapsed("total elapsed (including cleanup and build)", startedAt);
+  if (launchResult.ready) {
+    console.log(
+      "codexhost dev: Launcher readiness does not mean Renderer installation is complete",
+    );
+  }
   if (launchResult.signal) {
     console.error(`codexhost dev: Launcher exited from signal ${launchResult.signal}`);
   }

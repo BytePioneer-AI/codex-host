@@ -9,6 +9,8 @@ import {
   decodeThreadSectionMoveRequest,
   encodeHostThreadListCursor,
   encodeSectionThreadListCursor,
+  observeDeletedProject,
+  type JsonObject,
 } from "../src/index.js";
 
 describe("Codex Thread list and management protocol boundary", () => {
@@ -202,14 +204,61 @@ describe("Codex Thread list and management protocol boundary", () => {
         params: {
           threadId: "thread-1",
           isPinned: true,
+          projectId: "project-a",
+          daybreakEnabled: null,
           gitInfo: { branch: "main", sha: null },
         },
       }),
     ).toEqual({
       threadId: "thread-1",
-      isPinned: true,
+      projectId: "project-a",
       gitInfo: { branch: "main", sha: null },
+      unsupportedFields: ["isPinned"],
     });
+  });
+
+  it("decodes Codex metadata patch semantics for clearing and leaving fields unchanged", () => {
+    const decode = (params: JsonObject) =>
+      decodeThreadMetadataUpdateRequest({ id: 3, method: "thread/metadata/update", params });
+    expect(decode({ threadId: "t", projectId: "", gitInfo: null, daybreakEnabled: false })).toEqual(
+      { threadId: "t", projectId: null, daybreakEnabled: false, unsupportedFields: [] },
+    );
+    expect(decode({ threadId: "t", projectId: null })).toEqual({
+      threadId: "t",
+      unsupportedFields: [],
+    });
+    expect(() => decode({ threadId: "t", projectId: "  " })).toThrow("non-empty");
+    expect(() => decode({ threadId: "t", gitInfo: { branch: "" } })).toThrow("non-empty");
+    expect(() => decode({ threadId: "t", daybreakEnabled: "yes" })).toThrow("boolean");
+    expect(decode({ threadId: "t", gitInfo: { branch: "main", futureField: "x" } })).toEqual({
+      threadId: "t",
+      gitInfo: { branch: "main" },
+      unsupportedFields: ["gitInfo.futureField"],
+    });
+  });
+
+  it("filters thread/list by project while keeping External aggregation", () => {
+    const decode = (params: JsonObject) =>
+      decodeThreadListRequest({ id: 4, method: "thread/list", params });
+    const any = decode({});
+    const unassigned = decode({ projectId: null });
+    const project = decode({ projectId: "project-a" });
+    expect(any).toMatchObject({ projectId: undefined, supportsExternal: true });
+    expect(unassigned).toMatchObject({ projectId: null, supportsExternal: true });
+    expect(project).toMatchObject({ projectId: "project-a", supportsExternal: true });
+    expect(new Set([any, unassigned, project].map((value) => value?.queryFingerprint)).size).toBe(
+      3,
+    );
+  });
+
+  it("observes only official project deletion notifications", () => {
+    const changed = (changeType: string) => ({
+      method: "project/changed",
+      params: { projectId: "project-a", changeType },
+    });
+    expect(observeDeletedProject(changed("deleted"))).toBe("project-a");
+    expect(observeDeletedProject(changed("updated"))).toBeNull();
+    expect(observeDeletedProject({ id: 1, ...changed("deleted") })).toBeNull();
   });
 
   it("validates official thread/list pages without interpreting Thread content", () => {

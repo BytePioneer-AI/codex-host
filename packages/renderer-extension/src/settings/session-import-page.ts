@@ -10,6 +10,7 @@ import {
   type RendererSessionImportClient,
 } from "../renderer-session-import-client.js";
 export type { RendererSessionImportClient } from "../renderer-session-import-client.js";
+import { createHorizontalScrollHint } from "./horizontal-scroll-hint.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -83,10 +84,20 @@ export function createSessionImportSettingsPage(
       harnessOptions.dataset.sessionImportHarness = "selector";
       harnessOptions.setAttribute("role", "group");
       harnessOptions.setAttribute("aria-label", messages.sessionImportHarness);
+      const harnessScroller = document.createElement("div");
+      harnessScroller.className = "settings-session-import-harness__scroller";
+      const harnessHint = createHorizontalScrollHint(
+        document,
+        harnessOptions,
+        "settings-session-import-harness__indicator",
+      );
+      harnessScroller.append(harnessOptions, harnessHint.element);
       let selectedHarness: HarnessId | null = null;
       let sources: HarnessSessionImportSourcesResult["harnesses"] = [];
       const sourceButtons: HTMLButtonElement[] = [];
       const renderHarnessOptions = (): void => {
+        // Rebuilding the options must not throw a scrolled selector back to its start.
+        const scrolled = harnessOptions.scrollLeft;
         harnessOptions.replaceChildren();
         sourceButtons.length = 0;
         for (const source of sources) {
@@ -107,8 +118,14 @@ export function createSessionImportSettingsPage(
           sourceButtons.push(option);
           harnessOptions.append(option);
         }
+        harnessOptions.scrollLeft = scrolled;
+        // A selection restored from an earlier visit may sit beyond the visible options.
+        harnessOptions
+          .querySelector<HTMLElement>('[aria-pressed="true"]')
+          ?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+        harnessHint.update();
       };
-      harness.append(harnessLabel, harnessOptions);
+      harness.append(harnessLabel, harnessScroller);
 
       const description = document.createElement("p");
       description.className = "settings-page-description";

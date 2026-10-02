@@ -2202,6 +2202,120 @@ describe("Renderer Session Import page", () => {
     scope.dispose();
   });
 
+  it("shows a scroll hint only while the Harness options overflow and scrolls them with the wheel", async () => {
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: ["pi", "omp", "grok"].map((id) => ({
+          harnessId: harnessIdSchema.parse(id),
+          name: id,
+        })),
+      })),
+      listHarnessSessions: vi.fn(async () => ({ total: 0, candidates: [] })),
+      importHarnessSession: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => null,
+      () => client,
+      vi.fn(async () => undefined),
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(client.listHarnessSessions).toHaveBeenCalledTimes(1));
+    const selector = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportHarness === "selector",
+    );
+    const indicator = descendants(content).find(
+      ({ className }) => className === "settings-session-import-harness__indicator",
+    );
+    const thumb = indicator?.children[0] as FakeElement | undefined;
+    if (!selector || !indicator || !thumb) throw new Error("Harness selector missing");
+    // Everything fits: no hint, and the wheel is left to the page.
+    expect(indicator.dataset.overflowing).toBe("false");
+    const wheel = (deltaY: number, deltaX = 0) => {
+      const event = { deltaX, deltaY, ctrlKey: false, preventDefault: vi.fn() };
+      selector.dispatch("wheel", event);
+      return event.preventDefault.mock.calls.length > 0;
+    };
+    expect(wheel(100)).toBe(false);
+
+    selector.scrollWidth = 1_200;
+    selector.clientWidth = 600;
+    selector.dispatch("scroll");
+    expect(indicator.dataset.overflowing).toBe("true");
+    expect(thumb.style).toMatchObject({ width: "50%", left: "0%" });
+
+    expect(wheel(300)).toBe(true);
+    selector.dispatch("scroll");
+    expect(selector.scrollLeft).toBe(300);
+    expect(thumb.style.left).toBe("25%");
+    // Horizontal gestures already scroll natively and must not be handled twice.
+    expect(wheel(100, 40)).toBe(false);
+    expect(wheel(900)).toBe(true);
+    expect(selector.scrollLeft).toBe(600);
+    // At either end the page keeps scrolling.
+    expect(wheel(100)).toBe(false);
+
+    // The hint is draggable with a mouse: 600px of line stand for 1200px of options.
+    const capture = vi.fn();
+    Object.assign(indicator, {
+      getBoundingClientRect: () => ({ left: 100, width: 600 }),
+      setPointerCapture: capture,
+    });
+    const pointer = (clientX: number, target: FakeElement, overrides = {}) => ({
+      button: 0,
+      pointerId: 7,
+      clientX,
+      target,
+      preventDefault: vi.fn(),
+      ...overrides,
+    });
+    // Pressing the bare line first centres the visible part on the pointer...
+    indicator.dispatch("pointerdown", pointer(250, indicator));
+    expect(selector.scrollLeft).toBe(0);
+    expect(capture).toHaveBeenCalledWith(7);
+    expect(indicator.dataset.dragging).toBe("true");
+    // ...and moving then follows the pointer one to one along the line, within the ends.
+    indicator.dispatch("pointermove", pointer(400, indicator));
+    expect(selector.scrollLeft).toBe(300);
+    expect(thumb.style.left).toBe("25%");
+    indicator.dispatch("pointermove", pointer(400, indicator, { pointerId: 8 }));
+    indicator.dispatch("pointermove", pointer(5_000, indicator));
+    expect(selector.scrollLeft).toBe(600);
+    indicator.dispatch("pointerup", pointer(5_000, indicator));
+    expect(indicator.dataset.dragging).toBeUndefined();
+    indicator.dispatch("pointermove", pointer(100, indicator));
+    expect(selector.scrollLeft).toBe(600);
+    // Pressing the thumb itself keeps the position; other buttons do nothing.
+    indicator.dispatch("pointerdown", pointer(650, thumb, { button: 2 }));
+    expect(indicator.dataset.dragging).toBeUndefined();
+    indicator.dispatch("pointerdown", pointer(650, thumb));
+    expect(selector.scrollLeft).toBe(600);
+    indicator.dispatch("pointermove", pointer(600, thumb));
+    expect(selector.scrollLeft).toBe(500);
+    indicator.dispatch("pointercancel", pointer(600, thumb));
+    indicator.dispatch("pointerdown", pointer(700, thumb));
+    indicator.dispatch("pointermove", pointer(5_000, thumb));
+    indicator.dispatch("pointerup", pointer(5_000, thumb));
+    expect(selector.scrollLeft).toBe(600);
+
+    // Choosing another Harness rebuilds the options without jumping back to the start.
+    descendants(content)
+      .find(({ dataset }) => dataset.sessionImportHarnessOption === "grok")
+      ?.dispatch("click");
+    expect(selector.scrollLeft).toBe(600);
+    expect(thumb.style.left).toBe("50%");
+    scope.dispose();
+  });
+
   it("discovers Harness options, ignores stale Harness results, and imports Pi with an activity warning", async () => {
     const oldList = deferred<{ candidates: []; total: number }>();
     const client = {

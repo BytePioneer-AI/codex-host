@@ -11,6 +11,7 @@
     { "path": "./packages/desktop-control/tsconfig.json" },
     { "path": "./packages/update-manager/tsconfig.json" },
     { "path": "./packages/console-server/tsconfig.json" },
+    { "path": "./packages/client/tsconfig.json" },
     { "path": "./packages/adapters/pi/tsconfig.json" },
     { "path": "./packages/adapters/claude-code/tsconfig.json" },
     { "path": "./packages/adapters/deepseek-harness/tsconfig.json" },

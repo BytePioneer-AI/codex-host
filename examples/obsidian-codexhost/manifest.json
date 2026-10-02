@@ -1,0 +1,9 @@
+{
+  "id": "codexhost-bridge",
+  "name": "CodexHost Bridge",
+  "version": "0.0.1",
+  "minAppVersion": "1.5.0",
+  "description": "Connect Obsidian to a local CodexHost multi-agent runtime.",
+  "author": "CodexHost",
+  "isDesktopOnly": true
+}

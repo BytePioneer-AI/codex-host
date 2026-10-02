@@ -45,6 +45,7 @@ export function auditHostBundleMetafile(metafile) {
     "/packages/host-runtime/src/app-server-host.ts/",
     "/packages/host-runtime/src/harness-plugin-loader.ts/",
     "/packages/host-runtime/src/installed-harness-plugins.ts/",
+    "/packages/host-runtime/src/external-ui-server.ts/",
     "/packages/host-runtime/src/remote-app-server.ts/",
     "/packages/host-runtime/src/remote-control-app-server.ts/",
     "/packages/host-runtime/src/remote-socket-lock.ts/",

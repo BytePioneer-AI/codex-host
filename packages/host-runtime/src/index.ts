@@ -34,6 +34,13 @@ export type {
   RemoteAppServerSessionStreams,
   RemoteAppServerWebSocketListener,
 } from "./remote-app-server.js";
+export {
+  EXTERNAL_UI_DESCRIPTOR_FILE,
+  EXTERNAL_UI_PROTOCOL_VERSION,
+  externalUiDescriptorPath,
+  startExternalUiServer,
+} from "./external-ui-server.js";
+export type { ExternalUiDescriptorV1, ExternalUiServer } from "./external-ui-server.js";
 export { runDelegationCli, DELEGATION_HELP } from "./delegation-cli.js";
 export { DelegationControlRegistry } from "./delegation-control-registry.js";
 export { startDelegationControlServer } from "./delegation-control-server.js";

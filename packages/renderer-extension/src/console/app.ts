@@ -9,6 +9,7 @@ import { consoleMessages, type ConsoleMessages } from "./messages.js";
 import { createOfflineHarnessesPage } from "./pages/harnesses-offline.js";
 import { hostPage } from "./pages/host-required.js";
 import { createOverviewPage } from "./pages/overview.js";
+import { createChatPage } from "./pages/chat.js";
 import { ConsoleState } from "./state.js";
 import { createRendererModelClient } from "../renderer-model-client.js";
 import { createRendererSessionImportClient } from "../renderer-session-import-client.js";
@@ -142,7 +143,7 @@ export function startConsoleApp(document: Document): void {
   const sections: NavigationSection[] = [
     {
       label: "",
-      pages: [createOverviewPage(messages, state, navigate, locale)],
+      pages: [createOverviewPage(messages, state, navigate, locale), createChatPage()],
     },
     {
       label: messages.settingsSection,

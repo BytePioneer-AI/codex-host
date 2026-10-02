@@ -610,3 +610,106 @@
     width: calc(100% - 32px);
   }
 }
+
+
+/* Multi-Agent Chat */
+
+.console-chat-page {
+  display: grid;
+  grid-template-rows: auto minmax(260px, 1fr) auto;
+  gap: 12px;
+  min-height: calc(100vh - 96px);
+}
+
+.console-chat-toolbar {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.console-chat-toolbar .console-panel__header {
+  grid-column: 1 / -1;
+}
+
+.console-chat-field {
+  display: grid;
+  gap: 6px;
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+
+.console-chat-field .console-input {
+  width: 100%;
+}
+
+.console-chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+  background: var(--settings-inset);
+  border: 1px solid var(--settings-border);
+  border-radius: 12px;
+}
+
+.console-chat-message {
+  max-width: min(820px, 92%);
+  padding: 10px 12px;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
+}
+
+.console-chat-message.is-user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--settings-focus) 9%, var(--settings-panel));
+}
+
+.console-chat-message.is-reasoning,
+.console-chat-message.is-tool {
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+
+.console-chat-message.is-tool {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+.console-chat-message.is-system {
+  color: var(--settings-danger);
+  border-color: var(--settings-danger-border);
+}
+
+.console-chat-message__role {
+  margin-bottom: 4px;
+  color: var(--settings-muted);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.console-chat-message__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.console-chat-composer {
+  margin-bottom: 0;
+}
+
+.console-chat-input {
+  min-height: 92px;
+  padding: 10px 12px;
+  resize: vertical;
+  color: var(--settings-text);
+  font: inherit;
+  background: var(--settings-inset);
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
+}
+
+@media (max-width: 760px) {
+  .console-chat-toolbar {
+    grid-template-columns: 1fr;
+  }
+}

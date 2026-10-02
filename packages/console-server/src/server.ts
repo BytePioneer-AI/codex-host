@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import os from "node:os";
+import path from "node:path";
 
 import { isConsoleHostMethod, type ConsoleAnnouncement } from "@codexhost/shared-contracts";
 import { readAnnouncement } from "./announcement.js";
@@ -24,6 +26,7 @@ import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
 import { CONSOLE_PAGE_CSS, CONSOLE_PAGE_HTML } from "./page.js";
 import type { ConsolePaths } from "./paths.js";
 import { ConsoleUpdateError, type ConsoleUpdates } from "./updates.js";
+import { createExternalUiProxy } from "./external-ui-proxy.js";
 
 export const CONSOLE_SERVICE = "codexhost-console";
 const MAX_BODY_BYTES = 16 * 1024;
@@ -167,6 +170,31 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     };
   };
 
+  const sourceInspect = async (startup: Awaited<ReturnType<typeof readStartupRecords>>): Promise<InspectDocument> => {
+    const latestDesktop = startup.find((record) => record.desktop !== null)?.desktop ?? null;
+    const running = await options.host.available();
+    return {
+      schemaVersion: 1,
+      launcherVersion: startup[0]?.launcherVersion || options.version,
+      launcherExecutable: options.installation.launcherExecutable ?? "source",
+      desktop: latestDesktop
+        ? {
+            platform: process.platform,
+            version: latestDesktop.version,
+            build: latestDesktop.build,
+            installRoot: latestDesktop.installRoot,
+            processIds: [],
+          }
+        : null,
+      desktopError: latestDesktop ? null : "Codex Desktop installation was not found",
+      runtime: {
+        descriptorPath: path.join(options.paths.dataDirectory, "runtime.json"),
+        running,
+        launcherPid: null,
+      },
+    };
+  };
+
   async function collect() {
     const [inspectResult, startup, controller] = await Promise.all([
       loadInspect().then(
@@ -179,7 +207,12 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       readStartupRecords(options.paths.startupRecordFile),
       readControllerStatus(options.paths.controllerStatusFile),
     ]);
-    const inspectDocument = inspectResult.value;
+    let inspectDocument = inspectResult.value;
+    let inspectError = inspectResult.error;
+    if (!inspectDocument && options.installation.distribution === null) {
+      inspectDocument = await sourceInspect(startup);
+      inspectError = null;
+    }
     const controllerAlive = controller !== null && processIsAlive(controller.pid);
     const summary = summarize({
       running: inspectDocument?.runtime.running ?? false,
@@ -191,7 +224,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     });
     return {
       inspectDocument,
-      inspectError: inspectResult.error,
+      inspectError,
       startup,
       controller,
       controllerAlive,
@@ -255,6 +288,14 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     const method = request.method ?? "GET";
     const route = `${method} ${url.pathname}`;
+
+    if (route === "GET /api/external-ui/info") {
+      sendJson(response, 200, {
+        wsPath: "/api/external-ui",
+        defaultCwd: environment.HOME || os.homedir(),
+      });
+      return;
+    }
 
     if (route === "GET /api/health") {
       sendJson(response, 200, {
@@ -417,6 +458,11 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     sendJson(response, 404, { error: "Not found" });
   }
 
+  const externalUiProxy = createExternalUiProxy({
+    descriptorPath: path.join(options.paths.dataDirectory, "runtime.json"),
+    port: () => port,
+  });
+
   const server = createServer((request, response) => {
     handle(request, response).catch((error: unknown) => {
       if (!response.headersSent) {
@@ -425,6 +471,10 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
         response.destroy();
       }
     });
+  });
+
+  server.on("upgrade", (request, socket, head) => {
+    if (!externalUiProxy.handleUpgrade(request, socket, head)) socket.destroy();
   });
 
   return new Promise((resolve, reject) => {
@@ -440,6 +490,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
         close: () =>
           new Promise<void>((done) => {
             if (idleTimer) clearTimeout(idleTimer);
+            externalUiProxy.close();
             server.close(() => done());
             server.closeAllConnections();
           }),

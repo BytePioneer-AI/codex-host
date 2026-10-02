@@ -1,5 +1,5 @@
 {
-  "name": "@codexhost/console-server",
+  "name": "@codexhost/client",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -13,13 +13,9 @@
     }
   },
   "scripts": {
-    "build": "tsc -b",
-    "build:release": "node scripts/build-release.mjs"
+    "build": "tsc -b"
   },
   "dependencies": {
-    "@codexhost/harness-plugin-files": "0.0.0",
-    "@codexhost/shared-contracts": "0.0.0",
-    "@codexhost/update-manager": "0.0.0",
     "ws": "8.21.3"
   }
 }

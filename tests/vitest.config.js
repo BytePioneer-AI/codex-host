@@ -6,6 +6,7 @@ import { configDefaults, defineConfig } from "vitest/config";
 const root = path.resolve(import.meta.dirname, "..");
 const include = [
   "packages/**/test/**/*.test.ts",
+  "examples/**/test/**/*.test.ts",
   "packages/repository-automation/test/**/*.test.mjs",
   "tests/release/**/*.test.mjs",
   "tools/**/*.test.mjs",

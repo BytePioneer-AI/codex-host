@@ -57,7 +57,10 @@ export function createKimiInstallation(environment: NodeJS.ProcessEnv) {
         updateAvailable: newerInstallationVersion(currentVersion, latestVersion),
         canUpdate,
         ...(!canUpdate
-          ? { message: "Use the original installer to update this Kimi installation" }
+          ? {
+              messageCode: "original-installer",
+              message: "Use the original installer to update this Kimi installation",
+            }
           : {}),
       };
     },

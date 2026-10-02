@@ -2,6 +2,7 @@ import type { HarnessInstallationState } from "@codexhost/shared-contracts";
 
 import type { ExternalRendererAgent } from "../agent-selection-state.js";
 import type { RendererSettingsMessages } from "./localization.js";
+import { harnessVersionLabel, harnessVersionNote } from "./harness-version-messages.js";
 
 /** Owned by one Connections page, reused across diagnostic renders and row switches. */
 export function createHarnessVersionPanel(
@@ -39,14 +40,15 @@ export function createHarnessVersionPanel(
   let unsupported = false;
   const render = (): void => {
     current.textContent = `${messages.harnessVersionCurrent}: ${state?.currentVersion ?? "—"}`;
-    latest.textContent = `${messages.harnessVersionLatest}: ${state?.latestVersion ?? "—"}`;
+    latest.textContent = `${messages.harnessVersionLatest}: ${harnessVersionLabel(state, messages.harnessVersion)}`;
     update.disabled = busy || signal.aborted || !state?.canUpdate || !state.updateAvailable;
     update.textContent =
       state?.canUpdate && state.latestVersion !== "Unknown" && !state.updateAvailable
         ? messages.harnessVersionUpToDate
         : messages.harnessVersionUpdate;
-    note.textContent = state?.message
-      ? `${state.message} ${messages.harnessVersionNote}`
+    const detail = harnessVersionNote(state, messages.harnessVersion);
+    note.textContent = detail
+      ? `${detail} ${messages.harnessVersionNote}`
       : messages.harnessVersionNote;
   };
   const run = async (action: "check" | "update"): Promise<void> => {

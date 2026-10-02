@@ -4,6 +4,11 @@ import {
   type CredentialImportMessages,
 } from "./credential-import-messages.js";
 import type { DefaultRendererSettingsPageId } from "./pages.js";
+import {
+  harnessVersionEnglish,
+  harnessVersionChinese,
+  type HarnessVersionMessages,
+} from "./harness-version-messages.js";
 
 export const RENDERER_SETTINGS_LOCALES = ["en", "zh-CN"] as const;
 export type RendererSettingsLocale = (typeof RENDERER_SETTINGS_LOCALES)[number];
@@ -191,6 +196,7 @@ export interface RendererSettingsMessages {
   readonly connectionInstall: string;
   readonly connectionInstallDescription: string;
   readonly connectionInstallRunning: string;
+  readonly harnessVersion: HarnessVersionMessages;
   readonly harnessVersionTitle: string;
   readonly harnessVersionCurrent: string;
   readonly harnessVersionLatest: string;
@@ -470,6 +476,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionInstallDescription: "This Harness was not detected.",
   connectionInstallRunning:
     "Installing on the selected Host. You can leave this page; login or setup may still be required afterward.",
+  harnessVersion: harnessVersionEnglish,
   harnessVersionTitle: "Harness CLI version",
   harnessVersionCurrent: "Current version",
   harnessVersionLatest: "Latest version",
@@ -763,6 +770,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
   connectionInstallRunning: "正在所选 Host 上安装，离开页面不会中断。安装后可能仍需登录或配置。",
+  harnessVersion: harnessVersionChinese,
   harnessVersionTitle: "Harness CLI 版本",
   harnessVersionCurrent: "当前版本",
   harnessVersionLatest: "最新版本",

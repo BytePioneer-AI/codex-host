@@ -14,6 +14,7 @@ export function createKiroInstallation(environment: NodeJS.ProcessEnv, command?:
       latestVersion: "Unknown",
       updateAvailable: false,
       canUpdate: false,
+      messageCode: "kiro-native-updater",
       message:
         "Use Kiro CLI's original installer or native updater to check for and install updates.",
     };

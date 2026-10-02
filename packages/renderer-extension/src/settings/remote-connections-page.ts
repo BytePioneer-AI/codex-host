@@ -362,6 +362,13 @@ export function createRemoteConnectionsPage(
           previous,
           async save(draft) {
             await control.ssh.save(draft, previous, signal);
+            // The address or key may have changed, so what was learned about this computer
+            // (including a failed check under the old address) no longer applies.
+            if (previous) {
+              installations.delete(previous.hostId);
+              inspectFailures.delete(previous.hostId);
+              restarting.delete(previous.hostId);
+            }
             await refresh();
           },
         });

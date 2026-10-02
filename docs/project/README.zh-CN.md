@@ -30,7 +30,7 @@
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>下载</strong></a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>下载</strong></a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
 
 <br />
 
@@ -280,12 +280,14 @@ CodexHost 的做法不同：
 
 </details>
 
-## 加入交流群
+<a id="加入交流群"></a>
+
+## 微信交流群
 
 <table align="center">
   <tr>
     <td>
-      <strong>加入交流群</strong><br />
+      <strong>微信交流群</strong><br />
       <sub>对 CodexHost 用法、功能感兴趣的开发者可以扫码加入微信群交流。</sub>
       <ul>
         <li><sub>安装问题可以加群询问</sub></li>

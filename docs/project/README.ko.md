@@ -30,7 +30,7 @@
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>다운로드</strong></a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#원격-harness">원격 연결</a> · <a href="#교류-그룹-참여">교류 그룹</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="../../README.md">English</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>다운로드</strong></a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#원격-harness">원격 연결</a> · <a href="#교류-그룹-참여">微信交流群</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="../../README.md">English</a></p>
 
 <br />
 
@@ -279,12 +279,14 @@ CodexHost는 다른 방식을 택합니다.
 
 </details>
 
-## 교류 그룹 참여
+<a id="교류-그룹-참여"></a>
+
+## 微信交流群
 
 <table align="center">
   <tr>
     <td>
-      <strong>교류 그룹 참여</strong><br />
+      <strong>微信交流群</strong><br />
       <sub>CodexHost 사용법과 기능에 관심 있는 개발자는 QR 코드를 스캔해 위챗 그룹에 참여할 수 있습니다.</sub>
       <ul>
         <li><sub>설치 문제는 그룹에서 질문할 수 있습니다</sub></li>

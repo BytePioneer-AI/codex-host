@@ -1145,7 +1145,8 @@ export class AppServerHost {
       this.#options.sharedThreads &&
       (request.method.startsWith("thread/") ||
         request.method.startsWith("turn/") ||
-        request.method.startsWith("codexhost/thread/"))
+        request.method.startsWith("codexhost/thread/") ||
+        request.method.startsWith("codexhost/harness/"))
     ) {
       try {
         const reply = await this.#options.sharedThreads.route(request, this.#options.defaultAgent);

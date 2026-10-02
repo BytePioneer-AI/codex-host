@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ConsoleDaemon } from "../src/daemon.js";
 import type { ConsoleHarnesses } from "../src/harnesses.js";
 import { HostUnavailableError, type ConsoleHostClient } from "../src/host-client.js";
 import type { InspectDocument } from "../src/installation.js";
@@ -61,6 +62,23 @@ function fakeUpdates(): ConsoleUpdates {
   };
 }
 
+function fakeDaemon(): ConsoleDaemon {
+  const status = {
+    running: false,
+    pid: null,
+    port: null,
+    startedAt: null,
+    runtimePath: "/opt/codexhost/app/host-runtime.mjs",
+    error: null,
+  };
+  return {
+    status: vi.fn(async () => status),
+    start: vi.fn(async () => ({ ...status, running: true, pid: 123, port: 4567 })),
+    stop: vi.fn(async () => status),
+    restart: vi.fn(async () => ({ ...status, running: true, pid: 124, port: 4568 })),
+  };
+}
+
 function fakeHarnesses(): ConsoleHarnesses {
   const harness = {
     id: "pi",
@@ -97,6 +115,7 @@ async function start(
     paths: consolePaths({ CODEXHOST_DATA_DIR: directory }),
     updates,
     harnesses: fakeHarnesses(),
+    daemon: fakeDaemon(),
     pageScript: "window.consoleLoaded = true;\n",
     host: options.host ?? { available: vi.fn(async () => false), request: vi.fn() },
     inspect: async () => inspectDocument(options.codexRunning ?? false),
@@ -161,6 +180,7 @@ describe("console server", () => {
         "summary",
         "issueUrl",
         "hostAvailable",
+        "daemon",
       ].sort(),
     );
     expect(overview).toHaveProperty("console", { version: "1.0.0", distribution: null });

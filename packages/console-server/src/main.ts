@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createConsoleDaemon } from "./daemon.js";
 import { createConsoleHarnesses, harnessPluginRoots } from "./harnesses.js";
 import { createConsoleHostClient } from "./host-client.js";
 import { resolveInstallation } from "./installation.js";
@@ -46,6 +47,11 @@ async function serve(): Promise<void> {
     harnesses: createConsoleHarnesses(
       harnessPluginRoots(appDirectory, installation.distribution === null),
     ),
+    daemon: createConsoleDaemon({
+      appDirectory,
+      dataDirectory: paths.dataDirectory,
+      logsDirectory: paths.logsDirectory,
+    }),
     idleTimeoutMs: IDLE_TIMEOUT_MS,
     onExit: exit,
   });

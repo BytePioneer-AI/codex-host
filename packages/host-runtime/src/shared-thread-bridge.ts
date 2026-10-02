@@ -137,10 +137,12 @@ export class SharedThreadBridge {
 
   async route(request: JsonRpcRequest, defaultAgent: "codex" | "pi"): Promise<JsonObject | null> {
     const params = object(request.params) ? request.params : {};
+    const sharedHarnessRequest =
+      this.options.delegateCreates && request.method.startsWith("codexhost/harness/");
     const create = this.options.delegateCreates
       ? classifyCreateRequestRoute(request, defaultAgent)
       : null;
-    let shared = create !== null && create.selectedHarness !== "codex";
+    let shared = sharedHarnessRequest || (create !== null && create.selectedHarness !== "codex");
     if (!shared && typeof params.threadId === "string") {
       shared =
         this.#known.has(params.threadId) ||

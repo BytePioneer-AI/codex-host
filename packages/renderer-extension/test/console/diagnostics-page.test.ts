@@ -41,6 +41,14 @@ function overview(): ConsoleOverview {
     summary: { state: "running", detail: null },
     issueUrl: "",
     hostAvailable: false,
+    daemon: {
+      running: false,
+      pid: null,
+      port: null,
+      startedAt: null,
+      runtimePath: "/repo/packages/host-runtime/dist/main.js",
+      error: null,
+    },
   };
 }
 
@@ -70,7 +78,7 @@ describe("overview startup diagnostics", () => {
     createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
     const initial = JSON.stringify(replaceChildren.mock.calls.at(-1));
     expect(initial).toContain("codexhost 正在启动");
-    expect(initial).not.toContain('"tag":"button"');
+    expect(initial).not.toContain('"label":"启动 codexhost"');
     expect(initial).not.toContain("启动成功");
     expect(initial).not.toContain("codexhost 未运行");
 
@@ -86,7 +94,7 @@ describe("overview startup diagnostics", () => {
     refresh?.();
     const ready = JSON.stringify(replaceChildren.mock.calls.at(-1));
     expect(ready).toContain("codexhost 正在运行");
-    expect(ready).not.toContain('"tag":"button"');
+    expect(ready).not.toContain('"label":"启动 codexhost"');
   });
 
   it("does not present an abandoned starting record as a successful startup", () => {

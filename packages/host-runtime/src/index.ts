@@ -64,6 +64,12 @@ export type {
   ThreadWaitInput,
 } from "./delegation-types.js";
 export { hasLauncherManagedUpdateRuntime, runHostRuntime } from "./run-host-runtime.js";
+export {
+  DAEMON_PROCESS_TITLE,
+  DAEMON_RUNTIME_ARGUMENT,
+  runExternalHarnessDaemon,
+} from "./daemon-runtime.js";
+export type { RunExternalHarnessDaemonOptions } from "./daemon-runtime.js";
 export { runClaudeAquaHarnessBroker } from "./aqua-harness-broker.js";
 export {
   REMOTE_CONTROL_BRIDGE_DESCRIPTOR_FILE,

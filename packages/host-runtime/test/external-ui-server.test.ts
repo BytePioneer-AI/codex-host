@@ -12,6 +12,7 @@ import {
   startExternalUiServer,
   type ExternalUiDescriptorV1,
 } from "../src/external-ui-server.js";
+import { SharedThreadOwner } from "../src/shared-thread-owner.js";
 
 let dataDirectory: string;
 
@@ -89,6 +90,38 @@ describe("external UI server", () => {
 });
 
 describe("external UI session lifecycle", () => {
+  it("treats a SharedThreadOwner viewer disconnect as a normal session exit", async () => {
+    const environment = { CODEXHOST_DATA_DIR: dataDirectory };
+    const owner = new SharedThreadOwner();
+    const diagnosticOutput = new PassThrough();
+    let diagnostics = "";
+    diagnosticOutput.setEncoding("utf8");
+    diagnosticOutput.on("data", (chunk: string) => {
+      diagnostics += chunk;
+    });
+    const server = await startExternalUiServer({
+      environment,
+      diagnosticOutput,
+      createSession: (streams) => owner.createSession(streams),
+    });
+
+    try {
+      const descriptor = server.descriptor;
+      const client = new WebSocket(`ws://127.0.0.1:${descriptor.port}/`, {
+        headers: { authorization: `Bearer ${descriptor.token}` },
+      });
+      await once(client, "open");
+      client.close();
+      await once(client, "close");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(diagnostics).not.toContain("Premature close");
+    } finally {
+      await server.close();
+      owner.close();
+      owner.output.end();
+    }
+  });
+
   it("disconnects transport without hard-cancelling and waits for shutdown", async () => {
     const environment = { CODEXHOST_DATA_DIR: dataDirectory };
     let finishSession = (): void => undefined;

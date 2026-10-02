@@ -114,6 +114,50 @@ export function createProductionExternalThreadStore(
   return new MappingStore({ directory: defaultMappingStoreDirectory(environment) });
 }
 
+/**
+ * Desktop frontend Store used while a separate daemon owns every External Thread.
+ *
+ * Reads that are merged with the shared daemon return an empty local contribution.
+ * Any mutation reaching this Store is a routing bug and fails closed instead of
+ * competing for the daemon-owned Mapping Store lock.
+ */
+export function createSharedOwnerFrontendStore(): ExternalThreadStore {
+  const routedMutation = async (): Promise<never> => {
+    throw new Error("External Thread mutation must be routed to the shared daemon");
+  };
+  return {
+    initialize: async () => undefined,
+    getThread: async () => null,
+    listThreads: async () => [],
+    getThreadByCreateRequest: async () => null,
+    getDelegation: async () => null,
+    getDelegationByChild: async () => null,
+    findDelegationByRequest: async () => null,
+    findRecentDelegation: async () => null,
+    listDelegations: async () => [],
+    createDelegation: routedMutation,
+    setDelegationStatus: routedMutation,
+    removeDelegation: routedMutation,
+    createProvisional: routedMutation,
+    commitReady: routedMutation,
+    rebindSubagentSession: routedMutation,
+    replaceReadySession: routedMutation,
+    supersededNativeSessionIds: () => [],
+    replaceReadySessionAfterLastTurn: routedMutation,
+    upsertTurnMappings: routedMutation,
+    reconcileTurnMappings: routedMutation,
+    setTitle: routedMutation,
+    setTransportModelId: routedMutation,
+    setArchived: routedMutation,
+    updateMetadata: routedMutation,
+    removeProvisional: routedMutation,
+    removeThread: routedMutation,
+    listSectionPlacements: async () => [],
+    replaceSectionPlacements: routedMutation,
+    close: async () => undefined,
+  };
+}
+
 export class ExternalThreadRepository {
   constructor(private readonly store: ExternalThreadStore) {}
 

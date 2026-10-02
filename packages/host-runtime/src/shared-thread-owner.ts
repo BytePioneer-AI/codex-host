@@ -153,6 +153,12 @@ export class SharedThreadOwner {
             }
           }
           return 0;
+        } catch (error) {
+          // A viewer disconnect intentionally destroys only this transport input.
+          // Node's async stream iterator reports that as ERR_STREAM_PREMATURE_CLOSE;
+          // it is not a Harness/session failure and must not surface as a daemon error.
+          if (detached) return 0;
+          throw error;
         } finally {
           detached = true;
           unsubscribe();

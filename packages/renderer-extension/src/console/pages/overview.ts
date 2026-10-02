@@ -58,6 +58,17 @@ export function createOverviewPage(
     mount(context: RendererSettingsPageMountContext) {
       const document = context.content.ownerDocument;
       let launching = false;
+      let daemonAction: "start" | "stop" | "restart" | null = null;
+      const runDaemonAction = (action: "start" | "stop" | "restart"): void => {
+        daemonAction = action;
+        render();
+        void consolePost(`/api/daemon/${action}`)
+          .catch(() => undefined)
+          .finally(() => {
+            daemonAction = null;
+            void state.refresh();
+          });
+      };
       const render = (): void => {
         const overview = state.overview;
         if (!overview) return;
@@ -128,6 +139,66 @@ export function createOverviewPage(
           ),
         );
 
+        const daemon = overview.daemon;
+        const daemonActions = h(document, "div", { className: "console-actions" });
+        if (daemon.running) {
+          const restart = button(
+            document,
+            daemonAction === "restart" ? "Restarting…" : "Restart daemon",
+            () => runDaemonAction("restart"),
+          );
+          const stop = button(
+            document,
+            daemonAction === "stop" ? "Stopping…" : "Stop daemon",
+            () => runDaemonAction("stop"),
+          );
+          restart.disabled = daemonAction !== null;
+          stop.disabled = daemonAction !== null;
+          daemonActions.append(restart, stop);
+        } else {
+          const startDaemon = button(
+            document,
+            daemonAction === "start" ? "Starting…" : "Start daemon",
+            () => runDaemonAction("start"),
+            "primary",
+          );
+          startDaemon.disabled = daemonAction !== null;
+          daemonActions.append(startDaemon);
+        }
+        const daemonCard = h(
+          document,
+          "section",
+          { className: "console-hero", "data-tone": daemon.running ? "ok" : "info" },
+          h(
+            document,
+            "div",
+            { className: "console-hero__icon" },
+            createRendererSettingsIcon(daemon.running ? "check" : "play", 20),
+          ),
+          h(
+            document,
+            "div",
+            { className: "console-hero__copy" },
+            h(
+              document,
+              "div",
+              { className: "console-hero__title" },
+              daemon.running ? "Daemon running" : "Daemon stopped",
+            ),
+            h(
+              document,
+              "div",
+              { className: "console-hero__detail" },
+              daemon.running
+                ? [daemon.pid && `PID ${daemon.pid}`, daemon.port && `port ${daemon.port}`]
+                    .filter(Boolean)
+                    .join(" · ")
+                : daemon.error ?? "External UI and Harness sessions are not running.",
+            ),
+          ),
+          daemonActions,
+        );
+
         context.content.replaceChildren(
           h(document, "h1", { className: "settings-section-label" }, messages.overview),
           h(
@@ -152,6 +223,8 @@ export function createOverviewPage(
             actions,
           ),
           versions,
+          h(document, "h2", { className: "console-section-title" }, "Daemon"),
+          daemonCard,
           ...renderStartupDiagnostics(document, messages, overview, locale),
           h(document, "h2", { className: "console-section-title" }, messages.quickActions),
           mountReportActions(document, messages, overview),

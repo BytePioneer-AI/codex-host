@@ -22,6 +22,7 @@ import {
 } from "./installation.js";
 import { buildDiagnosticReport, issueUrl, serializeDiagnosticReport } from "./diagnostic-report.js";
 import { ConsoleHarnessError, type ConsoleHarnesses } from "./harnesses.js";
+import type { ConsoleDaemon } from "./daemon.js";
 import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
 import { CONSOLE_PAGE_CSS, CONSOLE_PAGE_HTML } from "./page.js";
 import type { ConsolePaths } from "./paths.js";
@@ -41,6 +42,7 @@ export interface ConsoleServerOptions {
   paths: ConsolePaths;
   updates: ConsoleUpdates;
   harnesses: ConsoleHarnesses;
+  daemon: ConsoleDaemon;
   /** The console page bundle. */
   pageScript: string;
   /** The running Host's settings channel, when codexhost runs. */
@@ -249,6 +251,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       summary,
       issueUrl: reportIssueUrl,
       hostAvailable: await options.host.available(),
+      daemon: await options.daemon.status(),
     };
   }
 
@@ -392,6 +395,30 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
         const status =
           error instanceof ConsoleUpdateError && error.code === "codex-running" ? 409 : 500;
         sendJson(response, status, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    if (
+      route === "GET /api/daemon/status" ||
+      route === "POST /api/daemon/start" ||
+      route === "POST /api/daemon/stop" ||
+      route === "POST /api/daemon/restart"
+    ) {
+      try {
+        const result =
+          route === "POST /api/daemon/start"
+            ? await options.daemon.start()
+            : route === "POST /api/daemon/stop"
+              ? await options.daemon.stop()
+              : route === "POST /api/daemon/restart"
+                ? await options.daemon.restart()
+                : await options.daemon.status();
+        inspectCache = null;
+        sendJson(response, 200, result);
+      } catch (error) {
+        sendJson(response, 500, {
           error: error instanceof Error ? error.message : String(error),
         });
       }

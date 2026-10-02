@@ -688,7 +688,12 @@ export function createDefaultRendererSettingsPages(
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics),
     createAccountsSettingsPage(messages, getAccountClient),
-    createSessionImportSettingsPage(messages, getSessionImportClient, openImportedThread),
+    createSessionImportSettingsPage(
+      messages,
+      getSessionImportClient,
+      openImportedThread,
+      getDiagnostics,
+    ),
     createAppearanceSettingsPage(messages, getLoadedSessionsClient),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages, getUpdateClient),

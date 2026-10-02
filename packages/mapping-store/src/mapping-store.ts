@@ -14,7 +14,12 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-import type { HostThreadId, HostTurnId } from "@codexhost/shared-contracts";
+import type {
+  HarnessId,
+  HostThreadId,
+  HostTurnId,
+  NativeSessionRef,
+} from "@codexhost/shared-contracts";
 
 import {
   THREAD_METADATA_FIELDS,
@@ -40,6 +45,11 @@ import {
   writeSectionPlacementsFile,
   type StoredSectionPlacementV1,
 } from "./section-placements.js";
+import {
+  readSupersededSessionsFile,
+  writeSupersededSessionsFile,
+  type StoredSupersededSessionV1,
+} from "./superseded-sessions.js";
 
 export type MappingStoreErrorCode =
   | "STORE_LOCKED"
@@ -333,6 +343,7 @@ export class MappingStore {
   readonly #hostTurns = new Map<HostTurnId, HostThreadId>();
   readonly #nativeTurns = new Map<string, HostTurnId>();
   #sectionPlacements: StoredSectionPlacementV1[] = [];
+  #supersededSessions: StoredSupersededSessionV1[] = [];
   // ponytail: A Store-wide queue caps write concurrency at one; shard only if measured throughput requires it.
   #writeTail: Promise<void> = Promise.resolve();
   #initialized = false;
@@ -445,6 +456,19 @@ export class MappingStore {
           ),
         ).catch(() => undefined);
         this.#sectionPlacements = [];
+      }
+      try {
+        this.#supersededSessions = await readSupersededSessionsFile(this.#supersededSessionsPath);
+      } catch {
+        // Only import suggestions depend on this; losing it must not block Thread access.
+        await rename(
+          this.#supersededSessionsPath,
+          path.join(
+            this.#quarantineDirectory,
+            `superseded-sessions.json.${this.#now().getTime()}.invalid`,
+          ),
+        ).catch(() => undefined);
+        this.#supersededSessions = [];
       }
       this.#rebuildIndexes();
       this.#initialized = true;
@@ -678,6 +702,12 @@ export class MappingStore {
   }
 
   async replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1> {
+    const replaced = await this.#replaceReadySession(input);
+    await this.#recordSuperseded(input.expectedNativeSessionRef, replaced);
+    return replaced;
+  }
+
+  #replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1> {
     return this.#update(input.hostThreadId, (current) => {
       if (
         current.state !== "ready" ||
@@ -708,6 +738,14 @@ export class MappingStore {
   }
 
   async replaceReadySessionAfterLastTurn(
+    input: ReplaceReadySessionAfterLastTurnInput,
+  ): Promise<StoredThreadRecordV1> {
+    const replaced = await this.#replaceReadySessionAfterLastTurn(input);
+    await this.#recordSuperseded(input.expectedNativeSessionRef, replaced);
+    return replaced;
+  }
+
+  #replaceReadySessionAfterLastTurn(
     input: ReplaceReadySessionAfterLastTurnInput,
   ): Promise<StoredThreadRecordV1> {
     return this.#update(input.hostThreadId, (current) => {
@@ -892,6 +930,42 @@ export class MappingStore {
       }
       await this.#remove(hostThreadId);
     });
+  }
+
+  /** Native Sessions that an existing or former Thread of this Harness moved on from. */
+  supersededNativeSessionIds(harnessId: HarnessId): string[] {
+    this.#requireInitialized();
+    return this.#supersededSessions
+      .filter((session) => session.harnessId === harnessId)
+      .map(({ nativeSessionId }) => nativeSessionId);
+  }
+
+  /**
+   * Remember the Native Session a Thread just left. Best effort by design: the replacement is
+   * already committed, and a lost entry only lets the old Session reappear as an import candidate.
+   */
+  async #recordSuperseded(
+    previous: NativeSessionRef,
+    replaced: StoredThreadRecordV1,
+  ): Promise<void> {
+    const current = replaced.nativeSessionRef?.nativeSessionId;
+    if (!current || current === previous.nativeSessionId) return;
+    const same = (session: StoredSupersededSessionV1, nativeSessionId: string) =>
+      session.harnessId === previous.harnessId && session.nativeSessionId === nativeSessionId;
+    await this.#enqueue(async () => {
+      this.#supersededSessions = await writeSupersededSessionsFile(this.#supersededSessionsPath, [
+        // A Session a Thread returned to is current again, and a repeated entry moves to the end.
+        ...this.#supersededSessions.filter(
+          (session) => !same(session, current) && !same(session, previous.nativeSessionId),
+        ),
+        {
+          harnessId: previous.harnessId,
+          nativeSessionId: previous.nativeSessionId,
+          hostThreadId: replaced.hostThreadId,
+          supersededAt: this.#now().toISOString(),
+        },
+      ]);
+    }).catch(() => undefined);
   }
 
   async removeThread(hostThreadId: HostThreadId): Promise<void> {
@@ -1272,6 +1346,10 @@ export class MappingStore {
 
   get #sectionPlacementsPath(): string {
     return path.join(this.#sectionsDirectory, "placements.json");
+  }
+
+  get #supersededSessionsPath(): string {
+    return path.join(this.#directory, "superseded-sessions", "sessions.json");
   }
 
   #metadataPath(hostThreadId: HostThreadId): string {

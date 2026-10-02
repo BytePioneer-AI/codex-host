@@ -6,6 +6,8 @@ import type {
   HarnessInspection,
   HarnessResult,
   HarnessSession,
+  HarnessSessionImportCapability,
+  HarnessSessionImportSource,
   OpenSessionInput,
   HarnessExecutionPolicy,
   HostThreadSnapshot,
@@ -21,7 +23,15 @@ import { OPENCODE_PERMISSION_MODE_CATALOG } from "../permission-modes.js";
 import { readCatalog } from "./catalog.js";
 import { V2Connection } from "./connection.js";
 import { readHistory } from "./history.js";
-import { errorResult, harnessId, sameDirectory, v2Locator, v2Permissions } from "./state.js";
+import { listV2SessionCandidates, resolveV2SessionCandidate } from "./session-import.js";
+import {
+  errorResult,
+  failure,
+  harnessId,
+  sameDirectory,
+  v2Locator,
+  v2Permissions,
+} from "./state.js";
 import { V2Session, v2Capabilities } from "./session.js";
 
 export class V2Adapter implements HarnessAdapter {
@@ -57,6 +67,50 @@ export class V2Adapter implements HarnessAdapter {
           ...errorResult(error).error,
           ...(connection.stderrTail ? { stderrTail: connection.stderrTail } : {}),
         },
+      };
+    } finally {
+      await connection.close();
+      this.#connections.delete(connection);
+    }
+  }
+
+  readonly sessionImport = {
+    listCandidates: () => this.#discover((client) => listV2SessionCandidates(client)),
+    resolveCandidate: async (
+      nativeSessionId: string,
+    ): Promise<HarnessResult<HarnessSessionImportSource>> => {
+      const source = await this.#discover((client) =>
+        resolveV2SessionCandidate(client, nativeSessionId),
+      );
+      if (!source.ok) return source;
+      return source.value
+        ? { ok: true, value: source.value }
+        : {
+            ok: false,
+            error: failure("OpenCode Session is no longer importable", "sessionNotFound"),
+          };
+    },
+  } satisfies HarnessSessionImportCapability;
+
+  /** Read-only discovery on a private server: no Session is created, loaded or prompted. */
+  async #discover<T>(read: (client: OpenCodeClient) => Promise<T>): Promise<HarnessResult<T>> {
+    if (this.#closed)
+      return { ok: false, error: failure("OpenCode Adapter is closed", "invalidState") };
+    const connection = new V2Connection(this.options, process.cwd());
+    this.#connections.add(connection);
+    try {
+      const value = await read(await connection.client());
+      if (this.#closed) throw new Error("OpenCode Adapter closed during Session discovery");
+      return { ok: true, value };
+    } catch {
+      return {
+        ok: false,
+        error: this.#closed
+          ? failure("OpenCode Adapter is closed", "invalidState")
+          : failure(
+              "OpenCode sessions could not be read; check the installation and retry",
+              "unavailable",
+            ),
       };
     } finally {
       await connection.close();

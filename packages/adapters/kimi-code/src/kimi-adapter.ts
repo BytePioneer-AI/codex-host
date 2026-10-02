@@ -38,6 +38,7 @@ import {
   readKimiSessionSnapshot,
   readKimiSessionUsage,
 } from "./history.js";
+import { KimiSessionImport } from "./session-import.js";
 import {
   buildModelCatalogFromConfig,
   decodeKimiModelRefId,
@@ -161,6 +162,7 @@ function stateFromConfig(
 
 export class KimiAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = kimiHarnessId;
+  readonly sessionImport: KimiSessionImport;
 
   #options: KimiAdapterOptions;
   #deps: KimiAdapterDependencies;
@@ -176,6 +178,10 @@ export class KimiAdapter implements HarnessAdapter {
   constructor(options: KimiAdapterOptions = {}, dependencies: KimiAdapterDependencies = {}) {
     this.#options = options;
     this.#deps = dependencies;
+    this.sessionImport = new KimiSessionImport({
+      environment: { ...process.env, ...options.environment },
+      homeDirectory: options.homeDirectory,
+    });
   }
 
   async inspectAccount() {
@@ -690,6 +696,7 @@ export class KimiAdapter implements HarnessAdapter {
     if (this.#closed) return;
     this.#closed = true;
     this.#commandCatalog = KIMI_DEFAULT_COMMAND_CATALOG;
+    await this.sessionImport.close();
 
     for (const session of this.#sessions) {
       await session.close().catch(() => undefined);

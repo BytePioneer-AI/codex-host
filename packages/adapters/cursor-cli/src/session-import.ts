@@ -8,10 +8,14 @@ import type {
   HarnessSessionImportSource,
 } from "@codexhost/harness-adapter";
 import {
-  HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH,
-  harnessSessionImportCandidateSchema,
-  type HarnessSessionImportCandidate,
-} from "@codexhost/shared-contracts";
+  SessionImportChangedError,
+  SessionImportScope,
+  isMissingFileError,
+  sameFileFingerprint,
+  sessionImportCandidate,
+  sessionImportTitle,
+} from "@codexhost/harness-adapter/session-import";
+import type { HarnessSessionImportCandidate } from "@codexhost/shared-contracts";
 import {
   cursorConfigDirectory,
   cursorSessionDirectory,
@@ -21,7 +25,6 @@ import { cursorNativeSessionRef } from "./session-ref.js";
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const MAX_METADATA_BYTES = 1024 * 1024;
-class CursorSessionChangedError extends Error {}
 
 function errorCode(error: unknown): string | undefined {
   return typeof error === "object" &&
@@ -35,32 +38,26 @@ async function optionalStat(file: string): Promise<Stats | null> {
   try {
     return await lstat(file);
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return null;
+    if (isMissingFileError(error)) return null;
     throw error;
   }
 }
-function sameFile(left: Stats | null, right: Stats | null): boolean {
-  return left === null || right === null
-    ? left === right
-    : left.dev === right.dev &&
-        left.ino === right.ino &&
-        left.size === right.size &&
-        left.mtimeMs === right.mtimeMs &&
-        left.ctimeMs === right.ctimeMs;
-}
-
 /** Adapter-owned, read-only discovery. No process startup, transcript copy or Host mapping writes. */
 export class CursorSessionImport implements HarnessSessionImportCapability {
   readonly #environment: NodeJS.ProcessEnv;
-  readonly #abort = new AbortController();
-  readonly #pending = new Set<Promise<unknown>>();
+  readonly #scope = new SessionImportScope({
+    closedMessage: "Cursor Session import is closed",
+    unavailableMessage:
+      "Cursor ACP sessions could not be read; close native clients, check storage access and retry",
+    notFoundMessage: "Cursor ACP Session is no longer importable",
+  });
 
   constructor(environment: NodeJS.ProcessEnv) {
     this.#environment = { ...environment };
   }
 
   listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> {
-    return this.#read(async (signal) => {
+    return this.#scope.read(async (signal) => {
       const root = path.join(cursorConfigDirectory(this.#environment), "acp-sessions");
       const info = await optionalStat(root);
       if (!info) return [];
@@ -76,7 +73,7 @@ export class CursorSessionImport implements HarnessSessionImportCapability {
         } catch (error) {
           // A changing Session is omitted from this listing, never imported from
           // cached metadata. Storage permission errors must remain visible.
-          if (!(error instanceof CursorSessionChangedError)) throw error;
+          if (!(error instanceof SessionImportChangedError)) throw error;
         }
       }
       return candidates;
@@ -95,26 +92,17 @@ export class CursorSessionImport implements HarnessSessionImportCapability {
           retryable: false,
         },
       };
-    const result = await this.#read((signal) => this.#candidate(nativeSessionId, signal));
-    if (!result.ok) return result;
-    if (!result.value)
-      return {
-        ok: false,
-        error: {
-          code: "sessionNotFound",
-          message: "Cursor ACP Session is no longer importable",
-          retryable: false,
-        },
-      };
-    return {
-      ok: true,
-      value: {
-        candidate: result.value,
-        // Native ACP stores do not attest to --force. Imported sessions must not
-        // acquire unattended privileges from UI defaults or a guessed locator.
-        nativeRef: cursorNativeSessionRef(nativeSessionId, "default"),
-      },
-    };
+    return this.#scope.resolve(async (signal) => {
+      const candidate = await this.#candidate(nativeSessionId, signal);
+      return candidate
+        ? {
+            candidate,
+            // Native ACP stores do not attest to --force. Imported sessions must not
+            // acquire unattended privileges from UI defaults or a guessed locator.
+            nativeRef: cursorNativeSessionRef(nativeSessionId, "default"),
+          }
+        : null;
+    });
   }
 
   async #candidate(id: string, signal: AbortSignal): Promise<HarnessSessionImportCandidate | null> {
@@ -158,12 +146,7 @@ export class CursorSessionImport implements HarnessSessionImportCapability {
       // workspace and the history chain must all be readable and consistent.
       const turns = readCursorNativeTurns(id, cwd, this.#environment);
       if (!turns.length) return null;
-      title =
-        turns[0]?.text
-          .replaceAll("\0", "")
-          .replace(/\s+/gu, " ")
-          .trim()
-          .slice(0, HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH) || null;
+      title = sessionImportTitle(turns[0]?.text);
     } catch (error) {
       signal.throwIfAborted();
       if (["EACCES", "EPERM", "EIO", "EMFILE", "ENFILE"].includes(errorCode(error) ?? ""))
@@ -173,52 +156,18 @@ export class CursorSessionImport implements HarnessSessionImportCapability {
     }
     signal.throwIfAborted();
     const after = await Promise.all(files.map(optionalStat));
-    if (before.some((info, index) => !sameFile(info, after[index] ?? null)))
-      throw new CursorSessionChangedError("Cursor Session changed during discovery");
-    const parsed = harnessSessionImportCandidateSchema.safeParse({
+    if (before.some((info, index) => !sameFileFingerprint(info, after[index] ?? null)))
+      throw new SessionImportChangedError("Cursor Session changed during discovery");
+    // A stable read does not establish that another Cursor process is idle: running stays unknown.
+    return sessionImportCandidate({
       nativeSessionId: id,
       cwd,
       title,
-      updatedAt: Math.floor(Math.max(database.mtimeMs, wal?.mtimeMs ?? 0)),
-      // A stable read does not establish that another Cursor process is idle.
-      running: null,
+      updatedAt: Math.max(database.mtimeMs, wal?.mtimeMs ?? 0),
     });
-    return parsed.success ? parsed.data : null;
   }
 
-  #read<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<HarnessResult<T>> {
-    const signal = this.#abort.signal;
-    if (signal.aborted)
-      return Promise.resolve({
-        ok: false,
-        error: {
-          code: "invalidState",
-          message: "Cursor Session import is closed",
-          retryable: false,
-        },
-      });
-    const request = operation(signal)
-      .then((value): HarnessResult<T> => {
-        signal.throwIfAborted();
-        return { ok: true, value };
-      })
-      .catch((): HarnessResult<T> => ({
-        ok: false,
-        error: {
-          code: signal.aborted ? "invalidState" : "unavailable",
-          message: signal.aborted
-            ? "Cursor Session import is closed"
-            : "Cursor ACP sessions could not be read; close native clients, check storage access and retry",
-          retryable: !signal.aborted,
-        },
-      }))
-      .finally(() => this.#pending.delete(request));
-    this.#pending.add(request);
-    return request;
-  }
-
-  async close(): Promise<void> {
-    this.#abort.abort();
-    await Promise.allSettled(this.#pending);
+  close(): Promise<void> {
+    return this.#scope.close();
   }
 }

@@ -3,6 +3,7 @@ import type {
   HarnessInspection,
   HarnessResult,
   HarnessSession,
+  HarnessSessionImportCapability,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
 import {
@@ -54,6 +55,43 @@ export class OpenCodeAdapter implements HarnessAdapter {
       detected.major === 2 ? new V2Adapter(pinned) : new V1Adapter(pinned, this.dependencies);
     this.#adapters.add(adapter);
     return adapter;
+  }
+
+  readonly sessionImport: HarnessSessionImportCapability = {
+    listCandidates: () => this.#discover((imports) => imports.listCandidates()),
+    resolveCandidate: (nativeSessionId) =>
+      this.#discover((imports) => imports.resolveCandidate(nativeSessionId)),
+  };
+
+  /** Session import follows the selected CLI's protocol, like every other operation. */
+  async #discover<T>(
+    read: (imports: V2Adapter["sessionImport"]) => Promise<HarnessResult<T>>,
+  ): Promise<HarnessResult<T>> {
+    if (this.#closed)
+      return { ok: false, error: failure("OpenCode Adapter is closed", "invalidState") };
+    let adapter: HarnessAdapter | undefined;
+    try {
+      adapter = await this.#select();
+      if (!(adapter instanceof V2Adapter))
+        return {
+          ok: false,
+          // v1 answers per project only; there is no native listing across projects to import from.
+          error: failure("OpenCode Session import requires OpenCode v2", "unsupported"),
+        };
+      return await read(adapter.sessionImport);
+    } catch (error) {
+      return {
+        ok: false,
+        error: this.#closed
+          ? failure("OpenCode Adapter is closed", "invalidState")
+          : normalize(error),
+      };
+    } finally {
+      if (adapter) {
+        await adapter.close();
+        this.#adapters.delete(adapter);
+      }
+    }
   }
 
   async inspect(input: { cwd?: string; refresh?: boolean } = {}): Promise<HarnessInspection> {

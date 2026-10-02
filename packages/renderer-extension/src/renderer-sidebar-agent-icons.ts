@@ -113,7 +113,7 @@ export interface SidebarAgentIconRow {
   hostId(): string | null;
   threadId(): string | null;
   draftId(): string | null;
-  render(agent: Exclude<RendererAgent, "codex">): void;
+  render(agent: RendererAgent): void;
   clear(): void;
 }
 
@@ -128,10 +128,8 @@ export interface RendererSidebarAgentIcons {
   dispose(): void;
 }
 
-export function rendererAgentForThreadOwnership(
-  ownership: ThreadOwnership,
-): Exclude<RendererAgent, "codex"> | null {
-  if (ownership.owner === "codex") return null;
+export function rendererAgentForThreadOwnership(ownership: ThreadOwnership): RendererAgent | null {
+  if (ownership.owner === "codex") return "codex";
   if (ownership.harnessId === "pi") return "pi";
   if (ownership.harnessId === "claude-code") return "claude-code";
   if (ownership.harnessId === "deepseek-harness") return "deepseek-harness";
@@ -184,7 +182,7 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
     return draftIdFromSidebarRowElement(this.element);
   }
 
-  render(agent: Exclude<RendererAgent, "codex">): void {
+  render(agent: RendererAgent): void {
     const titleTrigger = this.element.querySelector<HTMLElement>("[data-thread-title-trigger]");
     const title = titleTrigger?.querySelector<HTMLElement>("[data-thread-title]");
     if (!titleTrigger || !title) {
@@ -294,7 +292,7 @@ export function installRendererSidebarAgentIcons(options: {
   dom?: SidebarAgentIconDom;
 }): RendererSidebarAgentIcons {
   const dom = options.dom ?? new BrowserSidebarAgentIconDom(document);
-  const ownershipByThread = new Map<string, Exclude<RendererAgent, "codex"> | null>();
+  const ownershipByThread = new Map<string, RendererAgent | null>();
   const pending = new Set<string>();
   const failed = new Set<string>();
   const provisionalCodex = new Set<string>();
@@ -407,11 +405,10 @@ export function installRendererSidebarAgentIcons(options: {
       if (localAgent !== null && localAgent !== undefined) {
         if (threadId.success) {
           const key = ownershipKey(hostId, threadId.data);
-          ownershipByThread.set(key, localAgent === "codex" ? null : localAgent);
+          ownershipByThread.set(key, localAgent);
           clearOwnershipRetry(key);
         }
-        if (localAgent === "codex") row.clear();
-        else row.render(localAgent);
+        row.render(localAgent);
         continue;
       }
       if (!threadId.success) {

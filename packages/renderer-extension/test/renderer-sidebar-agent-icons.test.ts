@@ -285,7 +285,7 @@ describe("Renderer sidebar Agent ownership", () => {
     expect(client.listThreadOwnership).toHaveBeenCalledWith({
       threadIds: ["codex-thread", "pi-thread", "claude-thread", "unknown-thread"],
     });
-    expect(rows.map((row) => row.agent)).toEqual([null, "pi", "claude-code", null]);
+    expect(rows.map((row) => row.agent)).toEqual(["codex", "pi", "claude-code", null]);
     control.dispose();
   });
 

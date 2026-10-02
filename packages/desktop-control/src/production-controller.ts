@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { openRendererLocalPage } from "./renderer-local-page.js";
+import { listCdpTargets } from "./cdp-client.js";
 
 import {
   startControllerAttachmentServer,
@@ -37,6 +39,7 @@ export interface DesktopControllerDependencies {
     rendererSource: string;
     enabledAgents: readonly string[];
     timeoutMs: number;
+    signal?: AbortSignal;
   }): Promise<RendererCdpControlSession>;
   startAttachmentServer(
     options: StartControllerAttachmentServerOptions,
@@ -275,8 +278,10 @@ export async function runDesktopController(
           "qoder",
           "qoder-cn",
           "kimi-code",
+          "zcode",
         ],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
+        signal,
       },
       dependencies,
     );
@@ -284,14 +289,6 @@ export async function runDesktopController(
     return installed;
   };
   startupTrace("initialization started");
-  try {
-    session = await createSession();
-    recordRecoverySuccess();
-  } catch (error) {
-    startupTrace("initial Renderer Session unavailable", error);
-    session = undefined;
-    recordRecoveryFailure(error);
-  }
 
   let operation = Promise.resolve<unknown>(undefined);
   const useSession = <T>(callback: () => Promise<T>): Promise<T> => {
@@ -329,6 +326,13 @@ export async function runDesktopController(
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
+      openLocalPage: (url) =>
+        openRendererLocalPage(
+          (expression) =>
+            useSession(async () => (await recoverSession()).executeRenderer(expression)),
+          url,
+          () => listCdpTargets(options.rendererCdpEndpoint),
+        ),
       attach: () =>
         useSession(async () => {
           const current = await recoverSession();
@@ -341,6 +345,17 @@ export async function runDesktopController(
       schemaVersion: 2,
       state: "compatible",
       issues: [],
+    });
+    await useSession(async () => {
+      if (session) return;
+      try {
+        session = await createSession();
+        recordRecoverySuccess();
+      } catch (error) {
+        startupTrace("initial Renderer Session unavailable", error);
+        session = undefined;
+        recordRecoveryFailure(error);
+      }
     });
     while (!signal.aborted) {
       await dependencies.sleep(dependencies.monitorIntervalMs);

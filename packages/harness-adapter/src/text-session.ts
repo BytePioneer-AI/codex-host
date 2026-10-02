@@ -41,6 +41,7 @@ export type HarnessErrorCode =
   | "notInstalled"
   | "unavailable"
   | "authenticationRequired"
+  | "configurationRequired"
   | "sessionNotFound"
   | "sessionBusy"
   | "checkpointNotFound"
@@ -581,6 +582,8 @@ export interface HarnessAdapter {
    * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
    */
   installation?(action: "check" | "update"): Promise<HarnessInstallationState>;
+  /** Explicit first-time CLI installation using an Adapter-owned official source. */
+  install?(): Promise<void>;
   readonly credentialExport?: HarnessCredentialExport;
   readonly credentialImports?: HarnessCredentialImports;
   readonly harnessId: HarnessId;

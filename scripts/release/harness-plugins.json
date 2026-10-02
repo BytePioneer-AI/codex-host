@@ -15,13 +15,12 @@
     "packages/adapters/hermes",
     "packages/adapters/qoder",
     "packages/adapters/qoder-cn",
-    "packages/adapters/kimi-code"
+    "packages/adapters/kimi-code",
+    "packages/adapters/zcode"
   ],
   "runtimePackages": [
     "@agentclientprotocol/sdk",
     "@anthropic-ai/claude-agent-sdk",
-    "@deepseek-ai/cosmokit",
-    "@deepseek-ai/schemastery",
     "@hono/node-server",
     "@modelcontextprotocol/sdk",
     "@opencode-ai/sdk",

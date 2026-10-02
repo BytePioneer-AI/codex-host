@@ -2,12 +2,12 @@
 
 ## 当前范围
 
-设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP** 和 **DSH** 的原生 Session（已验证 `0.1.2-rc.1` / `0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.5-rc.3` / `0.1.7-rc.1`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-015rc1-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
+设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP** 和 **DSH** 的原生 Session（已验证 `0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-version-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
 
 - 设置页始终使用本地 Host，即使 Composer 当前连接远程工作区。
 - 可选 Harness 来自该 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
 - 目录表示“实现了导入接口”，不保证当前原生运行时可用。不兼容的 DSH 原生协议、旧 Host、缺失插件或不可用存储会明确失败，不伪装成无候选。
-- DSH 仅允许本机、codexhost 托管的 Web；`0.1.2-rc.1`、`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.5-rc.3` 和 `0.1.7-rc.1` 已验证。其他 SemVer 版本可尝试连接及导入，须通过原生 Web 与历史协议校验；Legacy 协议已移除。不把版本号当作兼容保证。
+- DSH 仅允许本机、codexhost 托管的 Web；`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1` 和 `0.2.0-rc.2` 已验证，低于 `0.1.7-rc.1` 的版本在启动 Web 前拒绝。其他 SemVer 版本可尝试连接及导入，须通过原生 Web 与历史协议校验；Legacy 协议与 V0/V3 已移除。不把版本号当作兼容保证。
 - 本次没有增加远程扫描、Claude Code Broker 导入，也没有完成整个 Agent Picker 的动态插件化。
 
 ## Adapter 契约与职责
@@ -90,6 +90,15 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 
 导入能力与 Claude CLI 的原生会话列表是两条边界：本页可以导入旧 `sdk-ts` 会话；codexhost 新建 SDK 会话另以 `codexhost-sdk` entrypoint 持久化，使当前 Claude CLI 版本的原生 picker 也能列出它们。
 
+## Hermes 原生规则
+
+- 使用所选 Hermes 运行环境中的 `SessionDB(read_only=True).list_sessions_rich`；与 Gateway 历史读取共用原生 launcher/bootstrap，不调用 ACP，不恢复会话，不发送 Turn。Gateway `session.list` 本身缺少导入要求的 cwd 和最近活动时间。
+- 范围是当前原生 home 的数据库，遵守原生归档、隐藏、内部来源及 `sessions.show_subagents` 过滤；不限制为旧 `source=acp` 记录，也没有固定 200／1,000 条总候选截断。超时或响应超出资源保护界限明确失败，不返回截断列表。
+- 压缩 lineage 使用原生 `_lineage_root_id` 保持稳定身份，标题、cwd 和最近活动时间取原生投影；避免与已映射根会话重复导入。cwd 列为空时仅回读原生 `model_config.cwd`，不以进程 cwd 或 `.` 填补；时间使用原生活动／开始时间，缺失或无效记录跳过。
+- `resolveCandidate` 在提交前只读地重新查询选中 ID，返回最新元数据；删除、归档、隐藏或身份已不可发现时返回 `sessionNotFound`。不缓存列表作为导入依据。查询无法可靠确认外部进程运行状态，`running` 为 null；导入前应关闭其他原生客户端。
+- 引用保存 Hermes 原生根 ID，不预先增加 Gateway locator。真正打开时由 `session.resume` 验证持久化身份和 cwd 后确认 Gateway 引用；不复制、迁移或改写 Transcript。
+- 关闭 Adapter 会取消读进程并拒绝迟到结果；存储损坏、协议错误和运行环境不可用明确失败。真实隔离环境验证超过 1,000 条候选、压缩根去重、历史恢复和查询前后数据库／配置不变；不代表 Desktop GUI 验收。
+
 ## Cursor CLI ACP 原生规则
 
 - 仅枚举 Cursor 配置根目录下的 `acp-sessions/<UUID>/`。默认是 `~/.cursor/acp-sessions`；与恢复会话共用 `cursorConfigDirectory()`，优先使用 `CURSOR_CONFIG_DIR`，其次是 `XDG_CONFIG_HOME/cursor`。不扫描 Cursor IDE 聊天或普通 CLI `chats`，不转换它们的存储格式。
@@ -104,8 +113,8 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 ## DSH 原生规则
 
 - 通过托管 Web 的公开 Session API 发现候选并重新检查所选 Session，不直接扫描或改写 DSH 的原生日志文件。
-- 导入只登记映射；打开 Thread 后才读取原生历史，并继续相同 Native Session ID。`0.1.2-rc.1` 使用 V0 日志；已验证的 `0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.5-rc.3` 使用 V3 日志及独立 Assistant 流；`0.1.7-rc.1` 使用 V4 日志并校验 `developer/message`、surface 引用、Assistant 流块和 Fork closer。系统消息和开发者指令参与原生历史引用但不展示为用户回合。
-- 两种日志的序号与 checkpoint 不可互换。原生格式迁移由 DSH 负责，codexhost 不把旧 checkpoint 当作迁移后的序号，也不提供降级迁移。详见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。
+- 导入只登记映射；打开 Thread 后才读取原生历史，并继续相同 Native Session ID。已验证版本都使用 V4 日志，Adapter 校验 `developer/message`、surface 引用、Assistant 流块、DSH 补写的工具结果和 Fork 标记。系统消息和开发者指令参与原生历史引用但不展示为用户回合。
+- 旧版 DSH 写的 V0/V3 Session 由 DSH 在打开时迁移到 V4。迁移可能重编号序号，codexhost 不把迁移前的 checkpoint 当作迁移后的序号，也不提供降级迁移。详见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。
 - 若配置的回环端点已有无法认证的 DSH Web，先关闭该实例，再重新运行连接诊断，让 codexhost 启动自己的 Web；不会接管或停止外部进程。
 
 ## 验证

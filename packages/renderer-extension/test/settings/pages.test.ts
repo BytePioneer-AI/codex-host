@@ -11,7 +11,7 @@ import {
   type UpdateCheckResult,
   type UpdateStatus,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/settings/icons.js", () => ({
   createRendererSettingsIcon: () => ({ classList: { add() {} } }),
@@ -43,6 +43,8 @@ import type {
   RendererConnectionDiagnostics,
   RendererConnectionSnapshot,
 } from "../../src/settings/pages.js";
+
+import { createHarnessInstallationPanel } from "../../src/settings/harness-installation-panel.js";
 
 class FakeElement {
   readonly children: unknown[] = [];
@@ -131,7 +133,7 @@ class FakeElement {
     this.dispatch("scroll");
   }
 
-  scrollIntoView(): void {}
+  scrollIntoView = vi.fn();
 
   getAttribute(name: string): string | null {
     return this.attributes.get(name) ?? null;
@@ -798,15 +800,13 @@ describe("Harness CLI version panel", () => {
     expect(button("update").disabled).toBe(true);
     abort.abort();
   });
-  it("shows check failures and the installer link, and checks again when the page reopens", async () => {
+  it("shows check failures without a duplicate website link, and checks again when the page reopens", async () => {
     const run = vi.fn(async () => state).mockRejectedValueOnce(new Error("secret-native-output"));
     const { panel, button, abort } = mount(run);
     await vi.waitFor(() => expect(visibleText(panel)).toContain("Could not complete"));
     expect(visibleText(panel)).not.toContain("secret-native-output");
     expect(button("update").disabled).toBe(true);
-    expect(descendants(panel).find((element) => element.tagName === "a")?.href).toBe(
-      "https://pi.dev/",
-    );
+    expect(descendants(panel).some((element) => element.tagName === "a")).toBe(false);
     abort.abort();
     const reopened = mount(run);
     await vi.waitFor(() => expect(reopened.button("update").disabled).toBe(false));
@@ -825,7 +825,7 @@ describe("Harness CLI version panel", () => {
     expect(manual.button("update").disabled).toBe(true);
     manual.abort.abort();
   });
-  it("shows native manual-update guidance without claiming an unknown latest version is current", async () => {
+  it("shows localized manual-update guidance without claiming an unknown latest version is current", async () => {
     const { panel, button, abort } = mount(async () => ({
       ...state,
       latestVersion: "Unknown",
@@ -833,7 +833,8 @@ describe("Harness CLI version panel", () => {
       canUpdate: false,
       message: "This installation belongs to its desktop app.",
     }));
-    await vi.waitFor(() => expect(visibleText(panel)).toContain("belongs to its desktop app"));
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("original installer"));
+    expect(visibleText(panel)).not.toContain("belongs to its desktop app");
     expect(button("update").textContent).toBe("Update");
     expect(button("update").disabled).toBe(true);
     abort.abort();
@@ -858,6 +859,67 @@ describe("Harness CLI version panel", () => {
     expect(visibleText(panel)).not.toContain("1.0.0");
     expect(button("update").disabled).toBe(true);
   });
+});
+
+describe("Harness installation actions", () => {
+  it.each(["codebuddy", "kiro-cli"] as const)(
+    "provides one automatic install action for %s",
+    (agent) => {
+      const document = new FakeDocument();
+      const run = vi.fn();
+      const panel = createHarnessInstallationPanel(
+        document as unknown as Document,
+        agent,
+        "local",
+        rendererSettingsMessages("zh-CN"),
+        vi.fn(),
+        { run, status: "idle" },
+      ) as unknown as FakeElement;
+      const installs = descendants(panel).filter(
+        ({ dataset }) => dataset.connectionAction === "install",
+      );
+      expect(installs).toHaveLength(1);
+      const install = installs[0];
+      assert(install);
+      expect(install.textContent).toBe("一键安装");
+      if (agent === "codebuddy") {
+        const actions = elementWithClass(panel, "settings-harness-installation-actions");
+        expect(descendants(actions)).toContain(install);
+        expect(
+          descendants(actions).some(({ dataset }) => dataset.connectionAction === "copy-install"),
+        ).toBe(true);
+      } else {
+        expect(panel.children).toContain(install);
+      }
+      install.dispatch("click");
+      install.dispatch("click");
+      expect(run).toHaveBeenCalledOnce();
+      expect(install.disabled).toBe(true);
+    },
+  );
+
+  it.each(["installing", "checking"] as const)(
+    "disables automatic installation while %s",
+    (status) => {
+      const document = new FakeDocument();
+      const run = vi.fn();
+      const panel = createHarnessInstallationPanel(
+        document as unknown as Document,
+        "codebuddy",
+        "local",
+        rendererSettingsMessages("en"),
+        vi.fn(),
+        { run, status },
+      ) as unknown as FakeElement;
+      const install = descendants(panel).find(
+        ({ dataset }) => dataset.connectionAction === "install",
+      );
+      assert(install);
+      expect(install.disabled).toBe(true);
+      install.dispatch("click");
+      expect(run).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("Renderer Connections page", () => {
@@ -923,110 +985,362 @@ describe("Renderer Connections page", () => {
     scope.dispose();
   });
   it.each([
-    ["pi", "https://pi.dev/install.sh"],
-    ["claude-code", "https://claude.ai/install.sh"],
-    ["deepseek-harness", "npm install -g @deepseek-ai/dsh@0.1.5-rc.1"],
-    ["opencode", "opencode-ai"],
-    ["grok", "@xai-official/grok"],
-    ["omp", "https://omp.sh/install"],
-    ["antigravity", "https://antigravity.google/cli/install.sh"],
-    ["kiro-cli", "https://cli.kiro.dev/install"],
-    ["codebuddy", "@tencent-ai/codebuddy-code"],
-    ["workbuddy", "应用内置 CLI"],
-    ["cursor-cli", "https://cursor.com/install"],
-    ["hermes", "https://hermes-agent.nousresearch.com/install.sh"],
-    ["qoder", "https://qoder.com/install"],
-    ["qoder-cn", "https://static.qoder.com.cn/qoder-cli-cn/install.sh"],
-  ] as const)("shows actionable installation instructions for %s", async (agent, expected) => {
-    const refresh = vi.fn(async () => undefined);
-    const diagnostics: RendererConnectionDiagnostics = {
-      snapshot: () => ({
-        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
-        hosts: [
-          {
-            hostId: "remote-test",
-            active: true,
-            agents: [{ agent, availability: "notInstalled", error: null }],
-          },
-        ],
-      }),
-      refresh,
-      subscribe: () => () => undefined,
-    };
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("zh-CN"),
-      () => null,
-      () => diagnostics,
-    ).find(({ id }) => id === "connections");
-    if (!page) throw new Error("Expected connections page");
-    const document = new FakeDocument("Win32");
-    const content = document.createElement("main");
-    const scope = new RendererSettingsPageScope();
-    const cleanup = page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (op, handlers) => scope.runLatest(op, handlers),
-    });
-    const install = elementWithClass(content, "settings-connection-install-link");
-    expect(install.tagName).toBe("button");
-    expect(install.href).toBe("");
-    install.dispatch("click", { stopPropagation() {} });
-    const panel = elementWithClass(content, "settings-harness-installation");
-    expect(visibleText(panel)).toContain(expected);
-    expect(
-      visibleText(content).includes(
-        "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。",
-      ),
-    ).toBe(agent === "deepseek-harness");
-    expect(visibleText(panel)).toContain("请在远程 Host 上安装。");
-    expect(visibleText(panel)).not.toMatch(
-      /选择本机系统|此页面不会自动执行|Windows ARM64|PATH|WSL|安装完成不代表已就绪/,
-    );
-    expect(refresh).not.toHaveBeenCalled();
-    const blocks = descendants(panel).filter(
-      ({ className }) => className === "settings-harness-installation-command",
-    );
-    expect(blocks.length).toBe(
-      agent === "workbuddy"
-        ? 0
-        : ["deepseek-harness", "opencode", "grok", "codebuddy"].includes(agent)
-          ? 1
-          : 2,
-    );
-    for (const block of blocks) {
-      const code = descendants(block).find(({ tagName }) => tagName === "code");
-      const copy = descendants(block).find(({ tagName }) => tagName === "button");
-      if (!code || !copy) throw new Error("Expected install command and copy button");
-      const command = code.textContent;
-      copy.dispatch("click");
-      await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenLastCalledWith(command));
-      expect(command).not.toContain("sudo");
-      document.clipboardWriteText.mockRejectedValueOnce(new Error("denied"));
-      copy.dispatch("click");
-      await vi.waitFor(() => expect(visibleNotesText(copy)).toContain("复制失败"));
-    }
-    for (const link of descendants(panel).filter(({ tagName }) => tagName === "a")) {
-      expect(link.href).toMatch(/^https:\/\//);
-      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
-    }
-    const check = descendants(panel).find(
-      ({ dataset }) => dataset.connectionAction === "check-install",
-    );
-    if (!check) throw new Error("Expected installation check button");
-    check.dispatch("click");
-    expect(check.disabled).toBe(true);
-    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
-    await vi.waitFor(() =>
+    ["pi", "https://pi.dev/"],
+    ["claude-code", "https://code.claude.com/"],
+    ["deepseek-harness", "https://github.com/deepseek-ai/deepseek-harness"],
+    ["opencode", "https://opencode.ai/"],
+    ["grok", "https://www.npmjs.com/package/@xai-official/grok"],
+    ["omp", "https://github.com/can1357/oh-my-pi"],
+    ["antigravity", "https://antigravity.google/"],
+    ["kiro-cli", "https://kiro.dev/"],
+    ["codebuddy", "https://www.codebuddy.ai/"],
+    ["workbuddy", "https://www.workbuddy.ai/"],
+    ["cursor-cli", "https://cursor.com/"],
+    ["devin", "https://devin.ai/"],
+    ["hermes", "https://hermes-agent.nousresearch.com/"],
+    ["qoder", "https://qoder.com/"],
+    ["qoder-cn", "https://qoder.cn/"],
+    ["kimi-code", "https://code.kimi.com/"],
+    ["zcode", "https://zcode.z.ai/"],
+  ] as const)(
+    "shows manual commands and supported download guides for %s",
+    async (agent, expected) => {
+      const refresh = vi.fn(async () => undefined);
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "remote-test",
+              active: true,
+              agents: [{ agent, availability: "notInstalled", error: null }],
+            },
+          ],
+        }),
+        refresh,
+        subscribe: () => () => undefined,
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      if (!page) throw new Error("Expected connections page");
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      if (!row) throw new Error("Expected Harness row");
       expect(
-        descendants(content).find(({ dataset }) => dataset.connectionAction === "check-install")
-          ?.disabled,
-      ).toBe(false),
-    );
-    cleanup?.();
-    scope.dispose();
-  });
+        descendants(row).some(({ className }) => className === "settings-connection-website"),
+      ).toBe(false);
+      row.dispatch("click", { target: null });
+      const header = elementWithClass(content, "settings-connection-inspector__header");
+      const website = elementWithClass(header, "settings-connection-website");
+      expect(website).toMatchObject({
+        tagName: "a",
+        href: expected,
+        target: "_blank",
+        rel: "noopener noreferrer",
+        title: "访问官网",
+      });
+      expect(website.getAttribute("aria-label")).toContain("访问官网:");
+      expect(visibleText(website)).toBe("");
+      const stopPropagation = vi.fn();
+      website.dispatch("click", { stopPropagation });
+      expect(stopPropagation).toHaveBeenCalledOnce();
+      expect(
+        descendants(content).some(
+          ({ className }) => className === "settings-connection-install-link",
+        ),
+      ).toBe(false);
+      const panel = elementWithClass(content, "settings-connection-inspector__body");
+      expect(
+        descendants(content).some(({ className }) => className === "settings-harness-installation"),
+      ).toBe(true);
+      const guides = descendants(panel).filter(({ tagName }) => tagName === "a");
+      const desktopApp = agent === "workbuddy" || agent === "zcode";
+      expect(guides).toHaveLength(desktopApp ? 1 : 0);
+      if (desktopApp) {
+        expect(guides).toMatchObject([
+          {
+            textContent: "下载",
+            href: expected,
+            target: "_blank",
+            rel: "noopener noreferrer",
+          },
+        ]);
+      }
+      if (agent === "workbuddy") {
+        expect(visibleText(panel)).toContain("请下载并安装 WorkBuddy 桌面应用。");
+        expect(visibleText(panel)).not.toContain("下载与安装指南");
+      }
+      if (agent === "zcode") expect(visibleText(panel)).toContain("请安装 ZCode Desktop");
+      expect(
+        visibleText(content).includes(
+          "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。",
+        ),
+      ).toBe(agent === "deepseek-harness");
+      expect(visibleText(panel)).toContain("请在远程 Host 上安装。");
+      expect(visibleText(panel)).not.toMatch(
+        /选择本机系统|此页面不会自动执行|Windows ARM64|PATH|WSL|安装完成不代表已就绪/,
+      );
+      expect(refresh).not.toHaveBeenCalled();
+      const blocks = descendants(panel).filter(
+        ({ className }) => className === "settings-harness-installation-command",
+      );
+      expect(blocks).toHaveLength(
+        desktopApp
+          ? 0
+          : ["deepseek-harness", "opencode", "grok", "codebuddy"].includes(agent)
+            ? 1
+            : 2,
+      );
+      for (const block of blocks) {
+        const code = descendants(block).find(({ tagName }) => tagName === "code");
+        const copy = descendants(block).find(
+          ({ dataset }) => dataset.connectionAction === "copy-install",
+        );
+        if (!code || !copy) throw new Error("Expected install command and copy button");
+        expect(code.textContent).not.toBe("");
+        copy.dispatch("click");
+        await vi.waitFor(() =>
+          expect(document.clipboardWriteText).toHaveBeenLastCalledWith(code.textContent),
+        );
+        document.clipboardWriteText.mockRejectedValueOnce(new Error("denied"));
+        copy.dispatch("click");
+        await vi.waitFor(() => expect(visibleNotesText(copy)).toContain("复制失败"));
+      }
+      const check = descendants(panel).find(
+        ({ dataset }) => dataset.connectionAction === "check-install",
+      );
+      if (!check) throw new Error("Expected installation check button");
+      check.dispatch("click");
+      expect(check.disabled).toBe(true);
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+      await vi.waitFor(() =>
+        expect(
+          descendants(content).find(({ dataset }) => dataset.connectionAction === "check-install")
+            ?.disabled,
+        ).toBe(false),
+      );
+      cleanup?.();
+      scope.dispose();
+    },
+  );
 
-  it.each(["workbuddy"] as const)(
+  it.each([
+    {
+      locale: "zh-CN",
+      agent: "qoder-cn",
+      nativeMessage: "Please run qoderclicn login to authenticate.",
+    },
+    {
+      locale: "en",
+      agent: "qoder-cn",
+      nativeMessage: "Please run qoderclicn login to authenticate.",
+    },
+    {
+      locale: "zh-CN",
+      agent: "antigravity",
+      nativeMessage:
+        "Fetching available models... Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+    },
+    {
+      locale: "en",
+      agent: "antigravity",
+      nativeMessage:
+        "Fetching available models... Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+    },
+  ] as const)(
+    "localizes authentication summaries and preserves native diagnostics ($agent, $locale)",
+    ({ locale, agent, nativeMessage }) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent,
+                  availability: "unavailable",
+                  error: {
+                    code: "authenticationRequired",
+                    message: nativeMessage,
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      assert(page);
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      assert(row);
+      expect(visibleText(row)).toContain(messages.connectionLoginRequired);
+      row.dispatch("click", { target: null });
+      expect(
+        visibleText(elementWithClass(content, "settings-connection-inspector__header")),
+      ).toContain(messages.connectionLoginRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionLoginDescription);
+      expect(visibleText(summary)).not.toContain(nativeMessage);
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        nativeMessage,
+      );
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["zh-CN", "en"] as const)(
+    "shows missing Hermes configuration separately from login (%s)",
+    (locale) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent: "hermes",
+                  availability: "unavailable",
+                  error: {
+                    code: "configurationRequired",
+                    message: "Run `hermes setup`.",
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      if (!page) throw new Error("Expected connections page");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "hermes");
+      if (!row) throw new Error("Expected Hermes row");
+      expect(visibleText(row)).toContain(messages.connectionConfigurationRequired);
+      row.dispatch("click", { target: null });
+      expect(
+        visibleText(elementWithClass(content, "settings-connection-inspector__header")),
+      ).toContain(messages.connectionConfigurationRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionConfigurationDescription);
+      expect(visibleText(summary)).not.toContain("Run `hermes setup`.");
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        "Run `hermes setup`.",
+      );
+      expect(visibleText(summary)).not.toContain(messages.connectionLoginRequired);
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["zh-CN", "en"] as const)(
+    "shows OMP model setup errors without a login status (%s)",
+    (locale) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent: "omp",
+                  availability: "error",
+                  error: {
+                    code: "configurationRequired",
+                    message: "Configure a Provider API key and select a model with /model.",
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      assert(page);
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "omp");
+      assert(row);
+      expect(visibleText(row)).toContain(messages.connectionConfigurationRequired);
+      expect(visibleText(row)).not.toContain(messages.connectionLoginRequired);
+      row.dispatch("click", { target: null });
+      const header = elementWithClass(content, "settings-connection-inspector__header");
+      expect(visibleText(header)).toContain(messages.connectionConfigurationRequired);
+      expect(visibleText(header)).not.toContain(messages.connectionLoginRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionConfigurationDescription);
+      expect(visibleText(summary)).not.toContain("Configure a Provider API key");
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        "Configure a Provider API key and select a model with /model.",
+      );
+      expect(visibleText(summary)).not.toContain(messages.connectionLoginRequired);
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["workbuddy", "zcode"] as const)(
     "edits %s launch settings in the local right-side inspector",
     async (agent) => {
       const messages = rendererSettingsMessages("zh-CN");
@@ -1071,6 +1385,9 @@ describe("Renderer Connections page", () => {
       const panel = elementWithClass(content, "settings-connection-inspector__body");
       const input = descendants(panel).find(({ tagName }) => tagName === "input");
       if (!input) throw new Error("Expected launch path input");
+      expect(visibleText(panel)).toContain(
+        agent === "zcode" ? messages.launchPathZcodeHelp : messages.launchPathWorkbuddyHelp,
+      );
       await vi.waitFor(() => expect(input.disabled).toBe(false));
       expect(diagnostics.getLaunchSettings).toHaveBeenCalledWith("local", agent);
       const save = descendants(panel).find(
@@ -1115,6 +1432,57 @@ describe("Renderer Connections page", () => {
       scope.dispose();
     },
   );
+  it("offers automatic installation only for Harnesses with an install command", () => {
+    const installation = vi.fn(async () => {
+      throw new Error("not expected");
+    });
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: (["kiro-cli", "workbuddy", "zcode"] as const).map((agent) => ({
+              agent,
+              availability: "notInstalled" as const,
+              error: null,
+            })),
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      installation,
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected connections page");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const offersInstall = (agent: string): boolean => {
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      if (!row) throw new Error("Expected Harness row");
+      return descendants(row).some(
+        ({ className }) => className === "settings-connection-install-link",
+      );
+    };
+    expect(offersInstall("kiro-cli")).toBe(true);
+    // Desktop apps are downloaded by the user; their plugins expose no installer.
+    expect(offersInstall("workbuddy")).toBe(false);
+    expect(offersInstall("zcode")).toBe(false);
+    expect(installation).not.toHaveBeenCalled();
+    cleanup?.();
+    scope.dispose();
+  });
   it("opens managed DSH Web only for the local Host and coalesces repeated clicks", async () => {
     const opened = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {
@@ -1171,9 +1539,9 @@ describe("Renderer Connections page", () => {
     );
     if (!dshRow) throw new Error("DeepSeek Harness row is not rendered");
     dshRow.dispatch("click", { target: null });
-    expect(visibleText(content)).toContain("0.1.7-rc.2");
+    expect(visibleText(content)).toContain("0.2.0-rc.2");
     expect(visibleText(content)).toContain(
-      "其他版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
+      "高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
     );
     const open = descendants(content).find(
       ({ dataset }) => dataset.connectionAction === "open-web-ui",
@@ -1227,6 +1595,7 @@ describe("Renderer Connections page", () => {
                   retryable: true,
                   stage: "startup",
                   durationMs: 120,
+                  diagnostic: "Native process stopped during startup",
                   stderrTail: "check ~/.pi/agent/settings.json",
                 },
               },
@@ -1277,7 +1646,18 @@ describe("Renderer Connections page", () => {
     expect(visibleText(content)).toContain("公司");
     expect(visibleText(content)).toContain("pi exited with code 1");
     expect(visibleText(content)).toContain("~/.pi/agent/settings.json");
-    expect(visibleText(content)).toContain("startup");
+    expect(
+      descendants(content).some(
+        ({ className }) => className === "settings-connection-error-metadata",
+      ),
+    ).toBe(false);
+    const report = visibleText(elementWithClass(content, "settings-connection-stderr"));
+    expect(report).toContain("error.code: processExited");
+    expect(report).toContain("retryable: true");
+    expect(report).toContain("stage: startup");
+    expect(report).toContain("durationMs: 120");
+    expect(report).toContain("diagnostic: Native process stopped during startup");
+    expect(report).toContain("stderr:\ncheck ~/.pi/agent/settings.json");
     const issueLink = descendants(content).find(
       ({ tagName, href }) =>
         tagName === "a" && href === "https://github.com/BytePioneer-AI/codex-host/issues/new",
@@ -1289,9 +1669,7 @@ describe("Renderer Connections page", () => {
     if (!copyButton) throw new Error("Copy error log button is not rendered");
     copyButton.dispatch("click");
     await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledOnce());
-    expect(document.clipboardWriteText).toHaveBeenCalledWith(
-      expect.stringContaining("host: local"),
-    );
+    expect(document.clipboardWriteText).toHaveBeenCalledWith(report);
     await vi.waitFor(() => expect(visibleNotesText(content)).toContain("已复制"));
     const refresh = descendants(content).find(
       ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "refresh",
@@ -1305,9 +1683,14 @@ describe("Renderer Connections page", () => {
     await vi.waitFor(() => expect(refresh.disabled).toBe(false));
     expect(visibleNotesText(refresh)).toContain("重新诊断连接");
 
-    const installLink = elementWithClass(content, "settings-connection-install-link");
-    expect(installLink.tagName).toBe("button");
-    expect(installLink.href).toBe("");
+    const website = elementWithClass(content, "settings-connection-website");
+    expect(website.tagName).toBe("a");
+    expect(website.title).toBe("访问官网");
+    expect(
+      descendants(content).some(
+        ({ className }) => className === "settings-connection-install-link",
+      ),
+    ).toBe(false);
 
     expect(visibleText(content)).toContain("查看错误");
     const remoteTab = descendants(content).find(
@@ -1322,12 +1705,20 @@ describe("Renderer Connections page", () => {
     );
     expect(selectedPanel).toBeDefined();
     expect(visibleText(content)).not.toContain("pi exited with code 1");
+    const header = elementWithClass(content, "settings-connection-inspector__header");
+    expect(visibleText(header)).toContain("已连接");
+    const body = elementWithClass(content, "settings-connection-inspector__body");
+    expect(
+      descendants(body).some(({ className }) => className === "settings-connection-state-summary"),
+    ).toBe(false);
+    expect(visibleText(body)).not.toContain("该组件在当前 Host 上可用。");
     const selectedRemoteTab = descendants(content).find(
       ({ dataset, attributes }) =>
         dataset.connectionHostTab === "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8" &&
         attributes.get("aria-selected") === "true",
     );
     expect(selectedRemoteTab).toBeDefined();
+    expect(selectedRemoteTab?.scrollIntoView).not.toHaveBeenCalled();
 
     const hostTabs = elementWithClass(content, "settings-connection-host-tabs");
     hostTabs.clientWidth = 240;

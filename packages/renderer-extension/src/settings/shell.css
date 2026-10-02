@@ -1086,11 +1086,38 @@
   border-radius: 10px;
 }
 
+.settings-harness-installation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .settings-harness-installation-command pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
   font-size: 12px;
+}
+
+.settings-connection-website {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  color: var(--settings-muted);
+  border-radius: 4px;
+}
+
+.settings-connection-website:hover {
+  color: var(--settings-focus);
+  background: var(--settings-hover);
+}
+
+.settings-connection-website:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 1px;
 }
 
 .settings-connection-install-link {
@@ -1104,13 +1131,11 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
-  opacity: 0;
-  transition: opacity 120ms ease;
 }
 
-.settings-connection-row:hover .settings-connection-install-link,
-.settings-connection-install-link:focus-visible {
-  opacity: 1;
+.settings-connection-install-link:disabled {
+  opacity: 0.45;
+  cursor: wait;
 }
 
 .settings-connection-install-link:hover {
@@ -1157,6 +1182,10 @@
   min-width: 0;
   gap: 12px;
   padding: 12px;
+}
+
+.settings-connection-inspector__body:empty {
+  display: none;
 }
 
 .settings-harness-version {
@@ -1281,33 +1310,6 @@
   background: var(--settings-danger-bg);
   border: 1px solid var(--settings-danger-border);
   border-radius: 10px;
-}
-
-.settings-connection-error-metadata {
-  display: grid;
-  gap: 7px;
-  padding: 12px;
-  background: var(--settings-inset);
-  border: 1px solid var(--settings-border);
-  border-radius: 9px;
-}
-
-.settings-connection-detail-line {
-  display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  gap: 10px;
-  min-width: 0;
-  color: var(--settings-muted);
-  font-size: 10px;
-  line-height: 16px;
-}
-
-.settings-connection-detail-line code {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--settings-text);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  white-space: pre-wrap;
 }
 
 .settings-connection-error-log-header {

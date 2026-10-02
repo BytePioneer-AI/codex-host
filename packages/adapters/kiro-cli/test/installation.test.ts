@@ -27,6 +27,7 @@ describe("Kiro installation", () => {
         updateAvailable: false,
         canUpdate: false,
         message: expect.stringContaining("native updater"),
+        messageCode: "kiro-native-updater",
       },
     );
     expect(mocks.resolve).toHaveBeenCalledWith({ command: "/chosen/kiro-cli", environment });

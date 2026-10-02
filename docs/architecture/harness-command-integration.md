@@ -90,7 +90,8 @@ Live commands are filtered by a blocklist, never an allowlist. `COMMON_EXCLUDED_
 | OMP | RPC `available_commands_update` event | `source: "skill"` | every `source: "builtin"` entry (terminal UI commands) |
 | CodeBuddy | ACP `available_commands_update` | `_meta.type: "skill"` | its own reviewed list |
 | Cursor CLI | ACP push | none (common list applies to every entry) | `update-cli-config` |
-| Qoder, Hermes | SDK or ACP push | none (common list applies to every entry) | — |
+| Qoder | SDK or ACP push | none (common list applies to every entry) | — |
+| Hermes | Gateway `slash.exec` / `session.compress` verified command set | none (common list applies to every entry) | — |
 
 WorkBuddy, DeepSeek Harness and OpenCode deliberately keep static catalogs. Antigravity CLI has no native listing interface.
 
@@ -155,7 +156,7 @@ submitted as Host text Turns.
 
 DeepSeek declares exactly `/compact`, `/dsh-goal`, and `/plan` in its static Adapter catalog, for both new and existing Threads. Neither catalog display nor command admission queries native `commands/list`. Execution retains ID, argument, busy-state, cancellation, and native-result validation; an unsupported native deployment reports its execution error rather than being probed beforehand. Native `feedback`, `permission`, `export`, the Client-side `/model`, and unknown commands are not exposed through this surface.
 
-DeepSeek has been tested with `0.1.2-rc.1`, `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.5-rc.3` and `0.1.7-rc.1`. Other SemVer versions may attempt native protocol validation. The Adapter sends `images: []` with `commands/execute` for the `0.1.2` family's V0 profile, or `submittedAttachments: []` for the V3/V4 profiles; this version-specific translation does not add attachment input or native descriptor discovery to the public command surface.
+DeepSeek has been tested with `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1` and `0.2.0-rc.2`; versions below `0.1.7-rc.1` are rejected as `unsupported` before the managed Web starts, and other SemVer versions from `0.1.7-rc.1` on may attempt native protocol validation. The Adapter sends `submittedAttachments: []` with `commands/execute`; this native argument does not add attachment input or native descriptor discovery to the public command surface.
 
 OpenCode exposes only the fixed `/compact` command, implemented through native Session summarization. Dynamic native command discovery and execution are not part of its Host integration.
 

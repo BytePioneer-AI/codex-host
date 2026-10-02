@@ -163,6 +163,56 @@ describe("external direction changes use normal Desktop start presentation", () 
   });
 
   it.each([
+    { code: -32601, message: "Method not found" },
+    {
+      code: -32600,
+      message:
+        "Invalid request: unknown variant `codexhost/thread/ownership/list`, expected one of `thread/read`",
+    },
+  ])("uses native steering after a stock app-server rejects ownership: %j", async (error) => {
+    const f = fixture();
+    const original = f.rpc.getMockImplementation();
+    f.rpc.mockImplementation(async (method, params, options) => {
+      if (method === "codexhost/thread/ownership/list") throw error;
+      if (method === "thread/read") {
+        return {
+          thread: { id: "thread", modelProvider: "openai", cliVersion: "0.9.0" },
+        };
+      }
+      return original?.(method, params, options);
+    });
+    await expect(f.manager.steerTurn(...f.args)).resolves.toEqual({ turnId: "official" });
+    expect(f.rpc.mock.calls.map(([method]) => method)).toEqual([
+      "codexhost/thread/ownership/list",
+      "thread/read",
+    ]);
+    expect(f.originalSteer).toHaveBeenCalledWith(...f.args);
+    expect(f.manager.startTurn).not.toHaveBeenCalled();
+    f.dispose();
+  });
+
+  it.each([
+    { id: "other", modelProvider: "openai", cliVersion: "0.9.0" },
+    { id: "thread", modelProvider: "codexhost", cliVersion: "codexhost" },
+    { id: "thread", modelProvider: "openai" },
+  ])("does not steer when stock ownership cannot prove a native Thread: %j", async (thread) => {
+    const f = fixture();
+    f.rpc.mockImplementation(async (method) => {
+      if (method === "codexhost/thread/ownership/list")
+        throw {
+          code: -32600,
+          message: "Invalid request: unknown variant `codexhost/thread/ownership/list`",
+        };
+      if (method === "thread/read") return { thread };
+      throw new Error("unexpected request");
+    });
+    await expect(f.manager.steerTurn(...f.args)).rejects.toThrow(/ownership/);
+    expect(f.originalSteer).not.toHaveBeenCalled();
+    expect(f.manager.startTurn).not.toHaveBeenCalled();
+    f.dispose();
+  });
+
+  it.each([
     { input: [] },
     { input: [{ type: "text", text: " " }] },
     { input: [{ type: "image", url: "image" }] },
@@ -274,6 +324,15 @@ describe("external direction changes use normal Desktop start presentation", () 
     });
     await expect(f.manager.steerTurn(...f.args)).rejects.toThrow("cancel failed");
     expect(f.manager.startTurn).toHaveBeenCalledOnce();
+    f.dispose();
+  });
+
+  it("does not classify an invalid ownership request as a stock endpoint", async () => {
+    const f = fixture();
+    f.rpc.mockRejectedValueOnce({ code: -32600, message: "Invalid request: invalid params" });
+    await expect(f.manager.steerTurn(...f.args)).rejects.toMatchObject({ code: -32600 });
+    expect(f.rpc.mock.calls.map(([method]) => method)).toEqual(["codexhost/thread/ownership/list"]);
+    expect(f.originalSteer).not.toHaveBeenCalled();
     f.dispose();
   });
 });

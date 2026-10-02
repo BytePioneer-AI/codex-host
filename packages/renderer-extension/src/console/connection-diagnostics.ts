@@ -1,4 +1,4 @@
-import type { CodexhostError } from "@codexhost/shared-contracts";
+import { harnessIdSchema, type CodexhostError } from "@codexhost/shared-contracts";
 
 import {
   KNOWN_RENDERER_AGENTS,
@@ -85,7 +85,18 @@ export function createConsoleConnectionDiagnostics(
   };
 
   let started = false;
+  const installation = client.installation?.bind(client);
   return {
+    ...(installation
+      ? ({
+          installation: async (hostId, agent, action) => {
+            if (hostId !== "local") {
+              throw new Error("Web console installation only supports the local Host");
+            }
+            return installation({ harnessId: harnessIdSchema.parse(agent), action });
+          },
+        } satisfies Pick<RendererConnectionDiagnostics, "installation">)
+      : {}),
     snapshot(): RendererConnectionSnapshot {
       if (!started) {
         started = true;

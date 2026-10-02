@@ -29,6 +29,20 @@ const node: Text = ["Requires Node.js (including npm).", "需先安装 Node.js�
 // Sources: each entry's official URL, checked when updating the guide. These are
 // user-run instructions, not a Host installer or a claim of Adapter compatibility.
 const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
+  zcode: {
+    // codexhost runs the Agent CLI bundled with the installed ZCode Desktop.
+    url: "https://github.com/BytePioneer-AI/codex-host/blob/main/docs/harnesses/zcode/zcode-harness-integration.md#%E5%AE%89%E8%A3%85",
+    commands: [],
+    before: [
+      "Install ZCode Desktop and sign in with a Start Plan account. If ZCode is not in the default location (/Applications/ZCode.app on macOS, %LOCALAPPDATA%\\Programs\\ZCode on Windows, /opt/ZCode on Linux), set its path in the connection settings.",
+      "请安装 ZCode Desktop 并登录 Start Plan 账号。ZCode 不在默认安装位置（macOS 为 /Applications/ZCode.app，Windows 为 %LOCALAPPDATA%\\Programs\\ZCode，Linux 为 /opt/ZCode）时，可在连接设置中填写其路径。",
+    ],
+    downloads: [{ label: "ZCode", url: "https://zcode.z.ai/" }],
+    after: [
+      "Check again after signing in. The ZCode Desktop window does not need to stay open.",
+      "登录后重新检测；使用时不需要保持 ZCode 窗口打开。",
+    ],
+  },
   pi: {
     url: "https://pi.dev/",
     commands: shells(
@@ -47,11 +61,10 @@ const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
   },
   "deepseek-harness": {
     url: "https://github.com/deepseek-ai/deepseek-harness#run",
-    // Must match the Adapter's exact supported range, not npm's latest tag.
-    commands: npm("@deepseek-ai/dsh@0.1.5-rc.1"),
+    commands: npm("@deepseek-ai/dsh@latest"),
     before: [
-      "Requires Node.js. Installs the compatible version 0.1.5-rc.1.",
-      "需先安装 Node.js。下方命令安装兼容版本 0.1.5-rc.1。",
+      "Requires Node.js. Installs npm's latest version; connection still requires native protocol validation.",
+      "需先安装 Node.js。安装 npm 最新版本；连接仍需通过原生协议校验。",
     ],
     after: [
       "Check again, then open Web UI to configure your provider. Stop any manually started dsh web first.",
@@ -110,17 +123,13 @@ const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
     url: "https://www.workbuddy.ai/docs/workbuddy/Quickstart",
     commands: [],
     before: [
-      "Install the WorkBuddy desktop app. codexhost uses its bundled CLI, not the standalone CodeBuddy CLI.",
-      "请安装 WorkBuddy 桌面应用。codexhost 使用应用内置 CLI，不能用 CodeBuddy CLI 代替。",
+      "Download and install the WorkBuddy desktop app.",
+      "请下载并安装 WorkBuddy 桌面应用。",
     ],
     downloads: [
       {
-        label: "macOS",
-        url: "https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Mac-Guide",
-      },
-      {
-        label: "Windows",
-        url: "https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Win-Guide",
+        label: "WorkBuddy",
+        url: "https://www.workbuddy.ai/",
       },
     ],
     after: [
@@ -182,6 +191,11 @@ const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
     after: start("kimi"),
   },
 };
+
+/** Desktop-app Harnesses have no install command: the user downloads the app instead. */
+export function harnessHasInstallCommands(agent: ExternalRendererAgent): boolean {
+  return guides[agent].commands.length > 0;
+}
 
 export function harnessInstallationGuide(
   agent: ExternalRendererAgent,

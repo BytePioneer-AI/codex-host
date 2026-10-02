@@ -64,7 +64,10 @@ export function createOpenCodeInstallation(environment: NodeJS.ProcessEnv, comma
         updateAvailable: newerInstallationVersion(currentVersion, latestVersion),
         canUpdate,
         ...(!canUpdate
-          ? { message: "Use the original package manager to update this OpenCode installation." }
+          ? {
+              messageCode: "original-installer",
+              message: "Use the original package manager to update this OpenCode installation.",
+            }
           : {}),
       };
     },

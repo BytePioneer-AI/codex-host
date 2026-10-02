@@ -2,6 +2,7 @@ import type { JsonObject } from "@codexhost/protocol-core";
 import { describe, expect, it } from "vitest";
 
 import {
+  closeFixture,
   createFixture,
   requestId,
   startPiThread,
@@ -26,6 +27,8 @@ function serveOfficialSections(fixture: ReturnType<typeof createFixture>, pinned
       let result: JsonObject | undefined;
       if (request.method === "threadSection/list") {
         result = { data: [{ id: PINNED, name: "Pinned", appearance: null }], nextCursor: null };
+      } else if (request.method === "project/read") {
+        result = { project: { id: String(params.projectId) } };
       } else if (request.method === "thread/list" && params.sectionId === PINNED) {
         result = { data: pinned.map((id) => ({ id })), nextCursor: null, backwardsCursor: null };
       } else if (request.method === "thread/read") {
@@ -156,6 +159,70 @@ describe("External Thread sections through AppServerHost", () => {
     expect(unarchived.result).toMatchObject({ thread: { id: threadId, ...pinned } });
     await stopFixture(fixture);
   });
+
+  it.each([false, true])(
+    "keeps section placement when metadata changes (restarted: %s)",
+    async (restarted) => {
+      let fixture = createFixture();
+      const threadId = await startPiThread(fixture);
+      serveOfficialSections(fixture, []);
+      await call(fixture, 131, "thread/section/move", { threadId, sectionId: PINNED });
+      const read = await call(fixture, 132, "thread/read", { threadId });
+      const { section, sectionEnteredAt } = (read.result as JsonObject).thread as JsonObject;
+
+      if (restarted) {
+        const mappingStoreDirectory = fixture.mappingStoreDirectory;
+        await closeFixture(fixture);
+        fixture = createFixture({ mappingStoreDirectory });
+        serveOfficialSections(fixture, []);
+      }
+
+      try {
+        const updated = await call(fixture, 133, "thread/metadata/update", {
+          threadId,
+          projectId: "project-a",
+          daybreakEnabled: true,
+          gitInfo: { branch: "main" },
+        });
+        const expectedThread = {
+          id: threadId,
+          projectId: "project-a",
+          daybreakEnabled: true,
+          gitInfo: { branch: "main" },
+          section,
+          sectionEnteredAt,
+        };
+        expect(updated.result).toMatchObject({ thread: expectedThread });
+
+        const listed = await call(fixture, 134, "thread/list", {
+          ...pinnedList,
+          projectId: "project-a",
+        });
+        expect((listed.result as JsonObject).data).toMatchObject([expectedThread]);
+        const excluded = await call(fixture, 135, "thread/list", {
+          ...pinnedList,
+          projectId: "project-b",
+        });
+        expect((excluded.result as JsonObject).data).toEqual([]);
+
+        await call(fixture, 136, "thread/section/move", { threadId, sectionId: null });
+        const unpinned = await call(fixture, 137, "thread/metadata/update", {
+          threadId,
+          daybreakEnabled: false,
+        });
+        expect(unpinned.result).toMatchObject({
+          thread: {
+            ...expectedThread,
+            daybreakEnabled: false,
+            section: null,
+            sectionEnteredAt: null,
+          },
+        });
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("returns the official error for a missing section", async () => {
     const fixture = createFixture();

@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AvailableCommand, PromptResponse } from "@agentclientprotocol/sdk";
+import type {
+  HermesNativeCommand as AvailableCommand,
+  HermesPromptResponse as PromptResponse,
+} from "../src/hermes-transport.js";
 import type { HarnessOutput, HostItemSnapshot } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
-import type { HermesAcpTransport, HermesTransportEvent } from "../src/acp-transport.js";
-import { hermesCommandCatalog } from "../src/hermes-commands.js";
+import type { HermesSessionTransport, HermesTransportEvent } from "../src/hermes-transport.js";
+import { hermesCommandCatalog, hermesGatewayCommandName } from "../src/hermes-commands.js";
 import { hermesFileChanges, hermesToolOutput } from "../src/hermes-file-changes.js";
 import { HermesSession } from "../src/hermes-session.js";
 
@@ -13,12 +16,10 @@ const nativeCommands: AvailableCommand[] = [
   { name: "context", description: "Inspect context" },
 ];
 type Emit = (event: HermesTransportEvent) => void;
-function makeSession(
-  runTurn: (text: string, emit: Emit) => Promise<PromptResponse>,
-  replay: HermesTransportEvent[] = [],
-) {
+function makeSession(runTurn: (text: string, emit: Emit) => Promise<PromptResponse>) {
   const transport = {
     availableCommands: nativeCommands,
+    nativeCommandName: hermesGatewayCommandName,
     onFault: () => undefined,
     runTurn: vi.fn(runTurn),
     cancel: vi.fn(async () => undefined),
@@ -30,12 +31,10 @@ function makeSession(
       nativeSessionId: "native",
       formatVersion: 1,
     }),
-    transport: transport as unknown as HermesAcpTransport,
+    transport: transport as unknown as HermesSessionTransport,
     open: {
-      initialize: { protocolVersion: 1 },
       sessionId: "native",
       session: { sessionId: "native", models: null, modes: null },
-      replay,
     },
     onSettle: () => undefined,
   });
@@ -61,7 +60,6 @@ function emitEdit(emit: Emit, status: "completed" | "failed") {
     type: "tool.call",
     toolCallId: "edit",
     update: {
-      sessionUpdate: "tool_call",
       toolCallId: "edit",
       title: "Edit file",
       status: "in_progress",
@@ -72,7 +70,6 @@ function emitEdit(emit: Emit, status: "completed" | "failed") {
     type: "tool.update",
     toolCallId: "edit",
     update: {
-      sessionUpdate: "tool_call_update",
       toolCallId: "edit",
       status,
       content: [{ type: "content", content: { type: "text", text: "native tool result" } }],
@@ -103,7 +100,7 @@ describe("Hermes native diff projection", () => {
       }),
     ).toEqual([]);
   });
-  it("reads the ACP nested content envelope", () => {
+  it("reads normalized Gateway tool content", () => {
     expect(
       hermesToolOutput({
         toolCallId: "t",
@@ -144,7 +141,6 @@ describe("Hermes native diff projection", () => {
         type: "tool.call",
         toolCallId: "edit",
         update: {
-          sessionUpdate: "tool_call",
           toolCallId: "edit",
           title: "Edit file",
           status: "in_progress",
@@ -155,7 +151,6 @@ describe("Hermes native diff projection", () => {
         type: "tool.update",
         toolCallId: "edit",
         update: {
-          sessionUpdate: "tool_call_update",
           toolCallId: "edit",
           status: "completed",
           content: [{ ...diff, newText: "x".repeat(1024 * 1024 + 1) }],
@@ -172,17 +167,6 @@ describe("Hermes native diff projection", () => {
     expect(completedItems(await outputs).filter(({ item }) => item.type === "fileChange")).toEqual(
       [],
     );
-    await session.close();
-  });
-  it("projects the same confirmed changes when replaying history", async () => {
-    const replay: HermesTransportEvent[] = [{ type: "user.text", text: "edit file" }];
-    emitEdit((event) => replay.push(event), "completed");
-    const { session } = makeSession(async () => ({ stopReason: "end_turn" }), replay);
-    const snapshot = await session.readSnapshot();
-    expect(snapshot.ok && snapshot.value.turns[0]?.items.map(({ item }) => item.type)).toEqual([
-      "toolExecution",
-      "fileChange",
-    ]);
     await session.close();
   });
 });
@@ -217,13 +201,13 @@ describe("Hermes native commands", () => {
       ]).commands.map(({ id }) => id),
     ).toEqual(["hermes.compress", "hermes.context"]);
   });
-  it("runs compression via the native prompt without claiming it was persisted in history", async () => {
+  it("projects Gateway compression without claiming it was persisted in chat history", async () => {
     const { session, transport } = makeSession(async (_text, emit) => {
       emit({
         type: "agent.text",
         text: "Context compressed: 8 -> 3 messages\n~2,000 -> ~500 tokens",
       });
-      return { stopReason: "end_turn" };
+      return { stopReason: "end_turn", compactionOutcome: { status: "succeeded" } };
     });
     const outputs = collect(session.outputs);
     expect(
@@ -282,10 +266,16 @@ describe("Hermes native commands", () => {
     ]);
     await session.close();
   });
-  it("preserves native textual failure results instead of inventing compaction success", async () => {
+  it("uses the structured failure outcome rather than parsing display text", async () => {
     const { session } = makeSession(async (_text, emit) => {
       emit({ type: "agent.text", text: "Compression failed: native error" });
-      return { stopReason: "end_turn" };
+      return {
+        stopReason: "end_turn",
+        compactionOutcome: {
+          status: "failed",
+          error: { code: "nativeFailure", message: "structured failure", retryable: false },
+        },
+      };
     });
     const outputs = collect(session.outputs);
     await session.commands.execute({
@@ -300,7 +290,7 @@ describe("Hermes native commands", () => {
     expect(events.at(-1)).toMatchObject({
       kind: "event",
       event: {
-        outcome: { status: "failed", error: { message: "Compression failed: native error" } },
+        outcome: { status: "failed", error: { message: "structured failure" } },
       },
     });
     await session.close();
@@ -311,7 +301,7 @@ describe("Hermes native commands", () => {
   ])("does not report successful compaction for %s", async (text) => {
     const { session } = makeSession(async (_text, emit) => {
       emit({ type: "agent.text", text });
-      return { stopReason: "end_turn" };
+      return { stopReason: "end_turn", compactionOutcome: { status: "cancelled", reason: text } };
     });
     const outputs = collect(session.outputs);
     await session.commands.execute({
@@ -325,6 +315,26 @@ describe("Hermes native commands", () => {
     expect(events.at(-1)).toMatchObject({
       kind: "event",
       event: { outcome: { status: "succeeded" } },
+    });
+    await session.close();
+  });
+
+  it("does not infer compression success from text when the structured outcome is missing", async () => {
+    const { session } = makeSession(async (_text, emit) => {
+      emit({
+        type: "agent.text",
+        text: "Context compressed: 8 -> 3 messages\n~2,000 -> ~500 tokens",
+      });
+      return { stopReason: "end_turn" };
+    });
+    const outputs = collect(session.outputs);
+    await session.commands.execute({
+      turnId: hostTurnIdSchema.parse("missing-outcome"),
+      commandId: "hermes.compress",
+    });
+    expect((await outputs).at(-1)).toMatchObject({
+      kind: "event",
+      event: { outcome: { status: "failed", error: { code: "protocolError" } } },
     });
     await session.close();
   });
@@ -381,7 +391,7 @@ describe("Hermes native commands", () => {
       else {
         expect(await session.execute({ type: "turn.cancel", turnId })).toMatchObject({ ok: true });
         expect(transport.cancel).toHaveBeenCalledOnce();
-        // Acceptance is not completion: wait for the native prompt's terminal result.
+        // Acceptance is not completion: wait for the Gateway operation's terminal result.
         finish({ stopReason: "cancelled" });
       }
       const events = await outputs;
@@ -404,25 +414,15 @@ describe("Hermes native commands", () => {
   );
 });
 
-describe("Hermes ACP native command grammar", () => {
-  it.each(["/context extra", "//context", " /CoNtExT "])(
-    "keeps ACP-dispatched %j outside chat history",
-    async (text) => {
-      const { session } = makeSession(async () => ({ stopReason: "end_turn" }));
-      const completed = collect(session.outputs);
-      await session.execute({
-        type: "turn.start",
-        turnId: hostTurnIdSchema.parse("acp-command"),
-        input: [{ type: "text", text }],
-      });
-      const terminal = (await completed).find(
-        (output) => output.kind === "event" && output.event.type === "turn.completed",
-      );
-      if (terminal?.kind !== "event" || terminal.event.type !== "turn.completed")
-        throw new Error("Missing completion");
-      expect(terminal.event.nativeTurnRef).toBeUndefined();
-      expect(await session.readSnapshot()).toMatchObject({ ok: true, value: { turns: [] } });
-      await session.close();
+describe("Hermes Gateway command grammar", () => {
+  it.each(["/context extra", "//context"])(
+    "does not classify %j using the old ACP grammar",
+    (text) => {
+      expect(hermesGatewayCommandName(text)).toBeNull();
     },
   );
+  it("classifies only Gateway-dispatched commands", () => {
+    expect(hermesGatewayCommandName(" /CoNtExT ")).toBe("context");
+    expect(hermesGatewayCommandName("/compress focus")).toBe("compress");
+  });
 });

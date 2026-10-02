@@ -36,8 +36,15 @@ export interface ModernQuestionItem {
   readonly intent?: ModernQuestionIntent;
 }
 
+/** DSH 0.2.0-rc.2 keys a tool call's question; `timed` marks a wait DSH itself may release. */
+export interface ModernQuestionWait {
+  readonly callId: string;
+  readonly timed?: boolean;
+}
+
 export interface ModernQuestionRequest {
   readonly questions: readonly ModernQuestionItem[];
+  readonly wait?: ModernQuestionWait;
 }
 
 export interface ModernQuestionAnswerItem {
@@ -983,14 +990,30 @@ function parseApprovalRequest(value: Readonly<Record<string, unknown>>): ModernA
 }
 
 function parseQuestionRequest(value: Readonly<Record<string, unknown>>): ModernQuestionRequest {
-  if (!hasExactKeys(value, ["questions"]) || !Array.isArray(value.questions)) {
+  if (!hasOnlyKeys(value, ["questions"], ["wait"]) || !Array.isArray(value.questions)) {
     throw invalidFrame();
   }
   assertCollection(value.questions);
   if (value.questions.length === 0) throw invalidFrame();
   const questions = value.questions.map(parseQuestionItem);
   if (new Set(questions.map(({ id }) => id)).size !== questions.length) throw invalidFrame();
-  return { questions };
+  const wait = Object.hasOwn(value, "wait") ? parseQuestionWait(value.wait) : undefined;
+  return { questions, ...(wait ? { wait } : {}) };
+}
+
+function parseQuestionWait(value: unknown): ModernQuestionWait {
+  if (
+    !isPlainRecord(value) ||
+    !hasOnlyKeys(value, ["callId"], ["timed"]) ||
+    !validIdentifier(value.callId) ||
+    (Object.hasOwn(value, "timed") && typeof value.timed !== "boolean")
+  ) {
+    throw invalidFrame();
+  }
+  return {
+    callId: value.callId,
+    ...(typeof value.timed === "boolean" ? { timed: value.timed } : {}),
+  };
 }
 
 function parseQuestionItem(value: unknown): ModernQuestionItem {

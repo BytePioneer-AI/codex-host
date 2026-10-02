@@ -24,6 +24,7 @@ function only<T>(values: readonly T[], message: string): T {
 
 export class DelegationControlRegistry implements DelegationControlApi, DelegationWatchApi {
   readonly #registrations = new Set<DelegationControlRegistration>();
+  #harnessCatalog: DelegationControlRegistration | undefined;
   // Watches sit above the sessions so either end may belong to any registered session.
   readonly #watchService: DelegationWatchService;
 
@@ -35,12 +36,20 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     return this.#registrations.size;
   }
 
-  register(registration: DelegationControlRegistration): () => void {
+  register(
+    registration: DelegationControlRegistration,
+    options: { harnessCatalog?: boolean } = {},
+  ): () => void {
     this.#registrations.add(registration);
-    return () => this.#registrations.delete(registration);
+    if (options.harnessCatalog) this.#harnessCatalog = registration;
+    return () => {
+      this.#registrations.delete(registration);
+      if (this.#harnessCatalog === registration) this.#harnessCatalog = undefined;
+    };
   }
 
   async inspect(input: HarnessInspectInput) {
+    if (this.#harnessCatalog) return this.#harnessCatalog.inspect(input);
     const registrations = [...this.#registrations];
     return only(
       registrations,
@@ -49,6 +58,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async listHarnesses() {
+    if (this.#harnessCatalog) return this.#harnessCatalog.listHarnesses();
     return only(
       [...this.#registrations],
       "Harness discovery requires exactly one active Host Runtime session",
@@ -92,6 +102,9 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     if (input.parentThreadId) {
       return (await this.#registrationForThread(input.parentThreadId)).list(input);
     }
+    // A shared SSH owner sees the same native backend plus all external
+    // Threads. Do not duplicate its rows once per attached GUI.
+    if (this.#harnessCatalog) return this.#harnessCatalog.list(input);
     const registrations = [...this.#registrations];
     if (registrations.length === 0) {
       throw new DelegationControlError(
@@ -132,6 +145,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         { matchingRuntimeCount: matches.length },
       );
     }
+    if (this.#harnessCatalog) return this.#harnessCatalog;
     if (registrations.length === 0) {
       throw new DelegationControlError(
         "PARENT_THREAD_AMBIGUOUS",

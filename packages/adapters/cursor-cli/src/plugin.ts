@@ -1,3 +1,4 @@
+import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { CURSOR_COMMAND_CATALOG } from "./slash-commands.js";
 import { createCursorInstallation } from "./installation.js";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
@@ -17,5 +18,9 @@ export function createHarnessAdapter(context: HarnessPluginContext): HarnessAdap
   const environment = { ...context.environment };
   return Object.assign(new CursorAdapter({ environment }), {
     installation: createCursorInstallation(environment),
+    install: createHarnessInstaller(environment, {
+      posix: "https://cursor.com/install",
+      windows: "https://cursor.com/install?win32=true",
+    }),
   });
 }

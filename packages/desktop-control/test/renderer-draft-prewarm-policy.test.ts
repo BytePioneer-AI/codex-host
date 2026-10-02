@@ -198,7 +198,7 @@ describe("Renderer draft prewarm policy", () => {
   it("retries while the current Renderer request manager is mounting", async () => {
     const evaluate = vi
       .fn<() => Promise<unknown>>()
-      .mockRejectedValueOnce(new Error("Renderer request manager is ambiguous"))
+      .mockRejectedValueOnce(new Error("Renderer Host request manager is unavailable"))
       .mockResolvedValue({ state: "ready", reason: "owned-request-bridge" });
     const inspector = {
       async evaluate<T>(): Promise<T> {

@@ -1,7 +1,6 @@
 import path from "node:path";
 
 import {
-  commandInvocation,
   resolveHarnessExecutable,
   targetPath,
   VERSION_MANAGER_ROOTS,
@@ -41,15 +40,4 @@ export function resolveHermesExecutable(
   return targetPath(platform).isAbsolute(resolution.executable)
     ? resolution.executable
     : path.resolve(resolution.executable);
-}
-
-export function hermesInvocation(
-  command: string,
-  platform = process.platform,
-): {
-  command: string;
-  arguments: string[];
-  windowsVerbatimArguments: boolean;
-} {
-  return commandInvocation(command, ["acp"], process.env, platform);
 }

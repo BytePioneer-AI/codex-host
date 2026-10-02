@@ -1,5 +1,6 @@
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
+import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { GrokAdapter } from "./grok-adapter.js";
 import { createGrokInstallation } from "./installation.js";
 
@@ -12,6 +13,12 @@ export function createHarnessAdapter(context: HarnessPluginContext): GrokAdapter
       ...(environment[GROK_COMMAND_ENV] ? { command: environment[GROK_COMMAND_ENV] } : {}),
       environment,
     }),
-    { installation: createGrokInstallation(environment, environment[GROK_COMMAND_ENV]) },
+    {
+      installation: createGrokInstallation(environment, environment[GROK_COMMAND_ENV]),
+      install: createHarnessInstaller(environment, {
+        npm: "@xai-official/grok",
+        allowScripts: "@xai-official/grok",
+      }),
+    },
   );
 }

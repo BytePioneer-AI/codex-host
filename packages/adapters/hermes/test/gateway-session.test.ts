@@ -8,7 +8,7 @@ import { hostTurnIdSchema, nativeSessionRefSchema } from "@codexhost/shared-cont
 import { HermesGatewayTransport, type GatewayRecord } from "../src/gateway-transport.js";
 import { HermesGatewaySessionTransport } from "../src/gateway-session-transport.js";
 import { HermesSession } from "../src/hermes-session.js";
-import type { HermesTransportEvent } from "../src/acp-transport.js";
+import type { HermesTransportEvent } from "../src/hermes-transport.js";
 
 // Stand-in for Hermes's provider-aware parse_model_input (a configured named
 // custom provider wins over the plain `provider:model` split).
@@ -60,7 +60,6 @@ function makeSession(f: ReturnType<typeof fixture>) {
     }),
     transport: f.bridge,
     open: {
-      initialize: { protocolVersion: 1 },
       sessionId: "native",
       session: {
         sessionId: "native",
@@ -68,7 +67,6 @@ function makeSession(f: ReturnType<typeof fixture>) {
         modes: null,
         thinkingOptions: [{ id: "low" as never, label: "low" }],
       },
-      replay: [],
     },
     onSettle: () => {},
   });
@@ -182,14 +180,9 @@ describe("Hermes gateway native interactions", () => {
       "go",
       () => {},
       async (request) => {
-        expect(request.options.map((o) => o.optionId)).toEqual([
-          "once",
-          "session",
-          "always",
-          "deny",
-        ]);
-        expect(request.effects?.session).toBe("allowForSession");
-        return { outcome: { outcome: "selected", optionId: "session" } };
+        expect(request.options.map((o) => o.id)).toEqual(["once", "session", "always", "deny"]);
+        expect(request.options.find((o) => o.id === "session")?.effect).toBe("allowForSession");
+        return "session";
       },
     );
     await pause();
@@ -312,13 +305,101 @@ describe("Hermes gateway native turn projection", () => {
       await session.close();
     },
   );
+  it("marks the live final answer before terminal reasoning completion without requiring history reload", async () => {
+    const f = fixture();
+    const s = makeSession(f);
+    const checkpoint = {
+      harnessId: "hermes" as never,
+      nativeSessionId: "native",
+      checkpointId: "1",
+      formatVersion: 1 as const,
+    };
+    vi.mocked(f.bridge.readNativeSnapshot)
+      .mockResolvedValueOnce({ turns: [] })
+      .mockResolvedValue({
+        turns: [
+          {
+            nativeTurnRef: {
+              harnessId: "hermes" as never,
+              nativeSessionId: "native",
+              nativeTurnKey: "row-1",
+              formatVersion: 1,
+            },
+            checkpoint,
+            input: [{ type: "text", text: "go" }],
+            items: [],
+            outcome: { status: "unknown", reason: "native" },
+          },
+        ],
+      });
+    const completed = outputsUntilComplete(s);
+    await s.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("final-phase"),
+      input: [{ type: "text", text: "go" }],
+    });
+    await pause();
+    f.emit("message.delta", { text: "The answer." });
+    f.emit("message.complete", {
+      text: "The answer.",
+      reasoning: "Late native reasoning",
+      status: "complete",
+    });
+    const outputs = await completed;
+    const items = outputs.flatMap((o) =>
+      o.kind === "event" && o.event.type === "item.completed" ? [o.event.snapshot.item] : [],
+    );
+    expect(items).toMatchObject([
+      { type: "agentMessage", text: "The answer.", phase: "final_answer" },
+      { type: "reasoning", text: "Late native reasoning" },
+    ]);
+    expect(outputs.at(-1)).toMatchObject({
+      kind: "event",
+      event: { type: "turn.completed", outcome: { checkpoint } },
+    });
+    await s.close();
+  });
+
+  it.each(["interrupted", "error"])(
+    "does not mark partial output as a final answer after %s",
+    async (status) => {
+      const f = fixture();
+      const s = makeSession(f);
+      const completed = outputsUntilComplete(s);
+      await s.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse(`partial-${status}`),
+        input: [{ type: "text", text: "go" }],
+      });
+      await pause();
+      f.emit("message.delta", { text: "Partial answer." });
+      f.emit("message.complete", {
+        text: "Partial answer.",
+        reasoning: "Late reasoning",
+        status,
+        error: "native failure",
+      });
+      const outputs = await completed;
+      const answer = outputs.find(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          o.event.snapshot.item.type === "agentMessage",
+      );
+      expect(answer).toMatchObject({ event: { snapshot: { item: { text: "Partial answer." } } } });
+      if (answer?.kind === "event" && answer.event.type === "item.completed")
+        expect(answer.event.snapshot.item).not.toHaveProperty("phase");
+      await s.close();
+    },
+  );
+
   it("preserves complete tool output, native rendered diff and terminal reasoning/usage", async () => {
     const f = fixture();
     const events: HermesTransportEvent[] = [];
     const active = f.bridge.runTurn(
       "go",
       (e) => events.push(e),
-      async () => ({ outcome: { outcome: "cancelled" } }),
+      async () => null,
     );
     await pause();
     f.emit("message.delta", { text: "hello" });
@@ -337,7 +418,7 @@ describe("Hermes gateway native turn projection", () => {
       reasoning: "native thinking",
       usage: { input: 10, output: 5, total: 15, reasoning: 2, context_used: 12, context_max: 100 },
     });
-    expect(await active).toMatchObject({ usage: { inputTokens: 10, thoughtTokens: 2 } });
+    expect(await active).toMatchObject({ usage: { inputTokens: 10, reasoningOutputTokens: 2 } });
     expect(events.filter((e) => e.type === "agent.text")).toEqual([
       { type: "agent.text", text: "hello" },
     ]);
@@ -358,7 +439,7 @@ describe("Hermes gateway native turn projection", () => {
     const active = f.bridge.runTurn(
       "go",
       (e) => events.push(e),
-      async () => ({ outcome: { outcome: "cancelled" } }),
+      async () => null,
     );
     await pause();
     f.emit("tool.complete", {
@@ -393,7 +474,7 @@ describe("Hermes gateway native turn projection", () => {
       .runTurn(
         "go",
         () => {},
-        async () => ({ outcome: { outcome: "cancelled" } }),
+        async () => null,
       )
       .then((r) => {
         settled = true;
@@ -411,7 +492,7 @@ describe("Hermes gateway native turn projection", () => {
       f.bridge.runTurn(
         "/compress",
         () => {},
-        async () => ({ outcome: { outcome: "cancelled" } }),
+        async () => null,
       ),
     ).rejects.toThrow("pending");
     expect(fault).toHaveBeenCalledOnce();
@@ -420,7 +501,7 @@ describe("Hermes gateway native turn projection", () => {
       f.bridge.runTurn(
         "later",
         () => {},
-        async () => ({ outcome: { outcome: "cancelled" } }),
+        async () => null,
       ),
     ).rejects.toThrow("unavailable");
   });
@@ -496,7 +577,7 @@ describe("Hermes gateway native turn projection", () => {
       await fresh.bridge.runTurn(
         "/compress",
         () => {},
-        async () => ({ outcome: { outcome: "cancelled" } }),
+        async () => null,
       ),
     ).toMatchObject({
       stopReason: "end_turn",

@@ -75,7 +75,8 @@ describe("Hermes native runtime commands", () => {
       const output = spawnSync(command.command, command.arguments, { encoding: "utf8" });
       expect(setup).toContain("sys.stdout = io.StringIO()");
       expect(output.status).toBe(0);
-      expect(output.stdout).toBe('{"result":true}\n');
+      // Python writes CRLF line endings on Windows; every reader trims or splits lines.
+      expect(output.stdout.replaceAll("\r\n", "\n")).toBe('{"result":true}\n');
     },
   );
 });

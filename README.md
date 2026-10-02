@@ -31,7 +31,7 @@ But **Codex** isn't the only great **Agent Harness** — **Claude Code** and **P
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>Download</strong></a> · <a href="#cross-agent-collaboration">Cross-Agent Collaboration</a> · <a href="#remote-harness">Remote</a> · <a href="#join-the-community">Community</a> · <a href="docs/project/README.zh-CN.md">简体中文</a> · <a href="docs/project/README.ko.md">한국어</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>Download</strong></a> · <a href="#cross-agent-collaboration">Cross-Agent Collaboration</a> · <a href="#remote-harness">Remote</a> · <a href="#join-the-community">微信交流群</a> · <a href="docs/project/README.zh-CN.md">简体中文</a> · <a href="docs/project/README.ko.md">한국어</a></p>
 
 <br />
 
@@ -280,12 +280,14 @@ CodexHost does it differently:
 
 </details>
 
-## Join the Community
+<a id="join-the-community"></a>
+
+## 微信交流群
 
 <table align="center">
   <tr>
     <td>
-      <strong>Join the Community</strong><br />
+      <strong>微信交流群</strong><br />
       <sub>Scan the QR code to join our WeChat group and chat about CodexHost.</sub>
       <ul>
         <li><sub>Get help with installation</sub></li>
@@ -296,7 +298,7 @@ CodexHost does it differently:
       <sub><strong>Contributions are welcome.</strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="WeChat group QR code" src="docs/imgs/wechat-qrcode.jpg" />
+      <img width="230" alt="WeChat group QR code" src="docs/imgs/wechat-group-4-qrcode.jpg" />
     </td>
   </tr>
 </table>

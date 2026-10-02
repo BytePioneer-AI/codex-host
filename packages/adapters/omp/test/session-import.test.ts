@@ -83,7 +83,7 @@ describe("OMP native Session import discovery", () => {
     // Windows reads USERPROFILE, so both home variables point at the same fake home.
     const home = { HOME: "/home/u", USERPROFILE: "/home/u" };
     expect(ompSessionImportDirectory(home)).toEqual({
-      directory: path.resolve("/home/u", ".omp", "agent", "sessions"),
+      directory: path.join("/home/u", ".omp", "agent", "sessions"),
       flat: false,
     });
     expect(ompSessionImportDirectory({ ...home, PI_CODING_AGENT_DIR: "~/alt" })).toEqual({

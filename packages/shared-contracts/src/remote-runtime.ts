@@ -39,7 +39,7 @@ export const remoteSshSetupParamsSchema = z
       .refine((value) => !value.startsWith("-") && !/\s/u.test(value)),
     port: z.number().int().min(1).max(65535).nullable(),
     identity: z.string().max(4096).nullable(),
-    action: z.enum(["inspect", "install", "repair"]),
+    action: z.enum(["inspect", "install", "update", "repair"]),
     version: z
       .string()
       .regex(/^\d+\.\d+\.\d+$/u)

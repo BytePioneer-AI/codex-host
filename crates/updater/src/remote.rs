@@ -85,6 +85,8 @@ pub(crate) fn apply(path: &Path) -> Result<(), Box<dyn Error>> {
             return Err("remote updater paths must be absolute".into());
         }
     }
+    // Record this process first: the service that started it only knows it by this PID.
+    status(&request, "installing", None)?;
     let result = apply_locked(&request);
     if let Err(error) = &result {
         let _ = status(&request, "failed", Some(error.to_string()));

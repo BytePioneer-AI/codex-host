@@ -25,6 +25,8 @@ import { runRemoteSshSetup } from "./remote-ssh-setup.js";
 import type { RemoteSshSetupParams, RemoteSshSetupResult } from "@codexhost/shared-contracts";
 
 type Update = RuntimeStatus["update"];
+const UPDATER_START_TIMEOUT_MS = 5_000;
+const UPDATER_WATCH_INTERVAL_MS = 2_000;
 interface Installation {
   version: string;
   distribution: string;
@@ -182,10 +184,7 @@ export class RuntimeMaintenance {
       try {
         const value: unknown = JSON.parse(await readFile(this.#statusPath, "utf8"));
         const parsed = runtimeStatusSchema.shape.update.parse(value);
-        if (
-          observedUpdate.phase === "idle" &&
-          ["installing", "restarting"].includes(parsed.phase)
-        ) {
+        if (["installing", "restarting"].includes(parsed.phase)) {
           const pid = (value as { updaterPid?: unknown }).updaterPid;
           let alive = false;
           if (typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0) {
@@ -195,6 +194,10 @@ export class RuntimeMaintenance {
             } catch (error) {
               alive = (error as NodeJS.ErrnoException).code === "EPERM";
             }
+          } else {
+            // The helper records its PID as soon as it starts; allow it a moment to do so.
+            const written = (await stat(this.#statusPath)).mtimeMs;
+            alive = Date.now() - written < UPDATER_START_TIMEOUT_MS * 2;
           }
           if (!alive) {
             parsed.phase = "failed";
@@ -207,13 +210,25 @@ export class RuntimeMaintenance {
         /* No previous operation, or an atomic replacement is in progress. */
       }
     }
+    const restartRequired =
+      !!running &&
+      !!installed &&
+      (running.version !== installed.version || running.digest !== installed.digest);
+    // A reconnect can start the installed build after the update helper was interrupted, and a
+    // later update can pass an earlier target. Once the target (or newer) is what runs, the
+    // recorded failure no longer describes this service.
+    if (
+      this.#update.phase === "failed" &&
+      this.#update.targetVersion !== null &&
+      !!running &&
+      compareSemanticVersions(running.version, this.#update.targetVersion) >= 0 &&
+      !restartRequired
+    )
+      this.#update = { phase: "succeeded", targetVersion: this.#update.targetVersion, error: null };
     return {
       runningVersion: running?.version ?? null,
       installedVersion: installed?.version ?? null,
-      restartRequired:
-        !!running &&
-        !!installed &&
-        (running.version !== installed.version || running.digest !== installed.digest),
+      restartRequired,
       remote: this.options.remote,
       updateSupported: !!resources && installed?.distribution === "npm",
       update: { ...this.#update },
@@ -293,33 +308,53 @@ export class RuntimeMaintenance {
       }),
       { mode: 0o600 },
     );
-    const child = spawn(helper, ["remote", "--request", request], {
-      detached: true,
-      stdio: "ignore",
-      env: this.options.environment,
-    });
+    // The service's supervisor terminates every descendant when the service stops, detached
+    // ones included. A shell starts the helper in the background and exits, which re-parents
+    // the helper to init so it survives the restart it performs.
+    const starter = spawn(
+      "/bin/sh",
+      ["-c", '"$0" remote --request "$1" </dev/null >/dev/null 2>&1 &', helper, request],
+      { detached: true, stdio: "ignore", env: this.options.environment },
+    );
     await new Promise<void>((resolve, reject) => {
-      child.once("spawn", resolve);
-      child.once("error", reject);
+      starter.once("error", reject);
+      starter.once("exit", (code) =>
+        code === 0 ? resolve() : reject(new Error("Remote updater could not be started")),
+      );
     });
-    child.once("exit", (code) => {
-      // Usually this process is replaced before the helper exits. On install failure keep it usable.
+    // The helper records its own PID first; from then on status() can tell whether it is alive.
+    const deadline = Date.now() + UPDATER_START_TIMEOUT_MS;
+    while (!(await this.#helperReported())) {
+      if (Date.now() >= deadline) {
+        const failure = "Remote updater did not start";
+        await writeFile(
+          this.#statusPath,
+          JSON.stringify({ phase: "failed", targetVersion: version, error: failure }),
+          { mode: 0o600 },
+        );
+        throw new Error(failure);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    // Requests stay blocked until the helper finishes or dies; nothing else may be asking.
+    const watch = setInterval(() => {
       void this.status()
-        .then(async () => {
-          if (code !== 0 && !["failed", "succeeded"].includes(this.#update.phase)) {
-            this.#update = {
-              phase: "failed",
-              targetVersion: version,
-              error: "Remote updater exited before completion; retry the update",
-            };
-            await writeFile(this.#statusPath, JSON.stringify(this.#update), { mode: 0o600 });
-          }
-        })
         .catch(() => undefined)
-        .finally(() => {
-          this.#blocked = false;
+        .then(() => {
+          if (!this.#blocked) clearInterval(watch);
         });
-    });
-    child.unref();
+    }, UPDATER_WATCH_INTERVAL_MS);
+    watch.unref();
+  }
+  async #helperReported(): Promise<boolean> {
+    try {
+      const value = JSON.parse(await readFile(this.#statusPath, "utf8")) as {
+        phase?: unknown;
+        updaterPid?: unknown;
+      };
+      return typeof value.updaterPid === "number" || value.phase === "failed";
+    } catch {
+      return false;
+    }
   }
 }

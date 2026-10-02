@@ -46,6 +46,15 @@ async function fixture(remote = false) {
   await control.status();
   return { control, root, runtimePath, metadata };
 }
+/** Stands in for the shell that starts the helper: the helper reports its PID, the shell exits. */
+function helperStartedBy(statusPath: string, targetVersion: string, updaterPid: number) {
+  const starter = new EventEmitter();
+  void writeFile(
+    statusPath,
+    JSON.stringify({ phase: "installing", targetVersion, error: null, updaterPid }),
+  ).then(() => starter.emit("exit", 0));
+  return starter;
+}
 describe("runtime maintenance", () => {
   it("reads the workspace version for source launches without distribution metadata", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "codexhost-source-"));
@@ -68,6 +77,26 @@ describe("runtime maintenance", () => {
       restartRequired: false,
       updateSupported: false,
     });
+  });
+  it("drops a recorded update failure once the target version is the one running", async () => {
+    const failed = (targetVersion: string) => ({
+      phase: "failed",
+      targetVersion,
+      error: "stopped",
+    });
+    for (const [targetVersion, phase] of [
+      ["0.11.0", "succeeded"],
+      ["0.10.0", "succeeded"],
+      ["0.12.0", "failed"],
+    ] as const) {
+      const f = await fixture(true);
+      await mkdir(path.join(f.root, "data"), { recursive: true });
+      await writeFile(
+        path.join(f.root, "data/remote-update.json"),
+        JSON.stringify(failed(targetVersion)),
+      );
+      expect((await f.control.status()).update).toMatchObject({ phase, targetVersion });
+    }
   });
   it("retains the actual running version when npm replaces installed files", async () => {
     const f = await fixture();
@@ -101,11 +130,8 @@ describe("runtime maintenance", () => {
           }),
       );
       await writeFile(f.runtimePath, "// build two");
-      const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
-      spawn.mockImplementation(() => {
-        queueMicrotask(() => child.emit("spawn"));
-        return child;
-      });
+      const statusPath = path.join(f.root, "data/remote-update.json");
+      spawn.mockImplementation(() => helperStartedBy(statusPath, "0.11.0", process.pid));
       expect((await f.control.start("0.11.0")).update.phase).toBe("installing");
       expect(spawn).toHaveBeenCalledOnce();
       assert(finishActive);
@@ -114,11 +140,27 @@ describe("runtime maintenance", () => {
       await expect(f.control.operation(async () => "turn")).rejects.toThrow("updating");
       const call = spawn.mock.calls[0];
       assert(call);
-      const [, args] = call;
-      const request = JSON.parse(await readFile(args[2], "utf8"));
+      // The helper is started through a shell that exits, so the service is not its parent.
+      const [command, args, options] = call;
+      expect(command).toBe("/bin/sh");
+      expect(args[1]).toMatch(/&$/u);
+      expect(options).toMatchObject({ detached: true });
+      const request = JSON.parse(await readFile(args[3], "utf8"));
       expect(request).toMatchObject({ version: "0.11.0", restartOnly: true });
-      child.emit("exit", 1);
-      await vi.waitFor(async () => expect((await f.control.status()).update.phase).toBe("failed"));
+      // A helper that dies without reporting is noticed through its PID, and requests resume.
+      await writeFile(
+        statusPath,
+        JSON.stringify({
+          phase: "restarting",
+          targetVersion: "0.11.0",
+          error: null,
+          updaterPid: 999999999,
+        }),
+      );
+      expect((await f.control.status()).update).toMatchObject({
+        phase: "failed",
+        error: expect.stringContaining("interrupted"),
+      });
       expect(await f.control.operation(async () => "turn")).toBe("turn");
     },
   );
@@ -126,11 +168,8 @@ describe("runtime maintenance", () => {
     "rejects a downgrade and coalesces duplicate scheduling",
     async () => {
       const f = await fixture(true);
-      const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
-      spawn.mockImplementation(() => {
-        queueMicrotask(() => child.emit("spawn"));
-        return child;
-      });
+      const statusPath = path.join(f.root, "data/remote-update.json");
+      spawn.mockImplementation(() => helperStartedBy(statusPath, "0.12.0", process.pid));
       await expect(f.control.start("0.10.0")).rejects.toThrow("downgrades");
       const result = await Promise.all([f.control.start("0.12.0"), f.control.start("0.12.0")]);
       expect(result.map((r) => r.update.phase)).toEqual(["installing", "installing"]);

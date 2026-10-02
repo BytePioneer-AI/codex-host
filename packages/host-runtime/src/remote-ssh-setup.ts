@@ -47,7 +47,9 @@ export async function runRemoteSshSetup(
       if (code !== 0) {
         reject(
           new Error(
-            diagnostic.trim() || "SSH installation failed; check the remote computer and retry",
+            // The helper prefixes its own name, which means nothing on the settings page.
+            diagnostic.trim().replace(/^codexhost updater:\s*/u, "") ||
+              "SSH installation failed; check the remote computer and retry",
           ),
         );
         return;

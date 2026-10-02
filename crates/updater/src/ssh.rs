@@ -17,6 +17,22 @@ struct Request {
     action: String,
     version: Option<String>,
 }
+/// Only published stable releases are installed over SSH; the value is interpolated into a script.
+fn release_version(request: &Request) -> Result<&str, Box<dyn Error>> {
+    let version = request
+        .version
+        .as_deref()
+        .ok_or("A release version is required")?;
+    let parts: Vec<_> = version.split('.').collect();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err("Install requires a published stable version".into());
+    }
+    Ok(version)
+}
 fn script(request: &Request) -> Result<String, Box<dyn Error>> {
     if request.hostname.is_empty()
         || request.hostname.starts_with('-')
@@ -25,27 +41,41 @@ fn script(request: &Request) -> Result<String, Box<dyn Error>> {
     {
         return Err("Invalid SSH address or port".into());
     }
+    // Version managers such as nvm are usually loaded only by interactive shells, so a
+    // non-interactive SSH session often has no Node.js on PATH. An installed service records
+    // its Node.js in the SSH profile; use that (and the npm and codexhost beside it). Otherwise
+    // fall back to loading nvm, which is where Node.js most often is on a fresh computer.
+    let node = "if [ -n \"${CODEXHOST_HOST_NODE_PATH:-}\" ]; then PATH=\"$(dirname \"$CODEXHOST_HOST_NODE_PATH\"):$PATH\"; export PATH; fi; if ! command -v node >/dev/null 2>&1 && [ -s \"${NVM_DIR:-$HOME/.nvm}/nvm.sh\" ]; then . \"${NVM_DIR:-$HOME/.nvm}/nvm.sh\" >/dev/null 2>&1 || true; fi; ";
+    // With a damaged installation SSH sessions fall through to stock Codex, which then owns the
+    // control socket. There is no managed service to stop in that case; starting replaces it.
+    let stock = "codexhost remote status 2>/dev/null | grep -q '\"protocol\": \"stock-codex\"'";
+    // The desktop reconnects while the service starts, and on a slow computer the two can replace
+    // each other's listener for a while, outlasting the start command's own wait. What matters
+    // is that a managed service ends up running, so look again before reporting a failed start.
+    let started = "{ sleep 20; codexhost remote status 2>/dev/null | grep -q '\"protocol\": \"codexhost\"'; } || { sleep 20; codexhost remote status 2>/dev/null | grep -q '\"protocol\": \"codexhost\"'; }";
     let probe = "if [ -f \"$HOME/.codexhost/remote/manifest.json\" ]; then printf installed; else printf not-installed; fi";
     match request.action.as_str() {
         "inspect" => Ok(probe.into()),
         "install" => {
-            let version = request
-                .version
-                .as_deref()
-                .ok_or("A release version is required")?;
-            let parts: Vec<_> = version.split('.').collect();
-            if parts.len() != 3
-                || parts
-                    .iter()
-                    .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
-            {
-                return Err("Install requires a published stable version".into());
-            }
+            let version = release_version(request)?;
             Ok(format!(
-                "set -e; mkdir -p \"$HOME/.codexhost\"; mkdir \"$HOME/.codexhost/ssh-setup.lock\" 2>/dev/null || exit 49; trap 'rmdir \"$HOME/.codexhost/ssh-setup.lock\"' EXIT; [ ! -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 43; case $(uname -s) in Darwin|Linux) ;; *) exit 44;; esac; command -v node >/dev/null && command -v npm >/dev/null && command -v codex >/dev/null || exit 45; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || exit 46; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote start >/dev/null 2>&1 || exit 48; printf installed"
+                "{node}set -e; mkdir -p \"$HOME/.codexhost\"; mkdir \"$HOME/.codexhost/ssh-setup.lock\" 2>/dev/null || exit 49; trap 'rmdir \"$HOME/.codexhost/ssh-setup.lock\"' EXIT; [ ! -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 43; case $(uname -s) in Darwin|Linux) ;; *) exit 44;; esac; command -v node >/dev/null && command -v npm >/dev/null && command -v codex >/dev/null || exit 45; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || exit 46; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf installed"
             ))
         }
-        "repair" => Ok("set -e; command -v codexhost >/dev/null || exit 45; mkdir -p \"$HOME/.codexhost\"; mkdir \"$HOME/.codexhost/ssh-setup.lock\" 2>/dev/null || exit 49; trap 'rmdir \"$HOME/.codexhost/ssh-setup.lock\"' EXIT; codexhost remote stop >/dev/null 2>&1 || exit 50; codexhost remote uninstall >/dev/null 2>&1 || exit 51; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote start >/dev/null 2>&1 || exit 48; printf installed".into()),
+        // For services too old to update themselves. A newer CLI refuses to stop an installation
+        // written in an older format, so the old CLI stops the service when it is available, and
+        // the new CLI migrates the installation before stopping whatever is still running.
+        "update" => {
+            let version = release_version(request)?;
+            Ok(format!(
+                "{node}set -e; mkdir -p \"$HOME/.codexhost\"; mkdir \"$HOME/.codexhost/ssh-setup.lock\" 2>/dev/null || exit 49; trap 'rmdir \"$HOME/.codexhost/ssh-setup.lock\"' EXIT; [ -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 52; command -v node >/dev/null && command -v npm >/dev/null || exit 45; npm view @codexhost/cli@{version} version --fetch-retries=0 --fetch-timeout=30000 >/dev/null 2>&1 || exit 53; if command -v codexhost >/dev/null; then codexhost remote stop >/dev/null 2>&1 || true; fi; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || {{ codexhost remote start >/dev/null 2>&1 || true; exit 46; }}; command -v codexhost >/dev/null || exit 54; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf installed"
+            ))
+        }
+        // A damaged installation is exactly what the CLI refuses to stop, so the first stop is
+        // best effort; once the installation is rewritten, the second one must succeed.
+        "repair" => Ok(format!(
+            "{node}set -e; command -v codexhost >/dev/null || exit 45; mkdir -p \"$HOME/.codexhost\"; mkdir \"$HOME/.codexhost/ssh-setup.lock\" 2>/dev/null || exit 49; trap 'rmdir \"$HOME/.codexhost/ssh-setup.lock\"' EXIT; codexhost remote stop >/dev/null 2>&1 || true; codexhost remote uninstall >/dev/null 2>&1 || exit 51; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf installed"
+        )),
         _ => Err("Unknown SSH action".into()),
     }
 }
@@ -102,9 +132,12 @@ pub fn apply() -> Result<(), Box<dyn Error>> {
     };
     if !status.success() {
         return Err(match status.code() {
-            Some(43) => "Remote service is already installed. Connect and use its update button; older services require a manual update",
+            Some(43) => "Remote service is already installed. Connect and use its update button",
+            Some(52) => "Remote service is not installed. Use Install and connect instead",
+            Some(53) => "This release is not published on npm, or the remote computer cannot reach the registry",
+            Some(54) => "codexhost was installed but is not on the remote PATH. Update this remote manually",
             Some(44) => "Only Mac and Linux remote computers are supported",
-            Some(45) => "Install Node.js, npm and Codex CLI on the remote computer first",
+            Some(45) => "Node.js, npm or Codex CLI was not found over SSH. Install them on the remote computer and make sure non-interactive SSH sessions have them on PATH",
             Some(46) => "npm installation failed. Check network access and global installation permissions",
             Some(47) => "Remote service configuration failed. Check Codex CLI and the remote desktop login",
             Some(50) => "Remote service could not stop. Check the remote service before retrying",
@@ -158,6 +191,60 @@ mod tests {
         assert!(script(&r).is_err());
         r.version = Some("1.2.3-dev".into());
         assert!(script(&r).is_err());
+        r.action = "update".into();
+        assert!(script(&r).is_err());
+        r.version = None;
+        assert!(script(&r).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn maintenance_finds_tools_beside_the_recorded_node() {
+        let root = std::env::temp_dir().join(format!("codexhost-ssh-node-{}", std::process::id()));
+        let bin = root.join("node/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(root.join(".codexhost/remote")).unwrap();
+        std::fs::write(root.join(".codexhost/remote/manifest.json"), "{}").unwrap();
+        for tool in ["node", "npm", "codexhost"] {
+            use std::os::unix::fs::PermissionsExt;
+            let path = bin.join(tool);
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut r = request();
+        for (action, version) in [("update", Some("1.2.3")), ("repair", None)] {
+            r.action = action.into();
+            r.version = version.map(Into::into);
+            let run = |node: Option<&std::path::Path>| {
+                let mut command = Command::new("/bin/sh");
+                command
+                    .args(["-c", &script(&r).unwrap()])
+                    .env_clear()
+                    .env("HOME", &root)
+                    .env("PATH", "/usr/bin:/bin");
+                if let Some(node) = node {
+                    command.env("CODEXHOST_HOST_NODE_PATH", node);
+                }
+                command.output().unwrap()
+            };
+            assert_eq!(run(None).status.code(), Some(45), "{action}");
+            assert!(run(Some(&bin.join("node"))).status.success(), "{action}");
+        }
+        // Without a recorded Node.js, nvm is loaded when it is present.
+        std::fs::create_dir_all(root.join(".nvm")).unwrap();
+        std::fs::write(
+            root.join(".nvm/nvm.sh"),
+            format!("PATH=\"{}:$PATH\"; export PATH\n", bin.display()),
+        )
+        .unwrap();
+        let loaded = Command::new("/bin/sh")
+            .args(["-c", &script(&r).unwrap()])
+            .env_clear()
+            .env("HOME", &root)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        assert!(loaded.status.success());
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn install_refuses_to_replace_existing_remote_services() {
@@ -207,6 +294,20 @@ mod tests {
         assert_eq!(second.status.code(), Some(43));
         assert_eq!(std::fs::read_to_string(root.join("calls")).unwrap(), calls);
         assert!(!root.join(".codexhost/ssh-setup.lock").exists());
+        r.action = "update".into();
+        r.version = Some("1.2.4".into());
+        let update = format!("{mocks}{}", script(&r).unwrap());
+        let updated = Command::new("sh")
+            .args(["-c", &update])
+            .env("HOME", &root)
+            .output()
+            .unwrap();
+        assert!(updated.status.success());
+        let calls = format!(
+            "{calls}view @codexhost/cli@1.2.4 version --fetch-retries=0 --fetch-timeout=30000\nremote stop\ninstall -g @codexhost/cli@1.2.4\nremote install\nremote stop\nremote start\n"
+        );
+        assert_eq!(std::fs::read_to_string(root.join("calls")).unwrap(), calls);
+        assert!(!root.join(".codexhost/ssh-setup.lock").exists());
         r.action = "repair".into();
         r.version = None;
         let repair = format!("{mocks}{}", script(&r).unwrap());
@@ -218,7 +319,9 @@ mod tests {
         assert!(repaired.status.success());
         assert_eq!(
             std::fs::read_to_string(root.join("calls")).unwrap(),
-            format!("{calls}remote stop\nremote uninstall\nremote install\nremote start\n")
+            format!(
+                "{calls}remote stop\nremote uninstall\nremote install\nremote stop\nremote start\n"
+            )
         );
         std::fs::remove_dir_all(root).unwrap();
     }

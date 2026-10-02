@@ -95,6 +95,14 @@ Live commands are filtered by a blocklist, never an allowlist. `COMMON_EXCLUDED_
 
 WorkBuddy, DeepSeek Harness and OpenCode deliberately keep static catalogs. Antigravity CLI has no native listing interface.
 
+### Commands installed after an OMP process starts
+
+On an unknown, non-excluded slash command in a loaded catalog, the Host calls the optional Adapter `commands.refresh()` once and resolves against the refreshed catalog. It still rejects commands absent from that catalog. Initial lazy catalogs retain the ordinary first-prompt path. Listing commands never reloads a process.
+
+OMP reloads an idle process by resuming its persisted Session file; Codex Desktop stays running. It first confirms native quiescence (`isSettled`, no streaming, compaction, queued messages or async work), preserves the live Model, Thinking and permission mode, and validates Session identity and cwd. Active work is refused, and failure after the old process stops faults the Session rather than creating a new conversation. This accommodates extension code which OMP loads only at process startup.
+
+The OMP Adapter displays native `command_output`, visible custom messages and notification text. It correlates local command completion via `prompt_result.id` or `data.agentInvoked: false`; no `agent_end` or native User Entry is required for local commands such as `/duo-status`. Model-backed prompts retain their native terminal and history checks.
+
 ## 5. Add focused tests
 
 At minimum, cover:

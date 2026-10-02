@@ -1,6 +1,7 @@
 import type { CodexSshConnection, CodexSshDraft } from "../codex-ssh-adapter.js";
 import { preferenceId } from "./preference-ui.js";
 import { remoteElement, remoteErrorMessage, type RemoteText } from "./remote-connections-card.js";
+import { localizeRemoteFailure } from "./remote-failure-messages.js";
 
 interface RemoteDialogOptions {
   /** Element inside the settings shell that hosts the modal. */
@@ -80,7 +81,7 @@ function createRemoteDialog(
         (failure: unknown) => {
           if (signal.aborted) return;
           setBusy(false);
-          error.textContent = remoteErrorMessage(failure);
+          error.textContent = localizeRemoteFailure(remoteErrorMessage(failure), t);
         },
       );
     },

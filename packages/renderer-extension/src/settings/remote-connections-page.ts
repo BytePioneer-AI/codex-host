@@ -15,6 +15,7 @@ import {
   type RemoteConnectionRow,
   type RemoteText,
 } from "./remote-connections-card.js";
+import { localizeRemoteFailure } from "./remote-failure-messages.js";
 import {
   openRemoteConnectionEditor,
   openRemoteConnectionRemoval,
@@ -166,7 +167,7 @@ export function createRemoteConnectionsPage(
           : "";
         banner.hidden = !loadError;
         bannerText.textContent = loadError
-          ? `${t("读取连接失败", "Could not load connections")}: ${loadError}`
+          ? `${t("读取连接失败", "Could not load connections")}: ${localizeRemoteFailure(loadError, t)}`
           : "";
         renderPlaceholder();
         for (const [hostId, card] of cards) {

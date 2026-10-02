@@ -2,6 +2,7 @@ import type { RuntimeStatus } from "@codexhost/shared-contracts";
 import type { CodexSshConnection } from "../codex-ssh-adapter.js";
 import { remoteUpdateTarget } from "../remote-connections-control.js";
 import { createRendererSettingsIcon } from "./icons.js";
+import { localizeRemoteFailure } from "./remote-failure-messages.js";
 
 export type RemoteText = (cn: string, en: string) => string;
 export type RemoteTone = "neutral" | "progress" | "success" | "warning" | "danger";
@@ -169,7 +170,10 @@ function serviceSummary(
           ),
     ]);
     if (row.remoteIssue)
-      hints.push(["danger", `${t("原因", "Reason")}: ${row.remoteIssue.message}`]);
+      hints.push([
+        "danger",
+        `${t("原因", "Reason")}: ${localizeRemoteFailure(row.remoteIssue.message, t)}`,
+      ]);
     return { title: t("远程服务", "Remote service"), hints };
   }
 
@@ -195,7 +199,7 @@ function serviceSummary(
   };
   const phase = phases[remote.update.phase];
   if (phase) hints.push(phase);
-  if (remote.update.error) hints.push(["danger", remote.update.error]);
+  if (remote.update.error) hints.push(["danger", localizeRemoteFailure(remote.update.error, t)]);
   if (remote.restartRequired && !busy)
     hints.push([
       "warning",
@@ -296,7 +300,12 @@ export function renderRemoteCard(
   card.append(head);
 
   if (row.stateError) {
-    const detail = remoteElement(document, "p", "settings-remote-card__detail", row.stateError);
+    const detail = remoteElement(
+      document,
+      "p",
+      "settings-remote-card__detail",
+      localizeRemoteFailure(row.stateError, t),
+    );
     detail.dataset.tone = "danger";
     card.append(detail);
   }
@@ -317,7 +326,8 @@ export function renderRemoteCard(
   if (row.pending) copy.append(hint("progress", row.pending, true));
   else {
     for (const [hintTone, text] of summary.hints) copy.append(hint(hintTone, text));
-    if (row.notice) copy.append(hint(row.notice.tone, row.notice.text, true));
+    if (row.notice)
+      copy.append(hint(row.notice.tone, localizeRemoteFailure(row.notice.text, t), true));
   }
 
   const serviceActions = remoteElement(document, "div", "settings-remote-card__actions");

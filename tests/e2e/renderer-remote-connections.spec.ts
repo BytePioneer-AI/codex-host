@@ -93,6 +93,11 @@ test("SSH settings save, connection toggle, version display, and immediate updat
   await page.screenshot({ path: path.join(shots, "00-versions.png"), fullPage: true });
   await page.getByRole("button", { name: "添加连接", exact: true }).click();
   await expect(page.getByRole("heading", { name: "添加 SSH 连接" })).toBeVisible();
+  // A failure reported in English by the bridge is shown in the page's language.
+  await page.getByLabel("名称", { exact: true }).fill("公司");
+  await page.getByLabel("SSH 地址", { exact: true }).fill("dev@linux");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "已存在同名的连接" })).toBeVisible();
   await page.getByLabel("名称", { exact: true }).fill("Linux 开发机");
   await page.getByLabel("SSH 地址", { exact: true }).fill("dev@linux");
   await page.screenshot({ path: path.join(shots, "01-editor.png"), fullPage: true });

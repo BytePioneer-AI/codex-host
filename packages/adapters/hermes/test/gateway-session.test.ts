@@ -33,7 +33,7 @@ function fixture() {
       return { pairs: [], commands: {}, categories: [], skills: {} };
     if (method === "config.get") return { value: "low" };
     if (method === "prompt.submit") return { status: "streaming" };
-    if (method === "slash.exec") return {output: "Native command output"};
+    if (method === "slash.exec") return { output: "Native command output" };
     if (method === "session.compress")
       return { status: "compressed", summary: { noop: true, note: "Nothing to compress" } };
     if (method === "config.set") {
@@ -511,7 +511,8 @@ describe("Hermes gateway native turn projection", () => {
   });
   it("reports native summary-generation abort as failed compression, not user cancellation", async () => {
     const f = fixture();
-    const request = f.request.getMockImplementation()!;
+    const request = f.request.getMockImplementation();
+    if (!request) throw new Error("request mock is not set");
     f.request.mockImplementation(async (method, ...args) =>
       method === "session.compress"
         ? {

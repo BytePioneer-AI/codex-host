@@ -45,13 +45,14 @@ export class HermesUsage {
   ) {}
   merge(usage: HostUsage): HostUsage {
     this.#revision++;
-    return (this.#latest = {...this.#latest, ...usage});
+    return (this.#latest = { ...this.#latest, ...usage });
   }
   observe(usage: HostUsage): void {
     if (this.available()) this.publish(this.merge(usage));
   }
   refresh(ensureFresh = false): Promise<void> {
-    if (!this.available() || !this.read) return Promise.resolve();
+    const read = this.read;
+    if (!this.available() || !read) return Promise.resolve();
     if (ensureFresh) this.#revision++;
     if (this.#refresh) {
       // Model/Turn boundaries require a new read after an already-running poll.
@@ -60,12 +61,14 @@ export class HermesUsage {
     const revision = this.#revision;
     this.#refresh = (async () => {
       try {
-        const usage = await this.read!();
+        const usage = await read();
         if (usage && revision === this.#revision) this.observe(usage);
       } catch {
         // Optional metadata failures must not interrupt an otherwise healthy chat.
       }
-    })().finally(() => {this.#refresh = null;});
+    })().finally(() => {
+      this.#refresh = null;
+    });
     return this.#refresh;
   }
 }

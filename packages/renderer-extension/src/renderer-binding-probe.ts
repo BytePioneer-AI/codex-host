@@ -60,6 +60,14 @@ import {
   type RendererCodexUsageGateStatus,
 } from "./renderer-codex-usage-gate.js";
 import {
+  createRendererCodexUsageBanner,
+  type RendererCodexUsageBanner,
+} from "./renderer-codex-usage-banner.js";
+import {
+  createRendererNativeInferenceRoute,
+  type RendererNativeInferenceRoute,
+} from "./renderer-native-inference-route.js";
+import {
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
@@ -587,6 +595,7 @@ interface MountedComposer {
   composerId: string;
   control: ComposerAgentControl;
   codexUsageGate: RendererCodexUsageGate;
+  codexUsageBanner: RendererCodexUsageBanner;
   modelTarget: readonly unknown[] | null;
   modelView: ExternalModelControlView;
   permissionModeView: ExternalPermissionModeControlView;
@@ -597,13 +606,7 @@ interface MountedComposer {
   hostId: string | null;
   usageRequestGeneration: number;
   commandRequestGeneration: number;
-  nativeInferenceRoute: {
-    client: RendererModelClient;
-    threadId: string | null;
-    checkedAt: number;
-    independent: boolean;
-    pending: boolean;
-  } | null;
+  nativeInferenceRoute: RendererNativeInferenceRoute;
 }
 
 interface MountedCatalogRequest {
@@ -961,6 +964,7 @@ export function installRendererBindingProbe(
     mounted: MountedComposer,
     status: RendererCodexUsageGateStatus,
   ): void => {
+    mounted.codexUsageBanner.update(status === "bypassed");
     const title =
       status === "unsupported"
         ? rendererHarnessMessages(settingsLifecycle.locale).codexUsageGateUnavailable
@@ -994,15 +998,16 @@ export function installRendererBindingProbe(
       currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
     );
-    const nativeSubmissionReady =
+    const nativeEligible =
       controller.get(mounted.composer).agent === "codex" &&
       mounted.ownershipStatus !== "loading" &&
       mounted.ownershipStatus !== "error" &&
-      !controller.isSwitching(mounted.composer) &&
-      mounted.nativeInferenceRoute?.client === composerClient(mounted) &&
-      mounted.nativeInferenceRoute.threadId ===
-        threadIdFromComposerModelTarget(mounted.modelTarget) &&
-      mounted.nativeInferenceRoute.independent;
+      !controller.isSwitching(mounted.composer);
+    const nativeSubmissionReady = mounted.nativeInferenceRoute.update(
+      composerClient(mounted),
+      threadIdFromComposerModelTarget(mounted.modelTarget),
+      nativeEligible,
+    );
     showCodexUsageGateStatus(
       mounted,
       mounted.codexUsageGate.update(externalSubmissionReady || nativeSubmissionReady),
@@ -1015,49 +1020,6 @@ export function installRendererBindingProbe(
         );
       };
     }
-    refreshNativeInferenceRoute(mounted);
-  };
-
-  const refreshNativeInferenceRoute = (mounted: MountedComposer): void => {
-    const client = composerClient(mounted);
-    if (controller.get(mounted.composer).agent !== "codex" || !client) return;
-    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
-    const previous = mounted.nativeInferenceRoute;
-    if (
-      previous?.client === client &&
-      previous.threadId === threadId &&
-      (previous.pending || Date.now() - previous.checkedAt < 5000)
-    ) {
-      return;
-    }
-    const route = { client, threadId, checkedAt: Date.now(), independent: false, pending: true };
-    mounted.nativeInferenceRoute = route;
-    renderMounted(mounted);
-    void (async () => {
-      try {
-        route.independent =
-          (await client.usesIndependentNativeInference?.(threadId ? { threadId } : undefined)) ===
-          true;
-      } catch (error) {
-        console.warn(
-          "codexhost native inference route could not be verified; retaining Codex usage gate",
-          error instanceof Error ? error.name : "UnknownError",
-        );
-      } finally {
-        route.pending = false;
-        route.checkedAt = Date.now();
-        if (
-          !disposed &&
-          mountedByComposer.get(mounted.composer) === mounted &&
-          mounted.composer.isConnected &&
-          mounted.nativeInferenceRoute === route &&
-          threadIdFromComposerModelTarget(mounted.modelTarget) === threadId &&
-          composerClient(mounted) === client
-        ) {
-          renderMounted(mounted);
-        }
-      }
-    })();
   };
 
   let delegationMention: RendererDelegationMentionControl | null = null;
@@ -2676,7 +2638,12 @@ export function installRendererBindingProbe(
       composerId: state.composerId,
       control,
       codexUsageGate: createRendererCodexUsageGate(composer),
-      nativeInferenceRoute: null,
+      codexUsageBanner: createRendererCodexUsageBanner(composer),
+      nativeInferenceRoute: createRendererNativeInferenceRoute(() => {
+        if (!disposed && mountedByComposer.get(composer) === mounted && composer.isConnected) {
+          renderMounted(mounted);
+        }
+      }),
       modelTarget,
       modelView: inherited?.modelView ?? { status: "idle" },
       permissionModeView: inherited?.permissionModeView ?? { status: "idle" },
@@ -2756,6 +2723,8 @@ export function installRendererBindingProbe(
           usageRefreshTimers.delete(composer);
         }
         mounted.codexUsageGate.dispose();
+        mounted.codexUsageBanner.dispose();
+        mounted.nativeInferenceRoute.dispose();
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
         continue;
@@ -3236,6 +3205,8 @@ export function installRendererBindingProbe(
         mounted.usageRequestGeneration += 1;
         usageRefreshAttempts.delete(mounted.composer);
         mounted.codexUsageGate.dispose();
+        mounted.codexUsageBanner.dispose();
+        mounted.nativeInferenceRoute.dispose();
         disposeComposerAgentControl(mounted.control);
       }
       mountedByComposer.clear();

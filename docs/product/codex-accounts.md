@@ -23,7 +23,7 @@
 
 ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两道账号级布尔门禁用 Composer 提交：账号额度门和 reserve `hardBlocked`。API Key 登录不经过这两道门。它们是界面上的订阅额度预检，不是协议限制；外部 Harness 的 `turn/start` 由 Host 路由，不会发到官方后端。
 
-因此在单个 Composer 选中外部 Agent、Adapter 就绪且没有 codexhost 自身的提交阻塞时，`renderer-codex-usage-gate.ts` 只把该 Composer 对这两道门的订阅快照投影为 `false`，继续走原生提交链路。不写账号、atom 或额度查询缓存，Codex 额度横幅保持显示；其他 Composer、Codex 路径和空输入、附件、运行中等其他原生限制不受影响。外部 Harness 的真实额度与错误由其自身处理。切回 Codex、Composer 移除或扩展卸载时恢复实时原生结果。
+因此在单个 Composer 选中外部 Agent、Adapter 就绪且没有 codexhost 自身的提交阻塞时，`renderer-codex-usage-gate.ts` 只把该 Composer 对这两道门的订阅快照投影为 `false`，继续走原生提交链路。不写账号、atom 或额度查询缓存；其他 Composer、官方 Codex 路径和空输入、附件、运行中等其他原生限制不受影响。外部 Harness 的真实额度与错误由其自身处理。切回官方 Codex、Composer 移除或扩展卸载时恢复实时原生结果。
 
 门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
 
@@ -31,7 +31,9 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 原生 Codex 也可以使用与官方订阅额度无关的 custom Provider。Renderer 通过同一 Host 的 `config/read` 核验有效配置，要求非官方 HTTP(S) endpoint，以及显式独立 bearer、环境 Key 或 `requires_openai_auth=false`。`openai`、`cc-switch-official`、Host 的外部投影 Provider、官方 endpoint 和未知配置保留原生额度门。不根据 `gpt-*` 模型名或 ChatGPT 登录状态猜测 Billing Source，也不重置或伪造官方额度。
 
-已有 Thread 先通过同一 Host 的 `thread/read` 核验真实 `modelProvider`，避免把新 Thread 的默认 custom 配置用于历史官方 Thread。判定缓存绑定 Host 客户端与 Thread；目标切换、重新核验或读取失败时不沿用旧目标的投影。Renderer 状态只保留布尔判定，不保存凭据。未就绪、归属加载失败、空输入、附件等其他提交限制不变。独立 Provider 自身的额度或认证失败仍由真实后端处理。
+已有 Thread 先通过同一 Host 的 `thread/read` 核验真实 `modelProvider`，避免把新 Thread 的默认 custom 配置用于历史官方 Thread。判定缓存绑定 Host 客户端与 Thread。就绪的原生 Composer 每 5 秒自动复核；同一 Host/Thread 的已确认结果在最多 5 秒的复核期间保持，避免周期性撤销额度隔离而闪烁。返回官方配置、读取失败或复核超时立即撤销；Host/Thread 切换、ownership 加载/错误及切换中不复用旧结果。Composer 移除和扩展卸载清除定时器，过期响应不能恢复旧投影。Renderer 状态只保留布尔判定，不保存凭据。空输入、附件等其他提交限制不变。独立 Provider 自身的额度或认证失败仍由真实后端处理。
+
+额度隔离成功的 Composer 同时隐藏其原生「Codex 和工作使用额度已用完」横幅。`renderer-codex-usage-banner.ts` 只识别该 Composer 内 `aside[role="status"]` 的已提交 React 祖先中明确的 `banner.banner_type`（`rate_limit_reached` 及套餐前缀），不按翻译文案、模型名或 CSS 压缩类名隐藏。局部 MutationObserver 在绘制前处理原生节点替换及样式重写，不等待下一 animation frame。其他警告与未知横幅保持原样；隔离撤销、Composer 移除或扩展卸载时恢复原来的可见性与样式。账号设置与额度入口继续展示真实官方余额。
 
 使用独立代理凭据时可保留 `requires_openai_auth=true` 和官方账号展示，官方已用额度不会因此变成可用。此判定复用已有组件局部额度门适配；Desktop 26.928 的新 selector / outer owner 兼容由独立的 [PR #467](https://github.com/BytePioneer-AI/codex-host/pull/467) 处理，不能仅凭独立 Provider 判定绕过未知门控形态。
 

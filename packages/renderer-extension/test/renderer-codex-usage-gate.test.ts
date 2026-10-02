@@ -302,6 +302,47 @@ describe("Codex usage gate for external Harness Composers", () => {
     expect(f.source.store.set).not.toHaveBeenCalled();
   });
 
+  it("fails closed when one outer owner has an ambiguous Account gate shape", () => {
+    for (const options of [
+      { omitReserve: true, duplicateAccount: true },
+      { omitReserve: true, accountReserveActive: true, duplicateAccount: true },
+    ]) {
+      const f = composerFixture();
+      const outer = composerFixture(f.source, options);
+      (f.owner as { return: unknown }).return = outer.owner;
+
+      expect(f.blocked()).toBe(true);
+      expect(outer.blocked()).toBe(true);
+      expect(f.gate.update(true)).toBe("unsupported");
+      expect(f.blocked()).toBe(true);
+      expect(outer.blocked()).toBe(true);
+      expect(f.source.store.set).not.toHaveBeenCalled();
+    }
+  });
+
+  it("rediscovers the outer Account owner before reusing an existing projection", () => {
+    const f = composerFixture();
+    expect(f.gate.update(true)).toBe("bypassed");
+    expect(f.blocked()).toBe(false);
+
+    const outerA = composerFixture(f.source, { omitReserve: true });
+    (f.owner as { return: unknown }).return = outerA.owner;
+    expect(outerA.blocked()).toBe(true);
+    expect(f.gate.refresh()).toBe("bypassed");
+    expect(outerA.blocked()).toBe(false);
+
+    const outerB = composerFixture(f.source, { omitReserve: true });
+    (f.owner as { return: unknown }).return = outerB.owner;
+    expect(outerB.blocked()).toBe(true);
+    expect(f.gate.refresh()).toBe("bypassed");
+    expect(outerA.blocked()).toBe(true);
+    expect(outerB.blocked()).toBe(false);
+
+    f.gate.dispose();
+    expect(f.blocked()).toBe(true);
+    expect(outerB.blocked()).toBe(true);
+  });
+
   it("rejects incomplete Account selectors that also read reserve.active", () => {
     const source = desktopStore();
     const accountRead = source.accountGate.read;

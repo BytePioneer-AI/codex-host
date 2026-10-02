@@ -99,21 +99,29 @@ function findSubmitOwner(composer: Element): Fiber | null {
   return owners.length === 1 ? (owners[0] ?? null) : null;
 }
 
-function findOuterAccountGateOwner(
-  composer: Element,
-  primary: Fiber,
-): Fiber | null | undefined {
-  const matches = submitOwnerCandidates(composer).filter((candidate) => {
-    if (candidate === primary) return false;
+function findOuterAccountGateOwner(composer: Element, primary: Fiber): Fiber | null | undefined {
+  let match: Fiber | null = null;
+  for (const candidate of submitOwnerCandidates(composer)) {
+    if (candidate === primary) continue;
 
     const gates = gateSubscriptions(candidate);
+    const recognized =
+      gates.account.length + gates.accountReserveActive.length + gates.reserve.length;
 
-    return !gates.invalid && gates.reserve.length === 0 && gates.account.length === 1;
-  });
+    if (gates.invalid) return undefined;
+    if (recognized === 0) continue;
+    if (
+      gates.reserve.length !== 0 ||
+      gates.account.length !== 1 ||
+      gates.accountReserveActive.length !== 0
+    ) {
+      return undefined;
+    }
+    if (match) return undefined;
+    match = candidate;
+  }
 
-  if (matches.length === 0) return null;
-  if (matches.length === 1) return matches[0] ?? null;
-  return undefined;
+  return match;
 }
 
 function subscriptionAt(hook: Hook): Subscription | null {
@@ -460,6 +468,19 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
       retryAt = 0;
       return "native";
     }
+    if (owner) {
+      const currentOuterAccountOwner = findOuterAccountGateOwner(composer, owner);
+      if (currentOuterAccountOwner === undefined) {
+        release();
+        retryAt = Date.now() + RETRY_DELAY_MS;
+        return "unsupported";
+      }
+      if (currentOuterAccountOwner !== outerAccountOwner) {
+        release();
+        retryAt = 0;
+      }
+    }
+
     if (
       (owner && !isBound(owner, projections.values())) ||
       (outerAccountOwner &&

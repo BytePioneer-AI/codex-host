@@ -68,7 +68,10 @@ export type HermesTransportEvent =
   | { type: "agent.thought"; text: string }
   | { type: "tool.call"; toolCallId: string; update: HermesToolUpdate }
   | { type: "tool.update"; toolCallId: string; update: HermesToolUpdate }
-  | { type: "usage"; used?: number; size?: number };
+  | { type: "usage"; usage: HostUsage }
+  | { type: "status.warning"; text: string }
+  | { type: "compaction.started"; text: string }
+  | { type: "compaction.finished"; text: string };
 export interface HermesOpenResult {
   sessionId: string;
   session: {
@@ -103,7 +106,11 @@ export interface HermesPromptResponse {
 export interface HermesSessionTransport {
   onFault: (error: HermesTransportError) => void;
   readonly availableCommands: readonly HermesNativeCommand[];
+  getCommands?(): Promise<readonly HermesNativeCommand[]>;
+  readUsage?(): Promise<HostUsage | null>;
+  onUsage?: (usage: HostUsage) => void;
   nativeCommandName(text: string): string | null;
+  rejectsCommand?(text: string): boolean;
   runTurn(
     text: string,
     onEvent: (event: HermesTransportEvent) => void,

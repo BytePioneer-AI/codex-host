@@ -28,8 +28,12 @@ function fixture() {
   const info = { model: "test", provider: "custom", yolo: false };
   const bridge = new HermesGatewaySessionTransport(raw, "runtime", "native", info);
   const request = vi.spyOn(raw, "request").mockImplementation(async (method, params) => {
+    if (method === "complete.slash") return { items: [] };
+    if (method === "commands.catalog")
+      return { pairs: [], commands: {}, categories: [], skills: {} };
     if (method === "config.get") return { value: "low" };
     if (method === "prompt.submit") return { status: "streaming" };
+    if (method === "slash.exec") return {output: "Native command output"};
     if (method === "session.compress")
       return { status: "compressed", summary: { noop: true, note: "Nothing to compress" } };
     if (method === "config.set") {
@@ -507,14 +511,19 @@ describe("Hermes gateway native turn projection", () => {
   });
   it("reports native summary-generation abort as failed compression, not user cancellation", async () => {
     const f = fixture();
-    f.request.mockResolvedValue({
-      status: "aborted",
-      summary: {
-        aborted: true,
-        headline: "Compression aborted",
-        note: "Summary generation failed",
-      },
-    });
+    const request = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, ...args) =>
+      method === "session.compress"
+        ? {
+            status: "aborted",
+            summary: {
+              aborted: true,
+              headline: "Compression aborted",
+              note: "Summary generation failed",
+            },
+          }
+        : request(method, ...args),
+    );
     const s = makeSession(f);
     const outputs = outputsUntilComplete(s);
     await s.commands.execute({

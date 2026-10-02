@@ -20,7 +20,9 @@ Gateway 的 `clarify` 映射为 Host Question，支持单题、批量题、文�
 
 Thinking 目录直接对应 `hermes_constants.parse_reasoning_effort` 的 none/minimal/low/medium/high/xhigh/max/ultra。选择调用 `config.set(scope=session)` 并回读确认；none 确实关闭 reasoning，而非原生仅用于显示的 hide。实际模型是否接受相应 effort 仍遵循 Hermes 原生模型实现。
 
-工具状态与完整结果来自 `tool.start` / `tool.complete.result`，不把截断的 summary/result_text 当完整结果。专属进程通过原生 `HERMES_TUI_TOOL_PROGRESS=all` 开关启用工具生命周期，不改用户配置。reasoning/text 流式和最终内容去重；成功 `message.complete` 的最终正文与尚未完成投影的回答一致时，显式标记 `final_answer`，避免末尾补发 reasoning 后实时界面缺少回答动作、只有重读历史才出现。失败或中断的部分正文不标为最终回答；Usage 投影原生累计 input/output/reasoning/total 与 context_used/context_max。取消等待原生终态；无法确认独占提交或压缩 pending 时终止会话，避免不确定的原生任务与下一轮重叠。RPC 超时、协议故障、关闭均释放自有进程组，Windows 使用 taskkill 树终止。
+工具状态与完整结果来自 `tool.start` / `tool.complete.result`，不把截断的 summary/result_text 当完整结果。专属进程通过原生 `HERMES_TUI_TOOL_PROGRESS=all` 开关启用工具生命周期，不改用户配置。reasoning/text 流式和最终内容去重；成功 `message.complete` 的最终正文与尚未完成投影的回答一致时，显式标记 `final_answer`，避免末尾补发 reasoning 后实时界面缺少回答动作、只有重读历史才出现。失败或中断的部分正文不标为最终回答。取消等待原生终态；无法确认独占提交或压缩 pending 时终止会话，避免不确定的原生任务与下一轮重叠。状态变更 RPC 超时、底层协议故障及关闭均释放自有进程组，Windows 使用 taskkill 树终止；只读 Usage 与命令目录查询的超时不关闭正常聊天连接。
+
+Usage 接入原生 `session.usage` RPC，并接收 Turn 内及闲置时的同名事件。Session 打开、Model 确认切换、Turn 结束、自动压缩阶段结束及 Host 主动刷新时读取；合并并发轮询，忽略晚于新推送或关闭的旧响应，Model／Turn 边界在已有轮询结束后补读，避免沿用切换前的上下文。只投影原生可靠数值：累计 input/output/reasoning/total、context_used/context_max，以及可选 context_percent/cache_hit_pct。缺失或非法字段不补零；不反推精确缓存 Token，不解析账号额度文本，不把 Nous Credits 换算为通用 Provider 费用。可选刷新失败不制造聊天失败。
 
 ## Edit Diff
 
@@ -30,9 +32,13 @@ Gateway 的原生 `inline_diff` 只在工具完成后投影 `fileChange`，通�
 
 ## 斜杠与压缩
 
-Gateway 支持 `/help`、`/tools`、`/context`、`/version`（原生 `slash.exec`）和 `/compress [focus]`（原生 `session.compress`）。不再保留 ACP 的命令公告、首 token 语法或 prompt 执行分支。命令参数先验证，均遵守单 Turn 排他性；原生命令不进入聊天 Transcript，也不生成虚构 NativeTurnRef。
+Gateway 保留 `/help`、`/tools`、`/context`、`/version`（原生 `slash.exec`）和 `/compress [focus]`（原生 `session.compress`）。已加载 Session 的动态目录同时读取 `complete.slash` 与 `commands.catalog`：补全列表可能截断，不能当全量目录；原生 catalog 补足条目、来源和参数元数据。只追加已审核的只读内置命令与原生注册的插件命令，遵守公共排除名单和 Hermes 控制命令／别名排除项，不暴露原生 Terminal、配置或消息平台专属入口。`kind: skill`、技能元数据及快捷命令别名不作为 `slash.exec` 命令执行；技能／bundle 的 pending-input 和 origin 合同尚未接入此目录。
 
-压缩生成 `contextCompaction` Item。Gateway 依据结构化状态：实际 compressed 成功，无变化/锁未获得为带原生原因的 no-op，summary generation aborted 为 Item 和 Turn 失败；pending 不是成功，关闭进程释放未完成工作。不再解析 ACP 的人类可读压缩文本；缺少 Gateway 结构化结果明确失败，不猜测成功。不会把无变化或原生总结失败描述成用户取消。自动压缩没有完整可观测生命周期，不宣称自动压缩 Item。
+目录与执行都使用当前 Session／工作目录，执行前重新读取并验证命令和参数，拒绝已撤销、不安全及非终态返回的命令。参数原样交给原生 `slash.exec`，不实现 Host 命令引擎；插件处理器仍是用户安装的原生代码，来源检查不承诺插件任意副作用为只读。发现期间同样守住单 Turn 排他性，关闭或失败后不启动迟到任务。命令输出不进入聊天 Transcript，也不生成虚构 NativeTurnRef。新草稿与尚未加载的 Session 按公共命令路由使用静态目录／工作目录缓存，不为列菜单启动进程。
+
+压缩生成 `contextCompaction` Item。Gateway 依据结构化状态：实际 compressed 成功，无变化/锁未获得为带原生原因的 no-op，summary generation aborted 为 Item 和 Turn 失败；pending 不是成功，关闭进程释放未完成工作。不再解析 ACP 的人类可读压缩文本；缺少 Gateway 结构化结果明确失败，不猜测成功。不会把无变化或原生总结失败描述成用户取消。自动压缩观察活动 Turn 的 `status.update(kind=compacting)` 与 `kind=compacted`。重复心跳不产生新阶段；原生 warning 原样展示但不作为提交结论。`compacted` 在锁竞争、提交围栏中止或可行性失败等路径也可能发出，不能据此宣称压缩成功。
+
+因此自动阶段以 `commentary` 状态消息展示开始、原生提示与阶段结束，明确说明提交结果未知，不生成暗示成功的 `contextCompaction` Item，也不依据文本、Token 下降或聊天成功推断压缩成功。Turn 结束、失败、取消或关闭时收尾未确认的观察消息，保留原生 Turn 结果；这些消息不是最终回答，不写入原生历史。当前 Gateway 没有可靠的自动压缩提交成功／失败／取消结果接口；闲置阶段不合成 Host Turn，尚无完整自动压缩生命周期或标准 Summarizing 控件对齐。
 
 `/model` 使用专门的确认配置接口；`/reset`、原地 undo/rewind、queue/steer 不作为命令暴露，避免破坏 Host 历史或绕过排他 Turn。
 
@@ -60,6 +66,6 @@ Gateway 保留 `CODEXHOST_CLI_PATH`、`CODEXHOST_RUNTIME_ENDPOINT`、`CODEXHOST_
 - [持久化数据库](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/hermes_state.py)、[导入导出](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/hermes_state_portability.py)
 - [原生会话列表与压缩 lineage 投影](https://github.com/NousResearch/hermes-agent/blob/1450c7fcfb5cca740e9b76545bd2ecdec94f4aa0/hermes_state_sessions.py)
 
-协议 fixture 测试覆盖 Question/审批/配置确认、diff 片段、命令与压缩失败/取消、迟到事件、重复回答、进程故障、Gateway-only 路由及 owner。可选原生测试用 `CODEXHOST_HERMES_NATIVE_TEST_PYTHON` 指向已安装的上述 Hermes Python；在隔离 HERMES_HOME 下真实执行 SessionDB 派生/回滚/压缩 lineage，运行本地 OpenAI 模拟服务驱动真实 gateway/clarify/terminal 与恢复，并验证进程内技能预加载、用户已有技能保留、原先没有委派说明的会话恢复，以及 Host CLI 环境。测试不调用付费模型；尚未进行真实外部模型压缩或 Desktop 端到端验收。另有 `CODEXHOST_HERMES_NATIVE_TEST_LAUNCHER` 选入的 managed-runtime 测试，验证正式启动器下的模型解析、真实 SessionDB 历史、精确 Fork、源历史不变、委派 preload、Gateway 懒恢复，以及导入样式的无 locator 引用通过真实 Gateway 恢复；使用原生 home root 下的临时独立 home 共享已安装依赖，不修改用户配置或历史，不发模型请求。自定义原生安装根可通过 `CODEXHOST_HERMES_NATIVE_TEST_HOME_ROOT` 指定。
+协议 fixture 测试覆盖 Question/审批/配置确认、diff 片段、命令与压缩失败/取消、迟到事件、重复回答、进程故障、Gateway-only 路由及 owner，并覆盖 Usage 并发／旧响应、目录截断／来源过滤／撤销、自动压缩心跳／未知提交结果及只读 RPC 非致命超时。可选原生测试用 `CODEXHOST_HERMES_NATIVE_TEST_PYTHON` 指向已安装的上述 Hermes Python；在隔离 HERMES_HOME 下真实执行 SessionDB 派生/回滚/压缩 lineage，运行本地 OpenAI 模拟服务驱动真实 gateway/clarify/terminal 与恢复，并验证进程内技能预加载、用户已有技能保留、原先没有委派说明的会话恢复，以及 Host CLI 环境。测试不调用付费模型；尚未进行真实外部模型压缩或 Desktop 端到端验收。另有 `CODEXHOST_HERMES_NATIVE_TEST_LAUNCHER` 选入的 managed-runtime 测试，验证正式启动器下的模型解析、真实 SessionDB 历史、精确 Fork、源历史不变、委派 preload、Gateway 懒恢复，以及导入样式的无 locator 引用通过真实 Gateway 恢复；使用原生 home root 下的临时独立 home 共享已安装依赖，不修改用户配置或历史，不发模型请求。自定义原生安装根可通过 `CODEXHOST_HERMES_NATIVE_TEST_HOME_ROOT` 指定。
 
 版本兼容回归在真实 Hermes 子进程中仅替换发布版本和 contract 元数据，验证创建、工具交互、历史读取、Fork 与恢复；不修改安装文件。原生发现测试覆盖超过 1,000 条候选、旧原生存储的 cwd 元数据、压缩根身份去重、无 locator 引用和数据库／配置不变；定向测试覆盖删除及元数据复查、关闭取消、超时、坏响应和错误隔离。Gateway 引用无论旧、新或缺少 contract 元数据都可恢复。实际接口缺失、响应格式错误、会话身份不一致或历史校验失败仍会报错；这些检查不依赖版本号。元数据替换测试不代表已经验证其他发布版本的全部接口行为。

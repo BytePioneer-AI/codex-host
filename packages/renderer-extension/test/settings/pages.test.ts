@@ -44,6 +44,8 @@ import type {
   RendererConnectionSnapshot,
 } from "../../src/settings/pages.js";
 
+import { createHarnessInstallationPanel } from "../../src/settings/harness-installation-panel.js";
+
 class FakeElement {
   readonly children: unknown[] = [];
   readonly dataset: Record<string, string> = {};
@@ -856,6 +858,65 @@ describe("Harness CLI version panel", () => {
     expect(visibleText(panel)).not.toContain("1.0.0");
     expect(button("update").disabled).toBe(true);
   });
+});
+
+describe("Harness installation actions", () => {
+  it.each(["codebuddy", "kiro-cli"] as const)(
+    "provides one automatic install action for %s",
+    (agent) => {
+      const document = new FakeDocument();
+      const run = vi.fn();
+      const panel = createHarnessInstallationPanel(
+        document as unknown as Document,
+        agent,
+        "local",
+        rendererSettingsMessages("zh-CN"),
+        vi.fn(),
+        { run, status: "idle" },
+      ) as unknown as FakeElement;
+      const installs = descendants(panel).filter(
+        ({ dataset }) => dataset.connectionAction === "install",
+      );
+      expect(installs).toHaveLength(1);
+      const install = installs[0]!;
+      expect(install.textContent).toBe("一键安装");
+      if (agent === "codebuddy") {
+        const actions = elementWithClass(panel, "settings-harness-installation-actions");
+        expect(descendants(actions)).toContain(install);
+        expect(
+          descendants(actions).some(({ dataset }) => dataset.connectionAction === "copy-install"),
+        ).toBe(true);
+      } else {
+        expect(panel.children).toContain(install);
+      }
+      install.dispatch("click");
+      install.dispatch("click");
+      expect(run).toHaveBeenCalledOnce();
+      expect(install.disabled).toBe(true);
+    },
+  );
+
+  it.each(["installing", "checking"] as const)(
+    "disables automatic installation while %s",
+    (status) => {
+      const document = new FakeDocument();
+      const run = vi.fn();
+      const panel = createHarnessInstallationPanel(
+        document as unknown as Document,
+        "codebuddy",
+        "local",
+        rendererSettingsMessages("en"),
+        vi.fn(),
+        { run, status },
+      ) as unknown as FakeElement;
+      const install = descendants(panel).find(
+        ({ dataset }) => dataset.connectionAction === "install",
+      )!;
+      expect(install.disabled).toBe(true);
+      install.dispatch("click");
+      expect(run).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("Renderer Connections page", () => {

@@ -1086,6 +1086,12 @@
   border-radius: 10px;
 }
 
+.settings-harness-installation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .settings-harness-installation-command pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

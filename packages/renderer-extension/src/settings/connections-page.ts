@@ -482,6 +482,12 @@ function renderConnectionInspector(
         messages,
         (button, command, label) =>
           copyDiagnosticsToClipboard(document, button, command, messages, label),
+        item.install
+          ? {
+              run: item.install,
+              status: busy ? (item.availability as "installing" | "checking") : "idle",
+            }
+          : undefined,
       ),
     );
     const check = document.createElement("button");

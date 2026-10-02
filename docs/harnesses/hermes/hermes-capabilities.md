@@ -12,6 +12,8 @@ Gateway 区分 runtime ID 与持久化 ID。Host 保存持久化根 ID；恢复�
 
 Gateway 的 `clarify` 映射为 Host Question，支持单题、批量题、文本、单选和多选，保留原生选项与自填语义。Host 验证答案后回复原生请求；多选通过原生支持的 JSON 数组编码，选项中的逗号不会被拆开。`request.cancel` 的超时映射为 expired，取消/关闭后不回复迟到答案。审批保留原生 once、session、always、deny，分别映射单次、会话、永久和拒绝。
 
+模型目录探测优先调用所选 Hermes launcher 的 `--print-runtime-command`，由原生 bootstrap 选择安装绑定的 Python 与依赖 generation，不假定新版存在 `venv/bin/python`。不提供该接口的旧版仍使用原有 shim/virtualenv 发现。原生运行命令一旦确认，执行失败或输出异常直接报告，不回退到另一份安装。探测复用 Hermes 原生 `_has_any_provider_configured` 检查；明确返回未配置 Provider/API Key 时返回 `configurationRequired`，Desktop/Web 显示「需要配置」，提示运行 `hermes setup` 后重新检测。旧版没有此检查时不凭空目录推断未配置，也不把解释器或网络故障误报为配置问题。明确未配置会清除此前的目录缓存，避免后续超时继续掩盖状态。
+
 模型目录探测在同一 Adapter 内合并并发读取，避免重复启动 Python。刷新超过 20 秒时，仅在已有成功读取的原生目录时继续使用该目录；后续成功刷新替换缓存。首次读取超时、解释器故障、返回格式错误仍报告失败。缓存仅在当前 Adapter 生命周期内有效，不写入用户配置。
 
 Thinking 目录直接对应 `hermes_constants.parse_reasoning_effort` 的 none/minimal/low/medium/high/xhigh/max/ultra。选择调用 `config.set(scope=session)` 并回读确认；none 确实关闭 reasoning，而非原生仅用于显示的 hide。实际模型是否接受相应 effort 仍遵循 Hermes 原生模型实现。

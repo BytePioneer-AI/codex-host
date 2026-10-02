@@ -21,6 +21,8 @@
 
 `delegate start` 先完成委派；watch 注册失败不会让命令失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。`thread send` 不提供 `--watch`，发送后需要通知时单独执行 `thread watch`。
 
+需保留当前独立审查并在其结束后补充任务时，可使用 `thread send <thread> --message <text> --wait-idle-ms 600000`。CLI 最多等待指定时间（上限 30 分钟），仅对启动前的 `THREAD_BUSY` 拒绝重试，再提交一个新 Turn；不会取消原轮、同轮注入或在 Host 中留下队列。CLI 必须保持运行；等待空闲到期且尚未被接受时返回 `notDelivered: true`。发送请求本身超时则投递结果可能未知，不自动重发。普通 `thread send` 仍立即返回忙碌错误。
+
 ## 结果
 
 | 结果 | 含义 |

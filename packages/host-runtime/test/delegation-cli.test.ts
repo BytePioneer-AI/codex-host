@@ -359,6 +359,50 @@ describe("delegation CLI", () => {
     });
   });
 
+  it("waits before resending an explicitly refused busy message", async () => {
+    const calls: { path: string; body: unknown }[] = [];
+    let sends = 0;
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      calls.push({ path, body: JSON.parse(String(init?.body)) });
+      if (path.endsWith("/send") && sends++ === 0)
+        return new Response(
+          JSON.stringify({ error: { code: "THREAD_BUSY", message: "reviewing" } }),
+          { status: 409 },
+        );
+      return new Response(
+        JSON.stringify(
+          path.endsWith("/wait") ? { status: "completed" } : { turnId: "next", status: "running" },
+        ),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const status = await runDelegationCli({
+      arguments: [
+        "thread",
+        "send",
+        "child-1",
+        "--message",
+        "extra review",
+        "--wait-idle-ms",
+        "5000",
+      ],
+      environment: {
+        [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+        [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+      },
+      fetchImpl,
+      output: new PassThrough(),
+    });
+    expect(status).toBe(0);
+    expect(calls.map((call) => call.path)).toEqual([
+      "/v1/thread/send",
+      "/v1/thread/wait",
+      "/v1/thread/send",
+    ]);
+    expect(calls[2]?.body).toEqual({ threadId: "child-1", message: "extra review" });
+  });
+
   it("applies wait and list defaults", async () => {
     const fetchImpl = successfulFetch({ ok: true });
     const environment = {
@@ -396,6 +440,14 @@ describe("delegation CLI", () => {
     ["invalid discovery arguments", ["harness", "list", "pi"]],
     ["invalid view", ["thread", "read", "thread-1", "--view", "raw"]],
     ["invalid timeout", ["thread", "wait", "thread-1", "--timeout-ms", "0"]],
+    [
+      "invalid idle wait",
+      ["thread", "send", "thread-1", "--message", "extra", "--wait-idle-ms", "0"],
+    ],
+    [
+      "excessive idle wait",
+      ["thread", "send", "thread-1", "--message", "extra", "--wait-idle-ms", "1800001"],
+    ],
     [
       "invalid message limit",
       ["thread", "read", "thread-1", "--view", "messages", "--limit", "101"],

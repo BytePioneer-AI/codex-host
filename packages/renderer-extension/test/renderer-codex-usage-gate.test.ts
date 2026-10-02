@@ -17,7 +17,17 @@ function desktopStore() {
   let allowed = false;
   let hardBlocked = false;
   const auth: Atom = { read: () => ({ authMethod, authenticatedAccountId: "account" }) };
-  const usage: Atom = { read: () => ({ data: { rate_limit: { allowed } } }) };
+  const usage: Atom = {
+    read: () => ({
+      data: {
+        rate_limit: {
+          allowed,
+          primary_window: { remaining_percent: 0 },
+          secondary_window: { remaining_percent: 0 },
+        },
+      },
+    }),
+  };
   const reserve: Atom = { read: () => ({ active: false, eligible: true, hardBlocked }) };
   const accountGate: Atom = {
     read: (get) => {
@@ -34,6 +44,30 @@ function desktopStore() {
     read: (get) => (get(reserve) as { hardBlocked: boolean }).hardBlocked,
   };
   const reserveActive: Atom = { read: (get) => (get(reserve) as { active: boolean }).active };
+  const accountReserveActiveGate: Atom = {
+    read: (get) => {
+      const a = get(auth) as { authMethod: string };
+      if (a.authMethod !== "chatgpt") return false;
+      const limit = (
+        get(usage) as {
+          data: {
+            rate_limit: {
+              allowed: boolean;
+              primary_window: unknown;
+              secondary_window: unknown;
+            };
+          };
+        }
+      ).data.rate_limit;
+      const active = (get(reserve) as { active: boolean }).active;
+      return (
+        limit.allowed === false &&
+        limit.primary_window != null &&
+        limit.secondary_window != null &&
+        active === false
+      );
+    },
+  };
   const listeners = new Map<Atom, Set<() => void>>();
   const emit = () => {
     // Model Jotai's propagation to derived signal atoms; React's listener
@@ -57,6 +91,7 @@ function desktopStore() {
   return {
     store,
     accountGate,
+    accountReserveActiveGate,
     reserveGate,
     reserveActive,
     setAuthMethod(value: string) {
@@ -83,6 +118,7 @@ function composerFixture(
     duplicateAccount?: boolean;
     snapshotWrapper?: boolean;
     signalReserve?: boolean;
+    accountReserveActive?: boolean;
   } = {},
 ) {
   const subscribers: Array<{ getSnapshot(): unknown }> = [];
@@ -91,7 +127,7 @@ function composerFixture(
   const rerender = vi.fn();
   for (const selector of [
     source.reserveActive,
-    source.accountGate,
+    options.accountReserveActive ? source.accountReserveActiveGate : source.accountGate,
     ...(options.omitReserve ? [] : [source.reserveGate]),
     ...(options.duplicateAccount ? [source.accountGate] : []),
   ]) {
@@ -226,6 +262,30 @@ describe("Codex usage gate for external Harness Composers", () => {
     expect(external.gate.update(false)).toBe("native");
     expect(external.blocked()).toBe(true);
     expect(external.instances.map((instance) => instance.getSnapshot)).toEqual(nativeSnapshots);
+  });
+
+  it("binds the Desktop 26.928 exhausted-account selector that also reads reserve.active", () => {
+    const source = desktopStore();
+    const external = composerFixture(source, {
+      snapshotWrapper: true,
+      signalReserve: true,
+      accountReserveActive: true,
+    });
+    const codex = composerFixture(source, {
+      snapshotWrapper: true,
+      signalReserve: true,
+      accountReserveActive: true,
+    });
+
+    expect(external.blocked()).toBe(true);
+    expect(external.gate.update(true)).toBe("bypassed");
+    expect(external.blocked()).toBe(false);
+    expect(codex.blocked()).toBe(true);
+    expect(source.store.get(source.accountReserveActiveGate)).toBe(true);
+    expect(source.store.set).not.toHaveBeenCalled();
+
+    expect(external.gate.update(false)).toBe("native");
+    expect(external.blocked()).toBe(true);
   });
 
   it("keeps unrelated or mismatched snapshot wrappers native", () => {

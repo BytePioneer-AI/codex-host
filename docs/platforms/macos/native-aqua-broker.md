@@ -7,7 +7,10 @@ run its native CLI through the current user's Aqua LaunchAgent.
 The broker owns exactly one installed plugin. Its authenticated owner-only socket
 and descriptor are scoped to the plugin ID. Foreign Session/parent references
 are rejected before opening a native Session. Sequence, generation and native
-writer ownership checks remain in force across requests.
+writer ownership checks remain in force across requests. A Fork reads its source
+without claiming or releasing that Session's writer, so an open source does not
+block it. The derived Session still needs its own unclaimed write identity;
+native checkpoint validation and cross-directory Fork limits remain Adapter-owned.
 
 A Session may expose `nativeWriterRef` to reserve the immutable identity it will
 write before a native Session exists. This does not confirm durable history and

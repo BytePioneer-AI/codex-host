@@ -541,7 +541,10 @@ export async function startHarnessBrokerServer(input: {
         const sourceNativeId = sourceRef?.nativeSessionId;
         if (sourceRef && sourceRef.harnessId !== input.adapter.harnessId)
           return { ok: false, error: protocolError("Native Session belongs to another Harness") };
-        const sourceKey = sourceNativeId ? nativeWriterKey(sourceNativeId) : undefined;
+        // Fork reads the source; only its derived Session claims a new writer below.
+        // Do not reserve or release the source's existing write identity for a Fork.
+        const sourceKey =
+          sourceNativeId && openInput.kind !== "fork" ? nativeWriterKey(sourceNativeId) : undefined;
         if (sourceKey && nativeWriters.has(sourceKey)) {
           return {
             ok: false,

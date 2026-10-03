@@ -520,6 +520,10 @@ export class PiRpcSession {
   #admission: Promise<void> = Promise.resolve();
   #admissionReserved = false;
   #quarantineSeq = 0;
+  #quarantineTimer: NodeJS.Timeout | null = null;
+  // Command ids whose pending entry was discarded by an unsettled cancellation: Pi may still
+  // answer them afterwards, and a late response must not fault an otherwise healthy Session.
+  #abandonedCommands = new Map<string, number>();
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
@@ -993,6 +997,7 @@ export class PiRpcSession {
         pending.command !== "compact"
       )
         continue;
+      this.#rememberAbandonedCommand(id);
       this.#pending.delete(id);
       if (pending.timeout) clearTimeout(pending.timeout);
       pending.timeout = null;
@@ -1000,13 +1005,40 @@ export class PiRpcSession {
     }
     this.#closeInteractions(active, "superseded");
     this.#activeTurn = null;
-    this.#quarantine = {
+    const quarantine: TurnCancellationQuarantine = {
       seq: (this.#quarantineSeq += 1),
       since: Date.now(),
       deadline: Date.now() + this.#recoveryTimeoutMs,
       reason: active.failure ? message(active.failure) : "cancellation unconfirmed",
     };
+    this.#quarantine = quarantine;
+    // Schedule the expiry so the Host still observes a fault when no further operation arrives.
+    this.#clearQuarantineTimer();
+    const timer = setTimeout(() => {
+      if (this.#quarantine?.seq !== quarantine.seq) return;
+      this.#faultExpiredQuarantine(quarantine);
+    }, this.#recoveryTimeoutMs);
+    timer.unref?.();
+    this.#quarantineTimer = timer;
     active.resolve({ text: active.text, cancelled: true });
+  }
+
+  #rememberAbandonedCommand(id: string): void {
+    const now = Date.now();
+    for (const [key, at] of this.#abandonedCommands) {
+      if (now - at > 300_000) this.#abandonedCommands.delete(key);
+    }
+    this.#abandonedCommands.set(id, now);
+    while (this.#abandonedCommands.size > 64) {
+      const oldest = this.#abandonedCommands.keys().next();
+      if (oldest.done) break;
+      this.#abandonedCommands.delete(oldest.value);
+    }
+  }
+
+  #clearQuarantineTimer(): void {
+    if (this.#quarantineTimer) clearTimeout(this.#quarantineTimer);
+    this.#quarantineTimer = null;
   }
 
   async #acquireAdmission(): Promise<() => void> {
@@ -1059,6 +1091,7 @@ export class PiRpcSession {
   }
 
   #faultExpiredQuarantine(quarantine: TurnCancellationQuarantine): PiRpcFaultError {
+    this.#clearQuarantineTimer();
     this.#quarantine = null;
     const fault = new PiRpcFaultError(
       "protocolError",
@@ -1105,6 +1138,7 @@ export class PiRpcSession {
       const probe = await this.#probeIdle(remaining);
       if (this.#quarantine !== quarantine) return;
       if (!probe.streaming && !probe.compacting) {
+        this.#clearQuarantineTimer();
         this.#quarantine = null;
         return;
       }
@@ -1120,6 +1154,7 @@ export class PiRpcSession {
   }
 
   close(): Promise<void> {
+    this.#clearQuarantineTimer();
     if (!this.#closed) {
       this.#closed = true;
       this.#rejectAll(new Error("Pi RPC Session closed"));
@@ -1186,6 +1221,10 @@ export class PiRpcSession {
       return;
     }
     if (this.#subagents.handle(value)) return;
+    // Quarantined: the Turn was abandoned while the process may still be finishing it, so late
+    // Turn or interaction frames must not start work or fault the Session. Responses are handled
+    // above so the recovery probe can still complete.
+    if (this.#quarantine) return;
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
       this.#compactionTurn = this.#activeTurn;
@@ -1497,6 +1536,7 @@ export class PiRpcSession {
     }
     const pending = this.#pending.get(id);
     if (!pending) {
+      if (this.#abandonedCommands.delete(id)) return;
       this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response id is not pending"));
       return;
     }

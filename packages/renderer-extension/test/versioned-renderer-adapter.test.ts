@@ -48,7 +48,11 @@ import {
 } from "../src/versioned-renderer-adapter.js";
 
 function composerWithFiber(fiber: object): Element {
-  const composer = { matches: () => true, parentElement: null } as unknown as Element;
+  const composer = {
+    matches: () => true,
+    querySelector: () => null,
+    parentElement: null,
+  } as unknown as Element;
   Object.defineProperty(composer, "__reactFiber$test", {
     configurable: true,
     value: fiber,

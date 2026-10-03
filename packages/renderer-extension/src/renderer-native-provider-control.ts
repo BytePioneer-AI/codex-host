@@ -25,6 +25,7 @@ export function createRendererNativeProviderControl(container: Element, onChange
       root.setAttribute("data-codexhost-native-provider-continuation", "");
       root.className = "flex items-center gap-2 text-xs";
       const button = container.ownerDocument.createElement("button");
+      button.setAttribute("data-codexhost-native-provider-continuation-action", "");
       button.type = "button";
       button.className = "rounded-md px-2 py-1 hover:bg-token-bg-secondary";
       const status = container.ownerDocument.createElement("span");

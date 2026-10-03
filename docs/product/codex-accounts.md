@@ -33,11 +33,23 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 已有 Thread 先通过同一 Host 的 `thread/read` 核验真实 `modelProvider`，避免把新 Thread 的默认 custom 配置用于历史官方 Thread。判定缓存绑定 Host 客户端与 Thread。就绪的原生 Composer 每 5 秒自动复核；同一 Host/Thread 的已确认结果在最多 5 秒的复核期间保持，避免周期性撤销额度隔离而闪烁。返回官方配置、读取失败或复核超时立即撤销；Host/Thread 切换、ownership 加载/错误及切换中不复用旧结果。Composer 移除和扩展卸载清除定时器，过期响应不能恢复旧投影。Renderer 状态只保留布尔判定，不保存凭据。空输入、附件等其他提交限制不变。独立 Provider 自身的额度或认证失败仍由真实后端处理。
 
-历史官方 Thread 不会因为默认 Provider 已改为 custom 而自动迁移。存在官方额度横幅、Thread 已验证且空闲、其工作目录的有效配置明确选择独立 Provider 时，Composer 提供「使用已配置的 Provider 继续」入口。只有点击后才解除该 Thread 的原生订阅，再以明确的 `modelProvider` 续接同一历史；已订阅的 `thread/resume` 仅重新加入，不能切换 Provider。迁移保留 Thread ID、历史、模型、工作目录、权限与推理设置，不发送草稿、不改登录或全局配置。运行中、配置改变或原生确认失败时保留额度限制并显示错误；可恢复时重新加入原来的 Provider。原生 `thread/loaded/list` 在退订后仍可列出空闲 Thread，不能把它当作 Provider 是否切换的证据；以 resume 的实际返回和同一 Host 的 Thread 核验为准。成功后由现有核验链确认实际 Provider，再解除此 Composer 的额度门并隐藏横幅。Desktop 的 native resume/store 契约同时接纳顶层有效 `modelProvider`，避免其历史 metadata 转换器保留旧的 Provider。
+历史 Thread 不会因为默认 Provider 改变而自动迁移。已验证且空闲的原生 Thread，其真实 Provider 与工作目录内的有效配置不同、来源和目标均可核验时，Composer 提供「使用已配置的 Provider 继续」入口；不要求额度耗尽或存在额度横幅。支持官方与独立 Provider 的双向续接，不自动迁移其他历史。只有点击后才解除该 Thread 的原生订阅，再以明确的 `modelProvider` 续接同一历史；已订阅的 `thread/resume` 仅重新加入，不能切换 Provider。
+
+续接保留 Thread ID、历史、草稿、工作目录、权限、推理设置及协作模式，采用当前配置的 Model（未配置时保留原 Model）；协作模式里的 Model 同步更新，避免覆盖新选择。不发送草稿、不改登录或全局配置。运行中、来源未知、配置改变或原生确认失败时不迁移；迁移中及失败后暂停按钮、键盘和表单提交并显示错误，可恢复时重新加入原来的 Provider、Model 与设置。认证失败后的 `systemError` Thread 仅在全部历史 Turn 已确认结束时允许恢复。
+
+原生退订成功不代表客户端已经释放：Codex 默认延迟约 60 秒卸载无人订阅的空闲 Thread。续接最多等待 90 秒，分页核验同一 Host 的 `thread/loaded/list`，确认该 Thread 已从内存释放后才构建新客户端，再核验 resume 实际返回的 Provider 与 Model。超时或其他连接仍持有时明确失败，不重启共享后端、不强停其他 Thread。Desktop 的 native resume/store 契约同时接纳顶层有效 `modelProvider` 与 Model，并同步原生模型选择、协作模式及 Thread 设置中的 Model，避免历史 metadata 转换器保留旧值、下一次原生发送又覆盖新选择。此同步覆盖显式续接及冷启动后的原生侧栏重开，只接纳当前 Host 对同一原生 Thread 的实际返回结果，不自动切换 Provider。
+
+CC Switch 切回官方模式后，旧 `custom` 会话仍可能携带 `PROXY_MANAGED` 占位认证，被官方代理以 401 拒绝。这不表示 CC Switch 仍选中 Copilot；其 `cc-switch-official` 路由也可使用同一个本地代理端口，但必须由原生 Codex 加载 ChatGPT 登录。显式续接到该路由会重建客户端认证，不能仅比较端口或改写历史标签。目标必须启用原生登录，不能带独立 bearer 或环境 Key；官方续接始终保留真实官方额度门。独立 Provider 的额度隔离及横幅隐藏仍需成功后的现有核验链确认。
 
 额度隔离成功的 Composer 同时隐藏其原生「Codex 和工作使用额度已用完」横幅。`renderer-codex-usage-banner.ts` 只识别该 Composer 内 `aside[role="status"]` 的已提交 React 祖先中明确的 `banner.banner_type`（`rate_limit_reached` 及套餐前缀），不按翻译文案、模型名或 CSS 压缩类名隐藏。局部 MutationObserver 在绘制前处理原生节点替换及样式重写，不等待下一 animation frame。其他警告与未知横幅保持原样；隔离撤销、Composer 移除或扩展卸载时恢复原来的可见性与样式。账号设置与额度入口继续展示真实官方余额。
 
 使用独立代理凭据时可保留 `requires_openai_auth=true` 和官方账号展示，官方已用额度不会因此变成可用。此判定复用已有组件局部额度门适配；Desktop 26.928 的新 selector / outer owner 兼容由独立的 [PR #467](https://github.com/BytePioneer-AI/codex-host/pull/467) 处理，不能仅凭独立 Provider 判定绕过未知门控形态。
+
+### 本地补丁与安装入口
+
+npm CLI 与 macOS 的 `codexhost.app` 是独立安装副本，各自加载自己的 `app/renderer-extension.js`。升级 GUI 应用不会升级另一个 npm 安装；只修补 npm 的文件，也不会让 GUI 应用获得该修复。排查升级后的历史续接时，先核验实际启动器的安装目录、版本与 Renderer 文件，而不是只读取 `codexhost --version`。
+
+尚未进入官方发行版的本地补丁可能被该安装副本的升级替换。重新部署必须基于该副本的版本，并保留新增的 Host/Renderer 契约；不能把旧版本的完整 bundle 覆盖到新安装。启动器也支持 `launch --renderer <绝对路径>` 指向安装目录之外、经版本匹配验证的 bundle。这个参数只改变 Renderer 来源，不更改登录、全局 Provider 配置或历史数据。
 
 ## 其他 Harness 的只读账号额度
 

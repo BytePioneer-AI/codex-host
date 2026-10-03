@@ -11,7 +11,12 @@ export interface RendererNativeRequestManager extends RendererHostRequestManager
   resumeThread?(params: unknown): Promise<unknown>;
   updateConversationState?(
     threadId: string,
-    update: (conversation: { modelProvider?: string }) => void,
+    update: (conversation: {
+      modelProvider?: string;
+      latestModel?: string;
+      latestCollaborationMode?: unknown;
+      latestThreadSettings?: unknown;
+    }) => void,
   ): unknown;
   getHostId?(): unknown;
   requestClient: RendererHostRequestBridge & { hostId?: unknown };

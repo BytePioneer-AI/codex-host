@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { createRendererNativeProviderControl } from "../src/renderer-native-provider-control.js";
+import { isComposerSubmitButton } from "../src/renderer-composer-dom.js";
 import type { RendererModelClient } from "../src/renderer-model-client.js";
 
 function deferred<T>() {
@@ -28,6 +29,12 @@ function fixture() {
     ownerDocument = { createElement: () => new Element() };
     setAttribute(name: string, value: string) {
       this.attributes.set(name, value);
+    }
+    hasAttribute(name: string) {
+      return this.attributes.has(name);
+    }
+    getAttribute(name: string) {
+      return this.attributes.get(name) ?? null;
     }
     addEventListener(name: string, listener: () => void) {
       this.events.set(name, listener);
@@ -84,6 +91,17 @@ function fixture() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Explicit historical Provider continuation control", () => {
+  it("never recaptures the continuation action as native Send because of its tooltip", async () => {
+    const f = fixture();
+    f.update();
+    await vi.waitFor(() => expect(f.root().hidden).toBe(false));
+    f.button().title = "Continue with this Provider; do not send the draft";
+    expect(isComposerSubmitButton(f.button() as unknown as HTMLButtonElement)).toBe(false);
+    expect(f.button().attributes.has("data-codexhost-native-provider-continuation-action")).toBe(
+      true,
+    );
+  });
+
   it("offers the verified Provider without resuming or sending anything", async () => {
     const f = fixture();
     f.update();
@@ -145,11 +163,27 @@ describe("Explicit historical Provider continuation control", () => {
     expect(f.change).not.toHaveBeenCalled();
   });
 
-  it("does not offer continuation when the native quota banner or eligibility is absent", () => {
+  it("does not inspect continuation when native ownership or eligibility is absent", () => {
     const f = fixture();
     f.update(false);
     expect(f.inspect).not.toHaveBeenCalled();
     expect(f.container.children).toHaveLength(0);
+  });
+
+  it("offers a verified official switchback even without an exhausted quota banner", async () => {
+    const f = fixture();
+    f.inspect.mockResolvedValue("cc-switch-official");
+    f.update();
+    await vi.waitFor(() => expect(f.button().textContent).toContain("cc-switch-official"));
+    expect(f.button().title).toContain("原生登录");
+    expect(f.button().title).toContain("Model");
+    f.button().click();
+    await vi.waitFor(() =>
+      expect(f.change).toHaveBeenCalledExactlyOnceWith(
+        { threadId: f.threadId },
+        "cc-switch-official",
+      ),
+    );
   });
 
   it("fails closed and logs when the candidate cannot be inspected", async () => {

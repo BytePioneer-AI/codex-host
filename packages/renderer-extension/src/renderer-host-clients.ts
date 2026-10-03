@@ -5,15 +5,12 @@ import type {
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
+import { installRendererNativeResume } from "./renderer-native-resume.js";
 import { restoreThreadReferenceCapability } from "./renderer-thread-reference-capability.js";
 import {
   installRendererManualCompaction,
   type RendererMessageTarget,
 } from "./renderer-manual-compaction.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** Model clients follow native connection identities, never the active Composer.
  * A captured client may finish an in-flight request after replacement, but may
@@ -34,7 +31,7 @@ export function createRendererHostClients(
   const retire = (hostId: string): void => {
     const entry = entries.get(hostId);
     entries.delete(hostId);
-    for (const cleanup of entry?.cleanups ?? []) {
+    for (const cleanup of (entry?.cleanups ?? []).slice().reverse()) {
       try {
         cleanup();
       } catch {
@@ -55,27 +52,7 @@ export function createRendererHostClients(
             throw new Error(`Renderer request manager is unavailable for Host ${route.hostId}`);
           }
           if (method === "thread/resume" && options === undefined && target.resumeThread) {
-            return target.resumeThread(params).then((result) => {
-              if (
-                !disposed &&
-                readRouting()?.forHost(route.hostId) === route &&
-                isRecord(params) &&
-                isRecord(result) &&
-                isRecord(result.thread) &&
-                result.thread.id === params.threadId &&
-                typeof result.thread.id === "string" &&
-                typeof result.modelProvider === "string" &&
-                result.modelProvider !== "codexhost"
-              ) {
-                // Resume reports the effective runtime Provider separately from
-                // its historical metadata, which Desktop's converter may retain.
-                const modelProvider = result.modelProvider;
-                target.updateConversationState?.(result.thread.id, (conversation) => {
-                  conversation.modelProvider = modelProvider;
-                });
-              }
-              return result;
-            });
+            return target.resumeThread(params);
           }
           return options === undefined
             ? target.sendRequest(method, params)
@@ -96,6 +73,11 @@ export function createRendererHostClients(
     entries.set(route.hostId, { route, client, cleanups });
     try {
       for (const install of [
+        () =>
+          installRendererNativeResume(
+            target,
+            () => !disposed && readRouting()?.forHost(route.hostId) === route,
+          ),
         () => installRendererExternalQueue(target),
         () => installRendererExternalSteering(target),
         () => installRendererManualCompaction(target, route.hostId, messages),

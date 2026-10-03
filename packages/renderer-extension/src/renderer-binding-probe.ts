@@ -62,7 +62,6 @@ import {
 } from "./renderer-codex-usage-gate.js";
 import {
   createRendererCodexUsageBanner,
-  hasCodexUsageBanner,
   type RendererCodexUsageBanner,
 } from "./renderer-codex-usage-banner.js";
 import {
@@ -994,7 +993,9 @@ export function installRendererBindingProbe(
       mounted.control,
       controller.get(mounted.composer),
       composerAdapterState(mounted),
-      controller.isSwitching(mounted.composer) || mounted.ownershipStatus === "loading",
+      controller.isSwitching(mounted.composer) ||
+        mounted.ownershipStatus === "loading" ||
+        mounted.nativeProviderControl.blocked,
       composerAvailability(mounted),
       mounted.modelView,
       mounted.permissionModeView,
@@ -1021,7 +1022,7 @@ export function installRendererBindingProbe(
     mounted.nativeProviderControl.update(
       composerClient(mounted),
       threadIdFromComposerModelTarget(mounted.modelTarget),
-      nativeEligible && !nativeSubmissionReady && hasCodexUsageBanner(mounted.composer),
+      nativeEligible,
       settingsLifecycle.locale,
     );
     if (mounted.control.usage) {
@@ -2845,7 +2846,11 @@ export function installRendererBindingProbe(
     const mounted = mountedByComposer.get(composer);
     if (!mounted) return null;
     const current = controller.get(composer);
-    if (controller.isSwitching(composer) || isOwnershipSubmissionBlocked(mounted.ownershipStatus)) {
+    if (
+      controller.isSwitching(composer) ||
+      isOwnershipSubmissionBlocked(mounted.ownershipStatus) ||
+      mounted.nativeProviderControl.blocked
+    ) {
       return false;
     }
     if (!isExternalConfigurationReady(mounted)) return false;

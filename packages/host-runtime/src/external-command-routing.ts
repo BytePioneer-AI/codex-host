@@ -56,15 +56,17 @@ export async function resolveExternalCommand(
   text: string,
   options: { liveCatalogPending?: (catalog: HarnessCommandCatalog) => boolean } = {},
 ): Promise<{ descriptor: HarnessCommandDescriptor; arguments?: JsonObject } | null> {
-  const catalog = await commands.list();
+  let catalog = await commands.list();
   if (!catalog.ok) throw new ExternalCommandError(-32073, catalog.error.message);
   const commandText = text.trim();
-  const matched = catalog.value.commands
-    .toSorted((left, right) => right.invocation.length - left.invocation.length)
-    .find((command) => {
-      if (commandText === command.invocation) return true;
-      return command.argumentMode === "text" && commandText.startsWith(`${command.invocation} `);
-    });
+  const match = (value: HarnessCommandCatalog) =>
+    value.commands
+      .toSorted((left, right) => right.invocation.length - left.invocation.length)
+      .find((command) => {
+        if (commandText === command.invocation) return true;
+        return command.argumentMode === "text" && commandText.startsWith(`${command.invocation} `);
+      });
+  let matched = match(catalog.value);
   if (!matched) {
     const name = /^\/(\S+)/u.exec(commandText)?.[1] ?? "";
     if (
@@ -74,6 +76,18 @@ export async function resolveExternalCommand(
     ) {
       return null;
     }
+    if (name && !isExcludedLiveCommand(name, "command") && commands.refresh) {
+      catalog = await commands.refresh();
+      if (!catalog.ok) {
+        throw new ExternalCommandError(
+          catalog.error.code === "sessionBusy" ? -32072 : -32073,
+          catalog.error.message,
+        );
+      }
+      matched = match(catalog.value);
+    }
+  }
+  if (!matched) {
     throw new ExternalCommandError(
       -32078,
       "External Harness does not expose the requested command",

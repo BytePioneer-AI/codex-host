@@ -30,6 +30,7 @@ import type {
   OmpTurnResult,
 } from "../src/omp-rpc-session.js";
 import { encodeOmpModelRef, type OmpNativeModel } from "../src/omp-model-catalog.js";
+import type { OmpAvailableCommand } from "../src/omp-slash-commands.js";
 
 class FakeOmpTransport implements OmpTurnTransport {
   state: OmpSessionState = {
@@ -223,6 +224,50 @@ class RestartableOmpTransport extends FakeOmpTransport {
   override async close(): Promise<void> {
     this.closed = true;
   }
+}
+
+class ReloadableOmpTransport extends RestartableOmpTransport {
+  availableCommands: OmpAvailableCommand[] = [];
+  reloadable = true;
+  async getReloadState() {
+    return this.reloadable ? this.state : null;
+  }
+}
+
+async function reloadFixture() {
+  const directory = path.join(tmpdir(), `codexhost-omp-reload-${randomUUID()}`);
+  await mkdir(directory, { recursive: true });
+  temporaryDirectories.push(directory);
+  const sessionFile = path.join(directory, "session.jsonl");
+  await writeFile(sessionFile, "persisted native session\n");
+  const first = new ReloadableOmpTransport();
+  first.state.sessionFile = sessionFile;
+  first.availableCommands = [{ name: "skill:existing", description: "Old skill", source: "skill" }];
+  const replacement = new ReloadableOmpTransport();
+  replacement.state = { ...first.state };
+  replacement.availableCommands = [{ name: "duo", description: "Duo", source: "extension" }];
+  const createTransport = vi.fn().mockReturnValueOnce(first).mockReturnValue(replacement);
+  const adapter = new OmpAdapter({}, { createTransport });
+  const opened = await adapter.open({
+    kind: "resume",
+    cwd: directory,
+    nativeRef: nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: first.state.sessionId,
+      locator: { sessionFile },
+      formatVersion: 1,
+    }),
+  });
+  if (!opened.ok) throw new Error(opened.error.message);
+  return {
+    first,
+    replacement,
+    adapter,
+    createTransport,
+    session: opened.value,
+    directory,
+    sessionFile,
+  };
 }
 
 function historyTurn(input: {
@@ -585,6 +630,92 @@ function outputs(session: { outputs: AsyncIterable<HarnessOutput> }): HarnessOut
   })();
   return values;
 }
+
+describe("OMP command reload", () => {
+  it("resumes the same Native Session with fresh extensions and live configuration", async () => {
+    const value = await reloadFixture();
+    try {
+      const refreshed = await value.session.commands?.refresh?.();
+      expect(refreshed).toMatchObject({
+        ok: true,
+        value: {
+          commands: expect.arrayContaining([expect.objectContaining({ invocation: "/duo" })]),
+        },
+      });
+      expect(value.first.closed).toBe(true);
+      expect(value.createTransport).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          cwd: value.directory,
+          sessionFile: value.sessionFile,
+          permissionMode: "yolo",
+        }),
+      );
+      expect(value.createTransport.mock.calls.at(-1)?.[0]).not.toHaveProperty("model");
+      expect(value.replacement.state.sessionId).toBe(value.first.state.sessionId);
+    } finally {
+      await value.adapter.close();
+    }
+  });
+
+  it("does not recycle a process with pending native work", async () => {
+    const value = await reloadFixture();
+    try {
+      value.first.reloadable = false;
+      await expect(value.session.commands?.refresh?.()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      expect(value.first.closed).toBe(false);
+      expect(value.createTransport).toHaveBeenCalledTimes(1);
+    } finally {
+      await value.adapter.close();
+    }
+  });
+
+  it("rejects an identity-changing reload instead of starting a fresh conversation", async () => {
+    const value = await reloadFixture();
+    try {
+      value.replacement.state.sessionId = "wrong-session";
+      await expect(value.session.commands?.refresh?.()).resolves.toMatchObject({
+        ok: false,
+        error: { message: expect.stringContaining("Native Session identity") },
+      });
+      expect(value.replacement.closed).toBe(true);
+    } finally {
+      await value.adapter.close();
+    }
+  });
+
+  it("completes local commands without inventing a native User Entry", async () => {
+    const value = await reloadFixture();
+    const observed = outputs(value.session);
+    try {
+      vi.spyOn(value.first, "runTurn").mockResolvedValue({
+        text: "Duo ready",
+        cancelled: false,
+        localOnly: true,
+      });
+      await value.session.execute({
+        type: "turn.start",
+        turnId: "status-turn" as HostTurnId,
+        input: [{ type: "text", text: "/duo-status" }],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(observed).toContainEqual({
+        kind: "event",
+        event: { type: "turn.completed", turnId: "status-turn", outcome: { status: "succeeded" } },
+      });
+      expect(observed).not.toContainEqual(
+        expect.objectContaining({
+          kind: "event",
+          event: expect.objectContaining({ type: "session.faulted" }),
+        }),
+      );
+    } finally {
+      await value.adapter.close();
+    }
+  });
+});
 
 async function nextOutput(iterator: AsyncIterator<HarnessOutput>): Promise<HarnessOutput> {
   const result = await iterator.next();

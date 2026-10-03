@@ -95,4 +95,44 @@ describe("command resolution before the live catalog loads", () => {
       },
     });
   });
+
+  it("refreshes a live catalog once before rejecting a newly installed command", async () => {
+    const descriptor = harnessCommandDescriptorSchema.parse({
+      id: "omp.slash.duo",
+      invocation: "/duo",
+      label: "Duo",
+      argumentMode: "text",
+    });
+    const refresh = vi.fn(async () => ({ ok: true as const, value: { commands: [descriptor] } }));
+    const commands = { ...builtInsOnly, refresh };
+    await expect(
+      resolveExternalCommand(commands, "/duo 分工", { liveCatalogPending: () => false }),
+    ).resolves.toEqual({ descriptor, arguments: { text: "分工" } });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await expect(resolveExternalCommand(commands, "/clear")).rejects.toMatchObject({
+      code: -32078,
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry native delivery or refresh a catalog that has not loaded", async () => {
+    const refresh = vi.fn(async () => ({
+      ok: false as const,
+      error: {
+        code: "sessionBusy" as const,
+        message: "still reviewing",
+        retryable: true,
+      },
+    }));
+    const commands = { ...builtInsOnly, refresh };
+    await expect(
+      resolveExternalCommand(commands, "/duo", { liveCatalogPending: () => true }),
+    ).resolves.toBeNull();
+    expect(refresh).not.toHaveBeenCalled();
+    await expect(resolveExternalCommand(commands, "/duo")).rejects.toMatchObject({
+      code: -32072,
+      message: "still reviewing",
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
 });

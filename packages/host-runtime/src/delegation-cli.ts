@@ -2,6 +2,7 @@ import type { Writable } from "node:stream";
 
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
+import { sendWhenIdle } from "./delegation-send.js";
 
 export { DELEGATION_HELP } from "./delegation-cli-help.js";
 
@@ -80,6 +81,7 @@ async function requestRuntime(input: {
   path: string;
   body: Record<string, unknown>;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 }): Promise<unknown> {
   const endpoint = input.environment[DELEGATION_RUNTIME_ENDPOINT_ENV];
   const token = input.environment[DELEGATION_RUNTIME_TOKEN_ENV];
@@ -110,6 +112,7 @@ async function requestRuntime(input: {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify(input.body),
+      ...(input.signal ? { signal: input.signal } : {}),
     });
   } catch (error) {
     throw new DelegationControlError(
@@ -282,7 +285,7 @@ export async function runDelegationCli(input: {
       return 0;
     }
     if (group === "thread" && command === "send") {
-      rejectUnknown(parsed, ["--message"]);
+      rejectUnknown(parsed, ["--message", "--wait-idle-ms"]);
       if (parsed.positionals.length !== 1) {
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
@@ -297,13 +300,31 @@ export async function runDelegationCli(input: {
           "Thread identifier and --message are required",
         );
       }
+      const timeoutMs = value(parsed, "--wait-idle-ms")
+        ? positiveInteger(value(parsed, "--wait-idle-ms"), "--wait-idle-ms", 1_800_000)
+        : 0;
+      const normalizedId = normalizeThreadId(threadId);
+      const runtimeOptions = {
+        environment,
+        ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+        ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+      };
       writeResult(
         "thread send",
-        await requestRuntime({
-          environment,
-          path: "/v1/thread/send",
-          body: { threadId: normalizeThreadId(threadId), message },
-          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        await sendWhenIdle({
+          timeoutMs,
+          send: () =>
+            requestRuntime({
+              ...runtimeOptions,
+              path: "/v1/thread/send",
+              body: { threadId: normalizedId, message },
+            }),
+          wait: (timeoutMs) =>
+            requestRuntime({
+              ...runtimeOptions,
+              path: "/v1/thread/wait",
+              body: { threadId: normalizedId, timeoutMs, view: "result" },
+            }),
         }),
       );
       return 0;

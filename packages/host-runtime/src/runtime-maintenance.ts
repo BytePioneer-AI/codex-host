@@ -17,7 +17,7 @@ import path from "node:path";
 import {
   compareSemanticVersions,
   defaultUpdateStateDirectory,
-  parseDistributionMetadata,
+  readRuntimeMetadata,
 } from "@codexhost/update-manager";
 import { runtimeStatusSchema, type RuntimeStatus } from "@codexhost/shared-contracts";
 
@@ -33,41 +33,13 @@ interface Installation {
   digest: string;
 }
 
-async function runtimeMetadata(
+async function installation(
   runtimePath: string,
-): Promise<{ version: string; distribution: string }> {
-  try {
-    return parseDistributionMetadata(
-      JSON.parse(
-        await readFile(path.join(path.dirname(runtimePath), "codexhost-distribution.json"), "utf8"),
-      ),
-    );
-  } catch (error) {
-    // Source launches use workspace modules rather than a packaged distribution.
-    const directory = path.dirname(runtimePath);
-    if (
-      path.basename(directory) !== "dist" ||
-      path.basename(path.dirname(directory)) !== "host-runtime" ||
-      path.basename(path.resolve(directory, "../..")) !== "packages"
-    )
-      throw error;
-    const workspace = JSON.parse(
-      await readFile(path.resolve(directory, "../../../package.json"), "utf8"),
-    ) as { name?: unknown; version?: unknown };
-    if (
-      workspace.name !== "codexhost" ||
-      typeof workspace.version !== "string" ||
-      !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(workspace.version)
-    )
-      throw error;
-    return { version: `${workspace.version}-dev`, distribution: "development" };
-  }
-}
-
-async function installation(runtimePath: string): Promise<Installation | null> {
+  environment: NodeJS.ProcessEnv,
+): Promise<Installation | null> {
   try {
     const [metadata, bytes] = await Promise.all([
-      runtimeMetadata(runtimePath),
+      readRuntimeMetadata(runtimePath, environment),
       readFile(runtimePath),
     ]);
     const parsed = metadata;
@@ -102,7 +74,7 @@ export class RuntimeMaintenance {
   constructor(
     readonly options: { runtimePath: string; remote: boolean; environment: NodeJS.ProcessEnv },
   ) {
-    this.#running = installation(options.runtimePath);
+    this.#running = installation(options.runtimePath, options.environment);
     const home = options.environment.HOME ?? homedir();
     this.#statusPath = path.join(
       options.environment.CODEXHOST_DATA_DIR ?? path.join(home, ".codexhost", "remote", "data"),
@@ -177,7 +149,7 @@ export class RuntimeMaintenance {
     const observedUpdate = this.#update;
     const [running, installed, resources] = await Promise.all([
       this.#running,
-      installation(this.options.runtimePath),
+      installation(this.options.runtimePath, this.options.environment),
       this.#resources(),
     ]);
     if (this.#update.phase === "idle" || this.#blocked) {
@@ -277,7 +249,7 @@ export class RuntimeMaintenance {
 
   async #launch(version: string): Promise<void> {
     // Recheck the installed version before launching the updater.
-    const installed = await installation(this.options.runtimePath);
+    const installed = await installation(this.options.runtimePath, this.options.environment);
     if (!installed || compareSemanticVersions(version, installed.version) < 0) {
       throw new Error("The remote installation changed; refresh versions before retrying");
     }

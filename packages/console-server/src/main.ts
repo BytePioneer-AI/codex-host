@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readRuntimeMetadata } from "@codexhost/update-manager";
 
 import { createConsoleHarnesses, harnessPluginRoots } from "./harnesses.js";
 import { createConsoleHostClient } from "./host-client.js";
@@ -28,6 +29,7 @@ async function serve(): Promise<void> {
   const paths = consolePaths();
   const port = consolePort();
   const installation = await resolveInstallation(appDirectory);
+  const runtime = await readRuntimeMetadata(entryPath).catch(() => null);
   const state: { running?: RunningConsoleServer } = {};
   const exit = (): void => {
     void (state.running?.close() ?? Promise.resolve()).finally(() => process.exit(0));
@@ -38,7 +40,7 @@ async function serve(): Promise<void> {
   state.running = await startConsoleServer({
     port,
     buildId: await consoleBuildId(entryPath),
-    version: installation.distribution?.version ?? "source",
+    version: runtime?.version ?? "source",
     installation,
     paths,
     updates,

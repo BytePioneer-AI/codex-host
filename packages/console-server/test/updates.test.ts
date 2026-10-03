@@ -149,4 +149,26 @@ describe("console updates", () => {
       updateAvailable: false,
     });
   });
+  it("reports the source launch version without enabling packaged updates", async () => {
+    await writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "codexhost", version: "0.12.0" }),
+    );
+    const updates = createConsoleUpdates({
+      environment: { CODEXHOST_DEV_VERSION: "0.11.0" },
+      onHandedOff: vi.fn(),
+    });
+    await expect(
+      updates.check({
+        distribution: null,
+        appDirectory: path.join(root, "packages/console-server/dist"),
+        runtimeDescriptorPath: null,
+        codexhostRunning: false,
+      }),
+    ).resolves.toMatchObject({
+      currentVersion: "0.11.0",
+      installation: null,
+      installationAvailable: false,
+    });
+  });
 });

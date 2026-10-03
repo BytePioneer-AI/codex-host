@@ -24,8 +24,20 @@ export const REMOTE_FAILURE_CHINESE: Readonly<Record<string, string>> = Object.f
   "codexhost was installed but is not on the remote PATH. Update this remote manually":
     "codexhost 已安装，但不在远程电脑的 PATH 中，请在远程电脑上手动更新",
   "Only Mac and Linux remote computers are supported": "只支持 Mac 和 Linux 远程电脑",
-  "Node.js, npm or Codex CLI was not found over SSH. Install them on the remote computer and make sure non-interactive SSH sessions have them on PATH":
-    "通过 SSH 找不到 Node.js、npm 或 Codex CLI。请在远程电脑上安装它们，并确保非交互式 SSH 会话的 PATH 中包含它们",
+  "Node.js was not detected over SSH. Install it on the remote computer or add it to the login shell PATH, then retry":
+    "通过 SSH 未检测到 Node.js。请在远程电脑上安装，或将已安装的 Node.js 加入登录 shell 的 PATH 后重试",
+  "npm was not detected over SSH. Install it on the remote computer or add it to the login shell PATH, then retry":
+    "通过 SSH 未检测到 npm。请在远程电脑上安装，或将已安装的 npm 加入登录 shell 的 PATH 后重试",
+  "Codex CLI was not detected over SSH. Install the command-line tool on the remote computer or add it to the login shell PATH, then retry. Codex Desktop is not required":
+    "通过 SSH 未检测到 Codex CLI（命令行工具）。请在远程电脑上安装，或将已安装的 Codex CLI 加入登录 shell 的 PATH 后重试。无需安装 Codex 桌面端",
+  "codexhost was not detected over SSH. Install it on the remote computer or add it to the login shell PATH, then retry":
+    "通过 SSH 未检测到 codexhost。请在远程电脑上安装，或将已安装的 codexhost 加入登录 shell 的 PATH 后重试",
+  "The active codexhost does not match the global npm installation. Uninstall only the remote service, or remove the package manually on the remote computer":
+    "当前 codexhost 与 npm 全局安装位置不匹配。请选择仅卸载远程服务，或在远程电脑上手动卸载软件包",
+  "The remote service was uninstalled, but removing the codexhost package failed. Check npm permissions on the remote computer and retry":
+    "远程服务已卸载，但 codexhost 软件包卸载失败。请检查远程电脑上的 npm 权限后重试",
+  "Remote Node.js is unsupported. Select Node.js 22.19 or later in the 22.x series, or Node.js 24.x":
+    "远程 Node.js 版本不受支持，请选择 Node.js 22.19 及以上的 22.x 版本，或 Node.js 24.x",
   "npm installation failed. Check network access and global installation permissions":
     "npm 安装失败，请检查网络和全局安装权限",
   "Remote service configuration failed. Check Codex CLI and the remote desktop login":

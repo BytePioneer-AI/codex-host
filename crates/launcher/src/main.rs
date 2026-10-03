@@ -948,6 +948,11 @@ fn desktop_environment(
     if env::var_os(STARTUP_TRACE_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
         environment.push((OsString::from(STARTUP_TRACE_ENV), OsString::from("1")));
     }
+    // LaunchServices and AppX do not inherit the source launch version.
+    // Runtime metadata readers validate it and use it only for source launches.
+    if let Some(version) = env::var_os("CODEXHOST_DEV_VERSION") {
+        environment.push((OsString::from("CODEXHOST_DEV_VERSION"), version));
+    }
     environment.extend(npm_update_runtime_environment(env::vars_os()));
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
     environment
@@ -1830,6 +1835,7 @@ mod tests {
                 .env("ZDOTDIR", root.join("shell"))
                 .env("CODEX_HOME", root.join("codex"))
                 .env("CODEX_ELECTRON_USER_DATA_PATH", root.join("electron"))
+                .env("CODEXHOST_DEV_VERSION", "0.12.0")
                 .env("OPENAI_API_KEY", "synthetic-not-forwarded")
                 .env_remove(super::REMOTE_SSH_MANAGED_ENV)
                 .output()
@@ -1854,6 +1860,7 @@ mod tests {
             "ZDOTDIR",
             "CODEX_HOME",
             "CODEX_ELECTRON_USER_DATA_PATH",
+            "CODEXHOST_DEV_VERSION",
         ] {
             assert!(
                 environment.contains(&(

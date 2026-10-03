@@ -18,6 +18,7 @@ import {
   isUpdateOperationActive,
   recoverUpdateOperationLock,
   selectInstallerReleaseArtifact,
+  readRuntimeMetadata,
   type BackgroundUpdateManager,
   type BackgroundUpdateStatus,
   type CodexhostLatestRelease,
@@ -208,8 +209,13 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   return Object.freeze({
     async check(target: ConsoleUpdateTarget, signal?: AbortSignal): Promise<UpdateCheckResult> {
       const metadata = target.distribution;
+      const runtime = metadata
+        ? null
+        : await readRuntimeMetadata(path.join(target.appDirectory, "main.js"), environment).catch(
+            () => null,
+          );
       const empty: UpdateCheckResult = {
-        currentVersion: metadata?.version ?? "0.0.0",
+        currentVersion: metadata?.version ?? runtime?.version ?? "0.0.0",
         installation: metadata ? installationKind(metadata) : null,
         latestVersion: null,
         updateAvailable: false,

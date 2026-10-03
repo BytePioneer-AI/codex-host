@@ -40,6 +40,8 @@ import {
   type HarnessId,
   harnessAccountSnapshotSchema,
   type HarnessAccountSnapshot,
+  accountCreditsSnapshotSchema,
+  type AccountCreditsSnapshot,
   harnessInspectionSchema,
   harnessSessionCapabilitiesSchema,
   type HarnessCommandCatalog,
@@ -708,6 +710,8 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   readonly #startTimeoutMs: number;
   #connection: Promise<BrokerConnection> | null = null;
   #closed = false;
+  #credits: AccountCreditsSnapshot | null = null;
+  #creditsRefresh: Promise<AccountCreditsSnapshot | null> | null = null;
 
   readonly subagents = {
     readSnapshot: async (
@@ -757,6 +761,30 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
             ? () => startBrokerLaunchAgent(this.harnessId, environment)
             : undefined));
     this.#startTimeoutMs = input.startTimeoutMs ?? BROKER_START_TIMEOUT_MS;
+  }
+
+  credits(): AccountCreditsSnapshot | null {
+    return this.#credits;
+  }
+
+  refreshCredits(): Promise<AccountCreditsSnapshot | null> {
+    if (this.#closed) return Promise.resolve(null);
+    if (this.#creditsRefresh) return this.#creditsRefresh;
+    this.#creditsRefresh = this.#readCredits().finally(() => {
+      this.#creditsRefresh = null;
+    });
+    return this.#creditsRefresh;
+  }
+
+  async #readCredits(): Promise<AccountCreditsSnapshot | null> {
+    try {
+      const value = await this.#request("adapter.credits", {}, true);
+      const credits = accountCreditsSnapshotSchema.nullable().parse(value);
+      if (!this.#closed) this.#credits = credits;
+    } catch {
+      // Optional telemetry: retain the last valid snapshot if the broker cannot read it.
+    }
+    return this.#credits;
   }
 
   async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
@@ -848,6 +876,7 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#credits = null;
     await Promise.allSettled([...this.#sessions].map((session) => session.close()));
     this.#sessions.clear();
     const connection = await this.#connection?.catch(() => null);

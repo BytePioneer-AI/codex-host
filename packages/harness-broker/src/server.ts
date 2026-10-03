@@ -12,6 +12,7 @@ import type {
 } from "@codexhost/harness-adapter";
 
 import {
+  accountCreditsSnapshotSchema,
   harnessAccountListParamsSchema,
   harnessAccountSnapshotSchema,
   harnessPluginIdSchema,
@@ -497,6 +498,11 @@ export async function startHarnessBrokerServer(input: {
     const handleRequest = async (request: HarnessBrokerRequest): Promise<unknown> => {
       if (closed || state.closed) throw new Error("Harness broker connection is closed");
       if (request.method === "adapter.open") retireWhenIdle = false;
+      if (request.method === "adapter.credits") {
+        harnessAccountListParamsSchema.parse(request.params);
+        const adapter = input.adapter as HarnessAdapter & { credits?: () => unknown };
+        return accountCreditsSnapshotSchema.nullable().parse(adapter.credits?.() ?? null);
+      }
       if (request.method === "adapter.inspectAccount") {
         harnessAccountListParamsSchema.parse(request.params);
         return harnessAccountSnapshotSchema

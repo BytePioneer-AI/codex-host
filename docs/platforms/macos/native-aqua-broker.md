@@ -74,6 +74,13 @@ local execution. The broker loads the same plugin with native context, avoiding
 recursive broker construction. Neither the generic Host nor the broker imports
 concrete adapters.
 
+Composer account limits use `adapter.credits` to read the native Adapter's existing
+quota snapshot. The broker client caches it for the Host's synchronous `credits()`
+read and coalesces concurrent refreshes. This forwards Claude Code's native 5-hour
+and 7-day windows without a separate account query or Model Turn. Missing quota
+stays absent; failed reads keep the last valid snapshot. The Renderer and local
+Claude Code quota path are unchanged.
+
 New clients may opt into forwarding the Host's scoped delegation environment:
 `CODEXHOST_CLI_PATH`, `CODEXHOST_RUNTIME_ENDPOINT`, `CODEXHOST_RUNTIME_TOKEN`, and
 `CODEXHOST_THREAD_ID`. HOME, PATH, loader variables and native credentials cannot

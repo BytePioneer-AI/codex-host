@@ -5,6 +5,7 @@ import type {
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
+import { installRendererNativeResume } from "./renderer-native-resume.js";
 import { restoreThreadReferenceCapability } from "./renderer-thread-reference-capability.js";
 import {
   installRendererManualCompaction,
@@ -30,7 +31,7 @@ export function createRendererHostClients(
   const retire = (hostId: string): void => {
     const entry = entries.get(hostId);
     entries.delete(hostId);
-    for (const cleanup of entry?.cleanups ?? []) {
+    for (const cleanup of (entry?.cleanups ?? []).slice().reverse()) {
       try {
         cleanup();
       } catch {
@@ -49,6 +50,9 @@ export function createRendererHostClients(
         sendRequest(method, params, options) {
           if (disposed || readRouting()?.forHost(route.hostId) !== route) {
             throw new Error(`Renderer request manager is unavailable for Host ${route.hostId}`);
+          }
+          if (method === "thread/resume" && options === undefined && target.resumeThread) {
+            return target.resumeThread(params);
           }
           return options === undefined
             ? target.sendRequest(method, params)
@@ -69,6 +73,11 @@ export function createRendererHostClients(
     entries.set(route.hostId, { route, client, cleanups });
     try {
       for (const install of [
+        () =>
+          installRendererNativeResume(
+            target,
+            () => !disposed && readRouting()?.forHost(route.hostId) === route,
+          ),
         () => installRendererExternalQueue(target),
         () => installRendererExternalSteering(target),
         () => installRendererManualCompaction(target, route.hostId, messages),

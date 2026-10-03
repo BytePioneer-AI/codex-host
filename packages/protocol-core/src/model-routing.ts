@@ -586,7 +586,12 @@ export function decodeExternalTransportModel(
 
 export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
   if (request.method !== "thread/start") return null;
-  if (!isJsonObject(request.params) || typeof request.params.model !== "string") {
+  if (!isJsonObject(request.params)) {
+    throw new Error("thread/start params must be an object");
+  }
+  // Native internal Threads, including MCP App hosts, let Codex choose its default Model.
+  if (request.params.model == null) return null;
+  if (typeof request.params.model !== "string") {
     throw new Error("thread/start params.model must be text");
   }
 

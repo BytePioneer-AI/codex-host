@@ -4,6 +4,24 @@ import type { JsonRpcRequest } from "@codexhost/protocol-core";
 import { classifyCreateRequestRoute, packageMetadata } from "../src/index.js";
 
 describe("host-runtime package", () => {
+  it.each(["codex", "pi"] as const)(
+    "keeps internal default-Model Threads on native Codex when defaultAgent=%s",
+    (defaultAgent) => {
+      for (const selection of [{}, { model: null }]) {
+        expect(
+          classifyCreateRequestRoute(
+            {
+              id: 1,
+              method: "thread/start",
+              params: { ephemeral: true, threadSource: "mcp_extension_host", ...selection },
+            },
+            defaultAgent,
+          ),
+        ).toBeNull();
+      }
+    },
+  );
+
   it("declares the composition-root dependencies", () => {
     expect(packageMetadata.dependencies).toHaveLength(7);
     expect(

@@ -100,6 +100,38 @@ describe("external Harness transport model routing", () => {
     expect(decodeCreateRoute({ id: 4, method: "model/list", params: {} })).toBeNull();
   });
 
+  it.each([{}, { model: null }])("leaves an unspecified Model to native Codex: %j", (selection) => {
+    expect(
+      decodeCreateRoute({
+        id: 5,
+        method: "thread/start",
+        params: { ephemeral: true, threadSource: "mcp_extension_host", ...selection },
+      }),
+    ).toBeNull();
+  });
+
+  it.each([false, true, 0, 42, [], {}].map((model) => ({ model })))(
+    "rejects an invalid supplied Model: %j",
+    ({ model }) => {
+      expect(() => decodeCreateRoute({ id: 5, method: "thread/start", params: { model } })).toThrow(
+        "thread/start params.model must be text",
+      );
+    },
+  );
+
+  it.each([undefined, null, [], "invalid", 1].map((params) => ({ params })))(
+    "rejects invalid start parameters: %j",
+    ({ params }) => {
+      expect(() =>
+        decodeCreateRoute({
+          id: 5,
+          method: "thread/start",
+          ...(params === undefined ? {} : { params }),
+        }),
+      ).toThrow("thread/start params must be an object");
+    },
+  );
+
   it("round-trips a bounded opaque selected Pi Model Ref", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
     const transportModelId = encodePiTransportModel(model);

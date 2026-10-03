@@ -558,12 +558,14 @@ class FakePiRpcProcess extends EventEmitter {
       this.#scenario === "settled-streaming" ||
       ((this.#scenario === "cancel" ||
         this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "cancel-no-settle" ||
         this.#scenario === "long-running") &&
         this.#promptCount > 1)
     ) {
       const text =
         this.#scenario === "cancel" ||
         this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "cancel-no-settle" ||
         this.#scenario === "long-running"
           ? "continued"
           : "synthetic final text";
@@ -1731,29 +1733,89 @@ describe("Pi RPC Turn aggregation", () => {
     }
   });
 
-  it("fails and closes a cancellation that does not reach stable settlement", async () => {
+  it("quarantines an unsettled cancellation instead of faulting the whole Session", async () => {
     vi.useFakeTimers();
     const onFault = vi.fn();
-    const rpc = session("cancel-no-settle", onFault, { cancelTimeoutMs: 10 });
+    const process = new FakePiRpcProcess("cancel-no-settle");
+    const rpc = new PiRpcSession(
+      {
+        cwd: "/synthetic",
+        commandTimeoutMs: 2_000,
+        cancelTimeoutMs: 10,
+        recoveryTimeoutMs: 60_000,
+        closeTimeoutMs: 500,
+        onFault,
+      },
+      { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+    );
+    const events: PiTurnEvent[] = [];
+
+    try {
+      await rpc.start();
+      const turn = rpc.runTurn("cancel me", (event) => events.push(event));
+      // Admission is asynchronous: let the Turn be registered before aborting it.
+      await vi.advanceTimersByTimeAsync(0);
+      const aborting = rpc.abort();
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Only this Turn ends, and the transport stays alive for the next prompt.
+      await expect(aborting).resolves.toBeUndefined();
+      await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+      expect(onFault).not.toHaveBeenCalled();
+
+      // Until the Session reports idle, new work is refused instead of reusing a busy process.
+      await expect(rpc.runTurn("blocked", () => undefined)).rejects.toThrow(/quarantined/);
+      expect(onFault).not.toHaveBeenCalled();
+
+      // Once the Session reports idle, the quarantine clears and the next Turn runs.
+      process.emitAgentSettled(false);
+      await expect(rpc.runTurn("continue", (event) => events.push(event))).resolves.toEqual({
+        text: "continued",
+        cancelled: false,
+      });
+      expect(onFault).not.toHaveBeenCalled();
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("faults the Session when a quarantined Session never reports idle", async () => {
+    vi.useFakeTimers();
+    const onFault = vi.fn();
+    const process = new FakePiRpcProcess("cancel-no-settle");
+    const rpc = new PiRpcSession(
+      {
+        cwd: "/synthetic",
+        commandTimeoutMs: 2_000,
+        cancelTimeoutMs: 10,
+        recoveryTimeoutMs: 50,
+        closeTimeoutMs: 500,
+        onFault,
+      },
+      { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+    );
 
     try {
       await rpc.start();
       const turn = rpc.runTurn("cancel me", () => undefined);
-      const rejected = expect(turn).rejects.toThrow(
-        "Pi Turn cancellation did not settle within its bound",
-      );
+      await vi.advanceTimersByTimeAsync(0);
       await rpc.abort();
-
       await vi.advanceTimersByTimeAsync(10);
+      await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+      expect(onFault).not.toHaveBeenCalled();
 
-      await rejected;
+      await vi.advanceTimersByTimeAsync(50);
+      await expect(rpc.runTurn("too late", () => undefined)).rejects.toThrow(
+        /did not return to a confirmed idle state within 50ms/,
+      );
       expect(onFault).toHaveBeenCalledWith(
         expect.objectContaining({
           kind: "protocolError",
-          message: "Pi Turn cancellation did not settle within its bound",
+          message: expect.stringContaining("did not return to a confirmed idle state within 50ms"),
         }),
       );
-      await expect(rpc.runTurn("unavailable", () => undefined)).rejects.toThrow("unavailable");
     } finally {
       await rpc.close();
       vi.useRealTimers();

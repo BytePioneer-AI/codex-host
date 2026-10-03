@@ -152,6 +152,7 @@ export interface PiRpcSessionOptions {
   commandTimeoutMs?: number;
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
+  recoveryTimeoutMs?: number;
   onFault?: (error: PiRpcFaultError) => void;
 }
 
@@ -203,9 +204,16 @@ interface ActiveTurn {
   tools: Map<string, string>;
   interactions: Map<string, { request: PiInteractionRequest; timeout: NodeJS.Timeout | null }>;
   settlement: "pending" | "confirming" | "confirmed";
-  cancellation: "none" | "requesting" | "accepted";
+  cancellation: "none" | "requesting" | "accepted" | "abandoned";
   cancellationTimeout: NodeJS.Timeout | null;
   abortPromise: Promise<void> | null;
+}
+
+interface TurnCancellationQuarantine {
+  seq: number;
+  since: number;
+  deadline: number;
+  reason: string;
 }
 
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -487,7 +495,10 @@ const nodeProcessAdapter: PiRpcProcessAdapter = {
 
 export class PiRpcSession {
   readonly #options: Required<
-    Pick<PiRpcSessionOptions, "commandTimeoutMs" | "cancelTimeoutMs" | "closeTimeoutMs">
+    Pick<
+      PiRpcSessionOptions,
+      "commandTimeoutMs" | "cancelTimeoutMs" | "closeTimeoutMs" | "recoveryTimeoutMs"
+    >
   > &
     PiRpcSessionOptions;
   readonly #processAdapter: PiRpcProcessAdapter;
@@ -499,6 +510,16 @@ export class PiRpcSession {
   #closePromise: Promise<void> | null = null;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
+  // Set when a Turn's cancellation could not be confirmed. New Turns are refused until the
+  // Session is observed idle, or the recovery window expires and the Session is faulted so the
+  // Host can rebuild it instead of reusing a possibly still-busy process.
+  #quarantine: TurnCancellationQuarantine | null = null;
+  #recoveryTimeoutMs: number;
+  // Serializes admission decisions so concurrent runTurn/compact calls cannot both pass the
+  // quarantine probe, and lets a stale probe detect that it no longer owns the quarantine.
+  #admission: Promise<void> = Promise.resolve();
+  #admissionReserved = false;
+  #quarantineSeq = 0;
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
@@ -526,8 +547,10 @@ export class PiRpcSession {
       // bound so a slow cancellation times out gracefully instead of faulting the whole Session.
       cancelTimeoutMs: 30_000,
       closeTimeoutMs: 2_000,
+      recoveryTimeoutMs: 60_000,
       ...options,
     };
+    this.#recoveryTimeoutMs = this.#options.recoveryTimeoutMs;
     this.#processAdapter = processAdapter;
     this.#subagents = new PiSubagentRpc(
       (type, payload) => this.#send(type, payload),
@@ -657,11 +680,10 @@ export class PiRpcSession {
     if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Pi RPC Session is unavailable");
     }
-    if (this.#activeTurn || this.#manualCompaction || this.#compactionActive) {
-      throw new Error("Pi RPC Session already has an active operation");
-    }
+    await this.#admitCompaction();
 
     const result = new Promise<PiCompactResult>((resolve, reject) => {
+      this.#admissionReserved = false;
       this.#manualCompaction = { onEvent, resolve, reject };
     });
     try {
@@ -824,10 +846,11 @@ export class PiRpcSession {
     if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Pi RPC Session is unavailable");
     }
-    if (this.#activeTurn) throw new Error("Pi RPC Session already has an active Turn");
     if (text.length === 0) throw new Error("Pi text Turn must not be empty");
+    await this.#admitTurn();
 
     const settled = new Promise<PiTurnResult>((resolve, reject) => {
+      this.#admissionReserved = false;
       this.#activeTurn = {
         origin: "requested",
         autonomousEvents: null,
@@ -942,8 +965,158 @@ export class PiRpcSession {
     if (this.#activeTurn !== active) return;
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     active.cancellationTimeout = null;
+    // Pi did not confirm settlement inside the bound. Faulting the whole Session here is what
+    // made a cancelled compaction leave the conversation unusable, so fail only this Turn, keep
+    // the transport alive and quarantine it until it reports a confirmed idle state.
+    active.cancellation = "abandoned";
+    active.failure = fault instanceof Error ? fault : new Error(message(fault));
+    this.#abandonUnsettledTurn(active);
+  }
+
+  #abandonUnsettledTurn(active: ActiveTurn): void {
+    if (this.#activeTurn !== active) return;
+    if (this.#compactionActive) {
+      this.#compactionActive = false;
+      const compactionTurn = this.#compactionTurn;
+      this.#compactionTurn = null;
+      const event: PiTurnEvent = { type: "compaction.completed", outcome: "cancelled" };
+      compactionTurn?.onEvent(event);
+      const manual = this.#manualCompaction;
+      this.#manualCompaction = null;
+      manual?.onEvent(event);
+      manual?.resolve({ outcome: "cancelled" });
+    }
+    for (const [id, pending] of [...this.#pending]) {
+      if (
+        pending.command !== "abort" &&
+        pending.command !== "prompt" &&
+        pending.command !== "compact"
+      )
+        continue;
+      this.#pending.delete(id);
+      if (pending.timeout) clearTimeout(pending.timeout);
+      pending.timeout = null;
+      pending.reject(active.failure ?? new Error("Pi RPC cancellation was not confirmed"));
+    }
+    this.#closeInteractions(active, "superseded");
+    this.#activeTurn = null;
+    this.#quarantine = {
+      seq: (this.#quarantineSeq += 1),
+      since: Date.now(),
+      deadline: Date.now() + this.#recoveryTimeoutMs,
+      reason: active.failure ? message(active.failure) : "cancellation unconfirmed",
+    };
+    active.resolve({ text: active.text, cancelled: true });
+  }
+
+  async #acquireAdmission(): Promise<() => void> {
+    const previous = this.#admission;
+    let release: () => void = () => undefined;
+    this.#admission = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    return release;
+  }
+
+  async #admitTurn(): Promise<void> {
+    const release = await this.#acquireAdmission();
+    try {
+      if (this.#activeTurn || this.#admissionReserved)
+        throw new Error("Pi RPC Session already has an active Turn");
+      this.#admissionReserved = true;
+      try {
+        await this.#awaitQuarantineClearance();
+      } catch (error) {
+        this.#admissionReserved = false;
+        throw error;
+      }
+    } finally {
+      release();
+    }
+  }
+
+  async #admitCompaction(): Promise<void> {
+    const release = await this.#acquireAdmission();
+    try {
+      if (
+        this.#activeTurn ||
+        this.#manualCompaction ||
+        this.#compactionActive ||
+        this.#admissionReserved
+      )
+        throw new Error("Pi RPC Session already has an active operation");
+      this.#admissionReserved = true;
+      try {
+        await this.#awaitQuarantineClearance();
+      } catch (error) {
+        this.#admissionReserved = false;
+        throw error;
+      }
+    } finally {
+      release();
+    }
+  }
+
+  #faultExpiredQuarantine(quarantine: TurnCancellationQuarantine): PiRpcFaultError {
+    this.#quarantine = null;
+    const fault = new PiRpcFaultError(
+      "protocolError",
+      `Pi RPC Session did not return to a confirmed idle state within ${this.#recoveryTimeoutMs}ms after an unconfirmed cancellation (${quarantine.reason})`,
+    );
     this.#fail(fault);
-    void this.close().catch(() => undefined);
+    return fault;
+  }
+
+  async #probeIdle(remainingMs: number): Promise<{ streaming: boolean; compacting: boolean }> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const response = await Promise.race([
+        this.#send("get_state", {}),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`Pi RPC state probe timed out after ${remainingMs}ms`)),
+            Math.max(1, remainingMs),
+          );
+        }),
+      ]);
+      const data = isRecord(response.data) ? response.data : {};
+      return {
+        streaming: parseSessionStreaming(response),
+        compacting: data.isCompacting === true,
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Refuse new work while the Session may still be busy with an unconfirmed cancellation.
+   * The probe is bounded by the remaining recovery window, and a probe that no longer owns the
+   * current quarantine generation can never clear a newer one.
+   */
+  async #awaitQuarantineClearance(): Promise<void> {
+    const quarantine = this.#quarantine;
+    if (!quarantine) return;
+    const remaining = quarantine.deadline - Date.now();
+    if (remaining <= 0) throw this.#faultExpiredQuarantine(quarantine);
+    let observation = "state unknown";
+    try {
+      const probe = await this.#probeIdle(remaining);
+      if (this.#quarantine !== quarantine) return;
+      if (!probe.streaming && !probe.compacting) {
+        this.#quarantine = null;
+        return;
+      }
+      observation = probe.compacting ? "still compacting" : "still streaming";
+    } catch (error) {
+      observation = `state probe failed: ${message(error)}`;
+    }
+    if (this.#quarantine !== quarantine) return;
+    if (Date.now() >= quarantine.deadline) throw this.#faultExpiredQuarantine(quarantine);
+    throw new Error(
+      `Pi RPC Session is quarantined after an unconfirmed cancellation (${observation}); retry shortly or restart the Session`,
+    );
   }
 
   close(): Promise<void> {

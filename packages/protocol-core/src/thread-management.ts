@@ -269,6 +269,19 @@ export function decodeHostThreadListCursor(
   return cursor;
 }
 
+/**
+ * Whether a `thread/list` continues a page the Host merged. Never throws. Only such a request is
+ * Host-owned; any other list the Host cannot decode belongs to native Codex unchanged.
+ */
+export function carriesHostThreadListCursor(request: JsonRpcRequest): boolean {
+  if (request.method !== "thread/list" || !isRecord(request.params)) return false;
+  const cursor = request.params.cursor;
+  return (
+    typeof cursor === "string" &&
+    (cursor.startsWith(HOST_CURSOR_PREFIX) || cursor.startsWith(SECTION_CURSOR_PREFIX))
+  );
+}
+
 export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadListRequest | null {
   if (request.method !== "thread/list") return null;
   const params = paramsObject(request, request.method);

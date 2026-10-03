@@ -42,8 +42,10 @@ function setup(initialHostId: string) {
   const editor = { __reactFiber$host: fiber, parentElement: null };
   const editors = [editor];
   const target: Record<string, unknown> = {};
+  const expressions: string[] = [];
   const renderer = {
     async evaluate<T>(expression: string): Promise<T> {
+      expressions.push(expression);
       return await runInNewContext(expression, {
         document: { querySelectorAll: () => editors },
         window: target,
@@ -56,8 +58,53 @@ function setup(initialHostId: string) {
       });
     },
   };
-  return { renderer, target, local, remote, managers, manager, fiber, editors };
+  return { renderer, target, local, remote, managers, manager, fiber, editors, expressions };
 }
+
+it("reconciles healthy native routing without resending the bootstrap on every check", async () => {
+  const fixture = setup("local");
+  await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+  const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+  try {
+    const initial = fixture.expressions.length;
+    for (let check = 0; check < 12; check += 1) {
+      await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+    }
+    const checks = fixture.expressions.slice(initial);
+    expect(checks).toHaveLength(12);
+    expect(checks.every((expression) => expression.length < 1_024)).toBe(true);
+    expect(fixture.expressions.some((expression) => expression.length > 10_000)).toBe(true);
+    expect(routing.forHost("local")?.manager).toBe(fixture.local);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("rechecks native owners on the short path and reinstalls a missing routing hook", async () => {
+  const fixture = setup("local");
+  await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+  let routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+  try {
+    const original = routing.forHost("local");
+    const replacement = fixture.manager("local");
+    fixture.managers.set("local", replacement);
+    const previous = fixture.expressions.length;
+    await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+    expect(fixture.expressions.slice(previous)).toHaveLength(1);
+    expect(fixture.expressions.at(-1)?.length).toBeLessThan(1_024);
+    expect(routing.forHost("local")?.manager).toBe(replacement);
+    expect(() => original?.policy.requestTarget()).toThrow("retired");
+
+    routing.dispose();
+    const beforeReinstall = fixture.expressions.length;
+    await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+    routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+    expect(fixture.expressions.slice(beforeReinstall)).toHaveLength(2);
+    expect(routing.forHost("local")?.manager).toBe(replacement);
+  } finally {
+    routing.dispose();
+  }
+});
 
 it.each(["local", "remote-ssh-discovered:linux"])(
   "keeps both Hosts addressable and switches immediately from %s without a Controller poll",
@@ -283,6 +330,11 @@ it.each(["single", "mixed"])("installs %s Hosts through the Inspector transport"
   });
   const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
   try {
+    const beforeRefresh = fixture.expressions.length;
+    await installRendererDraftPrewarmPolicy(inspector, 17);
+    const refresh = fixture.expressions.slice(beforeRefresh);
+    expect(refresh).toHaveLength(1);
+    expect(refresh[0]?.length).toBeLessThan(1_024);
     expect(fromId).toHaveBeenCalledWith(17);
     expect(routing.forHost("local")?.manager).toBe(fixture.local);
     if (mode === "mixed") expect(routing.forComposer()).toBeNull();

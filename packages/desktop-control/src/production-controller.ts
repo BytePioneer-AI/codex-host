@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { openRendererLocalPage } from "./renderer-local-page.js";
 import { listCdpTargets } from "./cdp-client.js";
 import { remoteConnectionsExpression } from "./remote-connections-control.js";
@@ -48,12 +49,13 @@ export interface DesktopControllerDependencies {
   ready(readiness: DesktopControllerReadiness): void;
   /** Publishes Renderer integration state for the codexhost console. */
   publishStatus?(document: DesktopControllerStatusDocument): void;
-  sleep(milliseconds: number): Promise<void>;
+  sleep(milliseconds: number, signal?: AbortSignal): Promise<void>;
   now?(): number;
-  monitorIntervalMs: number;
+  monitorIntervalMs?: number;
 }
 
 const PRODUCTION_INSTALL_TIMEOUT_MS = 90_000;
+const RENDERER_MONITOR_INTERVAL_MS = 5_000;
 const RENDERER_CSP_BOOTSTRAP =
   "globalThis.__zod_globalConfig ??= {}; globalThis.__zod_globalConfig.jitless = true;";
 const DESKTOP_CONTROLLER_READINESS_MAX_BYTES = 512;
@@ -97,8 +99,7 @@ const defaultDependencies: DesktopControllerDependencies = {
     process.stdout.write(`${serializeDesktopControllerReadiness(readiness)}\n`);
   },
   publishStatus: createControllerStatusPublisher(),
-  sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
-  monitorIntervalMs: 500,
+  sleep: (milliseconds, signal) => delay(milliseconds, undefined, { signal }),
 };
 
 function rendererCdpEndpoint(value: string): string {
@@ -353,7 +354,16 @@ export async function runDesktopController(
       }
     });
     while (!signal.aborted) {
-      await dependencies.sleep(dependencies.monitorIntervalMs);
+      // Native routing is also validated on demand by Composer and Host requests.
+      // Keep the fallback health check off the Renderer hot path while idle.
+      try {
+        await dependencies.sleep(
+          dependencies.monitorIntervalMs ?? RENDERER_MONITOR_INTERVAL_MS,
+          signal,
+        );
+      } catch (error) {
+        if (!signal.aborted) throw error;
+      }
       if (signal.aborted) continue;
       await useSession(async () => {
         if (!session && now() < nextRecoveryAt) return;

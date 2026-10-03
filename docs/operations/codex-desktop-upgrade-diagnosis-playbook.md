@@ -57,6 +57,16 @@ Codex Desktop 启动
 
 **重要：Adapter `ready` 不是最终验收标准。** 本次事故中 Adapter 已经是 `ready`，但 Agent 点击仍被旧的 prewarm 清理 RPC 中断。
 
+### Renderer 后台检查的开销
+
+Desktop Controller 默认每 5 秒检查一次 Renderer 集成。已安装的文档只执行简短的原生路由核对，不再在每次检查时序列化和发送完整 Request Bridge 安装脚本；路由 hook 缺失时才重新安装。核对仍读取当前 React ownership 和 Host registry，连接替换、断开及多个 Composer 的歧义不会被缓存的成功状态掩盖。
+
+Composer 操作、Host 请求和显式 attachment 仍按需核对连接，不等待后台检查。仅靠后台检测的文档丢失或 hook 消失，发现时间可能延后至下一个 5 秒检查；安装失败后的退避策略不变。
+
+后台等待支持取消，Controller 收到退出信号时立即结束等待，不增加退出时的 5 秒延迟。
+
+此限制减少 CodexHost 添加的后台工作，不对官方 Codex 的 CPU、GPU 或内存用量设硬上限。性能验证应区分后台检查次数、安装脚本传输量与真实界面耗时；隔离测试的工作量下降不能直接换算为整个 Desktop 的加速倍数。
+
 ## 二、第一步：记录现场版本和启动方式
 
 先记录 Codex Desktop 和 Codex Framework 的真实版本，不要只记录项目版本：

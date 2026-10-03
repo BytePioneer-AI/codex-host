@@ -109,6 +109,8 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 ## 更新
 
+`codexhost update` 提供不打开浏览器的终端入口，适用于 npm、macOS DMG 和 Windows 安装包。命令检查最新 Release，已是最新版本时成功退出；有更新时需先退出正在运行的 codexhost。命令复用控制台更新管理器和全局更新锁，等待下载、准备和 Updater 启动完成后退出，随后后台安装并重启 codexhost。终端显示的是交接状态，不代表安装已经完成；安装结果可在控制台查看。检查或准备失败时返回非零退出码。源码构建和 Linux 非 npm 安装不支持自更新。
+
 - codexhost 运行中：通过 Host 的更新流程检查与安装，与 Codex 设置页一致。
 - codexhost 未运行：控制台下载并准备更新，拉起 Updater 后退出；Updater 等待控制台进程退出，再按原流程安装并重新启动 codexhost。
 - npm 安装需通过 npm 命令启动的控制台（`codexhost`、`codexhost console`，或 Codex 设置页）才能更新，因为更新需要 npm 路径环境变量。

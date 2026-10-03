@@ -499,7 +499,7 @@ describe("npm package release", () => {
     expect(source).toContain('userArguments[0] === "delegate"');
     expect(source).toContain('userArguments[0] === "thread"');
     expect(source).toContain('userArguments[0] === "console"');
-    expect(source).toContain('[consoleServer, "open"]');
+    expect(source).toContain('[consoleServer, userArguments[0] === "update" ? "update" : "open"]');
     expect(source).toContain('"--codexhost-delegation-cli"');
     expect(source).toContain("CODEXHOST_CLI_PATH");
     expect(source).toContain('"--codexhost-remote"');
@@ -738,6 +738,12 @@ describe("npm package release", () => {
         expect(reported.launcher).toBe(path.join(realPackageRoot, "bin", "codexhost"));
         expect(reported.packageRoot).toBe(realPackageRoot);
         expect(spawnCodexhost(cellarNode, userBin, ["console", "extra"]).status).toBe(1);
+        const update = spawnCodexhost(cellarNode, userBin, ["update"]);
+        expect(update.status).toBe(0);
+        expect(JSON.parse(update.stdout)).toEqual({ ...reported, args: ["update"] });
+        expect(spawnCodexhost(cellarNode, userBin, ["update", "extra"]).status).toBe(1);
+        await writeFile(path.join(packageRoot, "app", "console-server.mjs"), "process.exit(7);\n");
+        expect(spawnCodexhost(cellarNode, userBin, ["update"]).status).toBe(7);
       } finally {
         await rm(root, { recursive: true, force: true });
       }

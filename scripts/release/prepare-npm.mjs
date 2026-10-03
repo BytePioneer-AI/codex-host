@@ -511,7 +511,7 @@ if (userArguments.length === 0) {
   launchArguments = userArguments;
 } else if (userArguments[0] === "inspect") {
   launchArguments = userArguments;
-} else if (userArguments[0] === "console") {
+} else if (userArguments[0] === "console" || userArguments[0] === "update") {
   launchArguments = null;
   consoleArguments = userArguments.slice(1);
 } else if (userArguments[0] === "remote") {
@@ -535,6 +535,7 @@ if (userArguments.length === 0) {
       "  codexhost --version",
       "  codexhost inspect",
       "  codexhost console",
+      "  codexhost update",
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost broker install|status|stop|uninstall",
@@ -581,9 +582,9 @@ if (launchArguments?.[0] === "launch") {
 }
 
 if (consoleArguments !== null) {
-  if (consoleArguments.length > 0) fail("console accepts no arguments");
+  if (consoleArguments.length > 0) fail(userArguments[0] + " accepts no arguments");
   if (!existsSync(consoleServer)) fail(\`missing console: \${consoleServer}\`);
-  const child = spawn(process.execPath, [consoleServer, "open"], {
+  const child = spawn(process.execPath, [consoleServer, userArguments[0] === "update" ? "update" : "open"], {
     env: { ...updateEnvironment, CODEXHOST_LAUNCHER_EXECUTABLE: launcher },
     stdio: "inherit",
     windowsHide: true,

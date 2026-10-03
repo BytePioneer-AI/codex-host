@@ -57,6 +57,8 @@ export interface ConsoleUpdates {
 export interface CreateConsoleUpdatesOptions {
   /** Called once the Updater owns the update; the console must then exit. */
   onHandedOff(): void;
+  /** Terminal commands must stay alive until preparation and Updater launch finish. */
+  waitForHandoff?: boolean;
   environment?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   /** Process the Updater waits on before installing: this console. */
@@ -304,11 +306,13 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
             options.onHandedOff();
           } catch (error) {
             await lock.release();
-            rejectPrepared(error);
+            throw error;
           }
         };
-        void run();
+        const completion = run();
+        void completion.catch(rejectPrepared);
         const statusPath = await preparedReady;
+        if (options.waitForHandoff) await completion;
         const status = await manager.readStatus(statusPath);
         if (!status) throw new Error("Background update did not create status");
         return { status: publicStatus(status) };

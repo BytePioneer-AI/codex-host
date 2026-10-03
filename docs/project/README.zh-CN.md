@@ -98,6 +98,8 @@ codexhost
 
 > Linux 支持 x64 / ARM64，详见 [Linux 说明](../platforms/linux/linux.zh-CN.md)。
 
+运行 `codexhost update` 可在终端检查并准备升级到最新版本。有更新时请先退出 Codex Desktop；准备完成后由后台更新器安装并重新启动 codexhost。已是最新版本时直接退出。
+
 <details>
 <summary>安装问题排查</summary>
 

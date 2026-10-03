@@ -9,6 +9,7 @@ import { loadConsoleBundle } from "./page.js";
 import { consolePaths, consolePort } from "./paths.js";
 import { startConsoleServer, type RunningConsoleServer } from "./server.js";
 import { createConsoleUpdates } from "./updates.js";
+import { updateFromCommand } from "./update-cli.js";
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const HANDOFF_EXIT_DELAY_MS = 500;
@@ -18,7 +19,7 @@ const appDirectory = path.dirname(entryPath);
 
 function usage(): never {
   console.error(
-    "usage: console-server open [--no-browser] | console-server ensure | console-server serve",
+    "usage: console-server open [--no-browser] | console-server ensure | console-server serve | console-server update",
   );
   process.exit(2);
 }
@@ -93,7 +94,9 @@ const run =
       ? open(rest)
       : command === "ensure"
         ? ensure(rest)
-        : usage();
+        : command === "update"
+          ? updateFromCommand(appDirectory, rest)
+          : usage();
 run.catch((error: unknown) => {
   console.error(`codexhost console: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);

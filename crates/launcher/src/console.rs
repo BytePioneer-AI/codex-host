@@ -265,11 +265,10 @@ fn show(reason: Option<&str>) -> bool {
     }
 }
 
-/// Runs `console-server open`, which ensures one console instance on the
-/// configured port and opens it in the default browser.
-pub fn open(command: &ConsoleCommand) -> Result<bool, Box<dyn Error>> {
+/// Runs a foreground console command (open or update).
+pub fn run(command: &ConsoleCommand, action: &str) -> Result<bool, Box<dyn Error>> {
     let mut process = node_command(command)?;
-    process.arg("open");
+    process.arg(action);
     Ok(process.status()?.success())
 }
 

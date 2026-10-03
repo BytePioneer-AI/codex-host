@@ -130,7 +130,7 @@ impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
+        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost update\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
     );
 }
 
@@ -1254,7 +1254,7 @@ fn start_launch_console(options: &LaunchOptions) {
     }
 }
 
-fn open_console() -> Result<(), Box<dyn Error>> {
+fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
     let installed = InstalledResources::from_current_executable()?;
     if !installed.console_server.is_file() {
         return Err(format!(
@@ -1267,10 +1267,10 @@ fn open_console() -> Result<(), Box<dyn Error>> {
         node: installed.node,
         console_server: installed.console_server,
     };
-    if console::open(&command)? {
+    if console::run(&command, action)? {
         Ok(())
     } else {
-        Err("codexhost console could not be opened".into())
+        Err(format!("codexhost {action} failed").into())
     }
 }
 
@@ -1309,7 +1309,9 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 .transpose()?;
             inspect(custom_install_root.as_deref(), options.json)
         }
-        Some("console") if arguments.len() == 1 => open_console(),
+        Some("console") if arguments.len() == 1 => run_console_command("open"),
+        Some("update") if arguments.len() == 1 => run_console_command("update"),
+        Some("update") => Err("update accepts no arguments".into()),
         Some("console") => Err("console accepts no arguments".into()),
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
         Some("open-loopback-url") if arguments.len() == 1 => {

@@ -117,8 +117,12 @@ describe("reserved native write identities", () => {
         }),
       ).resolves.toMatchObject({ ok: true });
       await first.value.close();
+      // Concurrent creates reach the native Harness in either order: resume the one `first` owned.
+      const released = required(
+        [f.session(0), f.session(1)].find((session) => session.close.mock.calls.length > 0),
+      );
       await expect(
-        f.clients[1].open({ kind: "resume", cwd: f.root, nativeRef: f.session(0).ref }),
+        f.clients[1].open({ kind: "resume", cwd: f.root, nativeRef: released.ref }),
       ).resolves.toMatchObject({ ok: true });
     } finally {
       await f.close();

@@ -42,6 +42,15 @@ wire protocol. Other plugins have distinct
 `ai.bytepioneer.codexhost.<plugin-id>-broker` LaunchAgents and
 `~/.codexhost/harness-broker/<plugin-id>-broker-v1.{json,sock}` resources.
 
+On macOS, a successful `codexhost remote install`, `status` or `uninstall` applies
+the same broker command to every brokered plugin (Claude Code, CodeBuddy,
+WorkBuddy and Cursor CLI). Every broker runs even if an earlier one fails, and
+the command reports the first failure. Reinstalling or repairing the remote
+service therefore replaces brokers left by an older release, and uninstalling
+removes them. When a broker is missing, stopped or stale, the remote connection
+check names the plugin and the `codexhost broker install --harness <plugin-id>`
+command that restores it.
+
 The Host loads a plugin with `managedRemoteHost: true` for managed remote
 execution. Its factory may select a broker client there and a native adapter for
 local execution. The broker loads the same plugin with native context, avoiding

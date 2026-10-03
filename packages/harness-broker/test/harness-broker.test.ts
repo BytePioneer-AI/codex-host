@@ -44,6 +44,23 @@ afterEach(async () => {
 });
 
 describe("macOS Aqua Harness broker", () => {
+  it("explains how to restore a broker that is not running", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cx-broker-missing-"));
+    roots.push(root);
+    const client = new BrokeredHarnessAdapter({
+      harnessId: "cursor-cli",
+      descriptorPath: path.join(root, "missing.json"),
+    });
+
+    const inspection = await client.inspect();
+
+    expect(inspection.status).toBe("unavailable");
+    const message = inspection.status === "unavailable" ? inspection.error.message : "";
+    expect(message).toContain("cursor-cli Aqua Harness broker on this Mac is not running");
+    expect(message).toContain("codexhost broker install --harness cursor-cli");
+    await client.close();
+  });
+
   it("discovers a newly started broker and reconnects on demand after its generation changes", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "cx-broker-restart-"));
     roots.push(root);

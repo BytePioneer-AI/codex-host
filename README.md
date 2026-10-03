@@ -31,7 +31,7 @@ But **Codex** isn't the only great **Agent Harness** — **Claude Code** and **P
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>Download</strong></a> · <a href="#cross-agent-collaboration">Cross-Agent Collaboration</a> · <a href="#remote-harness">Remote</a> · <a href="#join-the-community">Community</a> · <a href="docs/project/README.zh-CN.md">简体中文</a> · <a href="docs/project/README.ko.md">한국어</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>Download</strong></a> · <a href="#cross-agent-collaboration">Cross-Agent Collaboration</a> · <a href="#remote-harness">Remote</a> · <a href="#join-the-community">微信交流群</a> · <a href="docs/project/README.zh-CN.md">简体中文</a> · <a href="docs/project/README.ko.md">한국어</a></p>
 
 <br />
 
@@ -99,12 +99,14 @@ Grab the installer for your platform from [Releases](https://github.com/BytePion
 
 > Linux is supported on x64 and ARM64. See the [Linux guide](docs/platforms/linux/linux.md).
 
+Run `codexhost update` to check for the latest release and prepare an upgrade from your terminal. Quit Codex Desktop first if an upgrade is available. Once preparation completes, the background updater installs it and restarts codexhost. An up-to-date installation exits without changes.
+
 <details>
 <summary>Installation troubleshooting</summary>
 
 **codexhost does not start, or Codex opens without codexhost features**
 
-Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:26339/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open it in your browser, and terminal launches print its address.
+Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:4399/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open it in your browser, and terminal launches print its address.
 
 **macOS: "App can't be verified" on first launch**
 
@@ -280,12 +282,14 @@ CodexHost does it differently:
 
 </details>
 
-## Join the Community
+<a id="join-the-community"></a>
+
+## 微信交流群
 
 <table align="center">
   <tr>
     <td>
-      <strong>Join the Community</strong><br />
+      <strong>微信交流群</strong><br />
       <sub>Scan the QR code to join our WeChat group and chat about CodexHost.</sub>
       <ul>
         <li><sub>Get help with installation</sub></li>
@@ -296,7 +300,7 @@ CodexHost does it differently:
       <sub><strong>Contributions are welcome.</strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="WeChat group QR code" src="docs/imgs/wechat-qrcode.jpg" />
+      <img width="230" alt="WeChat group QR code" src="docs/imgs/wechat-group-4-qrcode.jpg" />
     </td>
   </tr>
 </table>
@@ -313,6 +317,9 @@ cd codex-host
 npm ci
 npm start
 ```
+
+To run the current source with a specific runtime version, use `npm start 0.12.0` (prereleases such as `0.13.0-rc.1` are also accepted). Host status, console version and update-check version reporting use this value. Without a version argument the version remains `<workspace-version>-dev`; `npm start 0.12.0 -- --no-build` reuses artifacts after building once. The override lasts for this launch and does not modify version files or publish packages. Source installations still lack packaged self-update resources; remote npm installation downloads the published package with that version, not the local source.
+
 
 ### Runtime Architecture
 
@@ -332,6 +339,14 @@ Tip: point your coding Agent at the in-repo [codexhost-add-harness Skill](.agent
 
 - Thanks to the [LINUX DO](https://linux.do/) community for their ongoing support.
 - Thanks to [Paseo](https://github.com/getpaseo/paseo), whose approach to multi-Harness integration and architecture inspired ours.
+
+## Contributors
+
+Thanks to everyone who has contributed to CodexHost.
+
+<a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
+  <img alt="CodexHost contributors" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+</a>
 
 ## Star History
 

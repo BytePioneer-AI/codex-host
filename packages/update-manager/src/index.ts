@@ -1,3 +1,4 @@
+export { readRuntimeMetadata } from "./runtime-metadata.js";
 export type {
   ArtifactDownloadProgress,
   ArtifactDownloader,

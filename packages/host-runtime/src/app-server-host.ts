@@ -1,3 +1,17 @@
+import {
+  EXTERNAL_THREAD_PREWARM_PARAM,
+  THREAD_PREWARM_DISCARD_METHOD,
+  threadPrewarmDiscardParamsSchema,
+  REMOTE_SSH_SETUP_METHOD,
+  CONSOLE_REMOTE_CONNECTIONS_METHOD,
+  remoteSshSetupParamsSchema,
+  RUNTIME_STATUS_METHOD,
+  REMOTE_UPDATE_METHOD,
+  remoteUpdateParamsSchema,
+} from "@codexhost/shared-contracts";
+import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
+import type { RuntimeMaintenance } from "./runtime-maintenance.js";
+import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
@@ -230,6 +244,7 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
 import {
+  carriesHostThreadListCursor,
   CodexTurnProjector,
   decodeCreateRoute,
   decodeExternalTransportSelection,
@@ -285,7 +300,6 @@ export interface AppServerHostOptions {
   sharedDelegation?: DelegationControlRegistration;
   stockCodexPath: string;
   arguments: string[];
-  defaultAgent: "codex" | "pi";
   environment?: NodeJS.ProcessEnv;
   desktopInput?: Readable;
   desktopOutput?: Writable;
@@ -307,6 +321,7 @@ export interface AppServerHostOptions {
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
+  runtimeMaintenance?: RuntimeMaintenance;
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
@@ -405,6 +420,7 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
     "CODEX_CLI_PATH",
     "CODEXHOST_HOST_NODE_PATH",
     "CODEXHOST_DATA_DIR",
+    // Retired setting still exported by older remote SSH profile blocks.
     "CODEXHOST_DEFAULT_AGENT",
     "CODEXHOST_HOST_RUNTIME_PATH",
     "CODEXHOST_PI_COMMAND",
@@ -505,9 +521,9 @@ function isHostQuestionRequestId(value: unknown): value is HostQuestionRequestId
   );
 }
 
+/** Only an explicit codexhost transport Model selects an External Harness. */
 export function classifyCreateRequestRoute(
   request: JsonRpcRequest,
-  defaultAgent: "codex" | "pi",
 ): CreateRequestRouteObservation | null {
   const route = decodeCreateRoute(request);
   if (!route) return null;
@@ -522,9 +538,17 @@ export function classifyCreateRequestRoute(
   return {
     requestMethod: "thread/start",
     modelCarrier: "official-model",
-    selectedHarness: defaultAgent,
-    selectionSource: defaultAgent === "pi" ? "default-agent" : "official-model",
+    selectedHarness: "codex",
+    selectionSource: "official-model",
   };
+}
+
+/**
+ * Reads routing fields before ownership is known. Never throws: a shape the Host does not
+ * recognize belongs to native Codex, which validates its own protocol.
+ */
+function routingParams(request: JsonRpcRequest): JsonObject {
+  return isRecord(request.params) ? (request.params as JsonObject) : {};
 }
 
 function requestObject(request: JsonRpcRequest): JsonObject {
@@ -604,6 +628,7 @@ export class AppServerHost {
   readonly #launchSettings: HarnessLaunchSettingsStore;
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
+  readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering = new ExternalTurnSteering();
   readonly #liveCommandCache = new LiveCommandCatalogCache();
   #repository: ExternalThreadRepository;
@@ -616,6 +641,8 @@ export class AppServerHost {
   #unregisterDelegationApi: (() => void) | undefined;
   #unsubscribeAccountState: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
+  /** Active reply guards by request ID; each records whether its request was answered. */
+  readonly #replyGuards = new Map<unknown, Set<{ answered: boolean }>>();
   #pendingOfficialTurnStarts = new Map<unknown, string>();
   #activeWorkDrainWaiters = new Set<() => void>();
   #pendingOfficialDelegationThreads = new Set<string>();
@@ -649,9 +676,10 @@ export class AppServerHost {
       diagnosticOutput: process.stderr,
       ...options,
     };
-    this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) =>
-      this.#takeConsoleReply(value),
-    );
+    this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) => {
+      this.#noteDesktopReply(value);
+      return this.#takeConsoleReply(value);
+    });
     const environment = this.#options.environment ?? process.env;
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
@@ -785,24 +813,30 @@ export class AppServerHost {
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
       externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
     });
+    const maintenanceOperation = <T>(run: () => Promise<T>): Promise<T> =>
+      options.runtimeMaintenance ? options.runtimeMaintenance.operation(run) : run();
     const unregisterDelegationApi = options.onDelegationApi?.({
       listHarnesses: () =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
       inspect: (input) =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
-      start: (input) => {
-        if (options.sharedDelegation && input.harnessId !== "codex") {
-          const active = [...this.#activeOfficialTurns.keys()];
-          const parentThreadId =
-            input.parentThreadId ?? (active.length === 1 ? active[0] : undefined);
-          return options.sharedDelegation.start({
-            ...input,
-            ...(parentThreadId ? { parentThreadId } : {}),
-          });
-        }
-        return this.#waitForPlugins().then(() => this.#delegationCoordinator.start(input));
-      },
-      send: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.send(input)),
+      start: (input) =>
+        maintenanceOperation(async () => {
+          if (options.sharedDelegation && input.harnessId !== "codex") {
+            const active = [...this.#activeOfficialTurns.keys()];
+            const parentThreadId =
+              input.parentThreadId ?? (active.length === 1 ? active[0] : undefined);
+            return options.sharedDelegation.start({
+              ...input,
+              ...(parentThreadId ? { parentThreadId } : {}),
+            });
+          }
+          return this.#waitForPlugins().then(() => this.#delegationCoordinator.start(input));
+        }),
+      send: (input) =>
+        maintenanceOperation(() =>
+          this.#waitForPlugins().then(() => this.#delegationCoordinator.send(input)),
+        ),
       cancel: (input) =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.cancel(input)),
       read: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.read(input)),
@@ -950,6 +984,7 @@ export class AppServerHost {
       }
       await this.#closeOfficialRuntime();
       this.#externalRuntime.clear();
+      this.#externalPrewarms.clear();
       this.#pendingOfficialTurnStarts.clear();
       this.#routeObservationTracker.clear();
       this.#unregisterDelegationApi?.();
@@ -1024,6 +1059,10 @@ export class AppServerHost {
     if (this.#closeRequested || this.#desktopInputEnded) {
       return { error: { code: -32090, message: "Codex Desktop is closing" } };
     }
+    if (method === CONSOLE_REMOTE_CONNECTIONS_METHOD) {
+      return requestDesktopRemoteConnections(this.#options.environment ?? process.env, params);
+    }
+    if (method === REMOTE_SSH_SETUP_METHOD) timeoutMs = Math.max(timeoutMs, 330_000);
     const parsed = jsonRpcRequestSchema.safeParse({
       id: `${this.#consoleRequestPrefix}${++this.#nextConsoleRequest}`,
       method,
@@ -1041,7 +1080,9 @@ export class AppServerHost {
       );
     });
     this.#dispatchDesktopRequest(() =>
-      this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+      this.#guardReply(request, () =>
+        this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+      ),
     );
     try {
       const message = await reply;
@@ -1112,7 +1153,7 @@ export class AppServerHost {
       this.#dispatchDesktopRequest(() =>
         this.#desktopRequests.run(threadId, () =>
           this.#externalRuntime.idleRelease.runOperation(threadId, () =>
-            this.#handleDesktopRequest(request, frame),
+            this.#guardReply(request, () => this.#handleDesktopRequest(request, frame)),
           ),
         ),
       );
@@ -1127,11 +1168,85 @@ export class AppServerHost {
     await this.#closeOfficialRuntime();
   }
 
+  /**
+   * A handler failure must still answer the request; otherwise Codex Desktop waits forever.
+   * Requests already answered or handed to native Codex are left alone. Work a handler detaches
+   * through {@link #dispatchDesktopReply} keeps its own guard.
+   */
+  async #guardReply(request: JsonRpcRequest, run: () => Promise<void>): Promise<void> {
+    const guard = { answered: false };
+    let guards = this.#replyGuards.get(request.id);
+    if (!guards) {
+      guards = new Set();
+      this.#replyGuards.set(request.id, guards);
+    }
+    guards.add(guard);
+    try {
+      await run();
+    } catch (error) {
+      this.#diagnose(error);
+      if (!guard.answered) {
+        await this.#writer
+          .json(rpcError(request, -32603, "codexhost could not handle the request"))
+          .catch((writeError: unknown) => this.#diagnose(writeError));
+      }
+    } finally {
+      guards.delete(guard);
+      if (guards.size === 0) this.#replyGuards.delete(request.id);
+    }
+  }
+
+  #markDesktopRequestAnswered(id: unknown): void {
+    for (const guard of this.#replyGuards.get(id) ?? []) guard.answered = true;
+  }
+
+  #noteDesktopReply(value: JsonValue): void {
+    if (isRecord(value) && "id" in value && !("method" in value)) {
+      this.#markDesktopRequestAnswered(value.id);
+    }
+  }
+
+  /** Detaches work that answers `request`, keeping the failure fallback. */
+  #dispatchDesktopReply(
+    request: JsonRpcRequest,
+    run: () => Promise<void>,
+    threadId?: string,
+  ): void {
+    this.#dispatchDesktopRequest(() => this.#guardReply(request, run), threadId);
+  }
+
   async #handleDesktopRequest(
     request: JsonRpcRequest,
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    if (
+      request.method === RUNTIME_STATUS_METHOD ||
+      request.method === REMOTE_UPDATE_METHOD ||
+      request.method === REMOTE_SSH_SETUP_METHOD
+    ) {
+      const maintenance = this.#options.runtimeMaintenance;
+      try {
+        if (!maintenance)
+          throw new Error("Runtime version management is unavailable in this build");
+        const result =
+          request.method === RUNTIME_STATUS_METHOD
+            ? await maintenance.status()
+            : request.method === REMOTE_SSH_SETUP_METHOD
+              ? await maintenance.setupSsh(remoteSshSetupParamsSchema.parse(request.params))
+              : await maintenance.start(remoteUpdateParamsSchema.parse(request.params).version);
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32090, errorMessage(error)));
+      }
+      return;
+    }
+    if (this.#options.runtimeMaintenance?.blocked) {
+      await this.#writer.json(
+        rpcError(request, -32090, "Remote service is updating; reconnect shortly"),
+      );
+      return;
+    }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
       await this.#writer.json(
         rpcEnvelope(request, {
@@ -1147,7 +1262,7 @@ export class AppServerHost {
         request.method.startsWith("codexhost/thread/"))
     ) {
       try {
-        const reply = await this.#options.sharedThreads.route(request, this.#options.defaultAgent);
+        const reply = await this.#options.sharedThreads.route(request);
         if (reply) {
           await this.#writer.json(reply);
           return;
@@ -1169,6 +1284,34 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(request, -32601, "Method is unavailable on the shared Thread service"),
       );
+      return;
+    }
+    if (this.#externalPrewarms.observe(request)) {
+      await this.#writer.json(
+        rpcError(request, -32075, "External prewarm close was not confirmed"),
+      );
+      return;
+    }
+    if (request.method === THREAD_PREWARM_DISCARD_METHOD) {
+      const parsed = threadPrewarmDiscardParamsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid prewarm discard request"));
+        return;
+      }
+      try {
+        const discarded = await this.#externalPrewarms.discard(parsed.data.threadId, {
+          get: (id) => this.#externalRuntime.get(id),
+          remove: async (thread) => {
+            await this.#repository.removeThread(thread.id);
+            this.#externalRuntime.remove(thread.id);
+            this.#routeObservationTracker.forgetThread(thread.id);
+          },
+        });
+        await this.#writer.json(rpcEnvelope(request, { result: { discarded } }));
+      } catch (error) {
+        this.#diagnose(error);
+        await this.#writer.json(rpcError(request, -32075, "External prewarm could not close"));
+      }
       return;
     }
     if (
@@ -1219,11 +1362,11 @@ export class AppServerHost {
       request.method === "codexhost/update/start" ||
       request.method === "codexhost/update/status"
     ) {
-      this.#dispatchDesktopRequest(() => this.#handleUpdateRequest(request));
+      this.#dispatchDesktopReply(request, () => this.#handleUpdateRequest(request));
       return;
     }
     if (request.method === CONSOLE_OPEN_METHOD) {
-      this.#dispatchDesktopRequest(() => this.#handleConsoleOpen(request));
+      this.#dispatchDesktopReply(request, () => this.#handleConsoleOpen(request));
       return;
     }
     if (
@@ -1231,11 +1374,11 @@ export class AppServerHost {
       request.method === "codexhost/account/list" ||
       request.method === "codexhost/account/refresh"
     ) {
-      this.#dispatchDesktopRequest(() => this.#handleCodexAccountRequest(request));
+      this.#dispatchDesktopReply(request, () => this.#handleCodexAccountRequest(request));
       return;
     }
     if (request.method === CREDENTIAL_IMPORTS_METHOD) {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         if (!credentialImportsParamsSchema.safeParse(request.params).success) {
           await this.#writer.json(rpcError(request, -32602, "Invalid credential import request"));
           return;
@@ -1262,7 +1405,7 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/accounts/sources") {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         if (!harnessAccountSourceListParamsSchema.safeParse(request.params).success) {
           await this.#writer.json(
             rpcError(request, -32602, "Invalid Harness account source list params"),
@@ -1279,7 +1422,7 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/accounts/inspect") {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         const params = harnessAccountInspectParamsSchema.safeParse(request.params);
         if (!params.success) {
           await this.#writer.json(
@@ -1303,7 +1446,7 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/accounts/list") {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         const params = harnessAccountListParamsSchema.safeParse(request.params);
         if (!params.success) {
           await this.#writer.json(rpcError(request, -32602, "Invalid Harness account list params"));
@@ -1323,11 +1466,11 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/inspect") {
-      this.#dispatchDesktopRequest(() => this.#inspectHarness(request));
+      this.#dispatchDesktopReply(request, () => this.#inspectHarness(request));
       return;
     }
     if (request.method === HARNESS_INSTALLATION_METHOD) {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         await this.#waitForPlugins();
         try {
           const result = await handleHarnessInstallation(request.params, this.#externalAdapters);
@@ -1347,14 +1490,14 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/web-ui/open") {
-      this.#dispatchDesktopRequest(() => this.#openHarnessWebUi(request));
+      this.#dispatchDesktopReply(request, () => this.#openHarnessWebUi(request));
       return;
     }
     if (
       request.method === HARNESS_LAUNCH_SETTINGS_GET_METHOD ||
       request.method === HARNESS_LAUNCH_SETTINGS_SET_METHOD
     ) {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         const schema =
           request.method === HARNESS_LAUNCH_SETTINGS_SET_METHOD
             ? harnessLaunchSettingsSetSchema
@@ -1397,7 +1540,7 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/plugins/list") {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         if (!harnessPluginListParamsSchema.safeParse(request.params).success) {
           await this.#writer.json(rpcError(request, -32602, "Invalid Harness plugin list params"));
           return;
@@ -1409,7 +1552,7 @@ export class AppServerHost {
       return;
     }
     if (isSessionImportRequest(request.method)) {
-      this.#dispatchDesktopRequest(() => this.#handleSessionImport(request));
+      this.#dispatchDesktopReply(request, () => this.#handleSessionImport(request));
       return;
     }
     if (request.method === "codexhost/thread/fork") {
@@ -1466,7 +1609,12 @@ export class AppServerHost {
         if (!decoded) throw new Error("Expected thread/list request");
         listRequest = decoded;
       } catch (error) {
-        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        // Only a Host cursor makes the list Host-owned. Any other shape is native Codex's to judge.
+        if (carriesHostThreadListCursor(request)) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        } else {
+          await this.#forwardOfficialRequest(request, frame);
+        }
         return;
       }
       if (
@@ -1476,7 +1624,7 @@ export class AppServerHost {
         await this.#forwardOfficialRequest(request, frame);
         return;
       }
-      this.#dispatchDesktopRequest(() =>
+      this.#dispatchDesktopReply(request, () =>
         listRequest.sortKey === "section_position"
           ? this.#listSectionThreads(request, frame, listRequest)
           : this.#listThreads(request, listRequest),
@@ -1490,32 +1638,48 @@ export class AppServerHost {
         if (!decoded) throw new Error("Expected thread/section/move request");
         move = decoded;
       } catch (error) {
-        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        // Either Thread may be External: the moved one or the one it is placed before.
+        const params = routingParams(request);
+        let external = false;
+        for (const threadId of [params.threadId, params.beforeThreadId]) {
+          if (typeof threadId !== "string") continue;
+          const location = await this.#locateExternalThread(threadId);
+          if (await this.#writeResolutionError(request, location)) return;
+          if (location.kind === "external") external = true;
+        }
+        if (external) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        } else {
+          await this.#forwardOfficialRequest(request, frame);
+        }
         return;
       }
       // Moves read and rewrite one shared order, so they apply one at a time.
       const task = this.#sectionMoves.then(() => this.#moveThreadSection(request, frame, move));
       this.#sectionMoves = task.catch(() => undefined);
-      this.#dispatchDesktopRequest(() => task);
+      this.#dispatchDesktopReply(request, () => task);
       return;
     }
     if (request.method === "thread/archive" || request.method === "thread/unarchive") {
-      let threadId: string;
-      try {
-        const decoded = decodeThreadArchiveRequest(request);
-        if (!decoded) throw new Error(`Expected ${request.method} request`);
-        threadId = decoded.threadId;
-      } catch (error) {
-        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
-        return;
-      }
-      const location = await this.#locateExternalThread(threadId);
+      const threadId = routingParams(request).threadId;
+      const location =
+        typeof threadId === "string"
+          ? await this.#locateExternalThread(threadId)
+          : ({ kind: "official" } as const);
       if (await this.#writeResolutionError(request, location)) return;
       if (location.kind === "official") {
         await this.#forwardOfficialRequest(request, frame);
         return;
       }
       if (location.kind === "external") {
+        try {
+          if (!decodeThreadArchiveRequest(request)) {
+            throw new Error(`Expected ${request.method} request`);
+          }
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+          return;
+        }
         await this.#setExternalThreadArchived(
           request,
           location,
@@ -1525,29 +1689,33 @@ export class AppServerHost {
       return;
     }
     if (request.method === "thread/metadata/update") {
-      let update: DecodedThreadMetadataUpdateRequest;
-      try {
-        const decoded = decodeThreadMetadataUpdateRequest(request);
-        if (!decoded) throw new Error("Expected thread/metadata/update request");
-        update = decoded;
-      } catch (error) {
-        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
-        return;
-      }
-      const location = await this.#locateExternalThread(update.threadId);
+      const threadId = routingParams(request).threadId;
+      const location =
+        typeof threadId === "string"
+          ? await this.#locateExternalThread(threadId)
+          : ({ kind: "official" } as const);
       if (await this.#writeResolutionError(request, location)) return;
       if (location.kind === "official") {
         await this.#forwardOfficialRequest(request, frame);
         return;
       }
       if (location.kind === "external") {
+        let update: DecodedThreadMetadataUpdateRequest;
+        try {
+          const decoded = decodeThreadMetadataUpdateRequest(request);
+          if (!decoded) throw new Error("Expected thread/metadata/update request");
+          update = decoded;
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+          return;
+        }
         await this.#updateExternalThreadMetadata(request, location, update);
       }
       return;
     }
     let createRoute: CreateRequestRouteObservation | null;
     try {
-      createRoute = classifyCreateRequestRoute(request, this.#options.defaultAgent);
+      createRoute = classifyCreateRequestRoute(request);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
@@ -1639,7 +1807,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "thread/turns/list" || request.method === "thread/items/list") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const resolution =
         typeof params.threadId === "string"
           ? await this.#resolveExternalThread(params.threadId)
@@ -1656,7 +1824,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "turn/start") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const threadId = params.threadId;
       const resolution =
         typeof threadId === "string"
@@ -1672,7 +1840,8 @@ export class AppServerHost {
       }
       if (await this.#writeResolutionError(request, resolution)) return;
       if (resolution.kind === "external") {
-        this.#dispatchDesktopRequest(
+        this.#dispatchDesktopReply(
+          request,
           () => this.#startExternalTurn(request, resolution.thread),
           resolution.thread.id,
         );
@@ -1683,14 +1852,15 @@ export class AppServerHost {
       }
     }
     if (request.method === "turn/steer") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const resolution =
         typeof params.threadId === "string"
           ? await this.#resolveExternalThread(params.threadId)
           : ({ kind: "official" } as const);
       if (await this.#writeResolutionError(request, resolution)) return;
       if (resolution.kind === "external") {
-        this.#dispatchDesktopRequest(
+        this.#dispatchDesktopReply(
+          request,
           () => this.#steerExternalTurn(request, resolution.thread),
           resolution.thread.id,
         );
@@ -1698,7 +1868,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "turn/interrupt") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const resolution =
         typeof params.threadId === "string"
           ? await this.#resolveExternalThread(params.threadId)
@@ -1710,7 +1880,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "thread/read") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const location =
         typeof params.threadId === "string"
           ? await this.#locateExternalThread(params.threadId)
@@ -1735,7 +1905,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "thread/read" || request.method === "thread/resume") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const resolution =
         typeof params.threadId === "string"
           ? await this.#resolveExternalThread(params.threadId)
@@ -1761,7 +1931,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "thread/unsubscribe") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       if (typeof params.threadId === "string") {
         const location = await this.#locateExternalThread(params.threadId);
         if (await this.#writeResolutionError(request, location)) return;
@@ -1780,7 +1950,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "thread/name/set" || request.method === "thread/delete") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const location =
         typeof params.threadId === "string"
           ? await this.#locateExternalThread(params.threadId)
@@ -1887,6 +2057,7 @@ export class AppServerHost {
     }
     try {
       await this.#officialRuntime.sendFrame(frame);
+      this.#markDesktopRequestAnswered(request.id);
     } catch {
       if (request.method === "turn/start") {
         this.#pendingOfficialTurnStarts.delete(request.id);
@@ -3232,7 +3403,8 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32078, "Thread is not externally owned"));
       return;
     }
-    this.#dispatchDesktopRequest(
+    this.#dispatchDesktopReply(
+      request,
       () => this.#executeResolvedThreadCommand(request, resolution.thread, params.data),
       resolution.thread.id,
     );
@@ -3714,6 +3886,9 @@ export class AppServerHost {
           ...(requestedThinkingOptionId ? { requestedThinkingOptionId } : {}),
           ...(requestedPermissionModeId ? { requestedPermissionModeId } : {}),
         });
+        if (params[EXTERNAL_THREAD_PREWARM_PARAM] === true) {
+          this.#externalPrewarms.register(externalThread);
+        }
         this.#routeObservationTracker.bindCreatedThread(request.id, externalThread.id);
         await this.#writer.json(
           rpcEnvelope(request, {
@@ -5268,8 +5443,12 @@ export class AppServerHost {
   }
 
   #dispatchDesktopRequest(run: () => Promise<void>, threadId?: string): void {
-    const task = threadId ? this.#externalRuntime.idleRelease.runOperation(threadId, run) : run();
-    void task.catch((error) => this.#diagnose(error));
+    try {
+      const task = threadId ? this.#externalRuntime.idleRelease.runOperation(threadId, run) : run();
+      void task.catch((error) => this.#diagnose(error));
+    } catch (error) {
+      this.#diagnose(error);
+    }
   }
 
   #diagnose(error: unknown): void {

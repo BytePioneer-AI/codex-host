@@ -178,9 +178,35 @@ async function readDescriptor(descriptorPath: string): Promise<HarnessBrokerDesc
   try {
     process.kill(descriptor.ownerPid, 0);
   } catch {
-    throw new Error("Aqua Harness broker owner process is unavailable");
+    throw new BrokerNotRunningError("its owner process has exited");
   }
   return descriptor;
+}
+
+/** The broker LaunchAgent is not serving: never installed, stopped, or left by an older release. */
+class BrokerNotRunningError extends Error {}
+
+const BROKER_NOT_RUNNING_CODES = new Set(["ENOENT", "ECONNREFUSED"]);
+
+function brokerNotRunningMessage(harnessId: HarnessId, reason: string): string {
+  return (
+    `The ${harnessId} Aqua Harness broker on this Mac is not running (${reason}). ` +
+    `Repair the remote service, or run on this Mac: codexhost broker install --harness ${harnessId}`
+  );
+}
+
+function describeBrokerConnectFailure(error: unknown, harnessId: HarnessId): Error {
+  if (error instanceof BrokerNotRunningError)
+    return new Error(brokerNotRunningMessage(harnessId, error.message));
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code && BROKER_NOT_RUNNING_CODES.has(code)) {
+    const reason =
+      code === "ENOENT"
+        ? "its descriptor or socket is missing"
+        : "its socket refused the connection";
+    return new Error(brokerNotRunningMessage(harnessId, reason));
+  }
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 class BrokerConnection {
@@ -212,24 +238,34 @@ class BrokerConnection {
   }
 
   static async connect(descriptorPath: string, harnessId: HarnessId): Promise<BrokerConnection> {
-    const descriptor = await readDescriptor(descriptorPath);
-    if (descriptor.harnessId !== harnessId)
-      throw new Error("Aqua broker belongs to another Harness");
-    const socket = net.createConnection(descriptor.socketPath);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error("Timed out connecting to Aqua Harness broker")),
-        HARNESS_BROKER_REQUEST_TIMEOUT_MS,
-      );
-      socket.once("connect", () => {
-        clearTimeout(timeout);
-        resolve();
+    let descriptor: HarnessBrokerDescriptorV1;
+    let socket: Socket;
+    let connecting: Socket | undefined;
+    try {
+      descriptor = await readDescriptor(descriptorPath);
+      if (descriptor.harnessId !== harnessId)
+        throw new Error("Aqua broker belongs to another Harness");
+      connecting = net.createConnection(descriptor.socketPath);
+      const pending = connecting;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("Timed out connecting to Aqua Harness broker")),
+          HARNESS_BROKER_REQUEST_TIMEOUT_MS,
+        );
+        pending.once("connect", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        pending.once("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
       });
-      socket.once("error", (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-    });
+      socket = pending;
+    } catch (error) {
+      connecting?.destroy();
+      throw describeBrokerConnectFailure(error, harnessId);
+    }
     const connection = new BrokerConnection(descriptor, socket);
     const hello = connection.#waitForHello();
     await writeBrokerFrame(socket, {

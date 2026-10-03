@@ -111,6 +111,26 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).not.toHaveBeenCalled();
   });
 
+  it("asks an outdated remote for its runtime status again after it was updated", async () => {
+    const status = {
+      runningVersion: "0.12.0",
+      installedVersion: "0.12.0",
+      restartRequired: false,
+      remote: true,
+      updateSupported: true,
+      update: { phase: "idle", targetVersion: null, error: null },
+    };
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Method not found"), { code: -32601 }))
+      .mockResolvedValueOnce(status);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.runtimeStatus) throw new Error("Missing runtime status client");
+    await expect(client.runtimeStatus()).rejects.toMatchObject({ code: -32601 });
+    await expect(client.runtimeStatus()).resolves.toEqual(status);
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("validates launch setting requests and responses on the selected request client", async () => {
     const harnessId = harnessIdSchema.parse("workbuddy");
     const result = { path: "D:\\Apps\\WorkBuddy", restartRequired: true };
@@ -291,11 +311,11 @@ describe("Renderer fixed Model request client", () => {
   it("opens the console through its fixed Host method and validates the address", async () => {
     const sendRequest = vi
       .fn()
-      .mockResolvedValueOnce({ url: "http://127.0.0.1:26339/" })
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:4399/" })
       .mockResolvedValueOnce({ url: "https://example.com/" });
     const client = createRendererModelClient([{ addNotificationCallback: vi.fn(), sendRequest }]);
     if (!client?.openConsole) throw new Error("Synthetic Model client cannot open the console");
-    await expect(client.openConsole()).resolves.toEqual({ url: "http://127.0.0.1:26339/" });
+    await expect(client.openConsole()).resolves.toEqual({ url: "http://127.0.0.1:4399/" });
     expect(sendRequest).toHaveBeenCalledWith("codexhost/console/open", {});
     await expect(client.openConsole()).rejects.toThrow();
   });
@@ -402,15 +422,18 @@ describe("Renderer fixed Model request client", () => {
       "openHarnessWebUi",
       "readUpdateStatus",
       "refreshCodexAccounts",
+      "runtimeStatus",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
       "setHarnessDisplaySettings",
       "setHarnessLaunchSettings",
       "setIdleReleaseSettings",
+      "setupSsh",
       "startUpdate",
       "subscribeCodexAccounts",
       "subscribeThreadUsage",
+      "updateRemote",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(

@@ -584,11 +584,14 @@ export function decodeExternalTransportModel(
   return selection === null ? null : selection.model;
 }
 
+/**
+ * Recognizes a Thread create the Host owns. Only a text Model can carry a codexhost transport
+ * marker; any other shape belongs to native Codex and is never validated here. A malformed
+ * codexhost marker still throws because the Host owns that format.
+ */
 export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
   if (request.method !== "thread/start") return null;
-  if (!isJsonObject(request.params) || typeof request.params.model !== "string") {
-    throw new Error("thread/start params.model must be text");
-  }
+  if (!isJsonObject(request.params) || typeof request.params.model !== "string") return null;
 
   const pluginRoute = decodeHarnessPluginRoute(request.params.model);
   if (pluginRoute) {

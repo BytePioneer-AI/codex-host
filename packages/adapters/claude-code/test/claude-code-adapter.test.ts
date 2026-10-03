@@ -417,9 +417,20 @@ describe("Claude Code HarnessAdapter", () => {
   it("opens and closes unused Sessions without creating a Transport", async () => {
     const { adapter, dependencies } = fixture();
     const session = await openSession(adapter);
+    const other = await openSession(adapter);
 
+    expect(session.initialState.nativeRef).toBeUndefined();
+    expect(session.nativeWriterRef).toEqual({
+      harnessId: "claude-code",
+      nativeSessionId: "claude-id-1",
+      formatVersion: 1,
+    });
+    expect(other.nativeWriterRef?.nativeSessionId).not.toBe(
+      session.nativeWriterRef?.nativeSessionId,
+    );
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     await session.close();
+    await other.close();
     expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 

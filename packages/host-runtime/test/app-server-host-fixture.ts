@@ -1,3 +1,4 @@
+import type { RuntimeMaintenance } from "../src/runtime-maintenance.js";
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,7 +16,7 @@ import { MappingStore } from "@codexhost/mapping-store";
 import { type ExternalHarnessId, type JsonObject } from "@codexhost/protocol-core";
 import { harnessIdSchema, type DeepSeekModernSessionCandidate } from "@codexhost/shared-contracts";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
-import { AppServerHost } from "../src/app-server-host.js";
+import { AppServerHost, type AppServerHostOptions } from "../src/app-server-host.js";
 import type { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import type { CodexAccountControl } from "../src/account/codex-account-control.js";
 import type { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
@@ -276,10 +277,12 @@ export function createFixture(
     createOfficialConnection?: () =>
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
+    runtimeMaintenance?: RuntimeMaintenance;
     consoleOpener?: HostConsoleOpener;
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+    onCreateRequestRoute?: AppServerHostOptions["onCreateRequestRoute"];
   } = {},
 ) {
   const adapter =
@@ -305,7 +308,6 @@ export function createFixture(
     ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
-    defaultAgent: "codex",
     desktopInput,
     desktopOutput,
     diagnosticOutput,
@@ -332,10 +334,12 @@ export function createFixture(
         }
       : {}),
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
+    ...(options.runtimeMaintenance ? { runtimeMaintenance: options.runtimeMaintenance } : {}),
     ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),
+    ...(options.onCreateRequestRoute ? { onCreateRequestRoute: options.onCreateRequestRoute } : {}),
   });
   const running = host.run();
   void running.then(

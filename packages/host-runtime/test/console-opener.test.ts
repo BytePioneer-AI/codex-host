@@ -37,15 +37,15 @@ describe("Host console opener", () => {
 
   it("reports the console root address", () => {
     expect(
-      parseConsoleAddress("codexhost console: http://127.0.0.1:26339/?view=diagnostics\n"),
-    ).toBe("http://127.0.0.1:26339/");
+      parseConsoleAddress("codexhost console: http://127.0.0.1:4399/?view=diagnostics\n"),
+    ).toBe("http://127.0.0.1:4399/");
     expect(parseConsoleAddress("codexhost console: https://evil.example/\n")).toBeNull();
     expect(parseConsoleAddress("nothing\n")).toBeNull();
   });
 
   it("runs console-server open with the Host environment", async () => {
     const spawnProcess = vi.fn(() =>
-      fakeChild("codexhost console: http://127.0.0.1:26339/\n", "", 0),
+      fakeChild("codexhost console: http://127.0.0.1:4399/\n", "", 0),
     );
     const opener = createHostConsoleOpener({
       entrypoint: "/opt/codexhost/app/console-server.mjs",
@@ -53,7 +53,7 @@ describe("Host console opener", () => {
       nodePath: "/opt/codexhost/runtime/node",
       spawnProcess: spawnProcess as never,
     });
-    await expect(opener.open()).resolves.toEqual({ url: "http://127.0.0.1:26339/" });
+    await expect(opener.open()).resolves.toEqual({ url: "http://127.0.0.1:4399/" });
     expect(spawnProcess).toHaveBeenCalledWith(
       "/opt/codexhost/runtime/node",
       ["/opt/codexhost/app/console-server.mjs", "open"],
@@ -68,8 +68,8 @@ describe("Host console opener", () => {
       entrypoint: "/console.mjs",
       environment: {},
       spawnProcess: (() =>
-        fakeChild("", "codexhost console: port 26339 is used by another program\n", 1)) as never,
+        fakeChild("", "codexhost console: port 4399 is used by another program\n", 1)) as never,
     });
-    await expect(opener.open()).rejects.toThrow("port 26339 is used by another program");
+    await expect(opener.open()).rejects.toThrow("port 4399 is used by another program");
   });
 });

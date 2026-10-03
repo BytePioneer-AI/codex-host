@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
+import net, { type AddressInfo } from "node:net";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocketServer } from "ws";
 
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(() => ({ unref: vi.fn() })),
@@ -13,6 +15,7 @@ import type {
 } from "../src/remote-host-install.js";
 import {
   classifyRemoteHostProbeResponse,
+  probeWebSocket,
   inspectRemoteHost,
   setRemoteHostLifecycleDependenciesForTest,
   startRemoteHost,
@@ -79,6 +82,36 @@ describe("remote Host lifecycle", () => {
         socketPath,
       ),
     ).toBeNull();
+  });
+
+  it("identifies a Host that announces Threads before answering the probe", async () => {
+    const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise((resolve) => server.once("listening", resolve));
+    server.on("connection", (connection) => {
+      connection.send(JSON.stringify({ method: "thread/started", params: {} }));
+      connection.on("message", () => {
+        connection.send(JSON.stringify({ method: "thread/started", params: {} }));
+        connection.send(
+          JSON.stringify({
+            id: 1,
+            error: { code: -32090, message: "Application updates are unavailable" },
+          }),
+        );
+      });
+    });
+    const { port } = server.address() as AddressInfo;
+    try {
+      await expect(
+        probeWebSocket({
+          socketPath,
+          createConnection: () => net.createConnection(port, "127.0.0.1"),
+          timeoutMs: 2_000,
+          timeoutMessage: "timed out",
+        }),
+      ).resolves.toEqual({ state: "running", socketPath, protocol: "codexhost" });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it("reports installation and runtime state together", async () => {

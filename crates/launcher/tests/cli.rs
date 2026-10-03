@@ -115,7 +115,7 @@ fn console_starts_before_missing_desktop_resources_are_rejected() {
     fs::write(root.join("app/console-server.mjs"), "fixture").expect("console entry");
     let node = root.join("runtime/node");
     // No real server or browser: record the native launch order only.
-    fs::write(&node, "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$CODEXHOST_DATA_DIR/calls\"\nif [ \"$2\" = open ]; then\n  echo 'codexhost console: http://127.0.0.1:26339/'\nfi\n")
+    fs::write(&node, "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$CODEXHOST_DATA_DIR/calls\"\nif [ \"$2\" = open ]; then\n  echo 'codexhost console: http://127.0.0.1:4399/'\nfi\n")
         .expect("fake Node");
     fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).expect("make executable");
     let output = output_of_copied_binary(
@@ -131,7 +131,7 @@ fn console_starts_before_missing_desktop_resources_are_rejected() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("bundled Shim"), "{stderr}");
     assert_eq!(calls, "ensure\nopen\n");
-    assert!(stderr.contains("codexhost console: http://127.0.0.1:26339/"));
+    assert!(stderr.contains("codexhost console: http://127.0.0.1:4399/"));
 }
 
 #[cfg(target_os = "macos")]
@@ -161,4 +161,46 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     assert!(stderr.contains("bundled Shim"));
     assert!(stderr.contains("Contents/Resources/libexec/codexhost-shim"));
     assert!(!stderr.contains("invalid launcher arguments"));
+}
+
+#[cfg(unix)]
+#[test]
+fn update_runs_packaged_console_without_launching_desktop() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("codexhost update {unique}"));
+    for directory in ["bin", "runtime", "app"] {
+        fs::create_dir_all(root.join(directory)).unwrap();
+    }
+    let installed = root.join("bin/codexhost");
+    fs::copy(launcher_path(), &installed).unwrap();
+    fs::write(root.join("app/console-server.mjs"), "fixture").unwrap();
+    let node = root.join("runtime/node");
+    fs::write(
+        &node,
+        "#!/bin/sh\nprintf '%s\\n' \"$2\"\nexit \"$TEST_UPDATE_EXIT\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+    for code in ["0", "7"] {
+        let output = output_of_copied_binary(
+            Command::new(&installed)
+                .arg("update")
+                .env("TEST_UPDATE_EXIT", code),
+        )
+        .unwrap();
+        assert_eq!(output.status.success(), code == "0");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "update");
+    }
+    let output = Command::new(&installed)
+        .args(["update", "extra"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("update accepts no arguments"));
+    fs::remove_dir_all(root).unwrap();
 }

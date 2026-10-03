@@ -489,6 +489,7 @@ const updateEnvironment = {
 const remoteSshBootstrapEnvironment = [
   "CODEX_INSTALL_DIR",
   "CODEXHOST_DATA_DIR",
+  // Retired; older remote profile blocks still export it.
   "CODEXHOST_DEFAULT_AGENT",
   "CODEXHOST_HOST_NODE_PATH",
   "CODEXHOST_HOST_RUNTIME_PATH",
@@ -511,7 +512,7 @@ if (userArguments.length === 0) {
   launchArguments = userArguments;
 } else if (userArguments[0] === "inspect") {
   launchArguments = userArguments;
-} else if (userArguments[0] === "console") {
+} else if (userArguments[0] === "console" || userArguments[0] === "update") {
   launchArguments = null;
   consoleArguments = userArguments.slice(1);
 } else if (userArguments[0] === "remote") {
@@ -535,6 +536,7 @@ if (userArguments.length === 0) {
       "  codexhost --version",
       "  codexhost inspect",
       "  codexhost console",
+      "  codexhost update",
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost broker install|status|stop|uninstall",
@@ -581,9 +583,9 @@ if (launchArguments?.[0] === "launch") {
 }
 
 if (consoleArguments !== null) {
-  if (consoleArguments.length > 0) fail("console accepts no arguments");
+  if (consoleArguments.length > 0) fail(userArguments[0] + " accepts no arguments");
   if (!existsSync(consoleServer)) fail(\`missing console: \${consoleServer}\`);
-  const child = spawn(process.execPath, [consoleServer, "open"], {
+  const child = spawn(process.execPath, [consoleServer, userArguments[0] === "update" ? "update" : "open"], {
     env: { ...updateEnvironment, CODEXHOST_LAUNCHER_EXECUTABLE: launcher },
     stdio: "inherit",
     windowsHide: true,
@@ -634,26 +636,48 @@ if (consoleArguments !== null) {
     process.exit(code ?? 1);
   });
 } else if (remoteArguments !== null) {
+  // Every Harness whose plugin selects a BrokeredHarnessAdapter for a managed
+  // macOS remote Host needs its own Aqua LaunchAgent. Keep this list in sync with
+  // those plugin factories; Claude Code keeps the legacy unlabelled invocation.
+  const nativeBrokerHarnessIds = ["claude-code", "codebuddy", "workbuddy", "cursor-cli"];
   const runNativeBroker = (command) => {
-    const broker = spawn(
-      launcher,
-      ["broker", command, "--node", process.execPath, "--host-runtime", hostRuntime],
-      {
-        env: updateEnvironment,
-        // remote status is a stable JSON stdout surface. Keep the broker's
-        // human-readable status beside it on stderr instead of corrupting JSON.
-        stdio: command === "status" ? ["inherit", process.stderr, "inherit"] : "inherit",
-        windowsHide: true,
-      },
-    );
-    broker.on("error", (error) => fail(error.message));
-    broker.on("exit", (code, signal) => {
-      if (signal) {
-        process.kill(process.pid, signal);
+    let index = 0;
+    let firstFailure = 0;
+    // Run every broker even after a failure so one broken service cannot leave
+    // the others stale or installed, then report the first failure.
+    const next = () => {
+      if (index >= nativeBrokerHarnessIds.length) {
+        process.exit(firstFailure);
         return;
       }
-      process.exit(code ?? 1);
-    });
+      const harnessId = nativeBrokerHarnessIds[index++];
+      const broker = spawn(
+        launcher,
+        [
+          "broker",
+          command,
+          ...(harnessId === "claude-code" ? [] : ["--harness", harnessId]),
+          "--node", process.execPath, "--host-runtime", hostRuntime,
+        ],
+        {
+          env: updateEnvironment,
+          // remote status is a stable JSON stdout surface. Keep the broker's
+          // human-readable status beside it on stderr instead of corrupting JSON.
+          stdio: command === "status" ? ["inherit", process.stderr, "inherit"] : "inherit",
+          windowsHide: true,
+        },
+      );
+      broker.on("error", (error) => fail(error.message));
+      broker.on("exit", (code, signal) => {
+        if (signal) {
+          process.kill(process.pid, signal);
+          return;
+        }
+        if (code !== 0 && firstFailure === 0) firstFailure = code ?? 1;
+        next();
+      });
+    };
+    next();
   };
   const child = spawn(
     process.execPath,

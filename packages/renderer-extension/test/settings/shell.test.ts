@@ -19,6 +19,7 @@ describe("Renderer settings foundation", () => {
     expect(pages.map(({ id }) => id)).toEqual(DEFAULT_RENDERER_SETTINGS_PAGE_IDS);
     expect(pages.map(({ label }) => label)).toEqual([
       "Connections",
+      "Remote connections",
       "Accounts",
       "Session Import",
       "General",
@@ -27,6 +28,7 @@ describe("Renderer settings foundation", () => {
     ]);
     expect(pages.map(({ icon }) => icon)).toEqual([
       "connections",
+      "gateway",
       "accounts",
       "session-import",
       "settings",
@@ -43,6 +45,7 @@ describe("Renderer settings foundation", () => {
 
     expect(pages.map(({ id }) => id)).toEqual([
       "connections",
+      "remote-connections",
       "accounts",
       "session-import",
       "appearance",

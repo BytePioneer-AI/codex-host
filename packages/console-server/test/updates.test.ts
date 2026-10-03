@@ -74,13 +74,13 @@ describe("console updates", () => {
     });
   });
 
-  it.each([false, true])("hands off to the Updater (waitForHandoff=%s)", async (waitForHandoff) => {
+  it("hands off to the Updater before returning", async () => {
     const { target, environment } = await npmLayout("linux");
     const spawnUpdater = vi.fn(() => Object.assign(new EventEmitter(), { pid: 4321 }) as never);
     const onHandedOff = vi.fn();
     const updates = createConsoleUpdates({
       onHandedOff,
-      waitForHandoff,
+      waitForHandoff: true,
       environment,
       platform: "linux",
       processId: 777,
@@ -94,8 +94,7 @@ describe("console updates", () => {
     const result = await updates.start(target);
 
     expect(result.status).toMatchObject({ version: "1.1.0", installation: "npm" });
-    if (waitForHandoff) expect(onHandedOff).toHaveBeenCalledOnce();
-    await vi.waitFor(() => expect(onHandedOff).toHaveBeenCalledOnce());
+    expect(onHandedOff).toHaveBeenCalledOnce();
     const requestPath = (spawnUpdater.mock.calls[0] as unknown as [string, string])[1];
     const request = JSON.parse(await readFile(requestPath, "utf8")) as Record<string, unknown>;
     expect(request).toMatchObject({

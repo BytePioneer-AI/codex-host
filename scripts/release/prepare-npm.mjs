@@ -489,6 +489,7 @@ const updateEnvironment = {
 const remoteSshBootstrapEnvironment = [
   "CODEX_INSTALL_DIR",
   "CODEXHOST_DATA_DIR",
+  // Retired; older remote profile blocks still export it.
   "CODEXHOST_DEFAULT_AGENT",
   "CODEXHOST_HOST_NODE_PATH",
   "CODEXHOST_HOST_RUNTIME_PATH",

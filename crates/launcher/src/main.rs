@@ -69,7 +69,6 @@ const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
 const DATA_DIRECTORY_ENV: &str = "CODEXHOST_DATA_DIR";
 const REMOTE_SSH_MANAGED_ENV: &str = "CODEXHOST_REMOTE_SSH_MANAGED";
 const PI_COMMAND_ENV: &str = "CODEXHOST_PI_COMMAND";
-const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
 const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
 const LAUNCHER_EXECUTABLE_ENV: &str = "CODEXHOST_LAUNCHER_EXECUTABLE";
 const RUNTIME_DESCRIPTOR_PATH_ENV: &str = "CODEXHOST_RUNTIME_DESCRIPTOR_PATH";
@@ -508,8 +507,6 @@ fn desktop_controller_command(
         .arg(&control.renderer_cdp_endpoint)
         .arg("--renderer")
         .arg(&options.renderer_extension)
-        .arg("--default-agent")
-        .arg("codex")
         .arg("--attachment-port")
         .arg(control.attachment_port.to_string())
         .arg("--attachment-nonce")
@@ -914,7 +911,6 @@ fn desktop_environment(
             OsString::from(HOST_RUNTIME_PATH_ENV),
             options.host_runtime.as_os_str().to_owned(),
         ),
-        (OsString::from(DEFAULT_AGENT_ENV), OsString::from("codex")),
         (
             OsString::from(LAUNCHER_PID_ENV),
             OsString::from(std::process::id().to_string()),
@@ -1406,14 +1402,14 @@ mod tests {
     #[cfg(target_os = "windows")]
     use super::wait_for_desktop_exit;
     use super::{
-        CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
-        LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, NPM_CLI_PATH_ENV, NPM_LAUNCHER_PATH_ENV,
-        NPM_NODE_PATH_ENV, NPM_PACKAGE_ROOT_ENV, RUNTIME_DESCRIPTOR_PATH_ENV,
-        ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, absolute_directory,
-        allocate_runtime_control, delegation_node, desktop_controller_command, desktop_environment,
-        emit_ready_line, managed_desktop_data_directory, npm_update_runtime_environment,
-        parse_inspect_options, parse_launch_options, read_bounded_controller_line,
-        read_bounded_loopback_url, validate_loopback_root_url,
+        CONTROL_NONCE_ENV, CONTROL_PORT_ENV, HOST_NODE_PATH_ENV, LAUNCHER_EXECUTABLE_ENV,
+        LAUNCHER_PID_ENV, NPM_CLI_PATH_ENV, NPM_LAUNCHER_PATH_ENV, NPM_NODE_PATH_ENV,
+        NPM_PACKAGE_ROOT_ENV, RUNTIME_DESCRIPTOR_PATH_ENV, ResolvedLaunchOptions, RuntimeControl,
+        STARTUP_TRACE_ENV, absolute_directory, allocate_runtime_control, delegation_node,
+        desktop_controller_command, desktop_environment, emit_ready_line,
+        managed_desktop_data_directory, npm_update_runtime_environment, parse_inspect_options,
+        parse_launch_options, read_bounded_controller_line, read_bounded_loopback_url,
+        validate_loopback_root_url,
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{DESKTOP_TREE_REFRESH_INTERVAL, desktop_tree_refresh_due};
@@ -1663,8 +1659,6 @@ mod tests {
                 "http://127.0.0.1:43123",
                 "--renderer",
                 "/opt/renderer-extension.js",
-                "--default-agent",
-                "codex",
                 "--attachment-port",
                 "43124",
                 "--attachment-nonce",
@@ -1707,7 +1701,6 @@ mod tests {
                 .find(|(candidate, _)| candidate == name)
                 .map(|(_, value)| value)
         };
-        assert_eq!(value(DEFAULT_AGENT_ENV), Some(&OsString::from("codex")));
         assert_eq!(
             value(LAUNCHER_PID_ENV),
             Some(&OsString::from(std::process::id().to_string()))

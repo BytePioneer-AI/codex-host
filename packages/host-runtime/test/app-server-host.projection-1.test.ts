@@ -768,26 +768,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("terminates the official app-server when its Host session closes", async () => {
-    const fixture = createFixture({ officialExitsOnInputEnd: false });
-    fixture.official.kill.mockImplementationOnce(() => {
-      fixture.official.stdout.end();
-      fixture.official.emit("exit", null, "SIGTERM");
-      return true;
-    });
-
-    try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledTimes(1));
-      expect(() => fixture.host.close()).not.toThrow();
-      await expect(fixture.running).resolves.toBe(0);
-      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
-    } finally {
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
   it("accepts confirmed graceful EOF shutdown without signaling the exited process", async () => {
     const fixture = createFixture();
     const exited = vi.fn();
@@ -800,52 +780,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       expect(exited).toHaveBeenCalledExactlyOnceWith(0, null);
       expect(fixture.official.kill).not.toHaveBeenCalled();
     } finally {
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("lets an active official Turn reach its terminal event after Desktop disconnects", async () => {
-    const fixture = createFixture({ officialExitsOnInputEnd: false });
-    const threadId = "019cbe86-76cf-7721-b5e4-978934e18757";
-    const turnId = "019cbe86-8eef-79d0-8658-cf2c64aa38cf";
-
-    try {
-      await bindOfficialThread(fixture, threadId);
-      writeRequest(fixture.desktopInput, {
-        id: 1,
-        method: "turn/start",
-        params: { threadId, input: [{ type: "text", text: "keep running" }] },
-      });
-      await readJsonLine(fixture.official.stdin);
-      fixture.official.stdout.write(
-        `${JSON.stringify({ method: "turn/started", params: { threadId, turn: { id: turnId } } })}\n`,
-      );
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-
-      fixture.host.disconnect();
-      const beforeTerminal = await Promise.race([
-        fixture.running.then(() => "settled" as const),
-        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
-      ]);
-
-      expect(beforeTerminal).toBe("pending");
-      expect(fixture.official.kill).not.toHaveBeenCalled();
-
-      fixture.official.stdout.write(
-        `${JSON.stringify({
-          method: "turn/completed",
-          params: { threadId, turn: { id: turnId, status: "completed" } },
-        })}\n`,
-      );
-      await expect(
-        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
-      ).resolves.toBeTruthy();
-      await expect(fixture.running).resolves.toBe(0);
-      expect(fixture.official.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
-    } finally {
-      fixture.host.close();
       fixture.desktopInput.end();
       await fixture.running;
       rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });

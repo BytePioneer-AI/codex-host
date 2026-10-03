@@ -71,7 +71,6 @@ for (const resume of [false, true]) {
   const host = new AppServerHost({
     stockCodexPath: "unused-synthetic-official",
     arguments: ["app-server"],
-    defaultAgent: "codex",
     desktopInput: input,
     desktopOutput: output,
     diagnosticOutput: diagnostic,

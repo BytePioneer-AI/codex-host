@@ -1,4 +1,5 @@
-import type { JsonObject } from "@codexhost/shared-contracts";
+import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
+import { harnessIdSchema, type JsonObject } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -127,6 +128,72 @@ describe("official Codex passthrough", () => {
       expect(await fixture.collector.waitFor((message) => requestId(message, 4))).toMatchObject({
         id: 4,
         error: { code: -32602 },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("rejects an undecodable section move anchored before an External Thread", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startExternalThread(fixture, "codexhost/pi-native", 3);
+      writeRequest(fixture.desktopInput, {
+        id: 4,
+        method: "thread/section/move",
+        params: { threadId: "official-thread", sectionId: 7, beforeThreadId: threadId },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 4))).toMatchObject({
+        id: 4,
+        error: { code: -32602 },
+      });
+      expect(fixture.official.stdin.readableLength).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("answers a request whose handler fails instead of leaving Desktop waiting", async () => {
+    const fixture = createFixture({
+      onCreateRequestRoute: () => {
+        throw new Error("synthetic handler failure");
+      },
+    });
+    try {
+      await initialize(fixture);
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "thread/start",
+        params: { model: "official/model" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
+        id: 2,
+        error: { code: -32603 },
+      });
+      expect(fixture.official.stdin.readableLength).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("answers a detached Host request whose work fails after the handler returned", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    Object.defineProperty(adapter, "inspectAccount", {
+      get() {
+        throw new Error("synthetic detached failure");
+      },
+    });
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    try {
+      await fixture.ready;
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "codexhost/harness/accounts/sources",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
+        id: 2,
+        error: { code: -32603 },
       });
     } finally {
       await stopFixture(fixture);

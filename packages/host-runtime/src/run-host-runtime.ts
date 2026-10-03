@@ -48,7 +48,6 @@ import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js"
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
-const DEFAULT_AGENT_ENV = "CODEXHOST_DEFAULT_AGENT";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
 
 export function createRemoteOfficialAppServerPlan(
@@ -96,15 +95,10 @@ export function resolveHostRuntimePaths(input: {
 
 function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
   stockCodexPath: string;
-  defaultAgent: "codex" | "pi";
 } {
   const stockCodexPath = environment[STOCK_CODEX_PATH_ENV];
   if (!stockCodexPath) throw new Error(`${STOCK_CODEX_PATH_ENV} is required`);
-  const defaultAgent = environment[DEFAULT_AGENT_ENV];
-  if (defaultAgent !== "codex" && defaultAgent !== "pi") {
-    throw new Error(`${DEFAULT_AGENT_ENV} must be 'codex' or 'pi'`);
-  }
-  return { stockCodexPath, defaultAgent };
+  return { stockCodexPath };
 }
 
 /**
@@ -194,7 +188,7 @@ export async function runHostRuntime(input: {
   hostRuntimeUrl?: string;
   updateCoordinator?: HostUpdateCoordinator;
 }): Promise<number> {
-  const { stockCodexPath, defaultAgent } = requiredRuntimeConfiguration(input.environment);
+  const { stockCodexPath } = requiredRuntimeConfiguration(input.environment);
   const { packaged: hostRuntimePath, maintenance: maintenanceRuntimePath } =
     resolveHostRuntimePaths(input);
   const runtimeMaintenance = maintenanceRuntimePath
@@ -262,7 +256,6 @@ export async function runHostRuntime(input: {
                 : {}),
               stockCodexPath,
               arguments: input.arguments,
-              defaultAgent,
               environment: delegationEnvironment,
               ...shared,
               ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
@@ -285,7 +278,6 @@ export async function runHostRuntime(input: {
           await mappingStore.initialize();
           const common = {
             stockCodexPath,
-            defaultAgent,
             environment: delegationEnvironment,
             ...shared,
             ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
@@ -379,7 +371,6 @@ export async function runHostRuntime(input: {
         ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
         stockCodexPath,
         arguments: [],
-        defaultAgent,
         environment: delegationEnvironment,
         desktopInput: sharedOwner.input,
         desktopOutput: sharedOwner.output,
@@ -416,7 +407,6 @@ export async function runHostRuntime(input: {
             }),
             stockCodexPath,
             arguments: [],
-            defaultAgent,
             environment: delegationEnvironment,
             desktopInput,
             desktopOutput,

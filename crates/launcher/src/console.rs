@@ -374,7 +374,7 @@ mod tests {
         std::fs::write(
             &node,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$2\" >> '{}'\nif [ \"$2\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:26339/'; fi\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$2\" >> '{}'\nif [ \"$2\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:4399/'; fi\n",
                 calls.display()
             ),
         )
@@ -458,10 +458,10 @@ mod tests {
     fn accepts_only_a_loopback_console_address() {
         assert_eq!(
             parse_console_url(
-                b"noise\ncodexhost console: http://127.0.0.1:26339/?view=diagnostics\n"
+                b"noise\ncodexhost console: http://127.0.0.1:4399/?view=diagnostics\n"
             )
             .as_deref(),
-            Some("http://127.0.0.1:26339/?view=diagnostics")
+            Some("http://127.0.0.1:4399/?view=diagnostics")
         );
         assert_eq!(
             parse_console_url(b"codexhost console: https://example.com/\n"),

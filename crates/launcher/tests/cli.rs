@@ -115,7 +115,7 @@ fn console_starts_before_missing_desktop_resources_are_rejected() {
     fs::write(root.join("app/console-server.mjs"), "fixture").expect("console entry");
     let node = root.join("runtime/node");
     // No real server or browser: record the native launch order only.
-    fs::write(&node, "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$CODEXHOST_DATA_DIR/calls\"\nif [ \"$2\" = open ]; then\n  echo 'codexhost console: http://127.0.0.1:26339/'\nfi\n")
+    fs::write(&node, "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$CODEXHOST_DATA_DIR/calls\"\nif [ \"$2\" = open ]; then\n  echo 'codexhost console: http://127.0.0.1:4399/'\nfi\n")
         .expect("fake Node");
     fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).expect("make executable");
     let output = output_of_copied_binary(
@@ -131,7 +131,7 @@ fn console_starts_before_missing_desktop_resources_are_rejected() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("bundled Shim"), "{stderr}");
     assert_eq!(calls, "ensure\nopen\n");
-    assert!(stderr.contains("codexhost console: http://127.0.0.1:26339/"));
+    assert!(stderr.contains("codexhost console: http://127.0.0.1:4399/"));
 }
 
 #[cfg(target_os = "macos")]

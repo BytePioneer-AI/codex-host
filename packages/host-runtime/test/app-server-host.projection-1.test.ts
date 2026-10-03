@@ -1513,12 +1513,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
   });
 
   it("opens the local console only when the Host can", async () => {
-    const consoleOpener = { open: vi.fn(async () => ({ url: "http://127.0.0.1:26339/" })) };
+    const consoleOpener = { open: vi.fn(async () => ({ url: "http://127.0.0.1:4399/" })) };
     const local = createFixture({ consoleOpener });
     writeRequest(local.desktopInput, { id: 27, method: "codexhost/console/open", params: {} });
     await expect(
       local.collector.waitFor((message) => requestId(message, 27)),
-    ).resolves.toMatchObject({ result: { url: "http://127.0.0.1:26339/" } });
+    ).resolves.toMatchObject({ result: { url: "http://127.0.0.1:4399/" } });
     writeRequest(local.desktopInput, {
       id: 28,
       method: "codexhost/console/open",

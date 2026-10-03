@@ -2246,8 +2246,8 @@ describe("Renderer Updates page", () => {
   it("offers the codexhost console on the About page when the Host can open it", async () => {
     const openConsole = vi
       .fn()
-      .mockRejectedValueOnce(new Error("port 26339 is used by another program"))
-      .mockResolvedValueOnce({ url: "http://127.0.0.1:26339/" });
+      .mockRejectedValueOnce(new Error("port 4399 is used by another program"))
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:4399/" });
     const client = {
       checkUpdate: vi.fn(),
       startUpdate: vi.fn(),
@@ -2276,7 +2276,7 @@ describe("Renderer Updates page", () => {
     if (!button) throw new Error("console button is missing");
     button.dispatch("click");
     await vi.waitFor(() =>
-      expect(visibleText(content)).toContain("port 26339 is used by another program"),
+      expect(visibleText(content)).toContain("port 4399 is used by another program"),
     );
     button.dispatch("click");
     await vi.waitFor(() => expect(openConsole).toHaveBeenCalledTimes(2));

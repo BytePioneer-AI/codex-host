@@ -41,7 +41,7 @@ type: warning
 | 启动方式 | 行为 |
 |---|---|
 | 安装包（macOS 打开应用、Windows 开始菜单） | 先启动控制台并在默认浏览器打开总览，再启动 Codex Desktop；启动失败或注入持续失败时另外打开总览查看原因 |
-| 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 控制台在后台与 Codex Desktop 一同启动，启动结束时在终端输出 `codexhost console: http://127.0.0.1:26339/` |
+| 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 控制台在后台与 Codex Desktop 一同启动，启动结束时在终端输出 `codexhost console: http://127.0.0.1:4399/` |
 
 控制台在校验 Shim、Host Runtime、Desktop Controller 和 Renderer 等 Codex 启动资源之前启动；这些文件缺失时，仍能提供故障恢复入口。npm 包装脚本将这部分校验交给 Launcher，不提前拦截。Launcher、Node 和控制台自身文件仍须可用，端口占用等控制台自身故障不保证能打开网页；命令参数解析失败也不进入启动流程。
 
@@ -57,11 +57,11 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 | Windows 开始菜单 | “codexhost console” 快捷方式 |
 | Codex 设置页 | “关于”页的“打开控制台”，通过本地 Host 的 `codexhost/console/open` 打开；远程 Host 不支持 |
 
-地址为 `http://127.0.0.1:26339/`。命令会复用已运行的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），先让旧实例退出再以当前安装启动。控制台不需要登录，直接访问即可。
+地址为 `http://127.0.0.1:4399/`。命令会复用已运行的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），先让旧实例退出再以当前安装启动。控制台不需要登录，直接访问即可。
 
 ## 端口
 
-- 默认 `26339`，只监听 `127.0.0.1`。可用 `CODEXHOST_CONSOLE_PORT` 修改（1024–65535）。
+- 默认 `4399`，只监听 `127.0.0.1`。可用 `CODEXHOST_CONSOLE_PORT` 修改（1024–65535）。
 - 端口被其他程序占用时直接报错，不自动换端口。
 - codexhost 运行期间控制台保持运行；codexhost 未运行时，30 分钟无请求后自动退出，下次打开或启动 codexhost 时重新启动。
 

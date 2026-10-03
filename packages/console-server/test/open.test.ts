@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { consoleBuildId, consoleUrl } from "../src/open.js";
 
 it("opens the overview containing diagnostics", () => {
-  expect(consoleUrl(26339)).toBe("http://127.0.0.1:26339/");
+  expect(consoleUrl(4399)).toBe("http://127.0.0.1:4399/");
   expect(consoleUrl(26340)).toBe("http://127.0.0.1:26340/");
 });
 

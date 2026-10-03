@@ -242,7 +242,6 @@ function managedEnvironment(
     CODEXHOST_HOST_NODE_PATH: manifest.nodePath,
     CODEXHOST_HOST_RUNTIME_PATH: manifest.hostRuntimePath,
     CODEXHOST_DATA_DIR: manifest.dataDirectory,
-    CODEXHOST_DEFAULT_AGENT: "codex",
     CODEXHOST_REMOTE_SSH_MANAGED: "1",
     PATH: `${path.dirname(manifest.wrapperPath)}${path.delimiter}${path.dirname(manifest.stockCodexPath)}${path.delimiter}${environment.PATH ?? "/usr/bin:/bin"}`,
   };

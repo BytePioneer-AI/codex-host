@@ -7,10 +7,9 @@ import { installCurrentRendererAdapter } from "./versioned-renderer-adapter.js";
 
 export function installRendererBinding(
   enabledAgents: readonly RendererAgent[] = DEFAULT_RENDERER_AGENTS,
-  defaultAgent: RendererAgent = "codex",
 ): RendererBindingProbeApi {
   window.__codexhostRendererBindingProbeV1?.dispose();
-  const binding = installRendererBindingProbe({ enabledAgents, defaultAgent });
+  const binding = installRendererBindingProbe({ enabledAgents });
   try {
     const adapter = installCurrentRendererAdapter();
     binding.setAdapter(adapter.status, adapter.dispose, adapter.applyAgent, adapter.modelControl);

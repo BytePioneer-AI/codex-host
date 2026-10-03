@@ -47,7 +47,6 @@ function setup() {
   const host = new AppServerHost({
     stockCodexPath: "/unused",
     arguments: [],
-    defaultAgent: "codex",
     externalOnly: true,
     desktopInput: owner.input,
     desktopOutput: owner.output,

@@ -48,7 +48,6 @@ describe.skipIf(!RUN_REAL)("Antigravity real Subagent Desktop protocol", () => {
       const host = new AppServerHost({
         stockCodexPath: "/unused",
         arguments: ["app-server"],
-        defaultAgent: "codex",
         desktopInput: input,
         desktopOutput: output,
         diagnosticOutput: diagnostics,

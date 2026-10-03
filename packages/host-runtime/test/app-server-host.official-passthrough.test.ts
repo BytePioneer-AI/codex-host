@@ -132,4 +132,46 @@ describe("official Codex passthrough", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("rejects an undecodable section move anchored before an External Thread", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startExternalThread(fixture, "codexhost/pi-native", 3);
+      writeRequest(fixture.desktopInput, {
+        id: 4,
+        method: "thread/section/move",
+        params: { threadId: "official-thread", sectionId: 7, beforeThreadId: threadId },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 4))).toMatchObject({
+        id: 4,
+        error: { code: -32602 },
+      });
+      expect(fixture.official.stdin.readableLength).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("answers a request whose handler fails instead of leaving Desktop waiting", async () => {
+    const fixture = createFixture({
+      onCreateRequestRoute: () => {
+        throw new Error("synthetic handler failure");
+      },
+    });
+    try {
+      await initialize(fixture);
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "thread/start",
+        params: { model: "official/model" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
+        id: 2,
+        error: { code: -32603 },
+      });
+      expect(fixture.official.stdin.readableLength).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 });

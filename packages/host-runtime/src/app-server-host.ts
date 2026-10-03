@@ -296,7 +296,6 @@ export interface AppServerHostOptions {
   sharedDelegation?: DelegationControlRegistration;
   stockCodexPath: string;
   arguments: string[];
-  defaultAgent: "codex" | "pi";
   environment?: NodeJS.ProcessEnv;
   desktopInput?: Readable;
   desktopOutput?: Writable;
@@ -417,6 +416,7 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
     "CODEX_CLI_PATH",
     "CODEXHOST_HOST_NODE_PATH",
     "CODEXHOST_DATA_DIR",
+    // Retired setting still exported by older remote SSH profile blocks.
     "CODEXHOST_DEFAULT_AGENT",
     "CODEXHOST_HOST_RUNTIME_PATH",
     "CODEXHOST_PI_COMMAND",
@@ -517,9 +517,9 @@ function isHostQuestionRequestId(value: unknown): value is HostQuestionRequestId
   );
 }
 
+/** Only an explicit codexhost transport Model selects an External Harness. */
 export function classifyCreateRequestRoute(
   request: JsonRpcRequest,
-  defaultAgent: "codex" | "pi",
 ): CreateRequestRouteObservation | null {
   const route = decodeCreateRoute(request);
   if (!route) return null;
@@ -534,8 +534,8 @@ export function classifyCreateRequestRoute(
   return {
     requestMethod: "thread/start",
     modelCarrier: "official-model",
-    selectedHarness: defaultAgent,
-    selectionSource: defaultAgent === "pi" ? "default-agent" : "official-model",
+    selectedHarness: "codex",
+    selectionSource: "official-model",
   };
 }
 
@@ -636,6 +636,8 @@ export class AppServerHost {
   #unregisterDelegationApi: (() => void) | undefined;
   #unsubscribeAccountState: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
+  /** Desktop requests whose handler has neither answered nor handed them to native Codex. */
+  readonly #unansweredDesktopRequests = new Set<unknown>();
   #pendingOfficialTurnStarts = new Map<unknown, string>();
   #activeWorkDrainWaiters = new Set<() => void>();
   #pendingOfficialDelegationThreads = new Set<string>();
@@ -669,9 +671,10 @@ export class AppServerHost {
       diagnosticOutput: process.stderr,
       ...options,
     };
-    this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) =>
-      this.#takeConsoleReply(value),
-    );
+    this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) => {
+      this.#noteDesktopReply(value);
+      return this.#takeConsoleReply(value);
+    });
     const environment = this.#options.environment ?? process.env;
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
@@ -1142,7 +1145,7 @@ export class AppServerHost {
       this.#dispatchDesktopRequest(() =>
         this.#desktopRequests.run(threadId, () =>
           this.#externalRuntime.idleRelease.runOperation(threadId, () =>
-            this.#handleDesktopRequest(request, frame),
+            this.#answerDesktopRequest(request, frame),
           ),
         ),
       );
@@ -1155,6 +1158,35 @@ export class AppServerHost {
     this.#externalSteering.close();
     if (this.#drainActiveWorkOnInputEnd) await this.#waitForActiveWorkToDrain();
     await this.#closeOfficialRuntime();
+  }
+
+  /**
+   * A handler failure must still answer the request; otherwise Codex Desktop waits forever.
+   * Requests already answered or handed to native Codex are left alone.
+   */
+  async #answerDesktopRequest(
+    request: JsonRpcRequest,
+    frame: Buffer<ArrayBufferLike>,
+  ): Promise<void> {
+    this.#unansweredDesktopRequests.add(request.id);
+    try {
+      await this.#handleDesktopRequest(request, frame);
+    } catch (error) {
+      this.#diagnose(error);
+      if (this.#unansweredDesktopRequests.has(request.id)) {
+        await this.#writer
+          .json(rpcError(request, -32603, "codexhost could not handle the request"))
+          .catch((writeError: unknown) => this.#diagnose(writeError));
+      }
+    } finally {
+      this.#unansweredDesktopRequests.delete(request.id);
+    }
+  }
+
+  #noteDesktopReply(value: JsonValue): void {
+    if (isRecord(value) && "id" in value && !("method" in value)) {
+      this.#unansweredDesktopRequests.delete(value.id);
+    }
   }
 
   async #handleDesktopRequest(
@@ -1204,7 +1236,7 @@ export class AppServerHost {
         request.method.startsWith("codexhost/thread/"))
     ) {
       try {
-        const reply = await this.#options.sharedThreads.route(request, this.#options.defaultAgent);
+        const reply = await this.#options.sharedThreads.route(request);
         if (reply) {
           await this.#writer.json(reply);
           return;
@@ -1552,13 +1584,16 @@ export class AppServerHost {
         if (!decoded) throw new Error("Expected thread/section/move request");
         move = decoded;
       } catch (error) {
-        const threadId = routingParams(request).threadId;
-        const location =
-          typeof threadId === "string"
-            ? await this.#locateExternalThread(threadId)
-            : ({ kind: "official" } as const);
-        if (await this.#writeResolutionError(request, location)) return;
-        if (location.kind === "external") {
+        // Either Thread may be External: the moved one or the one it is placed before.
+        const params = routingParams(request);
+        let external = false;
+        for (const threadId of [params.threadId, params.beforeThreadId]) {
+          if (typeof threadId !== "string") continue;
+          const location = await this.#locateExternalThread(threadId);
+          if (await this.#writeResolutionError(request, location)) return;
+          if (location.kind === "external") external = true;
+        }
+        if (external) {
           await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
         } else {
           await this.#forwardOfficialRequest(request, frame);
@@ -1626,7 +1661,7 @@ export class AppServerHost {
     }
     let createRoute: CreateRequestRouteObservation | null;
     try {
-      createRoute = classifyCreateRequestRoute(request, this.#options.defaultAgent);
+      createRoute = classifyCreateRequestRoute(request);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
@@ -1966,6 +2001,7 @@ export class AppServerHost {
     }
     try {
       await this.#officialRuntime.sendFrame(frame);
+      this.#unansweredDesktopRequests.delete(request.id);
     } catch {
       if (request.method === "turn/start") {
         this.#pendingOfficialTurnStarts.delete(request.id);

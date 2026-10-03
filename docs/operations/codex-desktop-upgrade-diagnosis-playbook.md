@@ -59,6 +59,10 @@ Codex Desktop 启动
 
 ## 二、第一步：记录现场版本和启动方式
 
+本地 Host 的官方后端异常退出或连接异常关闭后，Host 使用与远程部署相同的退避恢复机制：确认旧进程退出，再重建后端并重新初始化已有客户端。恢复期间官方请求仍返回不可用；失败的回合或语音启动请求不会自动重放。后端就绪后，用户可以显式重试，已订阅的持久 Thread 在需要时通过原生 `thread/resume` 恢复。此过程不重启 Desktop，也不关闭外部 Harness。
+
+若语音启动提示 `Official request failed; retry explicitly`，应先检查 Host Runtime 日志是否持续出现 `Codex is unavailable`，以及是否随后记录 `official Codex is unavailable; restarting in ...ms`。该报错本身不能证明麦克风权限、网络或语音服务异常；恢复失败时继续核对真实后端启动和连接故障。
+
 先记录 Codex Desktop 和 Codex Framework 的真实版本，不要只记录项目版本：
 
 ```bash

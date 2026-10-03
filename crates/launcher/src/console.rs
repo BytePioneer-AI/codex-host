@@ -313,6 +313,9 @@ fn desktop_json(installation: &DesktopInstallation, process_ids: &[u32]) -> Valu
         "version": installation.version,
         "build": installation.build,
         "installRoot": installation.install_root.display().to_string(),
+        "packagedCodexCli": installation.packaged_codex_cli.display().to_string(),
+        "executableCodexCli": installation.executable_codex_cli.display().to_string(),
+        "codexCliSource": installation.codex_cli_source.as_str(),
         "processIds": process_ids,
     })
 }
@@ -359,6 +362,38 @@ pub fn inspect_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inspect_desktop_distinguishes_packaged_and_selected_cli_with_source() {
+        let root = std::env::temp_dir().join("inspect-cli");
+        let installation = DesktopInstallation {
+            identity: DesktopIdentity::LinuxPackage {
+                package_name: "chatgpt".into(),
+                brand: "chatgpt".into(),
+                flavor: "prod".into(),
+            },
+            version: "1.2.3".into(),
+            build: "1.2.3".into(),
+            asar_integrity: "sha256:fixture".into(),
+            install_root: root.clone(),
+            desktop_launcher: root.join("launcher"),
+            desktop_executable: root.join("ChatGPT"),
+            packaged_codex_cli: root.join("resources/codex"),
+            executable_codex_cli: root.join("independent/codex"),
+            codex_cli_source: codexhost_platform::CodexCliSource::Environment,
+        };
+        let document = desktop_json(&installation, &[123]);
+        assert_eq!(
+            document["packagedCodexCli"],
+            installation.packaged_codex_cli.display().to_string()
+        );
+        assert_eq!(
+            document["executableCodexCli"],
+            installation.executable_codex_cli.display().to_string()
+        );
+        assert_eq!(document["codexCliSource"], "environment");
+        assert_eq!(document["processIds"], json!([123]));
+    }
 
     #[cfg(unix)]
     #[test]

@@ -4,8 +4,11 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use super::codex_cli::select_codex_cli;
 use super::installation::{canonical_unix_executable, sha256_file};
-use crate::{DesktopIdentity, DesktopInstallation, PlatformError};
+use crate::{
+    CodexCliOverride, CodexCliSource, DesktopIdentity, DesktopInstallation, PlatformError,
+};
 
 const LINUX_INSTALL_ROOT: &str = "/usr/lib/chatgpt";
 const LINUX_DESKTOP_LAUNCHER: &str = "/usr/bin/chatgpt";
@@ -68,6 +71,14 @@ fn linux_installation(
     root: &Path,
     launcher_path: &Path,
 ) -> Result<DesktopInstallation, PlatformError> {
+    linux_installation_with_cli(root, launcher_path, None)
+}
+
+fn linux_installation_with_cli(
+    root: &Path,
+    launcher_path: &Path,
+    selected_cli: Option<&CodexCliOverride>,
+) -> Result<DesktopInstallation, PlatformError> {
     let install_root = root.canonicalize().map_err(|error| {
         PlatformError::NotFound(format!(
             "official ChatGPT Linux package '{}' is unavailable: {error}",
@@ -120,17 +131,26 @@ fn linux_installation(
         canonical_linux_elf(&install_root.join("ChatGPT"), "Desktop executable")?;
     let packaged_launcher =
         canonical_unix_executable(&install_root.join("codex-launcher"), "Desktop launcher")?;
-    let packaged_codex_cli =
-        canonical_linux_elf(&install_root.join("resources/codex"), "Codex CLI")?;
+    let packaged_codex_cli = install_root.join("resources/codex");
     if !desktop_executable.starts_with(&install_root)
         || !packaged_launcher.starts_with(&install_root)
-        || !packaged_codex_cli.starts_with(&install_root)
     {
         return Err(PlatformError::Invalid(format!(
             "ChatGPT Linux package '{}' resolves an executable outside the package",
             install_root.display()
         )));
     }
+    let (executable_codex_cli, codex_cli_source) =
+        select_codex_cli(selected_cli, CodexCliSource::Packaged, || {
+            let cli = canonical_linux_elf(&packaged_codex_cli, "Codex CLI")?;
+            if !cli.starts_with(&install_root) {
+                return Err(PlatformError::Invalid(format!(
+                    "ChatGPT Linux package '{}' resolves a Codex CLI outside the package",
+                    install_root.display()
+                )));
+            }
+            Ok(cli)
+        })?;
     let launcher_metadata = launcher_path.symlink_metadata().map_err(|error| {
         PlatformError::NotFound(format!(
             "official ChatGPT launcher '{}' is unavailable: {error}",
@@ -173,8 +193,9 @@ fn linux_installation(
         install_root,
         desktop_launcher,
         desktop_executable,
-        packaged_codex_cli: packaged_codex_cli.clone(),
-        executable_codex_cli: packaged_codex_cli,
+        packaged_codex_cli,
+        executable_codex_cli,
+        codex_cli_source,
     })
 }
 
@@ -182,6 +203,16 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     linux_installation(
         Path::new(LINUX_INSTALL_ROOT),
         Path::new(LINUX_DESKTOP_LAUNCHER),
+    )
+}
+
+pub fn discover_codex_desktop_with_cli(
+    selected_cli: Option<&CodexCliOverride>,
+) -> Result<DesktopInstallation, PlatformError> {
+    linux_installation_with_cli(
+        Path::new(LINUX_INSTALL_ROOT),
+        Path::new(LINUX_DESKTOP_LAUNCHER),
+        selected_cli,
     )
 }
 
@@ -263,8 +294,49 @@ mod tests {
             installation.packaged_codex_cli,
             installation.executable_codex_cli
         );
+        assert_eq!(
+            installation.codex_cli_source,
+            crate::CodexCliSource::Packaged
+        );
         fs::remove_dir_all(root).expect("remove fixture");
         fs::remove_file(launcher).expect("remove launcher");
+    }
+
+    #[test]
+    fn external_cli_does_not_require_a_packaged_cli_but_still_validates_desktop() {
+        let root = fixture("chatgpt", "prod");
+        let official_launcher = launcher(&root);
+        let external_root = temporary_directory("external-native-cli");
+        let external_cli = external_root.join("codex");
+        fs::write(&external_cli, native_elf()).unwrap();
+        fs::set_permissions(&external_cli, fs::Permissions::from_mode(0o755)).unwrap();
+        let selected = crate::resolve_codex_cli_override(Some(&external_cli), None, None, None)
+            .unwrap()
+            .unwrap();
+        let packaged = root.join("resources/codex");
+        fs::remove_file(&packaged).unwrap();
+
+        assert!(linux_installation(&root, &official_launcher).is_err());
+        let installation =
+            super::linux_installation_with_cli(&root, &official_launcher, Some(&selected)).unwrap();
+        assert_eq!(installation.packaged_codex_cli, packaged);
+        assert_eq!(installation.executable_codex_cli, external_cli);
+        assert_eq!(
+            installation.codex_cli_source,
+            crate::CodexCliSource::CommandLine
+        );
+
+        fs::write(
+            root.join("resources/linux-package-metadata.json"),
+            r#"{"codexAppBrand":"codex","codexBuildFlavor":"dev","version":"26.803.81509"}"#,
+        )
+        .unwrap();
+        assert!(
+            super::linux_installation_with_cli(&root, &official_launcher, Some(&selected)).is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external_root).unwrap();
+        fs::remove_file(official_launcher).unwrap();
     }
 
     #[test]

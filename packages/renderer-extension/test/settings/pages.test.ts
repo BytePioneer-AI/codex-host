@@ -19,6 +19,8 @@ vi.mock("../../src/settings/icons.js", () => ({
 }));
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
+import type { CodexSshConnection } from "../../src/codex-ssh-adapter.js";
+import type { RemoteConnectionsControl } from "../../src/remote-connections-control.js";
 import {
   RENDERER_UPDATE_REQUEST_TIMEOUT_MS,
   RendererUpdateRequestTimeoutError,
@@ -1569,6 +1571,91 @@ describe("Renderer Connections page", () => {
     cleanup?.();
     scope.dispose();
   });
+
+  it.each(["loaded", "failed", "unmounted"] as const)(
+    "uses configured remote Host names without changing IDs (%s)",
+    async (result) => {
+      const hostId = "remote-ssh-codex-managed:8185b421-eeec-4f3b-bca7-21ea95341381";
+      const request = Promise.withResolvers<CodexSshConnection[]>();
+      const control: RemoteConnectionsControl = {
+        ssh: {
+          list: vi.fn(() => request.promise),
+          save: vi.fn(),
+          remove: vi.fn(),
+          connect: vi.fn(),
+          state: vi.fn(),
+        },
+        setup: vi.fn(),
+        runtime: vi.fn(),
+        update: vi.fn(),
+      };
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: ["local", hostId, "remote-ssh-discovered:legacy"].map((id) => ({
+            hostId: id,
+            active: id === hostId,
+            agents: [],
+          })),
+        }),
+        refresh: vi.fn(),
+        subscribe: () => () => undefined,
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        undefined,
+        () => diagnostics,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => control,
+      ).find(({ id }) => id === "connections");
+      assert(page);
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      expect(control.ssh.list).toHaveBeenCalledWith(scope.signal);
+      if (result === "unmounted") {
+        scope.dispose();
+        cleanup?.();
+      }
+      if (result === "failed") request.reject(new Error("Native connection list unavailable"));
+      else
+        request.resolve([
+          {
+            hostId,
+            displayName: "公司电脑",
+            source: "codex-managed",
+            sshHost: "user@office",
+            sshAlias: null,
+            sshPort: null,
+            identity: null,
+            autoConnect: true,
+          },
+        ]);
+      await request.promise.catch(() => undefined);
+      const tabs = descendants(content).filter(({ dataset }) => dataset.connectionHostTab);
+      expect(tabs.map(({ textContent }) => textContent)).toEqual([
+        "本地",
+        result === "loaded" ? "公司电脑" : hostId.split(":")[1],
+        "legacy",
+      ]);
+      const remoteTab = tabs.find(({ dataset }) => dataset.connectionHostTab === hostId);
+      assert(remoteTab);
+      expect(remoteTab.getAttribute("aria-selected")).toBe("true");
+      expect(remoteTab.title).toContain(remoteTab.textContent);
+      if (result !== "unmounted") {
+        cleanup?.();
+        scope.dispose();
+      }
+    },
+  );
 
   it("renders Host tabs, install actions, and error details", async () => {
     const refreshRequest = deferred<undefined>();

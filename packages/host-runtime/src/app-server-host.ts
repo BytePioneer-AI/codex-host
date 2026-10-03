@@ -4740,7 +4740,8 @@ export class AppServerHost {
       await this.#resolveDesktopQuestion(event.interactionId);
     }
     const ephemeralTurn =
-      event.type === "turn.completed" && thread.ephemeralTurnIds.has(event.turnId);
+      event.type === "turn.completed" &&
+      (event.ephemeral === true || thread.ephemeralTurnIds.has(event.turnId));
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#persistTerminalIdentity(thread, event);
       if (persistenceError) {

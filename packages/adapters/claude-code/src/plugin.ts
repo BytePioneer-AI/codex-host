@@ -52,6 +52,9 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
 }
 
 export async function warmup(adapter: Pick<HarnessAdapter, "inspect">): Promise<void> {
+  // A brokered adapter starts its Aqua broker on demand; prefetching at Host startup
+  // would start (and keep resident) a broker no request needed.
+  if (adapter instanceof BrokeredHarnessAdapter) return;
   try {
     await adapter.inspect();
   } catch {

@@ -3,7 +3,7 @@ import { CURSOR_COMMAND_CATALOG } from "./slash-commands.js";
 import { createCursorInstallation } from "./installation.js";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import { CursorAdapter } from "./adapter.js";
-import { resolveCursorExecutable } from "./command.js";
+import { CursorNotInstalledError, resolveCursorExecutable } from "./command.js";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 
@@ -20,8 +20,8 @@ export function createHarnessAdapter(context: HarnessPluginContext): HarnessAdap
         try {
           resolveCursorExecutable(environment);
           return true;
-        } catch {
-          return false;
+        } catch (error) {
+          return !(error instanceof CursorNotInstalledError);
         }
       },
     });

@@ -56,7 +56,7 @@ describe("macOS Aqua Harness broker", () => {
 
     expect(inspection.status).toBe("unavailable");
     const message = inspection.status === "unavailable" ? inspection.error.message : "";
-    expect(message).toContain("cursor-cli Aqua Harness broker on this Mac is not running");
+    expect(message).toContain("cursor-cli Aqua Harness broker on this Mac could not be started");
     expect(message).toContain("codexhost broker install --harness cursor-cli");
     await client.close();
   });

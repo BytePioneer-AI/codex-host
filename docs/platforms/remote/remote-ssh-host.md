@@ -1,5 +1,7 @@
 # Use AI coding tools on a remote computer over SSH
 
+The Web console’s **Remote connections** page (`#remote-connections`) provides the same connection management, installation, update, repair, and uninstall actions as the embedded settings. Codex Desktop must be running through codexhost on the local computer.
+
 Use Claude Code, Pi, and other Harnesses (AI coding tools) installed and signed in on another computer from your local Codex Desktop. Your project and tools run remotely while you read replies, send messages, and manage the conversation locally.
 
 ## Before you start

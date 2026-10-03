@@ -10,6 +10,7 @@ import {
 const repository = path.resolve(import.meta.dirname, "..");
 /** Every place that words a failure the remote connections page can show. */
 const SOURCES = [
+  "packages/desktop-control/src/remote-connections-control.ts",
   "crates/updater/src/ssh.rs",
   "crates/updater/src/remote.rs",
   "packages/host-runtime/src/runtime-maintenance.ts",

@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { openRendererLocalPage } from "./renderer-local-page.js";
 import { listCdpTargets } from "./cdp-client.js";
+import { remoteConnectionsExpression } from "./remote-connections-control.js";
+import { remoteConnectionsReplySchema } from "@codexhost/shared-contracts";
 
 import {
   startControllerAttachmentServer,
@@ -325,6 +327,14 @@ export async function runDesktopController(
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
+      remoteConnections: async (request) => {
+        // Serialize session recovery, not the native request: the renderer can await Host
+        // responses while other settings reads run. Never retry a submitted mutation.
+        const current = await useSession(() => recoverSession());
+        return remoteConnectionsReplySchema.parse(
+          await current.executeRenderer(remoteConnectionsExpression(request)),
+        );
+      },
       openLocalPage: (url) =>
         openRendererLocalPage(
           (expression) =>

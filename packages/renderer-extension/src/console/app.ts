@@ -10,6 +10,7 @@ import { createOfflineHarnessesPage } from "./pages/harnesses-offline.js";
 import { hostPage } from "./pages/host-required.js";
 import { createOverviewPage } from "./pages/overview.js";
 import { ConsoleState } from "./state.js";
+import { createConsoleRemoteConnections } from "./remote-connections.js";
 import { createRendererModelClient } from "../renderer-model-client.js";
 import { createRendererSessionImportClient } from "../renderer-session-import-client.js";
 import accountsCss from "../settings/accounts.css";
@@ -128,6 +129,7 @@ export function startConsoleApp(document: Document): void {
     manager.sendRequest(method, params),
   );
   const updateClient = consoleUpdateClient();
+  const remoteConnections = createConsoleRemoteConnections(manager);
   const settingsPages = createDefaultRendererSettingsPages(
     settingsMessages,
     () => updateClient,
@@ -135,6 +137,8 @@ export function startConsoleApp(document: Document): void {
     () => modelClient,
     () => sessionImportClient,
     null,
+    () => null,
+    () => remoteConnections,
   );
   const navigate = (pageId: string): void => {
     window.location.hash = pageId;
@@ -157,6 +161,7 @@ export function startConsoleApp(document: Document): void {
             () => state.overview?.inspect?.runtime.running ?? false,
           ),
         ),
+        hostPage(required(settingsPages, "remote-connections"), messages, state),
         hostPage(required(settingsPages, "accounts"), messages, state),
         hostPage(required(settingsPages, "session-import"), messages, state),
         required(settingsPages, "updates"),

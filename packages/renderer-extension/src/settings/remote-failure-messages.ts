@@ -10,6 +10,10 @@ import type { RemoteText } from "./remote-connections-card.js";
  * Anything not listed here (SSH and Codex's own output, for example) is shown as received.
  */
 export const REMOTE_FAILURE_CHINESE: Readonly<Record<string, string>> = Object.freeze({
+  "Remote connection management is unavailable. Restart Codex through codexhost":
+    "远程连接管理暂不可用，请通过 codexhost 重新启动 Codex",
+  "Remote connection request timed out. Refresh before retrying": "远程连接请求超时，请刷新后再试",
+  "Invalid remote connection request": "远程连接请求无效",
   // SSH helper: installing, updating and repairing over SSH.
   "Invalid SSH address or port": "SSH 地址或端口无效",
   "Install requires a published stable version": "只能安装已发布的正式版本",

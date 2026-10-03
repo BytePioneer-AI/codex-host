@@ -1,10 +1,12 @@
 import {
   REMOTE_SSH_SETUP_METHOD,
+  CONSOLE_REMOTE_CONNECTIONS_METHOD,
   remoteSshSetupParamsSchema,
   RUNTIME_STATUS_METHOD,
   REMOTE_UPDATE_METHOD,
   remoteUpdateParamsSchema,
 } from "@codexhost/shared-contracts";
+import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
@@ -1039,6 +1041,10 @@ export class AppServerHost {
     if (this.#closeRequested || this.#desktopInputEnded) {
       return { error: { code: -32090, message: "Codex Desktop is closing" } };
     }
+    if (method === CONSOLE_REMOTE_CONNECTIONS_METHOD) {
+      return requestDesktopRemoteConnections(this.#options.environment ?? process.env, params);
+    }
+    if (method === REMOTE_SSH_SETUP_METHOD) timeoutMs = Math.max(timeoutMs, 330_000);
     const parsed = jsonRpcRequestSchema.safeParse({
       id: `${this.#consoleRequestPrefix}${++this.#nextConsoleRequest}`,
       method,

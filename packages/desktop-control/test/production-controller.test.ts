@@ -168,6 +168,7 @@ describe("production Desktop Controller", () => {
       nonce: attachmentNonce,
       attach: expect.any(Function),
       openLocalPage: expect.any(Function),
+      remoteConnections: expect.any(Function),
     });
     expect(ready).toHaveBeenCalledWith({
       schemaVersion: 2,

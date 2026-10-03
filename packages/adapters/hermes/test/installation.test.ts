@@ -32,6 +32,7 @@ describe("Hermes native installation", () => {
     await expect(createHermesInstallation({})("update")).resolves.toMatchObject({
       currentVersion: "0.10.0 @ def12345",
       updateAvailable: false,
+      messageCode: "hermes-update-channel",
     });
     expect(mocks.run).toHaveBeenCalledWith(
       "/chosen/hermes",
@@ -55,6 +56,7 @@ describe("Hermes native installation", () => {
         currentVersion: "0.10.0",
         canUpdate: false,
         latestVersion: "Unknown",
+        messageCode: "hermes-externally-managed",
       });
       expect(mocks.run.mock.calls.some((call) => call[1][1] === "--check")).toBe(false);
     },
@@ -110,11 +112,30 @@ describe("Hermes native installation", () => {
         updateAvailable: true,
         canUpdate: false,
         message: expect.stringContaining("native updater manually"),
+        messageCode: "hermes-manual-update",
       });
       await expect(installation("update")).rejects.toThrow("clean source checkout");
       expect(mocks.run.mock.calls.some((call) => call[1].includes("--yes"))).toBe(false);
     },
   );
+
+  it("returns a structured tracking-branch hint when native checks find new commits", async () => {
+    mocks.run.mockImplementation(async (_command, args) =>
+      args[0] === "--version"
+        ? "Hermes Agent v0.10.0"
+        : args[1] === "--help"
+          ? help
+          : args[1] === "--plan"
+            ? "Install: git (v0.10.0 @ abc12345)"
+            : "Update available: 2 commits behind origin/main.",
+    );
+    await expect(createHermesInstallation({})("check")).resolves.toMatchObject({
+      latestVersionKind: "tracking-branch",
+      messageCode: "hermes-manual-update",
+      updateAvailable: true,
+      canUpdate: false,
+    });
+  });
 
   it("does not mistake Python's version for the Harness version", async () => {
     mocks.run.mockResolvedValue("Python: 3.13.0");

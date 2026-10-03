@@ -30,7 +30,7 @@
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>下载</strong></a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>下载</strong></a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
 
 <br />
 
@@ -280,12 +280,14 @@ CodexHost 的做法不同：
 
 </details>
 
-## 加入交流群
+<a id="加入交流群"></a>
+
+## 微信交流群
 
 <table align="center">
   <tr>
     <td>
-      <strong>加入交流群</strong><br />
+      <strong>微信交流群</strong><br />
       <sub>对 CodexHost 用法、功能感兴趣的开发者可以扫码加入微信群交流。</sub>
       <ul>
         <li><sub>安装问题可以加群询问</sub></li>
@@ -296,7 +298,7 @@ CodexHost 的做法不同：
       <sub><strong>欢迎一起贡献~ </strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="微信群二维码" src="../imgs/wechat-qrcode.jpg" />
+      <img width="230" alt="微信群二维码" src="../imgs/wechat-group-4-qrcode.jpg" />
     </td>
   </tr>
 </table>
@@ -331,6 +333,14 @@ npm start
 
 - 感谢 [LINUX DO](https://linux.do/) 社区一直以来的支持。
 - 感谢 [Paseo](https://github.com/getpaseo/paseo) 项目在多 Harness 接入思路与架构设计方面带来的启发与参考。
+
+## 贡献者
+
+感谢所有为 CodexHost 做出贡献的开发者。
+
+<a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
+  <img alt="CodexHost 贡献者" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+</a>
 
 ## Star History
 

@@ -1,3 +1,4 @@
+import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { homedir } from "node:os";
@@ -22,6 +23,12 @@ import {
   DELEGATION_RUNTIME_TOKEN_ENV,
 } from "./delegation-types.js";
 import { createProductionExternalThreadStore } from "./external-thread-repository.js";
+import { SharedThreadOwner } from "./shared-thread-owner.js";
+import {
+  SharedThreadBridge,
+  connectSharedThreads,
+  sharedThreadSocketPath,
+} from "./shared-thread-bridge.js";
 import {
   createRemoteControlAppServerPlan,
   publishRemoteControlAppServerDescriptor,
@@ -69,6 +76,22 @@ export function hasLauncherManagedUpdateRuntime(
   if (!path.isAbsolute(npmPackageRoot) || !path.isAbsolute(hostRuntimePath)) return false;
   const runtimePackageRoot = path.dirname(path.dirname(path.normalize(hostRuntimePath)));
   return path.relative(path.normalize(npmPackageRoot), runtimePackageRoot) === "";
+}
+
+/**
+ * Only a packaged entry passes its own URL, so only it has distribution metadata
+ * for application updates. Runtime maintenance also works from a source launch,
+ * where the Launcher exports the path instead.
+ */
+export function resolveHostRuntimePaths(input: {
+  environment: NodeJS.ProcessEnv;
+  hostRuntimeUrl?: string;
+}): { packaged: string | undefined; maintenance: string | undefined } {
+  const packaged = input.hostRuntimeUrl ? fileURLToPath(input.hostRuntimeUrl) : undefined;
+  return {
+    packaged,
+    maintenance: packaged ?? input.environment.CODEXHOST_HOST_RUNTIME_PATH,
+  };
 }
 
 function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
@@ -172,7 +195,15 @@ export async function runHostRuntime(input: {
   updateCoordinator?: HostUpdateCoordinator;
 }): Promise<number> {
   const { stockCodexPath, defaultAgent } = requiredRuntimeConfiguration(input.environment);
-  const hostRuntimePath = input.hostRuntimeUrl ? fileURLToPath(input.hostRuntimeUrl) : undefined;
+  const { packaged: hostRuntimePath, maintenance: maintenanceRuntimePath } =
+    resolveHostRuntimePaths(input);
+  const runtimeMaintenance = maintenanceRuntimePath
+    ? new RuntimeMaintenance({
+        runtimePath: maintenanceRuntimePath,
+        remote: isRemoteUnixListenerInvocation(input.arguments),
+        environment: input.environment,
+      })
+    : undefined;
   const updateCoordinator =
     input.updateCoordinator ??
     (hostRuntimePath && hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
@@ -218,6 +249,17 @@ export async function runHostRuntime(input: {
         if (!remoteControlPlan) {
           try {
             const host = new AppServerHost({
+              ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+              ...(process.platform !== "win32"
+                ? {
+                    sharedThreads: new SharedThreadBridge({
+                      connect: () => connectSharedThreads(delegationEnvironment),
+                      delegateCreates: false,
+                      diagnose: (error) =>
+                        process.stderr.write(`codexhost shared Threads: ${String(error)}\n`),
+                    }),
+                  }
+                : {}),
               stockCodexPath,
               arguments: input.arguments,
               defaultAgent,
@@ -253,6 +295,7 @@ export async function runHostRuntime(input: {
             ...(consoleOpener ? { consoleOpener } : {}),
           };
           const host = new AppServerHost({
+            ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
             ...common,
             arguments: input.arguments,
             onDelegationApi,
@@ -262,6 +305,7 @@ export async function runHostRuntime(input: {
             diagnosticOutput: process.stderr,
             createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) =>
               new AppServerHost({
+                ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
                 ...common,
                 arguments: [],
                 desktopInput,
@@ -329,11 +373,47 @@ export async function runHostRuntime(input: {
       }));
       const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
       await mappingStore.initialize();
+      const sharedOwner = new SharedThreadOwner();
+      let sharedDelegation: DelegationControlRegistration | undefined;
+      const externalHost = new AppServerHost({
+        ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+        stockCodexPath,
+        arguments: [],
+        defaultAgent,
+        environment: delegationEnvironment,
+        desktopInput: sharedOwner.input,
+        desktopOutput: sharedOwner.output,
+        diagnosticOutput: process.stderr,
+        externalOnly: true,
+        ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
+        mappingStore,
+        closeMappingStoreOnExit: false,
+        officialRuntimeScope,
+        accountControl,
+        onDelegationApi: (api) => {
+          sharedDelegation = api;
+          return registry.register(api, { harnessCatalog: true });
+        },
+      });
+      const externalRunning = externalHost.run();
+      const sharedListener = createRemoteAppServerWebSocketListener({
+        socketPath: sharedThreadSocketPath(delegationEnvironment),
+        diagnosticOutput: process.stderr,
+        createSession: (streams) => sharedOwner.createSession(streams),
+      });
       const listener = createRemoteAppServerWebSocketListener({
         socketPath,
         diagnosticOutput: process.stderr,
         createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
           return new AppServerHost({
+            ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+            ...(sharedDelegation ? { sharedDelegation } : {}),
+            sharedThreads: new SharedThreadBridge({
+              connect: async () => sharedOwner.connect(),
+              delegateCreates: true,
+              diagnose: (error) =>
+                diagnosticOutput.write(`codexhost shared Threads: ${String(error)}\n`),
+            }),
             stockCodexPath,
             arguments: [],
             defaultAgent,
@@ -355,6 +435,7 @@ export async function runHostRuntime(input: {
       const stop = (): void => {
         void listener.close();
       };
+      void externalRunning.then(stop, stop);
       // Desktop's reconnect cleanup can kill the Shim supervisor and stock Codex
       // while this retitled listener survives. An unsupervised listener must
       // close normally and release its socket instead of lingering or crashing
@@ -372,6 +453,7 @@ export async function runHostRuntime(input: {
       });
       try {
         await prepareRemoteAppServerSocketDirectory(socketPath);
+        await prepareRemoteAppServerSocketDirectory(sharedThreadSocketPath(delegationEnvironment));
         // Also covers a loss reported while the directory was being prepared.
         if (supervisorLost) return 0;
         // Native Codex failure never closes this listener: external Harness
@@ -381,6 +463,7 @@ export async function runHostRuntime(input: {
         });
         if (supervisorLost) return 0;
         await listener.listen();
+        await sharedListener.listen();
         process.title = MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE;
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
@@ -394,9 +477,17 @@ export async function runHostRuntime(input: {
           await listener.close();
         } finally {
           try {
-            await officialRuntimeScope.close();
+            await sharedListener.close();
+            externalHost.close();
+            sharedOwner.close();
+            await externalRunning;
+            sharedOwner.output.end();
           } finally {
-            await mappingStore.close();
+            try {
+              await officialRuntimeScope.close();
+            } finally {
+              await mappingStore.close();
+            }
           }
         }
       }

@@ -1,12 +1,12 @@
 import { createTwoFilesPatch } from "diff";
 import type { HostFileChange, HostToolOutput } from "@codexhost/harness-adapter";
-import type { ToolCallUpdate } from "@agentclientprotocol/sdk";
+import type { HermesToolUpdate } from "./hermes-transport.js";
 
 const MAX_DIFF_BYTES = 1024 * 1024;
 const MAX_DIFFS = 32;
 
-/** Hermes also converts hunk snippets to ACP oldText/newText, losing file coordinates. */
-export function hermesFileChanges(update: ToolCallUpdate): HostFileChange[] {
+/** Gateway inline diffs are display fragments, not whole-file snapshots. */
+export function hermesFileChanges(update: HermesToolUpdate): HostFileChange[] {
   const changes: HostFileChange[] = [];
   let bytes = 0;
   for (const block of update.content ?? []) {
@@ -29,7 +29,7 @@ export function hermesFileChanges(update: ToolCallUpdate): HostFileChange[] {
   return changes;
 }
 
-export function hermesToolOutput(update: ToolCallUpdate): HostToolOutput | null {
+export function hermesToolOutput(update: HermesToolUpdate): HostToolOutput | null {
   const content: HostToolOutput["content"] = [];
   for (const block of update.content ?? []) {
     if (block.type !== "content") continue;

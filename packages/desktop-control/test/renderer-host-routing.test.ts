@@ -80,6 +80,86 @@ it.each(["local", "remote-ssh-discovered:linux"])(
   },
 );
 
+it("lists both Composer Hosts despite ambiguous routing and retains them in Settings", async () => {
+  const fixture = setup("local");
+  await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+  const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+  try {
+    fixture.editors.push({
+      __reactFiber$host: {
+        ...fixture.fiber,
+        memoizedProps: { executionTargetHostId: fixture.remote.getHostId() },
+      },
+      parentElement: null,
+    });
+    expect(routing.forComposer()).toBeNull();
+    expect(routing.knownHostIds?.()).toEqual(["local", fixture.remote.getHostId()]);
+    fixture.editors.length = 0;
+    fixture.managers.delete(fixture.remote.getHostId());
+    expect(routing.knownHostIds?.()).toEqual(["local", fixture.remote.getHostId()]);
+    expect(routing.forHost(fixture.remote.getHostId())).toBeNull();
+    expect(routing.forHost("local")?.manager).toBe(fixture.local);
+  } finally {
+    routing.dispose();
+  }
+  expect(routing.knownHostIds?.()).toEqual([]);
+});
+
+it.each(["both", "local-disconnected", "remote-disconnected"])(
+  "installs with multiple Composer Hosts (%s) without publishing an arbitrary draft route",
+  async (mode) => {
+    const fixture = setup("local");
+    fixture.editors.push({
+      __reactFiber$host: {
+        ...fixture.fiber,
+        memoizedProps: { executionTargetHostId: fixture.remote.getHostId() },
+      },
+      parentElement: null,
+    });
+    if (mode === "local-disconnected") fixture.managers.delete("local");
+    if (mode === "remote-disconnected") fixture.managers.delete(fixture.remote.getHostId());
+    await expect(installRendererDraftPrewarmPolicyDirect(fixture.renderer)).resolves.toMatchObject({
+      state: "ready",
+    });
+    const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+    try {
+      expect(routing.forComposer()).toBeNull();
+      expect(fixture.target.__codexhostDraftPrewarmPolicyV1).toBeUndefined();
+      const liveHostId = mode === "local-disconnected" ? fixture.remote.getHostId() : "local";
+      expect(routing.forHost(liveHostId)).not.toBeNull();
+      // Reconciliation must use the same readiness rule as first installation.
+      await expect(
+        installRendererDraftPrewarmPolicyDirect(fixture.renderer),
+      ).resolves.toMatchObject({
+        state: "ready",
+      });
+      fixture.editors.length = 0;
+      await expect(
+        installRendererDraftPrewarmPolicyDirect(fixture.renderer),
+      ).resolves.toMatchObject({
+        state: "ready",
+      });
+    } finally {
+      routing.dispose();
+    }
+  },
+);
+
+it("does not report ready without any valid native connection", async () => {
+  const fixture = setup("local");
+  fixture.managers.clear();
+  let now = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => (now += 60_001));
+  try {
+    await expect(installRendererDraftPrewarmPolicyDirect(fixture.renderer)).rejects.toThrow(
+      "Renderer Host request manager is unavailable",
+    );
+  } finally {
+    clock.mockRestore();
+    (fixture.target.__codexhostHostRoutingV1 as Routing | undefined)?.dispose();
+  }
+});
+
 it("invalidates only the replaced Host and never revives its direct stale manager", async () => {
   const fixture = setup("local");
   await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
@@ -175,8 +255,17 @@ it("does not infer local from a direct hook while a registry-backed Composer ide
   }
 });
 
-it("evaluates the same native Host router through the Inspector transport", async () => {
+it.each(["single", "mixed"])("installs %s Hosts through the Inspector transport", async (mode) => {
   const fixture = setup("remote-ssh-discovered:linux");
+  if (mode === "mixed") {
+    fixture.editors.push({
+      __reactFiber$host: {
+        ...fixture.fiber,
+        memoizedProps: { executionTargetHostId: "local" },
+      },
+      parentElement: null,
+    });
+  }
   const fromId = vi.fn(() => ({
     isDestroyed: () => false,
     getType: () => "window",
@@ -196,7 +285,8 @@ it("evaluates the same native Host router through the Inspector transport", asyn
   try {
     expect(fromId).toHaveBeenCalledWith(17);
     expect(routing.forHost("local")?.manager).toBe(fixture.local);
-    expect(routing.forComposer()?.manager).toBe(fixture.remote);
+    if (mode === "mixed") expect(routing.forComposer()).toBeNull();
+    else expect(routing.forComposer()?.manager).toBe(fixture.remote);
   } finally {
     routing.dispose();
   }

@@ -22,4 +22,5 @@ export {
   nativeHistoryRows,
   snapshotFromHistory,
 } from "./history.js";
+export { CodeBuddySessionImport } from "./session-import.js";
 export { CodeBuddyChildObserver } from "./subagent-history.js";

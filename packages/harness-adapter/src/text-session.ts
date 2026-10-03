@@ -41,6 +41,7 @@ export type HarnessErrorCode =
   | "notInstalled"
   | "unavailable"
   | "authenticationRequired"
+  | "configurationRequired"
   | "sessionNotFound"
   | "sessionBusy"
   | "checkpointNotFound"

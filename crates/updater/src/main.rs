@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
 mod install;
+mod remote;
 mod request;
+mod ssh;
 mod status;
 
 use std::env;
@@ -177,6 +179,12 @@ fn usage() {
 }
 
 fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    if arguments == ["ssh"] {
+        return ssh::apply();
+    }
+    if arguments.len() == 3 && arguments[0] == "remote" && arguments[1] == "--request" {
+        return remote::apply(Path::new(&arguments[2]));
+    }
     let handoff = match arguments {
         [command, flag, _, token_flag, token]
             if command == "apply" && flag == "--request" && token_flag == "--handoff-token" =>

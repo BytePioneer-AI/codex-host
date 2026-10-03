@@ -771,11 +771,11 @@ export function renderComposerAgentControl(
   const modelReady = selectedModel !== undefined && selectedCatalogModel !== undefined;
   const modelBlocked =
     state.agent !== "codex" && (modelView.status === "selecting" || !modelReady || !thinkingReady);
+  // Recording replaces the native footer, including its permission trigger.
+  // Submission depends on confirmed Harness configuration, not that UI slot;
+  // native ownership verification still guards picker visibility and placement.
   const permissionModeBlocked =
-    state.agent !== "codex" &&
-    (!isPermissionModeControlReady(permissionModeView) ||
-      (permissionModeView.status !== "unsupported" &&
-        !control.nativePermissionModeControlVerified));
+    state.agent !== "codex" && !isPermissionModeControlReady(permissionModeView);
   const submissionBlocked = switching || ownershipError || modelBlocked || permissionModeBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;

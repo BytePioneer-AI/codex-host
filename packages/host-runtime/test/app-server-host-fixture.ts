@@ -1,3 +1,4 @@
+import type { RuntimeMaintenance } from "../src/runtime-maintenance.js";
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -16,6 +17,7 @@ import { type ExternalHarnessId, type JsonObject } from "@codexhost/protocol-cor
 import { harnessIdSchema, type DeepSeekModernSessionCandidate } from "@codexhost/shared-contracts";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import { AppServerHost } from "../src/app-server-host.js";
+import type { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import type { CodexAccountControl } from "../src/account/codex-account-control.js";
 import type { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
 import type { OfficialAppServerConnection } from "../src/official-app-server-connection.js";
@@ -263,6 +265,7 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 
 export function createFixture(
   options: {
+    sharedThreads?: SharedThreadBridge;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
@@ -274,6 +277,7 @@ export function createFixture(
     createOfficialConnection?: () =>
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
+    runtimeMaintenance?: RuntimeMaintenance;
     consoleOpener?: HostConsoleOpener;
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
@@ -300,6 +304,7 @@ export function createFixture(
   const createOfficialConnection = options.createOfficialConnection;
   if (options.officialRuntimeScope) startup.resolve(undefined);
   const host = new AppServerHost({
+    ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
     defaultAgent: "codex",
@@ -329,6 +334,7 @@ export function createFixture(
         }
       : {}),
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
+    ...(options.runtimeMaintenance ? { runtimeMaintenance: options.runtimeMaintenance } : {}),
     ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),

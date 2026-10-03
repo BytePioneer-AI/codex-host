@@ -1,54 +1,122 @@
-# SSH 远程 Harness Host
+# 通过 SSH 使用远程电脑上的 AI 编程工具
 
-通过 Codex Desktop 原生 SSH 工作区，在本机使用只安装、只登录在被控机器上的 Harness（包括 Claude Code）。凭据始终留在被控机器上，不会通过 SSH 转发。
+你可以在本机的 Codex Desktop 中，使用另一台电脑上已安装并登录的 Claude Code、Pi 等 Harness（AI 编程工具）。项目和工具都在远程电脑上运行，你在本机查看回复、发送消息和操作会话。
 
-## 前置条件
+## 开始前需要准备什么
 
-- 本机：已安装 Codex Desktop 和 codexhost，系统可以是 macOS、Linux 或 Windows。
-- 被控机器：macOS 或 x64/ARM64 Linux（暂不支持 Windows），已安装 Codex CLI 和**与本机相同版本**的 codexhost。
-- 目标 Harness 已在被控机器上安装并登录。
-- Codex Desktop 原生 SSH 工作区已能正常使用（**设置 → 连接 → SSH**）。
+- **本机**：安装 Codex Desktop 和 codexhost，并能打开 Codex 的「设置 → 连接 → SSH」。
+- **远程电脑**：使用 Mac 或 Linux，已开启 SSH，并安装 Node.js、npm 和 Codex CLI。目前不支持将 Windows 作为远程电脑。
+- **要使用的工具**：已在远程电脑上安装并登录，例如 Claude Code。
+- **连接信息**：远程电脑的 SSH 地址，例如 `用户名@电脑地址`。如果连接需要指定端口或私钥文件，也请提前准备好。
 
-## 安装
+建议先将本机 codexhost 更新到最新版本，再按下面的步骤安装远程端。
 
-在被控机器上执行：
+## 第一步：确认 SSH 可以登录
 
-```bash
-npm install -g @codexhost/cli
-codexhost remote install
-codexhost remote start
-codexhost remote status
-```
+先在本机终端通过 SSH 登录一次远程电脑，并确认电脑身份。页面使用已有的 SSH 密钥或 SSH 别名，不会弹出密码输入框。
 
-`remote install` 只在 SSH 会话的 Shell 配置中加入一段带标记的配置（修改前会自动备份），不影响本地 Shell 和原有 `codex` 命令。在 macOS 上还会安装一个当前用户的 LaunchAgent，用于在登录会话中启动 Claude Code；它不读取 Keychain 或任何凭据。
+远程电脑需要已经安装 Node.js、npm 和 Codex CLI，并允许当前用户通过 npm 安装软件。如果远程电脑是 Mac，使用 Claude Code 时还需要保持该电脑的桌面用户已登录。
 
-## 使用
+## 第二步：添加 SSH 连接
 
 1. 在本机通过 codexhost 启动 Codex Desktop。
-2. 打开 SSH 工作区。
-3. 在输入框的 Agent / Model 选择器中选择目标 Harness。
+2. 打开 **codexhost 设置 → 远程连接**，点击「添加连接」。
+3. 填写连接信息：
+   - **名称**：给这台电脑起一个容易识别的名字，例如「公司电脑」。
+   - **SSH 地址**：填写 `用户名@电脑地址`，也可以填写已有的 SSH 别名。
+   - **端口、私钥路径**：仅在你的连接需要时填写，否则留空。
+4. 点击「保存」，页面会检测这台电脑。未安装远程服务时，点击「安装并连接」；已经安装时，点击「连接」。
+   - 安装过程中请等待页面显示结果，无需自己复制安装命令。
+   - 安装使用本机正在运行的正式发布版本；开发版不提供一键安装。
+5. 显示「已连接」后，在 Codex 中打开远程电脑上的项目。
 
-## 常用命令
+如果你已经在 Codex 中添加过 SSH 连接，这里会直接显示，不用重复添加。两处的连接设置共用，修改后也会同步显示。
+
+来自 SSH 配置文件的连接，可以在这里修改名称。其他详细信息请修改本机 SSH 配置，或到 Codex 的「设置 → 连接 → SSH」查看。
+
+## 第三步：选择工具并开始使用
+
+在远程项目的输入框中，通过 **Agent / Model** 选择器选择要使用的 Harness 和模型，然后像平时一样发送消息。
+
+本地项目和远程项目可以同时使用，各自显示对应电脑上可用的工具和模型。
+
+如果只使用 Codex 自带的远程编程功能，不使用其他 Harness，就不需要在远程电脑上安装 codexhost。
+
+## 日常管理连接
+
+在「远程连接」页面中，你可以编辑连接信息、断开连接或移除不再使用的连接。
+
+- **断开**：不再自动连接这台电脑；远程已开始的任务仍可继续运行。需要使用时，再点击「连接」。
+- **移除**：从连接列表中移除这台电脑，不会删除远程文件或会话。
+
+## 更新远程端
+
+「远程连接」页面会显示本机版本，以及远程的「已安装」和「运行中」版本。「运行中」表示远程当前正在使用的版本；如果页面提示需要重启，按提示操作即可。
+
+每台电脑单独显示需要进行的操作，只有点击按钮后才会执行：
+
+- **安装并连接**：安装远程服务，然后连接这台电脑。
+- **更新到本机版本**：远程版本较旧时显示。点击后立即更新并重启。
+- **更新远程服务**：远程端版本过旧、无法显示版本时显示。点击后通过 SSH 安装本机版本，重新配置并启动远程服务。
+- **重启并连接**：远程已经安装新版，但还在运行旧版时显示。点击后立即重启。
+- **重新连接**：连接失败时显示，断开后立即重新连接。
+- **修复远程服务**：仅在读不到远程状态、连接失败或更新失败时显示。停止服务、移除连接组件配置，再重新配置并启动。不卸载或更新 codexhost 软件包。
+- **重新检测**：暂时无法读取远程状态时重试检测；检测失败不代表没有安装。
+
+更新、重启或修复会立即执行，不会等待当前任务结束，可能中断正在进行的会话。
+
+页面不会在后台自动安装或更新。这里更新的是 codexhost 软件，不是项目文件或聊天记录。
+
+如果远程版本比本机新，请先更新本机。更新后连接没有恢复时，重新连接一次即可。
+
+### 需要手动更新时
+
+较旧的远程端无法显示版本，页面会显示「更新远程服务」，通常点击即可。如果按钮不可用（本机不是正式发布版本）或更新失败：
+
+1. 先将本机 codexhost 更新到最新版本。
+2. 在远程电脑的终端依次执行：
 
 ```bash
-codexhost remote status     # 查看运行状态和安装完整性
-codexhost remote start      # 启动（可重复执行）
-codexhost remote stop       # 停止，不影响其他 Codex 进程
-codexhost remote uninstall  # 卸载，保留 Thread 映射数据
+codexhost remote stop
+npm install -g @codexhost/cli@latest
+codexhost remote install
+codexhost remote start
 ```
 
-启动、停止或卸载后，需要在 Desktop 中重新连接 SSH 工作区。
+完成后，在本机重新连接这台电脑。
 
-## 升级
+## 在两台电脑上查看同一个会话
 
-在两台机器上用相同的包管理器升级到同一版本，然后在被控机器上重新执行 `codexhost remote install` 和 `codexhost remote start`，再重新连接 SSH 工作区。
+如果远程电脑也安装了 Codex Desktop，可以在那台电脑上通过 codexhost 启动它。两端使用相同版本的 codexhost，并确保远程桌面登录和 SSH 连接使用同一个用户账号。
 
-## 常见问题
+从 SSH 项目中创建的外部 Harness 会话会自动出现在另一端，首次出现可能需要几秒。两边都能查看消息、生成中的回复和工具操作，也都可以发送消息、中断任务或回答审批。
 
-- **运行中的原生 Codex 任务插入消息时提示不支持 `codexhost/thread/ownership/list`**：客户端会通过同一连接核对原生 Thread，再交给 Desktop 原生插话流程。外部 Harness Thread 和连接故障不会触发这条回退。
-- **`codexhost/harness/inspect is unsupported on this Host connection`**：当前 SSH 连接没有接入 codexhost。确认被控机器已安装并启动相同版本的 codexhost，然后重新连接 SSH 工作区。
-- **`remote status` 提示 degraded 或需要重新安装**：重新执行 `codexhost remote install`，再执行 `codexhost remote start`。
-- **原生 Codex 请求返回 `Official request failed; retry explicitly`**：被控机器上的官方 Codex 进程退出后，codexhost 会自动按退避重新拉起它，重新连接 SSH 工作区会立即重试。若持续失败，执行 `codexhost remote stop` 和 `codexhost remote start`。
-- **重连后几秒显示已连接、随即断开，再连一次才成功**：被控机器上残留了上一个 listener 的控制 socket（例如 listener 被强制结束）时，旧版本的启动检查会把新 listener 误判为未就绪，并在 10 秒后将其结束。升级到包含修复的版本即可。临时处理：通常再重连一次就能恢复，因为被结束的 listener 正常退出时会删除这个 socket；如果仍然反复出现，先确认被控机器上没有 listener 进程（`pgrep -f '^codexhost remote app-server listener'` 无输出），再删除 `~/.codex/app-server-control/app-server-control.sock`（设置了 `CODEX_HOME` 时位于其下）后重连。
-- **看不到某个 Harness**：在被控机器上检查该 Harness 是否已安装并登录，然后在设置中点击「重新诊断连接」。
-- **macOS 上安装失败，提示 launchd / `gui/$UID` 错误**：被控机器需要有已登录的图形会话，登录后重新执行 `codexhost remote install`。
+使用时注意：
+
+- 任务运行中追加消息，请使用插入功能；另开任务可能提示忙碌。
+- 两边同时回答同一个审批或提问时，以先处理的回答为准。
+- 断线后重新打开会话，可以查看期间产生的内容。如果不确定一条消息是否发送成功，先查看记录再决定是否重发。
+
+此功能适用于从 SSH 项目中创建的外部 Harness 会话。其他本地会话和 Codex 自带的会话仍按原有方式使用。
+
+## 遇到问题怎么办
+
+| 遇到的情况 | 可以这样处理 |
+| --- | --- |
+| 连接失败，或连接后很快断开 | 先确认 SSH 可以登录，再点击「重新检测」。未安装时点击「安装并连接」。仍有问题时，按手动更新步骤更新后重连。 |
+| 看不到想使用的 Harness | 在远程电脑上确认工具已安装并登录，然后在 codexhost 的「连接」页面点击「重新诊断连接」。 |
+| 无法读取远程版本，或提示版本过旧 | 点击「更新远程服务」；不可用或失败时按上面的「需要手动更新时」操作。 |
+| 更新失败 | 检查远程电脑能否联网，再重试；仍失败时按手动更新步骤操作。 |
+| 另一台电脑看不到同一个会话 | 确认两端都通过 codexhost 启动、版本相同，远程桌面与 SSH 使用同一用户。使用自定义数据目录时，两种启动方式也要保持一致。 |
+| Mac 上安装失败 | 确认远程 Mac 的桌面用户已登录，再执行 `codexhost remote install`。 |
+
+## 停止或卸载
+
+不再使用远程端时，在远程电脑的终端执行：
+
+```bash
+codexhost remote stop
+codexhost remote uninstall
+```
+
+停止服务会中断正在进行的会话。如果只是暂时断开连接，使用页面中的「断开」即可，不需要卸载。

@@ -11,7 +11,7 @@ import {
   type UpdateCheckResult,
   type UpdateStatus,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/settings/icons.js", () => ({
   createRendererSettingsIcon: () => ({ classList: { add() {} } }),
@@ -43,6 +43,8 @@ import type {
   RendererConnectionDiagnostics,
   RendererConnectionSnapshot,
 } from "../../src/settings/pages.js";
+
+import { createHarnessInstallationPanel } from "../../src/settings/harness-installation-panel.js";
 
 class FakeElement {
   readonly children: unknown[] = [];
@@ -823,7 +825,7 @@ describe("Harness CLI version panel", () => {
     expect(manual.button("update").disabled).toBe(true);
     manual.abort.abort();
   });
-  it("shows native manual-update guidance without claiming an unknown latest version is current", async () => {
+  it("shows localized manual-update guidance without claiming an unknown latest version is current", async () => {
     const { panel, button, abort } = mount(async () => ({
       ...state,
       latestVersion: "Unknown",
@@ -831,7 +833,8 @@ describe("Harness CLI version panel", () => {
       canUpdate: false,
       message: "This installation belongs to its desktop app.",
     }));
-    await vi.waitFor(() => expect(visibleText(panel)).toContain("belongs to its desktop app"));
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("original installer"));
+    expect(visibleText(panel)).not.toContain("belongs to its desktop app");
     expect(button("update").textContent).toBe("Update");
     expect(button("update").disabled).toBe(true);
     abort.abort();
@@ -856,6 +859,67 @@ describe("Harness CLI version panel", () => {
     expect(visibleText(panel)).not.toContain("1.0.0");
     expect(button("update").disabled).toBe(true);
   });
+});
+
+describe("Harness installation actions", () => {
+  it.each(["codebuddy", "kiro-cli"] as const)(
+    "provides one automatic install action for %s",
+    (agent) => {
+      const document = new FakeDocument();
+      const run = vi.fn();
+      const panel = createHarnessInstallationPanel(
+        document as unknown as Document,
+        agent,
+        "local",
+        rendererSettingsMessages("zh-CN"),
+        vi.fn(),
+        { run, status: "idle" },
+      ) as unknown as FakeElement;
+      const installs = descendants(panel).filter(
+        ({ dataset }) => dataset.connectionAction === "install",
+      );
+      expect(installs).toHaveLength(1);
+      const install = installs[0];
+      assert(install);
+      expect(install.textContent).toBe("一键安装");
+      if (agent === "codebuddy") {
+        const actions = elementWithClass(panel, "settings-harness-installation-actions");
+        expect(descendants(actions)).toContain(install);
+        expect(
+          descendants(actions).some(({ dataset }) => dataset.connectionAction === "copy-install"),
+        ).toBe(true);
+      } else {
+        expect(panel.children).toContain(install);
+      }
+      install.dispatch("click");
+      install.dispatch("click");
+      expect(run).toHaveBeenCalledOnce();
+      expect(install.disabled).toBe(true);
+    },
+  );
+
+  it.each(["installing", "checking"] as const)(
+    "disables automatic installation while %s",
+    (status) => {
+      const document = new FakeDocument();
+      const run = vi.fn();
+      const panel = createHarnessInstallationPanel(
+        document as unknown as Document,
+        "codebuddy",
+        "local",
+        rendererSettingsMessages("en"),
+        vi.fn(),
+        { run, status },
+      ) as unknown as FakeElement;
+      const install = descendants(panel).find(
+        ({ dataset }) => dataset.connectionAction === "install",
+      );
+      assert(install);
+      expect(install.disabled).toBe(true);
+      install.dispatch("click");
+      expect(run).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("Renderer Connections page", () => {
@@ -936,6 +1000,7 @@ describe("Renderer Connections page", () => {
     ["qoder", "https://qoder.com/"],
     ["qoder-cn", "https://qoder.cn/"],
     ["kimi-code", "https://code.kimi.com/"],
+    ["zcode", "https://zcode.z.ai/"],
   ] as const)(
     "shows manual commands and supported download guides for %s",
     async (agent, expected) => {
@@ -998,12 +1063,13 @@ describe("Renderer Connections page", () => {
         descendants(content).some(({ className }) => className === "settings-harness-installation"),
       ).toBe(true);
       const guides = descendants(panel).filter(({ tagName }) => tagName === "a");
-      expect(guides).toHaveLength(agent === "workbuddy" ? 1 : 0);
-      if (agent === "workbuddy") {
+      const desktopApp = agent === "workbuddy" || agent === "zcode";
+      expect(guides).toHaveLength(desktopApp ? 1 : 0);
+      if (desktopApp) {
         expect(guides).toMatchObject([
           {
             textContent: "下载",
-            href: "https://www.workbuddy.ai/",
+            href: expected,
             target: "_blank",
             rel: "noopener noreferrer",
           },
@@ -1013,6 +1079,7 @@ describe("Renderer Connections page", () => {
         expect(visibleText(panel)).toContain("请下载并安装 WorkBuddy 桌面应用。");
         expect(visibleText(panel)).not.toContain("下载与安装指南");
       }
+      if (agent === "zcode") expect(visibleText(panel)).toContain("请安装 ZCode Desktop");
       expect(
         visibleText(content).includes(
           "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。",
@@ -1027,7 +1094,7 @@ describe("Renderer Connections page", () => {
         ({ className }) => className === "settings-harness-installation-command",
       );
       expect(blocks).toHaveLength(
-        agent === "workbuddy"
+        desktopApp
           ? 0
           : ["deepseek-harness", "opencode", "grok", "codebuddy"].includes(agent)
             ? 1
@@ -1066,7 +1133,213 @@ describe("Renderer Connections page", () => {
     },
   );
 
-  it.each(["workbuddy"] as const)(
+  it.each([
+    {
+      locale: "zh-CN",
+      agent: "qoder-cn",
+      nativeMessage: "Please run qoderclicn login to authenticate.",
+    },
+    {
+      locale: "en",
+      agent: "qoder-cn",
+      nativeMessage: "Please run qoderclicn login to authenticate.",
+    },
+    {
+      locale: "zh-CN",
+      agent: "antigravity",
+      nativeMessage:
+        "Fetching available models... Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+    },
+    {
+      locale: "en",
+      agent: "antigravity",
+      nativeMessage:
+        "Fetching available models... Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+    },
+  ] as const)(
+    "localizes authentication summaries and preserves native diagnostics ($agent, $locale)",
+    ({ locale, agent, nativeMessage }) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent,
+                  availability: "unavailable",
+                  error: {
+                    code: "authenticationRequired",
+                    message: nativeMessage,
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      assert(page);
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      assert(row);
+      expect(visibleText(row)).toContain(messages.connectionLoginRequired);
+      row.dispatch("click", { target: null });
+      expect(
+        visibleText(elementWithClass(content, "settings-connection-inspector__header")),
+      ).toContain(messages.connectionLoginRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionLoginDescription);
+      expect(visibleText(summary)).not.toContain(nativeMessage);
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        nativeMessage,
+      );
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["zh-CN", "en"] as const)(
+    "shows missing Hermes configuration separately from login (%s)",
+    (locale) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent: "hermes",
+                  availability: "unavailable",
+                  error: {
+                    code: "configurationRequired",
+                    message: "Run `hermes setup`.",
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      if (!page) throw new Error("Expected connections page");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "hermes");
+      if (!row) throw new Error("Expected Hermes row");
+      expect(visibleText(row)).toContain(messages.connectionConfigurationRequired);
+      row.dispatch("click", { target: null });
+      expect(
+        visibleText(elementWithClass(content, "settings-connection-inspector__header")),
+      ).toContain(messages.connectionConfigurationRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionConfigurationDescription);
+      expect(visibleText(summary)).not.toContain("Run `hermes setup`.");
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        "Run `hermes setup`.",
+      );
+      expect(visibleText(summary)).not.toContain(messages.connectionLoginRequired);
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["zh-CN", "en"] as const)(
+    "shows OMP model setup errors without a login status (%s)",
+    (locale) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent: "omp",
+                  availability: "error",
+                  error: {
+                    code: "configurationRequired",
+                    message: "Configure a Provider API key and select a model with /model.",
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      assert(page);
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "omp");
+      assert(row);
+      expect(visibleText(row)).toContain(messages.connectionConfigurationRequired);
+      expect(visibleText(row)).not.toContain(messages.connectionLoginRequired);
+      row.dispatch("click", { target: null });
+      const header = elementWithClass(content, "settings-connection-inspector__header");
+      expect(visibleText(header)).toContain(messages.connectionConfigurationRequired);
+      expect(visibleText(header)).not.toContain(messages.connectionLoginRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionConfigurationDescription);
+      expect(visibleText(summary)).not.toContain("Configure a Provider API key");
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        "Configure a Provider API key and select a model with /model.",
+      );
+      expect(visibleText(summary)).not.toContain(messages.connectionLoginRequired);
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["workbuddy", "zcode"] as const)(
     "edits %s launch settings in the local right-side inspector",
     async (agent) => {
       const messages = rendererSettingsMessages("zh-CN");
@@ -1111,6 +1384,9 @@ describe("Renderer Connections page", () => {
       const panel = elementWithClass(content, "settings-connection-inspector__body");
       const input = descendants(panel).find(({ tagName }) => tagName === "input");
       if (!input) throw new Error("Expected launch path input");
+      expect(visibleText(panel)).toContain(
+        agent === "zcode" ? messages.launchPathZcodeHelp : messages.launchPathWorkbuddyHelp,
+      );
       await vi.waitFor(() => expect(input.disabled).toBe(false));
       expect(diagnostics.getLaunchSettings).toHaveBeenCalledWith("local", agent);
       const save = descendants(panel).find(
@@ -1155,6 +1431,57 @@ describe("Renderer Connections page", () => {
       scope.dispose();
     },
   );
+  it("offers automatic installation only for Harnesses with an install command", () => {
+    const installation = vi.fn(async () => {
+      throw new Error("not expected");
+    });
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: (["kiro-cli", "workbuddy", "zcode"] as const).map((agent) => ({
+              agent,
+              availability: "notInstalled" as const,
+              error: null,
+            })),
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      installation,
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected connections page");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const offersInstall = (agent: string): boolean => {
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      if (!row) throw new Error("Expected Harness row");
+      return descendants(row).some(
+        ({ className }) => className === "settings-connection-install-link",
+      );
+    };
+    expect(offersInstall("kiro-cli")).toBe(true);
+    // Desktop apps are downloaded by the user; their plugins expose no installer.
+    expect(offersInstall("workbuddy")).toBe(false);
+    expect(offersInstall("zcode")).toBe(false);
+    expect(installation).not.toHaveBeenCalled();
+    cleanup?.();
+    scope.dispose();
+  });
   it("opens managed DSH Web only for the local Host and coalesces repeated clicks", async () => {
     const opened = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {
@@ -1267,6 +1594,7 @@ describe("Renderer Connections page", () => {
                   retryable: true,
                   stage: "startup",
                   durationMs: 120,
+                  diagnostic: "Native process stopped during startup",
                   stderrTail: "check ~/.pi/agent/settings.json",
                 },
               },
@@ -1317,7 +1645,18 @@ describe("Renderer Connections page", () => {
     expect(visibleText(content)).toContain("公司");
     expect(visibleText(content)).toContain("pi exited with code 1");
     expect(visibleText(content)).toContain("~/.pi/agent/settings.json");
-    expect(visibleText(content)).toContain("startup");
+    expect(
+      descendants(content).some(
+        ({ className }) => className === "settings-connection-error-metadata",
+      ),
+    ).toBe(false);
+    const report = visibleText(elementWithClass(content, "settings-connection-stderr"));
+    expect(report).toContain("error.code: processExited");
+    expect(report).toContain("retryable: true");
+    expect(report).toContain("stage: startup");
+    expect(report).toContain("durationMs: 120");
+    expect(report).toContain("diagnostic: Native process stopped during startup");
+    expect(report).toContain("stderr:\ncheck ~/.pi/agent/settings.json");
     const issueLink = descendants(content).find(
       ({ tagName, href }) =>
         tagName === "a" && href === "https://github.com/BytePioneer-AI/codex-host/issues/new",
@@ -1329,9 +1668,7 @@ describe("Renderer Connections page", () => {
     if (!copyButton) throw new Error("Copy error log button is not rendered");
     copyButton.dispatch("click");
     await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledOnce());
-    expect(document.clipboardWriteText).toHaveBeenCalledWith(
-      expect.stringContaining("host: local"),
-    );
+    expect(document.clipboardWriteText).toHaveBeenCalledWith(report);
     await vi.waitFor(() => expect(visibleNotesText(content)).toContain("已复制"));
     const refresh = descendants(content).find(
       ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "refresh",
@@ -2409,6 +2746,189 @@ describe("Renderer Session Import page", () => {
     expect(
       descendants(content).some(({ dataset }) => dataset.sessionImportAction === "retry-open"),
     ).toBe(false);
+    scope.dispose();
+  });
+
+  it("hides Harnesses the local Host already reported as not installed, without inspecting again", async () => {
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: ["pi", "kimi-code", "grok", "omp", "third-party"].map((id) => ({
+          harnessId: harnessIdSchema.parse(id),
+          name: id,
+        })),
+      })),
+      listHarnessSessions: vi.fn(async () => ({ total: 0, candidates: [] })),
+      importHarnessSession: vi.fn(),
+    };
+    const agent = (name: string, availability: string) => ({
+      agent: name,
+      availability,
+      error: null,
+    });
+    const diagnostics = {
+      snapshot: vi.fn(() => ({
+        adapter: {},
+        hosts: [
+          {
+            hostId: "local",
+            active: false,
+            agents: [
+              agent("pi", "notInstalled"),
+              agent("kimi-code", "notInstalled"),
+              // Still being checked, failing or incompatible: its own error is shown on use.
+              agent("grok", "checking"),
+              agent("omp", "error"),
+            ],
+          },
+          // Import always uses the local Host; a remote workspace's status is irrelevant.
+          { hostId: "remote-1", active: true, agents: [agent("grok", "notInstalled")] },
+        ],
+      })),
+      refresh: vi.fn(),
+      subscribe: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics as never,
+      () => null,
+      () => client,
+      vi.fn(async () => undefined),
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    // The first Harness that is not missing is selected, not the hidden one.
+    await vi.waitFor(() =>
+      expect(client.listHarnessSessions).toHaveBeenCalledWith(
+        expect.objectContaining({ harnessId: "grok" }),
+      ),
+    );
+    expect(
+      descendants(content)
+        .filter(({ dataset }) => dataset.sessionImportHarnessOption !== undefined)
+        .map(({ textContent }) => textContent),
+    ).toEqual(["grok", "omp", "third-party"]);
+    expect(diagnostics.refresh).not.toHaveBeenCalled();
+    scope.dispose();
+  });
+
+  it("shows a scroll hint only while the Harness options overflow and scrolls them with the wheel", async () => {
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: ["pi", "omp", "grok"].map((id) => ({
+          harnessId: harnessIdSchema.parse(id),
+          name: id,
+        })),
+      })),
+      listHarnessSessions: vi.fn(async () => ({ total: 0, candidates: [] })),
+      importHarnessSession: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => null,
+      () => client,
+      vi.fn(async () => undefined),
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(client.listHarnessSessions).toHaveBeenCalledTimes(1));
+    const selector = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportHarness === "selector",
+    );
+    const indicator = descendants(content).find(
+      ({ className }) => className === "settings-session-import-harness__indicator",
+    );
+    const thumb = indicator?.children[0] as FakeElement | undefined;
+    if (!selector || !indicator || !thumb) throw new Error("Harness selector missing");
+    // Everything fits: no hint, and the wheel is left to the page.
+    expect(indicator.dataset.overflowing).toBe("false");
+    const wheel = (deltaY: number, deltaX = 0) => {
+      const event = { deltaX, deltaY, ctrlKey: false, preventDefault: vi.fn() };
+      selector.dispatch("wheel", event);
+      return event.preventDefault.mock.calls.length > 0;
+    };
+    expect(wheel(100)).toBe(false);
+
+    selector.scrollWidth = 1_200;
+    selector.clientWidth = 600;
+    selector.dispatch("scroll");
+    expect(indicator.dataset.overflowing).toBe("true");
+    expect(thumb.style).toMatchObject({ width: "50%", left: "0%" });
+
+    expect(wheel(300)).toBe(true);
+    selector.dispatch("scroll");
+    expect(selector.scrollLeft).toBe(300);
+    expect(thumb.style.left).toBe("25%");
+    // Horizontal gestures already scroll natively and must not be handled twice.
+    expect(wheel(100, 40)).toBe(false);
+    expect(wheel(900)).toBe(true);
+    expect(selector.scrollLeft).toBe(600);
+    // At either end the page keeps scrolling.
+    expect(wheel(100)).toBe(false);
+
+    // The hint is draggable with a mouse: 600px of line stand for 1200px of options.
+    const capture = vi.fn();
+    Object.assign(indicator, {
+      getBoundingClientRect: () => ({ left: 100, width: 600 }),
+      setPointerCapture: capture,
+    });
+    const pointer = (clientX: number, target: FakeElement, overrides = {}) => ({
+      button: 0,
+      pointerId: 7,
+      clientX,
+      target,
+      preventDefault: vi.fn(),
+      ...overrides,
+    });
+    // Pressing the bare line first centres the visible part on the pointer...
+    indicator.dispatch("pointerdown", pointer(250, indicator));
+    expect(selector.scrollLeft).toBe(0);
+    expect(capture).toHaveBeenCalledWith(7);
+    expect(indicator.dataset.dragging).toBe("true");
+    // ...and moving then follows the pointer one to one along the line, within the ends.
+    indicator.dispatch("pointermove", pointer(400, indicator));
+    expect(selector.scrollLeft).toBe(300);
+    expect(thumb.style.left).toBe("25%");
+    indicator.dispatch("pointermove", pointer(400, indicator, { pointerId: 8 }));
+    indicator.dispatch("pointermove", pointer(5_000, indicator));
+    expect(selector.scrollLeft).toBe(600);
+    indicator.dispatch("pointerup", pointer(5_000, indicator));
+    expect(indicator.dataset.dragging).toBeUndefined();
+    indicator.dispatch("pointermove", pointer(100, indicator));
+    expect(selector.scrollLeft).toBe(600);
+    // Pressing the thumb itself keeps the position; other buttons do nothing.
+    indicator.dispatch("pointerdown", pointer(650, thumb, { button: 2 }));
+    expect(indicator.dataset.dragging).toBeUndefined();
+    indicator.dispatch("pointerdown", pointer(650, thumb));
+    expect(selector.scrollLeft).toBe(600);
+    indicator.dispatch("pointermove", pointer(600, thumb));
+    expect(selector.scrollLeft).toBe(500);
+    indicator.dispatch("pointercancel", pointer(600, thumb));
+    indicator.dispatch("pointerdown", pointer(700, thumb));
+    indicator.dispatch("pointermove", pointer(5_000, thumb));
+    indicator.dispatch("pointerup", pointer(5_000, thumb));
+    expect(selector.scrollLeft).toBe(600);
+
+    // Choosing another Harness rebuilds the options without jumping back to the start.
+    descendants(content)
+      .find(({ dataset }) => dataset.sessionImportHarnessOption === "grok")
+      ?.dispatch("click");
+    expect(selector.scrollLeft).toBe(600);
+    expect(thumb.style.left).toBe("50%");
     scope.dispose();
   });
 

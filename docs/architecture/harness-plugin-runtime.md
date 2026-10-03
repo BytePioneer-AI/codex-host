@@ -103,7 +103,7 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
 
 插件可以额外导出可选的 `warmup(adapter): Promise<void>`。Host 调用它进行尽力而为的后台预取，不等待其完成后才服务请求；失败只记录稳定诊断码。当前 Claude Code 和 Antigravity 使用这个入口，其他插件无需为统一形式添加空实现。预取创建的原生资源也由 Adapter 的幂等关闭负责。专用运行时可以请求不预取的冷实例。
 
-Context 包含环境变量快照、平台、是否为受管远程 Host，以及可选 Broker 描述符路径和本地 URL 打开服务。目录加载时环境快照被冻结；它不是凭据过滤器。受管远程 Host 不提供本地 URL 打开服务。已提供的本地服务继续经过 Native Launcher 的 loopback URL 校验，不暴露任意系统 URL 打开接口。
+Context 包含环境变量快照、平台、是否为受管远程 Host，以及可选 Broker 描述符路径和本地页面服务。目录加载时环境快照被冻结；它不是凭据过滤器。`openLocalUrl` 经过 Native Launcher 的 loopback URL 校验，在系统浏览器打开页面。`openLocalPage` 通过既有认证 Controller 连接打开 Codex 内置浏览器的后台页面，返回 `show/close` 句柄；插件按请求持有并关闭它，连接断开也会释放所属页。该页面接口仅接受带显式端口的 `http://127.0.0.1/` 根地址，不向聊天页注入第三方脚本；需要当前可见的本地任务及可用的内置浏览器。受管远程 Host 不提供这两项本机服务。
 
 ## 自定义启动路径设置
 
@@ -119,7 +119,7 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。首次选择详情时自动检查一次，不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。所选 Harness 的详情卡片标题旁提供官网外链图标，列表行及详情正文不重复提供通用官网或安装说明链接。未安装且有自动安装入口时显示下载图标；点击显式发起 CLI 安装，点击行本身查看手动安装命令、复制按钮、接入提示和「重新检测」，正文不提供额外的通用安装指南跳转入口。WorkBuddy 在详情正文提供一个「下载」按钮，跳转官网首页，并提示下载安装桌面应用，不提供分系统的安装指南链接。未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用，不回退更新本机的另一份安装。
 
-可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message? }`。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
+可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message?, messageCode?, latestVersionKind? }`。`message` 保留为 Adapter 诊断文本，不在界面原样拼接；内置 Adapter 用 `messageCode` 标识更新限制或渠道说明，Renderer 按当前中英文设置显示。`latestVersionKind` 可标识 `unknown` / `tracking-branch`，避免将非版本状态当成英文版本号展示；真实版本号及提交标识保持原样。旧插件的 `Unknown` / `Tracking branch (new commits)` 仍按当前语言展示，缺少或无法识别提示码时仅显示通用本地化说明，不展示未翻译的诊断文本。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
 
 DSH 的 npx 更新只在显式点击更新时执行 `npx --yes --prefer-online @deepseek-ai/dsh --version`，保留与普通离线启动相同的无版本包规格及 Host 环境（包括 npm 缓存配置），避免 `@latest` 或固定版本规格创建另一份缓存。先确认在线命令返回目标版本，再用原来的 `--offline --no-install @deepseek-ai/dsh --version` 回读，任一步失败或版本不匹配均不报告成功。版本查询失败不执行更新；普通诊断和启动仍保持离线，不改变现有会话或自动重启已运行的 Web 进程。npm 原生管理缓存，不直接编辑缓存目录，也不新增 Host 持久状态。
 

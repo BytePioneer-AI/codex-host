@@ -15,6 +15,7 @@ import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
+import { harnessHasInstallCommands } from "./harness-installation-guides.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
 import { HARNESS_OFFICIAL_WEBSITES } from "./harness-official-websites.js";
 import { harnessInstallStore } from "./harness-install-store.js";
@@ -130,17 +131,6 @@ function diagnosticText(
         ]
       : []),
   ].join("\n");
-}
-
-function detailLine(document: Document, label: string, value: string): HTMLElement {
-  const line = document.createElement("div");
-  line.className = "settings-connection-detail-line";
-  const name = document.createElement("span");
-  name.textContent = label;
-  const content = document.createElement("code");
-  content.textContent = value;
-  line.append(name, content);
-  return line;
 }
 
 function setCopyButtonLabel(button: HTMLButtonElement, label: string): void {
@@ -322,7 +312,12 @@ function createConnectionRow(
   status.className = "settings-connection-row__status";
   status.dataset.connectionTone = connectionStatusTone(item.availability, item.error !== null);
   status.setAttribute("role", "cell");
-  status.textContent = connectionStatusLabel(item.availability, messages, item.error !== null);
+  status.textContent =
+    item.error?.code === "authenticationRequired"
+      ? messages.connectionLoginRequired
+      : item.error?.code === "configurationRequired"
+        ? messages.connectionConfigurationRequired
+        : connectionStatusLabel(item.availability, messages, item.error !== null);
 
   const action = document.createElement("div");
   action.className = "settings-connection-row__action";
@@ -422,9 +417,13 @@ function createInspectorHeader(
   status.className = "settings-connection-row__status";
   status.dataset.connectionTone = connectionStatusTone(item.availability, item.error !== null);
   status.textContent =
-    item.agentSnapshot && item.availability === "ready" && !item.error
-      ? messages.connectionStatusConnected
-      : connectionStatusLabel(item.availability, messages, item.error !== null);
+    item.error?.code === "authenticationRequired"
+      ? messages.connectionLoginRequired
+      : item.error?.code === "configurationRequired"
+        ? messages.connectionConfigurationRequired
+        : item.agentSnapshot && item.availability === "ready" && !item.error
+          ? messages.connectionStatusConnected
+          : connectionStatusLabel(item.availability, messages, item.error !== null);
   header.append(identity, status);
   return header;
 }
@@ -473,6 +472,12 @@ function renderConnectionInspector(
         messages,
         (button, command, label) =>
           copyDiagnosticsToClipboard(document, button, command, messages, label),
+        item.install
+          ? {
+              run: item.install,
+              status: busy ? (item.availability as "installing" | "checking") : "idle",
+            }
+          : undefined,
       ),
     );
     const check = document.createElement("button");
@@ -491,28 +496,20 @@ function renderConnectionInspector(
     const summary = document.createElement("div");
     summary.className = "settings-connection-error-summary";
     const title = document.createElement("strong");
-    title.textContent = messages.connectionErrorTitle;
+    const needsLogin = item.error.code === "authenticationRequired";
+    const needsConfiguration = item.error.code === "configurationRequired";
+    title.textContent = needsLogin
+      ? messages.connectionLoginRequired
+      : needsConfiguration
+        ? messages.connectionConfigurationRequired
+        : messages.connectionErrorTitle;
     const description = document.createElement("p");
-    description.textContent = item.error.message;
+    description.textContent = needsLogin
+      ? messages.connectionLoginDescription
+      : needsConfiguration
+        ? messages.connectionConfigurationDescription
+        : item.error.message;
     summary.append(title, description);
-
-    const metadata = document.createElement("div");
-    metadata.className = "settings-connection-error-metadata";
-    metadata.append(
-      detailLine(document, messages.connectionErrorCode, item.error.code),
-      detailLine(document, messages.connectionRetryable, String(item.error.retryable)),
-    );
-    if (item.error.stage) {
-      metadata.append(detailLine(document, messages.connectionFailureStage, item.error.stage));
-    }
-    if (item.error.durationMs !== undefined) {
-      metadata.append(
-        detailLine(document, messages.connectionDuration, `${item.error.durationMs} ms`),
-      );
-    }
-    if (item.error.diagnostic) {
-      metadata.append(detailLine(document, messages.connectionDiagnostic, item.error.diagnostic));
-    }
 
     const logHeader = document.createElement("div");
     logHeader.className = "settings-connection-error-log-header";
@@ -529,7 +526,7 @@ function renderConnectionInspector(
     logHeader.append(logTitle, copy);
     const log = document.createElement("pre");
     log.className = "settings-connection-stderr";
-    log.textContent = item.error.stderrTail ?? item.error.diagnostic ?? report;
+    log.textContent = report;
 
     const actions = document.createElement("div");
     actions.className = "settings-connection-error-actions";
@@ -543,7 +540,7 @@ function renderConnectionInspector(
     const issueNote = document.createElement("p");
     issueNote.className = "settings-connection-issue-note";
     issueNote.textContent = messages.connectionIssueDescription;
-    body.append(summary, metadata, logHeader, log, actions, issueNote);
+    body.append(summary, logHeader, log, actions, issueNote);
   } else {
     const status = document.createElement("div");
     status.className = "settings-connection-state-summary";
@@ -585,7 +582,12 @@ function renderConnectionInspector(
   const agent = item.agentSnapshot?.agent;
   const getLaunchSettings = diagnostics?.getLaunchSettings?.bind(diagnostics);
   const setLaunchSettings = diagnostics?.setLaunchSettings?.bind(diagnostics);
-  if (hostId === "local" && agent === "workbuddy" && getLaunchSettings && setLaunchSettings) {
+  if (
+    hostId === "local" &&
+    (agent === "zcode" || agent === "workbuddy") &&
+    getLaunchSettings &&
+    setLaunchSettings
+  ) {
     launchControls =
       existingLaunchControls ??
       createHarnessLaunchControls(document, messages, agent, {
@@ -885,7 +887,7 @@ export function createConnectionsSettingsPage(
                 ? { availability: "updating" as const }
                 : {}),
               ...(state?.error ? { installError: state.error } : {}),
-              ...(diagnostics?.installation && agent !== "workbuddy"
+              ...(diagnostics?.installation && harnessHasInstallCommands(agent)
                 ? {
                     install: () => {
                       void installs?.install(selectedHost.hostId, agent);

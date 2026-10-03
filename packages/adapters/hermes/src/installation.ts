@@ -17,6 +17,7 @@ export function createHermesInstallation(environment: NodeJS.ProcessEnv, command
           latestVersion: "Unknown",
           updateAvailable: false,
           canUpdate: false,
+          messageCode: "hermes-update-plan-unavailable",
           message:
             "This Hermes release does not expose a safe update plan. Use the original installer.",
         };
@@ -29,6 +30,7 @@ export function createHermesInstallation(environment: NodeJS.ProcessEnv, command
           latestVersion: "Unknown",
           updateAvailable: false,
           canUpdate: false,
+          messageCode: "hermes-externally-managed",
           message:
             "This Hermes installation is managed externally. Update it through its desktop app, container, or original package manager.",
         };
@@ -59,6 +61,8 @@ export function createHermesInstallation(environment: NodeJS.ProcessEnv, command
         latestVersion,
         updateAvailable,
         canUpdate,
+        ...(updateAvailable && !release ? { latestVersionKind: "tracking-branch" as const } : {}),
+        messageCode: canUpdate ? "hermes-update-channel" : "hermes-manual-update",
         message: canUpdate
           ? "Uses Hermes's configured update channel. Gateway restarts are deferred; existing processes keep their running code."
           : "Use the native updater manually. Safe non-interactive updates require a clean source checkout, commit identity, and Gateway restart deferral.",

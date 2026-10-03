@@ -734,6 +734,7 @@ function diffText(changes: HostFileChange[]): string {
 export class CodexTurnProjector {
   readonly #cwd: string;
   readonly #input: HostTurnSnapshot["input"];
+  readonly #clientUserMessageId: string | null;
   readonly #interactions = new Map<HostInteractionId, ProjectedInteraction>();
   readonly #items = new Map<HostItemId, ProjectedItem>();
   readonly #wireItemOrder: HostItemId[] = [];
@@ -753,11 +754,13 @@ export class CodexTurnProjector {
     cwd: string;
     startedAtMs: number;
     initialInput?: HostTurnSnapshot["input"];
+    clientUserMessageId?: string;
   }) {
     this.#threadId = input.threadId;
     this.#turnId = input.turnId;
     this.#cwd = input.cwd;
     this.#input = input.initialInput ?? [];
+    this.#clientUserMessageId = input.clientUserMessageId ?? null;
     this.#startedAtMs = input.startedAtMs;
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
   }
@@ -930,6 +933,21 @@ export class CodexTurnProjector {
             turn: this.pendingTurn(this.#startedAt),
           },
         },
+        // Connected viewers consume item events; turn snapshots alone do not
+        // insert later user messages into an already-open conversation.
+        ...this.#projectInput().flatMap((item) =>
+          ["item/started", "item/completed"].map((method) => ({
+            method,
+            emittedAtMs: this.#startedAtMs,
+            params: {
+              threadId: this.#threadId,
+              turnId: this.#turnId,
+              startedAtMs: this.#startedAtMs,
+              ...(method === "item/completed" ? { completedAtMs: this.#startedAtMs } : {}),
+              item,
+            },
+          })),
+        ),
       ],
     };
   }
@@ -1288,7 +1306,7 @@ export class CodexTurnProjector {
           {
             id: `${this.#turnId}-user`,
             type: "userMessage",
-            clientId: null,
+            clientId: this.#clientUserMessageId,
             content: this.#input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
           },
         ];

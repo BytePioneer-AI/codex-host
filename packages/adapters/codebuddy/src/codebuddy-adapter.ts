@@ -27,6 +27,7 @@ import {
 import { capabilitiesForProfile, configuration } from "./configuration.js";
 import { deriveCodeBuddySession } from "./derivation.js";
 import { codeBuddyCanonicalCwd, validateNativeRef } from "./history.js";
+import { CodeBuddySessionImport } from "./session-import.js";
 import { CodeBuddySession, type CodeBuddyHistoryReader } from "./session.js";
 import { readCodeBuddyChild } from "./subagent-history.js";
 import type { HarnessSubagentCapability } from "@codexhost/harness-adapter";
@@ -44,6 +45,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
   readonly harnessId;
   readonly commandCatalog?: HarnessCommandCatalog;
   readonly liveCommandCatalog = true;
+  readonly sessionImport: CodeBuddySessionImport;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async ({ parent, nativeSubagentId, cwd }) => {
       try {
@@ -87,6 +89,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
       if (commandCatalog) this.commandCatalog = commandCatalog;
     }
     this.#environment = { ...(options.environment ?? process.env) };
+    this.sessionImport = new CodeBuddySessionImport(this.#environment, this.#profile);
     this.#invocation = options.invocationFactory ?? codeBuddyInvocation;
     this.#factory =
       options.clientFactory ??
@@ -247,7 +250,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
   async close() {
     this.#closed = true;
     this.#abort.abort();
-    await Promise.allSettled([...this.#derivations]);
+    await Promise.allSettled([this.sessionImport.close(), ...this.#derivations]);
     const results = await Promise.allSettled(
       [...this.#sessions, ...this.#inspections].map((resource) => resource.close()),
     );

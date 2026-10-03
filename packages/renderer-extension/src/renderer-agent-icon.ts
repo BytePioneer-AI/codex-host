@@ -8,6 +8,7 @@ import kiroAgentIconUrl from "./assets/kiro-agent.svg";
 import codeBuddyAgentIconUrl from "./assets/codebuddy-agent.svg";
 import workBuddyAgentIconUrl from "./assets/workbuddy-agent.svg";
 import cursorAgentIconUrl from "./assets/cursor-agent.svg";
+import devinAgentIconUrl from "./assets/devin-agent.svg";
 import ompAgentIconUrl from "./assets/omp-agent.svg";
 import openCodeAgentIconUrl from "./assets/opencode-agent.png";
 import qoderAgentIconUrl from "./assets/qoder-agent.svg";
@@ -26,6 +27,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   codebuddy: "CodeBuddy",
   workbuddy: "WorkBuddy",
   "cursor-cli": "Cursor CLI",
+  devin: "Devin",
   hermes: "Hermes",
   qoder: "Qoder",
   "qoder-cn": "Qoder CN",
@@ -132,6 +134,7 @@ export function createRendererAgentIcon(
     agent === "codebuddy" ||
     agent === "workbuddy" ||
     agent === "cursor-cli" ||
+    agent === "devin" ||
     agent === "kimi-code" ||
     agent === "zcode"
   ) {
@@ -147,9 +150,11 @@ export function createRendererAgentIcon(
               ? workBuddyAgentIconUrl
               : agent === "cursor-cli"
                 ? cursorAgentIconUrl
-                : agent === "kiro-cli"
-                  ? kiroAgentIconUrl
-                  : antigravityAgentIconUrl;
+                : agent === "devin"
+                  ? devinAgentIconUrl
+                  : agent === "kiro-cli"
+                    ? kiroAgentIconUrl
+                    : antigravityAgentIconUrl;
     image.alt = "";
     image.draggable = false;
     image.style.width = `${size}px`;

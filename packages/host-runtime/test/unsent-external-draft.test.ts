@@ -34,6 +34,7 @@ describe("unsent external drafts", () => {
         1,
         {
           historyMode: "paginated",
+          codexhostPrewarm: true,
         },
       );
       writeRequest(fixture.desktopInput, {
@@ -69,9 +70,23 @@ describe("unsent external drafts", () => {
     const adapter = delayedIdentityAdapter();
     const fixture = createFixture({ externalAdapters: new Map([["claude-code", adapter]]) });
     try {
-      const threadId = await startExternalThread(fixture, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID);
+      const threadId = await startExternalThread(
+        fixture,
+        CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+        1,
+        {
+          codexhostPrewarm: true,
+        },
+      );
+      writeRequest(fixture.desktopInput, {
+        id: 99,
+        method: "codexhost/thread/inspect",
+        params: { threadId },
+      });
+      await fixture.collector.waitFor((m) => requestId(m, 99));
       expect(fixture.collector.messages.filter((m) => method(m, "thread/started"))).toEqual([]);
-      const session = adapter.sessions[0]!;
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Missing draft Session");
       const state = {
         nativeRef: {
           harnessId: harnessIdSchema.parse("claude-code"),

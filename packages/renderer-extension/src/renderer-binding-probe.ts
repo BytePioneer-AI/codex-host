@@ -2708,6 +2708,7 @@ export function installRendererBindingProbe(
         mounted.codexUsageGate.dispose();
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
+        controller.detach(composer);
         continue;
       }
       const state = controller.get(composer);

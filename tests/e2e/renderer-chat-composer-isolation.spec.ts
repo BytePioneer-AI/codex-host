@@ -103,8 +103,13 @@ async function setOrbitComposer(page: Page, orbit: boolean): Promise<void> {
   }, orbit);
 }
 
-async function nativeSubmitResults(page: Page): Promise<unknown> {
-  return page.locator('[role="textbox"]').evaluate((editor) => {
+async function nativeSubmitResults(page: Page, orbit?: boolean): Promise<unknown> {
+  return page.locator('[role="textbox"]').evaluate((editor, isOrbit) => {
+    if (isOrbit !== undefined) {
+      let fiber: object = { memoizedProps: { isOrbit, conversationId: "dot-room" }, return: null };
+      for (let depth = 0; depth < 80; depth += 1) fiber = { return: fiber };
+      Object.defineProperty(editor, "__reactFiber$dot", { configurable: true, value: fiber });
+    }
     const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
     const submit = new Event("submit", { bubbles: true, cancelable: true });
     const click = new MouseEvent("click", { bubbles: true, cancelable: true });
@@ -124,7 +129,7 @@ async function nativeSubmitResults(page: Page): Promise<unknown> {
     form.dispatchEvent(submit);
     send.dispatchEvent(click);
     return { received };
-  });
+  }, orbit);
 }
 
 test("dot cloud composers retain native submission despite the Codex root marker", async ({
@@ -149,8 +154,7 @@ test("a mounted root becoming dot stops intercepting before the next scan", asyn
   await setOrbitComposer(page, false);
   await page.addScriptTag({ content: browserBundle });
   await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(1);
-  await setOrbitComposer(page, true);
-  expect(await nativeSubmitResults(page)).toEqual({ received: 3 });
+  expect(await nativeSubmitResults(page, true)).toEqual({ received: 3 });
   // React changes produce DOM mutations; the same root must also lose all controls.
   await page.locator("form").evaluate((root) => root.setAttribute("aria-hidden", "false"));
   await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
@@ -208,6 +212,65 @@ test("a pending ownership failure cannot block a root after it becomes dot", asy
   await page.locator("form").evaluate((root) => root.setAttribute("aria-hidden", "false"));
   await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
   await expect(page.locator('button[type="submit"]')).toBeEnabled();
+});
+
+test("an external draft root reused after dot follows the new native draft preference", async ({
+  page,
+}) => {
+  await page.setContent(
+    '<form data-codex-composer-root><div contenteditable="true" role="textbox">draft</div><button type="submit" aria-label="Send">Send</button></form>',
+  );
+  const setDraft = async (id: string, agent: string) =>
+    page.locator('[role="textbox"]').evaluate(
+      (editor, input) => {
+        const modelState = { get: () => ({ modelSettings: null, isManuallyChanged: false }) };
+        Object.defineProperty(editor, "__reactFiber$dot", {
+          configurable: true,
+          value: {
+            memoizedProps: { isOrbit: false },
+            updateQueue: {
+              memoCache: {
+                data: [[{}, {}, input.id, modelState, undefined, modelState, modelState]],
+              },
+            },
+            return: null,
+          },
+        });
+        localStorage.setItem(
+          "codexhost.new-thread-preference.v1",
+          JSON.stringify({ version: 1, lastAgent: input.agent, externalByAgent: {} }),
+        );
+      },
+      { id, agent },
+    );
+  await setDraft("client-new-thread:external", "pi");
+  await page.addScriptTag({ content: browserBundle });
+  const selection = () =>
+    page.evaluate(() => window.__codexhostRendererBindingProbeV1?.status().selections[0]);
+  expect(await selection()).toMatchObject({ agent: "pi", phase: "draft" });
+  const oldId = (await selection())?.composerId;
+  expect(await nativeSubmitResults(page, true)).toEqual({ received: 3 });
+  await page.locator("form").evaluate((root) => root.setAttribute("aria-hidden", "false"));
+  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
+  await setDraft("client-new-thread:native", "codex");
+  await page.locator("form").evaluate((root) => root.removeAttribute("aria-hidden"));
+  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(1);
+  expect(await selection()).toMatchObject({ agent: "codex", phase: "draft" });
+  expect((await selection())?.composerId).not.toBe(oldId);
+  // The production binding must apply native Codex, not its previous Pi route.
+  const applied = await page.evaluate(() => {
+    let route: string | null = null;
+    window.__codexhostRendererBindingProbeV1?.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      (agent) => {
+        route = agent;
+        return true;
+      },
+    );
+    return route;
+  });
+  expect(applied).toBe("codex");
 });
 
 test("ordinary Chat composers remain untouched", async ({ page }) => {

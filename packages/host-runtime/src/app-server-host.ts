@@ -636,8 +636,8 @@ export class AppServerHost {
   #unregisterDelegationApi: (() => void) | undefined;
   #unsubscribeAccountState: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
-  /** Desktop requests whose handler has neither answered nor handed them to native Codex. */
-  readonly #unansweredDesktopRequests = new Set<unknown>();
+  /** Active reply guards by request ID; each records whether its request was answered. */
+  readonly #replyGuards = new Map<unknown, Set<{ answered: boolean }>>();
   #pendingOfficialTurnStarts = new Map<unknown, string>();
   #activeWorkDrainWaiters = new Set<() => void>();
   #pendingOfficialDelegationThreads = new Set<string>();
@@ -1074,7 +1074,9 @@ export class AppServerHost {
       );
     });
     this.#dispatchDesktopRequest(() =>
-      this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+      this.#guardReply(request, () =>
+        this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+      ),
     );
     try {
       const message = await reply;
@@ -1145,7 +1147,7 @@ export class AppServerHost {
       this.#dispatchDesktopRequest(() =>
         this.#desktopRequests.run(threadId, () =>
           this.#externalRuntime.idleRelease.runOperation(threadId, () =>
-            this.#answerDesktopRequest(request, frame),
+            this.#guardReply(request, () => this.#handleDesktopRequest(request, frame)),
           ),
         ),
       );
@@ -1162,31 +1164,49 @@ export class AppServerHost {
 
   /**
    * A handler failure must still answer the request; otherwise Codex Desktop waits forever.
-   * Requests already answered or handed to native Codex are left alone.
+   * Requests already answered or handed to native Codex are left alone. Work a handler detaches
+   * through {@link #dispatchDesktopReply} keeps its own guard.
    */
-  async #answerDesktopRequest(
-    request: JsonRpcRequest,
-    frame: Buffer<ArrayBufferLike>,
-  ): Promise<void> {
-    this.#unansweredDesktopRequests.add(request.id);
+  async #guardReply(request: JsonRpcRequest, run: () => Promise<void>): Promise<void> {
+    const guard = { answered: false };
+    let guards = this.#replyGuards.get(request.id);
+    if (!guards) {
+      guards = new Set();
+      this.#replyGuards.set(request.id, guards);
+    }
+    guards.add(guard);
     try {
-      await this.#handleDesktopRequest(request, frame);
+      await run();
     } catch (error) {
       this.#diagnose(error);
-      if (this.#unansweredDesktopRequests.has(request.id)) {
+      if (!guard.answered) {
         await this.#writer
           .json(rpcError(request, -32603, "codexhost could not handle the request"))
           .catch((writeError: unknown) => this.#diagnose(writeError));
       }
     } finally {
-      this.#unansweredDesktopRequests.delete(request.id);
+      guards.delete(guard);
+      if (guards.size === 0) this.#replyGuards.delete(request.id);
     }
+  }
+
+  #markDesktopRequestAnswered(id: unknown): void {
+    for (const guard of this.#replyGuards.get(id) ?? []) guard.answered = true;
   }
 
   #noteDesktopReply(value: JsonValue): void {
     if (isRecord(value) && "id" in value && !("method" in value)) {
-      this.#unansweredDesktopRequests.delete(value.id);
+      this.#markDesktopRequestAnswered(value.id);
     }
+  }
+
+  /** Detaches work that answers `request`, keeping the failure fallback. */
+  #dispatchDesktopReply(
+    request: JsonRpcRequest,
+    run: () => Promise<void>,
+    threadId?: string,
+  ): void {
+    this.#dispatchDesktopRequest(() => this.#guardReply(request, run), threadId);
   }
 
   async #handleDesktopRequest(
@@ -1308,11 +1328,11 @@ export class AppServerHost {
       request.method === "codexhost/update/start" ||
       request.method === "codexhost/update/status"
     ) {
-      this.#dispatchDesktopRequest(() => this.#handleUpdateRequest(request));
+      this.#dispatchDesktopReply(request, () => this.#handleUpdateRequest(request));
       return;
     }
     if (request.method === CONSOLE_OPEN_METHOD) {
-      this.#dispatchDesktopRequest(() => this.#handleConsoleOpen(request));
+      this.#dispatchDesktopReply(request, () => this.#handleConsoleOpen(request));
       return;
     }
     if (
@@ -1320,11 +1340,11 @@ export class AppServerHost {
       request.method === "codexhost/account/list" ||
       request.method === "codexhost/account/refresh"
     ) {
-      this.#dispatchDesktopRequest(() => this.#handleCodexAccountRequest(request));
+      this.#dispatchDesktopReply(request, () => this.#handleCodexAccountRequest(request));
       return;
     }
     if (request.method === CREDENTIAL_IMPORTS_METHOD) {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         if (!credentialImportsParamsSchema.safeParse(request.params).success) {
           await this.#writer.json(rpcError(request, -32602, "Invalid credential import request"));
           return;
@@ -1351,7 +1371,7 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/accounts/sources") {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         if (!harnessAccountSourceListParamsSchema.safeParse(request.params).success) {
           await this.#writer.json(
             rpcError(request, -32602, "Invalid Harness account source list params"),
@@ -1368,7 +1388,7 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/accounts/inspect") {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         const params = harnessAccountInspectParamsSchema.safeParse(request.params);
         if (!params.success) {
           await this.#writer.json(
@@ -1392,7 +1412,7 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/accounts/list") {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         const params = harnessAccountListParamsSchema.safeParse(request.params);
         if (!params.success) {
           await this.#writer.json(rpcError(request, -32602, "Invalid Harness account list params"));
@@ -1412,11 +1432,11 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/inspect") {
-      this.#dispatchDesktopRequest(() => this.#inspectHarness(request));
+      this.#dispatchDesktopReply(request, () => this.#inspectHarness(request));
       return;
     }
     if (request.method === HARNESS_INSTALLATION_METHOD) {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         await this.#waitForPlugins();
         try {
           const result = await handleHarnessInstallation(request.params, this.#externalAdapters);
@@ -1436,14 +1456,14 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/web-ui/open") {
-      this.#dispatchDesktopRequest(() => this.#openHarnessWebUi(request));
+      this.#dispatchDesktopReply(request, () => this.#openHarnessWebUi(request));
       return;
     }
     if (
       request.method === HARNESS_LAUNCH_SETTINGS_GET_METHOD ||
       request.method === HARNESS_LAUNCH_SETTINGS_SET_METHOD
     ) {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         const schema =
           request.method === HARNESS_LAUNCH_SETTINGS_SET_METHOD
             ? harnessLaunchSettingsSetSchema
@@ -1486,7 +1506,7 @@ export class AppServerHost {
       return;
     }
     if (request.method === "codexhost/harness/plugins/list") {
-      this.#dispatchDesktopRequest(async () => {
+      this.#dispatchDesktopReply(request, async () => {
         if (!harnessPluginListParamsSchema.safeParse(request.params).success) {
           await this.#writer.json(rpcError(request, -32602, "Invalid Harness plugin list params"));
           return;
@@ -1498,7 +1518,7 @@ export class AppServerHost {
       return;
     }
     if (isSessionImportRequest(request.method)) {
-      this.#dispatchDesktopRequest(() => this.#handleSessionImport(request));
+      this.#dispatchDesktopReply(request, () => this.#handleSessionImport(request));
       return;
     }
     if (request.method === "codexhost/thread/fork") {
@@ -1570,7 +1590,7 @@ export class AppServerHost {
         await this.#forwardOfficialRequest(request, frame);
         return;
       }
-      this.#dispatchDesktopRequest(() =>
+      this.#dispatchDesktopReply(request, () =>
         listRequest.sortKey === "section_position"
           ? this.#listSectionThreads(request, frame, listRequest)
           : this.#listThreads(request, listRequest),
@@ -1603,7 +1623,7 @@ export class AppServerHost {
       // Moves read and rewrite one shared order, so they apply one at a time.
       const task = this.#sectionMoves.then(() => this.#moveThreadSection(request, frame, move));
       this.#sectionMoves = task.catch(() => undefined);
-      this.#dispatchDesktopRequest(() => task);
+      this.#dispatchDesktopReply(request, () => task);
       return;
     }
     if (request.method === "thread/archive" || request.method === "thread/unarchive") {
@@ -1786,7 +1806,8 @@ export class AppServerHost {
       }
       if (await this.#writeResolutionError(request, resolution)) return;
       if (resolution.kind === "external") {
-        this.#dispatchDesktopRequest(
+        this.#dispatchDesktopReply(
+          request,
           () => this.#startExternalTurn(request, resolution.thread),
           resolution.thread.id,
         );
@@ -1804,7 +1825,8 @@ export class AppServerHost {
           : ({ kind: "official" } as const);
       if (await this.#writeResolutionError(request, resolution)) return;
       if (resolution.kind === "external") {
-        this.#dispatchDesktopRequest(
+        this.#dispatchDesktopReply(
+          request,
           () => this.#steerExternalTurn(request, resolution.thread),
           resolution.thread.id,
         );
@@ -2001,7 +2023,7 @@ export class AppServerHost {
     }
     try {
       await this.#officialRuntime.sendFrame(frame);
-      this.#unansweredDesktopRequests.delete(request.id);
+      this.#markDesktopRequestAnswered(request.id);
     } catch {
       if (request.method === "turn/start") {
         this.#pendingOfficialTurnStarts.delete(request.id);
@@ -3347,7 +3369,8 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32078, "Thread is not externally owned"));
       return;
     }
-    this.#dispatchDesktopRequest(
+    this.#dispatchDesktopReply(
+      request,
       () => this.#executeResolvedThreadCommand(request, resolution.thread, params.data),
       resolution.thread.id,
     );

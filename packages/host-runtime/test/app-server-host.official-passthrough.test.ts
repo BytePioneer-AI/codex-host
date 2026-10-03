@@ -1,4 +1,5 @@
-import type { JsonObject } from "@codexhost/shared-contracts";
+import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
+import { harnessIdSchema, type JsonObject } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -170,6 +171,30 @@ describe("official Codex passthrough", () => {
         error: { code: -32603 },
       });
       expect(fixture.official.stdin.readableLength).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("answers a detached Host request whose work fails after the handler returned", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    Object.defineProperty(adapter, "inspectAccount", {
+      get() {
+        throw new Error("synthetic detached failure");
+      },
+    });
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    try {
+      await fixture.ready;
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "codexhost/harness/accounts/sources",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
+        id: 2,
+        error: { code: -32603 },
+      });
     } finally {
       await stopFixture(fixture);
     }

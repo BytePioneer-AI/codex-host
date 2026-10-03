@@ -238,6 +238,7 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
 import {
+  carriesHostThreadListCursor,
   CodexTurnProjector,
   decodeCreateRoute,
   decodeExternalTransportSelection,
@@ -534,6 +535,14 @@ export function classifyCreateRequestRoute(
     selectedHarness: defaultAgent,
     selectionSource: defaultAgent === "pi" ? "default-agent" : "official-model",
   };
+}
+
+/**
+ * Reads routing fields before ownership is known. Never throws: a shape the Host does not
+ * recognize belongs to native Codex, which validates its own protocol.
+ */
+function routingParams(request: JsonRpcRequest): JsonObject {
+  return isRecord(request.params) ? (request.params as JsonObject) : {};
 }
 
 function requestObject(request: JsonRpcRequest): JsonObject {
@@ -1508,7 +1517,12 @@ export class AppServerHost {
         if (!decoded) throw new Error("Expected thread/list request");
         listRequest = decoded;
       } catch (error) {
-        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        // Only a Host cursor makes the list Host-owned. Any other shape is native Codex's to judge.
+        if (carriesHostThreadListCursor(request)) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        } else {
+          await this.#forwardOfficialRequest(request, frame);
+        }
         return;
       }
       if (
@@ -1532,7 +1546,17 @@ export class AppServerHost {
         if (!decoded) throw new Error("Expected thread/section/move request");
         move = decoded;
       } catch (error) {
-        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        const threadId = routingParams(request).threadId;
+        const location =
+          typeof threadId === "string"
+            ? await this.#locateExternalThread(threadId)
+            : ({ kind: "official" } as const);
+        if (await this.#writeResolutionError(request, location)) return;
+        if (location.kind === "external") {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        } else {
+          await this.#forwardOfficialRequest(request, frame);
+        }
         return;
       }
       // Moves read and rewrite one shared order, so they apply one at a time.
@@ -1542,22 +1566,25 @@ export class AppServerHost {
       return;
     }
     if (request.method === "thread/archive" || request.method === "thread/unarchive") {
-      let threadId: string;
-      try {
-        const decoded = decodeThreadArchiveRequest(request);
-        if (!decoded) throw new Error(`Expected ${request.method} request`);
-        threadId = decoded.threadId;
-      } catch (error) {
-        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
-        return;
-      }
-      const location = await this.#locateExternalThread(threadId);
+      const threadId = routingParams(request).threadId;
+      const location =
+        typeof threadId === "string"
+          ? await this.#locateExternalThread(threadId)
+          : ({ kind: "official" } as const);
       if (await this.#writeResolutionError(request, location)) return;
       if (location.kind === "official") {
         await this.#forwardOfficialRequest(request, frame);
         return;
       }
       if (location.kind === "external") {
+        try {
+          if (!decodeThreadArchiveRequest(request)) {
+            throw new Error(`Expected ${request.method} request`);
+          }
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+          return;
+        }
         await this.#setExternalThreadArchived(
           request,
           location,
@@ -1567,22 +1594,26 @@ export class AppServerHost {
       return;
     }
     if (request.method === "thread/metadata/update") {
-      let update: DecodedThreadMetadataUpdateRequest;
-      try {
-        const decoded = decodeThreadMetadataUpdateRequest(request);
-        if (!decoded) throw new Error("Expected thread/metadata/update request");
-        update = decoded;
-      } catch (error) {
-        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
-        return;
-      }
-      const location = await this.#locateExternalThread(update.threadId);
+      const threadId = routingParams(request).threadId;
+      const location =
+        typeof threadId === "string"
+          ? await this.#locateExternalThread(threadId)
+          : ({ kind: "official" } as const);
       if (await this.#writeResolutionError(request, location)) return;
       if (location.kind === "official") {
         await this.#forwardOfficialRequest(request, frame);
         return;
       }
       if (location.kind === "external") {
+        let update: DecodedThreadMetadataUpdateRequest;
+        try {
+          const decoded = decodeThreadMetadataUpdateRequest(request);
+          if (!decoded) throw new Error("Expected thread/metadata/update request");
+          update = decoded;
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+          return;
+        }
         await this.#updateExternalThreadMetadata(request, location, update);
       }
       return;
@@ -1681,7 +1712,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "thread/turns/list" || request.method === "thread/items/list") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const resolution =
         typeof params.threadId === "string"
           ? await this.#resolveExternalThread(params.threadId)
@@ -1698,7 +1729,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "turn/start") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const threadId = params.threadId;
       const resolution =
         typeof threadId === "string"
@@ -1725,7 +1756,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "turn/steer") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const resolution =
         typeof params.threadId === "string"
           ? await this.#resolveExternalThread(params.threadId)
@@ -1740,7 +1771,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "turn/interrupt") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const resolution =
         typeof params.threadId === "string"
           ? await this.#resolveExternalThread(params.threadId)
@@ -1752,7 +1783,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "thread/read") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const location =
         typeof params.threadId === "string"
           ? await this.#locateExternalThread(params.threadId)
@@ -1777,7 +1808,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "thread/read" || request.method === "thread/resume") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const resolution =
         typeof params.threadId === "string"
           ? await this.#resolveExternalThread(params.threadId)
@@ -1803,7 +1834,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "thread/unsubscribe") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       if (typeof params.threadId === "string") {
         const location = await this.#locateExternalThread(params.threadId);
         if (await this.#writeResolutionError(request, location)) return;
@@ -1822,7 +1853,7 @@ export class AppServerHost {
       }
     }
     if (request.method === "thread/name/set" || request.method === "thread/delete") {
-      const params = requestObject(request);
+      const params = routingParams(request);
       const location =
         typeof params.threadId === "string"
           ? await this.#locateExternalThread(params.threadId)

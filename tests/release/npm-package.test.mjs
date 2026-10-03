@@ -523,7 +523,7 @@ describe("npm package release", () => {
     ["--harness", "cursor-cli"],
   ];
 
-  it.each(["install", "uninstall"])(
+  it.each(["install", "stop", "uninstall"])(
     "manages every Aqua broker after a successful macOS remote %s",
     async (command) => {
       const { result, calls } = await runGeneratedWrapperLifecycle(

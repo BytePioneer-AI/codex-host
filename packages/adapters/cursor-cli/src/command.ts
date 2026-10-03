@@ -30,7 +30,7 @@ function cursorDiscoverySpec(skipPinnedVersions: boolean): HarnessDiscoverySpec 
 }
 
 /** Prefer the rolling launcher; an explicit executable remains authoritative. */
-function resolveCursorExecutable(
+export function resolveCursorExecutable(
   environment: NodeJS.ProcessEnv,
   command?: string,
 ): HarnessResolution {

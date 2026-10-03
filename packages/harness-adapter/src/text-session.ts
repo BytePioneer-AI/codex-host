@@ -531,6 +531,13 @@ export interface HarnessSession {
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
+  /**
+   * Immutable identity reserved for this Session's native writes, when known before native
+   * creation. Not evidence of durable history: only state.nativeRef confirms resumability.
+   * An Adapter supplying this must not write to the identity during open; the caller reserves
+   * it before executing commands. Subsequent state.nativeRef must match it exactly.
+   */
+  readonly nativeWriterRef?: NativeSessionRef;
   readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly commands?: HarnessCommandCapability;

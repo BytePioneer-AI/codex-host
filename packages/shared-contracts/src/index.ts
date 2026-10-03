@@ -1,6 +1,7 @@
 import { z } from "zod";
 export * from "./credential-imports.js";
 export * from "./harness-display-settings.js";
+export * from "./thread-prewarm.js";
 export {
   CONSOLE_HOST_METHODS,
   CONSOLE_OPEN_METHOD,

@@ -9,6 +9,23 @@ and descriptor are scoped to the plugin ID. Foreign Session/parent references
 are rejected before opening a native Session. Sequence, generation and native
 writer ownership checks remain in force across requests.
 
+A Session may expose `nativeWriterRef` to reserve the immutable identity it will
+write before a native Session exists. This does not confirm durable history and
+is not projected as `initialState.nativeRef`: persistence and recovery still
+require native confirmation. An Adapter using this contract must not write to
+that identity during `open`; the Broker claims it before commands can execute.
+Claude Code supplies the generated session ID that its CLI will use, so unused
+Desktop prewarms reserve only their own IDs, not the entire Broker. Concurrent
+opens wait for an in-flight create to report its identity rather than failing
+with a transient busy error. Sessions without an early write identity retain the
+conservative provisional guard. Foreign or colliding reservations are rejected;
+a later confirmed native identity must match the reservation exactly.
+
+Desktop Control marks disposable external prewarms and asks the Host to discard
+obsolete results, including late results after a configuration change. The Host
+serializes discard with user operations and never discards an adopted Session.
+See [external Thread prewarm ownership](../../architecture/harness-plugin-runtime.md#外部-thread-预热).
+
 Rust manages the service lifecycle:
 
 ```sh

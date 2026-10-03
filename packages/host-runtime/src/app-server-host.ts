@@ -1,4 +1,7 @@
 import {
+  EXTERNAL_THREAD_PREWARM_PARAM,
+  THREAD_PREWARM_DISCARD_METHOD,
+  threadPrewarmDiscardParamsSchema,
   REMOTE_SSH_SETUP_METHOD,
   CONSOLE_REMOTE_CONNECTIONS_METHOD,
   remoteSshSetupParamsSchema,
@@ -8,6 +11,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
+import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
@@ -624,6 +628,7 @@ export class AppServerHost {
   readonly #launchSettings: HarnessLaunchSettingsStore;
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
+  readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering = new ExternalTurnSteering();
   readonly #liveCommandCache = new LiveCommandCatalogCache();
   #repository: ExternalThreadRepository;
@@ -976,6 +981,7 @@ export class AppServerHost {
       }
       await this.#closeOfficialRuntime();
       this.#externalRuntime.clear();
+      this.#externalPrewarms.clear();
       this.#pendingOfficialTurnStarts.clear();
       this.#routeObservationTracker.clear();
       this.#unregisterDelegationApi?.();
@@ -1226,6 +1232,34 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(request, -32601, "Method is unavailable on the shared Thread service"),
       );
+      return;
+    }
+    if (this.#externalPrewarms.observe(request)) {
+      await this.#writer.json(
+        rpcError(request, -32075, "External prewarm close was not confirmed"),
+      );
+      return;
+    }
+    if (request.method === THREAD_PREWARM_DISCARD_METHOD) {
+      const parsed = threadPrewarmDiscardParamsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid prewarm discard request"));
+        return;
+      }
+      try {
+        const discarded = await this.#externalPrewarms.discard(parsed.data.threadId, {
+          get: (id) => this.#externalRuntime.get(id),
+          remove: async (thread) => {
+            await this.#repository.removeThread(thread.id);
+            this.#externalRuntime.remove(thread.id);
+            this.#routeObservationTracker.forgetThread(thread.id);
+          },
+        });
+        await this.#writer.json(rpcEnvelope(request, { result: { discarded } }));
+      } catch (error) {
+        this.#diagnose(error);
+        await this.#writer.json(rpcError(request, -32075, "External prewarm could not close"));
+      }
       return;
     }
     if (
@@ -3793,6 +3827,9 @@ export class AppServerHost {
           ...(requestedThinkingOptionId ? { requestedThinkingOptionId } : {}),
           ...(requestedPermissionModeId ? { requestedPermissionModeId } : {}),
         });
+        if (params[EXTERNAL_THREAD_PREWARM_PARAM] === true) {
+          this.#externalPrewarms.register(externalThread);
+        }
         this.#routeObservationTracker.bindCreatedThread(request.id, externalThread.id);
         await this.#writer.json(
           rpcEnvelope(request, {

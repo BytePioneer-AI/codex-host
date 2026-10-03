@@ -1,3 +1,4 @@
+import { matchesModernCwd, resolveModernWorkspace } from "./workspace.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -189,7 +190,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     };
     delete connectionOptions.version;
     this.#connection = this.#dependencies.createConnection(connectionOptions);
-    if (options.openWebUi && this.#connection.openWebUi) {
+    if (!options.desktopEndpoint && options.openWebUi && this.#connection.openWebUi) {
       this.webUi = Object.freeze({
         open: () => this.#track(this.#openWebUi()),
       });
@@ -292,7 +293,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     let session: ModernHarnessSession | undefined;
     let forkExpectation: ModernForkExpectation | undefined;
     try {
-      const cwd = path.resolve(input.cwd);
+      let cwd = path.resolve(input.cwd);
       let forkInput =
         input.kind === "fork" ? parseModernForkInput(input, this.#profile) : undefined;
       const rollbackSourceSessionId =
@@ -372,7 +373,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       if (!sessionId) throw new Error("unreachable Session open mode");
 
       if (input.kind === "create" || rollbackPlan?.kind === "create") {
-        await this.#createSession(
+        cwd = await this.#createSession(
           sessionId,
           cwd,
           rollbackPlan?.kind === "create" ? rollbackPlan.agentPreset : undefined,
@@ -411,6 +412,20 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         this.#journalOptions(),
       );
       this.#assertAccepting();
+      if (input.kind === "resume" && this.#options.desktopEndpoint) {
+        const workspace = await resolveModernWorkspace(
+          this.#connection,
+          cwd,
+          this.#lifetime.signal,
+        );
+        this.#assertAccepting();
+        if (!workspace.sessionIds.includes(sessionId)) {
+          // The verified journal proves this is an existing native Session. Native create
+          // adopts that identity and attaches it; it does not copy or replace its history.
+          await this.#createSession(sessionId, cwd, undefined, workspace);
+          this.#assertAccepting();
+        }
+      }
       if (forkExpectation) {
         await this.#verifyForkJournal(forkExpectation, journal, cwd);
         if (await clearInheritedForkInbox(this.#connection, journal, this.#lifetime.signal)) {
@@ -549,11 +564,18 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     requestedSessionId: string,
     cwd: string,
     agentPreset?: string,
-  ): Promise<void> {
+    resolvedWorkspace?: Awaited<ReturnType<typeof resolveModernWorkspace>>,
+  ): Promise<string> {
+    const workspace =
+      resolvedWorkspace ??
+      (this.#options.desktopEndpoint
+        ? await resolveModernWorkspace(this.#connection, cwd, this.#lifetime.signal)
+        : undefined);
+    this.#assertAccepting();
     const result = await this.#connection.call<unknown>("session/create", {
       request: {
         sessionId: requestedSessionId,
-        cwd,
+        ...(workspace ? { workspaceId: workspace.workspaceId } : { cwd }),
         ...(agentPreset === undefined ? {} : { agentPreset }),
       },
     });
@@ -572,6 +594,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         retryable: false,
       });
     }
+    return workspace?.path ?? cwd;
   }
 
   async #resolveLastTurnRollback(
@@ -696,7 +719,9 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     const seedLength = child.inheritedEventCount;
     if (
       child.header.parentSession !== expected.sourceSessionId ||
-      child.header.cwd !== cwd ||
+      !(this.#options.desktopEndpoint
+        ? await matchesModernCwd(child.header.cwd, cwd)
+        : child.header.cwd === cwd) ||
       seedLength !== expected.seedLength
     ) {
       throw forkProtocolError();
@@ -761,6 +786,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
 
   #journalOptions(): ModernJournalOptions {
     return {
+      allowCanonicalCwd: Boolean(this.#options.desktopEndpoint),
       profile: this.#profile,
       ...(this.#options.maxEvents === undefined ? {} : { maxEvents: this.#options.maxEvents }),
       ...(this.#options.maxHistoryBytes === undefined

@@ -2,6 +2,7 @@ import type {
   CodexhostError,
   HarnessInstallationState,
   HarnessLaunchSettings,
+  HarnessConnectionMode,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -15,6 +16,7 @@ import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
+import { createHarnessConnectionControls } from "./harness-connection-controls.js";
 import { harnessHasInstallCommands } from "./harness-installation-guides.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
 import { HARNESS_OFFICIAL_WEBSITES } from "./harness-official-websites.js";
@@ -57,7 +59,8 @@ export interface RendererConnectionDiagnostics {
   setLaunchSettings?(
     hostId: string,
     agent: ExternalRendererAgent,
-    path: string | null,
+    path: string | null | undefined,
+    connectionMode?: HarnessConnectionMode,
   ): Promise<HarnessLaunchSettings>;
   subscribe(listener: () => void): () => void;
 }
@@ -584,16 +587,21 @@ function renderConnectionInspector(
   const setLaunchSettings = diagnostics?.setLaunchSettings?.bind(diagnostics);
   if (
     hostId === "local" &&
-    (agent === "zcode" || agent === "workbuddy") &&
+    (agent === "zcode" || agent === "workbuddy" || agent === "deepseek-harness") &&
     getLaunchSettings &&
     setLaunchSettings
   ) {
     launchControls =
       existingLaunchControls ??
-      createHarnessLaunchControls(document, messages, agent, {
-        get: () => getLaunchSettings(hostId, agent),
-        set: (path) => setLaunchSettings(hostId, agent, path),
-      });
+      (agent === "deepseek-harness"
+        ? createHarnessConnectionControls(document, messages, {
+            get: () => getLaunchSettings(hostId, agent),
+            set: (mode) => setLaunchSettings(hostId, agent, undefined, mode),
+          })
+        : createHarnessLaunchControls(document, messages, agent, {
+            get: () => getLaunchSettings(hostId, agent),
+            set: (path) => setLaunchSettings(hostId, agent, path),
+          }));
     body.append(launchControls);
   }
   inspector.append(body);

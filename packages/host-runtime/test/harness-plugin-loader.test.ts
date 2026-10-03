@@ -71,6 +71,47 @@ afterEach(async () => {
 });
 
 describe("Harness plugin discovery and loading", () => {
+  it("passes saved modes only to opted-in local plugin factories", async () => {
+    const directory = await root(["custom-agent", "ordinary-agent"]);
+    const marker = path.join(directory, "mode.json");
+    await plugin(directory, "custom-agent", {
+      manifest: { connectionMode: true },
+      code: `
+      import { writeFileSync } from "node:fs";
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      export function createHarnessAdapter(context) {
+        writeFileSync(${JSON.stringify(marker)}, JSON.stringify(context.connectionMode ?? null));
+        return new FakeHarnessAdapter("custom-agent");
+      }
+    `,
+    });
+    await plugin(directory, "ordinary-agent");
+    const connectionModeForPlugin = vi.fn(async () => "desktop" as const);
+    const local = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      connectionModeForPlugin,
+    });
+    try {
+      expect(connectionModeForPlugin).toHaveBeenCalledExactlyOnceWith("custom-agent");
+      expect(JSON.parse(await readFile(marker, "utf8"))).toBe("desktop");
+      expect(local.list().find(({ id }) => id === "custom-agent")?.connectionMode).toBe(true);
+    } finally {
+      await local.close();
+    }
+    connectionModeForPlugin.mockClear();
+    const remote = await loadHarnessPlugins({
+      roots: [directory],
+      context: { ...context, managedRemoteHost: true },
+      connectionModeForPlugin,
+    });
+    try {
+      expect(connectionModeForPlugin).not.toHaveBeenCalled();
+      expect(JSON.parse(await readFile(marker, "utf8"))).toBeNull();
+    } finally {
+      await remote.close();
+    }
+  });
   it("passes saved commands only to opted-in local factories and exposes the setting", async () => {
     const directory = await root(["custom-agent", "ordinary-agent"]);
     const saved = "/custom/entry";

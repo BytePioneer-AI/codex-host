@@ -127,9 +127,13 @@ export function createConsoleConnectionDiagnostics(
       if (!client.getHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
       return client.getHarnessLaunchSettings({ harnessId: agent as never });
     },
-    async setLaunchSettings(_hostId, agent, path) {
+    async setLaunchSettings(_hostId, agent, path, connectionMode) {
       if (!client.setHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
-      return client.setHarnessLaunchSettings({ harnessId: agent as never, path });
+      return client.setHarnessLaunchSettings({
+        harnessId: agent as never,
+        ...(path === undefined ? {} : { path }),
+        ...(connectionMode ? { connectionMode } : {}),
+      });
     },
     subscribe(listener) {
       listeners.add(listener);

@@ -69,6 +69,7 @@ const runtimeLicenses = [
     source: "LICENSE",
     output: "tailwindcss-LICENSE.txt",
   },
+  { packageName: "yaml", license: "ISC", source: "LICENSE", output: "yaml-LICENSE.txt" },
   { packageName: "ws", license: "MIT", source: "LICENSE", output: "ws-LICENSE.txt" },
   { packageName: "zod", license: "MIT", source: "LICENSE", output: "zod-LICENSE.txt" },
 ];
@@ -266,6 +267,7 @@ export function expectedPayloadPaths(target) {
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",
     "licenses/ws-LICENSE.txt",
+    "licenses/yaml-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
     "THIRD_PARTY_NOTICES.txt",
   ];

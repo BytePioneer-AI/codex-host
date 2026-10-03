@@ -870,6 +870,7 @@ export class AppServerHost {
     const plugins = await loadHarnessPlugins({
       roots: this.#options.pluginRoots,
       launchCommandForPlugin: (id) => this.#launchSettings.initialCommand(id),
+      connectionModeForPlugin: (id) => this.#launchSettings.initialConnectionMode(id),
       context: this.#options.pluginContext ?? {
         environment: this.#options.environment ?? process.env,
         platform: process.platform,
@@ -1407,10 +1408,18 @@ export class AppServerHost {
           return;
         }
         await this.#waitForPlugins();
+        const plugin = this.#pluginDescriptors.find(
+          (plugin) => plugin.id === params.data.harnessId,
+        );
+        const mutation =
+          request.method === HARNESS_LAUNCH_SETTINGS_SET_METHOD
+            ? harnessLaunchSettingsSetSchema.parse(request.params)
+            : undefined;
         if (
-          !this.#pluginDescriptors.some(
-            (plugin) => plugin.id === params.data.harnessId && plugin.launchCommand,
-          )
+          !plugin ||
+          !(plugin.launchCommand || plugin.connectionMode) ||
+          (mutation?.path !== undefined && !plugin.launchCommand) ||
+          (mutation?.connectionMode !== undefined && !plugin.connectionMode)
         ) {
           await this.#writer.json(
             rpcError(request, -32602, "Harness launch settings are unavailable"),
@@ -1422,9 +1431,13 @@ export class AppServerHost {
             request.method === HARNESS_LAUNCH_SETTINGS_SET_METHOD
               ? await this.#launchSettings.set(
                   params.data.harnessId,
-                  harnessLaunchSettingsSetSchema.parse(request.params).path,
+                  mutation?.path,
+                  mutation?.connectionMode,
                 )
-              : await this.#launchSettings.get(params.data.harnessId);
+              : await this.#launchSettings.get(
+                  params.data.harnessId,
+                  plugin.connectionMode === true,
+                );
           await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
         } catch {
           await this.#writer.json(

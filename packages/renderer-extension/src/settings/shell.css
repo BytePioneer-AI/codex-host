@@ -1283,7 +1283,8 @@
   font-size: 12px;
 }
 
-.settings-harness-launch input {
+.settings-harness-launch input,
+.settings-harness-launch select {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -1295,7 +1296,8 @@
   font: inherit;
 }
 
-.settings-harness-launch input:focus-visible {
+.settings-harness-launch input:focus-visible,
+.settings-harness-launch select:focus-visible {
   outline: 2px solid var(--settings-focus);
   outline-offset: 2px;
 }

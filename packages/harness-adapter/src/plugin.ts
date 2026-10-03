@@ -1,4 +1,5 @@
 import type { HarnessAdapter } from "./text-session.js";
+import type { HarnessConnectionMode } from "@codexhost/shared-contracts";
 
 export interface HarnessLocalPage {
   show(): Promise<void>;
@@ -10,6 +11,8 @@ export interface HarnessPluginContext {
   readonly environment: Readonly<Record<string, string | undefined>>;
   /** Persisted installation directory or legacy entrypoint; only for plugins declaring launchCommand. */
   readonly launchCommand?: string;
+  /** Persisted preference; only for plugins declaring connectionMode. Native semantics belong to the plugin. */
+  readonly connectionMode?: HarnessConnectionMode;
   readonly platform: string;
   readonly managedRemoteHost: boolean;
   readonly brokerDescriptorPath?: string;

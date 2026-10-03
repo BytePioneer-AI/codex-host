@@ -26,6 +26,7 @@
     "@codexhost/harness-discovery": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
     "diff": "8.0.2",
-    "ws": "8.21.3"
+    "ws": "8.21.3",
+    "yaml": "2.8.1"
   }
 }

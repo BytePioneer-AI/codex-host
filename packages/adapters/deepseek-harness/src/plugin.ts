@@ -2,6 +2,7 @@ import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
 import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { DeepSeekHarnessAdapter } from "./deepseek-harness-adapter.js";
+import type { DeepSeekConnectionMode } from "./desktop-connection.js";
 import { createDeepSeekInstallation } from "./installation.js";
 
 export const DEEPSEEK_HARNESS_COMMAND_ENV = "CODEXHOST_DEEPSEEK_HARNESS_COMMAND";
@@ -18,6 +19,13 @@ export function createHarnessAdapter(context: HarnessPluginContext): DeepSeekHar
       ...(environment[DEEPSEEK_HARNESS_ENDPOINT_ENV]
         ? { endpoint: environment[DEEPSEEK_HARNESS_ENDPOINT_ENV] }
         : {}),
+      ...(environment.CODEXHOST_DEEPSEEK_HARNESS_CONNECTION_MODE
+        ? {
+            connectionMode:
+              environment.CODEXHOST_DEEPSEEK_HARNESS_CONNECTION_MODE as DeepSeekConnectionMode,
+          }
+        : {}),
+      ...(context.connectionMode ? { connectionMode: context.connectionMode } : {}),
       environment,
       ...(!context.managedRemoteHost && openLocalUrl
         ? { openWebUi: (url: URL) => openLocalUrl(url.href) }

@@ -19,6 +19,45 @@ async function setup() {
 
 describe("Host-owned Harness launch settings", () => {
   const id = "sample-agent";
+  it("defaults connection mode to auto and applies saved modes only on restart", async () => {
+    const { store, environment } = await setup();
+    expect(await store.initialConnectionMode(id)).toBeUndefined();
+    expect(await store.get(id, true)).toEqual({
+      path: null,
+      connectionMode: "auto",
+      restartRequired: false,
+    });
+    expect(await store.set(id, undefined, "desktop")).toEqual({
+      path: null,
+      connectionMode: "desktop",
+      restartRequired: true,
+    });
+    expect(await store.initialConnectionMode(id)).toBeUndefined();
+    const restarted = new HarnessLaunchSettingsStore(environment);
+    expect(await restarted.initialConnectionMode(id)).toBe("desktop");
+    expect(await restarted.get(id, true)).toEqual({
+      path: null,
+      connectionMode: "desktop",
+      restartRequired: false,
+    });
+    await restarted.set(id, undefined, "web");
+    expect(await restarted.initialConnectionMode(id)).toBe("desktop");
+    expect((await new HarnessLaunchSettingsStore(environment).get(id, true)).connectionMode).toBe(
+      "web",
+    );
+  });
+
+  it("preserves legacy paths while saving a mode and preserves the mode when clearing a path", async () => {
+    const { store, file } = await setup();
+    await store.set(id, file);
+    expect(await store.set(id, undefined, "web")).toMatchObject({
+      path: file,
+      connectionMode: "web",
+    });
+    expect(await store.set(id, null)).toMatchObject({ path: null, connectionMode: "web" });
+    await expect(store.set(id, undefined, "invalid" as "auto")).rejects.toThrow();
+    expect((await store.get(id, true)).connectionMode).toBe("web");
+  });
   it("persists paths, reports restart requirements, and clears without changing the active snapshot", async () => {
     const { store, root, environment, file } = await setup();
     expect(await store.initialCommand(id)).toBeUndefined();

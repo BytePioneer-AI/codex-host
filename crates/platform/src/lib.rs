@@ -71,7 +71,10 @@ pub use process::{
     process_exists, process_snapshot, terminate_process_by_id,
 };
 #[cfg(target_os = "windows")]
-pub use process::{desktop_process_ids, desktop_root_process_ids, process_started_at_micros};
+pub use process::{
+    descendant_process_snapshots, desktop_process_ids, desktop_root_process_ids,
+    process_instance_exists, process_started_at_micros, running_executable_snapshots,
+};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use process::{
     desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,

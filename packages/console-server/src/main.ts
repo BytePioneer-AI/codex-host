@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createConsoleHarnesses, harnessPluginRoots } from "./harnesses.js";
 import { createConsoleHostClient } from "./host-client.js";
 import { resolveInstallation } from "./installation.js";
-import { consoleBuildId, ensureConsole, openConsole } from "./open.js";
+import { consoleBuildId, ensureConsole, openConsole, stopConsoleForUpdate } from "./open.js";
 import { loadConsoleBundle } from "./page.js";
 import { consolePaths, consolePort } from "./paths.js";
 import { startConsoleServer, type RunningConsoleServer } from "./server.js";
@@ -18,7 +18,7 @@ const appDirectory = path.dirname(entryPath);
 
 function usage(): never {
   console.error(
-    "usage: console-server open [--no-browser] | console-server ensure | console-server serve",
+    "usage: console-server open [--no-browser] | console-server ensure | console-server serve | console-server stop-for-update",
   );
   process.exit(2);
 }
@@ -85,6 +85,11 @@ async function ensure(arguments_: string[]): Promise<void> {
   console.log(`codexhost console: http://127.0.0.1:${port}/`);
 }
 
+async function stopForUpdate(arguments_: string[]): Promise<void> {
+  if (arguments_.length > 0) usage();
+  await stopConsoleForUpdate({ appDirectory });
+}
+
 const [command, ...rest] = process.argv.slice(2);
 const run =
   command === "serve"
@@ -93,7 +98,9 @@ const run =
       ? open(rest)
       : command === "ensure"
         ? ensure(rest)
-        : usage();
+        : command === "stop-for-update"
+          ? stopForUpdate(rest)
+          : usage();
 run.catch((error: unknown) => {
   console.error(`codexhost console: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);

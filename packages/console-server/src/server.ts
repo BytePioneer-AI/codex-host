@@ -306,6 +306,18 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       setImmediate(exit);
       return;
     }
+    if (route === "POST /api/shutdown-for-update") {
+      if (
+        body?.expectedPid !== process.pid ||
+        body.expectedAppDirectory !== options.installation.appDirectory
+      ) {
+        sendJson(response, 409, { error: "Console instance changed" });
+        return;
+      }
+      sendJson(response, 200, { ok: true });
+      setImmediate(exit);
+      return;
+    }
     if (route === "GET /api/announcement") {
       sendJson(response, 200, await loadAnnouncement().catch(() => null));
       return;

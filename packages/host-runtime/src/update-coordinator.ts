@@ -23,6 +23,8 @@ import {
 } from "@codexhost/update-manager";
 
 const ERROR_MAX_LENGTH = 500;
+const WINDOWS_NPM_MANUAL_UPDATE_REASON =
+  "Windows npm installations require a manual update: exit codexhost and its Console, then run npm install -g @codexhost/cli@latest";
 
 export interface HostUpdateCoordinator {
   check(signal?: AbortSignal): Promise<UpdateCheckResult>;
@@ -102,7 +104,7 @@ export function createHostUpdateCoordinator(
     context: InstalledUpdateContext,
     release: CodexhostLatestRelease,
   ): Promise<boolean> {
-    if (context.installation.kind === "npm") return true;
+    if (context.installation.kind === "npm") return platform !== "win32";
     const target = context.metadata.target;
     if (target === "linux-x64" || target === "linux-arm64") return false;
     try {
@@ -143,7 +145,10 @@ export function createHostUpdateCoordinator(
         let error: string | null = null;
         if (updateAvailable) {
           installationAvailable = await installable(context, release);
-          if (!installationAvailable) {
+          if (
+            !installationAvailable &&
+            !(platform === "win32" && context.installation.kind === "npm")
+          ) {
             error = "The latest GitHub Release has no verified asset for this installation";
           }
         }
@@ -175,6 +180,9 @@ export function createHostUpdateCoordinator(
 
     async start(): Promise<UpdateStartResult> {
       const context = await installedContext();
+      if (platform === "win32" && context.installation.kind === "npm") {
+        throw new Error(WINDOWS_NPM_MANUAL_UPDATE_REASON);
+      }
       await recoverUpdateOperationLock(context.common.stateDirectory);
       const lock = await acquireUpdateOperationLock(context.common.stateDirectory);
       if (!lock) {
@@ -244,7 +252,10 @@ export function createHostUpdateCoordinator(
                       onPrepared,
                     });
             }
-            if (platform !== "darwin") manager.start(prepared);
+            // The Launcher starts this helper on Windows and macOS so it is not
+            // inside the Desktop process tree. A Host-started Windows helper is
+            // assigned to the Shim Job and dies when that Job closes.
+            if (platform !== "darwin" && platform !== "win32") manager.start(prepared);
           } catch (error) {
             await lock.release();
             rejectPrepared(error);

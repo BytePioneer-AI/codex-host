@@ -9,7 +9,11 @@ import type { ConsoleHarnesses } from "../src/harnesses.js";
 import { HostUnavailableError, type ConsoleHostClient } from "../src/host-client.js";
 import type { InspectDocument } from "../src/installation.js";
 import { consolePaths } from "../src/paths.js";
-import { startConsoleServer, type RunningConsoleServer } from "../src/server.js";
+import {
+  startConsoleServer,
+  type ConsoleServerOptions,
+  type RunningConsoleServer,
+} from "../src/server.js";
 import { ConsoleUpdateError, type ConsoleUpdates } from "../src/updates.js";
 
 let directory: string;
@@ -82,7 +86,12 @@ function fakeHarnesses(): ConsoleHarnesses {
 }
 
 async function start(
-  options: { codexRunning?: boolean; launch?: () => void; host?: ConsoleHostClient } = {},
+  options: {
+    codexRunning?: boolean;
+    launch?: () => void;
+    host?: ConsoleHostClient;
+    announcement?: ConsoleServerOptions["announcement"];
+  } = {},
 ) {
   const updates = fakeUpdates();
   const onExit = vi.fn();
@@ -101,6 +110,7 @@ async function start(
     host: options.host ?? { available: vi.fn(async () => false), request: vi.fn() },
     inspect: async () => inspectDocument(options.codexRunning ?? false),
     launch: options.launch ?? vi.fn(),
+    announcement: options.announcement ?? (async () => null),
     onExit,
   });
   const base = `http://127.0.0.1:${running.port}`;
@@ -142,6 +152,31 @@ describe("console server", () => {
       appDirectory: "/opt/codexhost/app",
     });
     expect(await rawRequest(port, `attacker.example:${port}`)).toBe(421);
+  });
+
+  it("stops for an update only when both installation and PID still match", async () => {
+    const { base, onExit } = await start();
+    const shutdown = (expectedPid: number, expectedAppDirectory: string) =>
+      fetch(`${base}/api/shutdown-for-update`, {
+        method: "POST",
+        headers: { ...CHANGE, "content-type": "application/json" },
+        body: JSON.stringify({ expectedPid, expectedAppDirectory }),
+      });
+    expect((await shutdown(process.pid, "/another-installation/app")).status).toBe(409);
+    expect((await shutdown(process.pid + 1, "/opt/codexhost/app")).status).toBe(409);
+    expect(onExit).not.toHaveBeenCalled();
+    expect((await shutdown(process.pid, "/opt/codexhost/app")).status).toBe(200);
+    await vi.waitFor(() => expect(onExit).toHaveBeenCalledOnce());
+  });
+
+  it("serves announcements without shutting down the console", async () => {
+    const announcement = { title: "Update notice", type: "info" as const, body: "Details" };
+    const { base, onExit } = await start({ announcement: async () => announcement });
+    const response = await fetch(`${base}/api/announcement`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(announcement);
+    expect(onExit).not.toHaveBeenCalled();
+    expect((await fetch(`${base}/api/health`)).status).toBe(200);
   });
 
   it("serves the overview without a login", async () => {

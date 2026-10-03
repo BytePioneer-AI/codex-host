@@ -110,8 +110,9 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 ## 更新
 
 - codexhost 运行中：通过 Host 的更新流程检查与安装，与 Codex 设置页一致。
-- codexhost 未运行：控制台下载并准备更新，拉起 Updater 后退出；Updater 等待控制台进程退出，再按原流程安装并重新启动 codexhost。
-- npm 安装需通过 npm 命令启动的控制台（`codexhost`、`codexhost console`，或 Codex 设置页）才能更新，因为更新需要 npm 路径环境变量。
+- codexhost 未运行且位于 Windows/macOS：控制台仍可检查最新版本、显示更新说明和中性的手动安装指引，但不提供应用内安装，也不会把这一预期限制显示为“更新失败”或要求重试。Updater 在这两个平台需要 Launcher 完成清理交接；离线控制台不能自行授权。要应用内更新，请启动 codexhost 并在 Codex 设置页操作；也可手动安装新版本。Windows npm 发行版即使启动 codexhost 后仍须手动更新，更新前应退出 codexhost 与独立控制台。
+- codexhost 未运行且位于 Linux：npm 安装可由控制台下载并准备更新，拉起 Updater 后退出；Updater 等待控制台进程退出，再安装并重新启动 codexhost。Linux 安装包不支持此流程。
+- Linux 的离线 npm 更新需通过 npm 命令启动控制台（`codexhost` 或 `codexhost console`），以提供所需的 npm 路径环境变量。
 - 源码构建不支持在控制台更新。
 
 ## 连接页（codexhost 未运行时）

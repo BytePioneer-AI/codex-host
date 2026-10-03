@@ -53,6 +53,10 @@ struct LaunchConsole {
 
 static PRESENTATION: Mutex<Option<Presentation>> = Mutex::new(None);
 static LAUNCH_CONSOLE: Mutex<Option<LaunchConsole>> = Mutex::new(None);
+// Serializes URL-opening commands with update handoff. A late integration
+// watcher must not restart the Console after the handoff stops it.
+#[cfg(target_os = "windows")]
+static UPDATE_HANDOFF: Mutex<bool> = Mutex::new(false);
 
 fn console_enabled(value: Option<OsString>) -> bool {
     value.as_deref() != Some(std::ffi::OsStr::new("0"))
@@ -229,6 +233,11 @@ fn integration_failing(document: &Value, launch_started_ms: u64, now_ms: u64) ->
 }
 
 fn show(reason: Option<&str>) -> bool {
+    #[cfg(target_os = "windows")]
+    let _handoff = match UPDATE_HANDOFF.lock() {
+        Ok(handoff) if !*handoff => handoff,
+        _ => return false,
+    };
     let (command, presentation, ensure) = {
         let Ok(mut slot) = LAUNCH_CONSOLE.lock() else {
             return false;
@@ -262,6 +271,45 @@ fn show(reason: Option<&str>) -> bool {
             print_url(&url);
             true
         }
+    }
+}
+
+/// Stops the Console served by this installation before the Updater's final
+/// process scan. The Console CLI owns instance checks and waits for its exit.
+#[cfg(target_os = "windows")]
+pub fn stop_for_update(command: &ConsoleCommand) -> Result<(), Box<dyn Error>> {
+    let mut handoff = UPDATE_HANDOFF
+        .lock()
+        .map_err(|_| "console handoff lock poisoned")?;
+    *handoff = true;
+    let ensure = LAUNCH_CONSOLE
+        .lock()
+        .map_err(|_| "launch console lock poisoned")?
+        .as_mut()
+        .and_then(|console| console.ensure.take());
+    if let Some(ensure) = ensure {
+        ensure.join().map_err(|_| "console ensure task panicked")?;
+    }
+    drop(handoff);
+    if !command.console_server.is_file() {
+        return Err(format!(
+            "bundled Console is missing: {}",
+            command.console_server.display()
+        )
+        .into());
+    }
+    let mut process = node_command(command)?;
+    process.arg("stop-for-update");
+    if !process.status()?.success() {
+        return Err("codexhost console could not be stopped for update".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn resume_after_update_failure() {
+    if let Ok(mut handoff) = UPDATE_HANDOFF.lock() {
+        *handoff = false;
     }
 }
 

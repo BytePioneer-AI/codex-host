@@ -28,6 +28,8 @@ import {
 } from "@codexhost/update-manager";
 
 const ERROR_MAX_LENGTH = 500;
+const OFFLINE_UPDATE_UNSUPPORTED =
+  "Offline updates on Windows and macOS require a Launcher handoff. Start Codex Desktop and update from Codex settings, or install the release manually.";
 
 export class ConsoleUpdateError extends Error {
   constructor(
@@ -107,6 +109,7 @@ function absoluteEnvironmentPath(environment: NodeJS.ProcessEnv, name: string): 
 export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): ConsoleUpdates {
   const environment = options.environment ?? process.env;
   const platform = options.platform ?? process.platform;
+  const requiresLauncherHandoff = platform === "win32" || platform === "darwin";
   const manager = options.manager ?? createBackgroundUpdateManager({ platform });
   const stateDirectory = (): string =>
     options.stateDirectory ?? defaultUpdateStateDirectory(platform, environment);
@@ -228,7 +231,8 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         const release = await fetchLatest(signal);
         candidate = release;
         const updateAvailable = compareSemanticVersions(metadata.version, release.version) < 0;
-        const installationAvailable = updateAvailable && installable(metadata, release);
+        const installationAvailable =
+          updateAvailable && !requiresLauncherHandoff && installable(metadata, release);
         return {
           ...empty,
           latestVersion: release.version,
@@ -238,7 +242,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
           releaseNotesUrl: release.releaseNotesUrl,
           status,
           error:
-            updateAvailable && !installationAvailable
+            updateAvailable && !requiresLauncherHandoff && !installationAvailable
               ? "The latest GitHub Release has no verified asset for this installation"
               : null,
         };
@@ -251,8 +255,13 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
       if (target.codexhostRunning) {
         throw new ConsoleUpdateError(
           "codex-running",
-          "codexhost is running; update from Codex settings or quit Codex Desktop first",
+          requiresLauncherHandoff
+            ? "codexhost is running; update from Codex settings or install the release manually"
+            : "codexhost is running; update from Codex settings or quit Codex Desktop first",
         );
+      }
+      if (requiresLauncherHandoff) {
+        throw new ConsoleUpdateError("unsupported", OFFLINE_UPDATE_UNSUPPORTED);
       }
       const metadata = target.distribution;
       if (!metadata) {

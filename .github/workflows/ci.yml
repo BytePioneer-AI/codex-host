@@ -49,14 +49,6 @@ jobs:
         with:
           toolchain: 1.97.1
 
-      - name: Setup cargo-zigbuild
-        if: runner.os == 'Linux'
-        run: |
-          python3 -m venv "$RUNNER_TEMP/zigbuild"
-          "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
-            --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
-          echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
-
       # Reuse compiled dependencies; only main refreshes the cache so PRs cannot evict it.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -103,6 +95,14 @@ jobs:
           --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools
           -- -D warnings && npm run test:rust
 
+      - name: Setup cargo-zigbuild
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zigbuild"
+          "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
+          echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
+
       - name: Smoke-test Linux npm package
         if: runner.os == 'Linux'
         run: >
@@ -131,13 +131,6 @@ jobs:
         with:
           toolchain: 1.97.1
 
-      - name: Setup cargo-zigbuild
-        run: |
-          python3 -m venv "$RUNNER_TEMP/zigbuild"
-          "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
-            --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
-          echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
-
       # Reuse compiled dependencies; only main refreshes the cache so PRs cannot evict it.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -161,6 +154,13 @@ jobs:
           cargo clippy --workspace --all-targets --locked
           --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools
           -- -D warnings && npm run test:rust
+
+      - name: Setup cargo-zigbuild
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zigbuild"
+          "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
+          echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
 
       - name: Smoke-test Linux ARM64 npm package
         run: >

@@ -30,13 +30,17 @@ interface RendererUsageMessages {
   readonly context: string;
   readonly recordedCredits: string;
   readonly latestCacheHit: string;
+  readonly sessionCacheHit: string;
   readonly outputSpeed: string;
+  readonly timeToFirstOutput: string;
   readonly cacheRead: string;
   readonly cacheWrite: string;
   readonly reasoning: string;
   readonly totalTokens: string;
   readonly inputOutput: string;
   readonly sessionCostEstimate: string;
+  readonly costAtPublicPrices: string;
+  readonly costReportedByHarness: string;
   readonly threadUsage: string;
   readonly threadUsageDetails: string;
   readonly tokensSummary: string;
@@ -49,13 +53,17 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   context: "Context",
   recordedCredits: "Recorded usage",
   latestCacheHit: "Latest cache hit",
+  sessionCacheHit: "Session cache hit",
   outputSpeed: "Output speed",
+  timeToFirstOutput: "Time to first output",
   cacheRead: "Cache read",
   cacheWrite: "Cache write",
   reasoning: "Reasoning",
   totalTokens: "Total tokens",
   inputOutput: "Input / output",
   sessionCostEstimate: "Session cost estimate",
+  costAtPublicPrices: "Tokens at public API prices, excluding subagents",
+  costReportedByHarness: "Reported by the Harness",
   threadUsage: "Thread Usage",
   threadUsageDetails: "Thread Usage details",
   tokensSummary: "tokens",
@@ -68,13 +76,17 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   context: "上下文",
   recordedCredits: "已记录消耗",
   latestCacheHit: "最近缓存命中率",
+  sessionCacheHit: "会话平均缓存命中率",
   outputSpeed: "输出速度",
+  timeToFirstOutput: "首字延迟",
   cacheRead: "缓存读取",
   cacheWrite: "缓存写入",
   reasoning: "推理",
   totalTokens: "Token 总数",
   inputOutput: "输入 / 输出",
   sessionCostEstimate: "会话费用估算",
+  costAtPublicPrices: "按公开 API 价格计算，不含子代理",
+  costReportedByHarness: "Harness 上报",
   threadUsage: "对话用量",
   threadUsageDetails: "对话用量详情",
   tokensSummary: "Token",
@@ -106,6 +118,12 @@ export function formatRendererTokenRate(
   locale: RendererSettingsLocale = "en",
 ): string {
   return `${decimal(value, 1)} ${rendererUsageMessages(locale).tokensPerSecond}`;
+}
+
+export function formatRendererLatency(milliseconds: number): string {
+  return milliseconds < 1_000
+    ? `${Math.round(milliseconds)} ms`
+    : `${decimal(milliseconds / 1_000, 1)} s`;
 }
 
 export function formatRendererTokenCount(value: number): string {
@@ -208,7 +226,9 @@ export function formatRendererPlanWindow(
 export function rendererUsageHasDisplayData(usage: ThreadUsageSnapshot | null): boolean {
   return (
     usage?.cacheHitRatePercent !== undefined ||
+    usage?.sessionCacheHitRatePercent !== undefined ||
     usage?.outputTokensPerSecond !== undefined ||
+    usage?.timeToFirstOutputMs !== undefined ||
     usage?.totalCostUsd !== undefined ||
     usage?.totalCredits !== undefined ||
     usage?.contextUsagePercent !== undefined ||
@@ -306,11 +326,25 @@ function renderDetails(
       formatRendererCacheHitRate(usage.cacheHitRatePercent),
     );
   }
+  if (usage?.sessionCacheHitRatePercent !== undefined) {
+    addDetailRow(
+      popover,
+      messages.sessionCacheHit,
+      formatRendererCacheHitRate(usage.sessionCacheHitRatePercent),
+    );
+  }
   if (usage?.outputTokensPerSecond !== undefined) {
     addDetailRow(
       popover,
       messages.outputSpeed,
       formatRendererTokenRate(usage.outputTokensPerSecond, locale),
+    );
+  }
+  if (usage?.timeToFirstOutputMs !== undefined) {
+    addDetailRow(
+      popover,
+      messages.timeToFirstOutput,
+      formatRendererLatency(usage.timeToFirstOutputMs),
     );
   }
   if (usage?.cachedInputTokens !== undefined) {
@@ -342,6 +376,21 @@ function renderDetails(
   }
   if (usage?.totalCostUsd !== undefined) {
     addDetailRow(popover, messages.sessionCostEstimate, formatRendererCost(usage.totalCostUsd));
+    const source =
+      usage.costSource === "publicPrice"
+        ? messages.costAtPublicPrices
+        : usage.costSource === "native"
+          ? messages.costReportedByHarness
+          : null;
+    if (source) {
+      const note = document.createElement("div");
+      note.textContent = source;
+      note.style.fontSize = "11px";
+      note.style.color = "color-mix(in srgb, currentColor 52%, transparent)";
+      note.style.textAlign = "right";
+      note.style.marginTop = "-2px";
+      popover.append(note);
+    }
   }
   if (usage?.totalCredits !== undefined) {
     addDetailRow(popover, messages.recordedCredits, formatRendererCredits(usage.totalCredits));

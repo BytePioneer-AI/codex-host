@@ -89,6 +89,18 @@ const { outputFiles } = await build({
             planFiveHourResetsAtUnix: 1_756_130_400,
           });
         };
+        globalThis.updateRendererUsageMetered = () => {
+          renderRendererUsageControl(usage, {
+            cacheHitRatePercent: 92.9,
+            sessionCacheHitRatePercent: 81.25,
+            outputTokensPerSecond: 64.2,
+            timeToFirstOutputMs: 1250,
+            inputTokens: 62300,
+            outputTokens: 7600,
+            totalCostUsd: 0.78,
+            costSource: "publicPrice",
+          }, "zh-CN");
+        };
         globalThis.updateRendererUsageChinese = () => {
           renderRendererUsageControl(usage, {
             cacheHitRatePercent: 92.9,
@@ -363,6 +375,29 @@ test("renders the Usage popover in Chinese when the settings locale is Chinese",
   await expect(popover).toContainText("输入 / 输出");
   await expect(popover).toContainText("会话费用估算");
   await expect(popover).not.toContainText("Latest cache hit");
+});
+
+test("shows Host-metered usage rows and the cost source", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0;padding-top:320px"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererUsageMetered");
+    if (typeof update !== "function") throw new Error("Metered Usage update is unavailable");
+    update();
+  });
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText("最近缓存命中率CH 92.9%");
+  await expect(popover).toContainText("会话平均缓存命中率CH 81.3%");
+  await expect(popover).toContainText("输出速度64.2 Token/秒");
+  await expect(popover).toContainText("首字延迟1.3 s");
+  await expect(popover).toContainText("会话费用估算$0.780");
+  await expect(popover).toContainText("按公开 API 价格计算，不含子代理");
 });
 
 test("omits plan limits from the Usage trigger and popover", async ({ page }) => {

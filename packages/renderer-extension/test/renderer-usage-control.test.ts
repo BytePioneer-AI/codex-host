@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatRendererContextSummary,
   formatRendererCredits,
+  formatRendererLatency,
   formatRendererPlanReset,
   formatRendererPlanWindow,
   formatRendererTokenCount,
@@ -92,5 +93,28 @@ describe("Renderer Usage native Codex snapshots", () => {
       }),
     ).toBe(true);
     expect(rendererUsageHasDisplayData(null)).toBe(false);
+  });
+});
+
+describe("Renderer Usage Host metering", () => {
+  it("shows session cache rate and time to first output on their own", () => {
+    expect(rendererUsageHasDisplayData({ sessionCacheHitRatePercent: 40 })).toBe(true);
+    expect(rendererUsageHasDisplayData({ timeToFirstOutputMs: 900 })).toBe(true);
+  });
+  it("formats latency in ms below one second and seconds above", () => {
+    expect(formatRendererLatency(840)).toBe("840 ms");
+    expect(formatRendererLatency(1_250)).toBe("1.3 s");
+    expect(formatRendererLatency(2_000)).toBe("2 s");
+  });
+  it("labels the cost source in both locales", () => {
+    expect(rendererUsageMessages("zh-CN")).toMatchObject({
+      sessionCacheHit: "会话平均缓存命中率",
+      timeToFirstOutput: "首字延迟",
+      costAtPublicPrices: "按公开 API 价格计算，不含子代理",
+      costReportedByHarness: "Harness 上报",
+    });
+    expect(rendererUsageMessages("en").costAtPublicPrices).toBe(
+      "Tokens at public API prices, excluding subagents",
+    );
   });
 });

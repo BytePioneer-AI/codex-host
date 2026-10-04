@@ -4,7 +4,7 @@
 - [x] 1.2 Claude Code 2.1.153（隔离配置、未登录、禁用自动更新）：读回没有 `ultracode` 字段，确认可据此识别旧版本。
 - [x] 1.3 小规模 Workflow（Ultracode 模式，sonnet，规模 small）：记录完整 SDK 消息。确认 Workflow 审批的 `displayName`/`description`、`task_started` 与工具结果字段、`workflow_progress` 的字段与状态、智能体消息不转发、智能体审批带 `agentID` 且在主回合结果之后到达、`task_notification` 后的续写。
 - [x] 1.4 关键词触发 + 中断：未开启 Ultracode 时提示含 "ultracode" 会先加载 `workflow-authoring` 技能再调用 Workflow；主回合进行中 `interrupt()` 会连带停止 Workflow（`task_notification` 为 stopped）。
-- [x] 1.5 比较 SDK 0.3.220 与 0.3.289 的 `getSubagentMessages()`：前者对 Workflow 智能体只返回最后 3 条（转录在附件记录处断链），后者返回完整转录且首条为带外层包装的任务。
+- [x] 1.5 比较 SDK 0.3.220 与 0.3.289 的 `getSubagentMessages()`：前者对 Workflow 智能体只返回最后 3 条（转录在附件记录处断链），后者返回完整转录且首条为带外层包装的任务。二分确认 0.3.259 起修复；0.3.274 起历史回放会把排队输入恢复为用户消息，因此选用 0.3.273。
 - [ ] 1.6 2.1.154–2.1.283 区间（Ultracode 隐含 xhigh 的旧语义）未实机验证；载荷对两种语义一致，读回判定不依赖版本。
 
 ## 2. Ultracode 档位
@@ -23,7 +23,7 @@
 - [x] 3.3 Adapter：接入委派生命周期；后台运行占用回合；状态变化与工具活动时刷新子线程；工具调用未返回却成功结束时按协议错误处理。
 - [x] 3.4 Transport：审批改为会话级并区分主线程与智能体来源；智能体审批跨越主回合结果、在挂起期间可作答、挂起结束时拒绝；挂起中续写片段的主线程审批可显示；审批标题带智能体标签。
 - [x] 3.5 子线程首条提示去掉 Workflow 外层包装。
-- [x] 3.6 升级 `@anthropic-ai/claude-agent-sdk` 到 0.3.289，修复 Workflow 智能体转录读取。
+- [x] 3.6 升级 `@anthropic-ai/claude-agent-sdk` 到 0.3.273，修复 Workflow 智能体转录读取。
 - [x] 3.7 测试：原生解析、委派生命周期、Transport 智能体审批、Adapter 挂起/作答/汇总/取消、子线程首条提示。
 
 ## 3A. 取消停止后台工作（owner 审查后补充）

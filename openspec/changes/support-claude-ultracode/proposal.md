@@ -33,7 +33,7 @@ Claude Code 从 2.1.154 起提供会话级的 Ultracode：开启后 Claude 会�
 
 **依赖**
 
-- `@anthropic-ai/claude-agent-sdk` 从 0.3.220 升级到 0.3.289。0.3.220 读取子智能体转录时会在附件记录处断链，Workflow 智能体只能读到最后几条消息；0.3.289 能读到完整转录（含首条任务）。升级后类型检查与现有测试无需改动。
+- `@anthropic-ai/claude-agent-sdk` 从 0.3.220 升级到 0.3.273。0.3.220 读取子智能体转录时会在附件记录处断链，Workflow 智能体只能读到最后几条消息；0.3.259 起能读到完整转录（含首条任务），0.3.273 是 0.3.274 改变历史回放之前的最后一版。升级后类型检查与现有测试无需改动。
 
 ## Capabilities
 
@@ -48,7 +48,7 @@ Claude Code 从 2.1.154 起提供会话级的 Ultracode：开启后 Claude 会�
 ## Impact
 
 - `packages/adapters/claude-code`：思考档位定义、Ultracode 读回判定（新文件 `ultracode.ts`）、SDK Transport（启动与切换时的读回、智能体审批作用域）、原生消息解析（Workflow 工具与进度）、Workflow 委派生命周期（新文件 `workflow-lifecycle.ts`）、Adapter（错误映射、回合占用、取消时停止后台工作、审批保留）、子线程首条提示、相关测试。
-- 依赖：`@anthropic-ai/claude-agent-sdk` 0.3.220 → 0.3.289（根与 Claude Adapter 的 `package.json`、`package-lock.json`）。
+- 依赖：`@anthropic-ai/claude-agent-sdk` 0.3.220 → 0.3.273（根与 Claude Adapter 的 `package.json`、`package-lock.json`）。
 - `docs/harnesses/claude-code/`：新增 Ultracode 与 Workflow 显示说明。
 - 不改变共享契约、Host、Renderer、Mapping Store 或其他 Harness。
 - 不包含：独立于档位的 Ultracode 开关；替用户打开 Workflows；Workflow 阶段映射到计划面板、运行日志输出、单个智能体的停止/续跑；冷读取历史时把 Workflow 还原为委派卡片（与现有 Agent 子智能体一致，历史中仍为普通工具项）；`workflowKeywordTriggerEnabled` 等 Workflow 设置。

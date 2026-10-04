@@ -19,7 +19,7 @@
 - 智能体的消息不会转发到主消息流；其工具审批经 `canUseTool` 到达，带 `agentID`，可能在主回合结果之后。
 - 结束时依次有 `task_updated`、`task_notification`（completed/failed/stopped），随后 Claude 在新的片段中汇总。主回合进行中 `interrupt()` 会连带停止 Workflow（`task_notification` 为 stopped）。
 - 提示里含 "ultracode" 关键词时，即使未开启 Ultracode 也会触发 Workflow（先加载 `workflow-authoring` 技能）。
-- 智能体转录写在 `<session>/subagents/workflows/<runId>/agent-<agentId>.jsonl`，首条为带 "[Workflow harness — computed task]" 外层包装、逐行缩进两格的任务文本。SDK 0.3.220 的 `getSubagentMessages()` 沿 `parentUuid` 回溯时跳过附件记录导致断链，只返回最后几条；0.3.289 能读到完整转录。
+- 智能体转录写在 `<session>/subagents/workflows/<runId>/agent-<agentId>.jsonl`，首条为带 "[Workflow harness — computed task]" 外层包装、逐行缩进两格的任务文本。SDK 0.3.220 的 `getSubagentMessages()` 沿 `parentUuid` 回溯时跳过附件记录导致断链，只返回最后几条；0.3.259 起能读到完整转录。
 
 ## Goals / Non-Goals
 
@@ -71,12 +71,12 @@
 
 15. **子线程首条提示去掉外层包装。** 识别到 "[Workflow harness — computed task]" 包装且正文逐行缩进时，显示去缩进后的任务原文；否则原样显示。
 
-16. **升级 SDK 到 0.3.289。** 只为修复转录断链；codexhost 仍使用用户安装的 CLI。升级后类型检查与全部现有测试无需修改。
+16. **升级 SDK 到 0.3.273。** 只为修复转录断链（0.3.259 起修复，0.3.274 起改变历史回放，故取 0.3.273）；codexhost 仍使用用户安装的 CLI。升级后类型检查与全部现有测试无需修改。
 
 ## Risks / Trade-offs
 
 - **`get_settings` 与 `workflow_progress` 都是未公开接口，CLI 升级可能变化** → 读回失败即关闭并给出可操作的提示；进度项严格校验、未知内容忽略；文档注明已验证的 CLI 版本。
-- **SDK 升级跨度较大（0.3.220 → 0.3.289）** → 类型检查与全部现有测试通过；实机验证覆盖文本回合、Ultracode、Workflow 与子线程读取；如维护者希望单独升级，可把依赖提交拆成独立 PR。
+- **SDK 升级跨度较大（0.3.220 → 0.3.273）** → 类型检查与全部现有测试通过；实机验证覆盖文本回合、Ultracode、Workflow 与子线程读取；如维护者希望单独升级，可把依赖提交拆成独立 PR。
 - **长时间的 Workflow 会让回合持续占用** → 与 Claude Code 自身"等 Workflow 结束再汇总"一致；用户可随时取消，取消会停止 Workflow。
 - **单张卡片可能有很多智能体** → 单帧上限 500 项且顺序稳定；Codex 卡片只显示状态与摘要，不显示阶段分组与用量。
 - **"无法判断原因"时提示较长** → 优先用设置与环境变量判断；Pro 用户的默认情况会得到打开 Workflows 的明确指引。
@@ -86,5 +86,5 @@
 ## Verification
 
 - 单元测试：档位与载荷（各方向切换）；读回判定与错误映射；启动前确认成功/失败（失败时不写入消息、进程关闭）；会话中切换与换模型的恢复及恢复后读回、恢复失败或读回不符时故障；Workflow 工具、任务帧、进度各状态、跨片段识别；委派项开启、更新、后台启动、结束、取消、未启动；智能体审批跨越主回合结果、挂起中续写片段的审批、挂起结束时拒绝；Adapter 级的挂起、刷新、作答、汇总后完成；取消时停止并确认后台任务、拦截停止后的自动回复、停止未确认时关闭进程、未证实的中断仍判失败；普通 Agent 审批在前台、挂起、取消、断连与迟到回复下的处理；子线程首条提示去包装。
-- 实机（用户同意使用其 Claude 账号；Linux x64，Claude Code 2.1.287，SDK 0.3.289；结果见 tasks 第 1 节）。
+- 实机（用户同意使用其 Claude 账号；Linux x64，Claude Code 2.1.287，SDK 0.3.273；结果见 tasks 第 1 节）。
 - Desktop：由用户确认档位菜单、失败提示、Workflow 卡片与子线程、审批、取消，并提供截图。

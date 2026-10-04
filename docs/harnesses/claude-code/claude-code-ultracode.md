@@ -50,7 +50,7 @@ Ultracode 下（以及提示中出现 "ultracode" 关键词时），Claude 会�
 - `packages/adapters/claude-code/src/claude-code-adapter.ts`：错误映射；后台运行按现有后台子智能体规则挂起回合；取消时停止并确认本回合的后台子智能体与 Workflow，等待续写静默后结束回合，停止未确认时关闭进程；挂起时保留智能体审批。
 - `packages/adapters/claude-code/src/claude-history.ts`：子线程首条提示去掉 "[Workflow harness — computed task]" 外层包装与缩进；无法识别时原样显示。
 
-子线程转录通过官方 `getSubagentMessages()` 读取，路径为 `<session>/subagents/workflows/<runId>/agent-<agentId>.jsonl`。SDK 0.3.220 读取这类转录时会在附件记录处断链，只能得到最后几条消息，因此依赖升级到 0.3.289。
+子线程转录通过官方 `getSubagentMessages()` 读取，路径为 `<session>/subagents/workflows/<runId>/agent-<agentId>.jsonl`。SDK 0.3.220 读取这类转录时会在附件记录处断链，只能得到最后几条消息，因此依赖升级到 0.3.273（0.3.259 起修复）。
 
 ## 已知限制
 

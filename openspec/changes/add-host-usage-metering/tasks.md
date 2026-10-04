@@ -32,7 +32,11 @@
 - [x] 6.2 用本机 Pi、OpenCode v2 实测，对比原生用量与 Host 计算结果。
 - [x] 6.3 运行 typecheck、lint、相关测试与 `openspec validate add-host-usage-metering --strict`。
 
-## 7. 后续批次（本变更之外跟进）
+## 7. 后续批次（进展见 `progress.md`）
 
-- [ ] 7.1 Claude Code（已完成：按 `message_start`/`message_delta` 逐请求计量、转录回放、1 小时档缓存写入）（先确认 Turn 末输入骤降）、CodeBuddy/WorkBuddy（缓存字段）、DeepSeek、Kimi、Qoder。
-- [ ] 7.2 Grok、ZCode、Hermes、Antigravity：合计型或模型归属不明确，按 D2 只计 Token，实测口径后接入。
+- [x] 7.1 Claude Code：按 `message_start`/`message_delta` 逐请求计量、转录回放、1 小时档缓存写入。
+- [x] 7.2 DeepSeek Harness（dsh）：按日志 `assistant/message` 的 `usage` 块计量。
+- [x] 7.3 CodeBuddy / WorkBuddy：从原生历史计量，修复缓存字段。
+- [ ] 7.4 Qoder / Qoder CN：待本机有真实会话后核对结构。
+- [ ] 7.5 Grok：待决定是否携带原生费用。
+- [ ] 7.6 Hermes、Kimi、ZCode、Antigravity：数据不足或无缓存字段，实测口径后再定；Kiro、Cursor 不接入。

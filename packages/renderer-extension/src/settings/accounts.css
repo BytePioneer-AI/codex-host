@@ -137,10 +137,7 @@
   background: light-dark(#f8f8fa, #202024);
   font-size: 11px;
   font-weight: 500;
-  text-align: left;
-}
-.settings-account-table th:last-child {
-  text-align: right;
+  text-align: center;
 }
 .settings-account-table td {
   padding: 17px 16px;
@@ -461,6 +458,7 @@
   }
   .settings-account-person-cell,
   .settings-account-management-cell,
+  .settings-account-usage-cell[colspan="2"],
   .settings-account-usage-cell--message,
   .settings-account-balance-cell {
     grid-column: 1 / -1;

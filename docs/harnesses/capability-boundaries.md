@@ -29,6 +29,10 @@ Agent 间任务协作目前是单向的：正常 Cursor Session 可以通过原�
 
 Pi Adapter 接入 `pi-subagents`（nicobailon）的异步 Host 状态与检查协议，以及同步 workflow 的 `workflowChildren` 摘要，复用公共子 Thread 和渲染链路。异步转写是原生有界窗口；同步 workflow 从父结果定位只读子 Session，文件不可用时可展示明确标注的原生结果摘要。没有已支持身份协议的同步单 Agent 调用及其他同名插件不自动兼容。详见 [Pi subagent 映射](pi/pi-subagents.md)。
 
+## Pi Token 速度插件
+
+Pi Adapter 自动识别已加载的 `pi-token-speed` 原生 RPC 状态（`setStatus`、`statusKey: tokenSpeed`），将其中的 `TPS: … tok/s` 投影到公共 `outputTokensPerSecond` 字段，沿用会话用量入口与浮窗展示。保留插件的小数精度，不根据 Host 时间或字符数另算速度；不自动安装插件，也不修改插件设置。初始化占位和撤回不冒充零速度；新的 Turn、切换 Model 和 Fork/Clone 清除旧速度，未安装或未输出有效状态时不显示。插件的 TTFT 和其他后缀不是本次接入范围。
+
 ## Pi Codex Fast
 
 Pi 当前 Model 同时具备 Codex OAuth、Codex API 和本地 `priority` 元数据时，Composer 显示默认关闭的闪电开关。Host 自动加载随插件交付的小型 Pi 扩展，通过原生 Provider 参数设置 priority，不依赖 Provider 名称，也不改变 Thinking 或 Pi 全局配置。缺少能力事实时不显示；真实服务端速度和额度效果未作承诺。详见 [Pi Codex Fast](pi/pi-fast.md)。

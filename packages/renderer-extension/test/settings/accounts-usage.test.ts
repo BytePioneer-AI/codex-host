@@ -25,6 +25,7 @@ class FakeElement {
   title = "";
   type = "";
   disabled = false;
+  colSpan = 1;
   constructor(readonly tagName: string) {}
   addEventListener(name: string, listener: () => void): void {
     this.listeners.set(name, listener);
@@ -47,10 +48,11 @@ function descendants(root: FakeElement): FakeElement[] {
     ...root.children.flatMap((child) => (child instanceof FakeElement ? descendants(child) : [])),
   ];
 }
-function elements(root: HTMLElement): FakeElement[] {
+function elements(root: HTMLElement | undefined): FakeElement[] {
+  if (!root) throw new Error("Expected rendered element");
   return descendants(root as unknown as FakeElement);
 }
-function text(root: HTMLElement): string {
+function text(root: HTMLElement | undefined): string {
   return elements(root)
     .map((el) => el.textContent)
     .join(" ");
@@ -103,11 +105,11 @@ describe("Account limit windows", () => {
     );
     if (!result) throw new Error("Expected limits");
     expect(text(result)).toContain("7 天");
-    expect(text(result)).toContain("—");
+    expect(text(result)).not.toContain("—");
     expect(text(result)).not.toContain("未提供此窗口");
     expect(
       elements(result).filter((el) => el.className === "settings-account-usage__missing"),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(elements(result).filter((el) => el.attributes.get("role") === "meter")).toHaveLength(1);
   });
 
@@ -231,10 +233,24 @@ describe("Quota comparison columns", () => {
     expect(text(result.cells[0])).not.toContain("5 小时");
     expect(text(result.cells[1])).not.toContain("7 天");
     expect(result.continuationCells).toHaveLength(1);
-    const [first, second] = result.continuationCells[0] ?? [];
-    if (!first || !second) throw new Error("Expected continuation quota cells");
+    const [first] = result.continuationCells[0] ?? [];
+    if (!first) throw new Error("Expected continuation quota cell");
     expect(text(first)).toContain("Extra");
-    expect(text(second)).toContain("—");
+    expect(first.colSpan).toBe(2);
+    expect(result.continuationCells[0]).toHaveLength(1);
+  });
+
+  it("packs Kimi's weekly and scoped five-hour limits into one row", () => {
+    const result = columns({
+      usedPercent: 0,
+      periodType: "weekly",
+      productUsage: [{ product: "Kimi Code · 5-hour", usagePercent: 12 }],
+    });
+    expect(result.cells).toHaveLength(2);
+    expect(result.continuationCells).toHaveLength(0);
+    expect(text(result.cells[0])).toContain("周额度");
+    expect(text(result.cells[1])).toContain("Kimi Code · 5 小时");
+    expect(text(result.cells[1])).toContain("88%");
   });
 
   it("retains the period on each scoped quota", () => {
@@ -256,18 +272,15 @@ describe("Quota comparison columns", () => {
       "remaining",
       vi.fn(),
     );
-    const [fiveHour, sevenDay] = result.cells;
-    if (!fiveHour || !sevenDay) throw new Error("Expected two comparison columns");
-    return { ...result, cells: [fiveHour, sevenDay] as const };
+    return result;
   }
 
-  it("places weekly zero usage only in the 7-day column", () => {
+  it("spans both quota columns for a single weekly allowance", () => {
     const result = columns({ usedPercent: 0, periodType: "weekly" });
-    expect(elements(result.cells[0]).some((el) => el.attributes.get("role") === "meter")).toBe(
-      false,
-    );
+    expect(result.cells).toHaveLength(1);
+    expect(result.cells[0]?.colSpan).toBe(2);
     expect(
-      elements(result.cells[1])
+      elements(result.cells[0])
         .find((el) => el.attributes.get("role") === "meter")
         ?.attributes.get("aria-valuenow"),
     ).toBe("100");

@@ -6,11 +6,7 @@ import type {
   CodexAccountUsageResult,
 } from "@codexhost/shared-contracts";
 
-import {
-  mountCredentialImports,
-  type RendererCredentialImportClient,
-} from "./credential-imports.js";
-import { codexAccountDisplayName } from "../renderer-codex-account-options.js";
+import type { RendererCredentialImportClient } from "./credential-imports.js";
 import {
   accountListFocusRestorer,
   accountPlanLabel,
@@ -103,7 +99,6 @@ export function createAccountsSettingsPage(
         usageByAccountId.clear();
         loadUsage(accounts);
         void harnessAccounts?.refresh(true);
-        void credentialImports.refresh();
       });
       search.addEventListener("input", () => render());
       toolbar.append(connected, searchWrapper, displayControls, refreshUsage);
@@ -111,14 +106,7 @@ export function createAccountsSettingsPage(
       list.className = "settings-account-list";
       const { table, body, updateDisplay } = createAccountsTable(document, messages);
       list.append(table);
-      const credentialImports = mountCredentialImports(
-        context.content,
-        context.signal,
-        getClient,
-        messages.credentialImports,
-        () => render(),
-      );
-      context.content.append(header, status, toolbar, list, credentialImports.section);
+      context.content.append(header, status, toolbar, list);
       const stopCountdowns = mountAccountResetCountdowns(list, messages, context.signal);
 
       let accounts: readonly CodexAccountSummary[] = [];
@@ -161,7 +149,7 @@ export function createAccountsSettingsPage(
         if (visibleAccounts.length + visibleHarnessAccounts.length === 0) {
           const emptyRow = document.createElement("tr");
           const emptyCell = document.createElement("td");
-          emptyCell.colSpan = 4;
+          emptyCell.colSpan = 3;
           emptyCell.className = "settings-account-empty";
           emptyCell.textContent = query ? messages.accountNoMatches : messages.accountEmpty;
           emptyRow.append(emptyCell);
@@ -171,10 +159,6 @@ export function createAccountsSettingsPage(
           body.append(
             ...renderAccountRows(document, account, messages, {
               current: accountPhase === "ready" && account.accountId === currentAccountId,
-              importAction: credentialImports.button(
-                "codex",
-                codexAccountDisplayName(account).full,
-              ),
               usage: usageByAccountId.get(account.accountId),
               display: usageDisplay,
               resetExpanded: expandedResetAccounts.has(account.accountId),
@@ -190,18 +174,7 @@ export function createAccountsSettingsPage(
           );
         }
         for (const account of visibleHarnessAccounts) {
-          body.append(
-            ...renderHarnessAccountRows(
-              document,
-              account,
-              messages,
-              usageDisplay,
-              credentialImports.button(
-                account.harnessId,
-                account.email ?? account.label ?? account.harnessName,
-              ),
-            ),
-          );
+          body.append(...renderHarnessAccountRows(document, account, messages, usageDisplay));
         }
         restoreFocus();
       };
@@ -316,7 +289,6 @@ export function createAccountsSettingsPage(
         // The page remains usable through list and refresh.
       }
       const harnessAccounts = createHarnessAccounts(context.signal, getClient, render);
-      void credentialImports.refresh();
       void harnessAccounts.refresh();
       load();
       return () => {

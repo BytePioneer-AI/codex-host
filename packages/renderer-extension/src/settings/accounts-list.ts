@@ -63,14 +63,14 @@ export function createAccountsTable(document: Document, messages: RendererSettin
   table.className = "settings-account-table";
   table.setAttribute("aria-label", messages.pageLabels.accounts);
   const columns = document.createElement("colgroup");
-  for (const width of [32, 24, 24, 20]) {
+  for (const width of [36, 32, 32]) {
     const column = document.createElement("col");
     column.style.width = `${width}%`;
     columns.append(column);
   }
   const head = document.createElement("thead");
   const row = document.createElement("tr");
-  const headers = Array.from({ length: 3 }, (_, index) => {
+  const headers = Array.from({ length: 2 }, (_, index) => {
     const cell = document.createElement("th");
     cell.scope = index === 1 ? "colgroup" : "col";
     if (index === 1) cell.colSpan = 2;
@@ -78,11 +78,7 @@ export function createAccountsTable(document: Document, messages: RendererSettin
     return cell;
   });
   const updateDisplay = (display: AccountUsageDisplay): void => {
-    const labels = [
-      messages.accountColumnAccount,
-      accountUsageColumnLabel(display, messages),
-      messages.credentialImports.column,
-    ];
+    const labels = [messages.accountColumnAccount, accountUsageColumnLabel(display, messages)];
     headers.forEach((cell, index) => {
       cell.textContent = labels[index] ?? "";
     });
@@ -149,22 +145,6 @@ function createAccountPerson(
   return person;
 }
 
-/**
- * The last column only ever holds the Harness target mark(s) a login can be copied to. Rows with no
- * verified-compatible target keep an empty cell so the table columns stay aligned.
- */
-function createTargetCell(
-  document: Document,
-  action: HTMLElement | null | undefined,
-): HTMLTableCellElement {
-  const cell = document.createElement("td");
-  cell.className = action
-    ? "settings-account-management-cell"
-    : "settings-account-management-cell settings-account-management-cell--empty";
-  if (action) cell.append(action);
-  return cell;
-}
-
 function renderAccountBalance(
   document: Document,
   messages: RendererSettingsMessages,
@@ -199,7 +179,6 @@ export function renderAccountRows(
     display: AccountUsageDisplay;
     resetExpanded: boolean;
     onRetry: () => void;
-    importAction?: HTMLElement | null;
     onResetExpanded: (open: boolean) => void;
   },
 ): HTMLTableRowElement[] {
@@ -237,8 +216,6 @@ export function renderAccountRows(
     input.onRetry,
     account.planType === "pro" ? "weekly-only" : "all",
   );
-  const actionsCell = createTargetCell(document, input.importAction);
-  if (input.importAction) row.className += " settings-account-row--targets";
   const continuationRows = usage.continuationCells.map((cells) => {
     const continuation = document.createElement("tr");
     continuation.className = "settings-account-row settings-account-quota-continuation-row";
@@ -249,10 +226,8 @@ export function renderAccountRows(
   if (continuationRows.length > 0) {
     personCell.rowSpan = continuationRows.length + 1;
     personCell.className += " settings-account-spanning-cell";
-    actionsCell.rowSpan = continuationRows.length + 1;
-    actionsCell.className += " settings-account-spanning-cell";
   }
-  row.append(personCell, ...usage.cells, actionsCell);
+  row.append(personCell, ...usage.cells);
   const reset =
     input.usage?.status === "ready"
       ? renderAccountResetCredits(document, input.usage.credits, messages)
@@ -263,7 +238,7 @@ export function renderAccountRows(
   detailsRow.id = `settings-account-reset-${++resetDetailsSequence}`;
   detailsRow.hidden = !input.resetExpanded;
   const detailsCell = document.createElement("td");
-  detailsCell.colSpan = 4;
+  detailsCell.colSpan = 3;
   detailsCell.append(reset.details);
   detailsRow.append(detailsCell);
   reset.summary.dataset.accountFocus = `${account.accountId}:reset`;
@@ -283,7 +258,6 @@ export function renderHarnessAccountRows(
   account: HarnessAccountListResult["accounts"][number],
   messages: RendererSettingsMessages,
   display: AccountUsageDisplay,
-  importAction?: HTMLElement | null,
 ): HTMLTableRowElement[] {
   const row = document.createElement("tr");
   row.className = "settings-account-row";
@@ -316,8 +290,6 @@ export function renderHarnessAccountRows(
         account.harnessId === "grok" ? "weekly-only" : "all",
       )
     : renderAccountBalance(document, messages, account.balance);
-  const managementCell = createTargetCell(document, importAction);
-  if (importAction) row.className += " settings-account-row--targets";
   personCell.title = messages.accountNativeManagementHint.replace("{harness}", account.harnessName);
   const continuationRows = usage.continuationCells.map((cells) => {
     const continuation = document.createElement("tr");
@@ -329,9 +301,7 @@ export function renderHarnessAccountRows(
   if (continuationRows.length > 0) {
     personCell.rowSpan = continuationRows.length + 1;
     personCell.className += " settings-account-spanning-cell";
-    managementCell.rowSpan = continuationRows.length + 1;
-    managementCell.className += " settings-account-spanning-cell";
   }
-  row.append(personCell, ...usage.cells, managementCell);
+  row.append(personCell, ...usage.cells);
   return [row, ...continuationRows];
 }

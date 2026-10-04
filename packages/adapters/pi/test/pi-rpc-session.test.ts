@@ -942,6 +942,42 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
+  it("projects token-speed status without chat or interaction events and resets between Turns", async () => {
+    const child = new FakePiRpcProcess("stats-full");
+    const onFault = vi.fn();
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), closeTimeoutMs: 500, onFault },
+      {
+        spawn: () => child as unknown as ChildProcessWithoutNullStreams,
+      },
+    );
+    const speed = vi.fn();
+    rpc.setTokenSpeedHandler(speed);
+    await rpc.start();
+    const emit = (statusText?: unknown) =>
+      child.stdout.write(
+        JSON.stringify({
+          type: "extension_ui_request",
+          method: "setStatus",
+          statusKey: "tokenSpeed",
+          statusText,
+        }) + "\n",
+      );
+    emit("TPS: 42.7 tok/s");
+    expect(speed).toHaveBeenLastCalledWith(42.7);
+    await expect(rpc.getSessionUsage()).resolves.toMatchObject({ outputTokensPerSecond: 42.7 });
+    emit("TPS: invalid");
+    expect(speed).toHaveBeenCalledTimes(1);
+    emit();
+    expect(speed).toHaveBeenLastCalledWith(undefined);
+    expect((await rpc.getSessionUsage())?.outputTokensPerSecond).toBeUndefined();
+    emit("TPS: 12.3 tok/s");
+    await rpc.runTurn("next", () => undefined);
+    expect((await rpc.getSessionUsage())?.outputTokensPerSecond).toBeUndefined();
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
   it("shares pending close confirmation between concurrent callers", async () => {
     const child = new FakePiRpcProcess("final-only");
     const rpc = new PiRpcSession(

@@ -58,6 +58,10 @@ class FakePiTransport implements PiTurnTransport {
     thinkingLevel: harnessThinkingOptionIdSchema.parse("high"),
     contextUsage: { contextUsedTokens: 40, contextWindowTokens: 200 },
   };
+  tokenSpeedHandler: ((speed: number | undefined) => void) | undefined;
+  setTokenSpeedHandler(handler: (speed: number | undefined) => void): void {
+    this.tokenSpeedHandler = handler;
+  }
   subagentHandler: ((runs: PiSubagentNode[]) => void) | undefined;
   readonly setSubagentStatusHandler = vi.fn((handler: (runs: PiSubagentNode[]) => void) => {
     this.subagentHandler = handler;
@@ -1665,6 +1669,35 @@ describe("Pi HarnessAdapter Session", () => {
       "Keep implementation details",
       expect.any(Function),
     );
+    await session.close();
+  });
+
+  it("publishes native fractional token speed and retracts only that usage field", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("speed"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+    transport.tokenSpeedHandler?.(42.7);
+    const observed = await nextEvent(iterator);
+    expect(observed).toMatchObject({
+      type: "session.usage.changed",
+      observedForTurnId: "speed",
+      usage: { outputTokensPerSecond: 42.7 },
+    });
+    transport.tokenSpeedHandler?.(undefined);
+    const retracted = await nextEvent(iterator);
+    expect(retracted).toMatchObject({ type: "session.usage.changed" });
+    if (observed.type !== "session.usage.changed" || retracted.type !== "session.usage.changed")
+      throw new Error("Missing usage event");
+    expect(retracted.usage?.outputTokensPerSecond).toBeUndefined();
+    const previous = { ...observed.usage };
+    delete previous.outputTokensPerSecond;
+    expect(retracted.usage).toEqual(Object.keys(previous).length ? previous : null);
     await session.close();
   });
 

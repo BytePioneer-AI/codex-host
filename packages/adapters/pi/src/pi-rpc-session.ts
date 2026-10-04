@@ -26,6 +26,7 @@ import {
 import type { PiNativeModel, PiNativeModelRef } from "./pi-model-catalog.js";
 import { verifyPiSessionCwd } from "./pi-session-file.js";
 import { PiSubagentRpc } from "./pi-subagent-rpc.js";
+import { parsePiTokenSpeedStatus } from "./pi-token-speed.js";
 import type { PiSubagentInspection, PiSubagentNode } from "./pi-subagents.js";
 
 export interface PiSessionState {
@@ -505,6 +506,8 @@ export class PiRpcSession {
   #fast: Pick<PiNativeModelRef, "provider" | "id"> | null = null;
   #fastAcknowledgement: { message: string; received: boolean } | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
+  #outputTokensPerSecond: number | undefined;
+  #tokenSpeedHandler: ((speed: number | undefined) => void) | undefined;
   #manualCompaction: ManualCompaction | null = null;
   #stderrTail = "";
   readonly #subagents: PiSubagentRpc;
@@ -547,6 +550,10 @@ export class PiRpcSession {
 
   get stderrTail(): string {
     return this.#stderrTail;
+  }
+
+  setTokenSpeedHandler(handler: (speed: number | undefined) => void): void {
+    this.#tokenSpeedHandler = handler;
   }
 
   setSubagentStatusHandler(handler: (runs: PiSubagentNode[]) => void): void {
@@ -709,9 +716,15 @@ export class PiRpcSession {
   }
 
   #withLatestCacheHitRate(usage: HostUsage): HostUsage {
-    return this.#latestCacheHitRatePercent === null || this.#latestCacheHitRatePercent === undefined
-      ? usage
-      : parseHostUsage({ ...usage, cacheHitRatePercent: this.#latestCacheHitRatePercent });
+    return parseHostUsage({
+      ...usage,
+      ...(this.#latestCacheHitRatePercent != null
+        ? { cacheHitRatePercent: this.#latestCacheHitRatePercent }
+        : {}),
+      ...(this.#outputTokensPerSecond !== undefined
+        ? { outputTokensPerSecond: this.#outputTokensPerSecond }
+        : {}),
+    });
   }
 
   async fork(entryId: string): Promise<PiSessionState> {
@@ -804,6 +817,7 @@ export class PiRpcSession {
   }
 
   async #refreshState(operation: string): Promise<PiSessionState> {
+    if (operation !== "Thinking") this.#resetTokenSpeed();
     try {
       this.#state = parseSessionState(await this.#send("get_state", {}));
       return this.state;
@@ -826,6 +840,7 @@ export class PiRpcSession {
     }
     if (this.#activeTurn) throw new Error("Pi RPC Session already has an active Turn");
     if (text.length === 0) throw new Error("Pi text Turn must not be empty");
+    this.#resetTokenSpeed();
 
     const settled = new Promise<PiTurnResult>((resolve, reject) => {
       this.#activeTurn = {
@@ -1013,6 +1028,18 @@ export class PiRpcSession {
       return;
     }
     if (this.#subagents.handle(value)) return;
+    if (
+      value.type === "extension_ui_request" &&
+      value.method === "setStatus" &&
+      value.statusKey === "tokenSpeed"
+    ) {
+      const status = parsePiTokenSpeedStatus(value);
+      if (status && this.#outputTokensPerSecond !== status.outputTokensPerSecond) {
+        this.#outputTokensPerSecond = status.outputTokensPerSecond;
+        this.#tokenSpeedHandler?.(this.#outputTokensPerSecond);
+      }
+      return;
+    }
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
       this.#compactionTurn = this.#activeTurn;
@@ -1165,7 +1192,14 @@ export class PiRpcSession {
     }
   }
 
+  #resetTokenSpeed(): void {
+    if (this.#outputTokensPerSecond === undefined) return;
+    this.#outputTokensPerSecond = undefined;
+    this.#tokenSpeedHandler?.(undefined);
+  }
+
   #startAutonomousTurn(value: unknown): ActiveTurn {
+    this.#resetTokenSpeed();
     const events: PiTurnEvent[] = [];
     const active: ActiveTurn = {
       origin: "autonomous",

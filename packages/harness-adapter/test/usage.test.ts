@@ -3,6 +3,16 @@ import { describe, expect, it } from "vitest";
 import { parseHostUsage } from "../src/index.js";
 
 describe("Harness Usage", () => {
+  it("accepts fractional native token rates without relaxing token counts", () => {
+    expect(parseHostUsage({ outputTokensPerSecond: 42.7 })).toEqual({
+      outputTokensPerSecond: 42.7,
+    });
+    expect(parseHostUsage({ outputTokensPerSecond: 0 })).toEqual({ outputTokensPerSecond: 0 });
+    for (const rate of [-1, NaN, Infinity, "42.7"]) {
+      expect(() => parseHostUsage({ outputTokensPerSecond: rate })).toThrow();
+    }
+    expect(() => parseHostUsage({ outputTokens: 42.7 })).toThrow();
+  });
   it("accepts native credits and independent context percent without fake tokens", () => {
     expect(parseHostUsage({ totalCredits: 0.125, contextUsagePercent: 102 })).toEqual({
       totalCredits: 0.125,

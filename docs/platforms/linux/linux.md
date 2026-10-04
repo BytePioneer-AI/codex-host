@@ -17,6 +17,10 @@ The Linux release supports the official ChatGPT `.deb` and `.rpm` packages on x8
 
 The runtime requires a mounted `/proc` and Linux `pidfd` support. Snap, Flatpak, AppImage, local or relocated installations, wrapper or `alternatives` launchers, cross-architecture execution, and codexhost Linux installer packages are not supported. codexhost is installed and updated through npm on Linux.
 
+## Native Codex CLI
+
+Use `codexhost launch --codex-cli /absolute/path/to/codex` or set `CODEX_CLI_PATH` in the Launcher's environment to select the native Codex CLI independently. Without an override, the packaged CLI remains the default; an invalid override produces an error. This setting does not expand supported Desktop installation formats. See [Native Codex CLI selection](../../architecture/native-codex-cli-selection.md) for precedence, validation, and diagnostics.
+
 ## Renderer compatibility
 
 Renderer integration failures are recovered in the background and do not display compatibility dialogs or write local warning acknowledgements. While an external Agent integration is unavailable, the managed Desktop remains usable with official Codex routing. The initial Controller handshake still fails closed on malformed or unsupported readiness output.

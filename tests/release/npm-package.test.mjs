@@ -499,7 +499,7 @@ describe("npm package release", () => {
     expect(source).toContain('userArguments[0] === "delegate"');
     expect(source).toContain('userArguments[0] === "thread"');
     expect(source).toContain('userArguments[0] === "console"');
-    expect(source).toContain('[consoleServer, "open"]');
+    expect(source).toContain('[consoleServer, userArguments[0] === "update" ? "update" : "open"]');
     expect(source).toContain('"--codexhost-delegation-cli"');
     expect(source).toContain("CODEXHOST_CLI_PATH");
     expect(source).toContain('"--codexhost-remote"');
@@ -510,35 +510,59 @@ describe("npm package release", () => {
     expect(source).not.toContain("runtime/node");
   });
 
-  it("installs the Aqua broker after a successful macOS remote install", async () => {
+  const brokerTail = [
+    "--node",
+    process.execPath,
+    "--host-runtime",
+    expect.stringMatching(/host-runtime\.mjs$/u),
+  ];
+  const brokerHarnessArguments = [
+    [],
+    ["--harness", "codebuddy"],
+    ["--harness", "workbuddy"],
+    ["--harness", "cursor-cli"],
+  ];
+
+  it.each(["install", "stop", "uninstall"])(
+    "manages every Aqua broker after a successful macOS remote %s",
+    async (command) => {
+      const { result, calls } = await runGeneratedWrapperLifecycle(
+        "darwin",
+        ["remote", command],
+        [0, 0, 0, 0, 0],
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls.slice(1).map((call) => call.args)).toEqual(
+        brokerHarnessArguments.map((harness) => ["broker", command, ...harness, ...brokerTail]),
+      );
+    },
+  );
+
+  it("keeps managing later brokers and reports the first broker failure", async () => {
     const { result, calls } = await runGeneratedWrapperLifecycle(
       "darwin",
       ["remote", "install"],
-      [0, 0],
+      [0, 0, 5, 6, 0],
     );
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(calls).toHaveLength(2);
-    expect(calls[1].args).toEqual([
-      "broker",
-      "install",
-      "--node",
-      process.execPath,
-      "--host-runtime",
-      expect.stringMatching(/host-runtime\.mjs$/u),
-    ]);
+    expect(result.status).toBe(5);
+    expect(calls).toHaveLength(5);
   });
 
   it("reports a macOS broker status failure after remote status succeeds", async () => {
     const { result, calls } = await runGeneratedWrapperLifecycle(
       "darwin",
       ["remote", "status"],
-      [0, 9],
+      [0, 0, 9, 0, 0],
     );
 
     expect(result.status).toBe(9);
-    expect(calls[1].args.slice(0, 2)).toEqual(["broker", "status"]);
-    expect(calls[1].stdoutFd).toBe(2);
+    expect(calls).toHaveLength(5);
+    for (const call of calls.slice(1)) {
+      expect(call.args.slice(0, 2)).toEqual(["broker", "status"]);
+      expect(call.stdoutFd).toBe(2);
+    }
   });
 
   it("does not manage an Aqua broker for Linux remote installs", async () => {
@@ -738,6 +762,12 @@ describe("npm package release", () => {
         expect(reported.launcher).toBe(path.join(realPackageRoot, "bin", "codexhost"));
         expect(reported.packageRoot).toBe(realPackageRoot);
         expect(spawnCodexhost(cellarNode, userBin, ["console", "extra"]).status).toBe(1);
+        const update = spawnCodexhost(cellarNode, userBin, ["update"]);
+        expect(update.status).toBe(0);
+        expect(JSON.parse(update.stdout)).toEqual({ ...reported, args: ["update"] });
+        expect(spawnCodexhost(cellarNode, userBin, ["update", "extra"]).status).toBe(1);
+        await writeFile(path.join(packageRoot, "app", "console-server.mjs"), "process.exit(7);\n");
+        expect(spawnCodexhost(cellarNode, userBin, ["update"]).status).toBe(7);
       } finally {
         await rm(root, { recursive: true, force: true });
       }

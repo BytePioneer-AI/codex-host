@@ -90,7 +90,9 @@ export function createConsoleHostClient(
         method: "POST",
         headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" },
         body: JSON.stringify({ method, params: params ?? {} }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(
+          method === "codexhost/remote/ssh-setup" ? Math.max(timeoutMs, 330_000) : timeoutMs,
+        ),
       });
       const body = (await response.json().catch(() => null)) as HostReply | null;
       if (!body || (!("result" in body) && !("error" in body))) {

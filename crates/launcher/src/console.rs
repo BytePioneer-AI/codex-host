@@ -313,11 +313,10 @@ pub fn resume_after_update_failure() {
     }
 }
 
-/// Runs `console-server open`, which ensures one console instance on the
-/// configured port and opens it in the default browser.
-pub fn open(command: &ConsoleCommand) -> Result<bool, Box<dyn Error>> {
+/// Runs a foreground console command (open or update).
+pub fn run(command: &ConsoleCommand, action: &str) -> Result<bool, Box<dyn Error>> {
     let mut process = node_command(command)?;
-    process.arg("open");
+    process.arg(action);
     Ok(process.status()?.success())
 }
 
@@ -423,7 +422,7 @@ mod tests {
         std::fs::write(
             &node,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$2\" >> '{}'\nif [ \"$2\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:26339/'; fi\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$2\" >> '{}'\nif [ \"$2\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:4399/'; fi\n",
                 calls.display()
             ),
         )
@@ -507,10 +506,10 @@ mod tests {
     fn accepts_only_a_loopback_console_address() {
         assert_eq!(
             parse_console_url(
-                b"noise\ncodexhost console: http://127.0.0.1:26339/?view=diagnostics\n"
+                b"noise\ncodexhost console: http://127.0.0.1:4399/?view=diagnostics\n"
             )
             .as_deref(),
-            Some("http://127.0.0.1:26339/?view=diagnostics")
+            Some("http://127.0.0.1:4399/?view=diagnostics")
         );
         assert_eq!(
             parse_console_url(b"codexhost console: https://example.com/\n"),

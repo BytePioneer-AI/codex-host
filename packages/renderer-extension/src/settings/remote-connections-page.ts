@@ -19,6 +19,7 @@ import { localizeRemoteFailure } from "./remote-failure-messages.js";
 import {
   openRemoteConnectionEditor,
   openRemoteConnectionRemoval,
+  openRemoteServiceUninstall,
 } from "./remote-connections-dialogs.js";
 
 const POLL_INTERVAL_MS = 5_000;
@@ -218,6 +219,7 @@ export function createRemoteConnectionsPage(
             remoteIssue = remoteVersionIssue(error);
             return null;
           });
+        if (signal.aborted || rows.get(hostId) !== row || probeTokens.get(hostId) !== token) return;
         // An update restarts the service, so it drops off for a moment. Keep showing the
         // update as in progress instead of offering troubleshooting for an expected gap.
         let expectedGap = false;
@@ -234,6 +236,8 @@ export function createRemoteConnectionsPage(
           Date.now() - (inspectFailures.get(hostId) ?? -INSPECT_RETRY_MS) >= INSPECT_RETRY_MS
         ) {
           const inspected = await control.setup(row.connection, "inspect").catch(() => null);
+          if (signal.aborted || rows.get(hostId) !== row || probeTokens.get(hostId) !== token)
+            return;
           if (inspected) installations.set(hostId, inspected.state);
           else inspectFailures.set(hostId, Date.now());
         }
@@ -319,8 +323,10 @@ export function createRemoteConnectionsPage(
         label: string,
         /** A resolved string is shown as the success message. */
         operation: () => Promise<unknown>,
+        rethrow = false,
       ): Promise<void> {
         const { hostId } = row.connection;
+        probeTokens.set(hostId, (probeTokens.get(hostId) ?? 0) + 1);
         row.pending = label;
         row.notice = null;
         render();
@@ -343,6 +349,7 @@ export function createRemoteConnectionsPage(
           installations.delete(hostId);
           inspectFailures.delete(hostId);
           void refresh(hostId);
+          if (rethrow) throw error;
         } finally {
           row.pending = null;
           if (!signal.aborted) {
@@ -475,6 +482,51 @@ export function createRemoteConnectionsPage(
                 return t("远程服务已修复，正在连接", "Remote service repaired; connecting");
               },
             );
+            break;
+          case "uninstall":
+            if (row.installation !== "installed" || remoteBusy(row.remote)) break;
+            openRemoteServiceUninstall({
+              container: root,
+              signal,
+              t,
+              connection,
+              async uninstall(removePackage) {
+                if (row.pending || remoteBusy(row.remote))
+                  throw new Error(
+                    t(
+                      "远程服务正在执行其他操作，请稍后重试",
+                      "Another remote operation is active; retry shortly",
+                    ),
+                  );
+                await act(
+                  row,
+                  action,
+                  t("正在卸载远程服务…", "Uninstalling remote service…"),
+                  async () => {
+                    // Wait for Codex to acknowledge disabling auto-connect before stopping its
+                    // remote listener, so this client cannot immediately recreate the service.
+                    await control.ssh.connect(hostId, false, signal);
+                    await control.setup(connection, "uninstall", undefined, removePackage);
+                    installations.set(hostId, "not-installed");
+                    inspectFailures.delete(hostId);
+                    restarting.delete(hostId);
+                    row.remote = null;
+                    row.remoteIssue = null;
+                    row.stateError = null;
+                    return removePackage
+                      ? t(
+                          "远程服务和 codexhost 软件包已卸载",
+                          "Remote service and codexhost package uninstalled",
+                        )
+                      : t(
+                          "远程服务已卸载，codexhost 软件包已保留",
+                          "Remote service uninstalled; codexhost package kept",
+                        );
+                  },
+                  true,
+                );
+              },
+            });
             break;
           case "update": {
             const target = row.remote ? remoteMaintenanceTarget(local, row.remote) : null;

@@ -98,12 +98,14 @@ codexhost
 
 > Linux 支持 x64 / ARM64，详见 [Linux 说明](../platforms/linux/linux.zh-CN.md)。
 
+运行 `codexhost update` 可在终端检查最新版本。Linux npm 安装有更新时，请先退出 Codex Desktop；准备完成后由后台更新器安装并重新启动 codexhost。Windows 和 macOS 上命令只报告可用版本，请在 Codex 设置页更新或手动安装。已是最新版本时直接退出。
+
 <details>
 <summary>安装问题排查</summary>
 
 **codexhost 启动失败，或 Codex 打开了但没有 codexhost 功能**
 
-运行 `codexhost console`（Windows：开始菜单 →“codexhost console”），打开本地控制台 `http://127.0.0.1:26339/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新 codexhost。控制台随 codexhost 一起启动：安装包启动时自动在浏览器打开，终端启动时会输出访问地址。
+运行 `codexhost console`（Windows：开始菜单 →“codexhost console”），打开本地控制台 `http://127.0.0.1:4399/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新 codexhost。控制台随 codexhost 一起启动：安装包启动时自动在浏览器打开，终端启动时会输出访问地址。
 
 **macOS：首次打开提示「应用无法验证」**
 
@@ -315,6 +317,9 @@ cd codex-host
 npm ci
 npm start
 ```
+
+可用 `npm start 0.12.0` 指定当前源码的运行版本，也支持 `0.13.0-rc.1` 等预发布版本。Host 状态、控制台版本和更新检查中的当前版本统一使用这个值。不传参数时仍为 `<仓库版本>-dev`；构建一次后，可用 `npm start 0.12.0 -- --no-build` 复用构建产物。参数只对本次启动生效，不修改版本文件、不发布 npm 包。源码安装仍不具备发行包的自更新资源；远程 npm 安装下载的是该版本已发布的包，不是本地源码。
+
 
 ### 运行架构
 

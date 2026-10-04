@@ -1,4 +1,5 @@
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
+import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
   catalogModelForRef,
   decodeHarnessPluginRoute,
@@ -305,6 +306,7 @@ type ApplyAdapterAgent = (
 ) => boolean;
 
 export interface RendererBindingProbeApi {
+  remoteConnections(request: unknown): Promise<unknown>;
   status(): RendererBindingProbeStatus;
   currentThreadId(): string | null;
   lockedSelection(): LockedComposerSelection | null;
@@ -3043,6 +3045,7 @@ export function installRendererBindingProbe(
     );
 
   const api: RendererBindingProbeApi = {
+    remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),
     currentThreadId() {
       const mounted = connectedComposers();
       return mounted.length === 1 && mounted[0]

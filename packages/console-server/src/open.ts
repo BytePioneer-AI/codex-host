@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import { readRuntimeMetadata } from "@codexhost/update-manager";
 
 import { consoleBundleCandidates } from "./page.js";
 import { CONSOLE_REQUEST_HEADER } from "./request-guard.js";
@@ -120,14 +121,19 @@ export interface OpenConsoleOptions {
   browser?: boolean;
 }
 
-/** Changes whenever the console server or its page bundle is replaced (update, rebuild). */
-export async function consoleBuildId(entryPath: string): Promise<string> {
+/** Changes when the server/page bundle is replaced or the source launch version changes. */
+export async function consoleBuildId(
+  entryPath: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
   const files = [entryPath, ...consoleBundleCandidates(path.dirname(entryPath))];
   const parts: string[] = [];
   for (const file of files) {
     const metadata = await stat(file).catch(() => null);
     if (metadata) parts.push(`${Math.trunc(metadata.mtimeMs)}-${metadata.size}`);
   }
+  const runtime = await readRuntimeMetadata(entryPath, environment).catch(() => null);
+  if (runtime?.distribution === "development") parts.push(runtime.version);
   return parts.join(".");
 }
 
@@ -166,7 +172,7 @@ export async function ensureConsole(
 
   let probe = await probeConsole(port);
   // Another installation, or this installation after an update, replaces the console.
-  const ownBuildId = await consoleBuildId(options.entryPath);
+  const ownBuildId = await consoleBuildId(options.entryPath, environment);
   if (
     probe.kind === "console" &&
     (probe.appDirectory !== options.appDirectory || probe.buildId !== ownBuildId)

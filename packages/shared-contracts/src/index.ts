@@ -1,6 +1,7 @@
 import { z } from "zod";
 export * from "./credential-imports.js";
 export * from "./harness-display-settings.js";
+export * from "./thread-prewarm.js";
 export {
   CONSOLE_HOST_METHODS,
   CONSOLE_OPEN_METHOD,
@@ -356,3 +357,14 @@ export {
   type RuntimeStatus,
   type RemoteUpdateParams,
 } from "./remote-runtime.js";
+export {
+  CONSOLE_REMOTE_CONNECTIONS_METHOD,
+  codexSshConnectionSchema,
+  codexSshDraftSchema,
+  remoteConnectionsRequestSchema,
+  remoteConnectionsReplySchema,
+  type RemoteConnectionsRequest,
+  type RemoteConnectionsReply,
+  type CodexSshConnection,
+  type CodexSshDraft,
+} from "./remote-connections.js";

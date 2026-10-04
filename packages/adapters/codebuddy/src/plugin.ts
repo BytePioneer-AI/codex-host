@@ -1,4 +1,5 @@
-import { createHarnessInstaller } from "@codexhost/harness-discovery";
+import { createHarnessInstaller, resolveHarnessExecutable } from "@codexhost/harness-discovery";
+import { codeBuddyDiscoverySpec } from "./command.js";
 import { CODEBUDDY_COMMAND_CATALOG } from "./slash-commands.js";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import { CodeBuddyAdapter } from "./codebuddy-adapter.js";
@@ -6,14 +7,18 @@ import { createCodeBuddyInstallation } from "./installation.js";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 
 export function createHarnessAdapter(context: HarnessPluginContext) {
-  if (context.platform === "darwin" && context.managedRemoteHost)
+  if (context.platform === "darwin" && context.managedRemoteHost) {
+    const environment = { ...context.environment };
     return new BrokeredHarnessAdapter({
       harnessId: "codebuddy",
       forwardDelegationEnvironment: true,
       commandCatalog: CODEBUDDY_COMMAND_CATALOG,
       liveCommandCatalog: true,
-      environment: { ...context.environment },
+      environment,
+      isInstalled: () =>
+        resolveHarnessExecutable(codeBuddyDiscoverySpec, { environment }) !== undefined,
     });
+  }
   const environment = { ...context.environment };
   return Object.assign(new CodeBuddyAdapter({ environment }), {
     installation: createCodeBuddyInstallation(environment),

@@ -1,5 +1,7 @@
 # Use AI coding tools on a remote computer over SSH
 
+The Web console’s **Remote connections** page (`#remote-connections`) provides the same connection management, installation, update, repair, and uninstall actions as the embedded settings. Codex Desktop must be running through codexhost on the local computer.
+
 Use Claude Code, Pi, and other Harnesses (AI coding tools) installed and signed in on another computer from your local Codex Desktop. Your project and tools run remotely while you read replies, send messages, and manage the conversation locally.
 
 ## Before you start
@@ -15,7 +17,7 @@ Update local codexhost to the latest version before installing the remote end be
 
 Log in to the remote computer once through SSH from your local terminal and confirm its identity. The page uses your existing SSH key or alias and does not show a password prompt.
 
-The remote computer needs Node.js, npm and Codex CLI, with permission for your user to install npm packages. On a remote Mac, keep the desktop user logged in when using Claude Code.
+The remote computer needs Node.js, npm and Codex CLI, with permission for your user to install npm packages. Use Node.js 22.19 or later in the 22.x series, or Node.js 24.x. Installation loads your interactive login shell, including configured version managers such as nvm. Existing installations prefer the executable Node.js path recorded by codexhost; an unsupported recorded version must be updated before maintenance. On a remote Mac, keep the desktop user logged in when using Claude Code.
 
 ## Step 2: Add an SSH connection
 
@@ -27,7 +29,7 @@ The remote computer needs Node.js, npm and Codex CLI, with permission for your u
    - **Port and identity file**: fill these in only if your connection requires them; otherwise, leave them blank.
 4. Click **Save**. The page checks the computer. Choose **Install and connect** if the remote service is missing, or **Connect** if it is already installed.
    - Wait for the installation result; you do not need to copy installation commands.
-   - Installation uses the published stable version running locally. Development builds do not offer one-click installation.
+   - Installation uses the published stable version running locally. Development builds require a stable runtime version as described in **Test from source with a specified version** below.
 5. Once it shows **Connected**, open a project on that computer in Codex.
 
 Existing Codex SSH connections appear here automatically; you do not need to add them again. Both pages share the same connection settings, so changes appear in both places.
@@ -85,6 +87,18 @@ codexhost remote start
 
 Then reconnect to that computer from your local machine.
 
+## Test from source with a specified version
+
+From the repository root, run:
+
+```bash
+npm start 0.12.0
+```
+
+This sets the source runtime version for the whole launch: Host status, the console and update-check version reporting share this value. Remote installation and updates use that same version through the normal version policy. The remote npm package must already be published; this command does not upload local changes. Without a version argument, the source version remains `<workspace-version>-dev` and npm installation stays disabled. The override does not change version files or turn the source checkout into an installed distribution with self-update resources.
+
+To test unpublished remote Host or Broker changes too, build and install the corresponding remote platform package on that computer; changing the local version label cannot deliver those changes.
+
 ## View the same conversation on both computers
 
 If the remote computer also has Codex Desktop, launch it through codexhost there. Use the same codexhost version on both computers, and use the same user account for the remote desktop login and SSH connection.
@@ -103,6 +117,7 @@ This applies to external Harness conversations created in SSH projects. Other lo
 
 | What happened | What to try |
 | --- | --- |
+| A specific tool (Node.js, npm or Codex CLI) is not detected over SSH | Install the named tool on the remote computer, or add its existing installation to the login shell PATH, then retry. This message does not prove the tool is uninstalled. Codex CLI is the command-line tool; remote Codex Desktop is not required. |
 | The connection fails or disconnects shortly afterward | Check that SSH login works, then choose **Check again**. If the service is missing, choose **Install and connect**. If needed, follow the manual update steps and reconnect. |
 | A Harness is missing | Confirm the tool is installed and signed in on the remote computer, then click **Run connection diagnostics** on codexhost's **Connections** page. |
 | Remote version information is missing or the service is outdated | Choose **Update remote service**. If it is unavailable or fails, follow **When you need to update manually** above. |
@@ -111,6 +126,10 @@ This applies to external Harness conversations created in SSH projects. Other lo
 | Installation fails on a Mac | Make sure the remote Mac's desktop user is logged in, then run `codexhost remote install` again. |
 
 ## Stop or uninstall
+
+Choose **Uninstall remote service** on the connection card. After confirmation, auto-connect is disabled for this connection, the remote service stops and its connection setup is removed. On Mac, the associated Harness background service is also uninstalled. The SSH connection entry, project files and chat data are kept, so the service can be installed again later. Active remote sessions are interrupted.
+
+The codexhost package is kept by default. Select **Also uninstall the codexhost package** to remove the remote computer's global npm `@codexhost/cli` after service removal succeeds. Codex CLI, Node.js and other Harnesses are kept. Only select this if the remote Desktop no longer needs that package to launch. A mismatch between the active CLI and npm's global installation rejects package removal before stopping the service; choose service-only removal or uninstall the package manually on the remote computer. If package removal fails after service removal, the page explains the partial result and allows retrying.
 
 When you no longer need the remote installation, run these commands on the remote computer:
 

@@ -15,6 +15,7 @@ export type RemoteCardAction =
   | "update"
   | "upgrade"
   | "repair"
+  | "uninstall"
   | "recheck";
 
 export interface RemoteConnectionRow {
@@ -332,6 +333,9 @@ export function renderRemoteCard(
 
   const serviceActions = remoteElement(document, "div", "settings-remote-card__actions");
   if (!row.probing) {
+    if (row.installation === "installed" && !remoteBusy(remote)) {
+      serviceActions.append(command("uninstall", t("卸载远程服务", "Uninstall remote service")));
+    }
     // Secondary actions first, so the one recommended action always sits at the edge.
     // Without an installed service the connection reaches stock Codex, which also rejects the
     // version query; that is a missing installation, not an outdated one.

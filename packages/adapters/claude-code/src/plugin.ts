@@ -3,6 +3,7 @@ import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 
 import { ClaudeCodeAdapter, claudeCommandCatalog } from "./claude-code-adapter.js";
+import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { createClaudeInstallation } from "./installation.js";
 
 import { createHarnessInstaller } from "@codexhost/harness-discovery";
@@ -17,6 +18,19 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
       commandCatalog: claudeCommandCatalog,
       liveCommandCatalog: true,
       environment,
+      isInstalled: () => {
+        try {
+          resolveClaudeCodeExecutable({
+            ...(environment[CLAUDE_CODE_COMMAND_ENV]
+              ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
+              : {}),
+            environment,
+          });
+          return true;
+        } catch (error) {
+          return !(error instanceof ClaudeCodeExecutableError);
+        }
+      },
       ...(context.brokerDescriptorPath ? { descriptorPath: context.brokerDescriptorPath } : {}),
     });
   }
@@ -38,6 +52,9 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
 }
 
 export async function warmup(adapter: Pick<HarnessAdapter, "inspect">): Promise<void> {
+  // A brokered adapter starts its Aqua broker on demand; prefetching at Host startup
+  // would start (and keep resident) a broker no request needed.
+  if (adapter instanceof BrokeredHarnessAdapter) return;
   try {
     await adapter.inspect();
   } catch {

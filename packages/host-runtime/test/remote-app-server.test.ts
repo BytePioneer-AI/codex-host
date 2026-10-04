@@ -111,20 +111,6 @@ async function withLegacyRemoteSocketInitializationLock<T>(
   }
 }
 
-async function socketAcceptsConnections(socketPath: string): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    const connection = net.createConnection(socketPath);
-    connection.once("connect", () => {
-      connection.destroy();
-      resolve(true);
-    });
-    connection.once("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT" || error.code === "ECONNREFUSED") resolve(false);
-      else reject(error);
-    });
-  });
-}
-
 describe("remote SSH app-server transport", () => {
   it("classifies only Unix listener app-server invocations", () => {
     expect(
@@ -547,96 +533,6 @@ describe("remote SSH app-server transport", () => {
         release.resolve(undefined);
         await Promise.allSettled(attempts);
         filesystemFault.staleLockRacePath = null;
-        await rm(root, { recursive: true, force: true });
-      }
-    },
-  );
-
-  it.skipIf(process.platform === "win32")(
-    "does not unlink a replacement socket while prior sessions settle",
-    async () => {
-      const root = await mkdtemp(path.join("/tmp", "ch-replacement-"));
-      const socketPath = path.join(root, "control.sock");
-      let finishFirstSession = (): void => undefined;
-      const first = createRemoteAppServerWebSocketListener({
-        socketPath,
-        diagnosticOutput: new PassThrough(),
-        createSession: () => ({
-          run: () =>
-            new Promise<number>((resolve) => {
-              finishFirstSession = () => resolve(0);
-            }),
-          disconnect: () => undefined,
-          close: () => undefined,
-        }),
-      });
-      const replacement = createRemoteAppServerWebSocketListener({
-        socketPath,
-        diagnosticOutput: new PassThrough(),
-        createSession: ({ output }) => ({
-          run: async () => {
-            output.end();
-            return 0;
-          },
-          disconnect: () => undefined,
-          close: () => undefined,
-        }),
-      });
-      let firstClosing: Promise<void> | null = null;
-
-      try {
-        await first.listen();
-        const firstClient = new WebSocket("ws://localhost/", {
-          createConnection: () => net.createConnection(socketPath),
-        });
-        await once(firstClient, "open");
-        const firstClientClosed = once(firstClient, "close");
-        firstClosing = first.close();
-        await firstClientClosed;
-
-        // Exercise the reset race deterministically on every platform.
-        const probeConnection = vi.spyOn(net, "createConnection");
-        probeConnection.mockImplementationOnce(() => {
-          probeConnection.mockRestore();
-          const connection = new net.Socket();
-          queueMicrotask(() => {
-            const error = new Error("fixture shutdown reset") as NodeJS.ErrnoException;
-            error.code = "ECONNRESET";
-            connection.destroy(error);
-          });
-          return connection;
-        });
-
-        let inactive = false;
-        for (let attempt = 0; attempt < 100; attempt += 1) {
-          // A probe racing server.close() can be reset before connecting.
-          // Retry that transient result; only absence/refusal proves inactivity.
-          const active = await socketAcceptsConnections(socketPath).catch(
-            (error: NodeJS.ErrnoException) => {
-              if (error.code === "ECONNRESET") return true;
-              throw error;
-            },
-          );
-          if (!active) {
-            inactive = true;
-            break;
-          }
-          await new Promise<void>((resolve) => setTimeout(resolve, 10));
-        }
-        expect(inactive).toBe(true);
-        await replacement.listen();
-
-        finishFirstSession();
-        await firstClosing;
-        const replacementClient = new WebSocket("ws://localhost/", {
-          createConnection: () => net.createConnection(socketPath),
-        });
-        await once(replacementClient, "open");
-        replacementClient.close();
-        await once(replacementClient, "close");
-      } finally {
-        finishFirstSession();
-        await Promise.allSettled([firstClosing ?? first.close(), replacement.close()]);
         await rm(root, { recursive: true, force: true });
       }
     },

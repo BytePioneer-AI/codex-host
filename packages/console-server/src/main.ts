@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readRuntimeMetadata } from "@codexhost/update-manager";
 
 import { createConsoleHarnesses, harnessPluginRoots } from "./harnesses.js";
 import { createConsoleHostClient } from "./host-client.js";
@@ -9,6 +10,7 @@ import { loadConsoleBundle } from "./page.js";
 import { consolePaths, consolePort } from "./paths.js";
 import { startConsoleServer, type RunningConsoleServer } from "./server.js";
 import { createConsoleUpdates } from "./updates.js";
+import { updateFromCommand } from "./update-cli.js";
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const HANDOFF_EXIT_DELAY_MS = 500;
@@ -18,7 +20,7 @@ const appDirectory = path.dirname(entryPath);
 
 function usage(): never {
   console.error(
-    "usage: console-server open [--no-browser] | console-server ensure | console-server serve | console-server stop-for-update",
+    "usage: console-server open [--no-browser] | console-server ensure | console-server serve | console-server update | console-server stop-for-update",
   );
   process.exit(2);
 }
@@ -27,6 +29,7 @@ async function serve(): Promise<void> {
   const paths = consolePaths();
   const port = consolePort();
   const installation = await resolveInstallation(appDirectory);
+  const runtime = await readRuntimeMetadata(entryPath).catch(() => null);
   const state: { running?: RunningConsoleServer } = {};
   const exit = (): void => {
     void (state.running?.close() ?? Promise.resolve()).finally(() => process.exit(0));
@@ -37,7 +40,7 @@ async function serve(): Promise<void> {
   state.running = await startConsoleServer({
     port,
     buildId: await consoleBuildId(entryPath),
-    version: installation.distribution?.version ?? "source",
+    version: runtime?.version ?? "source",
     installation,
     paths,
     updates,
@@ -98,9 +101,11 @@ const run =
       ? open(rest)
       : command === "ensure"
         ? ensure(rest)
-        : command === "stop-for-update"
-          ? stopForUpdate(rest)
-          : usage();
+        : command === "update"
+          ? updateFromCommand(appDirectory, rest)
+          : command === "stop-for-update"
+            ? stopForUpdate(rest)
+            : usage();
 run.catch((error: unknown) => {
   console.error(`codexhost console: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);

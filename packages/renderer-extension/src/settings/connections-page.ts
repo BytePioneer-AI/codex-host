@@ -12,6 +12,7 @@ import {
 import type { ExternalRendererAgent, RendererAgentAvailability } from "../agent-selection-state.js";
 import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "../renderer-agent-icon.js";
 import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
+import type { RemoteConnectionsControl } from "../remote-connections-control.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
@@ -681,6 +682,7 @@ export function createConnectionsSettingsPage(
   messages: RendererSettingsMessages,
   getDiagnostics: () => RendererConnectionDiagnostics | null,
   groupPreference: AgentGroupPreferenceStore = getSharedAgentGroupPreferenceStore(),
+  getRemoteConnections: () => RemoteConnectionsControl | null = () => null,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
     id: "connections",
@@ -721,6 +723,7 @@ export function createConnectionsSettingsPage(
       // diagnostic render. Keep in-flight updates and check results across row switches.
       const versionPanels = new Map<string, HTMLElement>();
       const updatingVersions = new Set<string>();
+      const hostNames = new Map<string, string>();
       let latestSnapshot: RendererConnectionSnapshot | null = null;
       let disposeHostScroller = (): void => undefined;
 
@@ -829,7 +832,7 @@ export function createConnectionsSettingsPage(
           tab.setAttribute("aria-controls", panelId);
           tab.setAttribute("aria-selected", String(host.hostId === selectedHost.hostId));
           tab.tabIndex = host.hostId === selectedHost.hostId ? 0 : -1;
-          const hostName = connectionHostName(host.hostId, messages);
+          const hostName = hostNames.get(host.hostId) || connectionHostName(host.hostId, messages);
           tab.textContent = hostName;
           tab.title = host.active ? `${hostName} · ${messages.connectionActiveHost}` : hostName;
           tab.addEventListener("click", () => {
@@ -1179,6 +1182,20 @@ export function createConnectionsSettingsPage(
       };
 
       render(diagnostics?.snapshot() ?? null);
+      void getRemoteConnections()
+        ?.ssh.list(context.signal)
+        .then(
+          (connections) => {
+            if (context.signal.aborted) return;
+            for (const connection of connections) {
+              hostNames.set(connection.hostId, connection.displayName.trim());
+            }
+            render(diagnostics?.snapshot() ?? null);
+          },
+          () => {
+            /* Keep the Host ID fallback when native connection names are unavailable. */
+          },
+        );
       // Keep the Main / More grouping in sync with any other open picker or
       // settings instance (e.g. the Agent picker's "Manage" shortcut).
       const unsubscribeGroup = groupPreference.subscribe(() =>

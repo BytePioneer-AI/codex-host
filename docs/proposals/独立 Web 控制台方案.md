@@ -28,7 +28,7 @@
 
 ## 2. 方案概述
 
-- 新增本地 Web 控制台，固定监听 `127.0.0.1:26339`，端口可配置。
+- 新增本地 Web 控制台，固定监听 `127.0.0.1:4399`，端口可配置。
 - 安装包与 npm 两种安装方式共用同一套控制台：同一个 `console-server.mjs`、同一个 `codexhost console` 子命令、同一套页面。
 - 控制台**只负责转发和安全校验**，业务逻辑复用现有模块与 `codexhost/*` 接口契约，不另写一套后端。
 - 两种运行状态：
@@ -114,8 +114,8 @@
 
 ### 5.1 端口
 
-- 默认 `127.0.0.1:26339`，只监听 loopback。26339 为 "CODEX" 的九宫格键位。
-- 核对结果：IANA 登记表中处于未分配段 `26265–26485`；低于 macOS / Windows（49152 起）与 Linux（32768 起）的临时端口范围；不与 Kubernetes NodePort（30000–32767）、Minecraft（25565）、MongoDB（27017）、CockroachDB（26257）等常见端口重叠；本机与仓库中无占用。
+- 默认 `127.0.0.1:4399`，只监听 loopback。选用四位端口，便于记忆。
+- 核对结果：IANA 登记表中 4399 未分配（TCP/UDP）；位于注册端口段，低于 macOS / Windows（49152 起）与 Linux（32768 起）的临时端口范围；未发现知名开源项目将其作为默认端口；本机与仓库中无占用。
 - 可通过 `CODEXHOST_CONSOLE_PORT` 或控制台设置修改。
 
 ### 5.2 单实例与端口冲突
@@ -188,7 +188,7 @@
 
 ## 11. 待确认问题
 
-- Windows 在安装 Hyper-V / WSL / Docker 后可能保留端口段，需在多台 Windows 机器上执行 `netsh interface ipv4 show excludedportrange protocol=tcp` 确认 26339 不在其中。
+- Windows 在安装 Hyper-V / WSL / Docker 后可能保留端口段，需在多台 Windows 机器上执行 `netsh interface ipv4 show excludedportrange protocol=tcp` 确认 4399 不在其中。
 - 本地可能同时存在的 Host Runtime 实例数量及控制台选择规则（含远程 Host 场景是否排除）。
 - 控制台空闲退出的时长，以及更新进行中时禁止退出的规则。
 - Codex 设置页中控制台入口的位置与文案。

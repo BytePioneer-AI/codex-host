@@ -74,7 +74,6 @@ function startHost({ root, environment }) {
   const host = new AppServerHost({
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
-    defaultAgent: "codex",
     environment,
     desktopInput: input,
     desktopOutput: output,

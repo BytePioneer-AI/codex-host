@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
-export const DEFAULT_CONSOLE_PORT = 26339;
+export const DEFAULT_CONSOLE_PORT = 4399;
 export const CONSOLE_PORT_ENV = "CODEXHOST_CONSOLE_PORT";
 export const LAUNCHER_EXECUTABLE_ENV = "CODEXHOST_LAUNCHER_EXECUTABLE";
 

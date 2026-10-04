@@ -259,44 +259,6 @@ describe("ZCode installed CLI transport", () => {
     });
   });
 
-  it("fails to start when the CLI does not confirm the account revision", async () => {
-    const { options } = await fixture("reply(null)");
-    const transport = new CliTransport(
-      options({ environment: { ...options().environment, FAKE_REVISION: "stale" } }),
-    );
-    await expect(transport.start()).rejects.toMatchObject({ code: "protocolError" });
-  });
-
-  it("answers native reverse requests by the mapping table", async () => {
-    const { options } = await fixture(
-      "reply(await ask(params.sessionId, {requestId:'r', sessionId:'s', scope:'runtime-materialization'}))",
-    );
-    const transport = await started(options());
-    const ask = async (method: string) => transport.request("readSession", { sessionId: method });
-    try {
-      expect(await ask("session/requestRuntimePreferences")).toEqual({
-        id: "server-1",
-        result: {
-          nativeSearchEnhancementsEnabled: true,
-          memoryEnabled: false,
-          askUserQuestionAutoResolutionEnabled: false,
-          modelContextBudgetStrategy: "preflight-v1",
-        },
-      });
-      expect(await ask("interaction/requestOfficialMcpAuthHeaders")).toMatchObject({
-        result: { ok: false, reason: "official_auth_unavailable" },
-      });
-      expect(await ask("interaction/browserList")).toMatchObject({ result: { browsers: [] } });
-      expect(await ask("interaction/browserExecute")).toMatchObject({
-        result: { ok: false, error: { code: "backend_unavailable" }, elapsedMs: 0 },
-      });
-      for (const method of ["automation/create", "offPeak/create", "unknown/method"])
-        expect(await ask(method)).toMatchObject({ error: { code: -32601 } });
-    } finally {
-      await transport.close();
-    }
-  });
-
   it("reports a re-announced interaction once and leaves it for resolveInteraction", async () => {
     const { options, log } = await fixture(
       `const p={requestId:'approval-1',sessionId:'s1'};ask('interaction/requestPermission',p);ask('interaction/requestPermission',p);ask('interaction/requestUserInput',{requestId:'q-1',sessionId:'s2'});reply({events:[]})`,

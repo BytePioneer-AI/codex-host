@@ -348,6 +348,32 @@ describe("console server", () => {
     expect(request).toHaveBeenCalledOnce();
   });
 
+  it("exposes remote settings only through guarded console requests", async () => {
+    const request = vi.fn(async () => ({ result: null }));
+    const { base } = await start({ host: { available: async () => true, request } });
+    for (const method of [
+      "codexhost/console/remote-connections",
+      "codexhost/remote/ssh-setup",
+      "codexhost/runtime/status",
+    ]) {
+      const body = JSON.stringify({ method, params: {} });
+      const blocked = await fetch(`${base}/api/host/request`, {
+        method: "POST",
+        headers: { origin: "https://example.com", ...CHANGE },
+        body,
+      });
+      expect(blocked.status).toBe(403);
+      const response = await fetch(`${base}/api/host/request`, {
+        method: "POST",
+        headers: { origin: base, ...CHANGE },
+        body,
+      });
+      expect(response.status).toBe(200);
+      expect(request).toHaveBeenLastCalledWith(method, {});
+    }
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
   it("returns 503 when no Host channel is running", async () => {
     const { base } = await start({
       host: {

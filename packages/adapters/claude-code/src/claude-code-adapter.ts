@@ -673,6 +673,10 @@ class ClaudeHarnessSession implements HarnessSession {
     this.outputs = this.#channel.outputs;
   }
 
+  get nativeWriterRef(): NativeSessionRef {
+    return this.#nativeRef;
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session is not open") };

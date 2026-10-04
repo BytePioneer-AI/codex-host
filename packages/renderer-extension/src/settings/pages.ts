@@ -695,7 +695,7 @@ export function createDefaultRendererSettingsPages(
   getRemoteConnections: () => RemoteConnectionsControl | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
-    createConnectionsSettingsPage(messages, getDiagnostics),
+    createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
     createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
     createSessionImportSettingsPage(

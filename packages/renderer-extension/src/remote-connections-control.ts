@@ -20,6 +20,7 @@ export interface RemoteConnectionsControl {
     connection: CodexSshConnection,
     action: RemoteSshSetupParams["action"],
     version?: string,
+    uninstallPackage?: boolean,
   ): Promise<RemoteSshSetupResult>;
   runtime(hostId: string): Promise<RuntimeStatus>;
   update(hostId: string, version: string): Promise<RuntimeStatus>;
@@ -70,7 +71,7 @@ export function createRemoteConnectionsControl(
   }
   const control: RemoteConnectionsControl = {
     ssh: createCodexSshClient(ownerWindow),
-    async setup(connection, action, version) {
+    async setup(connection, action, version, uninstallPackage) {
       const client = getClient("local");
       if (!client?.setupSsh)
         throw new Error("SSH installation is unavailable; update local codexhost and restart");
@@ -80,6 +81,7 @@ export function createRemoteConnectionsControl(
         identity: connection.identity,
         action,
         version: version ?? null,
+        ...(action === "uninstall" ? { uninstallPackage: uninstallPackage ?? false } : {}),
       });
     },
     async runtime(hostId) {

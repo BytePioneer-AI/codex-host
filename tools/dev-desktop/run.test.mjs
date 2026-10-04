@@ -79,7 +79,56 @@ describe("development Desktop start", () => {
     expect(() => parseArguments(["--desktop", "private.exe"])).toThrow("unknown option");
     expect(() => parseArguments(["--agent", "codex"])).toThrow("unknown option");
     expect(() => parseArguments(["--no-build", "--no-build"])).toThrow("may only be provided once");
+    for (const value of [undefined, "latest", "0.12", "0.12.0;echo bad"]) {
+      expect(() => parseArguments(["--version", ...(value ? [value] : [])])).toThrow(
+        "semantic version",
+      );
+    }
+    expect(() => parseArguments(["--version", "0.12.0", "--version", "0.13.0"])).toThrow(
+      "may only be provided once",
+    );
+    for (const arguments_ of [
+      ["0.12.0", "0.13.0"],
+      ["0.12.0", "--version", "0.13.0"],
+      ["--version", "0.12.0", "0.13.0"],
+    ]) {
+      expect(() => parseArguments(arguments_)).toThrow("may only be provided once");
+    }
+    for (const version of ["latest", "0.12", "0.12.0;echo bad"]) {
+      expect(() => parseArguments([version])).toThrow("semantic version");
+    }
   });
+
+  it.each([["0.12.0"], ["--version", "0.12.0"]])(
+    "accepts positional and explicit versions: %j",
+    (...arguments_) => {
+      expect(parseArguments(arguments_)).toEqual({ build: true, help: false, version: "0.12.0" });
+      expect(parseArguments([...arguments_, "--no-build"]).build).toBe(false);
+    },
+  );
+
+  it.each([undefined, "0.12.0", "0.13.0-rc.1+test"])(
+    "passes only the explicit source runtime version to the launcher: %s",
+    async (version) => {
+      const root = temporaryDirectory();
+      const nodePath = path.join(root, "node");
+      const artifacts = materializeArtifacts(root, "linux", nodePath);
+      const spawnImplementation = vi.fn(() => readyChild());
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      await runDevelopmentDesktop({
+        arguments_: [...(version ? [version] : []), "--no-build"],
+        root,
+        platform: "linux",
+        nodePath,
+        environment: { PATH: path.join(root, "missing"), CODEXHOST_DEV_VERSION: "0.99.0" },
+        spawnImplementation,
+      });
+      expect(spawnImplementation).toHaveBeenCalledOnce();
+      expect(spawnImplementation.mock.calls[0][0]).toBe(artifacts.launcher);
+      expect(spawnImplementation.mock.calls[0][2].env.CODEXHOST_DEV_VERSION).toBe(version);
+    },
+  );
 
   it("resolves platform development artifacts and validates regular files", () => {
     const root = temporaryDirectory();

@@ -15,6 +15,7 @@ import {
   isUpdateOperationActive,
   recoverUpdateOperationLock,
   resolveInstalledUpdateContext,
+  readRuntimeMetadata,
   selectInstallerReleaseArtifact,
   type BackgroundUpdateManager,
   type BackgroundUpdateStatus,
@@ -123,8 +124,12 @@ export function createHostUpdateCoordinator(
         await recoverUpdateOperationLock(context.common.stateDirectory);
         await cleanupTerminalUpdateState(context.common.stateDirectory);
       } catch (error) {
+        const runtime = await readRuntimeMetadata(
+          options.hostRuntimePath,
+          options.environment,
+        ).catch(() => null);
         return {
-          currentVersion: "0.0.0",
+          currentVersion: runtime?.distribution === "development" ? runtime.version : "0.0.0",
           installation: null,
           latestVersion: null,
           updateAvailable: false,

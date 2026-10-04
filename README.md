@@ -99,12 +99,14 @@ Grab the installer for your platform from [Releases](https://github.com/BytePion
 
 > Linux is supported on x64 and ARM64. See the [Linux guide](docs/platforms/linux/linux.md).
 
+Run `codexhost update` to check for the latest release from your terminal. On Linux npm installations, quit Codex Desktop first if an upgrade is available; once preparation completes, the background updater installs it and restarts codexhost. On Windows and macOS the command only reports the available version; update from Codex settings or install the release manually. An up-to-date installation exits without changes.
+
 <details>
 <summary>Installation troubleshooting</summary>
 
 **codexhost does not start, or Codex opens without codexhost features**
 
-Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:26339/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open it in your browser, and terminal launches print its address.
+Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:4399/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open it in your browser, and terminal launches print its address.
 
 **macOS: "App can't be verified" on first launch**
 
@@ -315,6 +317,9 @@ cd codex-host
 npm ci
 npm start
 ```
+
+To run the current source with a specific runtime version, use `npm start 0.12.0` (prereleases such as `0.13.0-rc.1` are also accepted). Host status, console version and update-check version reporting use this value. Without a version argument the version remains `<workspace-version>-dev`; `npm start 0.12.0 -- --no-build` reuses artifacts after building once. The override lasts for this launch and does not modify version files or publish packages. Source installations still lack packaged self-update resources; remote npm installation downloads the published package with that version, not the local source.
+
 
 ### Runtime Architecture
 

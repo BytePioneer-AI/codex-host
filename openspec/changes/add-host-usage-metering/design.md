@@ -8,7 +8,7 @@ External Harness 的用量当前由各 Adapter 在 `HostUsage` 快照中自行�
 |---|---|---|---|---|---|
 | Claude Code | 每次请求 + Turn 末 `modelUsage` | 否 | 是 | 每请求 | SDK 类型；Anthropic 口径 |
 | Pi / OMP | 每条 assistant message | 否 | 是（另有 `reasoning` 子项） | 每消息 | total = input + output + cacheRead + cacheWrite |
-| OpenCode | 每条 message | 否 | **否**（`reasoning` 单列） | 每消息 | total = input + output + reasoning + cache |
+| OpenCode v2 | 每个 step（assistant message，`session.step.ended` 带 tokens） | 否 | **否**（`reasoning` 单列） | 每消息 | total = input + output + reasoning + cache |
 | DeepSeek | 流式 usage chunk | 否 | 是 | 会话 | total = input + output + cacheRead |
 | Grok | 每 Turn（含多次模型调用） | **是** | 是 | 仅 Turn 主模型 | total = input + output |
 | ZCode | 仅会话合计 | **是** | 待实测 | 会话 | total = input + output |
@@ -27,7 +27,7 @@ External Harness 的用量当前由各 Adapter 在 `HostUsage` 快照中自行�
 
 - 已接入的 Harness 用同一口径、同一价格表、同一公式得到会话累计费用、会话平均缓存命中率、最近一轮首字延迟、回合平均输出速度。
 - 统计可证明完整（否则不显示会话级指标）、模型归属正确（否则不计费）、无重复（请求 ID 去重）。
-- 第一批以 Pi、OMP、OpenCode 闭环验证。
+- 第一批以 Pi、OMP、OpenCode v2 闭环验证；OpenCode v1 协议不接入。
 
 **Non-Goals:** 见 proposal。
 
@@ -100,7 +100,7 @@ Host 在收到 `complete: true` 之前，以及处于不完整状态时，不发
 
 ## Migration Plan
 
-先合入契约、价格表、计量模块与 Pi、OMP、OpenCode；其余 Adapter 保持现有快照行为（`costSource: "native"`）并分批接入。回滚时移除 Host 写入的派生字段即可恢复原状。
+先合入契约、价格表、计量模块与 Pi、OMP、OpenCode v2；OpenCode v1 与其余 Adapter 保持现有快照行为（`costSource: "native"`）并分批接入。回滚时移除 Host 写入的派生字段即可恢复原状。
 
 ## Open Questions
 

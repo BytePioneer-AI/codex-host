@@ -17,7 +17,7 @@
 - **BREAKING（行为）**：接入 `usage.request` 的 Thread，费用改由 Host 按 Token × 公开价格计算，不再使用 Harness 原生费用；`HostUsage` 新增 `costSource` 区分“按公开价格计算”与“Harness 上报”。
 - 新增价格表：随版本打包 models.dev 快照；Host 启动时本地价格表超过 7 天则后台刷新，失败静默沿用；用户可用数据目录中的 JSON 覆盖或补充。按模型 ID 精确匹配，不做模糊匹配；费用每次按当前价格表重算。
 - `HostUsage` 与 Thread Usage 契约新增 `sessionCacheHitRatePercent`、`timeToFirstOutputMs`、`costSource`。用量浮窗新增对应两行，并按费用来源说明计算方式。
-- 第一批只接入 Pi、OMP、OpenCode，完整验证创建、恢复、分叉、换模型、重复事件。Claude Code、CodeBuddy/WorkBuddy、DeepSeek、Kimi、Qoder 及其已知缺陷在后续批次处理；Grok、ZCode、Hermes 等合计型或模型归属不明确的放最后。Cursor CLI、Kiro 没有 Token 数据，不支持。
+- 第一批只接入 Pi、OMP、OpenCode v2（OpenCode v1 协议不接入，保持原生费用），完整验证创建、恢复、分叉、换模型、重复事件。Claude Code、CodeBuddy/WorkBuddy、DeepSeek、Kimi、Qoder 及其已知缺陷在后续批次处理；Grok、ZCode、Hermes 等合计型或模型归属不明确的放最后。Cursor CLI、Kiro 没有 Token 数据，不支持。
 
 ## Non-Goals
 
@@ -45,7 +45,8 @@ None.
 - `packages/harness-adapter`：新增两个输出事件类型与校验；`HostUsage` 新增三个字段。
 - `packages/shared-contracts`：Thread Usage 快照新增三个可选字段。
 - `packages/host-runtime`：新增价格表模块（快照、刷新、用户覆盖）与 Usage 计量模块，在 External Thread 事件处理处接入。
-- Adapters（第一批）：Pi、OMP、OpenCode。
+- Adapters（第一批）：Pi、OMP、OpenCode v2。
+- `packages/harness-broker`：事件白名单加入 `usage.request`、`usage.history`。
 - `packages/renderer-extension`：用量浮窗新增两行与费用来源说明。
 - 构建：新增价格表快照生成脚本与打包资源。
 - 网络：Host 每 7 天至多一次请求 `https://models.dev/api.json`。

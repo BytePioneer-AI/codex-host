@@ -105,6 +105,7 @@ Claude Adapter SHALL map each Root `Workflow` Tool Use to one Host Subagent Dele
 - **WHEN** an entry first reports `agentId`
 - **THEN** the Subagent SHALL keep its `subagentId` and gain that `nativeSubagentId`, and Host Runtime SHALL be able to open its Child Host Thread from the official transcript
 - **AND** the Child Thread's initial prompt SHALL show the computed task without Claude Code's Workflow harness frame when that frame is recognized
+- **AND** a relayed user request frame that immediately precedes the computed task SHALL NOT be shown as a separate prompt
 
 #### Scenario: Workflow agents make progress
 

@@ -22,7 +22,7 @@
 - [x] 3.2 `workflow-lifecycle.ts`：一个运行一个委派项，按序号维护多个智能体，稳定 `subagentId`、后续绑定 `nativeSubagentId`，后台启动后保持打开，按 `task_notification` 或回合结果结束。
 - [x] 3.3 Adapter：接入委派生命周期；后台运行占用回合；状态变化与工具活动时刷新子线程；工具调用未返回却成功结束时按协议错误处理。
 - [x] 3.4 Transport：审批改为会话级并区分主线程与智能体来源；智能体审批跨越主回合结果、在挂起期间可作答、挂起结束时拒绝；挂起中续写片段的主线程审批可显示；审批标题带智能体标签。
-- [x] 3.5 子线程首条提示去掉 Workflow 外层包装。
+- [x] 3.5 子线程首条提示去掉 Workflow 外层包装；Ultracode 下跳过任务前转述用户请求的提示。
 - [x] 3.6 升级 `@anthropic-ai/claude-agent-sdk` 到 0.3.273，修复 Workflow 智能体转录读取。
 - [x] 3.7 测试：原生解析、委派生命周期、Transport 智能体审批、Adapter 挂起/作答/汇总/取消、子线程首条提示。
 

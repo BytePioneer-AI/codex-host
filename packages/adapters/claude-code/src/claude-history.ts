@@ -81,6 +81,7 @@ function displayedUserText(text: string): string {
 
 const WORKFLOW_TASK_FRAME = "[Workflow harness \u2014 computed task]";
 const WORKFLOW_TASK_MARKER = "The computed task text follows:\n";
+const WORKFLOW_REQUEST_FRAME = "[Workflow harness \u2014 user request]";
 
 /**
  * A Workflow agent receives its computed task inside a native frame that indents every
@@ -183,6 +184,24 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
 
 function isHumanUser(message: ClaudeHistoryMessage): boolean {
   return visibleUserTextParts(message).length > 0;
+}
+
+/**
+ * Ultracode relays the user request that triggered a Workflow ahead of the agent's computed
+ * task. The parent Thread already shows that request, so the agent's Thread starts at the task.
+ */
+function isWorkflowRequestRelay(
+  message: ClaudeHistoryMessage,
+  next: ClaudeHistoryMessage | undefined,
+): boolean {
+  const parts = visibleUserTextParts(message);
+  if (parts.length === 0 || !parts.every((part) => part.startsWith(WORKFLOW_REQUEST_FRAME))) {
+    return false;
+  }
+  return (
+    next !== undefined &&
+    visibleUserTextParts(next).some((part) => part.startsWith(WORKFLOW_TASK_FRAME))
+  );
 }
 
 function turnOutcome(messages: ClaudeHistoryMessage[]): HistoricalTurnOutcome {
@@ -486,6 +505,10 @@ export function mapClaudeSubagentSnapshot(
     if (!first) break;
     const user = isHumanUser(first) ? first : null;
     if (!user && turns.length > 0) {
+      index += 1;
+      continue;
+    }
+    if (user && turns.length === 0 && isWorkflowRequestRelay(user, messages[index + 1])) {
       index += 1;
       continue;
     }

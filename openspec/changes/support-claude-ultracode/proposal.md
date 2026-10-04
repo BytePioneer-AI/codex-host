@@ -24,7 +24,7 @@ Claude Code 从 2.1.154 起提供会话级的 Ultracode：开启后 Claude 会�
 **Workflow 子智能体显示**
 
 - 一次 Workflow 运行投影为一个子智能体委派项（Codex 协作智能体卡片），卡片说明取 Workflow 的描述。
-- 根据 Claude Code 发出的 `task_progress.workflow_progress`，把每个 Workflow 智能体投影为卡片中的一个子智能体：标签、阶段（或智能体类型）、模型、状态（排队/运行/完成/失败）、结果或错误摘要；拿到原生 `agentId` 后可点开为只读子线程，首条提示显示去掉 Workflow 外层包装后的任务原文。
+- 根据 Claude Code 发出的 `task_progress.workflow_progress`，把每个 Workflow 智能体投影为卡片中的一个子智能体：标签、阶段（或智能体类型）、模型、状态（排队/运行/完成/失败）、结果或错误摘要；拿到原生 `agentId` 后可点开为只读子线程，首条提示显示去掉 Workflow 外层包装后的任务原文（Ultracode 下任务前转述的用户请求不重复显示）。
 - 智能体状态变化或有新的工具活动时刷新已打开的子线程。
 - Workflow 运行期间按现有后台子智能体规则占用当前回合，Workflow 结束且 Claude 给出汇总后回合才完成。
 - 智能体发起的工具审批在主回合结束后仍可作答，标题带智能体标签；回合结束时未作答的审批被拒绝。

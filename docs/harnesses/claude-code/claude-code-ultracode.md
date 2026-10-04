@@ -48,7 +48,7 @@ Ultracode 下（以及提示中出现 "ultracode" 关键词时），Claude 会�
 - `packages/adapters/claude-code/src/native-message.ts`：识别 `Workflow` 工具、`local_workflow` 任务帧与 SDK 未公开的 `task_progress.workflow_progress`。主回合结束后的进度帧由新的累积器处理，带 `workflow_progress` 的帧自带身份，其余按调用 ID 交给 Adapter 匹配。
 - `packages/adapters/claude-code/src/workflow-lifecycle.ts`：一次运行对应一个子智能体委派项。智能体按序号维护，`subagentId` 为"调用 ID:序号"，拿到原生 `agentId` 后成为 `nativeSubagentId`，Host 据此注册子线程。后台运行时委派项保持打开，由 `task_notification` 结束。
 - `packages/adapters/claude-code/src/claude-code-adapter.ts`：错误映射；后台运行按现有后台子智能体规则挂起回合；取消时停止并确认本回合的后台子智能体与 Workflow，等待续写静默后结束回合，停止未确认时关闭进程；挂起时保留智能体审批。
-- `packages/adapters/claude-code/src/claude-history.ts`：子线程首条提示去掉 "[Workflow harness — computed task]" 外层包装与缩进；无法识别时原样显示。
+- `packages/adapters/claude-code/src/claude-history.ts`：子线程首条提示去掉 "[Workflow harness — computed task]" 外层包装与缩进；无法识别时原样显示。Ultracode 下任务前那条转述用户请求的 "[Workflow harness — user request]" 提示不显示。
 
 子线程转录通过官方 `getSubagentMessages()` 读取，路径为 `<session>/subagents/workflows/<runId>/agent-<agentId>.jsonl`。SDK 0.3.220 读取这类转录时会在附件记录处断链，只能得到最后几条消息，因此依赖升级到 0.3.273（0.3.259 起修复）。
 

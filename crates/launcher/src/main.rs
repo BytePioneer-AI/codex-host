@@ -502,6 +502,8 @@ fn desktop_controller_command(
 ) -> Command {
     let mut command = Command::new(&options.node);
     command
+        // Keep proxy support without surfacing its experimental API notice.
+        .arg("--disable-warning=UNDICI-EHPA")
         .arg(node_entrypoint_path(&options.desktop_controller))
         .arg("--renderer-cdp-endpoint")
         .arg(&control.renderer_cdp_endpoint)
@@ -1654,6 +1656,7 @@ mod tests {
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             [
+                "--disable-warning=UNDICI-EHPA",
                 "/opt/desktop-controller.mjs",
                 "--renderer-cdp-endpoint",
                 "http://127.0.0.1:43123",
@@ -1985,7 +1988,7 @@ mod tests {
         let command = desktop_controller_command(&options, &runtime_control(), &[]);
 
         assert_eq!(
-            command.get_args().next(),
+            command.get_args().nth(1),
             Some(OsStr::new(r"C:\Program Files\codexhost\controller.mjs")),
         );
     }

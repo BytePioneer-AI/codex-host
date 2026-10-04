@@ -691,11 +691,11 @@ describe("Renderer Composer DOM behavior", () => {
 
     expect(isNativeContextUsageControlCandidate(native)).toBe(true);
     expect(nativeContextUsageControlForComposer(composer)).toBe(native);
-    expect(formatRendererCacheHitRate(99.9)).toBe("CH 99.9%");
+    expect(formatRendererCacheHitRate(99.9)).toBe("99.9%");
     expect(formatRendererCost(0.168)).toBe("$0.168");
-    expect(formatRendererTokenCount(87000)).toBe("87k");
-    expect(formatRendererTokenCount(6700)).toBe("6.7k");
-    expect(formatRendererTokenCount(375000)).toBe("375k");
+    expect(formatRendererTokenCount(87000)).toBe("87K");
+    expect(formatRendererTokenCount(6700)).toBe("6.7K");
+    expect(formatRendererTokenCount(375000)).toBe("375K");
     expect(rendererUsageTriggerMaxWidth()).toBe("min(240px, 30vw)");
   });
 

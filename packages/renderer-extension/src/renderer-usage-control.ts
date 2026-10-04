@@ -33,7 +33,9 @@ interface RendererUsageMessages {
   readonly sessionCacheHit: string;
   readonly outputSpeed: string;
   readonly timeToFirstOutput: string;
+  readonly cacheRead: string;
   readonly cacheReadWrite: string;
+  readonly cacheHitSummary: string;
   readonly sessionGroup: string;
   readonly turnGroup: string;
   readonly tokensGroup: string;
@@ -54,9 +56,11 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   recordedCredits: "Recorded usage",
   latestCacheHit: "Latest cache hit",
   sessionCacheHit: "Average cache hit",
-  outputSpeed: "Output speed",
-  timeToFirstOutput: "Time to first output",
+  outputSpeed: "Output speed (TPS)",
+  timeToFirstOutput: "Time to first token (TTFT)",
+  cacheRead: "Cache read",
   cacheReadWrite: "Cache read / write",
+  cacheHitSummary: "Cache",
   sessionGroup: "Session",
   turnGroup: "Latest turn",
   tokensGroup: "Tokens",
@@ -75,11 +79,13 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   account: "账号",
   context: "上下文",
   recordedCredits: "已记录消耗",
-  latestCacheHit: "最近缓存命中率",
-  sessionCacheHit: "平均缓存命中率",
-  outputSpeed: "输出速度",
-  timeToFirstOutput: "首字延迟",
+  latestCacheHit: "最近缓存命中",
+  sessionCacheHit: "平均缓存命中",
+  outputSpeed: "输出速度（TPS）",
+  timeToFirstOutput: "首 token（TTFT）",
+  cacheRead: "缓存读取",
   cacheReadWrite: "缓存读取 / 写入",
+  cacheHitSummary: "缓存命中",
   sessionGroup: "会话",
   turnGroup: "本轮",
   tokensGroup: "Token",
@@ -90,7 +96,7 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   threadUsage: "对话用量",
   threadUsageDetails: "对话用量详情",
   tokensSummary: "Token",
-  tokensPerSecond: "Token/秒",
+  tokensPerSecond: "tok/s",
 });
 
 export function rendererUsageMessages(locale: RendererSettingsLocale): RendererUsageMessages {
@@ -102,11 +108,12 @@ function decimal(value: number, fractionDigits: number): string {
 }
 
 export function formatRendererCacheHitRate(value: number): string {
-  return `CH ${decimal(value, 1)}%`;
+  return `${decimal(value, 1)}%`;
 }
 
+/** Cents from one dollar up; below that a third digit keeps small costs from reading $0.00. */
 export function formatRendererCost(value: number): string {
-  return `$${value.toFixed(3)}`;
+  return `$${value.toFixed(Math.abs(value) >= 1 ? 2 : 3)}`;
 }
 
 export function formatRendererCredits(value: number): string {
@@ -117,20 +124,25 @@ export function formatRendererTokenRate(
   value: number,
   locale: RendererSettingsLocale = "en",
 ): string {
-  return `${decimal(value, 1)} ${rendererUsageMessages(locale).tokensPerSecond}`;
+  const rate = value >= 100 ? String(Math.round(value)) : decimal(value, 1);
+  return `${rate} ${rendererUsageMessages(locale).tokensPerSecond}`;
 }
 
-export function formatRendererLatency(milliseconds: number): string {
+export function formatRendererLatency(
+  milliseconds: number,
+  locale: RendererSettingsLocale = "en",
+): string {
+  const chinese = locale === "zh-CN";
   return milliseconds < 1_000
-    ? `${Math.round(milliseconds)} ms`
-    : `${decimal(milliseconds / 1_000, 1)} s`;
+    ? `${Math.round(milliseconds)}${chinese ? " 毫秒" : "ms"}`
+    : `${decimal(milliseconds / 1_000, 1)}${chinese ? " 秒" : "s"}`;
 }
 
 export function formatRendererTokenCount(value: number): string {
   const sign = value < 0 ? "-" : "";
   const absolute = Math.abs(value);
   if (absolute < 1_000) return `${sign}${Math.round(absolute)}`;
-  if (absolute < 1_000_000) return `${sign}${decimal(absolute / 1_000, 1)}k`;
+  if (absolute < 1_000_000) return `${sign}${decimal(absolute / 1_000, 1)}K`;
   if (absolute < 1_000_000_000) return `${sign}${decimal(absolute / 1_000_000, 1)}M`;
   return `${sign}${decimal(absolute / 1_000_000_000, 1)}B`;
 }
@@ -396,7 +408,10 @@ function renderDetails(
     turn.push([messages.outputSpeed, formatRendererTokenRate(usage.outputTokensPerSecond, locale)]);
   }
   if (usage?.timeToFirstOutputMs !== undefined) {
-    turn.push([messages.timeToFirstOutput, formatRendererLatency(usage.timeToFirstOutputMs)]);
+    turn.push([
+      messages.timeToFirstOutput,
+      formatRendererLatency(usage.timeToFirstOutputMs, locale),
+    ]);
   }
   addGroup(popover, messages.turnGroup, turn);
 
@@ -409,11 +424,14 @@ function renderDetails(
       `${count(usage.inputTokens)} / ${count(usage.outputTokens)}`,
     ]);
   }
-  if (usage?.cachedInputTokens !== undefined || usage?.cacheWriteInputTokens !== undefined) {
+  // Cache writes appear only when a Harness reports some; many never do.
+  if (usage?.cacheWriteInputTokens !== undefined && usage.cacheWriteInputTokens > 0) {
     tokens.push([
       messages.cacheReadWrite,
       `${count(usage.cachedInputTokens)} / ${count(usage.cacheWriteInputTokens)}`,
     ]);
+  } else if (usage?.cachedInputTokens !== undefined) {
+    tokens.push([messages.cacheRead, count(usage.cachedInputTokens)]);
   }
   if (usage?.reasoningOutputTokens !== undefined) {
     tokens.push([messages.reasoning, formatRendererTokenCount(usage.reasoningOutputTokens)]);
@@ -639,7 +657,9 @@ export function renderRendererUsageControl(
 
   const summary = [
     usage?.totalCredits !== undefined ? formatRendererCredits(usage.totalCredits) : null,
-    cacheHitRatePercent !== undefined ? formatRendererCacheHitRate(cacheHitRatePercent) : null,
+    cacheHitRatePercent !== undefined
+      ? `${messages.cacheHitSummary} ${formatRendererCacheHitRate(cacheHitRatePercent)}`
+      : null,
     outputTokensPerSecond !== undefined
       ? formatRendererTokenRate(outputTokensPerSecond, locale)
       : null,

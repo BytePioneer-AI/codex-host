@@ -58,13 +58,13 @@ PR 维护只做两件事：**明确标题自动标签、CI 结束后更新一条
 
 `ci.yml` 保留四项基线 job，不配置分支保护。为减少重复工作，执行范围如下：
 
-| 检查 | Linux x64 | macOS / Windows / Linux ARM64 |
-| --- | --- | --- |
-| 格式、ESLint、包边界、完整 TypeScript 类型检查（含测试） | 执行 | 不重复执行 |
-| TypeScript 构建、预装插件构建 | 执行 | 执行 |
-| TypeScript 测试 | 全量 | 排除下述仅在 Linux x64 执行的测试，其余全部执行 |
-| Rust Clippy、编译和测试 | 执行 | 执行 |
-| Linux npm 安装包 smoke | 执行 | ARM64 执行；macOS / Windows 不适用 |
+| 检查 | Linux x64 | macOS / Windows | Linux ARM64 |
+| --- | --- | --- | --- |
+| 格式、ESLint、包边界、完整 TypeScript 类型检查（含测试） | 执行 | 不重复执行 | 不重复执行 |
+| TypeScript 构建、预装插件构建 | 执行 | 执行 | 由安装包 smoke 构建 |
+| TypeScript 测试 | 全量 | 平台敏感文件，另排除下述测试 | 不重复执行 |
+| Rust Clippy、编译和测试 | 执行 | 执行 | 执行 |
+| Linux npm 安装包 smoke | 执行 | 不适用 | 执行 |
 
 以下测试仅在 Linux x64 执行，不在其他三个平台重复运行：
 
@@ -73,7 +73,9 @@ PR 维护只做两件事：**明确标题自动标签、CI 结束后更新一条
 - `packages/renderer-extension/test/**`：浏览器逻辑、模拟 DOM 和显式模拟的平台信息，不是真实 Desktop UI 验证。
 - `tools/gate-claude-code/run.test.mjs`：入口测试会嵌套启动 Vitest，再次执行已被全量套件包含的 Gate 测试；其余 Gate 测试仍跨平台执行。
 
-其余测试继续保留文件系统、进程、路径、锁、SQLite、插件加载及发行产物的跨平台回归覆盖，Linux ARM64 不以安装包 smoke 替代这些测试。各平台的 TypeScript 构建仍会检查生产代码类型；Rust 格式只在 Linux x64 的 `format:check` 中检查一次，各平台继续执行完整 Clippy 和 Rust 测试。
+macOS 和 Windows 使用 `CODEXHOST_TEST_SCOPE=platform`，由 `tests/vitest.config.js` 的既有源码规则筛选涉及文件系统、进程、路径、环境变量等平台行为的测试文件；这是保守的文本筛选，不是完整依赖分析。纯逻辑测试保留在 Linux x64，不删除测试文件。Linux ARM64 不再执行 TypeScript 单测，保留 Rust 和真实 npm 安装包验证；因此不再单独覆盖 ARM64 上的 TS 会话、锁和持久化行为。各平台的 TypeScript 构建仍会检查生产代码类型；Rust 格式只在 Linux x64 的 `format:check` 中检查一次，各平台继续执行完整 Clippy 和 Rust 测试。
+
+仅修改 `docs/**` 或 Markdown 文件的 PR 不触发 CI；没有新的 CI 运行时，维护自动化不会发布新的通过评论。这种路径过滤不适用于要求每个 PR 都产生 CI check 的分支保护，启用此类保护前须调整。`main push` 不做路径过滤，继续为确切发布 SHA 提供完整证据。
 
 CI 使用全新 runner，且不持久化 Cargo `target` 目录，因此设置 `CARGO_INCREMENTAL=0`，不生成跨次编译使用的增量状态；Cargo 在同一 job 内仍可复用已构建且未变化的依赖产物。通过 `CARGO_PROFILE_DEV_DEBUG=0` 和 `CARGO_PROFILE_TEST_DEBUG=0` 关闭 Rust dev/test 编译的调试符号，减少编译、链接和产物开销；默认调试断言和溢出检查保持开启，但堆栈的源码定位信息会减少。不修改本地 Cargo 配置或 release profile，也不改变发布工作流。固定版本 npm 的安装和 `npm ci` 使用 `--prefer-offline` 优先利用现有 npm 缓存，缓存缺失时仍联网获取；不改变锁文件约束，也不关闭依赖审计。
 
@@ -84,15 +86,16 @@ CI 使用全新 runner，且不持久化 Cargo `target` 目录，因此设置 `C
 ```bash
 # Linux x64：构建并运行完整测试
 npm run test:typescript
-# 其他平台：构建并排除仅在 Linux x64 执行的测试
-npm run test:typescript -- \
+# macOS / Windows：筛选平台敏感文件，另排除 Linux x64 专属测试
+# Windows PowerShell 先执行 $env:CODEXHOST_TEST_SCOPE = 'platform'
+CODEXHOST_TEST_SCOPE=platform npm run test:typescript -- \
   --exclude 'packages/repository-automation/test/**' \
   --exclude 'packages/shared-contracts/test/**' \
   --exclude 'packages/renderer-extension/test/**' \
   --exclude 'tools/gate-claude-code/run.test.mjs'
 ```
 
-工作流将格式、Lint、类型检查、TypeScript 和 Rust 分为独立 step，便于观察瓶颈。修改执行范围后的实际耗时以 Actions 运行结果为准。
+工作流将格式、Lint、类型检查、TypeScript 和 Rust 分为独立 step，便于观察瓶颈。Linux 两个平台的安装包 smoke 在依赖安装成功且任务未取消时，即使前面的检查失败仍会执行；复用当前 runner，不新增重复安装和构建的 job，也不掩盖前面的失败。修改执行范围后的实际耗时以 Actions 运行结果为准。
 
 `release-packages.yml` 的发布校验继续保留，不属于 PR 评论功能：
 

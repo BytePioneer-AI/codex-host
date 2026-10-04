@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   push:
     branches:
       - main
@@ -56,6 +59,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
+        id: dependencies
         run: npm ci --prefer-offline
 
       - name: Check formatting
@@ -75,12 +79,12 @@ jobs:
         run: npm run test:typescript
 
       # Linux x64 covers governance, browser/contracts, and the nested Gate runner test.
-      # Windows runs only platform-sensitive files (see tests/vitest.config.js);
-      # pure-logic files are covered by the Linux and macOS lanes.
+      # Secondary OS lanes run only platform-sensitive files (see tests/vitest.config.js);
+      # Linux x64 covers platform-independent logic.
       - name: Test TypeScript (cross-platform)
         if: runner.os != 'Linux'
         env:
-          CODEXHOST_TEST_SCOPE: ${{ runner.os == 'Windows' && 'platform' || '' }}
+          CODEXHOST_TEST_SCOPE: platform
         run: >
           npm run test:typescript --
           --exclude 'packages/repository-automation/test/**'
@@ -95,8 +99,9 @@ jobs:
           --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools
           -- -D warnings && npm run test:rust
 
+      # Keep packaging evidence even when an unrelated check fails; reuse this runner.
       - name: Smoke-test Linux npm package
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
         run: >
           node scripts/release/smoke-npm-package.mjs
           --target linux-x64
@@ -130,16 +135,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
+        id: dependencies
         run: npm ci --prefer-offline
 
-      # Keep the same cross-platform coverage as macOS and Windows.
-      - name: Test TypeScript (cross-platform)
-        run: >
-          npm run test:typescript --
-          --exclude 'packages/repository-automation/test/**'
-          --exclude 'packages/shared-contracts/test/**'
-          --exclude 'packages/renderer-extension/test/**'
-          --exclude 'tools/gate-claude-code/run.test.mjs'
+      # Linux x64 owns TS tests; ARM64 verifies native code and the installed package.
 
       - name: Check Rust
         run: >
@@ -148,6 +147,7 @@ jobs:
           -- -D warnings && npm run test:rust
 
       - name: Smoke-test Linux ARM64 npm package
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: >
           node scripts/release/smoke-npm-package.mjs
           --target linux-arm64

@@ -49,6 +49,8 @@ External Harness 的用量当前由各 Adapter 在 `HostUsage` 快照中自行�
 - 缓存字段：已知为零 MUST 填 `0`；缺失表示未知。未知时依赖缓存的费用与平均缓存命中率不显示，不按零处理。
 - 计时：Adapter 把同一原生请求的首个推理/正文输出事件与其完成事件关联（如 Pi 同一 message 的 `message_update` 与 `message_end`），给出 `outputStartedAtMs`、`completedAtMs`；无法可靠关联时省略。
 - 子代理的原生请求不作为父会话记录发布，父会话费用不包含子代理。
+- 不属于对话消息、且原生不给出模型的后台请求（如 OpenCode v2 `session.usage.recorded` 的标题生成与压缩）不发布记录，不视为缺口；会话费用因此不含这部分。
+- 原生失败请求：带 Token 时照常发布；原生未给出 Token 时视为没有用量，不视为缺口。
 
 备选“Host 对 `HostUsage` 累计值做差”无法确定归属，否决。
 

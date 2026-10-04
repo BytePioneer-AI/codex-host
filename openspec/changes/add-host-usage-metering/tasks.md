@@ -18,7 +18,7 @@
 ## 4. Adapters（第一批：Pi、OMP、OpenCode v2）
 
 - [ ] 4.1 Pi、OMP：每条 assistant message 发布请求记录（加回缓存；消息 ID 作 `requestId`；按同一 message 的事件给出计时；排除子代理）；打开时回放原生历史全部请求（含所有分支），发布 `usage.history`。
-- [ ] 4.2 OpenCode v2（`packages/adapters/opencode/src/v2`）：每个 assistant message 发布记录（`session.step.ended` 的 tokens，加回缓存、加入思考；消息 ID 作 `requestId`；模型取 `step.started` 的 `model`）；打开时按 `message.list` 回放全部请求并发布 `usage.history`。v1 协议不接入。
+- [ ] 4.2 OpenCode v2（`packages/adapters/opencode/src/v2`）：每个 assistant message 发布记录（`session.step.ended` 的 tokens，加回缓存、加入思考；消息 ID 作 `requestId`；模型取 `step.started` 的 `model`）；打开时按 `message.list` 回放全部请求并发布 `usage.history`。标题/压缩的 `session.usage.recorded` 不计入；失败步骤仅带 Token 时计入。v1 协议不接入。
 - [ ] 4.3 以合成数据覆盖：创建、恢复、分叉、换模型、重复事件、历史不完整。
 
 ## 5. 界面与文档

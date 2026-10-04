@@ -127,7 +127,7 @@ export function createAccountsSettingsPage(
         void credentialImports.refresh();
       });
       search.addEventListener("input", () => render());
-      toolbar.append(connected, searchWrapper, displayControls, privacyToggle, refreshUsage);
+      toolbar.append(connected, privacyToggle, searchWrapper, displayControls, refreshUsage);
       const list = document.createElement("div");
       list.className = "settings-account-list";
       const { table, body, updateDisplay } = createAccountsTable(document, messages);

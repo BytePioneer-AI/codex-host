@@ -68,6 +68,15 @@
   color: var(--settings-muted);
   font-variant-numeric: tabular-nums;
 }
+/* Email privacy belongs to the identity column, so it sits beside the account count on the
+   left; quota controls (used/remaining, refresh) stay together on the right. */
+.settings-account-privacy-toggle {
+  margin-left: -8px;
+}
+.settings-account-privacy-toggle[aria-pressed="true"] {
+  color: var(--settings-text);
+  background: var(--settings-active);
+}
 .settings-account-search {
   display: flex;
   align-items: center;

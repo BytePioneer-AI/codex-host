@@ -99,7 +99,7 @@ export function optionalOmpStateContextUsage(
 /** A finished native assistant message observed on the RPC stream. */
 export interface OmpUsageObservation {
   message: Record<string, unknown>;
-  /** Adapter receive time of this assistant message's native start event. */
+  /** Adapter receive time of this message's first thinking, text or tool-call event. */
   startedAtMs: number | null;
   completedAtMs: number;
 }

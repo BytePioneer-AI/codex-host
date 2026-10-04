@@ -153,6 +153,11 @@ class FakePiRpcProcess extends EventEmitter {
     this.#output({ type: "agent_settled" });
   }
 
+  /** Writes one raw RPC frame, for timing tests that interleave real waits. */
+  emitFrame(value: unknown): void {
+    this.#output(value);
+  }
+
   emitAutonomousStart(responseId = "autonomous-pending"): void {
     this.#isStreaming = true;
     const message = {
@@ -988,6 +993,35 @@ describe("Pi RPC Turn aggregation", () => {
       expect(observation?.completedAtMs).toBeGreaterThanOrEqual(
         observation?.startedAtMs ?? Infinity,
       );
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("times a request from its first output token, excluding prefill", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const observations: PiUsageObservation[] = [];
+    rpc.setUsageHandler((observation) => observations.push(observation));
+    rpc.setAutonomousTurnHandler(() => undefined);
+    await rpc.start();
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    try {
+      const message = { role: "assistant", responseId: "tool-only", content: [] };
+      fakeProcess().emitFrame({ type: "message_start", message });
+      await sleep(120);
+      // A tool-call-only reply still starts generating at its tool-call block.
+      fakeProcess().emitFrame({
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+        message,
+      });
+      await sleep(20);
+      fakeProcess().emitFrame({ type: "message_end", message });
+      fakeProcess().emitAgentSettled();
+      await waitFor(() => observations.length === 1);
+      const [observation] = observations;
+      if (!observation?.startedAtMs) throw new Error("Request timing is missing");
+      expect(observation.completedAtMs - observation.startedAtMs).toBeLessThan(100);
     } finally {
       await rpc.close();
     }

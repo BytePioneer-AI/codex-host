@@ -185,7 +185,7 @@ export interface HostUsageRequest {
   cacheWriteInputTokens?: number;
   outputTokens: number;
   reasoningOutputTokens?: number;
-  /** Unix ms when this request's native stream started and completed; both or neither. */
+  /** Unix ms of this request's first output token and of its completion; both or neither. */
   startedAtMs?: number;
   completedAtMs?: number;
 }

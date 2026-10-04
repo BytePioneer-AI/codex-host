@@ -566,11 +566,22 @@ export class PiRpcSession {
 
   /** Every finished assistant message is one model request, with or without an active Turn. */
   #observeUsage(value: Record<string, unknown>): void {
-    // The request starts when the native stream opens its assistant message, so hidden
-    // reasoning and the output that follows both fall inside the request's duration.
     if (value.type === "message_start") {
-      this.#usageRequestStartedAtMs =
-        isRecord(value.message) && value.message.role === "assistant" ? Date.now() : null;
+      this.#usageRequestStartedAtMs = null;
+      return;
+    }
+    // Generation starts at the first output token: the first thinking, text or tool-call block
+    // or delta. Prefill before it is excluded, as in DeepSeek dsh's decode time.
+    if (value.type === "message_update") {
+      const event = value.assistantMessageEvent;
+      if (
+        this.#usageRequestStartedAtMs === null &&
+        isRecord(event) &&
+        typeof event.type === "string" &&
+        /^(text|thinking|reasoning|thought|toolcall)_(start|delta)$/u.test(event.type)
+      ) {
+        this.#usageRequestStartedAtMs = Date.now();
+      }
       return;
     }
     if (value.type === "message_end" && isRecord(value.message)) {

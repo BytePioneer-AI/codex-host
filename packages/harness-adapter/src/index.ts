@@ -10,8 +10,8 @@ export { validateHostInteractionResponse } from "./interaction.js";
 export { HarnessOutputChannel } from "./output-channel.js";
 export { sanitizeDiagnosticTail, filterAmbientNodeWarnings } from "./diagnostics.js";
 export { validateHostQuestionResponse } from "./question.js";
-export { parseHostUsage } from "./usage.js";
-export type { HostUsage } from "./usage.js";
+export { hostDerivedUsageFields, parseHostUsage, parseHostUsageRequest } from "./usage.js";
+export type { HostUsage, HostUsageCostSource, HostUsageRequest } from "./usage.js";
 export type {
   AutonomousTurnStartedEvent,
   CreateSessionInput,
@@ -93,6 +93,8 @@ export type {
   SessionStateChangedEvent,
   SessionUsageChangedEvent,
   SubagentStateChangedEvent,
+  UsageHistoryEvent,
+  UsageRequestEvent,
   SubagentTranscriptChangedEvent,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,

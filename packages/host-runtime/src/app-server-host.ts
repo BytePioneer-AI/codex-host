@@ -4800,6 +4800,9 @@ export class AppServerHost {
       });
       return;
     }
+    if (event.type === "usage.request" || event.type === "usage.history") {
+      return;
+    }
     if (event.type === "subagent.transcript.changed") {
       const nativeSubagentId = event.nativeSubagentId;
       const record = (await this.#repository.list()).find(

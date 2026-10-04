@@ -25,6 +25,9 @@ export const threadUsageSnapshotSchema = z
     planFiveHourResetsAtUnix: nonNegativeSafeIntegerSchema.optional(),
     planSevenDayUsedPercent: cacheHitRatePercentSchema.optional(),
     planSevenDayResetsAtUnix: nonNegativeSafeIntegerSchema.optional(),
+    sessionCacheHitRatePercent: cacheHitRatePercentSchema.optional(),
+    timeToFirstOutputMs: nonNegativeSafeIntegerSchema.optional(),
+    costSource: z.enum(["publicPrice", "native"]).optional(),
   })
   .strict()
   .superRefine((usage, context) => {
@@ -45,6 +48,13 @@ export const threadUsageSnapshotSchema = z
         code: "custom",
         message: "Thread Usage contextWindowTokens must be greater than zero",
         path: ["contextWindowTokens"],
+      });
+    }
+    if (usage.costSource !== undefined && usage.totalCostUsd === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Thread Usage costSource must be provided with totalCostUsd",
+        path: ["costSource"],
       });
     }
     if (

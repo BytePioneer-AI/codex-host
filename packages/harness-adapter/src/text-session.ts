@@ -20,7 +20,7 @@ import type {
   NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import type { HostUsage } from "./usage.js";
+import type { HostUsage, HostUsageRequest } from "./usage.js";
 import type { HarnessCredentialExport, HarnessCredentialImports } from "./credential-imports.js";
 
 export type {
@@ -438,6 +438,21 @@ export interface SessionUsageChangedEvent {
   observedForTurnId?: HostTurnId;
 }
 
+/** One native model request's usage; Host derives cost, cache and speed metrics from these. */
+export interface UsageRequestEvent {
+  type: "usage.request";
+  request: HostUsageRequest;
+}
+
+/**
+ * Sent after replaying native history on every open, and again with `complete: false` when a
+ * running request's usage is missing. The first one switches the Thread to Host metering.
+ */
+export interface UsageHistoryEvent {
+  type: "usage.history";
+  complete: boolean;
+}
+
 export interface SubagentStateChangedEvent {
   type: "subagent.state.changed";
   nativeSubagentId: string;
@@ -512,6 +527,8 @@ export interface SessionFaultedEvent {
 export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
+  | UsageRequestEvent
+  | UsageHistoryEvent
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent

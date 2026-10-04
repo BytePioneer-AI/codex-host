@@ -112,4 +112,15 @@ describe("Thread Usage contracts", () => {
   ])("rejects invalid plan-window snapshots: %#", (usage) => {
     expect(threadUsageSnapshotSchema.safeParse(usage).success).toBe(false);
   });
+
+  it("accepts Host-derived metering fields", () => {
+    const usage = {
+      totalCostUsd: 1.25,
+      costSource: "publicPrice",
+      sessionCacheHitRatePercent: 62.5,
+      timeToFirstOutputMs: 840,
+    };
+    expect(threadUsageSnapshotSchema.parse(usage)).toEqual(usage);
+    expect(threadUsageSnapshotSchema.safeParse({ costSource: "native" }).success).toBe(false);
+  });
 });

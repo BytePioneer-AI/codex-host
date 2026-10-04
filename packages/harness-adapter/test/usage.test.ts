@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseHostUsage } from "../src/index.js";
+import { parseHostUsage, parseHostUsageRequest } from "../src/index.js";
 
 describe("Harness Usage", () => {
   it("accepts fractional native token rates without relaxing token counts", () => {
@@ -86,5 +86,54 @@ describe("Harness Usage", () => {
     { planFiveHourResetsAtUnix: 1.5, planFiveHourUsedPercent: 45 },
   ])("rejects invalid plan-window snapshots %#", (input) => {
     expect(() => parseHostUsage(input)).toThrow();
+  });
+
+  it("accepts Host-derived fields and ties costSource to a cost", () => {
+    const usage = {
+      totalCostUsd: 0.5,
+      costSource: "publicPrice",
+      sessionCacheHitRatePercent: 80,
+      timeToFirstOutputMs: 1200,
+    };
+    expect(parseHostUsage(usage)).toEqual(usage);
+    expect(() => parseHostUsage({ costSource: "native" })).toThrow();
+    expect(() => parseHostUsage({ totalCostUsd: 1, costSource: "guess" })).toThrow();
+    expect(() => parseHostUsage({ sessionCacheHitRatePercent: 101 })).toThrow();
+    expect(() => parseHostUsage({ timeToFirstOutputMs: 1.5 })).toThrow();
+  });
+});
+
+describe("Harness Usage request", () => {
+  const base = { requestId: "msg-1", inputTokens: 100, outputTokens: 20 };
+
+  it("accepts a unified-convention request with explicit zero cache", () => {
+    const request = {
+      ...base,
+      historical: true,
+      model: "claude-sonnet-4-5",
+      provider: "anthropic",
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      reasoningOutputTokens: 5,
+      outputStartedAtMs: 1_000,
+      completedAtMs: 2_000,
+    };
+    expect(parseHostUsageRequest(request)).toEqual(request);
+    expect(parseHostUsageRequest(base)).toEqual(base);
+  });
+
+  it.each([
+    { ...base, requestId: "" },
+    { ...base, inputTokens: undefined },
+    { ...base, outputTokens: -1 },
+    { ...base, cachedInputTokens: 80, cacheWriteInputTokens: 30 },
+    { ...base, reasoningOutputTokens: 21 },
+    { ...base, outputStartedAtMs: 1 },
+    { ...base, outputStartedAtMs: 2, completedAtMs: 1 },
+    { ...base, model: "" },
+    { ...base, historical: "yes" },
+    { ...base, turnId: "turn-1" },
+  ])("rejects invalid requests: %#", (request) => {
+    expect(() => parseHostUsageRequest(request)).toThrow();
   });
 });

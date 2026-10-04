@@ -41,7 +41,7 @@ External Harness 的用量当前由各 Adapter 在 `HostUsage` 快照中自行�
 
 ### D2. 请求记录与归属
 
-`usage.request { requestId, turnId?, historical?, model?, provider?, inputTokens, cachedInputTokens?, cacheWriteInputTokens?, outputTokens, reasoningOutputTokens?, outputStartedAtMs?, completedAtMs? }`：
+`usage.request { request: { requestId, historical?, model?, provider?, inputTokens, cachedInputTokens?, cacheWriteInputTokens?, outputTokens, reasoningOutputTokens?, outputStartedAtMs?, completedAtMs? } }`（所属 Turn 由 Host 按到达时的活动 Turn 判定）：
 
 - `requestId` 必填，在原生会话内稳定（如原生消息 ID）。Host 在 Thread 内按 `requestId` 去重，历史回放与实时事件重叠时只计一次。
 - `model` 为原生实际模型 ID（非 UI 别名、非 `HarnessModelRef` 编码）。`provider` 仅当 Adapter 能给出标准服务商标识时填写；用户自定义的服务商别名（如 Pi 的 `codex-pi`）不填。

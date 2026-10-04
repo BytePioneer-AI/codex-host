@@ -714,7 +714,7 @@ export function historyUsage(contents: string): HostUsage | null {
           typeof value === "number" && Number.isFinite(value) && value >= 0,
       )
     ) {
-      result[host as keyof HostUsage] = values.reduce((sum, value) => sum + value, 0);
+      result[host as keyof typeof fields] = values.reduce((sum, value) => sum + value, 0);
     }
   }
   return Object.keys(result).length ? result : null;

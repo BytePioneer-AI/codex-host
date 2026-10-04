@@ -17,7 +17,22 @@ export interface HostUsage {
   planFiveHourResetsAtUnix?: number;
   planSevenDayUsedPercent?: number;
   planSevenDayResetsAtUnix?: number;
+  /** Host-derived: cumulative cache reads / cumulative input across the Session's requests. */
+  sessionCacheHitRatePercent?: number;
+  /** Host-derived: latest Turn start to its first reasoning or text output, as observed by Host. */
+  timeToFirstOutputMs?: number;
+  /** How `totalCostUsd` was obtained; present only with `totalCostUsd`. */
+  costSource?: HostUsageCostSource;
 }
+
+export type HostUsageCostSource = "publicPrice" | "native";
+
+/** Fields only Host metering may publish; Adapter snapshots carrying them are stripped by Host. */
+export const hostDerivedUsageFields = [
+  "sessionCacheHitRatePercent",
+  "timeToFirstOutputMs",
+  "costSource",
+] as const satisfies ReadonlyArray<keyof HostUsage>;
 
 const tokenFields = [
   "inputTokens",
@@ -33,10 +48,12 @@ const tokenFields = [
 const safeIntegerFields = [
   "planFiveHourResetsAtUnix",
   "planSevenDayResetsAtUnix",
+  "timeToFirstOutputMs",
 ] as const satisfies ReadonlyArray<keyof HostUsage>;
 
 const percentFields = [
   "cacheHitRatePercent",
+  "sessionCacheHitRatePercent",
   "planFiveHourUsedPercent",
   "planSevenDayUsedPercent",
 ] as const satisfies ReadonlyArray<keyof HostUsage>;
@@ -49,6 +66,7 @@ const usageFields = new Set<keyof HostUsage>([
   "totalCredits",
   "contextUsagePercent",
   "outputTokensPerSecond",
+  "costSource",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -137,5 +155,109 @@ export function parseHostUsage(value: unknown): HostUsage {
       "Harness Usage 'planSevenDayResetsAtUnix' must be provided with 'planSevenDayUsedPercent'",
     );
   }
+  if (value.costSource !== undefined) {
+    if (value.costSource !== "publicPrice" && value.costSource !== "native") {
+      throw new Error("Harness Usage 'costSource' must be 'publicPrice' or 'native'");
+    }
+    if (value.totalCostUsd === undefined) {
+      throw new Error("Harness Usage 'costSource' must be provided with 'totalCostUsd'");
+    }
+  }
   return { ...value } as HostUsage;
+}
+
+/**
+ * One native model request in the unified convention: `inputTokens` includes uncached input,
+ * cache reads and cache writes; `outputTokens` includes reasoning. A known-zero cache field is
+ * an explicit 0; an absent cache field means unknown.
+ */
+export interface HostUsageRequest {
+  /** Stable within the native Session, such as the native message ID. */
+  requestId: string;
+  /** True when replayed from native history on open. */
+  historical?: boolean;
+  /** Native model ID actually used, never a UI alias or HarnessModelRef encoding. */
+  model?: string;
+  /** Standard models.dev provider ID; omitted for user-defined provider aliases. */
+  provider?: string;
+  inputTokens: number;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  outputTokens: number;
+  reasoningOutputTokens?: number;
+  /** Unix ms of this request's first output and of its completion; both or neither. */
+  outputStartedAtMs?: number;
+  completedAtMs?: number;
+}
+
+const requestTokenFields = [
+  "inputTokens",
+  "cachedInputTokens",
+  "cacheWriteInputTokens",
+  "outputTokens",
+  "reasoningOutputTokens",
+  "outputStartedAtMs",
+  "completedAtMs",
+] as const satisfies ReadonlyArray<keyof HostUsageRequest>;
+
+const requestFields = new Set<string>([
+  ...requestTokenFields,
+  "requestId",
+  "historical",
+  "model",
+  "provider",
+]);
+
+export function parseHostUsageRequest(value: unknown): HostUsageRequest {
+  if (!isRecord(value)) throw new Error("Harness Usage request must be an object");
+  for (const key of Object.keys(value)) {
+    if (!requestFields.has(key)) {
+      throw new Error(`Harness Usage request contains unknown field '${key}'`);
+    }
+  }
+  if (typeof value.requestId !== "string" || value.requestId.length === 0) {
+    throw new Error("Harness Usage request 'requestId' must be a non-empty string");
+  }
+  for (const field of ["model", "provider"] as const) {
+    const candidate = value[field];
+    if (candidate !== undefined && (typeof candidate !== "string" || candidate.length === 0)) {
+      throw new Error(`Harness Usage request '${field}' must be a non-empty string`);
+    }
+  }
+  if (value.historical !== undefined && typeof value.historical !== "boolean") {
+    throw new Error("Harness Usage request 'historical' must be a boolean");
+  }
+  for (const field of requestTokenFields) {
+    const candidate = value[field];
+    if (
+      candidate !== undefined &&
+      (typeof candidate !== "number" || !Number.isSafeInteger(candidate) || candidate < 0)
+    ) {
+      throw new Error(`Harness Usage request '${field}' must be a non-negative safe integer`);
+    }
+  }
+  if (value.inputTokens === undefined || value.outputTokens === undefined) {
+    throw new Error("Harness Usage request must contain 'inputTokens' and 'outputTokens'");
+  }
+  const request = value as unknown as HostUsageRequest;
+  if (
+    (request.cachedInputTokens ?? 0) + (request.cacheWriteInputTokens ?? 0) >
+    request.inputTokens
+  ) {
+    throw new Error("Harness Usage request cache Tokens must not exceed 'inputTokens'");
+  }
+  if ((request.reasoningOutputTokens ?? 0) > request.outputTokens) {
+    throw new Error("Harness Usage request 'reasoningOutputTokens' must not exceed 'outputTokens'");
+  }
+  if ((request.outputStartedAtMs === undefined) !== (request.completedAtMs === undefined)) {
+    throw new Error("Harness Usage request timing fields must be provided together");
+  }
+  if (
+    request.outputStartedAtMs !== undefined &&
+    request.completedAtMs !== undefined &&
+    request.completedAtMs < request.outputStartedAtMs
+  ) {
+    throw new Error("Harness Usage request 'completedAtMs' must not precede 'outputStartedAtMs'");
+  }
+  return { ...request };
 }

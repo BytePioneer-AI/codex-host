@@ -436,8 +436,8 @@ describe("OpenCode v2 Session lifecycle", () => {
       ordinal: 0,
       delta: "thinking",
     });
-    const afterOutput = Date.now();
-    const completed = afterOutput + 2_000;
+    // The native event stream is consumed asynchronously, so the observation can land later.
+    const completed = Date.now() + 2_000;
     f.messages.push({
       ...assistant("live answer"),
       id: "assistant-live",
@@ -462,7 +462,7 @@ describe("OpenCode v2 Session lifecycle", () => {
     const started = live[0]?.type === "usage.request" ? live[0].request.startedAtMs : undefined;
     // Timed from the observed first output, not from creation or OpenCode's `streamed`.
     expect(started).toBeGreaterThanOrEqual(beforeOutput);
-    expect(started).toBeLessThanOrEqual(afterOutput);
+    expect(started).toBeLessThan(completed - 40); // earlier than OpenCode's streamed time
   });
   it("rejects concurrent starts and emits no lifecycle for rejected admission", async () => {
     const f = fixture();

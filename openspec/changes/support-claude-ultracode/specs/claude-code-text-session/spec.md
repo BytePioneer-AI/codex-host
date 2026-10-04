@@ -127,9 +127,40 @@ Claude Adapter SHALL map each Root `Workflow` Tool Use to one Host Subagent Dele
 - **WHEN** the user cancels while the Root Segment is active
 - **THEN** the native interrupt SHALL stop the Workflow and its Item SHALL settle as cancelled
 - **WHEN** the user cancels a Host Turn held for a launched Workflow
-- **THEN** Claude Adapter SHALL stop the Workflow task through the native task stop control and report its unfinished agents as interrupted
+- **THEN** Claude Adapter SHALL stop the Workflow task as the requirement "Claude cancellation stops the Turn's background work" defines and report its unfinished agents as interrupted
 
 #### Scenario: Workflow approval is requested
 
 - **WHEN** Claude Code requests permission to run a Workflow
 - **THEN** the Approval SHALL show the native display name and the workflow description Claude Code provides, without the script
+
+### Requirement: Claude cancellation stops the Turn's background work
+
+When the user cancels a Host Turn that owns running background Subagents or Workflow runs, Claude Adapter SHALL stop each of them through the native task stop control, in addition to interrupting an active Root Segment, and SHALL complete the Turn only after Claude Code reports each stop. Because Claude Code answers a stopped Subagent's notification on its own, the cancelled Turn SHALL remain until Claude Code stays quiet for the continuation quiescence window, and any Root Segment that starts meanwhile SHALL be interrupted. A stop or interrupt Claude Code does not confirm within the cancellation bound SHALL close the native process, which ends every task it runs.
+
+#### Scenario: User cancels a held Turn
+
+- **WHEN** the user cancels a Host Turn held for background Subagents or a launched Workflow
+- **THEN** the Adapter SHALL stop each running task natively, wait until Claude Code reports each one stopped, mark unfinished Subagents interrupted, and complete the Turn cancelled
+- **AND** agent approvals still pending SHALL close as cancelled, their native requests SHALL be denied, and a later response to them SHALL be rejected as stale
+
+#### Scenario: User cancels during the Root answer while background work runs
+
+- **WHEN** the user cancels while the Root Segment is active and the Turn owns running background tasks
+- **THEN** the Adapter SHALL interrupt the Root Segment and stop the tasks, and the interrupted Root Result SHALL NOT complete the Turn before the stops are confirmed and Claude Code stays quiet
+- **AND** a Root Result that does not prove its interruption SHALL still fail the Turn once the stops are confirmed
+
+#### Scenario: Claude answers the stop
+
+- **WHEN** Claude Code starts a Root Segment while a cancelled Turn waits
+- **THEN** the Adapter SHALL interrupt that Segment, complete its Items with the cancelled Turn, and SHALL NOT surface it as an autonomous Turn
+
+#### Scenario: Claude Code does not confirm a stop
+
+- **WHEN** a native stop or interrupt rejects, times out, or Claude Code still reports the task running when the bound expires
+- **THEN** the Adapter SHALL close the native process, complete the Turn cancelled once shutdown is confirmed, and resume the native Session for the next Turn
+
+#### Scenario: Turn owns no background work
+
+- **WHEN** a cancelled Turn owns no running background task and Claude owes no continuation
+- **THEN** cancellation SHALL keep its existing behavior: a held Turn completes cancelled at once, and an active Root Segment completes with its interrupted Result

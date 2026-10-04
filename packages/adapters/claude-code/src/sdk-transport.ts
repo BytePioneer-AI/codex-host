@@ -813,6 +813,19 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
+  async abortContinuation(): Promise<void> {
+    if (this.#active) return this.abort();
+    const activeQuery = this.#query;
+    if (!activeQuery) throw new Error("Claude SDK transport is not running");
+    this.#idleAccumulator?.requestCancel();
+    try {
+      await this.#stopRequest(activeQuery.interrupt(), INTERRUPT_TIMEOUT_MESSAGE);
+    } catch (error) {
+      await this.close();
+      throw error instanceof Error ? error : new Error(INTERRUPT_TIMEOUT_MESSAGE);
+    }
+  }
+
   /** A user stop must answer: native stop requests share the abort timeout. */
   async #stopRequest(request: Promise<unknown>, timeoutMessage: string): Promise<void> {
     const timeout = rejectAfter(this.#abortTimeoutMs, timeoutMessage);
@@ -1031,6 +1044,33 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   async stopBackgroundTask(taskId: string): Promise<void> {
     if (!this.#query) throw new Error("Claude SDK transport is not running");
     await this.#stopRequest(this.#query.stopTask(taskId), "Claude background task stop timed out");
+  }
+
+  async stopTasks(taskIds: readonly string[]): Promise<void> {
+    const activeQuery = this.#query;
+    if (!activeQuery) throw new Error("Claude SDK transport is not running");
+    const ids = [...new Set(taskIds)];
+    await Promise.all(
+      ids.map(async (taskId) => {
+        try {
+          await this.#stopRequest(
+            activeQuery.stopTask(taskId),
+            "Claude background task stop timed out",
+          );
+        } catch (error) {
+          // The task ended before the stop arrived.
+          if (this.#backgroundTasks.has(taskId)) throw error;
+        }
+      }),
+    );
+    // A control receipt alone is not a task terminal; wait until Claude Code reports each stop.
+    const deadline = Date.now() + this.#abortTimeoutMs;
+    while (ids.some((taskId) => this.#backgroundTasks.has(taskId))) {
+      if (Date.now() >= deadline || this.#query !== activeQuery) {
+        throw new Error("Claude background task stop was not confirmed");
+      }
+      await delay(10);
+    }
   }
 
   async #stopBackgroundTasks(): Promise<void> {

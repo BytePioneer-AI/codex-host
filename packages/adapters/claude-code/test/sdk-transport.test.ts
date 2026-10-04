@@ -2492,6 +2492,124 @@ describe("ClaudeSdkTransport background task stop", () => {
   });
 });
 
+describe("ClaudeSdkTransport confirmed background stops", () => {
+  function liveTasks(fakeQuery: FakeQuery, taskIds: string[]): void {
+    fakeQuery.push({
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: taskIds.map((task_id) => ({ task_id, task_type: "local_agent" })),
+    } as unknown as SDKMessage);
+  }
+
+  function shortTimeoutTransport(value: ReturnType<typeof fixture>) {
+    return new ClaudeSdkTransport({
+      command: process.execPath,
+      cwd: process.cwd(),
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      openMode: "create",
+      permissionMode: "default",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
+      closeTimeoutMs: 20,
+      abortTimeoutMs: 20,
+      onPermissionModeChanged: value.onPermissionModeChanged,
+      onFault: value.onFault,
+      onPlanLimit: value.onPlanLimit,
+      queryFactory: value.queryFactory,
+    });
+  }
+
+  it("resolves once Claude Code reports each stopped task", async () => {
+    const value = fixture();
+    await value.transport.start();
+    try {
+      liveTasks(value.fakeQuery, ["workflow-1", "agent-1"]);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+
+      await value.transport.stopTasks(["workflow-1", "agent-1", "workflow-1"]);
+
+      expect(value.fakeQuery.stopTask.mock.calls).toEqual([["workflow-1"], ["agent-1"]]);
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("accepts a failed stop for a task that already ended", async () => {
+    const value = fixture();
+    value.fakeQuery.stopTask.mockRejectedValueOnce(new Error("No task found with ID: agent-1"));
+    await value.transport.start();
+    try {
+      await expect(value.transport.stopTasks(["agent-1"])).resolves.toBeUndefined();
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("rejects a stop Claude Code acknowledges but does not carry out", async () => {
+    const value = fixture();
+    // The control request succeeds, but the task stays in the native live set.
+    value.fakeQuery.stopTask.mockImplementation(async () => undefined);
+    const transport = shortTimeoutTransport(value);
+    await transport.start();
+    try {
+      liveTasks(value.fakeQuery, ["agent-1"]);
+      await vi.waitFor(() => expect(transport.hasBackgroundTasks()).toBe(true));
+      await expect(transport.stopTasks(["agent-1"])).rejects.toThrow(
+        "Claude background task stop was not confirmed",
+      );
+    } finally {
+      liveTasks(value.fakeQuery, []);
+      await vi.waitFor(() => expect(transport.hasBackgroundTasks()).toBe(false));
+      await transport.close();
+    }
+  });
+
+  it("rejects a failed stop for a task Claude Code still runs", async () => {
+    const value = fixture();
+    value.fakeQuery.stopTask.mockRejectedValueOnce(new Error("stop failed"));
+    await value.transport.start();
+    try {
+      liveTasks(value.fakeQuery, ["agent-1"]);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+      await expect(value.transport.stopTasks(["agent-1"])).rejects.toThrow("stop failed");
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("interrupts a Root continuation that runs after the requested Turn", async () => {
+    const value = fixture();
+    const idleEvents: ClaudeTurnEvent[] = [];
+    const terminals: ClaudeTransportTurnResult[] = [];
+    value.transport.setIdleTurnHandler({
+      onEvent: (event) => idleEvents.push(event),
+      onTerminal: (result) => terminals.push(result),
+    });
+    await value.transport.start();
+    value.transport.setIdleLive(true);
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "init",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    await vi.waitFor(() => expect(idleEvents).toContainEqual({ type: "segment.started" }));
+
+    await value.transport.abortContinuation();
+    expect(value.fakeQuery.interrupt).toHaveBeenCalledOnce();
+    value.fakeQuery.push({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      errors: [],
+      terminal_reason: "aborted_streaming",
+    } as unknown as SDKMessage);
+    await vi.waitFor(() =>
+      expect(terminals).toEqual([{ status: "cancelled", reason: "aborted_streaming" }]),
+    );
+    await value.transport.close();
+  });
+});
+
 describe("ClaudeSdkTransport Ultracode", () => {
   const ultracode = harnessThinkingOptionIdSchema.parse("ultracode");
   const enter = { alwaysThinkingEnabled: true, effortLevel: "xhigh", ultracode: true };

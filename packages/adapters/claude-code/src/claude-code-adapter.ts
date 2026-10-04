@@ -169,6 +169,20 @@ interface RequestUsageRefreshRequest {
   generation: number;
 }
 
+/**
+ * A cancelled Turn that owned background tasks ends only after Claude Code confirms they
+ * stopped and stays quiet: Claude answers a stopped Subagent's notification on its own.
+ */
+interface TurnCancellation {
+  /** Native stops not yet confirmed. */
+  stopping: boolean;
+  /** A Root Segment Claude started during the cancellation is being interrupted. */
+  interrupting: boolean;
+  quiet: ReturnType<typeof setTimeout> | null;
+  /** A Segment Result that did not prove its interruption; the Turn fails once stops end. */
+  failure: HarnessError | null;
+}
+
 interface ActiveTurn {
   command: TurnStartCommand;
   compactionItem: HostContextCompactionItem | null;
@@ -197,6 +211,8 @@ interface ActiveTurn {
   usageTokensCalibrated: boolean;
   usageCostCalibrated: boolean;
   held: boolean;
+  /** Set while a cancelled Turn waits for its background work to stop. */
+  cancellation: TurnCancellation | null;
   /** True while Claude can still produce a native result for the current Root Segment. */
   rootSegmentActive: boolean;
   completion: Promise<void>;
@@ -904,6 +920,7 @@ class ClaudeHarnessSession implements HarnessSession {
       usageTokensCalibrated: false,
       usageCostCalibrated: false,
       held: false,
+      cancellation: null,
       rootSegmentActive: true,
       completion,
       resolveCompletion,
@@ -1041,6 +1058,7 @@ class ClaudeHarnessSession implements HarnessSession {
       usageTokensCalibrated: false,
       usageCostCalibrated: false,
       held: false,
+      cancellation: null,
       rootSegmentActive: true,
       completion,
       resolveCompletion,
@@ -1440,13 +1458,17 @@ class ClaudeHarnessSession implements HarnessSession {
       return { ok: true, value: { cancellationRequested: true } };
     }
     active.cancellationRequested = true;
+    const transport = this.#transport;
+    const taskIds = this.#backgroundTaskIds(active);
+    if (
+      transport &&
+      (taskIds.length > 0 ||
+        (active.held && (active.rootSegmentActive || this.#occupancy.awaitingContinuation)))
+    ) {
+      await this.#cancelBackgroundWork(active, transport, taskIds);
+      return { ok: true, value: { cancellationRequested: true } };
+    }
     if (active.held) {
-      // A Workflow run belongs to this Turn, so cancelling stops it natively. Its stop
-      // notification arrives after the Turn has ended.
-      const transport = this.#transport;
-      for (const taskId of active.workflows.taskIds()) {
-        void transport?.stopBackgroundTask(taskId).catch(() => undefined);
-      }
       this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
       return { ok: true, value: { cancellationRequested: true } };
     }
@@ -1461,6 +1483,88 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     if (this.#active === active) this.#armCancelEscalation(active);
     return { ok: true, value: { cancellationRequested: true } };
+  }
+
+  /** Background Subagents and Workflow runs of this Turn that Claude Code still runs. */
+  #backgroundTaskIds(active: ActiveTurn): string[] {
+    return [...new Set([...active.workflows.taskIds(), ...this.#occupancy.runningTaskIds()])];
+  }
+
+  /**
+   * Stops the Turn's background tasks and interrupts its Root Segment, if one runs. The Turn
+   * ends once Claude Code confirms the stops and stays quiet; a stop or interrupt it does not
+   * confirm closes the native process, which ends every task it runs.
+   */
+  async #cancelBackgroundWork(
+    active: ActiveTurn,
+    transport: ClaudeTurnTransport,
+    taskIds: readonly string[],
+  ): Promise<void> {
+    const cancellation: TurnCancellation = {
+      stopping: taskIds.length > 0,
+      interrupting: false,
+      quiet: null,
+      failure: null,
+    };
+    active.cancellation = cancellation;
+    this.#clearContinuationQuiescence();
+    const timeout = rejectAfter(this.#cancelTimeoutMs, "Claude Code cancellation timed out");
+    try {
+      await Promise.race([
+        Promise.all([
+          taskIds.length > 0 ? transport.stopTasks(taskIds) : undefined,
+          active.rootSegmentActive ? this.#interruptCancelledSegment(active) : undefined,
+        ]),
+        timeout.promise,
+      ]);
+    } catch {
+      this.#hardCancel(active);
+      return;
+    } finally {
+      timeout.cancel();
+    }
+    cancellation.stopping = false;
+    this.#settleCancellation(active);
+  }
+
+  /** Claude answers stopped work on its own; a cancelled Turn interrupts that answer too. */
+  async #interruptCancelledSegment(active: ActiveTurn): Promise<void> {
+    const cancellation = active.cancellation;
+    const transport = this.#transport;
+    if (!cancellation || cancellation.interrupting || !transport) return;
+    cancellation.interrupting = true;
+    this.#clearCancellationQuiet(cancellation);
+    await transport.abortContinuation();
+    // The interrupted Segment still owes its native terminal.
+    if (this.#active === active && cancellation.interrupting) this.#armCancelEscalation(active);
+  }
+
+  #settleCancellation(active: ActiveTurn): void {
+    const cancellation = active.cancellation;
+    if (this.#active !== active || !cancellation || this.#hardCancelTask) return;
+    if (cancellation.stopping || cancellation.interrupting || active.rootSegmentActive) return;
+    this.#clearCancellationQuiet(cancellation);
+    const quiet = setTimeout(() => {
+      cancellation.quiet = null;
+      if (
+        this.#active !== active ||
+        active.cancellation !== cancellation ||
+        cancellation.interrupting ||
+        active.rootSegmentActive
+      ) {
+        return;
+      }
+      if (cancellation.failure) this.#finishFailed(active, cancellation.failure);
+      else this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
+    }, this.#continuationQuiescenceMs);
+    quiet.unref();
+    cancellation.quiet = quiet;
+  }
+
+  #clearCancellationQuiet(cancellation: TurnCancellation): void {
+    if (!cancellation.quiet) return;
+    clearTimeout(cancellation.quiet);
+    cancellation.quiet = null;
   }
 
   async #close(): Promise<void> {
@@ -1649,6 +1753,9 @@ class ClaudeHarnessSession implements HarnessSession {
     switch (event.type) {
       case "segment.started":
         this.#observeRootOutput(active);
+        if (active.cancellation && !active.cancellation.interrupting) {
+          this.#interruptCancelledSegment(active).catch(() => this.#hardCancel(active));
+        }
         return;
       case "subagents.live":
         this.#occupancy.observeLive(event.nativeSubagentIds);
@@ -2122,6 +2229,7 @@ class ClaudeHarnessSession implements HarnessSession {
       usageTokensCalibrated: false,
       usageCostCalibrated: false,
       held: false,
+      cancellation: null,
       rootSegmentActive: true,
       completion,
       resolveCompletion,
@@ -2191,6 +2299,21 @@ class ClaudeHarnessSession implements HarnessSession {
     // A late native terminal cannot substitute for the process shutdown already in progress.
     if (this.#active !== active || this.#hardCancelTask) return;
     active.rootSegmentActive = false;
+    if (active.cancellation) {
+      // The Turn ends only once its background work is confirmed stopped; later Segments
+      // still reach it through the idle handler. An unproven interruption still fails it.
+      if (result.status === "failed") {
+        active.cancellation.failure ??= transportFailure(result.kind);
+      }
+      active.cancellation.interrupting = false;
+      this.#clearCancelEscalation();
+      if (!active.held) {
+        active.held = true;
+        this.#transport?.setIdleLive(true);
+      }
+      this.#settleCancellation(active);
+      return;
+    }
     if (
       result.status === "succeeded" &&
       (active.tools.size > 0 || active.subagents.size > 0 || active.workflows.pendingCount > 0)
@@ -2481,6 +2604,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (
       this.#active !== active ||
       !active.held ||
+      active.cancellation ||
       active.rootSegmentActive ||
       this.#phase !== "open" ||
       !this.#occupancy.awaitingContinuation
@@ -2521,6 +2645,10 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#active !== active) return;
     this.#requestUsageBoundary += 1;
     this.#clearCancelEscalation();
+    if (active.cancellation) {
+      this.#clearCancellationQuiet(active.cancellation);
+      active.cancellation = null;
+    }
     this.#clearContinuationQuiescence();
     const hold =
       outcome.status === "succeeded" && !active.cancellationRequested && this.#occupancy.unsettled;

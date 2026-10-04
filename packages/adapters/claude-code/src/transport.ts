@@ -252,6 +252,11 @@ export interface ClaudeTurnTransport {
   hasBackgroundTasks(): boolean;
   /** Requests a native stop; the task still settles through its `task_notification`. */
   stopBackgroundTask(taskId: string): Promise<void>;
+  /**
+   * Stops native background tasks and resolves once Claude Code reports that each one ended.
+   * A task that already ended needs no stop; a stop Claude Code does not confirm rejects.
+   */
+  stopTasks(taskIds: readonly string[]): Promise<void>;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   /** Live slash commands of the started native Session, when known. */
@@ -280,6 +285,11 @@ export interface ClaudeTurnTransport {
   ): Promise<ClaudeTransportTurnResult>;
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void>;
   abort(): Promise<void>;
+  /**
+   * Interrupts the Root Segment Claude Code runs after the requested Turn's Result, such as
+   * its answer to a task notification. Its terminal reaches the idle Turn handler.
+   */
+  abortContinuation(): Promise<void>;
   close(): Promise<void>;
 }
 

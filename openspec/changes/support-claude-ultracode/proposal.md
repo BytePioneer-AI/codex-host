@@ -26,9 +26,10 @@ Claude Code 从 2.1.154 起提供会话级的 Ultracode：开启后 Claude 会�
 - 一次 Workflow 运行投影为一个子智能体委派项（Codex 协作智能体卡片），卡片说明取 Workflow 的描述。
 - 根据 Claude Code 发出的 `task_progress.workflow_progress`，把每个 Workflow 智能体投影为卡片中的一个子智能体：标签、阶段（或智能体类型）、模型、状态（排队/运行/完成/失败）、结果或错误摘要；拿到原生 `agentId` 后可点开为只读子线程，首条提示显示去掉 Workflow 外层包装后的任务原文。
 - 智能体状态变化或有新的工具活动时刷新已打开的子线程。
-- Workflow 运行期间按现有后台子智能体规则占用当前回合，Workflow 结束且 Claude 给出汇总后回合才完成；运行中取消会停止整个 Workflow。
+- Workflow 运行期间按现有后台子智能体规则占用当前回合，Workflow 结束且 Claude 给出汇总后回合才完成。
 - 智能体发起的工具审批在主回合结束后仍可作答，标题带智能体标签；回合结束时未作答的审批被拒绝。
 - Workflow 本身的审批显示 Claude Code 提供的 Workflow 描述。
+- 取消会真正停止本回合的后台工作：对后台子智能体与 Workflow 发出原生停止并确认，拦截 Claude 停止后自动开始的回复；停止得不到确认时关闭 Claude Code 进程。这也修正了改动前挂起期间取消只在界面上标记中断、后台仍在运行的问题。
 
 **依赖**
 
@@ -46,7 +47,7 @@ Claude Code 从 2.1.154 起提供会话级的 Ultracode：开启后 Claude 会�
 
 ## Impact
 
-- `packages/adapters/claude-code`：思考档位定义、Ultracode 读回判定（新文件 `ultracode.ts`）、SDK Transport（启动与切换时的读回、智能体审批作用域）、原生消息解析（Workflow 工具与进度）、Workflow 委派生命周期（新文件 `workflow-lifecycle.ts`）、Adapter（错误映射、回合占用、取消、审批保留）、子线程首条提示、相关测试。
+- `packages/adapters/claude-code`：思考档位定义、Ultracode 读回判定（新文件 `ultracode.ts`）、SDK Transport（启动与切换时的读回、智能体审批作用域）、原生消息解析（Workflow 工具与进度）、Workflow 委派生命周期（新文件 `workflow-lifecycle.ts`）、Adapter（错误映射、回合占用、取消时停止后台工作、审批保留）、子线程首条提示、相关测试。
 - 依赖：`@anthropic-ai/claude-agent-sdk` 0.3.220 → 0.3.289（根与 Claude Adapter 的 `package.json`、`package-lock.json`）。
 - `docs/harnesses/claude-code/`：新增 Ultracode 与 Workflow 显示说明。
 - 不改变共享契约、Host、Renderer、Mapping Store 或其他 Harness。

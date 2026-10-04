@@ -38,16 +38,16 @@ Ultracode 下（以及提示中出现 "ultracode" 关键词时），Claude 会�
 - 智能体开始运行后即可点开为只读子线程，首条提示为该智能体收到的任务原文。智能体调用工具或状态变化时，已打开的子线程会刷新。
 - Workflow 在后台运行期间，当前回合保持进行中；Workflow 结束且 Claude 给出汇总后回合才完成。期间发送新消息会提示会话忙。
 - 智能体需要权限时，审批标题前带智能体标签，例如 `count:a.txt: Bash`。即使 Claude 的主回复已经结束，这些审批仍可作答；回合结束时未作答的审批会被拒绝。
-- 运行中取消会停止整个 Workflow，未完成的智能体标记为中断。
+- 取消会停止整个 Workflow，未完成的智能体标记为中断。取消时 codexhost 会等 Claude Code 确认停止再结束回合；得不到确认就关闭 Claude Code 进程，下一条消息自动恢复会话。后台运行的普通 Agent 子智能体同样会被停止，Claude 停止后自动开始的回复也会被中断。
 
 ## 所有权与投影
 
 - `packages/adapters/claude-code/src/thinking-options.ts`：Ultracode 档位，以及按切换方向生成 `applyFlagSettings` 载荷。只有进入或离开 Ultracode 时才带 `ultracode` 键，离开时显式写 `ultracode: false`，因为关闭 Thinking 或保持 xhigh 都不会清除已请求的 Ultracode。
 - `packages/adapters/claude-code/src/ultracode.ts`：读回判定（只认 `applied.ultracode === true`，其余一律按未生效）、原因分类与错误映射。读回使用 SDK 已实现但未写入公开类型的 `Query.getSettings()`。
-- `packages/adapters/claude-code/src/sdk-transport.ts`：启动时在写入用户消息前确认 Ultracode；会话中切换与换模型时确认并在失败时恢复。待处理审批是会话级的，区分主线程与智能体来源，智能体审批跨越主回合结果保留到回合真正结束。
+- `packages/adapters/claude-code/src/sdk-transport.ts`：启动时在写入用户消息前确认 Ultracode；会话中切换与换模型时确认，失败时恢复并读回确认。提供 `stopTasks`（停止并等待确认）与 `abortContinuation`（中断主回合结果之后 Claude 自行开始的回复）。待处理审批是会话级的，区分主线程与智能体来源，智能体审批跨越主回合结果保留到回合真正结束。
 - `packages/adapters/claude-code/src/native-message.ts`：识别 `Workflow` 工具、`local_workflow` 任务帧与 SDK 未公开的 `task_progress.workflow_progress`。主回合结束后的进度帧由新的累积器处理，带 `workflow_progress` 的帧自带身份，其余按调用 ID 交给 Adapter 匹配。
 - `packages/adapters/claude-code/src/workflow-lifecycle.ts`：一次运行对应一个子智能体委派项。智能体按序号维护，`subagentId` 为"调用 ID:序号"，拿到原生 `agentId` 后成为 `nativeSubagentId`，Host 据此注册子线程。后台运行时委派项保持打开，由 `task_notification` 结束。
-- `packages/adapters/claude-code/src/claude-code-adapter.ts`：错误映射；后台运行按现有后台子智能体规则挂起回合；挂起期间取消时调用原生 `stopTask`；挂起时保留智能体审批。
+- `packages/adapters/claude-code/src/claude-code-adapter.ts`：错误映射；后台运行按现有后台子智能体规则挂起回合；取消时停止并确认本回合的后台子智能体与 Workflow，等待续写静默后结束回合，停止未确认时关闭进程；挂起时保留智能体审批。
 - `packages/adapters/claude-code/src/claude-history.ts`：子线程首条提示去掉 "[Workflow harness — computed task]" 外层包装与缩进；无法识别时原样显示。
 
 子线程转录通过官方 `getSubagentMessages()` 读取，路径为 `<session>/subagents/workflows/<runId>/agent-<agentId>.jsonl`。SDK 0.3.220 读取这类转录时会在附件记录处断链，只能得到最后几条消息，因此依赖升级到 0.3.289。

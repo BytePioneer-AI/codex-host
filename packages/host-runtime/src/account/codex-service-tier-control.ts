@@ -64,14 +64,6 @@ function advertises(catalog: TierCatalog, model: string | null, tier: string): b
   return [...catalog.values()].some((tiers) => tiers.has(tier));
 }
 
-/** A Composer tier would override the thread's tier, so "off" must neutralize it explicitly. */
-function carriesTier(params: Record<string, unknown>): boolean {
-  return (
-    typeof params.serviceTier === "string" ||
-    (typeof params.serviceTierForTurn === "string" && params.serviceTierForTurn !== "default")
-  );
-}
-
 /** Confirmed settings are shared by every client of one official runtime, not by a draft UI. */
 export class CodexServiceTierControl {
   #settings: CodexServiceTierSettings | null = null;
@@ -142,7 +134,9 @@ export class CodexServiceTierControl {
 
   /**
    * The `serviceTierForTurn` value for an official `turn/start`, or null to forward unchanged.
-   * Never rejects: a tier that cannot be confirmed must not block or fail the user's turn.
+   * Disabled settings forward the caller's own tier fields untouched; the Host never wrote a
+   * sticky `serviceTier`, so there is nothing to neutralize. Never rejects: a tier that cannot
+   * be confirmed must not block or fail the user's turn.
    */
   async tierForTurn(
     params: Readonly<Record<string, unknown>>,
@@ -152,10 +146,9 @@ export class CodexServiceTierControl {
     if (typeof threadId !== "string") return null;
     await this.#pending;
     const settings = this.#settings;
-    if (!settings || (!settings.enabled && !carriesTier(params))) return null;
+    if (!settings || !settings.enabled) return null;
     const provider = this.#threads.get(threadId) ?? (await this.#readThread(threadId, request));
     if (!provider || provider === "openai") return null;
-    if (!settings.enabled) return "default";
     // Forced locally: whether the provider honors the tier is the provider's decision.
     return codexServiceTierRequestValue(settings.tier);
   }

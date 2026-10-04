@@ -104,6 +104,19 @@ async function enableTier(page: Page) {
   await expect(marker(page)).toHaveAttribute("data-codexhost-service-tier", "fast");
 }
 
+/** Fixed fake-clock origin; the 60s headroom absorbs the install→pause roundtrips. */
+const HOVER_CLOCK_TIME = new Date("2026-01-01T00:00:00Z");
+const HOVER_CLOCK_FROZEN = new Date(HOVER_CLOCK_TIME.getTime() + 60_000);
+/**
+ * Freeze only after setup so the fixture's timers stay live until then; the
+ * paused clock then advances the 200ms hover timer only through `runFor`,
+ * not through mouse or evaluate roundtrips.
+ */
+async function freezeHoverClock(page: Page): Promise<void> {
+  await page.clock.install({ time: HOVER_CLOCK_TIME });
+  await page.clock.pauseAt(HOVER_CLOCK_FROZEN);
+}
+
 test("the button appears only after the Host confirms, and opens the official flyout", async ({
   page,
 }) => {
@@ -173,12 +186,14 @@ test("click opens, a second click closes, and a click after hover-open confirms"
   await expect(button).toHaveAttribute("aria-expanded", "false");
 
   // Hover-open after the official 200ms, then a click keeps it open instead of
-  // closing what the hover just opened; the next click closes.
+  // closing what the hover just opened; the next click closes. Both reads run
+  // on the frozen clock so neither can drift across the 200ms boundary.
+  await freezeHoverClock(page);
   await page.mouse.move(10, 10);
   await button.hover();
-  await page.waitForTimeout(120);
+  await page.clock.runFor(120);
   expect(await isOpen(page)).toBe(false);
-  await page.waitForTimeout(150);
+  await page.clock.runFor(150);
   expect(await isOpen(page)).toBe(true);
   await button.click();
   expect(await isOpen(page)).toBe(true);
@@ -191,10 +206,13 @@ test("a hover that leaves before the delay never opens", async ({ page }) => {
   await enableTier(page);
   await openMenu(page);
   const button = localToggle(page);
+  await freezeHoverClock(page);
+  // Leaving 100ms in cancels the pending open; the following 250ms cross the
+  // 200ms delay with the timer already cancelled.
   await button.hover();
-  await page.waitForTimeout(100);
+  await page.clock.runFor(100);
   await page.mouse.move(10, 10);
-  await page.waitForTimeout(250);
+  await page.clock.runFor(250);
   expect(await isOpen(page)).toBe(false);
 });
 
@@ -619,7 +637,7 @@ test("the tier accents paint only the local Composer and its menu portal", async
       isMenu: true,
     },
   ]);
-  expect(await remoteToggle(page)).toHaveCount(0);
+  await expect(remoteToggle(page)).toHaveCount(0);
 
   // Local: the trigger bolt and both particle layers of the slider paint.
   const local = await accentState(page, "local-menu-host", "native-trigger");

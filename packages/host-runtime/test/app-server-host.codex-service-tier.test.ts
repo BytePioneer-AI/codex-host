@@ -34,7 +34,7 @@ function calls(request: ReturnType<typeof nativeRequest>, method: string): numbe
   return request.mock.calls.filter(([called]) => called === method).length;
 }
 
-it("switches the same thread between Fast, Ultrafast and default without retaining a stale tier", async () => {
+it("switches the same thread between Fast and Ultrafast and forwards disabled turns untouched", async () => {
   const control = new CodexServiceTierControl();
   const request = nativeRequest();
   const params: JsonObject = {
@@ -47,7 +47,8 @@ it("switches the same thread between Fast, Ultrafast and default without retaini
   for (const [settings, expected] of [
     [{ enabled: true, tier: "fast" }, "priority"],
     [{ enabled: true, tier: "ultrafast" }, "ultrafast"],
-    [{ enabled: false, tier: "ultrafast" }, "default"],
+    // Disabled settings never neutralize or replace the caller's own tier fields.
+    [{ enabled: false, tier: "ultrafast" }, null],
     [{ enabled: true, tier: "fast" }, "priority"],
   ] as const) {
     await control.apply(settings, request);
@@ -105,6 +106,40 @@ it("forwards turns unchanged and without native reads when nothing would change"
   await control.apply({ enabled: false, tier: "fast" }, request);
   expect(await control.tierForTurn({ threadId: "t", input: [] }, request)).toBeNull();
   expect(await control.tierForTurn({ input: [] }, request)).toBeNull();
+  expect(request).not.toHaveBeenCalled();
+});
+
+it.each<JsonObject>([
+  { threadId: "t", serviceTier: "fast" },
+  { threadId: "t", serviceTierForTurn: "priority" },
+  { threadId: "t", serviceTierForTurn: "ultrafast" },
+  { threadId: "t", serviceTier: "flex", serviceTierForTurn: "priority" },
+  { threadId: "t", input: [] },
+])(
+  "preserves caller tiers after the initial disabled sync without native reads: %j",
+  async (params) => {
+    const control = new CodexServiceTierControl();
+    const request = nativeRequest();
+    const snapshot = structuredClone(params);
+    await control.apply({ enabled: false, tier: "fast" }, request);
+    expect(await control.tierForTurn(params, request)).toBeNull();
+    expect(params).toEqual(snapshot);
+    expect(request).not.toHaveBeenCalled();
+  },
+);
+
+it("does not read an uncached thread after disabling a previously enabled tier", async () => {
+  const control = new CodexServiceTierControl();
+  const request = nativeRequest();
+  await control.apply({ enabled: true, tier: "ultrafast" }, request);
+  await control.apply({ enabled: false, tier: "ultrafast" }, request);
+  request.mockClear();
+  for (const params of [
+    { threadId: "uncached", serviceTierForTurn: "priority" },
+    { threadId: "uncached", input: [] },
+  ]) {
+    expect(await control.tierForTurn(params, request)).toBeNull();
+  }
   expect(request).not.toHaveBeenCalled();
 });
 
@@ -195,7 +230,8 @@ it("waits for pending settings and serializes changes across clients", async () 
   const turn = control.tierForTurn({ threadId: "t", serviceTier: "fast" }, request);
   deferred.resolve({ result: { config: { model_provider: "custom", model: "model-a" } } });
   await Promise.all([enable, disable]);
-  expect(await turn).toBe("default");
+  expect(await turn).toBeNull();
+  expect(calls(request, "thread/read")).toBe(0);
 });
 
 it("routes settings and final official turn frames through the Host without config writes", async () => {
@@ -246,10 +282,79 @@ it("routes settings and final official turn frames through the Host without conf
       method: "turn/start",
       params: { serviceTierForTurn: "ultrafast" },
     });
+    writeRequest(fixture.official.stdout, {
+      id: requiredMessageId(next),
+      result: { turn: { id: "next-turn" } },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 805));
+    writeRequest(fixture.desktopInput, {
+      id: 806,
+      method: CODEX_SERVICE_TIER_SETTINGS_METHOD,
+      params: { enabled: false, tier: "ultrafast" },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 806))).toMatchObject({
+      result: { settings: { enabled: false, tier: "ultrafast" }, effect: { state: "off" } },
+    });
+    let id = 807;
+    for (const tierFields of [{ serviceTierForTurn: "priority" }, {}]) {
+      const restored: JsonObject = { ...params, ...tierFields };
+      writeRequest(fixture.desktopInput, { id, method: "turn/start", params: restored });
+      const outgoing = await readJsonLine(fixture.official.stdin);
+      expect(outgoing.method).toBe("turn/start");
+      expect(outgoing.params).toEqual(restored);
+      writeRequest(fixture.official.stdout, {
+        id: requiredMessageId(outgoing),
+        result: { turn: { id: `restored-${id}` } },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, id));
+      id += 1;
+    }
   } finally {
     await stopFixture(fixture);
   }
 });
+
+it.each<JsonObject>([
+  { serviceTier: "fast" },
+  { serviceTierForTurn: "priority" },
+  { serviceTierForTurn: "ultrafast" },
+  { serviceTier: "flex", serviceTierForTurn: "priority" },
+  {},
+])(
+  "forwards caller tiers unchanged after the initial disabled Host RPC: %j",
+  async (tierFields) => {
+    const fixture = createFixture();
+    try {
+      await fixture.ready;
+      writeRequest(fixture.desktopInput, {
+        id: 840,
+        method: CODEX_SERVICE_TIER_SETTINGS_METHOD,
+        params: { enabled: false, tier: "fast" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 840))).toMatchObject({
+        result: { settings: { enabled: false, tier: "fast" }, effect: { state: "off" } },
+      });
+      expect(fixture.official.stdin.readableLength).toBe(0);
+      const params: JsonObject = {
+        threadId: "native-custom",
+        input: [{ type: "text", text: "keep native speed selection" }],
+        ...tierFields,
+      };
+      writeRequest(fixture.desktopInput, { id: 841, method: "turn/start", params });
+      const outgoing = await readJsonLine(fixture.official.stdin);
+      expect(outgoing.method).toBe("turn/start");
+      expect(outgoing.params).toEqual(params);
+      writeRequest(fixture.official.stdout, {
+        id: requiredMessageId(outgoing),
+        result: { turn: { id: "native-turn" } },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 841));
+      expect(fixture.official.stdin.readableLength).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  },
+);
 
 it("rejects invalid settings and maps native read failures to a settings error", async () => {
   const fixture = createFixture();

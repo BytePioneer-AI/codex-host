@@ -11,19 +11,19 @@ codexhost 设置 → 通用 →「Codex 请求档位」只有一个开关（默�
 | 官方模型菜单里的速度按钮 | 打开官方模型菜单后，在官方 `_ViewControls_` 行内、DOM 中紧随官方模型视图切换按钮插入插件自己的 32px 闪电按钮（视觉定位为绝对定位在行的 inline start，与官方 `_FastModeToggle_` 相同；几何 32px 盒 / 26px 内容方块 / 16px 图标；Fast 用官方 `bolt-fill-light-16`，Ultrafast 用官方双闪 `hU`；档位生效时官方 chart-blue 配色）。点击、Enter/Space 或鼠标悬停 200ms（官方 `FlyoutSubmenuItem` 的延时）打开真实的 233px 档位浮层。 |
 | 233px 档位浮层 | 与官方 `FlyoutSubmenuItem` 相同：内容渲染在独立 overlay 层（此处为 DOM 原生 `popover="manual"` top layer），因此不会被菜单 `_ViewTrack_` 的 `overflow:clip`、`ModelPickerDropdownContent` 的 `overflow-hidden` 或祖先 transform 裁剪或错位；4px 贴菜单 inline end 展开，空间不足时镜像到另一侧并约束在视口内（RTL 方向对应翻转）。列官方三项（标准 / 快速 / 超快）并带官方描述与 17px 对勾。点「标准」等于关闭本设置。选择后写偏好并触发同步，外层菜单保持打开、仅浮层收起且焦点回到按钮（对应官方 `keepOpenOnSelect`）；重选当前档位同样会上报。 |
 
-档位与官方三档一一对应：**标准** = 关闭（`enabled: false`，请求自带档位时覆写为 `"default"`，否则不注入）、**快速** = Fast、**超快** = Ultrafast。标准项保留上次选择的 Fast / Ultrafast，供重新开启时使用。设置页开关与菜单选择共享同一份偏好，菜单展示最近一次 Host 确认的档位。
+菜单三档对应本设置的三种选择：**标准** = 关闭（`enabled: false`，撤销 codexhost 的强制档位，保留请求原有档位且不注入）、**快速** = Fast、**超快** = Ultrafast。标准项保留上次选择的 Fast / Ultrafast，供重新开启时使用。设置页开关与菜单选择共享同一份偏好，菜单展示最近一次 Host 确认的档位。关闭不强制原生请求变成 `"default"`：官方速度控件或原生配置仍可决定请求档位。
 
 滑条粒子是纯装饰：Desktop 自身的运动设置（滑条 Root 的 `data-reduced-motion="true"`）或系统「减少运动」偏好（`prefers-reduced-motion: reduce`）任一成立时都不绘制，两条更严格的访问性门控都保留。
 
 | 本地自定义供应商的下一回合 | `turn/start.params.serviceTierForTurn` |
 | --- | --- |
-| 关闭 | `"default"`（仅在 Composer 自带档位时覆写，避免残留） |
+| 关闭 | 保留原值；未携带时不注入 |
 | Fast | `"priority"` |
 | Ultrafast | `"ultrafast"` |
 
 设置与偏好使用 `fast` / `ultrafast` 拼写；`priority` 只出现在出站 Wire 值中。
 
-档位在本地强制发送，不因模型目录是否声明而改变；服务端是否支持、忽略或拒绝由服务端决定。模型目录是否声明只影响设置页的说明性提示（`notice: "notAdvertised"`），不影响出站值。
+开启时档位在本地强制发送，不因模型目录是否声明而改变；服务端是否支持、忽略或拒绝由服务端决定。模型目录是否声明只影响设置页的说明性提示（`notice: "notAdvertised"`），不影响出站值。
 
 ## 为什么 codexhost 自己画闪电和速度按钮
 
@@ -49,11 +49,12 @@ Codex 会检查模型目录里的 `service_tiers`，并可能因未声明而改�
 
 `prepareCodexServiceTierCatalog` 在本地原生后端启动前准备目录：
 
-1. 读取 `<CODEX_HOME>/config.toml`，并按 Codex CLI 语义应用 `-c key=value` 覆盖：仅在第一个 `=` 处切分，key 按 `.` 分段且**不**当作 TOML 解析（因此 `plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true` 这类真实 Desktop 参数合法），value 按 TOML 值解析，失败则当字面字符串；只提取 `model_provider` / `model_catalog_json` / `profile` / `profiles` 相关值，无关或畸形覆盖被跳过而不影响启动。
+1. 读取 `<CODEX_HOME>/config.toml`，并按 Codex CLI 语义应用 `-c key=value` 覆盖：仅在第一个 `=` 处切分，key 按 `.` 分段且**不**当作 TOML 解析（因此 `plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true` 这类真实 Desktop 参数合法），value 按 TOML 值解析，失败则当字面字符串；只提取 `model_provider` / `model_catalog_json` / `profile` / `profiles` 相关值，无关或畸形覆盖被跳过而不影响启动。`profile` / `profiles` 的处理仅兼容当前解析器识别的旧式配置结构，不宣称覆盖各原生版本的完整配置层语义。
 2. 仅当生效的 Provider 不是 `openai` 时准备目录：配置了 `model_catalog_json` 就读取并扩展其副本（相对路径以 `CODEX_HOME` 为基准），否则从实际启动的 Codex 可执行文件提取内嵌模型元数据；只为每个模型补齐缺少的 `priority` 与 `ultrafast` 声明，其余字段的值保留。
-3. 将内容寻址的 JSON 副本写入 `<CODEX_HOME>/codexhost/service-tier-catalogs/<sha256>.json`，通过 `-c model_catalog_json=...` 追加到原生后端参数。
+3. 将内容寻址的 JSON 副本写入 `<CODEX_HOME>/codexhost/service-tier-catalogs/<sha256>.json`：已有文件必须与预期内容一致才复用，否则在同目录的独立临时位置完整写入后通过重命名发布；不直接向最终文件写入，也不先删除最终文件再发布。通过 `-c model_catalog_json=...` 追加到原生后端参数。
+4. 若选中的旧式 `profiles.<name>` 自带 `model_catalog_json`，同时为该 profile 追加指向同一副本的覆盖，避免 profile 仍选中原始目录；未选 profile 或 profile 不提供目录时不追加此项。名称无法准确表示为一个 CLI key 段时保留原参数，不生成错误的覆盖。
 
-原始配置及目录不变；读取、解析或写入失败时保留原生启动参数，不阻止 Codex 启动。
+原始配置及目录不变；读取、解析、校验、写入或发布失败时保留原生启动参数。无法原子替换时不删除现有目标文件；并发准备可以复用另一个准备者已发布的完整预期内容。临时数据在准备结束时清理；清理失败同样回退，不报告准备可用。目录读取与校验只发生在启动准备阶段，不加入每回合请求路径。
 
 ## 设置与请求路径
 
@@ -63,14 +64,14 @@ Host 返回 `{ settings, effect }`：`effect` 为 `off`、`active`（可选 `not
 
 `OfficialRuntimeScope` 中的 `CodexServiceTierControl` 由同一 native runtime 的所有客户端共享，串行处理修改，并被动缓存每个 Thread 的 Provider（上限 512）；进程退出时 `reset()`。
 
-在最终官方 `turn/start` 转发处，Host 等待已排队的设置修改，读取 Thread 的原生 Provider，对自定义 Provider 设置 `serviceTierForTurn`：关闭且请求未带档位时原样转发；关闭但请求自带档位时写 `"default"`；开启时写 `"priority"` / `"ultrafast"`。缓存命中零次 native 往返，未命中最多一次 `thread/read`。`turn/steer` 不修改；Host 不设置 sticky 的 `serviceTier`，并保留待转发请求的其他字段。该局部改写是[官方流量归属](../architecture/official-traffic-ownership.md)的明确例外：不改变官方请求归属，不提前严格校验未知官方参数；无需覆写时走原帧转发路径，转发后保留请求回复保护。
+在最终官方 `turn/start` 转发处，Host 等待已排队的设置修改：关闭时保留原生 `serviceTier` / `serviceTierForTurn`，不为档位决策读取 Thread；开启时读取 Thread 的原生 Provider，仅对自定义 Provider 写入 `"priority"` / `"ultrafast"`。开启时缓存命中零次 native 往返，未命中最多一次 `thread/read`。`turn/steer` 不修改；Host 不设置 sticky 的 `serviceTier`，关闭无需清理持久化档位，并保留待转发请求的其他字段。该局部改写是[官方流量归属](../architecture/official-traffic-ownership.md)的明确例外：不改变官方请求归属，不提前严格校验未知官方参数；无需覆写时走原帧转发路径，转发后保留请求回复保护。
 
 ## 验证
 
 定向测试覆盖以下行为；测试执行结果由对应验证运行报告，不在功能文档中维护会话记录：
 
-- `packages/host-runtime/test/app-server-host.codex-service-tier.test.ts`：同一 Thread 的 Fast、Ultrafast、默认与再次 Fast，旧 Composer 参数覆写，原请求不被原地修改，观察缓存，未声明档位仍强制注入，openai 与已开启设置下的外部 Harness 隔离，失败保留已接受设置，Host RPC 与最终转发；开启时未知官方参数仍透传给原生校验，`turn/steer` 不改写。
-- `packages/host-runtime/test/codex-service-tier-catalog.test.ts`：UTF-8 模型元数据提取、档位不重复、用户目录保留、profile 与命令行覆盖、**带 `@` 的真实 Desktop 参数回归**（`plugins.codex-app-tools@openai-bundled...`）、畸形覆盖跳过、启动失败回退。
+- `packages/host-runtime/test/app-server-host.codex-service-tier.test.ts`：同一 Thread 的 Fast、Ultrafast、关闭透传与再次 Fast，首次默认关闭和开启后关闭时保留原生档位且不读取 Thread，开启时旧 Composer 参数覆写，原请求不被原地修改，观察缓存，未声明档位仍强制注入，openai 与已开启设置下的外部 Harness 隔离，失败保留已接受设置，Host RPC 与最终转发；开启时未知官方参数仍透传给原生校验，`turn/steer` 不改写。
+- `packages/host-runtime/test/codex-service-tier-catalog.test.ts`：UTF-8 模型元数据提取、档位不重复、用户目录保留、旧式 profile 自带目录与根级覆盖选中同一副本、不可准确表达的 profile 名称回退、**带 `@` 的真实 Desktop 参数回归**（`plugins.codex-app-tools@openai-bundled...`）、损坏目录修复、完整内容复用、并发发布、写入或重命名失败回退与临时数据清理。
 - `packages/renderer-extension/test/renderer-codex-service-tier-preference.test.ts`：偏好校验与存储回退、重连与过期结果丢弃、快速修改合并、Host 不支持或拒绝时不标记已生效，以及 `<html>` 标记只在确认 `active` 时镜像（含 `notAdvertised`）。
 - `packages/renderer-extension/test/renderer-codex-service-tier-bolt.test.ts`：用官方菜单 DOM 结构（`role="menu"` + `aria-controls` 指向 + `_ModelPickerDropdownContent_` + `_ViewTrack_` + `_ViewControls_`）覆盖 32px 按钮紧跟官方视图切换、官方三档顺序与文案、官方 17px 对勾、选中态、标准项回调 `null`、重选当前档位仍上报、Hover 200ms 后 click 的竞争、Escape / 方向键 / Home / End / Tab 行为与焦点回收、外部 pointerdown / focusin 关闭、菜单可见性 observer 关闭浮层、菜单关闭/重建/外部 Harness/触发器缺失/超快警告/顶层 popover 不可用时移除、dispose 清理与旧节点不再上报、重复渲染零 DOM 写入、RTL 与视口边缘的浮层定位、en/zh 官方文案；另覆盖本地展示判定、root 与 portal 作用域建立/清理，以及同一 Composer 重建菜单时释放旧 portal。
 - `packages/renderer-extension/test/renderer-binding-probe-host-catalog.test.ts`：通过实际 probe 的渲染调用验证 per-Composer Host 与全局路由不一致时的本地隔离，以及同一原生草稿在全局路由不变时从本地切到远程、再回本地的即时刷新。

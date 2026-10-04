@@ -23,7 +23,7 @@ Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和
 
 - Mapping Store 读取失败时，带 `threadId` 的请求返回 `-32081`，不放行官方，避免外部 Thread 请求误发官方。
 - 原生 `turn/start` / `turn/steer` 中明确携带 codexhost Delegation 引用的文本输入，会在转发前改写为托管 Skill 引用；其他输入及字段不变。
-- 用户确认过[本地 Codex 请求档位设置](../product/codex-service-tier.md)后，原生 `turn/start` 会按 Thread 的自定义 Provider 覆写 `serviceTierForTurn`；关闭时仅中和 Composer 自带的档位。此例外不改变请求归属，不严格解码其他官方参数，也不作用于 `openai` Provider、远程 Thread、外部 Harness 或 `turn/steer`。未确认设置、无法确认 Thread Provider，或无需覆写时继续转发原帧；不修改用户认证配置。
+- 用户确认开启[本地 Codex 请求档位设置](../product/codex-service-tier.md)后，原生 `turn/start` 会按 Thread 的自定义 Provider 覆写 `serviceTierForTurn`；关闭时不改写原生档位。此例外不改变请求归属，不严格解码其他官方参数，也不作用于 `openai` Provider、远程 Thread、外部 Harness 或 `turn/steer`。未确认设置、设置关闭、无法确认 Thread Provider，或无需覆写时继续转发原帧；不修改用户认证配置。
 
 ## 请求必有回应
 

@@ -4,6 +4,8 @@ import { parse } from "smol-toml";
 export interface CodexStartupCatalogConfig {
   readonly model_provider?: unknown;
   readonly model_catalog_json?: unknown;
+  /** Selected legacy profile that supplied the effective `model_catalog_json`, when one did. */
+  readonly catalogProfileName?: string;
 }
 
 const RELEVANT_KEYS = ["model_provider", "model_catalog_json"] as const;
@@ -52,9 +54,10 @@ export function parseCodexConfigOverride(
 }
 
 /**
- * Resolve only the startup keys the tier catalog depends on, in Codex precedence:
- * `config.toml` with `-c` overrides applied, then the selected profile on top.
- * Unrelated or malformed overrides are skipped instead of failing the whole startup.
+ * Resolve only the startup keys the tier catalog depends on: `config.toml` with `-c`
+ * overrides applied, then the selected legacy profile on top. Unrelated or malformed
+ * overrides are skipped instead of failing the whole startup; `catalogProfileName` records
+ * which legacy profile layer supplied the effective catalog.
  */
 export function resolveCodexStartupCatalogConfig(
   config: Record<string, unknown>,
@@ -107,5 +110,13 @@ export function resolveCodexStartupCatalogConfig(
 
   const selected = profileFlag ?? profile;
   const fromProfile = typeof selected === "string" ? profiles.get(selected) : undefined;
-  return { ...root, ...fromProfile };
+  return {
+    ...root,
+    ...fromProfile,
+    // The profile layer wins over the root when it defines the key, matching Codex's
+    // legacy profile precedence; the name lets catalog preparation mirror the same layer.
+    ...(typeof selected === "string" && fromProfile?.model_catalog_json !== undefined
+      ? { catalogProfileName: selected }
+      : {}),
+  };
 }

@@ -131,6 +131,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
+import { settleExternalOutputFailure } from "./external-output-failure.js";
 import { isSessionImportRequest, SessionImportRequests } from "./session-import-requests.js";
 import {
   ExternalHistoryRequestError,
@@ -4684,6 +4685,13 @@ export class AppServerHost {
     } catch (error) {
       this.#externalRuntime.idleRelease.outputFailed(thread);
       this.#diagnose(error);
+      this.#externalSteering.fault(thread.id, new Error(errorMessage(error)));
+      await settleExternalOutputFailure(
+        thread,
+        error,
+        (output) => this.#projectHarnessOutput(thread, output),
+        (failure) => this.#diagnose(failure),
+      );
     } finally {
       this.#externalSteering.fault(
         thread.id,

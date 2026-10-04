@@ -338,8 +338,9 @@ export class V2Session implements HarnessSession {
       (event.type === "session.text.delta" || event.type === "session.reasoning.delta") &&
       active.assistants.has(event.data.assistantMessageID)
     ) {
-      const itemId = contentId(event.data.assistantMessageID, event.data.ordinal);
-      const type = event.type === "session.text.delta" ? "agentMessage" : "reasoning";
+      const contentType = event.type === "session.text.delta" ? "text" : "reasoning";
+      const itemId = contentId(event.data.assistantMessageID, contentType, event.data.ordinal);
+      const type = contentType === "text" ? "agentMessage" : "reasoning";
       const previous = active.transient.get(itemId);
       const item: Extract<HostItem, { type: "agentMessage" | "reasoning" }> = {
         type,

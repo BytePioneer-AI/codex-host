@@ -174,6 +174,7 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 - 关闭或 Desktop 输入 EOF 时先取消插件加载，再等待已接收的路由和 Session 打开任务完成，最后取 Session 快照并关闭资源，避免遗漏迟到的 Session。取消后迟到的 Adapter 仍会关闭；未加载或不可用的外部 Harness 不回退到官方 Codex。
 - 超时后才返回的 Adapter 会尝试关闭；未返回实例前创建的资源仍须由插件自行负责清理。
 - Host 退出时关闭已加载 Adapter；Registry 自身的 `close()` 幂等，并尝试关闭所有实例，即使某个实例同步抛错。
+- 外部 Session 输出消费或投影抛错时，Host 关闭该 Session，并用投影器已接受的 Item 状态取消未决交互、收尾活动 Item、将未结束的 Turn 标为失败。非法完成事件不能改变已有 Item 类型，也不能让 Desktop 永久保留运行状态；不伪造原生成功或 Checkpoint，不重写已完成 Turn 的结果。Desktop 已断开时通知只能尽力发送，关闭或通知失败保留诊断。
 
 ### 外部 Thread 预热
 

@@ -190,8 +190,12 @@ export class ModelPriceLookup {
     const [official] = officials;
     if (official === undefined || officials.size !== 1) return null;
     const separator = official.indexOf("/");
+    const officialProvider = official.slice(0, separator);
+    // An alias such as `deepseek-flash` may name a canonical model the catalog does not list;
+    // the official provider's own listing of this ID is then the official price.
     const officialEntry =
-      this.#providers[official.slice(0, separator)]?.[official.slice(separator + 1)];
+      this.#providers[officialProvider]?.[official.slice(separator + 1)] ??
+      listings.find(({ provider: listedBy }) => listedBy === officialProvider)?.entry;
     return officialEntry ? entryPrice(officialEntry) : null;
   }
 }

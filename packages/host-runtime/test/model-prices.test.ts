@@ -21,6 +21,10 @@ const table: ModelPriceTableData = {
     reseller: { "lonely-model": [1, 2] },
     alpha: { shared: [1, 1] },
     beta: { shared: [2, 2] },
+    deepseek: { "deepseek-flash": [0.15, 0.6, 0.003, null, "deepseek/deepseek-v4.1-flash"] },
+    "302ai": { "deepseek-flash": [0.15, 0.6, 0.003, null, "deepseek/deepseek-v4.1-flash"] },
+    reseller2: { "orphan-alias": [9, 9, null, null, "nowhere/orphan"] },
+    reseller3: { "orphan-alias": [8, 8, null, null, "nowhere/orphan"] },
   },
 };
 
@@ -57,6 +61,12 @@ describe("ModelPriceLookup", () => {
       cacheWrite: 3.75,
     });
     expect(lookup.find("claude-sonnet-4-5", "my-alias")).toEqual(lookup.find("claude-sonnet-4-5"));
+  });
+
+  it("uses the official provider's listing of an alias whose canonical model is unlisted", () => {
+    expect(lookup.find("deepseek-flash")).toEqual({ input: 0.15, output: 0.6, cacheRead: 0.003 });
+    // No listing by the official provider: still no guess.
+    expect(lookup.find("orphan-alias")).toBeNull();
   });
 
   it("uses a single listing and refuses to guess between unrelated listings", () => {

@@ -5,7 +5,7 @@
 ## 0. 先做这几件事
 
 1. 工作区：`/Users/chongwen.zhang/work/study/codex-host-main`，分支 `feat/host-usage-metering`，草稿 PR [#493](https://github.com/BytePioneer-AI/codex-host/pull/493)（base `main`，远端 `origin` = `BytePioneer-AI/codex-host`）。`gh` 在 `/opt/homebrew/bin/gh`，不在 PATH 中。
-2. 分支落后 `main` 1 个提交（`1d3b6c27 fix(opencode): prevent v2 content identity collisions and stuck turns`）。试合并只有 `packages/adapters/opencode/test/v2.test.ts` 冲突，源码可自动合并。继续工作前先 `git rebase origin/main`，解决该测试冲突（保留双方用例；我们的用例是 `replays metered history on open and meters each finished step once`），然后重跑 OpenCode 测试并 `git push --force-with-lease`。
+2. 已变基到 `main`（含 `1d3b6c27` OpenCode v2 条目 ID 修复，冲突仅为测试文件的 import）。继续前先 `git fetch origin main` 看是否又有新提交。
 3. 用户会在全部完成后统一验收。用户要求：**每个 Harness 都必须先用本机真实数据确认原生数据结构再实现，不得参照其他 Harness 猜测**；一次做一个，做完一个提交一个；用中文沟通。
 
 ## 1. 目标与原则

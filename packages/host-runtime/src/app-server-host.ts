@@ -864,9 +864,13 @@ export class AppServerHost {
     void this.#closeOfficialRuntime().catch((error: unknown) => this.#diagnose(error));
   }
 
-  async #closeOfficialRuntime(): Promise<void> {
+  async #closeOfficialRuntime(externalOutputsSettled = false): Promise<void> {
     const exporter = this.#nativeHistoryExport;
     if (exporter) {
+      // Keep the owned reader available until external Sessions have closed and
+      // their final output (including a late turn.completed) has been projected.
+      // run() performs that drain and then calls this with true in its finally.
+      if (!externalOutputsSettled) return;
       this.#exportingNativeHistory ??= this.#repository
         .list()
         .then((records) => exporter.exportOnExit(records))
@@ -934,7 +938,7 @@ export class AppServerHost {
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
       }
-      await this.#closeOfficialRuntime();
+      await this.#closeOfficialRuntime(true);
       return this.#closeRequested ? 0 : 1;
     }
     try {
@@ -992,7 +996,7 @@ export class AppServerHost {
           () => undefined,
         );
       }
-      await this.#closeOfficialRuntime();
+      await this.#closeOfficialRuntime(true);
       this.#externalRuntime.clear();
       this.#externalPrewarms.clear();
       this.#pendingOfficialTurnStarts.clear();

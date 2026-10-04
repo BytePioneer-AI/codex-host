@@ -12,6 +12,7 @@ const TEXT_DELTAS = new Set([
   "item/reasoning/summaryTextDelta",
 ]);
 const MAX_DELTA_LENGTH = 64 * 1024;
+const MAX_QUEUED_BATCHES = 4;
 
 function deltaIdentity(value: JsonValue): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value) || "id" in value) return null;
@@ -35,6 +36,7 @@ export class OrderedWriter {
   #tail = Promise.resolve();
   #pending: { identity: string; value: JsonObject; length: number; parts: string[] } | null = null;
   #timer: ReturnType<typeof setTimeout> | null = null;
+  #queuedBatches = 0;
 
   constructor(
     private readonly stream: Writable,
@@ -44,6 +46,8 @@ export class OrderedWriter {
   ) {}
 
   frame(frame: Buffer<ArrayBufferLike>, value?: JsonValue): Promise<void> {
+    if (this.#queuedBatches >= MAX_QUEUED_BATCHES)
+      return this.#tail.then(() => this.frame(frame, value));
     const identity = this.batchMs > 0 && value !== undefined ? deltaIdentity(value) : null;
     if (identity && value && typeof value === "object" && !Array.isArray(value)) {
       const params = value.params as JsonObject;
@@ -53,6 +57,8 @@ export class OrderedWriter {
         this.#pending.length + delta.length > MAX_DELTA_LENGTH
       ) {
         this.#flush();
+        if (this.#queuedBatches >= MAX_QUEUED_BATCHES)
+          return this.#tail.then(() => this.frame(frame, value));
       }
       if (!this.#pending) {
         this.#pending = { identity, value, length: 0, parts: [] };
@@ -92,7 +98,14 @@ export class OrderedWriter {
       ...pending.value,
       params: { ...(pending.value.params as JsonObject), delta: pending.parts.join("") },
     };
-    return this.#enqueue(() => writeJsonFrame(this.stream, value));
+    this.#queuedBatches++;
+    return this.#enqueue(async () => {
+      try {
+        await writeJsonFrame(this.stream, value);
+      } finally {
+        this.#queuedBatches--;
+      }
+    });
   }
 
   #enqueue(operation: () => Promise<void>): Promise<void> {

@@ -1,4 +1,4 @@
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { OrderedWriter } from "../src/ordered-writer.js";
@@ -31,6 +31,49 @@ function fixture(batchMs = 16) {
 afterEach(() => vi.useRealTimers());
 
 describe("native text delta batching", () => {
+  it("backpressures the native reader when four timed batches are blocked", async () => {
+    vi.useFakeTimers();
+    const callbacks: Array<() => void> = [];
+    const output: Buffer[] = [];
+    const stream = new Writable({
+      highWaterMark: 1,
+      write(chunk: Buffer, _encoding, done) {
+        output.push(Buffer.from(chunk));
+        callbacks.push(done);
+      },
+    });
+    const writer = new OrderedWriter(stream);
+    for (let index = 0; index < 4; index++) {
+      const value = delta(String(index));
+      await writer.frame(Buffer.from(JSON.stringify(value)), value);
+      await vi.advanceTimersByTimeAsync(16);
+    }
+    let accepted = false;
+    const value = delta("4");
+    const blocked = writer.frame(Buffer.from(JSON.stringify(value)), value).then(() => {
+      accepted = true;
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(accepted).toBe(false);
+    expect(output).toHaveLength(1);
+    for (let index = 0; index < 4; index++) {
+      expect(callbacks).toHaveLength(1);
+      callbacks.shift()?.();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    await blocked;
+    await vi.advanceTimersByTimeAsync(16);
+    callbacks.shift()?.();
+    await writer.drain();
+    const messages = Buffer.concat(output)
+      .toString()
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(messages.map((message) => message.params.delta)).toEqual(["0", "1", "2", "3", "4"]);
+    stream.destroy();
+  });
+
   it("preserves a 1000-fragment Unicode response before the completion barrier", async () => {
     const f = fixture();
     const fragments = Array.from({ length: 1000 }, (_, index) => `空投${index}🙂\n`);

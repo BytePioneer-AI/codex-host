@@ -30,6 +30,7 @@ codexhost
 - 不为导出启动 Harness、读取所有未打开的会话或发送 Model Turn。过去的对话须先在启用导出的 CodexHost 中打开一次，以取得正文；仅登记了映射的会话不会被伪造为空历史。
 - 跳过临时、Subagent、创建中、已删除和当前归档的 Thread；拒绝 Native Session 已被替换或 Turn 映射已变化的旧暂存快照。仍在执行的 Turn 不写入已结束的快照。
 - 导出需要 Host Runtime 正常退出。强制结束进程时不能保证退出钩子运行；仅断开共享 Host 的一个 GUI 不会结束外部 Session owner。已完成的暂存快照留在 Host 目录，可在下次正常退出时发布。
+- 正常退出先关闭外部 Session 并等待其输出任务结算，再发布快照和登记索引，最后关闭官方后端。关闭过程中最后结算的 Turn 也纳入本次快照。
 - 索引登记共用 1 秒等待预算；后端不可用或超时会诊断失败并保留文件，避免阻塞退出。未登记成功的文件不保证出现在已有数据库的列表中；下次正常退出可重试登记相同副本。
 - 依赖 Codex 本地 legacy rollout 格式，目前以 stock Codex CLI **0.159.2** 的隔离 `thread/list`（含 `useStateDbOnly`）及 `thread/read(includeTurns=true)` 验证。该格式不是稳定的公开导入 API，因此保留显式开关；Desktop/Framework 更新后应重新验证。尚未在运行中的 Desktop GUI 验收。
 - 不直接修改官方 SQLite；索引更新由官方 `thread/read` 完成。不重写用户既有 rollout，不复制外部登录凭据。新增副本不会继承 Harness 的模型配置。

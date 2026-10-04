@@ -73,6 +73,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
+import { ClaudeUltracodeUnavailableError, claudeUltracodeFailure } from "./ultracode.js";
 import { ClaudeSessionImportIndex } from "./claude-session-import.js";
 import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
@@ -386,6 +387,7 @@ function startupFailure(error: unknown): HarnessError {
   if (error instanceof ClaudeCodeExecutableError) {
     return { code: "notInstalled", message: error.message, retryable: false };
   }
+  if (error instanceof ClaudeUltracodeUnavailableError) return claudeUltracodeFailure(error);
   const text = error instanceof Error ? error.message.toLowerCase() : "";
   if (
     text.includes("not logged in") ||
@@ -1151,14 +1153,17 @@ class ClaudeHarnessSession implements HarnessSession {
       if (transport) {
         try {
           await transport.setModel(model);
-        } catch {
+        } catch (error) {
           return {
             ok: false,
-            error: {
-              code: "nativeFailure",
-              message: "Claude Code rejected the Model selection",
-              retryable: true,
-            },
+            error:
+              error instanceof ClaudeUltracodeUnavailableError
+                ? claudeUltracodeFailure(error)
+                : {
+                    code: "nativeFailure",
+                    message: "Claude Code rejected the Model selection",
+                    retryable: true,
+                  },
           };
         }
       }
@@ -1211,14 +1216,17 @@ class ClaudeHarnessSession implements HarnessSession {
       if (transport) {
         try {
           await transport.setThinkingOption(thinkingOptionId);
-        } catch {
+        } catch (error) {
           return {
             ok: false,
-            error: {
-              code: "nativeFailure",
-              message: "Claude Code rejected the Thinking selection",
-              retryable: true,
-            },
+            error:
+              error instanceof ClaudeUltracodeUnavailableError
+                ? claudeUltracodeFailure(error)
+                : {
+                    code: "nativeFailure",
+                    message: "Claude Code rejected the Thinking selection",
+                    retryable: true,
+                  },
           };
         }
       }

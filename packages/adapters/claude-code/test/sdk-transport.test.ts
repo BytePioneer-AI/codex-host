@@ -53,6 +53,14 @@ class FakeQuery {
   );
   readonly setModel = vi.fn(async () => undefined);
   readonly applyFlagSettings = vi.fn(async () => undefined);
+  readonly getSettings = vi.fn(async (): Promise<unknown> => ({
+    applied: {
+      effort: "xhigh",
+      ultracode: true,
+      ultracodeRequested: true,
+      ultracodeAvailable: true,
+    },
+  }));
   readonly setPermissionMode = vi.fn(async () => undefined);
   #closed = false;
   #messages: SDKMessage[] = [];
@@ -2481,5 +2489,133 @@ describe("ClaudeSdkTransport background task stop", () => {
       value.fakeQuery.stopTask.mockImplementation(async () => undefined);
       await transport.close();
     }
+  });
+});
+
+describe("ClaudeSdkTransport Ultracode", () => {
+  const ultracode = harnessThinkingOptionIdSchema.parse("ultracode");
+  const enter = { alwaysThinkingEnabled: true, effortLevel: "xhigh", ultracode: true };
+
+  it("turns Ultracode on before the first message and confirms it from native settings", async () => {
+    const value = fixture("create", "default", ultracode);
+
+    await value.transport.start();
+
+    expect(options(value).thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(options(value).effort).toBe("xhigh");
+    expect(value.fakeQuery.applyFlagSettings).toHaveBeenCalledTimes(1);
+    expect(value.fakeQuery.applyFlagSettings).toHaveBeenCalledWith(enter);
+    expect(value.fakeQuery.getSettings).toHaveBeenCalledTimes(1);
+    await value.transport.close();
+  });
+
+  it("fails startup when Claude Code does not put Ultracode into effect", async () => {
+    const value = fixture("create", "default", ultracode);
+    value.fakeQuery.getSettings.mockResolvedValueOnce({
+      applied: { ultracode: false, ultracodeRequested: true, ultracodeAvailable: false },
+      effective: {},
+    });
+    const close = vi.spyOn(value.fakeQuery, "close");
+
+    await expect(value.transport.start()).rejects.toMatchObject({
+      name: "ClaudeUltracodeUnavailableError",
+      reason: "unavailable",
+    });
+    expect(close).toHaveBeenCalled();
+    expect(value.transport.slashCommands()).toBeNull();
+  });
+
+  it("fails closed when the native settings cannot be read", async () => {
+    const value = fixture("create", "default", ultracode);
+    value.fakeQuery.getSettings.mockRejectedValueOnce(new Error("unknown control request"));
+
+    await expect(value.transport.start()).rejects.toMatchObject({ reason: "unverifiable" });
+  });
+
+  it("restores the confirmed selection when a live switch to Ultracode is not honored", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("high"));
+    await value.transport.start();
+    // Claude Code before 2.1.154 merges the unknown key and reports no Ultracode state.
+    value.fakeQuery.getSettings.mockResolvedValueOnce({ applied: { effort: "xhigh" } });
+
+    await expect(value.transport.setThinkingOption(ultracode)).rejects.toMatchObject({
+      reason: "unsupportedVersion",
+    });
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("medium"));
+
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [enter],
+      [{ alwaysThinkingEnabled: true, effortLevel: "high", ultracode: false }],
+      // The rejected selection never took effect, so leaving it sends no Ultracode key.
+      [{ alwaysThinkingEnabled: true, effortLevel: "medium" }],
+    ]);
+    await value.transport.close();
+  });
+
+  it("clears Ultracode explicitly when leaving it", async () => {
+    const value = fixture("create", "default", ultracode);
+    await value.transport.start();
+
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("xhigh"));
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("off"));
+    await value.transport.setThinkingOption(ultracode);
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("off"));
+
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [enter],
+      [{ alwaysThinkingEnabled: true, effortLevel: "xhigh", ultracode: false }],
+      [{ alwaysThinkingEnabled: false }],
+      [enter],
+      [{ alwaysThinkingEnabled: false, ultracode: false }],
+    ]);
+    expect(value.fakeQuery.getSettings).toHaveBeenCalledTimes(2);
+    await value.transport.close();
+  });
+
+  it("rejects a Model that cannot keep Ultracode and restores the previous Model", async () => {
+    const value = fixture("create", "default", ultracode);
+    await value.transport.start();
+    value.fakeQuery.getSettings.mockResolvedValueOnce({
+      applied: { ultracode: false, ultracodeRequested: true, ultracodeAvailable: false },
+      effective: { enableWorkflows: true },
+    });
+
+    await expect(value.transport.setModel("haiku")).rejects.toMatchObject({
+      reason: "modelUnsupported",
+    });
+    expect(value.fakeQuery.setModel.mock.calls).toEqual([["haiku"], [undefined]]);
+    expect(value.fakeQuery.applyFlagSettings.mock.calls.at(-1)).toEqual([enter]);
+
+    await value.transport.setModel("sonnet");
+    await value.transport.setModel("opus");
+    expect(value.fakeQuery.setModel.mock.calls.slice(2)).toEqual([["sonnet"], ["opus"]]);
+    await value.transport.close();
+  });
+
+  it("faults the Session when the confirmed state cannot be restored", async () => {
+    const value = fixture("create", "default", ultracode);
+    await value.transport.start();
+    value.fakeQuery.getSettings.mockResolvedValueOnce({ applied: { ultracode: false } });
+    const restoreFailure = new Error("native restore failed");
+    value.fakeQuery.setModel.mockResolvedValueOnce(undefined).mockRejectedValueOnce(restoreFailure);
+
+    await expect(value.transport.setModel("haiku")).rejects.toMatchObject({
+      reason: "notApplied",
+    });
+    expect(value.onFault).toHaveBeenCalledWith(restoreFailure);
+    await value.transport.close();
+  });
+
+  it("leaves other selections unconfirmed and untouched by Ultracode", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("max"));
+    await value.transport.start();
+    await value.transport.setModel("haiku");
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("low"));
+
+    expect(value.fakeQuery.getSettings).not.toHaveBeenCalled();
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [{ alwaysThinkingEnabled: true, effortLevel: "low" }],
+    ]);
+    await value.transport.close();
   });
 });

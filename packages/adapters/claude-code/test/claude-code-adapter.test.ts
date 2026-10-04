@@ -15,6 +15,7 @@ import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/index.js";
 import { projectClaudePlanLimitToCredits } from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
+import { ClaudeUltracodeUnavailableError } from "../src/ultracode.js";
 import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
 import type { ClaudePermissionMode } from "../src/permission-modes.js";
 import type {
@@ -541,6 +542,7 @@ describe("Claude Code HarnessAdapter", () => {
           { id: "high", label: "High" },
           { id: "xhigh", label: "Extra High" },
           { id: "max", label: "Max" },
+          { id: "ultracode", label: "Ultracode" },
         ],
         defaultThinkingOptionId: "auto",
       },
@@ -603,6 +605,7 @@ describe("Claude Code HarnessAdapter", () => {
           { id: "high" },
           { id: "xhigh" },
           { id: "max" },
+          { id: "ultracode" },
         ],
       },
     });
@@ -5454,5 +5457,95 @@ describe("Claude Code HarnessAdapter", () => {
       undefined,
       undefined,
     ]);
+  });
+});
+
+describe("Claude Code Ultracode selection", () => {
+  const ultracode = harnessThinkingOptionIdSchema.parse("ultracode");
+
+  it("aborts the message and keeps Ultracode selected when Claude Code rejects it at startup", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const createTransport = dependencies.createTransport;
+    vi.mocked(createTransport).mockImplementation((input) => {
+      const transport = new FakeClaudeTransport(
+        input.sessionId,
+        input.permissionMode,
+        input.onPermissionModeChanged,
+        input.onPlanLimit,
+      );
+      transport.start.mockRejectedValueOnce(
+        new ClaudeUltracodeUnavailableError("workflowsDisabled"),
+      );
+      transports.push(transport);
+      return transport;
+    });
+    const session = await openSession(adapter);
+    await expect(
+      session.execute({ type: "thinking.select", thinkingOptionId: ultracode }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+
+    for (const turn of ["first", "second"]) {
+      await expect(session.execute(textTurn(turn))).resolves.toEqual({
+        ok: false,
+        error: {
+          code: "configurationRequired",
+          message: expect.stringContaining("Dynamic workflows"),
+          retryable: true,
+        },
+      });
+    }
+    expect(vi.mocked(createTransport).mock.calls.map(([input]) => input.thinkingOptionId)).toEqual([
+      ultracode,
+      ultracode,
+    ]);
+    expect(transports.every((transport) => transport.turns.length === 0)).toBe(true);
+    await session.close();
+  });
+
+  it("keeps the confirmed option when a live switch to Ultracode is rejected", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("start"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    transport.setThinkingOption.mockRejectedValueOnce(
+      new ClaudeUltracodeUnavailableError("unsupportedVersion"),
+    );
+    await expect(
+      session.execute({ type: "thinking.select", thinkingOptionId: ultracode }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "unsupported",
+        message: expect.stringContaining("2.1.154"),
+        retryable: false,
+      },
+    });
+    transport.setModel.mockRejectedValueOnce(
+      new ClaudeUltracodeUnavailableError("modelUnsupported"),
+    );
+    await expect(
+      session.execute({ type: "model.select", model: encodeClaudeModelRef("haiku") }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    // Neither rejected selection was published.
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveThinkingOptionId: "high", effectiveModel: CLAUDE_DEFAULT_MODEL_REF },
+    });
+    await session.close();
   });
 });

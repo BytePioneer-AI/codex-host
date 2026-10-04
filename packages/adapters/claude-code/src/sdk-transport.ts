@@ -27,7 +27,12 @@ import {
 import { ClaudeNativeTurnAccumulator, parseClaudePlanLimitEvent } from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
 import { closeClaudeProcessGroup } from "./process-fence.js";
-import { claudeThinkingConfiguration, parseClaudeThinkingOptionId } from "./thinking-options.js";
+import {
+  claudeThinkingConfiguration,
+  claudeThinkingFlagSettings,
+  parseClaudeThinkingOptionId,
+} from "./thinking-options.js";
+import { ClaudeUltracodeUnavailableError, claudeUltracodeUnavailableReason } from "./ultracode.js";
 import type {
   ClaudeApprovalRequest,
   ClaudeApprovalSuggestionScope,
@@ -386,6 +391,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #environment: NodeJS.ProcessEnv;
   readonly #input = new PushableInput<SDKUserMessage>();
   readonly #model: string | undefined;
+  /** The Model the live Session runs; `undefined` is Claude Code's default Model. */
+  #currentModel: string | undefined;
   readonly #onFault: (error: unknown) => void;
   readonly #onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void;
   readonly #onPlanLimit: (planLimit: ClaudePlanLimitEvent) => void;
@@ -424,6 +431,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#command = options.command;
     this.#environment = options.environment ?? process.env;
     this.#model = options.model;
+    this.#currentModel = options.model;
     this.#onFault = options.onFault;
     this.#onPermissionModeChanged = options.onPermissionModeChanged;
     this.#onPlanLimit = options.onPlanLimit;
@@ -498,6 +506,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         (initialization as { commands?: unknown }).commands,
       );
       this.#provider = (await activeQuery.accountInfo().catch(() => undefined))?.apiProvider;
+      if (thinking.ultracode) {
+        // Ultracode is a session-scoped flag setting. It must be confirmed before the first
+        // message: Claude Code accepts the request even when the Session cannot honor it.
+        await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, null));
+        await this.#verifyUltracode(activeQuery);
+      }
     } catch (error) {
       activeQuery.close();
       this.#query = null;
@@ -537,20 +551,72 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   async setModel(model?: string): Promise<void> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
+    const thinking = claudeThinkingConfiguration(this.#thinkingOptionId);
+    const previousModel = this.#currentModel;
     await activeQuery.setModel(model);
+    if (thinking.ultracode) {
+      try {
+        await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, thinking));
+        await this.#verifyUltracode(activeQuery);
+      } catch (error) {
+        // Ultracode stays selected, so the Model it cannot run on is rejected instead.
+        await this.#restoreOrFault(async () => {
+          await activeQuery.setModel(previousModel);
+          await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, null));
+        });
+        throw error;
+      }
+    }
+    this.#currentModel = model;
   }
 
   async setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
     const id = parseClaudeThinkingOptionId(thinkingOptionId);
+    const previous = claudeThinkingConfiguration(this.#thinkingOptionId);
     const thinking = claudeThinkingConfiguration(id);
-    await activeQuery.applyFlagSettings(
-      thinking.enabled
-        ? { alwaysThinkingEnabled: true, effortLevel: thinking.effort ?? null }
-        : { alwaysThinkingEnabled: false },
-    );
+    await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, previous));
+    if (thinking.ultracode) {
+      try {
+        await this.#verifyUltracode(activeQuery);
+      } catch (error) {
+        // Restore the confirmed selection, including clearing the requested Ultracode flag.
+        await this.#restoreOrFault(() =>
+          activeQuery.applyFlagSettings(claudeThinkingFlagSettings(previous, thinking)),
+        );
+        throw error;
+      }
+    }
     this.#thinkingOptionId = id;
+  }
+
+  /** A failed restore leaves the native Model or Thinking state unknown; stop the Session. */
+  async #restoreOrFault(restore: () => Promise<void>): Promise<void> {
+    try {
+      await restore();
+    } catch (error) {
+      this.#onFault(error);
+    }
+  }
+
+  /**
+   * Claude Code accepts an Ultracode request even when the Session cannot honor it, so the
+   * effective state is read back from the native Session settings. Fails closed.
+   */
+  async #verifyUltracode(activeQuery: Query): Promise<void> {
+    // `getSettings` is a native control request the SDK implements without a public type.
+    const getSettings = (activeQuery as unknown as { getSettings?: () => Promise<unknown> })
+      .getSettings;
+    let settings: unknown;
+    try {
+      if (typeof getSettings !== "function") throw new Error("Claude SDK cannot read settings");
+      settings = await getSettings.call(activeQuery);
+    } catch {
+      throw new ClaudeUltracodeUnavailableError("unverifiable");
+    }
+    const reason = claudeUltracodeUnavailableReason(settings, this.#environment);
+    if (reason) throw new ClaudeUltracodeUnavailableError(reason);
   }
 
   async setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void> {

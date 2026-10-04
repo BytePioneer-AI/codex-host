@@ -308,6 +308,17 @@ function parseSessionStreaming(response: Record<string, unknown>): boolean {
   return isStreaming;
 }
 
+function cancellationSettled(response: Record<string, unknown>, terminalEnd: boolean): boolean {
+  const data = sessionStateData(response);
+  return (
+    !parseSessionStreaming(response) &&
+    (data.isSettled === true || (data.isSettled === undefined && terminalEnd)) &&
+    data.isCompacting !== true &&
+    data.hasPendingAsyncWork !== true &&
+    !(typeof data.queuedMessageCount === "number" && data.queuedMessageCount > 0)
+  );
+}
+
 function parseAvailableModels(response: Record<string, unknown>): OmpNativeModel[] {
   const data = isRecord(response.data) ? response.data : null;
   if (!data || !Array.isArray(data.models)) {
@@ -523,6 +534,7 @@ export class OmpRpcSession {
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
+  #closePromise: Promise<void> | null = null;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
   #compactionTimeout: NodeJS.Timeout | null = null;
@@ -556,7 +568,9 @@ export class OmpRpcSession {
     this.#options = {
       commandTimeoutMs: 30_000,
       compactionTimeoutMs: 300_000,
-      cancelTimeoutMs: 2_000,
+      // Native Abort waits for tools, persistence and deferred work to unwind.
+      // Stable cancellation must outlast the Host's 20s steering wait.
+      cancelTimeoutMs: 30_000,
       closeTimeoutMs: 2_000,
       ...options,
     };
@@ -964,10 +978,14 @@ export class OmpRpcSession {
       );
     }, this.#options.cancelTimeoutMs);
     const aborting = this.#send("abort", {})
-      .then(() => {
+      .then(async () => {
         if (this.#activeTurn !== active) return;
         active.cancellation = "accepted";
-        this.#finishSettledTurn(active);
+        // Aborting an idle/yielded run need not publish another agent_end.
+        // The acknowledgement alone is not proof that background work drained.
+        if (active.settlement !== "confirming") {
+          await this.#confirmCancelledTurn(active);
+        }
       })
       .catch((error: unknown) => {
         if (this.#activeTurn !== active) throw error;
@@ -990,11 +1008,15 @@ export class OmpRpcSession {
     void this.close().catch(() => undefined);
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#rejectAll(new Error("Omp RPC Session closed"));
-    await this.#stopProcess();
+  close(): Promise<void> {
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#rejectAll(new Error("Omp RPC Session closed"));
+    }
+    // Closing admission is not process exit; cancellation and recovery callers
+    // must await the same cleanup, including after a timed-out Prompt.
+    this.#closePromise ??= this.#stopProcess();
+    return this.#closePromise;
   }
 
   async #stopProcess(): Promise<void> {
@@ -1114,6 +1136,10 @@ export class OmpRpcSession {
     }
     const active = this.#activeTurn;
     if (this.#handleSubagentFrame(active, value)) return;
+    if (value.type === "session_settled" && active?.cancellation === "accepted") {
+      if (active.settlement === "pending") void this.#confirmCancelledTurn(active);
+      return;
+    }
     if (!active) {
       if (value.type === "extension_ui_request" && this.#isBlockingInteraction(value)) {
         this.#fail(
@@ -1508,14 +1534,45 @@ export class OmpRpcSession {
     });
   }
 
+  async #confirmCancelledTurn(active: ActiveTurn): Promise<void> {
+    try {
+      const response = await this.#send("get_state", {});
+      const state = parseSessionState(response);
+      if (this.#activeTurn !== active || active.cancellation !== "accepted") return;
+      // isStreaming:false alone also describes a session waiting for background
+      // jobs. Modern OMP supplies isSettled; older versions still need agent_end.
+      if (!cancellationSettled(response, active.settlement === "confirmed")) {
+        active.settlement = "pending";
+        return;
+      }
+      this.#state = state;
+      active.settlement = "confirmed";
+      this.#finishSettledTurn(active);
+    } catch (error) {
+      if (this.#activeTurn !== active) return;
+      const fault =
+        error instanceof OmpRpcFaultError
+          ? error
+          : new OmpRpcFaultError(
+              "protocolError",
+              `Omp RPC cancelled Turn state could not be confirmed: ${message(error)}`,
+            );
+      this.#terminateFailedCancellation(active, fault);
+    }
+  }
+
   async #confirmSettledTurn(active: ActiveTurn): Promise<void> {
     try {
       const response = await this.#send("get_state", {});
       const state = parseSessionState(response);
+      if (this.#activeTurn !== active) return;
+      if (active.cancellation === "accepted" && !cancellationSettled(response, true)) {
+        active.settlement = "pending";
+        return;
+      }
       if (parseSessionStreaming(response)) {
         throw new OmpRpcFaultError("protocolError", "Omp RPC agent_end state is still Streaming");
       }
-      if (this.#activeTurn !== active) return;
       this.#state = state;
       active.settlement = "confirmed";
       this.#finishSettledTurn(active);
@@ -1690,7 +1747,7 @@ export class OmpRpcSession {
     }
     let finalFault = fault;
     try {
-      await this.#stopProcess();
+      await this.close();
     } catch (error) {
       finalFault = new OmpRpcFaultError(
         "processExited",

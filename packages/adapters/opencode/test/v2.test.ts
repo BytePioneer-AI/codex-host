@@ -7,7 +7,11 @@ import type {
   SessionMessageAssistant,
   PermissionRequest,
 } from "@opencode/client";
-import { HarnessOutputChannel, type HarnessOutput } from "@codexhost/harness-adapter";
+import {
+  HarnessOutputChannel,
+  type HarnessOutput,
+  type HostEvent,
+} from "@codexhost/harness-adapter";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
 import { harnessModelCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { openCodeMajor } from "../src/version.js";
@@ -53,6 +57,8 @@ function fixture() {
   const native = new HarnessOutputChannel<OpenCodeEvent>();
   const messages: SessionMessageInfo[] = [];
   const events: HarnessOutput[] = [];
+  /** Host usage metering events, kept apart from the lifecycle the other tests assert. */
+  const usage: HostEvent[] = [];
   const prompt = vi.fn(async () => {
     messages.push(user());
     return { id: "inbox" };
@@ -88,7 +94,14 @@ function fixture() {
   );
   sessions.push(session);
   void (async () => {
-    for await (const event of session.outputs) events.push(event);
+    for await (const event of session.outputs) {
+      if (
+        event.kind === "event" &&
+        (event.event.type === "usage.request" || event.event.type === "usage.history")
+      )
+        usage.push(event.event);
+      else events.push(event);
+    }
   })();
   const emit = (type: string, data: object = {}) =>
     native.emit({ type, data: { sessionID: info.id, ...data } } as OpenCodeEvent);
@@ -112,6 +125,7 @@ function fixture() {
     native,
     messages,
     events,
+    usage,
     prompt,
     interrupt,
     emit,
@@ -383,6 +397,62 @@ describe("OpenCode v2 Session lifecycle", () => {
     f.emit("session.text.delta", { assistantMessageID: "old", ordinal: 0, delta: "late" });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(f.events).toHaveLength(length);
+  });
+  it("replays metered history on open and meters each finished step once", async () => {
+    const f = fixture();
+    f.messages.push(user("earlier"), {
+      ...assistant("earlier answer"),
+      id: "assistant-earlier",
+      time: { created: 2, streamed: 3, completed: 9 },
+      tokens: { input: 10, output: 4, reasoning: 2, cache: { read: 30, write: 5 } },
+    });
+    // An unfinished step has no Tokens and no usage.
+    f.messages.push({ ...assistant("cut off"), id: "assistant-unfinished" });
+    f.messages.push({ ...idle(), id: "idle-earlier" });
+    await f.start();
+    expect(f.usage).toEqual([
+      {
+        type: "usage.request",
+        request: {
+          requestId: "assistant-earlier",
+          historical: true,
+          model: "model",
+          provider: "test",
+          inputTokens: 45,
+          cachedInputTokens: 30,
+          cacheWriteInputTokens: 5,
+          outputTokens: 6,
+          reasoningOutputTokens: 2,
+        },
+      },
+      { type: "usage.history", complete: true },
+    ]);
+
+    await f.turn();
+    f.messages.push({
+      ...assistant("live answer"),
+      id: "assistant-live",
+      time: { created: 10, streamed: 1_000, completed: 3_000 },
+      tokens: { input: 1, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
+    });
+    f.emit("session.step.ended", { assistantMessageID: "assistant-live" });
+    f.messages.push(idle());
+    f.emit("session.execution.succeeded");
+    await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+    const live = f.usage.filter(
+      (event) => event.type === "usage.request" && event.request.requestId === "assistant-live",
+    );
+    expect(live).toEqual([
+      {
+        type: "usage.request",
+        request: expect.objectContaining({
+          outputTokens: 8,
+          outputStartedAtMs: 1_000,
+          completedAtMs: 3_000,
+        }),
+      },
+    ]);
+    expect(live[0]).not.toHaveProperty("request.historical");
   });
   it("rejects concurrent starts and emits no lifecycle for rejected admission", async () => {
     const f = fixture();

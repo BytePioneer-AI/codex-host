@@ -15,6 +15,36 @@ function controller(): DraftAgentController<object> {
 }
 
 describe("Renderer draft Agent controller", () => {
+  it.each([false, true])(
+    "detaches reused roots without leaking external state (locked=%s)",
+    (locked) => {
+      const agents = controller();
+      const root = {};
+      const target = locked ? ["conversation", "pi-thread"] : ["default", "client-new-thread:old"];
+      agents.mount(root, target, "pi");
+      const model = harnessModelRefSchema.parse({ id: "old-pi-model" });
+      if (locked) agents.restore(root, "pi", model);
+      else agents.setExternalModel(root, "pi", model);
+      agents.markSubmissionPending(root);
+      const old = agents.get(root);
+      const request = agents.beginModelRequest(root);
+      const ownership = agents.beginOwnershipRequest(root);
+      agents.detach(root);
+      const fresh = agents.mount(root, ["default", "client-new-thread:new"], "codex");
+      expect(fresh).toMatchObject({ agent: "codex", phase: "draft" });
+      expect(fresh.composerId).not.toBe(old.composerId);
+      expect(agents.modelForAgent(root, "pi")).toBeUndefined();
+      expect(agents.isSubmissionPending(root)).toBe(false);
+      expect(agents.isCurrentModelRequest(root, request)).toBe(false);
+      expect(agents.isCurrentOwnershipRequest(root, ownership)).toBe(false);
+      const revisit = {};
+      expect(agents.mount(revisit, target)).toMatchObject({
+        agent: "pi",
+        phase: locked ? "locked" : "draft",
+      });
+      expect(agents.modelForAgent(revisit, "pi")).toEqual(model);
+    },
+  );
   it("keeps Codex locked across Composer replacement", () => {
     const agents = controller();
     const draft = {};

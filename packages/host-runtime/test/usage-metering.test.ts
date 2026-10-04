@@ -155,6 +155,31 @@ describe("UsageMeter timing", () => {
     expect(usage?.outputTokensPerSecond).toBe(50);
   });
 
+  it("updates speed after every timed request while the Turn runs", () => {
+    const meter = completeMeter();
+    meter.turnStarted("turn-1", 0);
+    meter.recordRequest(
+      request("a", { outputTokens: 100, outputStartedAtMs: 0, completedAtMs: 1_000 }),
+      "turn-1",
+    );
+    meter.turnCompleted("turn-1");
+    meter.turnStarted("turn-2", 0);
+    // Until the new Turn has a timed request, the previous Turn's speed stays.
+    expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(100);
+    meter.recordRequest(
+      request("b", { outputTokens: 30, outputStartedAtMs: 0, completedAtMs: 1_000 }),
+      "turn-2",
+    );
+    expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(30);
+    meter.recordRequest(
+      request("c", { outputTokens: 90, outputStartedAtMs: 0, completedAtMs: 1_000 }),
+      "turn-2",
+    );
+    expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(60);
+    meter.turnCompleted("turn-2");
+    expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(60);
+  });
+
   it("publishes no speed for a Turn without timed requests", () => {
     const meter = completeMeter();
     meter.turnStarted("turn-1", 0);

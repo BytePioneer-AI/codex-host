@@ -154,7 +154,7 @@ Host MUST 按 `requestId` 在 Thread 内去重请求记录，并用请求记录�
 
 - **WHEN** 一个实时 Turn 收到推理或正文输出事件和带计时的请求记录
 - **THEN** Host MUST 以 Turn 开始到首个推理或正文输出事件的 Host 观测时长发布 `timeToFirstOutputMs`
-- **AND** Turn 结束时 Host MUST 以 Σ 输出 Token ÷ Σ (`completedAtMs` − `outputStartedAtMs`) 发布 `outputTokensPerSecond`，只计入本 Turn 内同时带两个时间且时长大于零的实时记录
+- **AND** 本 Turn 每计入一条记录，Host MUST 以本 Turn 至今的 Σ 输出 Token ÷ Σ (`completedAtMs` − `outputStartedAtMs`) 更新 `outputTokensPerSecond`，只计入同时带两个时间且时长大于零的实时记录；本 Turn 计入第一条记录前保留上一 Turn 的值
 - **AND** 历史记录、缺少计时、时长为零或在 Turn 结束后才到达的记录 MUST NOT 参与速度，但仍计入费用；没有可计入记录时 Host MUST NOT 发布速度
 
 #### Scenario: 未接入的 Adapter

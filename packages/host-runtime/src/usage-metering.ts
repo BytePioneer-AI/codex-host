@@ -57,6 +57,8 @@ export class UsageMeter {
     ) {
       this.#turnOutputTokens += request.outputTokens;
       this.#turnOutputMs += duration;
+      // Running average of the Turn so far; the previous Turn's value stays until now.
+      this.#outputTokensPerSecond = this.#turnOutputTokens / (this.#turnOutputMs / 1000);
     }
     return true;
   }
@@ -86,8 +88,8 @@ export class UsageMeter {
 
   turnCompleted(turnId: string): void {
     if (turnId !== this.#turnId) return;
-    this.#outputTokensPerSecond =
-      this.#turnOutputMs > 0 ? this.#turnOutputTokens / (this.#turnOutputMs / 1000) : undefined;
+    // A Turn without timed requests publishes no speed rather than a stale one.
+    if (this.#turnOutputMs === 0) this.#outputTokensPerSecond = undefined;
     this.#turnId = null;
     this.#turnStartedAtMs = null;
   }

@@ -75,7 +75,7 @@ Host 在收到 `complete: true` 之前，以及处于不完整状态时，不发
 - 费用：每次发布时用当前价格表对全部记录重算，价格刷新或用户补价后自然更新。单条记录费用 = `(input − cacheRead − cacheWrite) × in + cacheRead × cacheReadPrice + cacheWrite × cacheWritePrice + output × out`。记录缺 `model`、模型无精确匹配、或有缓存读/写 Token 但缺对应单价时，整个会话省略费用。
 - 会话平均缓存命中率 = Σ `cachedInputTokens` ÷ Σ `inputTokens`（分母为 0 时省略）。
 - 首字延迟：Turn 开始到首个 `reasoning.delta` 或正文 `text.append` 的 Host 观测时长，仅保留最近一轮。
-- 回合平均速度：速度 = Σ 输出 Token ÷ Σ (`completedAtMs` − `outputStartedAtMs`)，只计入本 Turn 内带两个时间且时长大于零的实时记录，Turn 结束时发布。缺计时、时长为零、Turn 结束后才到达的记录和历史记录不计入速度，但照常计费。按请求关联计时，排除了工具执行时间和后续请求的预填充等待，也不受请求交错到达的影响。
+- 回合平均速度：速度 = Σ 输出 Token ÷ Σ (`completedAtMs` − `outputStartedAtMs`)，只计入本 Turn 内带两个时间且时长大于零的实时记录，每计入一条记录即更新为本 Turn 至今的平均值，计入第一条前保留上一 Turn 的值。缺计时、时长为零、Turn 结束后才到达的记录和历史记录不计入速度，但照常计费。按请求关联计时，排除了工具执行时间和后续请求的预填充等待，也不受请求交错到达的影响。
 - 未接入的 Adapter（当前 Session 未发布 `usage.history`）：保留其原生费用，`costSource: "native"`。
 
 状态随 Session 替换、Thread 删除、Host 关闭丢弃，不写 Mapping Store。计量错误只影响派生字段，不影响会话（沿用现有“Usage Telemetry 不得改变生命周期正确性”要求）。

@@ -52,6 +52,7 @@ import {
 import {
   codeBuddyCanonicalCwd,
   historyUsage,
+  historyUsageRequests,
   pendingNativeHistoryRewind,
   readNativeHistory,
   snapshotFromHistory,
@@ -88,6 +89,7 @@ export class CodeBuddySession implements HarnessSession {
   initialUsage: HostUsage | null = null;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly outputs = this.#channel.outputs;
+  readonly #meteredRequests = new Set<string>();
   readonly subagents: CodeBuddySubagents;
   #client: CodeBuddyClient;
   #generation = 0;
@@ -221,7 +223,11 @@ export class CodeBuddySession implements HarnessSession {
       this.#hasTurn =
         snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile).turns.length > 0;
       this.#usage = historyUsage(history);
+      this.#meterHistory(history, true);
       rewind = pendingNativeHistoryRewind(history);
+    } else {
+      // A new Session has no native requests yet.
+      this.#emit({ type: "usage.history", complete: true });
     }
     await this.#client.initialize();
     const opened = await this.#client.open(this.input.cwd, this.#ref?.nativeSessionId);
@@ -282,6 +288,17 @@ export class CodeBuddySession implements HarnessSession {
   #emit(event: HostEvent) {
     this.#channel.emit({ kind: "event", event });
   }
+
+  /** Publishes native requests not yet metered; the first read also declares completeness. */
+  #meterHistory(history: string, historical: boolean) {
+    const { requests, complete } = historyUsageRequests(history, historical);
+    for (const request of requests) {
+      if (this.#meteredRequests.has(request.requestId)) continue;
+      this.#meteredRequests.add(request.requestId);
+      this.#emit({ type: "usage.request", request });
+    }
+    if (historical || !complete) this.#emit({ type: "usage.history", complete });
+  }
   #apply(config: ReturnType<typeof configuration>, emit = true) {
     this.#config = config;
     if (this.#ref && record(this.#ref.locator).codebuddyDerived === 1)
@@ -328,6 +345,8 @@ export class CodeBuddySession implements HarnessSession {
         this.profile,
       );
       this.#usage = historyUsage(history);
+      // Requests the last Turn added, now persisted; CodeBuddy ACP reports no per-request usage.
+      this.#meterHistory(history, false);
       return {
         ...this.subagents.project(
           snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile),

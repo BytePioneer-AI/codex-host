@@ -33,6 +33,13 @@ const table: ModelPriceTableData = {
     },
     resellerB: { "v-flash": [0.12, 0.3, null, null, "vendor/v-flash-0731"] },
     reseller2: { "orphan-alias": [9, 9, null, null, "nowhere/orphan"] },
+    // The vendor lists its newest model only under aliases; resellers use the exact ID.
+    lab: {
+      "lab-flash": [0.15, 0.6, 0.003, null, "lab/lab-v2-flash"],
+      "lab-v1-flash": [0.15, 0.6, 0.003, null, "lab/lab-v2-flash"],
+    },
+    reseller4: { "lab-v2-flash": [0.04, 0.08, 0.008, null, "lab/lab-v2-flash"] },
+    reseller5: { "lab-v2-flash": [0, 0, 0, 0, "lab/lab-v2-flash"] },
     reseller3: { "orphan-alias": [8, 8, null, null, "nowhere/orphan"] },
   },
 };
@@ -80,6 +87,10 @@ describe("ModelPriceLookup", () => {
 
   it("prefers the vendor's own listing when resellers disagree on its version", () => {
     expect(lookup.find("v-flash")).toEqual({ input: 0.15, output: 0.6, cacheRead: 0.003 });
+  });
+
+  it("prices an official model the vendor lists only under agreeing aliases", () => {
+    expect(lookup.find("lab-v2-flash")).toEqual({ input: 0.15, output: 0.6, cacheRead: 0.003 });
   });
 
   it("follows canonical links to the final official listing", () => {

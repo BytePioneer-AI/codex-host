@@ -1,0 +1,95 @@
+import { describe, expect, it } from "vitest";
+
+import { historyUsageRequests } from "../src/history.js";
+
+// `providerData.rawUsage` captured from local CodeBuddy history (deepseek-v4.1-flash).
+const rawUsage = {
+  prompt_tokens: 20093,
+  completion_tokens: 279,
+  total_tokens: 20372,
+  completion_tokens_details: { reasoning_tokens: 17, cached_tokens: 0 },
+  prompt_tokens_details: { reasoning_tokens: 0, cached_tokens: 17664 },
+  prompt_cache_hit_tokens: 17664,
+  prompt_cache_miss_tokens: 2429,
+  cache_read_input_tokens: 0,
+  cache_creation_input_tokens: 0,
+  prompt_cache_write_tokens: 0,
+  completion_thinking_tokens: 17,
+  credit: 0.11,
+  cached_tokens: 0,
+};
+
+function row(id: string, parentId: string | null, type: string, data: Record<string, unknown>) {
+  return JSON.stringify({ id, parentId, timestamp: 1, type, providerData: data });
+}
+
+function history(...rows: string[]) {
+  return rows.join("\n") + "\n";
+}
+
+const provider = { messageId: "msg-1", model: "deepseek-v4.1-flash", rawUsage };
+
+describe("CodeBuddy usage records", () => {
+  it("meters one request per messageId with cached input from prompt_tokens_details", () => {
+    expect(
+      historyUsageRequests(
+        history(
+          row("r1", null, "reasoning", provider),
+          row("r2", "r1", "function_call", provider),
+          row("r3", "r2", "function_call_result", {}),
+        ),
+        true,
+      ),
+    ).toEqual({
+      requests: [
+        {
+          requestId: "msg-1",
+          historical: true,
+          model: "deepseek-v4.1-flash",
+          inputTokens: 20093,
+          cachedInputTokens: 17664,
+          cacheWriteInputTokens: 0,
+          outputTokens: 279,
+          reasoningOutputTokens: 17,
+        },
+      ],
+      complete: true,
+    });
+  });
+
+  it("leaves requests with unverified Anthropic-style cache fields unmetered", () => {
+    const unverified = { ...provider, rawUsage: { ...rawUsage, cache_read_input_tokens: 5 } };
+    expect(historyUsageRequests(history(row("r1", null, "reasoning", unverified)), true)).toEqual({
+      requests: [],
+      complete: false,
+    });
+  });
+
+  it("reads prompt cache writes, which prompt_tokens includes", () => {
+    // Captured from WorkBuddy (gpt-5.6-luna): 24963 written + 3 missed = 24966 prompt.
+    const writes = {
+      ...provider,
+      model: "gpt-5.6-luna",
+      rawUsage: {
+        ...rawUsage,
+        prompt_tokens: 24966,
+        completion_tokens: 14,
+        prompt_tokens_details: { cached_tokens: 0 },
+        prompt_cache_hit_tokens: 0,
+        prompt_cache_miss_tokens: 3,
+        prompt_cache_write_tokens: 24963,
+        completion_thinking_tokens: 0,
+      },
+    };
+    expect(
+      historyUsageRequests(history(row("r1", null, "reasoning", writes)), true).requests[0],
+    ).toMatchObject({ inputTokens: 24966, cachedInputTokens: 0, cacheWriteInputTokens: 24963 });
+  });
+
+  it("skips subagent requests recorded in the parent history", () => {
+    const sub = { ...provider, messageId: "msg-sub", isSubAgent: true };
+    expect(historyUsageRequests(history(row("r1", null, "reasoning", sub)), true).requests).toEqual(
+      [],
+    );
+  });
+});

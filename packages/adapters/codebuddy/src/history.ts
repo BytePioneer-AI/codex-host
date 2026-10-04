@@ -4,11 +4,13 @@ import { access, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type {
-  HostItemSnapshot,
-  HostThreadSnapshot,
-  HostTurnSnapshot,
-  HostUsage,
+import {
+  parseHostUsageRequest,
+  type HostItemSnapshot,
+  type HostThreadSnapshot,
+  type HostTurnSnapshot,
+  type HostUsage,
+  type HostUsageRequest,
 } from "@codexhost/harness-adapter";
 import {
   hostItemIdSchema,
@@ -687,6 +689,76 @@ export function snapshotFromHistory(
 }
 
 /** One Usage entry per model request; duplicated tool rows do not multiply spend. */
+function usageCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Host usage metering for CodeBuddy and WorkBuddy. Each `providerData.messageId` on the active
+ * branch is one model request; its rows share one OpenAI-compatible `rawUsage`. Verified against
+ * local CodeBuddy history (deepseek-v4.1-flash, hy4-preview-f): `prompt_tokens` includes cached
+ * input and cache writes (= `prompt_cache_hit_tokens` + `prompt_cache_miss_tokens` +
+ * `prompt_cache_write_tokens` on all 368 local CodeBuddy and WorkBuddy rows), cached input is
+ * `prompt_tokens_details.cached_tokens` (equal to `prompt_cache_hit_tokens`), and
+ * `completion_tokens` includes `completion_thinking_tokens`. The Anthropic-style
+ * `cache_read_input_tokens` and `cache_creation_input_tokens` were always zero; a request that
+ * reports either has unverified semantics and is left unmetered rather than guessed. Subagent
+ * requests belong to their own transcripts.
+ */
+export function historyUsageRequests(
+  contents: string,
+  historical: boolean,
+): { requests: HostUsageRequest[]; complete: boolean } {
+  const usages = new Map<string, Record<string, unknown>>();
+  for (const row of nativeHistoryRows(contents)) {
+    const data = record(row.providerData);
+    if (data.isSubAgent === true || !Object.keys(record(data.rawUsage)).length) continue;
+    if (text(data.messageId)) usages.set(text(data.messageId), data);
+  }
+  const requests: HostUsageRequest[] = [];
+  let complete = true;
+  for (const [requestId, data] of usages) {
+    const usage = record(data.rawUsage);
+    const model = text(data.model) || text(data.requestModelId);
+    const input = usageCount(usage.prompt_tokens);
+    const output = usageCount(usage.completion_tokens);
+    const cached = usageCount(record(usage.prompt_tokens_details).cached_tokens ?? 0);
+    const written = usageCount(usage.prompt_cache_write_tokens ?? 0);
+    const thinking = usageCount(usage.completion_thinking_tokens);
+    const unverifiedCache = [usage.cache_read_input_tokens, usage.cache_creation_input_tokens].some(
+      (value) => value !== undefined && value !== 0,
+    );
+    if (
+      !model ||
+      input === null ||
+      output === null ||
+      cached === null ||
+      written === null ||
+      unverifiedCache
+    ) {
+      complete = false;
+      continue;
+    }
+    try {
+      requests.push(
+        parseHostUsageRequest({
+          requestId,
+          ...(historical ? { historical: true } : {}),
+          model,
+          inputTokens: input,
+          cachedInputTokens: cached,
+          cacheWriteInputTokens: written,
+          outputTokens: output,
+          ...(thinking !== null && thinking <= output ? { reasoningOutputTokens: thinking } : {}),
+        }),
+      );
+    } catch {
+      complete = false;
+    }
+  }
+  return { requests, complete };
+}
+
 export function historyUsage(contents: string): HostUsage | null {
   const requests = new Map<string, Record<string, unknown>>();
   for (const row of nativeHistoryRows(contents)) {

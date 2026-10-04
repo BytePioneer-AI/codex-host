@@ -253,7 +253,26 @@ export class ModelPriceLookup {
     const entry =
       officialEntry ??
       listings.find(({ provider: listedBy }) => listedBy === officialProvider)?.entry;
-    return entry ? entryPrice(entry) : null;
+    return entry ? entryPrice(entry) : this.#vendorAliasPrice(official);
+  }
+
+  /**
+   * The vendor's price for an official model it lists only under aliases, such as DeepSeek's
+   * `deepseek-flash` and `deepseek-v4-flash` for `deepseek/deepseek-v4.1-flash`; used only when
+   * every such alias carries the same price.
+   */
+  #vendorAliasPrice(official: string): ModelPrice | null {
+    const vendor = official.slice(0, official.indexOf("/"));
+    let found: ModelPrice | null = null;
+    for (const [alias, entry] of Object.entries(this.#providers[vendor] ?? {})) {
+      const canonical = entry[4];
+      if (typeof canonical !== "string") continue;
+      if (this.#resolveCanonical(canonical).id !== official || alias === official) continue;
+      const price = entryPrice(entry);
+      if (found && !samePrice(found, price)) return null;
+      found = price;
+    }
+    return found;
   }
 
   /**

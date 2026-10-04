@@ -1539,6 +1539,11 @@ class ClaudeHarnessSession implements HarnessSession {
       });
       transport.setIdleTurnHandler({
         onEvent: (event) => {
+          // A model request made while idle is still part of this Session's usage.
+          if (event.type === "usage.request") {
+            this.#meterUsage(event.record);
+            return;
+          }
           const active = this.#active;
           if (active) {
             this.#handleTurnEvent(active, event);
@@ -1625,6 +1630,11 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
+    // Usage belongs to the Session, so a request settling after its Turn ended still counts.
+    if (event.type === "usage.request") {
+      if (this.#phase !== "closed" && this.#phase !== "faulted") this.#meterUsage(event.record);
+      return;
+    }
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     switch (event.type) {
       case "segment.started":
@@ -1762,9 +1772,6 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       case "usage.result":
         this.#applyResultUsage(active, event);
-        return;
-      case "usage.request":
-        this.#meterUsage(event.record);
         return;
     }
   }

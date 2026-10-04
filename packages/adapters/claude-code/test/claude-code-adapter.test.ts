@@ -424,6 +424,23 @@ describe("Claude Code usage metering", () => {
       { type: "usage.request", request: live },
       { type: "usage.history", complete: false },
     ]);
+
+    // A request settling while no Turn is active, such as a background continuation.
+    transport.finish({ status: "succeeded" });
+    const idle = { ...live, requestId: "msg_idle" };
+    await vi.waitFor(() => expect(transport.idleHandler).not.toBeNull());
+    transport.idleHandler?.onEvent({
+      type: "usage.request",
+      record: { kind: "request", request: idle },
+    });
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) throw new Error("Harness output ended unexpectedly");
+      if (next.value.kind === "event" && next.value.event.type === "usage.request") {
+        expect(next.value.event.request).toEqual(idle);
+        break;
+      }
+    }
     await opened.value.close();
     await adapter.close();
   });

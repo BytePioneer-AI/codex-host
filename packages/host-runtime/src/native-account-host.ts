@@ -7,6 +7,7 @@ import {
   SingleNativeCodexAccount,
   type CodexAccountControl,
 } from "./account/codex-account-control.js";
+import { prepareCodexServiceTierCatalog } from "./account/codex-service-tier-startup.js";
 import { officialEnvironment } from "./app-server-host.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backends.js";
@@ -39,6 +40,11 @@ export async function prepareLocalCodex(input: {
     input.environment.CODEX_HOME ?? path.join(homedir(), ".codex"),
   );
   await mkdir(home, { recursive: true });
+  const serviceTier = await prepareCodexServiceTierCatalog({
+    codexHome: home,
+    stockCodexPath: input.stockCodexPath,
+    arguments: input.arguments,
+  });
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
@@ -46,7 +52,7 @@ export async function prepareLocalCodex(input: {
       createOwnedLoopbackBackend({
         stockCodexPath: input.stockCodexPath,
         cwd: home,
-        arguments: input.arguments,
+        arguments: serviceTier.arguments,
         environment: { ...officialEnvironment(input.environment), CODEX_HOME: home },
       }),
   });

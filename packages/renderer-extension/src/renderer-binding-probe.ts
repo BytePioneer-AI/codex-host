@@ -14,6 +14,7 @@ import {
   type HarnessPermissionModeId,
   type HarnessPermissionModeScope,
   type HarnessThinkingOptionId,
+  type CodexServiceTierId,
   type AccountCreditsSnapshot,
   type ThreadInspection,
   type ThreadUsageInspection,
@@ -43,6 +44,7 @@ import {
   mountComposerAgentControl,
   reconcileComposerNativeControls,
   renderComposerAgentControl,
+  renderComposerServiceTier,
   sendButtonWithin,
   type ComposerAgentControl,
   type ExternalModelControlView,
@@ -57,6 +59,13 @@ import {
   TRANSCRIPT_ITEM_SELECTOR,
 } from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
+import { rendererServiceTierPlacement } from "./renderer-codex-service-tier-bolt.js";
+import { installCodexServiceTierStyle } from "./renderer-codex-service-tier-style.js";
+import {
+  CODEX_SERVICE_TIER_ATTRIBUTE,
+  readCodexServiceTierPreference,
+  writeCodexServiceTierPreference,
+} from "./renderer-codex-service-tier-preference.js";
 import {
   createRendererCodexUsageGate,
   type RendererCodexUsageGate,
@@ -764,6 +773,10 @@ export function installRendererBindingProbe(
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
   const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
+  // Pure-CSS Fast/Ultrafast accents, keyed on the local ownership scope the
+  // tier control stamps (never on the global Host-confirmed marker); installed
+  // once per probe.
+  const disposeCodexServiceTierStyle = installCodexServiceTierStyle(document);
   let scanScheduled = false;
   let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
@@ -975,6 +988,40 @@ export function installRendererBindingProbe(
   const composerAdapterState = (mounted: MountedComposer): RendererAdapterStatus["state"] =>
     composerClient(mounted) ? "ready" : "installing";
 
+  /**
+   * The Host-confirmed request tier, published on `<html>` by the settings
+   * synchronizer. The Composer speed control mirrors that confirmed effect only
+   * — never a draft choice, and never a choice the Host has not applied.
+   */
+  const confirmedServiceTier = (): CodexServiceTierId | null => {
+    const value = document.documentElement?.getAttribute(CODEX_SERVICE_TIER_ATTRIBUTE);
+    return value === "fast" || value === "ultrafast" ? value : null;
+  };
+
+  const renderServiceTier = (mounted: MountedComposer): void => {
+    const state = controller.get(mounted.composer);
+    // The confirmed tier is machine-wide, but the accent may only appear on a
+    // Composer whose own Host is this machine: a remote Host's native Composer,
+    // an external Harness and a switching Composer all yield, and the scope
+    // stamp keeps the CSS off every surface this control does not own.
+    const placement = rendererServiceTierPlacement({
+      agent: state.agent,
+      hostId: mounted.hostId,
+      switching: controller.isSwitching(mounted.composer),
+      confirmedTier: confirmedServiceTier(),
+    });
+    renderComposerServiceTier(mounted.control, {
+      tier: placement.tier,
+      suppressed: placement.suppressed,
+      scope: placement.tier === null ? null : (mounted.composer as HTMLElement),
+      locale: settingsLifecycle.locale,
+    });
+  };
+
+  const onServiceTierStatus = (): void => {
+    for (const mounted of mountedByComposer.values()) renderServiceTier(mounted);
+  };
+
   const renderMounted = (mounted: MountedComposer): void => {
     if (!isMountedComposer(mounted.composer)) return;
     const accounts = composerCodexAccounts(mounted.composer);
@@ -996,6 +1043,7 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus === "error",
     );
     showCodexUsageGateStatus(mounted, mounted.codexUsageGate.update(externalSubmissionReady));
+    renderServiceTier(mounted);
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
         void refreshThreadUsage(
@@ -2397,6 +2445,11 @@ export function installRendererBindingProbe(
         mounted.usage = null;
         mounted.accountCredits = null;
         mounted.usageRequestGeneration += 1;
+        // The Composer's Host just changed: the tier accent follows the Host
+        // that owns this Composer, so it must move in this same step. A native
+        // Codex draft never reaches loadExternalCatalog (it returns for Codex),
+        // so without this render the released scope would linger.
+        renderServiceTier(mounted);
         const state = controller.get(mounted.composer);
         if (applyDraftAgentCarrier(mounted.composer, state.agent)) {
           void clearDraftPrewarm(mounted.composer).catch(() => undefined);
@@ -2619,6 +2672,21 @@ export function installRendererBindingProbe(
         const editor = composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
         if (editor) delegationMention?.openFor(editor);
       },
+      (tier) => {
+        // The official Standard option means the default speed, which is this
+        // feature's off state: it turns the shared preference off, exactly like
+        // the settings switch. Only `enabled` changes — the remembered tier is
+        // a separate dimension (the official Standard entry is just the option
+        // whose value is null), so returning to Standard must not discard the
+        // tier the user will get back when they re-enable the feature.
+        const owner = document.defaultView;
+        if (!owner) return;
+        const current = readCodexServiceTierPreference(owner);
+        writeCodexServiceTierPreference(
+          owner,
+          tier === null ? { ...current, enabled: false } : { ...current, enabled: true, tier },
+        );
+      },
     );
     const mounted: MountedComposer = {
       composer,
@@ -2717,6 +2785,9 @@ export function installRendererBindingProbe(
       const state = controller.get(composer);
       const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
+      // Opening the official Model menu is a DOM change inside the Composer, so
+      // this scan is where the Speed row enters and leaves that menu.
+      renderServiceTier(mounted);
       if (refreshTargets) refreshMountedConversationTarget(mounted);
       showCodexUsageGateStatus(mounted, mounted.codexUsageGate.refresh());
     }
@@ -2996,6 +3067,7 @@ export function installRendererBindingProbe(
   window.addEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
   window.addEventListener("codexhost:draft-workspace", onDraftWorkspace);
   window.addEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
+  window.addEventListener("codexhost:codex-service-tier-status", onServiceTierStatus);
   window.addEventListener("focus", onWindowFocus);
   delegationMention = installRendererDelegationMention(document, {
     onOpen: (editor) => {
@@ -3169,6 +3241,7 @@ export function installRendererBindingProbe(
       modelControl = null;
       mutationObserver.disconnect();
       disposeReasoningSoftWrap();
+      disposeCodexServiceTierStyle();
       delegationMention?.dispose();
       sidebarAgentIcons.dispose();
       settingsLifecycle.dispose();
@@ -3179,6 +3252,7 @@ export function installRendererBindingProbe(
       window.removeEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
       window.removeEventListener("codexhost:draft-workspace", onDraftWorkspace);
       window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
+      window.removeEventListener("codexhost:codex-service-tier-status", onServiceTierStatus);
       window.removeEventListener("focus", onWindowFocus);
       for (const state of harnessAvailabilityByHost.values()) {
         state.requestGeneration += 1;

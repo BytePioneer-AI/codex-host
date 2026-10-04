@@ -92,10 +92,11 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(26 + preinstalledHarnessPluginPaths().length);
+      expect(paths).toHaveLength(27 + preinstalledHarnessPluginPaths().length);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        28 + preinstalledHarnessPluginPaths().length,
+        29 + preinstalledHarnessPluginPaths().length,
       );
+      expect(paths).toContain("licenses/smol-toml-LICENSE.txt");
       expect(paths).toContain("licenses/tailwindcss-LICENSE.txt");
       expect(paths).toContain("app/plugins/enabled.json");
       expect(paths).toContain("app/console-server.mjs");

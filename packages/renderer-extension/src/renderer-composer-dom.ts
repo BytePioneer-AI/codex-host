@@ -4,7 +4,7 @@ import type {
   RendererAgent,
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
-import { catalogModelForRef } from "@codexhost/shared-contracts";
+import { catalogModelForRef, type CodexServiceTierId } from "@codexhost/shared-contracts";
 import type {
   AccountCreditsSnapshot,
   CodexAccountSummary,
@@ -49,6 +49,10 @@ import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
+import {
+  mountRendererServiceTierControl,
+  type RendererServiceTierControl,
+} from "./renderer-codex-service-tier-bolt.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -94,6 +98,9 @@ export interface ComposerAgentControl {
   usage: RendererUsageControl | null;
   composerId: string;
   harnessCommands: RendererHarnessCommandControl;
+  serviceTier: RendererServiceTierControl;
+  /** The preference writer for the Composer speed button; null means "Standard". */
+  onSelectServiceTier: (tier: CodexServiceTierId | null) => void;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
 }
@@ -649,6 +656,36 @@ export function reconcileComposerNativeControls(
   setNativeControlHidden(control.nativePermissionModeControl, hidePermissionMode);
 }
 
+export interface ServiceTierPlacement {
+  /** The Host-confirmed tier, or null while the feature is off or unconfirmed. */
+  tier: CodexServiceTierId | null;
+  /** Never show the speed control for an external Harness or a hidden native trigger. */
+  suppressed: boolean;
+  /** The local Composer this control belongs to; only a local Host may stamp it. */
+  scope: HTMLElement | null;
+  locale: RendererSettingsLocale;
+}
+
+/**
+ * The speed button lives inside the official Model menu, which the trigger
+ * opens through its own `aria-controls`; when the trigger is missing or hidden
+ * the button leaves the DOM instead of falling back to another slot.
+ */
+export function renderComposerServiceTier(
+  control: ComposerAgentControl,
+  placement: ServiceTierPlacement,
+): void {
+  const trigger = control.nativeModelControl?.element ?? null;
+  control.serviceTier.render({
+    tier: placement.tier,
+    suppressed: placement.suppressed,
+    scope: placement.scope,
+    trigger,
+    locale: placement.locale,
+    onSelect: control.onSelectServiceTier,
+  });
+}
+
 export function mountComposerAgentControl(
   composer: Element,
   composerId: string,
@@ -661,6 +698,7 @@ export function mountComposerAgentControl(
   onSelectThinking: (thinkingOptionId: string) => void,
   onSelectPermissionMode: (permissionModeId: string) => void,
   onOpenCommandMenu: () => void,
+  onSelectServiceTier: (tier: CodexServiceTierId | null) => void,
 ): ComposerAgentControl {
   // External Harnesses inject more footer chips than native Codex. Let the
   // thread column shrink under sidebar / narrow-window pressure so those chips
@@ -689,6 +727,7 @@ export function mountComposerAgentControl(
     onSelectPermissionMode,
   );
   const credits = mountRendererCreditsControl(composerId);
+  const serviceTier = mountRendererServiceTierControl();
 
   const toolbar = sendButton.parentElement;
   const harnessCommands = mountRendererHarnessCommandControl(
@@ -719,6 +758,8 @@ export function mountComposerAgentControl(
     credits,
     usage: null,
     harnessCommands,
+    serviceTier,
+    onSelectServiceTier,
     sendButton,
     sendDisabledBeforeSwitch: null,
   } satisfies ComposerAgentControl;
@@ -852,6 +893,7 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
   restoreNativeControl(control.nativeContextUsageControl);
   restoreNativeControl(control.nativePermissionModeControl);
   control.credits.dispose();
+  control.serviceTier.dispose();
   control.usage?.dispose();
   control.usage = null;
   control.harnessCommands.dispose();

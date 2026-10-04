@@ -485,6 +485,13 @@ describe("current Codex Renderer Agent adapter", () => {
               timeoutMinutes: 30,
             },
           );
+          expect(requestTarget.sendRequest).toHaveBeenCalledWith(
+            "codexhost/settings/codex-service-tier/set",
+            {
+              enabled: false,
+              tier: "fast",
+            },
+          );
           const localClient = adapter.modelControl?.clientForHost?.("local");
           expect(localClient).toBeTruthy();
           // The local target remains discoverable while the remote route is active.
@@ -510,7 +517,7 @@ describe("current Codex Renderer Agent adapter", () => {
             fakeWindow.__codexhostDraftPrewarmPolicyV1 = policy;
             expect(adapter.modelControl?.clientForHost?.("local")).toBe(localClient);
           }
-          expect(requestTarget.sendRequest).toHaveBeenCalledTimes(2);
+          expect(requestTarget.sendRequest).toHaveBeenCalledTimes(3);
           expect(requestTarget.sendRequest).toHaveBeenCalledWith(
             "codexhost/harness/display-settings/get",
             {},

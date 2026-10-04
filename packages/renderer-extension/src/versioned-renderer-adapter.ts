@@ -9,6 +9,7 @@ import {
 } from "@codexhost/desktop-control/renderer-bindings";
 import { createRendererHostClients } from "./renderer-host-clients.js";
 import { installIdleReleasePreferenceSync } from "./renderer-idle-release-preference.js";
+import { installCodexServiceTierPreferenceSync } from "./renderer-codex-service-tier-preference.js";
 import {
   encodeHarnessPluginRoute,
   harnessIdSchema,
@@ -927,6 +928,7 @@ export function installCurrentRendererAdapter(): {
 
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const idleReleaseSync = installIdleReleasePreferenceSync(window);
+  const serviceTierSync = installCodexServiceTierPreferenceSync(window);
   const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1, window);
   const stopGroupSync = startAgentGroupSync(
     getSharedAgentGroupPreferenceStore(),
@@ -953,6 +955,7 @@ export function installCurrentRendererAdapter(): {
         ? client
         : clients.forHost("local");
     idleReleaseSync.connect(localClient);
+    serviceTierSync.connect(localClient);
     // Adapter readiness describes native connections, not a unique global
     // Composer route. Never use this aggregate readiness to choose a request Host.
     const connected =
@@ -1157,6 +1160,7 @@ export function installCurrentRendererAdapter(): {
         () => clients.dispose(),
         () => usageSubscription.dispose(),
         () => idleReleaseSync.dispose(),
+        () => serviceTierSync.dispose(),
       ];
       selectedPolicies.clear();
       for (const cleanup of cleanups) {

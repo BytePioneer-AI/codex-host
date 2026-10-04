@@ -6,6 +6,7 @@ import {
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import { mountIdleReleaseControls } from "./idle-release-controls.js";
+import { mountCodexServiceTierControls } from "./codex-service-tier-controls.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import {
   createPreferenceGroup,
@@ -59,9 +60,11 @@ export function createAppearanceSettingsPage(
         messages,
         getLoadedSessionsClient,
       );
+      const disposeServiceTier = mountCodexServiceTierControls(context, messages);
       return () => {
         ownerWindow.removeEventListener(REASONING_SOFT_WRAP_CHANGE_EVENT, sync);
         disposeIdleRelease();
+        disposeServiceTier();
       };
     },
   });

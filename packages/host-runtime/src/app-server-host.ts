@@ -31,6 +31,11 @@ import {
   idleReleaseSettingsSchema,
 } from "@codexhost/shared-contracts";
 import {
+  CODEX_SERVICE_TIER_SETTINGS_METHOD,
+  codexServiceTierSettingsSchema,
+} from "@codexhost/shared-contracts";
+import { prepareCodexServiceTierCatalog } from "./account/codex-service-tier-startup.js";
+import {
   CREDENTIAL_IMPORTS_METHOD,
   credentialImportsParamsSchema,
 } from "@codexhost/shared-contracts";
@@ -693,12 +698,18 @@ export class AppServerHost {
         diagnosticOutput: this.#options.diagnosticOutput,
         permanentHome,
         createBackend: () =>
-          createOwnedConnectionBackend(() =>
+          createOwnedConnectionBackend(async () =>
             options.createOfficialConnection
               ? options.createOfficialConnection()
               : spawnOfficialAppServerConnection({
                   stockCodexPath: this.#options.stockCodexPath,
-                  arguments: this.#options.arguments,
+                  arguments: (
+                    await prepareCodexServiceTierCatalog({
+                      codexHome: permanentHome,
+                      stockCodexPath: this.#options.stockCodexPath,
+                      arguments: this.#options.arguments,
+                    })
+                  ).arguments,
                   environment: {
                     ...officialEnvironment(environment),
                     CODEX_HOME: permanentHome,
@@ -731,6 +742,7 @@ export class AppServerHost {
       onBackendStopped: () => {
         this.#pendingOfficialTurnStarts.clear();
         this.#activeOfficialTurns.clear();
+        this.#officialRuntimeScope.serviceTier.reset();
         this.#signalActiveWorkChanged();
       },
       output: async (output) =>
@@ -1355,6 +1367,37 @@ export class AppServerHost {
       } else {
         const settings = this.#externalRuntime.idleRelease.configure(parsed.data);
         await this.#writer.json(rpcEnvelope(request, { result: settings }));
+      }
+      return;
+    }
+    if (request.method === CODEX_SERVICE_TIER_SETTINGS_METHOD) {
+      const parsed = codexServiceTierSettingsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid Codex service tier settings"));
+      } else {
+        try {
+          const result = await this.#officialRuntimeScope.serviceTier.apply(
+            parsed.data,
+            (method, params) => this.#requestOfficial(method, params),
+          );
+          // Optional fields are absent, never explicitly undefined, on the wire.
+          const effect = result.effect;
+          await this.#writer.json(
+            rpcEnvelope(request, {
+              result: jsonValueSchema.parse({
+                settings: { enabled: result.settings.enabled, tier: result.settings.tier },
+                effect:
+                  effect.state === "active" && effect.notice !== undefined
+                    ? { state: "active", notice: effect.notice }
+                    : effect,
+              }),
+            }),
+          );
+        } catch {
+          await this.#writer.json(
+            rpcError(request, -32000, "Could not update the Codex service tier"),
+          );
+        }
       }
       return;
     }
@@ -2057,7 +2100,23 @@ export class AppServerHost {
       return;
     }
     try {
-      await this.#officialRuntime.sendFrame(frame);
+      const value = request.method === "turn/start" ? parseJsonFrame(frame) : null;
+      // Delegation may have rewritten the input in the final frame.
+      const tier =
+        isRecord(value) && isRecord(value.params)
+          ? await this.#officialRuntimeScope.serviceTier.tierForTurn(
+              value.params as JsonObject,
+              (method, params) => this.#requestOfficial(method, params),
+            )
+          : null;
+      if (tier !== null && isRecord(value) && isRecord(value.params)) {
+        await this.#officialRuntime.send({
+          ...value,
+          params: { ...value.params, serviceTierForTurn: tier },
+        });
+      } else {
+        await this.#officialRuntime.sendFrame(frame);
+      }
       this.#markDesktopRequestAnswered(request.id);
     } catch {
       if (request.method === "turn/start") {
@@ -2082,6 +2141,7 @@ export class AppServerHost {
       return;
     }
     const parsed = input.value;
+    this.#officialRuntimeScope.serviceTier.observe(parsed);
     this.#observeOfficialTurnStartResponse(parsed);
     let forwarded: JsonValue = parsed;
     if (isRecord(parsed) && typeof parsed.method === "string" && "id" in parsed) {

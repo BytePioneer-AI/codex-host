@@ -2,6 +2,7 @@ import type { Writable } from "node:stream";
 
 import { parseJsonFrame, type JsonObject } from "@codexhost/protocol-core";
 
+import { CodexServiceTierControl } from "../account/codex-service-tier-control.js";
 import type { OfficialAppServerConnection } from "../official-app-server-connection.js";
 import type { CodexRuntimeOutput } from "./codex-runtime.js";
 import {
@@ -28,6 +29,7 @@ export class OfficialRuntimeScope {
   readonly owner: OfficialRuntimeOwner;
   readonly gate: OfficialWorkGate;
   readonly permanentHome: string;
+  readonly serviceTier = new CodexServiceTierControl();
   readonly #diagnosticOutput: Writable;
   readonly #recovery: { delaysMs: readonly number[]; stableMs: number } | undefined;
   #starting: Promise<void> | undefined;

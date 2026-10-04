@@ -127,27 +127,27 @@ describe("UsageMeter timing", () => {
     expect(meter.outputObserved("turn-1", 1_800)).toBe(true);
     expect(meter.outputObserved("turn-1", 2_000)).toBe(false);
     meter.recordRequest(
-      request("a", { outputTokens: 100, outputStartedAtMs: 10_000, completedAtMs: 12_000 }),
+      request("a", { outputTokens: 100, startedAtMs: 10_000, completedAtMs: 12_000 }),
       "turn-1",
     );
     meter.recordRequest(
-      request("b", { outputTokens: 50, outputStartedAtMs: 20_000, completedAtMs: 21_000 }),
+      request("b", { outputTokens: 50, startedAtMs: 20_000, completedAtMs: 21_000 }),
       "turn-1",
     );
     // Excluded from speed: no timing, zero duration, historical.
     meter.recordRequest(request("c", { outputTokens: 999 }), "turn-1");
     meter.recordRequest(
-      request("d", { outputTokens: 999, outputStartedAtMs: 5, completedAtMs: 5 }),
+      request("d", { outputTokens: 999, startedAtMs: 5, completedAtMs: 5 }),
       "turn-1",
     );
     meter.recordRequest(
-      request("e", { historical: true, outputTokens: 999, outputStartedAtMs: 1, completedAtMs: 2 }),
+      request("e", { historical: true, outputTokens: 999, startedAtMs: 1, completedAtMs: 2 }),
       "turn-1",
     );
     meter.turnCompleted("turn-1");
     // Arrives after the Turn ended.
     meter.recordRequest(
-      request("f", { outputTokens: 999, outputStartedAtMs: 1, completedAtMs: 2 }),
+      request("f", { outputTokens: 999, startedAtMs: 1, completedAtMs: 2 }),
       null,
     );
     const usage = meter.derive(null, prices);
@@ -159,7 +159,7 @@ describe("UsageMeter timing", () => {
     const meter = completeMeter();
     meter.turnStarted("turn-1", 0);
     meter.recordRequest(
-      request("a", { outputTokens: 100, outputStartedAtMs: 0, completedAtMs: 1_000 }),
+      request("a", { outputTokens: 100, startedAtMs: 0, completedAtMs: 1_000 }),
       "turn-1",
     );
     meter.turnCompleted("turn-1");
@@ -167,12 +167,12 @@ describe("UsageMeter timing", () => {
     // Until the new Turn has a timed request, the previous Turn's speed stays.
     expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(100);
     meter.recordRequest(
-      request("b", { outputTokens: 30, outputStartedAtMs: 0, completedAtMs: 1_000 }),
+      request("b", { outputTokens: 30, startedAtMs: 0, completedAtMs: 1_000 }),
       "turn-2",
     );
     expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(30);
     meter.recordRequest(
-      request("c", { outputTokens: 90, outputStartedAtMs: 0, completedAtMs: 1_000 }),
+      request("c", { outputTokens: 90, startedAtMs: 0, completedAtMs: 1_000 }),
       "turn-2",
     );
     expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(60);
@@ -184,7 +184,7 @@ describe("UsageMeter timing", () => {
     const meter = completeMeter();
     meter.turnStarted("turn-1", 0);
     meter.recordRequest(
-      request("a", { outputTokens: 10, outputStartedAtMs: 0, completedAtMs: 1_000 }),
+      request("a", { outputTokens: 10, startedAtMs: 0, completedAtMs: 1_000 }),
       "turn-1",
     );
     meter.turnCompleted("turn-1");

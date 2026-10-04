@@ -432,7 +432,7 @@ describe("OpenCode v2 Session lifecycle", () => {
     f.messages.push({
       ...assistant("live answer"),
       id: "assistant-live",
-      time: { created: 10, streamed: 1_000, completed: 3_000 },
+      time: { created: 1_000, streamed: 2_500, completed: 3_000 },
       tokens: { input: 1, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
     });
     f.emit("session.step.ended", { assistantMessageID: "assistant-live" });
@@ -447,7 +447,7 @@ describe("OpenCode v2 Session lifecycle", () => {
         type: "usage.request",
         request: expect.objectContaining({
           outputTokens: 8,
-          outputStartedAtMs: 1_000,
+          startedAtMs: 1_000,
           completedAtMs: 3_000,
         }),
       },

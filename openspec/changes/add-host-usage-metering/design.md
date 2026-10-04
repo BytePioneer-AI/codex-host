@@ -41,13 +41,13 @@ External Harness 的用量当前由各 Adapter 在 `HostUsage` 快照中自行�
 
 ### D2. 请求记录与归属
 
-`usage.request { request: { requestId, historical?, model?, provider?, inputTokens, cachedInputTokens?, cacheWriteInputTokens?, outputTokens, reasoningOutputTokens?, outputStartedAtMs?, completedAtMs? } }`（所属 Turn 由 Host 按到达时的活动 Turn 判定）：
+`usage.request { request: { requestId, historical?, model?, provider?, inputTokens, cachedInputTokens?, cacheWriteInputTokens?, outputTokens, reasoningOutputTokens?, startedAtMs?, completedAtMs? } }`（所属 Turn 由 Host 按到达时的活动 Turn 判定）：
 
 - `requestId` 必填，在原生会话内稳定（如原生消息 ID）。Host 在 Thread 内按 `requestId` 去重，历史回放与实时事件重叠时只计一次。
 - `model` 为原生实际模型 ID（非 UI 别名、非 `HarnessModelRef` 编码）。`provider` 仅当 Adapter 能给出标准服务商标识时填写；用户自定义的服务商别名（如 Pi 的 `codex-pi`）不填。
 - 合计型 Harness 可发布合计增量；只有当 Adapter 能证明增量全部属于同一模型（例如原生按模型分别给出合计）时才带 `model`，否则省略 `model`，该记录只计 Token、使整个会话费用不可计算。
 - 缓存字段：已知为零 MUST 填 `0`；缺失表示未知。未知时依赖缓存的费用与平均缓存命中率不显示，不按零处理。
-- 计时：Adapter 把同一原生请求的首个推理/正文输出事件与其完成事件关联（如 Pi 同一 message 的 `message_update` 与 `message_end`），给出 `outputStartedAtMs`、`completedAtMs`；无法可靠关联时省略。
+- 计时：Adapter 把同一原生请求的开始事件与完成事件关联（如 Pi 同一 assistant message 的 `message_start` 与 `message_end`，OpenCode v2 assistant 消息的 `time.created` 与 `time.completed`），给出 `startedAtMs`、`completedAtMs`；无法可靠关联时省略。参考 API 网关（如 sub2api）的请求时长：从请求开始而非首个可见输出计时，因为不流式输出思考的模型（如 GPT 系列只给摘要）会在首个可见输出前生成大量思考 Token，从首个输出计时会高估速度。
 - 子代理的原生请求不作为父会话记录发布，父会话费用不包含子代理。
 - 不属于对话消息、且原生不给出模型的后台请求（如 OpenCode v2 `session.usage.recorded` 的标题生成与压缩）不发布记录，不视为缺口；会话费用因此不含这部分。
 - 原生失败请求：带 Token 时照常发布；原生未给出 Token 时视为没有用量，不视为缺口。
@@ -75,7 +75,7 @@ Host 在收到 `complete: true` 之前，以及处于不完整状态时，不发
 - 费用：每次发布时用当前价格表对全部记录重算，价格刷新或用户补价后自然更新。单条记录费用 = `(input − cacheRead − cacheWrite) × in + cacheRead × cacheReadPrice + cacheWrite × cacheWritePrice + output × out`。记录缺 `model`、模型无精确匹配、或有缓存读/写 Token 但缺对应单价时，整个会话省略费用。
 - 会话平均缓存命中率 = Σ `cachedInputTokens` ÷ Σ `inputTokens`（分母为 0 时省略）。
 - 首字延迟：Turn 开始到首个 `reasoning.delta` 或正文 `text.append` 的 Host 观测时长，仅保留最近一轮。
-- 回合平均速度：速度 = Σ 输出 Token ÷ Σ (`completedAtMs` − `outputStartedAtMs`)，只计入本 Turn 内带两个时间且时长大于零的实时记录，每计入一条记录即更新为本 Turn 至今的平均值，计入第一条前保留上一 Turn 的值。缺计时、时长为零、Turn 结束后才到达的记录和历史记录不计入速度，但照常计费。按请求关联计时，排除了工具执行时间和后续请求的预填充等待，也不受请求交错到达的影响。
+- 回合平均速度：速度 = Σ 输出 Token ÷ Σ (`completedAtMs` − `startedAtMs`)，只计入本 Turn 内带两个时间且时长大于零的实时记录，每计入一条记录即更新为本 Turn 至今的平均值，计入第一条前保留上一 Turn 的值。缺计时、时长为零、Turn 结束后才到达的记录和历史记录不计入速度，但照常计费。按请求关联计时，排除了工具执行时间，也不受请求交错到达的影响；请求时长包含预填充与思考，结果偏保守，不会高估。
 - 未接入的 Adapter（当前 Session 未发布 `usage.history`）：保留其原生费用，`costSource: "native"`。
 
 状态随 Session 替换、Thread 删除、Host 关闭丢弃，不写 Mapping Store。计量错误只影响派生字段，不影响会话（沿用现有“Usage Telemetry 不得改变生命周期正确性”要求）。

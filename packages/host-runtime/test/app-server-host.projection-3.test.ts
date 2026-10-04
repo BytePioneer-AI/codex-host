@@ -1139,7 +1139,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         cachedInputTokens: 1_400,
         cacheWriteInputTokens: 0,
         outputTokens: 200,
-        outputStartedAtMs: 1_000,
+        startedAtMs: 1_000,
         completedAtMs: 3_000,
       },
     });

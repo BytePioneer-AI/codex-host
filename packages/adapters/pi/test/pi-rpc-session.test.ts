@@ -970,7 +970,7 @@ describe("Pi RPC Turn aggregation", () => {
     }
   });
 
-  it("reports each finished assistant message with its output timing for usage metering", async () => {
+  it("reports each finished assistant message with its request timing for usage metering", async () => {
     const { rpc, process: fakeProcess } = autonomousSession();
     const observations: PiUsageObservation[] = [];
     rpc.setUsageHandler((observation) => observations.push(observation));
@@ -981,12 +981,12 @@ describe("Pi RPC Turn aggregation", () => {
       await waitFor(() => observations.length === 1);
       expect(observations[0]).toMatchObject({
         message: { role: "assistant", responseId: "autonomous-response" },
-        outputStartedAtMs: expect.any(Number),
+        startedAtMs: expect.any(Number),
         completedAtMs: expect.any(Number),
       });
       const [observation] = observations;
       expect(observation?.completedAtMs).toBeGreaterThanOrEqual(
-        observation?.outputStartedAtMs ?? Infinity,
+        observation?.startedAtMs ?? Infinity,
       );
     } finally {
       await rpc.close();

@@ -1,6 +1,6 @@
 ## 1. 契约
 
-- [x] 1.1 `harness-adapter` 与 `harness-broker` 事件白名单：新增 `usage.request`（`requestId`、可选 `model`/`provider`/`historical`/`outputStartedAtMs`/`completedAtMs`、统一口径与“缓存已知为零填 0”约束）与 `usage.history { complete }` 输出事件及校验。
+- [x] 1.1 `harness-adapter` 与 `harness-broker` 事件白名单：新增 `usage.request`（`requestId`、可选 `model`/`provider`/`historical`/`startedAtMs`/`completedAtMs`、统一口径与“缓存已知为零填 0”约束）与 `usage.history { complete }` 输出事件及校验。
 - [x] 1.2 `HostUsage` 与 `threadUsageSnapshotSchema` 新增 `sessionCacheHitRatePercent`、`timeToFirstOutputMs`、`costSource` 及校验。
 
 ## 2. 价格表

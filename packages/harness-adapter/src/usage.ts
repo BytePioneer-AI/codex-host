@@ -185,8 +185,8 @@ export interface HostUsageRequest {
   cacheWriteInputTokens?: number;
   outputTokens: number;
   reasoningOutputTokens?: number;
-  /** Unix ms of this request's first output and of its completion; both or neither. */
-  outputStartedAtMs?: number;
+  /** Unix ms when this request's native stream started and completed; both or neither. */
+  startedAtMs?: number;
   completedAtMs?: number;
 }
 
@@ -196,7 +196,7 @@ const requestTokenFields = [
   "cacheWriteInputTokens",
   "outputTokens",
   "reasoningOutputTokens",
-  "outputStartedAtMs",
+  "startedAtMs",
   "completedAtMs",
 ] as const satisfies ReadonlyArray<keyof HostUsageRequest>;
 
@@ -249,15 +249,15 @@ export function parseHostUsageRequest(value: unknown): HostUsageRequest {
   if ((request.reasoningOutputTokens ?? 0) > request.outputTokens) {
     throw new Error("Harness Usage request 'reasoningOutputTokens' must not exceed 'outputTokens'");
   }
-  if ((request.outputStartedAtMs === undefined) !== (request.completedAtMs === undefined)) {
+  if ((request.startedAtMs === undefined) !== (request.completedAtMs === undefined)) {
     throw new Error("Harness Usage request timing fields must be provided together");
   }
   if (
-    request.outputStartedAtMs !== undefined &&
+    request.startedAtMs !== undefined &&
     request.completedAtMs !== undefined &&
-    request.completedAtMs < request.outputStartedAtMs
+    request.completedAtMs < request.startedAtMs
   ) {
-    throw new Error("Harness Usage request 'completedAtMs' must not precede 'outputStartedAtMs'");
+    throw new Error("Harness Usage request 'completedAtMs' must not precede 'startedAtMs'");
   }
   return { ...request };
 }

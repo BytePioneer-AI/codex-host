@@ -115,7 +115,7 @@ describe("Harness Usage request", () => {
       cachedInputTokens: 0,
       cacheWriteInputTokens: 0,
       reasoningOutputTokens: 5,
-      outputStartedAtMs: 1_000,
+      startedAtMs: 1_000,
       completedAtMs: 2_000,
     };
     expect(parseHostUsageRequest(request)).toEqual(request);
@@ -128,8 +128,8 @@ describe("Harness Usage request", () => {
     { ...base, outputTokens: -1 },
     { ...base, cachedInputTokens: 80, cacheWriteInputTokens: 30 },
     { ...base, reasoningOutputTokens: 21 },
-    { ...base, outputStartedAtMs: 1 },
-    { ...base, outputStartedAtMs: 2, completedAtMs: 1 },
+    { ...base, startedAtMs: 1 },
+    { ...base, startedAtMs: 2, completedAtMs: 1 },
     { ...base, model: "" },
     { ...base, historical: "yes" },
     { ...base, turnId: "turn-1" },

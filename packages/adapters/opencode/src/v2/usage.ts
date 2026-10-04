@@ -13,7 +13,7 @@ export function v2UsageRequest(
 ): HostUsageRequest | null {
   if (message.type !== "assistant" || !message.tokens) return null;
   const { input, output, reasoning, cache } = message.tokens;
-  const { streamed, completed } = message.time;
+  const { created, completed } = message.time;
   return parseHostUsageRequest({
     requestId: message.id,
     ...(historical ? { historical: true } : {}),
@@ -26,8 +26,9 @@ export function v2UsageRequest(
     cacheWriteInputTokens: cache.write,
     outputTokens: output + reasoning,
     reasoningOutputTokens: reasoning,
-    ...(!historical && streamed !== undefined && completed !== undefined && completed >= streamed
-      ? { outputStartedAtMs: streamed, completedAtMs: completed }
+    // The whole step, like a gateway's request duration, so hidden reasoning is not excluded.
+    ...(!historical && completed !== undefined && completed >= created
+      ? { startedAtMs: created, completedAtMs: completed }
       : {}),
   });
 }

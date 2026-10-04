@@ -46,8 +46,8 @@ export class UsageMeter {
     if (this.#requests.has(request.requestId)) return false;
     this.#requests.set(request.requestId, request);
     const duration =
-      request.outputStartedAtMs !== undefined && request.completedAtMs !== undefined
-        ? request.completedAtMs - request.outputStartedAtMs
+      request.startedAtMs !== undefined && request.completedAtMs !== undefined
+        ? request.completedAtMs - request.startedAtMs
         : 0;
     if (
       !request.historical &&

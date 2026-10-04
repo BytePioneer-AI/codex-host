@@ -99,8 +99,8 @@ export function optionalPiStateContextUsage(
 /** A finished native assistant message observed on the RPC stream. */
 export interface PiUsageObservation {
   message: Record<string, unknown>;
-  /** Adapter receive time of this message's first reasoning or text delta. */
-  outputStartedAtMs: number | null;
+  /** Adapter receive time of this assistant message's native start event. */
+  startedAtMs: number | null;
   completedAtMs: number;
 }
 
@@ -113,7 +113,7 @@ export type PiUsageRecord = { kind: "request"; request: HostUsageRequest } | { k
  */
 export function piUsageRecord(
   message: unknown,
-  extra: { historical?: boolean; outputStartedAtMs?: number | null; completedAtMs?: number } = {},
+  extra: { historical?: boolean; startedAtMs?: number | null; completedAtMs?: number } = {},
 ): PiUsageRecord | null {
   if (!isRecord(message) || message.role !== "assistant") return null;
   const usage = isRecord(message.usage) ? message.usage : null;
@@ -132,8 +132,8 @@ export function piUsageRecord(
   const cacheWrite = nonNegativeSafeInteger(usage.cacheWrite);
   const reasoning = nonNegativeSafeInteger(usage.reasoning);
   const timed =
-    extra.outputStartedAtMs !== undefined &&
-    extra.outputStartedAtMs !== null &&
+    extra.startedAtMs !== undefined &&
+    extra.startedAtMs !== null &&
     extra.completedAtMs !== undefined;
   try {
     return {
@@ -150,9 +150,7 @@ export function piUsageRecord(
         ...(cacheWrite !== null ? { cacheWriteInputTokens: cacheWrite } : {}),
         outputTokens: output,
         ...(reasoning !== null && reasoning <= output ? { reasoningOutputTokens: reasoning } : {}),
-        ...(timed
-          ? { outputStartedAtMs: extra.outputStartedAtMs, completedAtMs: extra.completedAtMs }
-          : {}),
+        ...(timed ? { startedAtMs: extra.startedAtMs, completedAtMs: extra.completedAtMs } : {}),
       }),
     };
   } catch {

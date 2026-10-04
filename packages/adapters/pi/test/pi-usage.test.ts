@@ -13,7 +13,7 @@ const assistant = {
 
 describe("Pi usage records", () => {
   it("adds cache back into input and keeps reasoning inside output", () => {
-    expect(piUsageRecord(assistant, { outputStartedAtMs: 10, completedAtMs: 30 })).toEqual({
+    expect(piUsageRecord(assistant, { startedAtMs: 10, completedAtMs: 30 })).toEqual({
       kind: "request",
       request: {
         requestId: "resp-1",
@@ -23,7 +23,7 @@ describe("Pi usage records", () => {
         cacheWriteInputTokens: 50,
         outputTokens: 40,
         reasoningOutputTokens: 10,
-        outputStartedAtMs: 10,
+        startedAtMs: 10,
         completedAtMs: 30,
       },
     });
@@ -35,7 +35,7 @@ describe("Pi usage records", () => {
     expect(
       piUsageRecord(
         { ...withoutResponse, usage: { input: 5, output: 1 } },
-        { outputStartedAtMs: null, completedAtMs: 9 },
+        { startedAtMs: null, completedAtMs: 9 },
       ),
     ).toEqual({
       kind: "request",

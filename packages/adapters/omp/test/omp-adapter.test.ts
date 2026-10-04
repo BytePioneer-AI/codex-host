@@ -641,7 +641,7 @@ describe("OMP Adapter usage metering", () => {
         responseId: "resp-live",
         usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 0 },
       },
-      outputStartedAtMs: 10,
+      startedAtMs: 10,
       completedAtMs: 20,
     });
     let event = (await iterator.next()).value;
@@ -657,7 +657,7 @@ describe("OMP Adapter usage metering", () => {
         cachedInputTokens: 3,
         cacheWriteInputTokens: 0,
         outputTokens: 2,
-        outputStartedAtMs: 10,
+        startedAtMs: 10,
         completedAtMs: 20,
       },
     });

@@ -2003,18 +2003,18 @@ describe("Pi HarnessAdapter Session", () => {
         responseId: "resp-live",
         usage: { input: 1, output: 4, cacheRead: 0, cacheWrite: 0 },
       },
-      outputStartedAtMs: 100,
+      startedAtMs: 100,
       completedAtMs: 300,
     });
     transport.usageHandler({
       message: { role: "assistant", responseId: "resp-broken" },
-      outputStartedAtMs: null,
+      startedAtMs: null,
       completedAtMs: 400,
     });
     expect((await iterator.next()).value).toMatchObject({
       event: {
         type: "usage.request",
-        request: { requestId: "resp-live", outputStartedAtMs: 100, completedAtMs: 300 },
+        request: { requestId: "resp-live", startedAtMs: 100, completedAtMs: 300 },
       },
     });
     expect((await iterator.next()).value).toEqual({

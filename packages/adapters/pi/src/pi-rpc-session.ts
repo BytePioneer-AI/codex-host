@@ -495,7 +495,7 @@ export class PiRpcSession {
   #activeTurn: ActiveTurn | null = null;
   #autonomousTurnHandler: ((turn: PiAutonomousTurn) => void) | null = null;
   #usageHandler: ((observation: PiUsageObservation) => void) | null = null;
-  #usageOutputStartedAtMs: number | null = null;
+  #usageRequestStartedAtMs: number | null = null;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
@@ -566,29 +566,20 @@ export class PiRpcSession {
 
   /** Every finished assistant message is one model request, with or without an active Turn. */
   #observeUsage(value: Record<string, unknown>): void {
+    // The request starts when the native stream opens its assistant message, so hidden
+    // reasoning and the output that follows both fall inside the request's duration.
     if (value.type === "message_start") {
-      this.#usageOutputStartedAtMs = null;
-      return;
-    }
-    if (value.type === "message_update") {
-      const event = value.assistantMessageEvent;
-      if (
-        this.#usageOutputStartedAtMs === null &&
-        isRecord(event) &&
-        typeof event.type === "string" &&
-        /^(text|thinking|reasoning|thought)_delta$/u.test(event.type)
-      ) {
-        this.#usageOutputStartedAtMs = Date.now();
-      }
+      this.#usageRequestStartedAtMs =
+        isRecord(value.message) && value.message.role === "assistant" ? Date.now() : null;
       return;
     }
     if (value.type === "message_end" && isRecord(value.message)) {
       if (value.message.role !== "assistant") return;
-      const outputStartedAtMs = this.#usageOutputStartedAtMs;
-      this.#usageOutputStartedAtMs = null;
+      const startedAtMs = this.#usageRequestStartedAtMs;
+      this.#usageRequestStartedAtMs = null;
       this.#usageHandler?.({
         message: value.message,
-        outputStartedAtMs,
+        startedAtMs,
         completedAtMs: Date.now(),
       });
     }

@@ -1,3 +1,4 @@
+import type { ClaudeUsageRecord } from "./claude-usage.js";
 import type {
   HarnessAccountSnapshot,
   HarnessThinkingOptionId,
@@ -150,6 +151,8 @@ export type ClaudeTurnEvent =
       requestId: string;
       reason: "responded" | "cancelled" | "superseded";
     }
+  /** One finished native model request, for Host usage metering. */
+  | { type: "usage.request"; record: ClaudeUsageRecord }
   | {
       type: "usage.result";
       totalCostUsd?: number;

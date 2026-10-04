@@ -316,19 +316,118 @@ function textTurn(id: string) {
   };
 }
 
+/** Lifecycle assertions skip Host usage metering events, which have their own tests. */
+async function nextOutput(iterator: AsyncIterator<HarnessOutput>) {
+  for (;;) {
+    const output = await iterator.next();
+    if (
+      output.done ||
+      output.value.kind !== "event" ||
+      (output.value.event.type !== "usage.request" && output.value.event.type !== "usage.history")
+    ) {
+      return output;
+    }
+  }
+}
+
 async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
-  const output = await iterator.next();
+  const output = await nextOutput(iterator);
   if (output.done) throw new Error("Harness output ended unexpectedly");
   if (output.value.kind !== "event") throw new Error("Expected a Harness event output");
   return output.value.event;
 }
 
 async function nextInteraction(iterator: AsyncIterator<HarnessOutput>) {
-  const output = await iterator.next();
+  const output = await nextOutput(iterator);
   if (output.done) throw new Error("Harness output ended unexpectedly");
   if (output.value.kind !== "interaction") throw new Error("Expected a Harness Interaction");
   return output.value.interaction;
 }
+
+describe("Claude Code usage metering", () => {
+  const usage = {
+    input_tokens: 10,
+    cache_creation_input_tokens: 8643,
+    cache_read_input_tokens: 21000,
+    cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 8643 },
+    output_tokens: 247,
+  };
+
+  it("replays the transcript on resume, then meters live requests", async () => {
+    const { adapter, history, transports } = fixture();
+    history.push(
+      { type: "user", uuid: "u1", message: { role: "user", content: "hi" } },
+      {
+        type: "assistant",
+        uuid: "a1",
+        message: { id: "msg_old", model: "claude-opus-5-5", usage, content: [] },
+      },
+    );
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/synthetic",
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "source-session",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toEqual({
+      kind: "event",
+      event: {
+        type: "usage.request",
+        request: {
+          requestId: "msg_old",
+          historical: true,
+          model: "claude-opus-5-5",
+          inputTokens: 29653,
+          cachedInputTokens: 21000,
+          cacheWriteInputTokens: 8643,
+          cacheWrite1hInputTokens: 8643,
+          outputTokens: 247,
+        },
+      },
+    });
+    expect((await iterator.next()).value).toEqual({
+      kind: "event",
+      event: { type: "usage.history", complete: true },
+    });
+
+    await opened.value.execute(textTurn("turn-1"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Claude transport was not created");
+    const live = {
+      requestId: "msg_live",
+      model: "claude-opus-5-5",
+      inputTokens: 5,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 3,
+      startedAtMs: 10,
+      completedAtMs: 20,
+    };
+    transport.event({ type: "usage.request", record: { kind: "request", request: live } });
+    transport.event({ type: "usage.request", record: { kind: "missing" } });
+    const metered = [];
+    while (metered.length < 2) {
+      const next = await iterator.next();
+      if (next.done) throw new Error("Harness output ended unexpectedly");
+      if (
+        next.value.kind === "event" &&
+        (next.value.event.type === "usage.request" || next.value.event.type === "usage.history")
+      )
+        metered.push(next.value.event);
+    }
+    expect(metered).toEqual([
+      { type: "usage.request", request: live },
+      { type: "usage.history", complete: false },
+    ]);
+    await opened.value.close();
+    await adapter.close();
+  });
+});
 
 describe("projectClaudePlanLimitToCredits", () => {
   it("returns null when nothing has been observed", () => {
@@ -5410,7 +5509,8 @@ describe("Claude Code HarnessAdapter", () => {
       error: { code: "notInstalled" },
     });
     await session.close();
-    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    // Only the empty usage history of the new Session precedes the end of outputs.
+    await expect(nextOutput(iterator)).resolves.toEqual({ done: true, value: undefined });
   });
 
   it("closes an in-flight Inspector before Adapter close resolves", async () => {

@@ -1,3 +1,4 @@
+import { claudeUsageHistory, type ClaudeUsageRecord } from "./claude-usage.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -35,6 +36,7 @@ import {
   type HostQuestionInteraction,
   type HostReasoningItem,
   type HostUsage,
+  type HostUsageRequest,
   type InspectHarnessInput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -618,6 +620,8 @@ class ClaudeHarnessSession implements HarnessSession {
       toolOutputLimit: number;
       cancelTimeoutMs: number;
       continuationQuiescenceMs: number;
+      /** Native requests already in the transcript, replayed for Host usage metering. */
+      usageHistory: { requests: HostUsageRequest[]; complete: boolean };
     },
   ) {
     this.#cwd = cwd;
@@ -671,6 +675,10 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#state = this.initialState;
     this.#statePublished = durable;
     this.outputs = this.#channel.outputs;
+    for (const request of options.usageHistory.requests) {
+      this.#event({ type: "usage.request", request });
+    }
+    this.#event({ type: "usage.history", complete: options.usageHistory.complete });
   }
 
   get nativeWriterRef(): NativeSessionRef {
@@ -1755,7 +1763,16 @@ class ClaudeHarnessSession implements HarnessSession {
       case "usage.result":
         this.#applyResultUsage(active, event);
         return;
+      case "usage.request":
+        this.#meterUsage(event.record);
+        return;
     }
+  }
+
+  /** Publishes one live request to Host metering; an unusable one marks history incomplete. */
+  #meterUsage(record: ClaudeUsageRecord): void {
+    if (record.kind === "request") this.#event({ type: "usage.request", request: record.request });
+    else this.#event({ type: "usage.history", complete: false });
   }
 
   #startCompaction(active: ActiveTurn): void {
@@ -3022,6 +3039,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         };
       }
     }
+    const sessionId = forked?.ok
+      ? forked.value.sessionId
+      : nativeRef?.success
+        ? nativeRef.data.nativeSessionId
+        : this.#dependencies.randomUUID();
+    const usageHistory = await this.#readUsageHistory(cwd, sessionId, openMode);
     const session: ClaudeHarnessSession = new ClaudeHarnessSession(
       cwd,
       this.#dependencies,
@@ -3038,11 +3061,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           (input.kind === "resume" && Boolean(input.model || input.thinkingOptionId)) ||
           Boolean(durableRef && isPendingClaudeSession(durableRef)),
         ...(durableRef ? { nativeRef: durableRef } : {}),
-        sessionId: forked?.ok
-          ? forked.value.sessionId
-          : nativeRef?.success
-            ? nativeRef.data.nativeSessionId
-            : this.#dependencies.randomUUID(),
+        sessionId,
+        usageHistory,
         ...(requestedModel ? { requestedModel } : {}),
         requestedPermissionModeId,
         requestedThinkingOptionId,
@@ -3053,6 +3073,23 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     );
     this.#sessions.add(session);
     return { ok: true, value: session };
+  }
+
+  /**
+   * Every request already in the native transcript, for Host usage metering. A new Session has
+   * none; an unreadable transcript is an incomplete history rather than an empty one.
+   */
+  async #readUsageHistory(
+    cwd: string,
+    sessionId: string,
+    openMode: "create" | "resume",
+  ): Promise<{ requests: HostUsageRequest[]; complete: boolean }> {
+    if (openMode === "create") return { requests: [], complete: true };
+    try {
+      return claudeUsageHistory(await this.#dependencies.readSessionMessages({ cwd, sessionId }));
+    } catch {
+      return { requests: [], complete: false };
+    }
   }
 
   /** Account-level plan windows are shared, but only stable native pushes may update them. */

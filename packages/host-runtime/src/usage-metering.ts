@@ -6,7 +6,7 @@ import {
   type HostUsageRequest,
 } from "@codexhost/harness-adapter";
 
-import type { ModelPriceLookup } from "./model-prices.js";
+import { cacheWrite1hPrice, type ModelPriceLookup } from "./model-prices.js";
 
 const TOKENS_PER_PRICE_UNIT = 1_000_000;
 
@@ -148,10 +148,12 @@ export class UsageMeter {
         return null;
       }
       const price = prices.find(request.model, request.provider);
+      const cacheWrite1h = request.cacheWrite1hInputTokens ?? 0;
+      const cacheWrite5m = cacheWrite - cacheWrite1h;
       if (
         !price ||
         (cacheRead > 0 && price.cacheRead === undefined) ||
-        (cacheWrite > 0 && price.cacheWrite === undefined)
+        (cacheWrite5m > 0 && price.cacheWrite === undefined)
       ) {
         unpriced.add(request.model);
         continue;
@@ -160,7 +162,8 @@ export class UsageMeter {
       total +=
         ((request.inputTokens - cacheRead - cacheWrite) * price.input +
           cacheRead * (price.cacheRead ?? 0) +
-          cacheWrite * (price.cacheWrite ?? 0) +
+          cacheWrite5m * (price.cacheWrite ?? 0) +
+          cacheWrite1h * cacheWrite1hPrice(price) +
           request.outputTokens * price.output) /
         TOKENS_PER_PRICE_UNIT;
     }

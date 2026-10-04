@@ -80,6 +80,19 @@ describe("UsageMeter cost", () => {
     expect(usage?.unpricedModels).toBeUndefined();
   });
 
+  it("prices one-hour cache writes at twice the input price, as Claude Code does", () => {
+    const usage = completeMeter(
+      request("a", {
+        inputTokens: 1_000_000,
+        cacheWriteInputTokens: 1_000_000,
+        cacheWrite1hInputTokens: 600_000,
+        outputTokens: 0,
+      }),
+    ).derive(null, prices);
+    // 0.4M five-minute writes at 3.75 + 0.6M one-hour writes at 2 × 3.
+    expect(usage?.totalCostUsd).toBeCloseTo(1.5 + 3.6, 10);
+  });
+
   it("recomputes cost against the current price table", () => {
     const meter = completeMeter(request("a"));
     const cheaper = new ModelPriceLookup({

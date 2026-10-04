@@ -1,3 +1,4 @@
+import { claudeUsageRecord, isClaudeModelRequest } from "./claude-usage.js";
 import { jsonValueSchema } from "@codexhost/shared-contracts";
 
 import { parseClaudeNativeFileChange } from "./file-change.js";
@@ -411,6 +412,13 @@ export class ClaudeNativeTurnAccumulator {
     this.#cancelRequested = true;
   }
 
+  #usageRequest: {
+    id: string;
+    model: string;
+    usage: unknown;
+    startedAtMs: number | null;
+  } | null = null;
+
   consume(message: unknown): ClaudeNativeMessageResult {
     if (this.#completed || !isRecord(message)) return { events: [] };
     const events: ClaudeNativeEvent[] = [];
@@ -432,7 +440,10 @@ export class ClaudeNativeTurnAccumulator {
     }
 
     if (message.type === "stream_event" && isRecord(message.event)) {
-      if (!nested) this.#consumeStreamEvent(message, events);
+      if (!nested) {
+        this.#observeUsage(message.event, events);
+        this.#consumeStreamEvent(message, events);
+      }
     } else if (message.type === "tool_progress") {
       this.#consumeToolProgress(message, events);
     }
@@ -611,6 +622,41 @@ export class ClaudeNativeTurnAccumulator {
         ...(description ? { description } : {}),
         ...(agentId ? { nativeSubagentId: agentId } : {}),
         ...(resultSummary ? { resultSummary } : {}),
+      });
+    }
+  }
+
+  /**
+   * Meters each root model request from the Anthropic stream: `message_start` names it and
+   * carries input and cache counts, the first `content_block_start` is its first output token,
+   * `message_delta` carries the final counts and `message_stop` completes it.
+   */
+  #observeUsage(event: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    if (event.type === "message_start") {
+      const message = isRecord(event.message) ? event.message : null;
+      this.#usageRequest =
+        message &&
+        typeof message.id === "string" &&
+        message.id.length > 0 &&
+        isClaudeModelRequest(message.model)
+          ? { id: message.id, model: message.model, usage: message.usage, startedAtMs: null }
+          : null;
+      return;
+    }
+    const request = this.#usageRequest;
+    if (!request) return;
+    if (event.type === "content_block_start") {
+      request.startedAtMs ??= Date.now();
+    } else if (event.type === "message_delta" && isRecord(event.usage)) {
+      request.usage = { ...(isRecord(request.usage) ? request.usage : {}), ...event.usage };
+    } else if (event.type === "message_stop") {
+      this.#usageRequest = null;
+      events.push({
+        type: "usage.request",
+        record: claudeUsageRecord(request.id, request.model, request.usage, {
+          startedAtMs: request.startedAtMs,
+          completedAtMs: Date.now(),
+        }),
       });
     }
   }

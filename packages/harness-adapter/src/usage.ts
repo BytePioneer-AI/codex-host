@@ -204,6 +204,11 @@ export interface HostUsageRequest {
   inputTokens: number;
   cachedInputTokens?: number;
   cacheWriteInputTokens?: number;
+  /**
+   * Of `cacheWriteInputTokens`, those written with a one-hour lifetime (Anthropic prompt
+   * caching), priced differently from the default five-minute writes.
+   */
+  cacheWrite1hInputTokens?: number;
   outputTokens: number;
   reasoningOutputTokens?: number;
   /** Unix ms of this request's first output token and of its completion; both or neither. */
@@ -215,6 +220,7 @@ const requestTokenFields = [
   "inputTokens",
   "cachedInputTokens",
   "cacheWriteInputTokens",
+  "cacheWrite1hInputTokens",
   "outputTokens",
   "reasoningOutputTokens",
   "startedAtMs",
@@ -269,6 +275,14 @@ export function parseHostUsageRequest(value: unknown): HostUsageRequest {
   }
   if ((request.reasoningOutputTokens ?? 0) > request.outputTokens) {
     throw new Error("Harness Usage request 'reasoningOutputTokens' must not exceed 'outputTokens'");
+  }
+  if (
+    request.cacheWrite1hInputTokens !== undefined &&
+    request.cacheWrite1hInputTokens > (request.cacheWriteInputTokens ?? -1)
+  ) {
+    throw new Error(
+      "Harness Usage request 'cacheWrite1hInputTokens' must not exceed 'cacheWriteInputTokens'",
+    );
   }
   if ((request.startedAtMs === undefined) !== (request.completedAtMs === undefined)) {
     throw new Error("Harness Usage request timing fields must be provided together");

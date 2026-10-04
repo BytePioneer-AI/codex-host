@@ -34,5 +34,5 @@
 
 ## 7. 后续批次（本变更之外跟进）
 
-- [ ] 7.1 Claude Code（先确认 Turn 末输入骤降）、CodeBuddy/WorkBuddy（缓存字段）、DeepSeek、Kimi、Qoder。
+- [ ] 7.1 Claude Code（已完成：按 `message_start`/`message_delta` 逐请求计量、转录回放、1 小时档缓存写入）（先确认 Turn 末输入骤降）、CodeBuddy/WorkBuddy（缓存字段）、DeepSeek、Kimi、Qoder。
 - [ ] 7.2 Grok、ZCode、Hermes、Antigravity：合计型或模型归属不明确，按 D2 只计 Token，实测口径后接入。

@@ -24,7 +24,18 @@ export interface ModelPrice {
   input: number;
   output: number;
   cacheRead?: number;
+  /** Default (five-minute) cache writes. */
   cacheWrite?: number;
+  /** One-hour cache writes; only user overrides set it, see `cacheWrite1hPrice`. */
+  cacheWrite1h?: number;
+}
+
+/**
+ * One-hour cache writes cost twice the base input price, as in Claude Code's built-in list
+ * prices (`promptCacheWrite1hTokens`); models.dev publishes only the five-minute price.
+ */
+export function cacheWrite1hPrice(price: ModelPrice): number {
+  return price.cacheWrite1h ?? price.input * 2;
 }
 
 export const MODELS_DEV_URL = "https://models.dev/api.json";
@@ -118,7 +129,7 @@ export function parseModelPriceOverrides(value: unknown): Map<string, ModelPrice
       throw new Error(`Price override '${key}' is invalid`);
     }
     for (const field of Object.keys(entry)) {
-      if (!["input", "output", "cacheRead", "cacheWrite"].includes(field)) {
+      if (!["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h"].includes(field)) {
         throw new Error(`Price override '${key}' contains unknown field '${field}'`);
       }
     }
@@ -128,7 +139,7 @@ export function parseModelPriceOverrides(value: unknown): Map<string, ModelPrice
       throw new Error(`Price override '${key}' needs non-negative 'input' and 'output'`);
     }
     const resolved: ModelPrice = { input, output };
-    for (const field of ["cacheRead", "cacheWrite"] as const) {
+    for (const field of ["cacheRead", "cacheWrite", "cacheWrite1h"] as const) {
       if (entry[field] === undefined) continue;
       const candidate = price(entry[field]);
       if (candidate === null) throw new Error(`Price override '${key}' has invalid '${field}'`);
@@ -154,7 +165,8 @@ function samePrice(left: ModelPrice, right: ModelPrice): boolean {
     left.input === right.input &&
     left.output === right.output &&
     left.cacheRead === right.cacheRead &&
-    left.cacheWrite === right.cacheWrite
+    left.cacheWrite === right.cacheWrite &&
+    left.cacheWrite1h === right.cacheWrite1h
   );
 }
 

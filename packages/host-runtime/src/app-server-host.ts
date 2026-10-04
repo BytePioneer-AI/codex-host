@@ -36,6 +36,8 @@ import {
 } from "@codexhost/shared-contracts";
 import { handleCredentialImports } from "./credential-imports.js";
 import { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
+import { OrderedWriter } from "./ordered-writer.js";
+import { EXPORT_HISTORY_ON_EXIT_ENV, NativeHistoryExport } from "./native-history-export.js";
 import {
   HARNESS_DISPLAY_GET_METHOD,
   HARNESS_DISPLAY_SET_METHOD,
@@ -265,8 +267,6 @@ import {
   parseJsonFrame,
   projectCodexThreadUsage,
   readLfFrames,
-  writeFrame,
-  writeJsonFrame,
   jsonRpcRequestSchema,
   threadForkResult,
   threadRevertResult,
@@ -588,31 +588,6 @@ function turnProjectionGate(): TurnProjectionGate {
   return { promise, resolve };
 }
 
-class OrderedWriter {
-  #tail = Promise.resolve();
-
-  constructor(
-    private readonly stream: Writable,
-    /** Returns true for a message it consumed instead of the stream. */
-    private readonly intercept: (value: JsonValue) => boolean = () => false,
-  ) {}
-
-  frame(frame: Buffer<ArrayBufferLike>): Promise<void> {
-    return this.#enqueue(() => writeFrame(this.stream, frame));
-  }
-
-  json(value: JsonValue): Promise<void> {
-    if (this.intercept(value)) return Promise.resolve();
-    return this.#enqueue(() => writeJsonFrame(this.stream, value));
-  }
-
-  #enqueue(operation: () => Promise<void>): Promise<void> {
-    const next = this.#tail.then(operation, operation);
-    this.#tail = next.catch(() => undefined);
-    return next;
-  }
-}
-
 export class AppServerHost {
   readonly #options: Required<
     Pick<AppServerHostOptions, "desktopInput" | "desktopOutput" | "diagnosticOutput">
@@ -654,6 +629,8 @@ export class AppServerHost {
   #nextOfficialServerRequestId = 0;
   #sectionMoves: Promise<void> = Promise.resolve();
   #writer: OrderedWriter;
+  readonly #nativeHistoryExport: NativeHistoryExport | undefined;
+  #exportingNativeHistory: Promise<void> | undefined;
   /** Console requests share Desktop handling; their replies return to the console. */
   readonly #consoleRequestPrefix = `codexhost-console:${randomUUID()}:`;
   readonly #consoleReplies = new Map<string, (message: JsonValue) => void>();
@@ -676,11 +653,17 @@ export class AppServerHost {
       diagnosticOutput: process.stderr,
       ...options,
     };
-    this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) => {
-      this.#noteDesktopReply(value);
-      return this.#takeConsoleReply(value);
-    });
     const environment = this.#options.environment ?? process.env;
+    const batchMs = Number(environment.CODEXHOST_NATIVE_DELTA_BATCH_MS ?? 16);
+    this.#writer = new OrderedWriter(
+      this.#options.desktopOutput,
+      (value) => {
+        this.#noteDesktopReply(value);
+        return this.#takeConsoleReply(value);
+      },
+      Number.isInteger(batchMs) && batchMs >= 0 && batchMs <= 50 ? batchMs : 16,
+      (error) => this.#diagnose(error),
+    );
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
     );
@@ -711,6 +694,24 @@ export class AppServerHost {
                 }),
           ),
       });
+    this.#nativeHistoryExport =
+      environment[EXPORT_HISTORY_ON_EXIT_ENV] === "1"
+        ? new NativeHistoryExport(
+            path.join(
+              environment.CODEXHOST_DATA_DIR ?? path.join(os.homedir(), ".codexhost"),
+              "history-export",
+            ),
+            this.#officialRuntimeScope.permanentHome,
+            () => this.#diagnose("External history could not be exported to native Codex"),
+            async (threadId) => {
+              const response = await this.#requestOfficial("thread/read", {
+                threadId,
+                includeTurns: false,
+              });
+              if (response.error) throw new Error("Native history index registration failed");
+            },
+          )
+        : undefined;
     this.#accountControl =
       options.accountControl ??
       new SingleNativeCodexAccount(() => ({
@@ -864,6 +865,13 @@ export class AppServerHost {
   }
 
   async #closeOfficialRuntime(): Promise<void> {
+    if (this.#nativeHistoryExport) {
+      this.#exportingNativeHistory ??= this.#repository
+        .list()
+        .then((records) => this.#nativeHistoryExport!.exportOnExit(records))
+        .catch(() => this.#diagnose("External history export did not complete"));
+      await this.#exportingNativeHistory;
+    }
     this.#nativeAccountObserver?.close();
     if (this.#ownsOfficialRuntimeScope) await this.#officialRuntimeScope.close();
     await this.#officialRuntime.close();
@@ -967,6 +975,7 @@ export class AppServerHost {
       const threads = this.#externalRuntime.values();
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
+      await this.#writer.drain();
       await Promise.allSettled(
         [...new Set(this.#externalAdapters.values())].map((adapter) =>
           Promise.resolve().then(() => adapter.close()),
@@ -2119,7 +2128,7 @@ export class AppServerHost {
       this.#diagnose(error);
     }
     this.#routeObservationTracker.bindOfficialResponse(parsed);
-    if (forwarded === parsed) await this.#writer.frame(input.frame);
+    if (forwarded === parsed) await this.#writer.frame(input.frame, parsed);
     else await this.#writer.json(forwarded);
     this.#nativeAccountObserver?.observe(parsed);
     const deletedProjectId = observeDeletedProject(parsed);
@@ -3962,8 +3971,10 @@ export class AppServerHost {
     return true;
   }
 
-  #refreshExternalThread(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
-    return this.#externalRuntime.refresh(thread);
+  async #refreshExternalThread(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
+    const error = await this.#externalRuntime.refresh(thread);
+    if (!error) this.#nativeHistoryExport?.stage(thread.record, thread.turns);
+    return error;
   }
 
   #persistTerminalIdentity(
@@ -4210,6 +4221,7 @@ export class AppServerHost {
         return;
       }
     }
+    if (includeTurns && historyFresh) this.#nativeHistoryExport?.stage(thread.record, thread.turns);
     await this.#writer.json(
       rpcEnvelope(request, {
         result: {
@@ -4242,6 +4254,7 @@ export class AppServerHost {
       }
     }
     try {
+      if (historyFresh) this.#nativeHistoryExport?.stage(thread.record, thread.turns);
       const turns = this.#externalHistoryTurns(thread);
       const result =
         request.method === "thread/turns/list"
@@ -4274,6 +4287,7 @@ export class AppServerHost {
         return;
       }
     }
+    if (historyFresh) this.#nativeHistoryExport?.stage(thread.record, thread.turns);
     const turns = this.#externalHistoryTurns(thread);
     const responseThread = {
       ...(await this.#withExternalSection(thread.thread)),
@@ -4905,6 +4919,7 @@ export class AppServerHost {
       thread.historyHydrated = false;
       thread.running = false;
       thread.activeTurnId = null;
+      if (!ephemeralTurn) this.#nativeHistoryExport?.stage(thread.record, thread.turns);
       // Detached Items (native background commands) settle on this Turn later.
       if (!projection.projector.hasOpenDetachedItems) thread.projectedTurns.delete(event.turnId);
       thread.responseGates.delete(event.turnId);
@@ -4939,6 +4954,7 @@ export class AppServerHost {
       !projection.projector.hasOpenDetachedItems
     ) {
       thread.projectedTurns.delete(event.turnId);
+      this.#nativeHistoryExport?.stage(thread.record, thread.turns);
     }
     for (const message of result.messages) await this.#writer.json(message);
     if (event.type === "turn.completed") {

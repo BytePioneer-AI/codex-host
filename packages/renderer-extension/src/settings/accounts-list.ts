@@ -10,6 +10,7 @@ import {
   type AccountUsageDisplay,
   type AccountUsageViewState,
 } from "./accounts-usage.js";
+import { accountDisplayText } from "./account-privacy.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 let resetDetailsSequence = 0;
@@ -197,6 +198,7 @@ export function renderAccountRows(
     onRetry: () => void;
     onResetExpanded: (open: boolean) => void;
     importAction?: HTMLElement | null;
+    hideEmails?: boolean;
   },
 ): HTMLTableRowElement[] {
   const row = document.createElement("tr");
@@ -204,8 +206,8 @@ export function renderAccountRows(
   row.dataset.accountId = account.accountId;
   row.dataset.accountFocus = `${account.accountId}:row`;
   row.tabIndex = -1;
-  const name = codexAccountDisplayName(account);
-  row.setAttribute("aria-label", name.full);
+  const name = accountDisplayText(codexAccountDisplayName(account).full, input.hideEmails === true);
+  row.setAttribute("aria-label", name);
   const personCell = document.createElement("td");
   personCell.className = "settings-account-person-cell";
   const mark = document.createElement("div");
@@ -215,7 +217,7 @@ export function renderAccountRows(
   mark.append(createRendererAgentIcon("codex", 26, document));
   personCell.append(
     createAccountPerson(document, messages, {
-      name: name.full,
+      name,
       agent: "Codex",
       plan: accountPlanLabel(account.planType),
       highlighted: account.planType === "pro" || account.planType === "prolite",
@@ -279,12 +281,16 @@ export function renderHarnessAccountRows(
   messages: RendererSettingsMessages,
   display: AccountUsageDisplay,
   importAction?: HTMLElement | null,
+  hideEmails = false,
 ): HTMLTableRowElement[] {
   const row = document.createElement("tr");
   row.className = "settings-account-row";
   row.dataset.harnessId = account.harnessId;
   row.tabIndex = -1;
-  const name = account.email ?? account.label ?? account.harnessName;
+  const name = accountDisplayText(
+    account.email ?? account.label ?? account.harnessName,
+    hideEmails,
+  );
   row.setAttribute("aria-label", name);
   const personCell = document.createElement("td");
   personCell.className = "settings-account-person-cell";

@@ -242,6 +242,47 @@ test("imports from a row chip or the Pi section without adding a table column", 
   await expect(pi.getByRole("button", { name: "导入账号", exact: true })).toBeVisible();
 });
 
+test("shows emails by default and masks their middle on demand across the page", async ({
+  page,
+}, testInfo) => {
+  await setup(page, { scenario: "external" });
+  const toolbar = page.locator(".settings-account-toolbar");
+  const toggle = toolbar.getByRole("button", { name: "隐藏邮箱", exact: true });
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  const nativeEmail = page.locator(`${nativeRow} .settings-account-email`);
+  const grokEmail = page.locator('[data-harness-id="grok"] .settings-account-email');
+  await expect(nativeEmail).toHaveText("zhaobin_jiang@163.com");
+  // Import once so the Pi section also lists an email.
+  await page.locator(`${nativeRow} .settings-account-pi-import`).click();
+  await page
+    .getByRole("dialog", { name: "导入到 Pi", exact: true })
+    .getByRole("button", { name: "确认导入", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "已复制到 Pi", exact: true })
+    .getByRole("button", { name: "完成", exact: true })
+    .click();
+  const pi = page.getByRole("region", { name: "Pi 中的账号" });
+
+  await toggle.click();
+  const reveal = toolbar.getByRole("button", { name: "显示邮箱", exact: true });
+  await expect(reveal).toHaveAttribute("aria-pressed", "true");
+  await expect(nativeEmail).toHaveText("zh****ng@163.com");
+  await expect(nativeEmail).toHaveAttribute("title", "zh****ng@163.com");
+  await expect(grokEmail).toHaveText("g****k@example.com");
+  await expect(page.getByText("zhaobin_jiang", { exact: false })).toHaveCount(0);
+  await expect(pi).toContainText("zh****ng@163.com");
+  await page.screenshot({ path: testInfo.outputPath("accounts-emails-hidden.png") });
+  // Masking is display-only: search still finds the account by its real email.
+  await toolbar.getByRole("searchbox").fill("zhaobin");
+  await expect(nativeEmail).toHaveText("zh****ng@163.com");
+  await toolbar.getByRole("searchbox").fill("");
+
+  await reveal.click();
+  await expect(nativeEmail).toHaveText("zhaobin_jiang@163.com");
+  await expect(pi).toContainText("zhaobin_jiang@163.com");
+});
+
 test("keeps quota columns aligned with the Pi chip in the identity and spans single limits", async ({
   page,
 }, testInfo) => {

@@ -8,6 +8,7 @@
 
 页面使用「账号 / 剩余额度（或已用额度）」表格，两个表头居中，额度区域保留两列并共用不绑定周期的表头；下方是「Pi 中的账号」专区。导入 Pi 的入口放在账号信息下方的次级行（与「重置卡」同一行），不再单独占用「用于 Harness」列。全局刷新在工具栏，原生管理边界以身份的悬停提示保留。窄窗口下每个账号独立排列，两个额度窗口并排，单个额度横跨整个额度区域，最窄布局再纵向堆叠。视觉沿用原设置外壳：无边框搜索、全局额度刷新。所有账号行统一使用各自的产品 Logo。工具栏的「账号」数量包含当前 Codex 账号和实际返回的其他 Harness 账号，不随搜索筛选改变。
 
+- 工具栏「已用/剩余」与刷新之间有眼睛图标按钮，默认显示完整邮箱；点击后整页（账号表、「Pi 中的账号」专区、导入对话框，以及悬停提示和辅助技术名称）把邮箱本地部分的中间替换为固定 4 个 `*`，保留前后各两位与完整域名（如 `zh****ng@163.com`；本地部分 4 位及以下只保留首尾各一位），非邮箱名称不变。这只是显示层处理，不改变搜索（仍按真实邮箱匹配）、导入请求或任何存储数据；状态仅在当前页面保持，重新打开设置页恢复显示。
 - 主标题显示完整邮箱或账号名称，单行省略并可悬停查看完整身份；Agent 名称、真实套餐与「Codex 当前」标记作为次级信息，不显示本地 `CODEX_HOME` 路径。
 - 搜索按邮箱、账号名称、Agent 或套餐筛选整个列表，仅在两类账号都不匹配时显示一个空状态。Codex 按 Host 返回顺序在前，其他 Harness 通常按稳定的 Harness ID 顺序排列，Antigravity CLI 固定放在这些 Harness 的最后；不按剩余额度或当前状态重排。
 - 每条额度进度条独立显示类别与周期。仅排列真实返回的窗口，每行最多两个：Cursor 的 Auto 与 API 月额度并排，Kimi 的周额度与 5 小时额度同样并排，不按通用/模型范围强制拆成两行。只有一个窗口（包括额外行的单项窗口）时横跨两列，不保留空窗口占位。超过两项时继续换行，不挤入账号信息。不为缺少的窗口补成已用 0% 或剩余 100%；不冒充全账号总额度，也不合并或丢弃重复报告。
@@ -83,6 +84,7 @@ SSH 维持远端原生单账号，不传输本地凭据。
 - `packages/adapters/pi/src/pi-credential-imports.ts`：Pi 原生存储和导入配置所有权管理。
 - `packages/host-runtime/src/credential-imports.ts`：通过公共 Adapter 契约路由后端凭证转移。
 - `packages/renderer-extension/src/settings/accounts-list.ts`：统一账号行与重置卡数量展开。
+- `packages/renderer-extension/src/settings/account-privacy.ts`：邮箱中间位遮挡。
 - `packages/renderer-extension/src/settings/accounts-usage.ts`：额度窗口分列、额外具名额度和重置卡详情。
 - `packages/renderer-extension/src/settings/accounts-reset-time.ts`：紧凑重置时间与页面本地倒计时。
 - `packages/renderer-extension/src/settings/harness-accounts.ts`：其他 Harness 只读账号查询状态。

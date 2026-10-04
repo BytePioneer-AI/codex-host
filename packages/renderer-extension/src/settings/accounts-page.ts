@@ -99,6 +99,27 @@ export function createAccountsSettingsPage(
       refreshUsage.title = messages.accountCreditsRefresh;
       refreshUsage.setAttribute("aria-label", messages.accountCreditsRefresh);
       refreshUsage.append(createRendererSettingsIcon("refresh", 16));
+      let hideEmails = false;
+      const privacyToggle = document.createElement("button");
+      privacyToggle.type = "button";
+      privacyToggle.className = "settings-icon-button settings-account-privacy-toggle";
+      const updatePrivacyToggle = (): void => {
+        // The button names the action it performs next; aria-pressed reports the masked state.
+        const label = hideEmails ? messages.accountEmailsShow : messages.accountEmailsHide;
+        privacyToggle.title = label;
+        privacyToggle.setAttribute("aria-label", label);
+        privacyToggle.setAttribute("aria-pressed", String(hideEmails));
+        privacyToggle.replaceChildren(
+          createRendererSettingsIcon(hideEmails ? "eye-off" : "eye", 16),
+        );
+      };
+      updatePrivacyToggle();
+      privacyToggle.addEventListener("click", () => {
+        hideEmails = !hideEmails;
+        updatePrivacyToggle();
+        credentialImports.setHideEmails(hideEmails);
+        render();
+      });
       refreshUsage.addEventListener("click", () => {
         usageByAccountId.clear();
         loadUsage(accounts);
@@ -106,7 +127,7 @@ export function createAccountsSettingsPage(
         void credentialImports.refresh();
       });
       search.addEventListener("input", () => render());
-      toolbar.append(connected, searchWrapper, displayControls, refreshUsage);
+      toolbar.append(connected, searchWrapper, displayControls, privacyToggle, refreshUsage);
       const list = document.createElement("div");
       list.className = "settings-account-list";
       const { table, body, updateDisplay } = createAccountsTable(document, messages);
@@ -186,6 +207,7 @@ export function createAccountsSettingsPage(
                 "codex",
                 codexAccountDisplayName(account).full,
               ),
+              hideEmails,
             }),
           );
         }
@@ -200,6 +222,7 @@ export function createAccountsSettingsPage(
                 account.harnessId,
                 account.email ?? account.label ?? account.harnessName,
               ),
+              hideEmails,
             ),
           );
         }

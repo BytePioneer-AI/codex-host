@@ -9,6 +9,7 @@ import {
 import { KNOWN_RENDERER_AGENTS, type RendererAgent } from "../agent-selection-state.js";
 import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "../renderer-agent-icon.js";
 import type { CredentialImportMessages } from "./credential-import-messages.js";
+import { accountDisplayText } from "./account-privacy.js";
 import { createRendererSettingsIcon } from "./icons.js";
 
 export interface RendererCredentialImportClient {
@@ -94,6 +95,8 @@ export function mountCredentialImports(
   // Pi's own logins are context, not something to act on, so they start collapsed.
   let othersExpanded = false;
   let sectionExpanded = true;
+  let hideEmails = false;
+  const shown = (text: string): string => accountDisplayText(text, hideEmails);
   const targetButtons = new Map<string, HTMLElement>();
 
   const importedRecords = (): readonly CredentialImportRecord[] =>
@@ -201,15 +204,15 @@ export function mountCredentialImports(
     row.className = "settings-pi-accounts__row";
     row.tabIndex = -1;
     row.dataset.importName = record.name;
-    row.setAttribute("aria-label", record.source.label);
+    row.setAttribute("aria-label", shown(record.source.label));
     const agent = KNOWN_RENDERER_AGENTS.find((candidate) => candidate === record.source.harnessId);
     const mark = createMark(agent);
     const identity = document.createElement("div");
     identity.className = "settings-pi-accounts__identity";
     const label = document.createElement("strong");
     label.className = "settings-account-email";
-    label.textContent = record.source.label;
-    label.title = record.source.label;
+    label.textContent = shown(record.source.label);
+    label.title = label.textContent;
     label.translate = false;
     const meta = document.createElement("div");
     meta.className = "settings-account-metadata";
@@ -239,7 +242,7 @@ export function mountCredentialImports(
     reimport.type = "button";
     reimport.className = "settings-account-action";
     reimport.textContent = messages.rowReimport;
-    reimport.setAttribute("aria-label", `${messages.reimport}: ${record.source.label}`);
+    reimport.setAttribute("aria-label", `${messages.reimport}: ${shown(record.source.label)}`);
     reimport.disabled = busy || !source;
     reimport.title = messages.reimport;
     reimport.addEventListener("click", () => {
@@ -249,7 +252,7 @@ export function mountCredentialImports(
     remove.type = "button";
     remove.className = "settings-account-action settings-pi-accounts__remove";
     remove.textContent = messages.rowRemove;
-    remove.setAttribute("aria-label", `${messages.remove}: ${record.source.label}`);
+    remove.setAttribute("aria-label", `${messages.remove}: ${shown(record.source.label)}`);
     remove.disabled = busy;
     remove.addEventListener("click", () => openDialog("remove", { record }, `row:${record.name}`));
     // A copy whose source login is not the current one simply cannot be copied again: no button.
@@ -273,7 +276,7 @@ export function mountCredentialImports(
     const agent = login.vendor ? VENDOR_AGENTS[login.vendor] : undefined;
     row.setAttribute(
       "aria-label",
-      [login.label ?? login.provider, agent && RENDERER_AGENT_LABELS[agent]]
+      [shown(login.label ?? login.provider), agent && RENDERER_AGENT_LABELS[agent]]
         .filter(Boolean)
         .join(" · "),
     );
@@ -282,7 +285,7 @@ export function mountCredentialImports(
     identity.className = "settings-pi-accounts__identity";
     const title = document.createElement("strong");
     title.className = "settings-account-email";
-    title.textContent = login.label ?? login.provider;
+    title.textContent = shown(login.label ?? login.provider);
     title.title = title.textContent;
     title.translate = false;
     const meta = document.createElement("div");
@@ -431,7 +434,7 @@ export function mountCredentialImports(
         sourceRadios.push(radio);
         const copy = document.createElement("span");
         const label = document.createElement("strong");
-        label.textContent = choice.label;
+        label.textContent = shown(choice.label);
         label.translate = false;
         const existing = importedRecords().find((record) => record.source.id === choice.id);
         const agent = KNOWN_RENDERER_AGENTS.find((candidate) => candidate === choice.harnessId);
@@ -500,7 +503,7 @@ export function mountCredentialImports(
         const active = source ?? record?.source;
         const choices = mode === "add" && state.choose ? compatibleSources() : [];
         if (choices.length > 1) body.append(sourcePicker(choices));
-        else if (active) body.append(line(messages.source, active.label));
+        else if (active) body.append(line(messages.source, shown(active.label)));
         const input = document.createElement("input");
         input.type = "text";
         input.maxLength = 48;
@@ -602,6 +605,12 @@ export function mountCredentialImports(
   renderSection();
 
   return {
+    /** Mask the middle of email addresses in the section and dialogs (screen sharing). */
+    setHideEmails(value: boolean): void {
+      if (hideEmails === value) return;
+      hideEmails = value;
+      renderSection();
+    },
     /** Dedicated "imported into Pi" section, rendered below the account table. */
     section: section as HTMLElement,
     refresh: async (): Promise<void> => {

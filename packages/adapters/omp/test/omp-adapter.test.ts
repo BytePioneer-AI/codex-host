@@ -586,10 +586,20 @@ function outputs(session: { outputs: AsyncIterable<HarnessOutput> }): HarnessOut
   return values;
 }
 
+function isUsageMetering(output: HarnessOutput): boolean {
+  return (
+    output.kind === "event" &&
+    (output.event.type === "usage.request" || output.event.type === "usage.history")
+  );
+}
+
+/** Lifecycle assertions skip Host usage metering events, which have their own tests. */
 async function nextOutput(iterator: AsyncIterator<HarnessOutput>): Promise<HarnessOutput> {
-  const result = await iterator.next();
-  if (result.done) throw new Error("Harness output stream ended unexpectedly");
-  return result.value;
+  for (;;) {
+    const result = await iterator.next();
+    if (result.done) throw new Error("Harness output stream ended unexpectedly");
+    if (!isUsageMetering(result.value)) return result.value;
+  }
 }
 
 async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
@@ -597,6 +607,64 @@ async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
   if (output.kind !== "event") throw new Error("Expected a Harness event output");
   return output.event;
 }
+
+describe("OMP Adapter usage metering", () => {
+  it("declares empty history on create and meters live assistant messages", async () => {
+    const transport = new FakeOmpTransport();
+    let onUsage: OmpRpcSessionOptions["onUsage"];
+    const adapter = new OmpAdapter(
+      {},
+      {
+        createTransport: (options: OmpRpcSessionOptions) => {
+          onUsage = options.onUsage;
+          return transport;
+        },
+      },
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toEqual({
+      kind: "event",
+      event: { type: "usage.history", complete: true },
+    });
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-usage" as HostTurnId,
+      input: [{ type: "text", text: "hi" }],
+    });
+    if (!onUsage) throw new Error("Omp transport did not receive a usage callback");
+    onUsage({
+      message: {
+        role: "assistant",
+        model: "gpt-5",
+        responseId: "resp-live",
+        usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 0 },
+      },
+      outputStartedAtMs: 10,
+      completedAtMs: 20,
+    });
+    let event = (await iterator.next()).value;
+    while (event?.kind !== "event" || event.event.type !== "usage.request") {
+      event = (await iterator.next()).value;
+    }
+    expect(event.event).toEqual({
+      type: "usage.request",
+      request: {
+        requestId: "resp-live",
+        model: "gpt-5",
+        inputTokens: 4,
+        cachedInputTokens: 3,
+        cacheWriteInputTokens: 0,
+        outputTokens: 2,
+        outputStartedAtMs: 10,
+        completedAtMs: 20,
+      },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+});
 
 describe("OMP Adapter Subagents", () => {
   it("projects native Subagent lifecycle into a Host delegation Item", async () => {

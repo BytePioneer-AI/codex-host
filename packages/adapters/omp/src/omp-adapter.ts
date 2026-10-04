@@ -48,6 +48,7 @@ import {
   type PermissionModeSelectCompleted,
   type HostThreadSnapshot,
   type HostUsage,
+  type HostUsageRequest,
   type ThinkingSelectCommand,
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
@@ -84,6 +85,7 @@ import {
   type OmpAvailableCommand,
 } from "./omp-slash-commands.js";
 import { mapOmpSnapshot, resolveOmpForkBoundary, type OmpSessionHistory } from "./omp-history.js";
+import { ompUsageHistory, ompUsageRecord, type OmpUsageObservation } from "./omp-usage.js";
 import { readOmpSessionHistory } from "./omp-session-file.js";
 import { OmpSessionImport } from "./session-import.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
@@ -681,6 +683,7 @@ class OmpHarnessSession implements HarnessSession {
       startedTransport?: OmpTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ) {
     this.#cwd = cwd;
@@ -718,6 +721,21 @@ class OmpHarnessSession implements HarnessSession {
     this.#usage = this.initialUsage;
     this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
+    // A created Session has no native history yet; an opened one replays it for Host metering.
+    const usageHistory =
+      options.usageHistory ??
+      (options.startedTransport
+        ? { requests: [], complete: false }
+        : { requests: [], complete: true });
+    for (const request of usageHistory.requests) this.#event({ type: "usage.request", request });
+    this.#event({ type: "usage.history", complete: usageHistory.complete });
+  }
+
+  handleTransportUsage(observation: OmpUsageObservation): void {
+    if (this.#phase !== "open") return;
+    const record = ompUsageRecord(observation.message, observation);
+    if (record?.kind === "request") this.#event({ type: "usage.request", request: record.request });
+    else if (record?.kind === "missing") this.#event({ type: "usage.history", complete: false });
   }
 
   handleTransportFault(error: OmpRpcFaultError): void {
@@ -1290,6 +1308,7 @@ class OmpHarnessSession implements HarnessSession {
       permissionMode: mode,
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
       onSubagentEvent: (event) => this.handleTransportEvent(event),
+      onUsage: (observation) => this.handleTransportUsage(observation),
     });
     try {
       let replacement: OmpTurnTransport | null = null;
@@ -1591,6 +1610,7 @@ class OmpHarnessSession implements HarnessSession {
       cwd: this.#cwd,
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
       onSubagentEvent: (event) => this.handleTransportEvent(event),
+      onUsage: (observation) => this.handleTransportUsage(observation),
       permissionMode: this.#permissionMode,
     });
     const starting = transport
@@ -2497,6 +2517,7 @@ export class OmpAdapter implements HarnessAdapter {
           : { forkSessionFile: sourceSessionFile }),
         onFault: (error) => session?.handleTransportFault(error),
         onSubagentEvent: (event) => session?.handleTransportEvent(event),
+        onUsage: (observation) => session?.handleTransportUsage(observation),
       });
       await transport.start();
 
@@ -2570,7 +2591,12 @@ export class OmpAdapter implements HarnessAdapter {
       startedThinkingLevels = reconciled.thinkingLevels;
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
       const initialUsage = await transport.getSessionUsage().catch(() => null);
+      const usageHistory = await transport
+        .getEntries()
+        .then(ompUsageHistory)
+        .catch(() => ({ requests: [], complete: false }));
       session = this.#trackSession(input.cwd, {
+        usageHistory,
         ...(input.environment ? { environment: input.environment } : {}),
         startedTransport: transport,
         startedThinkingLevels,
@@ -2598,6 +2624,7 @@ export class OmpAdapter implements HarnessAdapter {
       startedTransport?: OmpTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ): OmpHarnessSession {
     const environment = options.environment;
@@ -2623,6 +2650,7 @@ export class OmpAdapter implements HarnessAdapter {
           ? { startedThinkingLevels: options.startedThinkingLevels }
           : {}),
         ...(options.initialUsage !== undefined ? { initialUsage: options.initialUsage } : {}),
+        ...(options.usageHistory ? { usageHistory: options.usageHistory } : {}),
       },
     );
     this.#sessions.add(session);

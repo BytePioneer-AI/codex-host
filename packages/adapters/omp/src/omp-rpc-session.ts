@@ -22,6 +22,7 @@ import {
   optionalOmpStateContextUsage,
   parseOmpSessionUsage,
   parseOmpStateContextUsage,
+  type OmpUsageObservation,
 } from "./omp-usage.js";
 import type { OmpNativeModel, OmpNativeModelRef } from "./omp-model-catalog.js";
 import type { OmpPermissionMode } from "./omp-permission-modes.js";
@@ -183,6 +184,8 @@ export interface OmpRpcSessionOptions {
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   onSubagentEvent?: (event: OmpTurnEvent) => void;
+  /** Finished assistant messages, for Host usage metering. */
+  onUsage?: (observation: OmpUsageObservation) => void;
   /**
    * Subscribe to native subagent frames during startup (default true). Short-lived
    * transports that never run Turns, such as inspection or transcript reads, opt out.
@@ -532,6 +535,7 @@ export class OmpRpcSession {
   #availableCommands: OmpAvailableCommand[] | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
   #manualCompaction: ManualCompaction | null = null;
+  #usageOutputStartedAtMs: number | null = null;
   #stderrTail = "";
   #frameDecoder = new OmpFrameDecoder();
   #startupFaultResolve: ((error: OmpRpcFaultError) => void) | null = null;
@@ -1114,6 +1118,7 @@ export class OmpRpcSession {
     }
     const active = this.#activeTurn;
     if (this.#handleSubagentFrame(active, value)) return;
+    this.#observeUsage(value);
     if (!active) {
       if (value.type === "extension_ui_request" && this.#isBlockingInteraction(value)) {
         this.#fail(
@@ -1211,6 +1216,36 @@ export class OmpRpcSession {
       if (active.settlement !== "pending") return;
       active.settlement = "confirming";
       void this.#confirmSettledTurn(active);
+    }
+  }
+
+  /** Every finished assistant message is one model request, with or without an active Turn. */
+  #observeUsage(value: Record<string, unknown>): void {
+    if (value.type === "message_start") {
+      this.#usageOutputStartedAtMs = null;
+      return;
+    }
+    if (value.type === "message_update") {
+      const event = value.assistantMessageEvent;
+      if (
+        this.#usageOutputStartedAtMs === null &&
+        isRecord(event) &&
+        typeof event.type === "string" &&
+        /^(text|thinking|reasoning|thought)_delta$/u.test(event.type)
+      ) {
+        this.#usageOutputStartedAtMs = Date.now();
+      }
+      return;
+    }
+    if (value.type === "message_end" && isRecord(value.message)) {
+      if (value.message.role !== "assistant") return;
+      const outputStartedAtMs = this.#usageOutputStartedAtMs;
+      this.#usageOutputStartedAtMs = null;
+      this.#options.onUsage?.({
+        message: value.message,
+        outputStartedAtMs,
+        completedAtMs: Date.now(),
+      });
     }
   }
 

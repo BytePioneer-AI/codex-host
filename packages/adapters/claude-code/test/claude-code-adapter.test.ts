@@ -9,6 +9,7 @@ import {
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
+  type HostInteractionId,
 } from "@codexhost/shared-contracts";
 
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
@@ -2470,6 +2471,245 @@ describe("Claude Code HarnessAdapter", () => {
     );
     expect(transport.autonomousTurnHandler).not.toBeNull();
     expect(transport.idleLive).toBe(false);
+    await session.close();
+  });
+
+  function agentApproval(transport: FakeClaudeTransport, requestId: string): void {
+    transport.event({
+      type: "interaction.requested",
+      request: { type: "approval", requestId, title: "Inspect implementation: Bash" },
+      agentScoped: true,
+    });
+  }
+
+  async function lateResponse(session: HarnessSession, interactionId: HostInteractionId) {
+    return session.execute({
+      type: "interaction.respond",
+      interactionId,
+      response: { type: "approval", actionId: "allowOnce" },
+    });
+  }
+
+  it("answers a foreground Agent approval and closes a pending one when the Turn ends", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("delegate in foreground"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "subagent.started",
+      operation: "spawn",
+      callId: "agent-1",
+      description: "Inspect implementation",
+      background: false,
+    });
+    await nextEvent(iterator);
+
+    agentApproval(transport, "agent-approval-1");
+    const answered = await nextInteraction(iterator);
+    await expect(lateResponse(session, answered.interactionId)).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(transport.respondToInteraction).toHaveBeenLastCalledWith({
+      type: "approval",
+      requestId: "agent-approval-1",
+      decision: "allowOnce",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: answered.interactionId,
+      reason: "responded",
+    });
+
+    agentApproval(transport, "agent-approval-2");
+    const pending = await nextInteraction(iterator);
+    transport.event({
+      type: "subagent.completed",
+      callId: "agent-1",
+      isError: false,
+      nativeSubagentId: "native-agent-1",
+      resultSummary: "Inspected",
+    });
+    transport.finish({ status: "succeeded" });
+    const outputs = eventOutputs(
+      await nextOutputMatching(
+        iterator,
+        (output) => output.kind === "event" && output.event.type === "turn.completed",
+      ),
+    );
+    // Without background work the Turn is not held, so the agent approval closes with it.
+    expect(outputs).toContainEqual(
+      expect.objectContaining({
+        type: "interaction.closed",
+        interactionId: pending.interactionId,
+        reason: "superseded",
+      }),
+    );
+    expect(outputs.at(-1)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    expect(transport.idleLive).toBe(false);
+    await expect(lateResponse(session, pending.interactionId)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    expect(transport.respondToInteraction).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it("keeps a background Agent approval answerable while the Turn is held", async () => {
+    const { iterator, session, transport } = await holdForBackgroundAgent();
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    expect(transport.idleLive).toBe(true);
+
+    agentApproval(transport, "agent-approval");
+    const interaction = await nextInteraction(iterator);
+    await expect(lateResponse(session, interaction.interactionId)).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(transport.respondToInteraction).toHaveBeenLastCalledWith({
+      type: "approval",
+      requestId: "agent-approval",
+      decision: "allowOnce",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: interaction.interactionId,
+      reason: "responded",
+    });
+    await session.close();
+  });
+
+  it("closes a pending agent approval when a held Turn is cancelled", async () => {
+    const { iterator, session, transport } = await holdForBackgroundAgent({
+      continuationQuiescenceMs: 10,
+    });
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    agentApproval(transport, "agent-approval");
+    const interaction = await nextInteraction(iterator);
+
+    await session.execute(cancelDelegation);
+    const outputs = eventOutputs(
+      await nextOutputMatching(
+        iterator,
+        (output) => output.kind === "event" && output.event.type === "turn.completed",
+      ),
+    );
+    expect(outputs).toContainEqual(
+      expect.objectContaining({
+        type: "interaction.closed",
+        interactionId: interaction.interactionId,
+        reason: "cancelled",
+      }),
+    );
+    expect(outputs.at(-1)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+    // The held Turn is over, so the native callback is denied and a late answer is rejected.
+    expect(transport.idleLive).toBe(false);
+    await expect(lateResponse(session, interaction.interactionId)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    expect(transport.respondToInteraction).not.toHaveBeenCalled();
+    await session.close();
+  });
+
+  it("closes a pending agent approval when the user cancels during the Root answer", async () => {
+    const { iterator, session, transport } = await holdForBackgroundAgent({
+      continuationQuiescenceMs: 10,
+    });
+    agentApproval(transport, "agent-approval");
+    const interaction = await nextInteraction(iterator);
+
+    await session.execute(cancelDelegation);
+    transport.finish({ status: "cancelled", reason: "aborted_streaming" });
+    const outputs = eventOutputs(
+      await nextOutputMatching(
+        iterator,
+        (output) => output.kind === "event" && output.event.type === "turn.completed",
+      ),
+    );
+    expect(outputs).toContainEqual(
+      expect.objectContaining({
+        type: "interaction.closed",
+        interactionId: interaction.interactionId,
+        reason: "cancelled",
+      }),
+    );
+    expect(outputs.at(-1)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+    await expect(lateResponse(session, interaction.interactionId)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    await session.close();
+  });
+
+  it("closes a pending agent approval when Claude Code disconnects during a held Turn", async () => {
+    const { adapter, transports, dependencies } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("delegate in background"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "subagent.started",
+      operation: "spawn",
+      callId: "agent-1",
+      description: "Inspect implementation",
+      background: true,
+    });
+    transport.event({
+      type: "subagent.completed",
+      callId: "agent-1",
+      isError: false,
+      continuesInBackground: true,
+      nativeSubagentId: "native-agent-1",
+      resultSummary: "Async agent launched successfully",
+    });
+    transport.finish({ status: "succeeded" });
+    await vi.waitFor(() => expect(transport.idleLive).toBe(true));
+    agentApproval(transport, "agent-approval");
+    const interaction = (
+      await nextOutputMatching(iterator, (output) => output.kind === "interaction")
+    ).at(-1);
+    if (interaction?.kind !== "interaction") throw new Error("Expected the agent approval");
+
+    // The native process exits: the Transport reports a fault.
+    const input = vi.mocked(dependencies.createTransport).mock.calls[0]?.[0];
+    input?.onFault(new Error("Claude Code exited"));
+    const outputs = eventOutputs(
+      await nextOutputMatching(
+        iterator,
+        (output) => output.kind === "event" && output.event.type === "turn.completed",
+      ),
+    );
+    expect(outputs).toContainEqual(
+      expect.objectContaining({
+        type: "interaction.closed",
+        interactionId: interaction.interaction.interactionId,
+        reason: "cancelled",
+      }),
+    );
+    expect(outputs.at(-1)).toMatchObject({ type: "turn.completed", outcome: { status: "failed" } });
+    await expect(
+      lateResponse(session, interaction.interaction.interactionId),
+    ).resolves.toMatchObject({ ok: false });
+    expect(transport.respondToInteraction).not.toHaveBeenCalled();
     await session.close();
   });
 

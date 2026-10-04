@@ -1507,6 +1507,38 @@ describe("ClaudeSdkTransport Question callbacks", () => {
     expect(events.at(-1)).toMatchObject({ reason: "cancelled" });
   });
 
+  it("denies a held agent approval when the transport closes", async () => {
+    const value = fixture();
+    const idleEvents: ClaudeTurnEvent[] = [];
+    value.transport.setIdleTurnHandler({
+      onEvent: (event) => idleEvents.push(event),
+      onTerminal: () => undefined,
+    });
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    value.transport.setIdleLive(true);
+    const permission = canUseTool(
+      "Bash",
+      { command: "ls" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "agent-bash-tool",
+        requestId: "agent-bash-control",
+        displayName: "Bash",
+        agentID: "agent-1",
+      },
+    );
+    expect(idleEvents).toMatchObject([{ type: "interaction.requested", agentScoped: true }]);
+
+    await value.transport.close();
+    await expect(permission).resolves.toMatchObject({
+      behavior: "deny",
+      toolUseID: "agent-bash-tool",
+    });
+    expect(idleEvents.at(-1)).toMatchObject({ type: "interaction.closed", reason: "cancelled" });
+  });
+
   it("closes a pending callback once when its AbortSignal fires", async () => {
     const value = fixture();
     await value.transport.start();

@@ -46,6 +46,7 @@ import { remoteOfficialAppServerSocketPath } from "./remote-official-app-server.
 import { startConsoleControlServer } from "./console-control-server.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
+import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
@@ -198,6 +199,12 @@ export async function runHostRuntime(input: {
         environment: input.environment,
       })
     : undefined;
+  // One price table per runtime; it refreshes in the background and never blocks startup.
+  const modelPrices = new ModelPriceCatalog({
+    directory: defaultModelPriceDirectory(input.environment),
+    diagnose: (message) => process.stderr.write(`codexhost Host Runtime: ${message}\n`),
+  });
+  void modelPrices.start();
   const updateCoordinator =
     input.updateCoordinator ??
     (hostRuntimePath && hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
@@ -244,6 +251,7 @@ export async function runHostRuntime(input: {
           try {
             const host = new AppServerHost({
               ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+              modelPrices,
               ...(process.platform !== "win32"
                 ? {
                     sharedThreads: new SharedThreadBridge({
@@ -288,6 +296,7 @@ export async function runHostRuntime(input: {
           };
           const host = new AppServerHost({
             ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+            modelPrices,
             ...common,
             arguments: input.arguments,
             onDelegationApi,
@@ -298,6 +307,7 @@ export async function runHostRuntime(input: {
             createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) =>
               new AppServerHost({
                 ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+                modelPrices,
                 ...common,
                 arguments: [],
                 desktopInput,
@@ -369,6 +379,7 @@ export async function runHostRuntime(input: {
       let sharedDelegation: DelegationControlRegistration | undefined;
       const externalHost = new AppServerHost({
         ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+        modelPrices,
         stockCodexPath,
         arguments: [],
         environment: delegationEnvironment,
@@ -398,6 +409,7 @@ export async function runHostRuntime(input: {
         createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
           return new AppServerHost({
             ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+            modelPrices,
             ...(sharedDelegation ? { sharedDelegation } : {}),
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),

@@ -38,6 +38,7 @@ import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
 import { ExternalThreadIdleRelease } from "./external-thread-idle-release.js";
+import { UsageMeter } from "./usage-metering.js";
 
 export interface TurnProjectionGate {
   promise: Promise<void>;
@@ -67,6 +68,8 @@ export interface ExternalThread {
   // history cannot be refreshed.
   projectedTerminalTurnId: HostTurnId | null;
   latestUsage: HostUsage | null;
+  /** Host metering for the current Session only; replaced with it. */
+  usageMeter: UsageMeter;
   usageTurnId: HostTurnId | null;
   projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
@@ -306,6 +309,7 @@ export class ExternalThreadRuntime {
       running,
       activeTurnId: null,
       latestUsage: input.session.initialUsage,
+      usageMeter: new UsageMeter(),
       usageTurnId: null,
       projectedTurns: new Map(),
       responseGates: new Map(),

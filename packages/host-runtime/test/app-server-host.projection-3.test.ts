@@ -1082,6 +1082,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
         usage: {
           cacheHitRatePercent: 99,
           totalCostUsd: 1.373,
+          costSource: "native",
+          // Host-observed for every Harness, integrated or not.
+          timeToFirstOutputMs: expect.any(Number),
           contextUsedTokens: 50,
           contextWindowTokens: 200,
           planFiveHourUsedPercent: 45,
@@ -1099,6 +1102,86 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 73)),
     ).resolves.toMatchObject({ error: { code: -32602 } });
+    await stopFixture(fixture);
+  });
+
+  it("meters External Usage from request records instead of native cost", async () => {
+    const fixture = createFixture();
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 80);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.publishUsage({ totalCostUsd: 99, inputTokens: 3_000 });
+    session.emitEvent({
+      type: "usage.request",
+      request: {
+        requestId: "native-1",
+        historical: true,
+        model: "claude-sonnet-4-5",
+        provider: "anthropic",
+        inputTokens: 1_000,
+        cachedInputTokens: 600,
+        cacheWriteInputTokens: 0,
+        outputTokens: 100,
+      },
+    });
+    session.emitEvent({ type: "usage.history", complete: true });
+
+    const turnId = await startPiTurn(fixture, threadId, 81);
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    session.appendText("answer");
+    session.emitEvent({
+      type: "usage.request",
+      request: {
+        requestId: "native-2",
+        model: "claude-sonnet-4-5",
+        provider: "anthropic",
+        inputTokens: 2_000,
+        cachedInputTokens: 1_400,
+        cacheWriteInputTokens: 0,
+        outputTokens: 200,
+        outputStartedAtMs: 1_000,
+        completedAtMs: 3_000,
+      },
+    });
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 82,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId },
+    });
+    const response = (await fixture.collector.waitFor((message) => requestId(message, 82))) as {
+      result: { usage: Record<string, unknown> };
+    };
+    expect(response.result.usage).toMatchObject({
+      inputTokens: 3_000,
+      costSource: "publicPrice",
+      sessionCacheHitRatePercent: (2_000 / 3_000) * 100,
+      outputTokensPerSecond: 100,
+    });
+    expect(response.result.usage.totalCostUsd).not.toBe(99);
+    expect(response.result.usage.totalCostUsd).toBeGreaterThan(0);
+    expect(response.result.usage.timeToFirstOutputMs).toEqual(expect.any(Number));
+    await stopFixture(fixture);
+  });
+
+  it("drops metering state when the Session is replaced", async () => {
+    const fixture = createFixture();
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 90);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.emitEvent({ type: "usage.history", complete: false });
+    session.publishUsage({ totalCostUsd: 4, outputTokens: 7 });
+    writeRequest(fixture.desktopInput, {
+      id: 91,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 91))).resolves.toEqual({
+      id: 91,
+      result: { threadId, usage: { outputTokens: 7 } },
+    });
     await stopFixture(fixture);
   });
 

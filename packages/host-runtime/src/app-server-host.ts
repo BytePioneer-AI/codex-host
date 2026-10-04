@@ -70,7 +70,7 @@ import type {
   HostApprovalResponse,
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
-import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
+import { parseHostUsage, type HostEvent, type HostUsage } from "@codexhost/harness-adapter";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
@@ -244,6 +244,7 @@ import {
 } from "./thread-list-aggregator.js";
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
+import { ModelPriceCatalog } from "./model-prices.js";
 import {
   carriesHostThreadListCursor,
   CodexTurnProjector,
@@ -326,6 +327,8 @@ export interface AppServerHostOptions {
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+  /** Shared by all Hosts of one runtime; defaults to the bundled snapshot only. */
+  modelPrices?: ModelPriceCatalog;
 }
 
 interface TurnProjectionGate {
@@ -632,6 +635,7 @@ export class AppServerHost {
   readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering = new ExternalTurnSteering();
   readonly #liveCommandCache = new LiveCommandCatalogCache();
+  readonly #modelPrices: ModelPriceCatalog;
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
@@ -677,6 +681,7 @@ export class AppServerHost {
       diagnosticOutput: process.stderr,
       ...options,
     };
+    this.#modelPrices = options.modelPrices ?? new ModelPriceCatalog();
     this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) => {
       this.#noteDesktopReply(value);
       return this.#takeConsoleReply(value);
@@ -3172,6 +3177,8 @@ export class AppServerHost {
             includeTurns: false,
           }),
       }));
+    const threadUsage =
+      resolution.kind === "official" ? null : await this.#threadUsage(resolution.thread);
     const inspection = threadInspectionSchema.parse(
       resolution.kind === "official"
         ? {
@@ -3208,7 +3215,7 @@ export class AppServerHost {
                 }
               : {}),
             history: resolution.thread.session.capabilities.history,
-            ...(resolution.thread.latestUsage ? { usage: resolution.thread.latestUsage } : {}),
+            ...(threadUsage ? { usage: threadUsage } : {}),
             locked: true,
           },
     );
@@ -3251,7 +3258,7 @@ export class AppServerHost {
       adapter && isCreditsAdapter(adapter) ? projectAccountCredits(adapter.credits()) : null;
     const result = threadUsageInspectionSchema.parse({
       threadId: params.data.threadId,
-      usage: resolution.thread.latestUsage,
+      usage: await this.#threadUsage(resolution.thread),
       ...(credits ? { accountCredits: credits } : {}),
     });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
@@ -4710,6 +4717,7 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (this.#meterTurnTiming(thread, event)) await this.#notifyThreadUsage(thread);
     if (event.type === "item.started" && event.item.type === "subagentDelegation") {
       event = {
         ...event,
@@ -4801,6 +4809,15 @@ export class AppServerHost {
       return;
     }
     if (event.type === "usage.request" || event.type === "usage.history") {
+      if (this.#externalRuntime.get(thread.id) !== thread) return;
+      if (event.type === "usage.request") {
+        const changed = thread.usageMeter.recordRequest(event.request, thread.activeTurnId);
+        // Replayed history is announced once by the following usage.history.
+        if (!changed || event.request.historical === true) return;
+      } else {
+        thread.usageMeter.recordHistory(event.complete);
+      }
+      await this.#notifyThreadUsage(thread);
       return;
     }
     if (event.type === "subagent.transcript.changed") {
@@ -5427,6 +5444,51 @@ export class AppServerHost {
 
   #isKnownExternalTurn(thread: ExternalThread, turnId: HostTurnId): boolean {
     return thread.projectedTurns.has(turnId) || thread.turns.some((turn) => turn.id === turnId);
+  }
+
+  /** Native snapshot plus Host-derived metering; metering faults never hide native fields. */
+  async #threadUsage(thread: ExternalThread): Promise<HostUsage | null> {
+    try {
+      return thread.usageMeter.derive(thread.latestUsage, await this.#modelPrices.lookup());
+    } catch (error) {
+      this.#diagnose(error);
+      return thread.latestUsage;
+    }
+  }
+
+  async #notifyThreadUsage(thread: ExternalThread): Promise<void> {
+    await this.#writer.json({
+      method: THREAD_USAGE_UPDATED_METHOD,
+      params: { threadId: thread.id },
+    });
+  }
+
+  /** Host-observed Turn timing; returns true when a derived metric changed. */
+  #meterTurnTiming(thread: ExternalThread, event: HostEvent): boolean {
+    if (this.#externalRuntime.get(thread.id) !== thread) return false;
+    const meter = thread.usageMeter;
+    switch (event.type) {
+      case "turn.started":
+      case "turn.autonomous.started":
+        meter.turnStarted(event.turnId, Date.now());
+        return false;
+      case "item.updated":
+        return event.update.type === "text.append" && event.update.text.length > 0
+          ? meter.outputObserved(event.turnId, Date.now())
+          : false;
+      case "item.started":
+      case "item.completed": {
+        const item = event.type === "item.started" ? event.item : event.snapshot.item;
+        return (item.type === "agentMessage" || item.type === "reasoning") && item.text.length > 0
+          ? meter.outputObserved(event.turnId, Date.now())
+          : false;
+      }
+      case "turn.completed":
+        meter.turnCompleted(event.turnId);
+        return true;
+      default:
+        return false;
+    }
   }
 
   async #replayExternalUsage(thread: ExternalThread): Promise<void> {

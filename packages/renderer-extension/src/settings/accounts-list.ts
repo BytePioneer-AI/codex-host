@@ -145,6 +145,22 @@ function createAccountPerson(
   return person;
 }
 
+/**
+ * Secondary line under an account's identity: reset cards and the Pi import chip share it, so the
+ * import entry costs no table column and rows without either keep their compact height.
+ */
+function appendAccountExtras(
+  cell: HTMLTableCellElement,
+  items: readonly (HTMLElement | null | undefined)[],
+): void {
+  const present = items.filter((item): item is HTMLElement => Boolean(item));
+  if (present.length === 0) return;
+  const extras = cell.ownerDocument.createElement("div");
+  extras.className = "settings-account-row__extras";
+  extras.append(...present);
+  cell.append(extras);
+}
+
 function renderAccountBalance(
   document: Document,
   messages: RendererSettingsMessages,
@@ -180,6 +196,7 @@ export function renderAccountRows(
     resetExpanded: boolean;
     onRetry: () => void;
     onResetExpanded: (open: boolean) => void;
+    importAction?: HTMLElement | null;
   },
 ): HTMLTableRowElement[] {
   const row = document.createElement("tr");
@@ -232,7 +249,10 @@ export function renderAccountRows(
     input.usage?.status === "ready"
       ? renderAccountResetCredits(document, input.usage.credits, messages)
       : null;
-  if (!reset) return [row, ...continuationRows];
+  if (!reset) {
+    appendAccountExtras(personCell, [input.importAction]);
+    return [row, ...continuationRows];
+  }
   const detailsRow = document.createElement("tr");
   detailsRow.className = "settings-account-details-row";
   detailsRow.id = `settings-account-reset-${++resetDetailsSequence}`;
@@ -249,7 +269,7 @@ export function renderAccountRows(
     reset.summary.setAttribute("aria-expanded", String(!detailsRow.hidden));
     input.onResetExpanded(!detailsRow.hidden);
   });
-  personCell.append(reset.summary);
+  appendAccountExtras(personCell, [reset.summary, input.importAction]);
   return [row, ...continuationRows, detailsRow];
 }
 
@@ -258,6 +278,7 @@ export function renderHarnessAccountRows(
   account: HarnessAccountListResult["accounts"][number],
   messages: RendererSettingsMessages,
   display: AccountUsageDisplay,
+  importAction?: HTMLElement | null,
 ): HTMLTableRowElement[] {
   const row = document.createElement("tr");
   row.className = "settings-account-row";
@@ -291,6 +312,7 @@ export function renderHarnessAccountRows(
       )
     : renderAccountBalance(document, messages, account.balance);
   personCell.title = messages.accountNativeManagementHint.replace("{harness}", account.harnessName);
+  appendAccountExtras(personCell, [importAction]);
   const continuationRows = usage.continuationCells.map((cells) => {
     const continuation = document.createElement("tr");
     continuation.className = "settings-account-row settings-account-quota-continuation-row";

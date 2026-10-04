@@ -23,9 +23,12 @@ type DialogMode = "add" | "reimport" | "remove" | "done";
 interface DialogState {
   readonly source?: CredentialSource | undefined;
   readonly record?: CredentialImportRecord | undefined;
+  /** Opened from the section header: let the user pick among every compatible login. */
+  readonly choose?: boolean | undefined;
 }
 
 const TARGET_HARNESS_ID = "pi";
+const SECTION_IMPORT_KEY = "section:import";
 
 /** Vendors codexhost recognizes in a Pi OAuth credential, mapped to the mark shown for them. */
 const VENDOR_AGENTS = {
@@ -72,9 +75,10 @@ export function defaultImportName(
 }
 
 /**
- * Controls for copying a native login into another Harness. Two surfaces: a small target icon on
- * each compatible account row (starts the copy), and a dedicated "imported into Pi" section below
- * the account table that lists, re-imports and removes the copies. `section` is the second one.
+ * Controls for copying a native login into another Harness. Two surfaces: a small Pi chip in the
+ * identity of each compatible account row ("Import into Pi", or the copied entry name), and a
+ * dedicated "Accounts in Pi" section below the account table that imports, lists, re-imports and
+ * removes the copies. `section` is the second one.
  */
 export function mountCredentialImports(
   root: HTMLElement,
@@ -89,12 +93,22 @@ export function mountCredentialImports(
   let dialog: HTMLDialogElement | undefined;
   // Pi's own logins are context, not something to act on, so they start collapsed.
   let othersExpanded = false;
+  let sectionExpanded = true;
   const targetButtons = new Map<string, HTMLElement>();
 
   const importedRecords = (): readonly CredentialImportRecord[] =>
     snapshot.targets.find((target) => target.harnessId === TARGET_HARNESS_ID)?.imports ?? [];
   const sourceOf = (record: CredentialImportRecord): CredentialSource | undefined =>
     snapshot.sources.find((source) => source.id === record.source.id);
+  const piTarget = () =>
+    snapshot.targets.find((candidate) => candidate.harnessId === TARGET_HARNESS_ID);
+  /** Current native logins Pi can take, in the order the Host reports them. */
+  const compatibleSources = (): readonly CredentialSource[] => {
+    const target = piTarget();
+    return target
+      ? snapshot.sources.filter((source) => target.providers.includes(source.provider))
+      : [];
+  };
   const section = document.createElement("section");
   section.className = "settings-pi-accounts";
   section.hidden = true;
@@ -102,12 +116,47 @@ export function mountCredentialImports(
   section.setAttribute("aria-label", messages.sectionTitle);
   const sectionHeader = document.createElement("div");
   sectionHeader.className = "settings-pi-accounts__header";
+  const sectionToggle = document.createElement("button");
+  sectionToggle.type = "button";
+  sectionToggle.className = "settings-pi-accounts__fold";
+  sectionToggle.setAttribute("aria-expanded", "true");
   const sectionTitle = document.createElement("strong");
   sectionTitle.textContent = messages.sectionTitle;
   const sectionCount = document.createElement("span");
-  sectionHeader.append(createRendererAgentIcon("pi", 16, document), sectionTitle, sectionCount);
+  sectionCount.className = "settings-pi-accounts__count";
+  sectionToggle.append(
+    createRendererSettingsIcon("chevron-right", 14),
+    createRendererAgentIcon("pi", 16, document),
+    sectionTitle,
+    sectionCount,
+  );
+  const sectionHint = document.createElement("span");
+  sectionHint.className = "settings-pi-accounts__hint";
+  sectionHint.textContent = messages.sectionHint;
+  const sectionImport = document.createElement("button");
+  sectionImport.type = "button";
+  sectionImport.className = "settings-pi-accounts__import";
+  sectionImport.setAttribute("aria-haspopup", "dialog");
+  sectionImport.append(createRendererSettingsIcon("add", 14), messages.sectionImport);
+  sectionImport.addEventListener("click", () => {
+    const sources = compatibleSources();
+    // Prefer a login that has no copy yet; every compatible login stays selectable in the dialog.
+    const free = sources.find(
+      (source) => !importedRecords().some((record) => record.source.id === source.id),
+    );
+    const source = free ?? sources[0];
+    if (source) openDialog("add", { source, choose: true }, SECTION_IMPORT_KEY);
+  });
+  sectionHeader.append(sectionToggle, sectionHint, sectionImport);
   const card = document.createElement("div");
   card.className = "settings-pi-accounts__card";
+  card.id = "settings-pi-accounts-card";
+  sectionToggle.setAttribute("aria-controls", card.id);
+  sectionToggle.addEventListener("click", () => {
+    sectionExpanded = !sectionExpanded;
+    card.hidden = !sectionExpanded;
+    sectionToggle.setAttribute("aria-expanded", String(sectionExpanded));
+  });
   const othersToggle = document.createElement("button");
   othersToggle.type = "button";
   othersToggle.className = "settings-pi-accounts__toggle";
@@ -255,11 +304,14 @@ export function mountCredentialImports(
   };
   const renderSection = (): void => {
     // Stay hidden until Pi is known as a target, so a failed or unsupported host shows nothing.
-    const target = snapshot.targets.find((candidate) => candidate.harnessId === TARGET_HARNESS_ID);
+    const target = piTarget();
     section.hidden = !target;
     const records = importedRecords();
     const others = target?.others ?? [];
     sectionCount.textContent = String(records.length + others.length);
+    card.hidden = !sectionExpanded;
+    sectionImport.hidden = compatibleSources().length === 0;
+    sectionImport.disabled = busy;
     rows.clear();
     if (records.length + others.length === 0) {
       const empty = document.createElement("p");
@@ -325,6 +377,9 @@ export function mountCredentialImports(
     let state = initial;
     let mode: DialogMode = initialMode;
     let nameInput: HTMLInputElement | undefined;
+    let nameEdited = false;
+    let sourceRadios: HTMLInputElement[] = [];
+    let refreshPreview = (): void => undefined;
 
     const command = (
       text: string,
@@ -358,9 +413,53 @@ export function mountCredentialImports(
       paragraph.textContent = text;
       return paragraph;
     };
+    /** Radio list of compatible logins, shown when the dialog starts from the section header. */
+    const sourcePicker = (choices: readonly CredentialSource[]): HTMLElement => {
+      const group = document.createElement("fieldset");
+      group.className = "settings-credential-dialog__sources";
+      const legend = document.createElement("legend");
+      legend.textContent = messages.source;
+      group.append(legend);
+      for (const choice of choices) {
+        const option = document.createElement("label");
+        option.className = "settings-credential-dialog__source";
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "settings-credential-source";
+        radio.value = choice.id;
+        radio.checked = choice.id === state.source?.id;
+        sourceRadios.push(radio);
+        const copy = document.createElement("span");
+        const label = document.createElement("strong");
+        label.textContent = choice.label;
+        label.translate = false;
+        const existing = importedRecords().find((record) => record.source.id === choice.id);
+        const agent = KNOWN_RENDERER_AGENTS.find((candidate) => candidate === choice.harnessId);
+        const detail = document.createElement("span");
+        detail.textContent = [
+          (agent && RENDERER_AGENT_LABELS[agent]) || choice.harnessId,
+          existing
+            ? messages.sourceImported.replace("{name}", existing.name)
+            : messages.sourceCurrent,
+        ].join(" · ");
+        copy.append(label, detail);
+        radio.addEventListener("change", () => {
+          if (!radio.checked) return;
+          state = { ...state, source: choice };
+          if (nameInput && !nameEdited) {
+            nameInput.value = defaultImportName(choice, importedRecords());
+          }
+          refreshPreview();
+        });
+        option.append(radio, copy);
+        group.append(option);
+      }
+      return group;
+    };
     const setBusy = (value: boolean): void => {
       for (const child of controls.children) (child as HTMLButtonElement).disabled = value;
       if (nameInput) nameInput.disabled = value;
+      for (const radio of sourceRadios) radio.disabled = value;
     };
     const submit = async (request: CredentialImportsRequest, next: DialogMode | null) => {
       error.textContent = "";
@@ -390,6 +489,7 @@ export function mountCredentialImports(
       mode = next;
       error.textContent = "";
       nameInput = undefined;
+      sourceRadios = [];
       body.replaceChildren();
       controls.replaceChildren();
       const { source, record } = state;
@@ -398,7 +498,9 @@ export function mountCredentialImports(
         title.textContent = mode === "add" ? messages.add : messages.reimport;
         modal.setAttribute("aria-label", title.textContent);
         const active = source ?? record?.source;
-        if (active) body.append(line(messages.source, active.label));
+        const choices = mode === "add" && state.choose ? compatibleSources() : [];
+        if (choices.length > 1) body.append(sourcePicker(choices));
+        else if (active) body.append(line(messages.source, active.label));
         const input = document.createElement("input");
         input.type = "text";
         input.maxLength = 48;
@@ -407,6 +509,9 @@ export function mountCredentialImports(
         input.value =
           record?.name ?? (source ? defaultImportName(source, importedRecords()) : "codex");
         input.readOnly = Boolean(record);
+        input.addEventListener("input", () => {
+          nameEdited = true;
+        });
         nameInput = input;
         const label = document.createElement("label");
         label.className = "settings-credential-dialog__field";
@@ -420,6 +525,7 @@ export function mountCredentialImports(
           ).replace("{name}", input.value);
         };
         input.addEventListener("input", update);
+        refreshPreview = update;
         update();
         body.append(label, preview, note(messages.warning));
         controls.append(
@@ -427,6 +533,7 @@ export function mountCredentialImports(
           command(
             messages.confirm,
             async () => {
+              const source = state.source;
               if (!source) return;
               if (!credentialImportNameSchema.safeParse(input.value).success) {
                 error.textContent = messages.invalidName;
@@ -480,7 +587,9 @@ export function mountCredentialImports(
       modal.remove();
       dialog = undefined;
       const target = returnKey
-        ? (targetButtons.get(returnKey) ?? rows.get(returnKey.replace(/^row:/, "")))
+        ? returnKey === SECTION_IMPORT_KEY
+          ? sectionImport
+          : (targetButtons.get(returnKey) ?? rows.get(returnKey.replace(/^row:/, "")))
         : undefined;
       (target?.isConnected ? target : section).focus();
     });
@@ -517,19 +626,33 @@ export function mountCredentialImports(
       const key = `${harnessId}:${accountLabel}:import`;
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "settings-icon-button settings-account-harness-target";
+      button.className = "settings-account-pi-import";
       button.dataset.accountFocus = key;
       button.disabled = busy;
-      if (record) button.dataset.state = "imported";
       const hint = record ? messages.importedHint.replace("{name}", record.name) : messages.add;
       button.title = hint;
       button.setAttribute("aria-label", hint);
-      button.setAttribute("aria-haspopup", "dialog");
-      button.append(createRendererAgentIcon("pi", 16, document));
+      button.append(createRendererAgentIcon("pi", 12, document));
+      if (record) {
+        // Copied: show the entry the login became in Pi; clicking reveals it in the Pi section.
+        button.dataset.state = "imported";
+        const name = document.createElement("code");
+        name.textContent = `${record.name}/…`;
+        name.translate = false;
+        button.append(name, createRendererSettingsIcon("check", 12));
+      } else {
+        button.setAttribute("aria-haspopup", "dialog");
+        button.append(messages.add);
+      }
       button.addEventListener("click", () => {
         if (!record) {
           openDialog("add", { source }, key);
           return;
+        }
+        if (!sectionExpanded) {
+          sectionExpanded = true;
+          renderSection();
+          sectionToggle.setAttribute("aria-expanded", "true");
         }
         const row = rows.get(record.name);
         row?.scrollIntoView({ block: "nearest", behavior: "smooth" });

@@ -120,13 +120,15 @@ test("shows detected Harness quota read-only and removes rows when authenticatio
   await expect(
     section.locator('[data-harness-id="grok"] .settings-account-person-cell'),
   ).toHaveAttribute("title", /登录、退出和切换请在其原生客户端中完成/);
-  // The last column holds only Harness target marks: no per-row refresh or native-management text.
+  // No per-row refresh or native-management text; only compatible logins get the Pi import chip.
   await expect(section.getByText("原生管理")).toHaveCount(0);
   await expect(section.getByRole("button", { name: "刷新额度" })).toHaveCount(0);
-  await expect(section.locator(".settings-account-harness-target")).toHaveCount(0);
+  await expect(section.locator('[data-harness-id="grok"] .settings-account-pi-import')).toHaveText(
+    "导入到 Pi",
+  );
   await expect(
     section.locator(
-      '[data-harness-id="claude-code"] .settings-account-harness-target, [data-harness-id="antigravity"] .settings-account-harness-target',
+      '[data-harness-id="claude-code"] .settings-account-pi-import, [data-harness-id="antigravity"] .settings-account-pi-import',
     ),
   ).toHaveCount(0);
   await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").clearHarnessAccounts());
@@ -171,7 +173,76 @@ test("shows current Codex quota, reset-credit count, and no Host consume or logi
   await expect(page.getByRole("button", { name: "使用重置", exact: true })).toHaveCount(0);
 });
 
-test("keeps quota columns aligned without Pi management and spans single limits", async ({
+test("imports from a row chip or the Pi section without adding a table column", async ({
+  page,
+}) => {
+  await setup(page, { scenario: "external" });
+  await page.setViewportSize({ width: 700, height: 900 });
+  const chip = page.locator(`${nativeRow} .settings-account-pi-import`);
+  await expect(chip).toHaveText("导入到 Pi");
+  // The chip shares the identity's extras line with the reset cards instead of a third column.
+  await expect(
+    page.locator(`${nativeRow} .settings-account-row__extras .settings-account-reset-summary`),
+  ).toHaveCount(1);
+  await expect(page.locator(".settings-account-table th")).toHaveText(["账号", "剩余额度"]);
+  const pi = page.getByRole("region", { name: "Pi 中的账号" });
+  await expect(pi.locator(".settings-pi-accounts__hint")).toBeVisible();
+  // Logins Pi already had sit behind a disclosure that starts collapsed.
+  const group = pi.locator(".settings-pi-accounts__others");
+  const toggle = pi.getByRole("button", { name: /Pi 自有配置/ });
+  await expect(group).toBeHidden();
+  await toggle.click();
+  await expect(group.locator(".settings-pi-accounts__row--other")).toHaveCount(3);
+  await expect(group.getByRole("button")).toHaveCount(0);
+
+  await chip.click();
+  const dialog = page.getByRole("dialog", { name: "导入到 Pi", exact: true });
+  await expect(dialog).toContainText("保留全部已有 Provider 配置");
+  await expect(dialog.getByLabel("模型入口名称")).toHaveValue("codex");
+  await expect(dialog.getByRole("radio")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "确认导入", exact: true }).click();
+  const done = page.getByRole("dialog", { name: "已复制到 Pi", exact: true });
+  await expect(done).toContainText("复制不代表已验证模型调用");
+  await done.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(chip).toHaveAttribute("data-state", "imported");
+  await expect(chip).toContainText("codex/…");
+  await expect(pi).toContainText("zhaobin_jiang@163.com");
+
+  // The section's own entry lets the user choose among compatible logins.
+  await pi.getByRole("button", { name: "导入账号", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "导入到 Pi", exact: true });
+  await expect(picker.getByRole("radio")).toHaveCount(2);
+  await expect(picker.getByRole("radio", { name: /grok@example.com/ })).toBeChecked();
+  await expect(picker.getByLabel("模型入口名称")).toHaveValue("grok");
+  await expect(picker).toContainText("已导入为 codex/…");
+  await picker.getByRole("button", { name: "确认导入", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "已复制到 Pi", exact: true })
+    .getByRole("button", { name: "完成", exact: true })
+    .click();
+  await expect(page.locator('[data-harness-id="grok"] .settings-account-pi-import')).toContainText(
+    "grok/…",
+  );
+
+  await pi.getByRole("button", { name: /重新导入凭证: zhaobin/ }).click();
+  const reimport = page.getByRole("dialog", { name: "重新导入凭证", exact: true });
+  await expect(reimport).toContainText("使用同一来源账号更新 codex/…");
+  await reimport.getByRole("button", { name: "取消", exact: true }).click();
+
+  await pi.getByRole("button", { name: /从 Pi 移除: zhaobin/ }).click();
+  const removal = page.getByRole("dialog", { name: "从 Pi 移除", exact: true });
+  await removal.getByRole("button", { name: "从 Pi 移除", exact: true }).click();
+  await expect(page.locator(".settings-credential-dialog[open]")).toHaveCount(0);
+  await expect(chip).not.toHaveAttribute("data-state", /.+/);
+  await expect(chip).toHaveText("导入到 Pi");
+
+  // Collapsing the section hides its list but keeps the header and import entry.
+  await pi.getByRole("button", { name: /Pi 中的账号/ }).click();
+  await expect(pi.locator(".settings-pi-accounts__card")).toBeHidden();
+  await expect(pi.getByRole("button", { name: "导入账号", exact: true })).toBeVisible();
+});
+
+test("keeps quota columns aligned with the Pi chip in the identity and spans single limits", async ({
   page,
 }, testInfo) => {
   await setup(page, { scenario: "layout", theme: "light" });
@@ -179,8 +250,11 @@ test("keeps quota columns aligned without Pi management and spans single limits"
   await expect(kimi).toHaveCount(1);
   await expect(kimi.getByRole("meter")).toHaveCount(2);
   await expect(kimi.locator(".settings-account-usage-cell")).toHaveCount(2);
-  await expect(page.getByRole("region", { name: "Pi 中的账号" })).toHaveCount(0);
-  await expect(page.locator(".settings-account-harness-target")).toHaveCount(0);
+  await expect(
+    page.locator(
+      '[data-harness-id="grok"] .settings-account-person-cell .settings-account-pi-import',
+    ),
+  ).toHaveCount(1);
   await expect(page.locator(".settings-account-table col")).toHaveCount(3);
   for (const header of await page.locator(".settings-account-table th").all()) {
     await expect(header).toHaveCSS("text-align", "center");
@@ -203,9 +277,12 @@ test("keeps quota columns aligned without Pi management and spans single limits"
   if (!narrow) throw new Error("Missing narrow quota bounds");
   expect(narrow.x + narrow.width).toBeLessThanOrEqual(700);
   await page.screenshot({ path: testInfo.outputPath("accounts-narrow.png") });
+  // Rendering the page only lists imports; nothing is copied without confirmation.
   expect(
-    await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").calls.imports),
-  ).toEqual([]);
+    (await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").calls.imports)).every(
+      (request: { action: string }) => request.action === "list",
+    ),
+  ).toBe(true);
 });
 
 test("updates compact countdowns without requests or inventing a reset", async ({ page }) => {

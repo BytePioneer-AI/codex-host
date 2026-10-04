@@ -6,7 +6,11 @@ import type {
   CodexAccountUsageResult,
 } from "@codexhost/shared-contracts";
 
-import type { RendererCredentialImportClient } from "./credential-imports.js";
+import {
+  mountCredentialImports,
+  type RendererCredentialImportClient,
+} from "./credential-imports.js";
+import { codexAccountDisplayName } from "../renderer-codex-account-options.js";
 import {
   accountListFocusRestorer,
   accountPlanLabel,
@@ -99,6 +103,7 @@ export function createAccountsSettingsPage(
         usageByAccountId.clear();
         loadUsage(accounts);
         void harnessAccounts?.refresh(true);
+        void credentialImports.refresh();
       });
       search.addEventListener("input", () => render());
       toolbar.append(connected, searchWrapper, displayControls, refreshUsage);
@@ -106,7 +111,14 @@ export function createAccountsSettingsPage(
       list.className = "settings-account-list";
       const { table, body, updateDisplay } = createAccountsTable(document, messages);
       list.append(table);
-      context.content.append(header, status, toolbar, list);
+      const credentialImports = mountCredentialImports(
+        context.content,
+        context.signal,
+        getClient,
+        messages.credentialImports,
+        () => render(),
+      );
+      context.content.append(header, status, toolbar, list, credentialImports.section);
       const stopCountdowns = mountAccountResetCountdowns(list, messages, context.signal);
 
       let accounts: readonly CodexAccountSummary[] = [];
@@ -170,11 +182,26 @@ export function createAccountsSettingsPage(
                 if (open) expandedResetAccounts.add(account.accountId);
                 else expandedResetAccounts.delete(account.accountId);
               },
+              importAction: credentialImports.button(
+                "codex",
+                codexAccountDisplayName(account).full,
+              ),
             }),
           );
         }
         for (const account of visibleHarnessAccounts) {
-          body.append(...renderHarnessAccountRows(document, account, messages, usageDisplay));
+          body.append(
+            ...renderHarnessAccountRows(
+              document,
+              account,
+              messages,
+              usageDisplay,
+              credentialImports.button(
+                account.harnessId,
+                account.email ?? account.label ?? account.harnessName,
+              ),
+            ),
+          );
         }
         restoreFocus();
       };
@@ -290,6 +317,7 @@ export function createAccountsSettingsPage(
       }
       const harnessAccounts = createHarnessAccounts(context.signal, getClient, render);
       void harnessAccounts.refresh();
+      void credentialImports.refresh();
       load();
       return () => {
         stopCountdowns();

@@ -457,26 +457,10 @@
     border: 0;
   }
   .settings-account-person-cell,
-  .settings-account-management-cell,
   .settings-account-usage-cell[colspan="2"],
   .settings-account-usage-cell--message,
   .settings-account-balance-cell {
     grid-column: 1 / -1;
-  }
-  .settings-account-table .settings-account-row > td.settings-account-management-cell--empty {
-    display: none;
-  }
-  .settings-account-row--targets {
-    position: relative;
-  }
-  .settings-account-row--targets .settings-account-person-cell {
-    padding-right: 32px;
-  }
-  .settings-account-table .settings-account-row--targets > td.settings-account-management-cell {
-    position: absolute;
-    top: 14px;
-    right: 12px;
-    width: auto;
   }
   .settings-account-email {
     font-size: 13px;
@@ -495,32 +479,57 @@
   }
 }
 
-/* Small Harness target mark: muted when nothing is copied, full-strength with a dot when it is. */
-.settings-account-harness-target {
-  position: relative;
-  width: 26px;
-  height: 28px;
-  color: var(--settings-subtle);
+/* Identity extras: reset cards and the Pi import chip share one wrapping line. */
+.settings-account-row__extras {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 6px;
 }
-.settings-account-harness-target:hover:not(:disabled) {
+/* Pi import chip: dashed "Import into Pi" until copied, then the entry name with a check. */
+.settings-account-pi-import {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 2px 8px;
+  color: var(--settings-muted);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  background: transparent;
+  border: 1px dashed var(--settings-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.settings-account-pi-import:hover:not(:disabled) {
   color: var(--settings-text);
+  border-style: solid;
+  background: var(--settings-hover);
 }
-.settings-account-harness-target:disabled {
-  opacity: 0.4;
+.settings-account-pi-import:disabled {
+  opacity: 0.45;
   cursor: default;
 }
-.settings-account-harness-target[data-state] {
+.settings-account-pi-import[data-state="imported"] {
   color: var(--settings-text);
+  background: var(--settings-inset);
+  border-style: solid;
 }
-.settings-account-harness-target[data-state]::after {
-  content: "";
-  position: absolute;
-  top: 5px;
-  right: 3px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--settings-text);
+.settings-account-pi-import code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.settings-account-pi-import > svg {
+  flex: none;
+}
+.settings-account-pi-import[data-state="imported"] > svg:last-child {
+  color: light-dark(#2f7d4f, #7fd19b);
+}
+.settings-account-pi-import:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 1px;
 }
 /* Dedicated "imported into Pi" section: same card language as the account table, lighter header. */
 .settings-pi-accounts {
@@ -531,17 +540,66 @@
 }
 .settings-pi-accounts__header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 8px 12px;
   padding: 0 2px 12px;
   font-size: 13px;
 }
-.settings-pi-accounts__header > svg {
+.settings-pi-accounts__fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--settings-text);
+  font: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.settings-pi-accounts__fold > svg {
   flex: none;
 }
-.settings-pi-accounts__header > :last-child {
+.settings-pi-accounts__fold > svg:first-child {
+  color: var(--settings-muted);
+  transition: transform 120ms ease;
+}
+.settings-pi-accounts__fold[aria-expanded="true"] > svg:first-child {
+  transform: rotate(90deg);
+}
+.settings-pi-accounts__count {
   color: var(--settings-muted);
   font-variant-numeric: tabular-nums;
+}
+.settings-pi-accounts__hint {
+  margin-right: auto;
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+.settings-pi-accounts__import {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 10px;
+  color: var(--settings-text);
+  font: inherit;
+  font-size: 12px;
+  background: light-dark(#ffffff, #232326);
+  border: 1px solid var(--settings-border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.settings-pi-accounts__import:hover:not(:disabled) {
+  background: var(--settings-hover);
+}
+.settings-pi-accounts__import:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.settings-pi-accounts__import[hidden],
+.settings-pi-accounts__card[hidden] {
+  display: none;
 }
 .settings-pi-accounts__card {
   container-type: inline-size;
@@ -679,6 +737,54 @@
   color: var(--settings-muted);
   font-size: 12px;
 }
+.settings-credential-dialog__sources {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.settings-credential-dialog__sources > legend {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+.settings-credential-dialog__source {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.settings-credential-dialog__source:has(input:checked) {
+  border-color: var(--settings-focus);
+  background: var(--settings-hover);
+}
+.settings-credential-dialog__source > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.settings-credential-dialog__source strong {
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.settings-credential-dialog__source > span > span {
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+.settings-credential-dialog .settings-credential-dialog__source input {
+  flex: none;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--settings-focus);
+}
 .settings-credential-dialog input {
   width: 100%;
   box-sizing: border-box;
@@ -725,9 +831,6 @@
 }
 
 @media (forced-colors: active) {
-  .settings-account-harness-target[data-state]::after {
-    background: Highlight;
-  }
   .settings-account-usage__bar {
     border: 1px solid CanvasText;
   }

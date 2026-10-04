@@ -8,7 +8,6 @@ import path from "node:path";
 
 import {
   HarnessOutputChannel,
-  parseHostUsage,
   validateHostQuestionResponse,
   type HarnessAdapter,
   type HarnessCredentialImports,
@@ -132,7 +131,6 @@ export interface PiAdapterOptions {
 export interface PiTurnTransport {
   readonly state: PiSessionState;
   readonly stderrTail?: string;
-  setTokenSpeedHandler?(handler: (speed: number | undefined) => void): void;
   setSubagentStatusHandler?(handler: (runs: PiSubagentNode[]) => void): void;
   inspectSubagent?(id: string): Promise<PiSubagentInspection>;
   setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void;
@@ -1328,20 +1326,6 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #bindAutonomousTurnHandler(transport: PiTurnTransport): void {
-    transport.setTokenSpeedHandler?.((speed) => {
-      if (this.#phase !== "open" || this.#transport !== transport) return;
-      const next = { ...(this.#usage ?? {}) };
-      delete next.outputTokensPerSecond;
-      if (speed !== undefined) next.outputTokensPerSecond = speed;
-      const usage = Object.keys(next).length ? parseHostUsage(next) : null;
-      if (JSON.stringify(usage) === JSON.stringify(this.#usage)) return;
-      this.#usage = usage;
-      this.#event({
-        type: "session.usage.changed",
-        usage,
-        ...(this.#active ? { observedForTurnId: this.#active.command.turnId } : {}),
-      });
-    });
     transport.setSubagentStatusHandler?.((runs) => {
       if (this.#phase !== "open") return;
       if (this.#transport !== transport) this.#pendingSubagentStatus = runs;

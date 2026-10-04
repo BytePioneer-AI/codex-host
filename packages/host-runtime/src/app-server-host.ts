@@ -865,10 +865,11 @@ export class AppServerHost {
   }
 
   async #closeOfficialRuntime(): Promise<void> {
-    if (this.#nativeHistoryExport) {
+    const exporter = this.#nativeHistoryExport;
+    if (exporter) {
       this.#exportingNativeHistory ??= this.#repository
         .list()
-        .then((records) => this.#nativeHistoryExport!.exportOnExit(records))
+        .then((records) => exporter.exportOnExit(records))
         .catch(() => this.#diagnose("External history export did not complete"));
       await this.#exportingNativeHistory;
     }
@@ -975,7 +976,7 @@ export class AppServerHost {
       const threads = this.#externalRuntime.values();
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
-      await this.#writer.drain();
+      await this.#writer.drain().catch((error: unknown) => this.#diagnose(error));
       await Promise.allSettled(
         [...new Set(this.#externalAdapters.values())].map((adapter) =>
           Promise.resolve().then(() => adapter.close()),

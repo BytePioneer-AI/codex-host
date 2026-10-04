@@ -91,7 +91,8 @@ describe("native history snapshots", () => {
     await f.exporter.exportOnExit([record]);
     const files = await f.files();
     expect(files).toHaveLength(1);
-    const file = files[0]!;
+    const file = files[0];
+    if (!file) throw new Error("Missing exported history");
     const initial = await readFile(file, "utf8");
     await appendFile(file, "NATIVE CONTINUATION MUST SURVIVE\n");
     await f.exporter.exportOnExit([record]);
@@ -109,7 +110,9 @@ describe("native history snapshots", () => {
     await f.exporter.exportOnExit([record]);
     let files = await f.files();
     expect(files).toHaveLength(1);
-    expect((await readFile(files[0]!, "utf8")).match(/"type":"task_started"/g)).toHaveLength(2);
+    const file = files[0];
+    if (!file) throw new Error("Missing exported history");
+    expect((await readFile(file, "utf8")).match(/"type":"task_started"/g)).toHaveLength(2);
     f.exporter.stage(record, [turn]);
     await f.exporter.exportOnExit([record]);
     files = await f.files();
@@ -122,7 +125,7 @@ describe("native history snapshots", () => {
     { ephemeral: true },
     { state: "creating" as const },
     { subagent: { parentHostThreadId: "parent", nativeSubagentId: "child" } },
-    { nativeSessionRef: { ...record.nativeSessionRef!, nativeSessionId: "replacement" } },
+    { nativeSessionRef: { ...record.nativeSessionRef, nativeSessionId: "replacement" } },
   ])("does not export hidden, provisional, ephemeral, or rebound Sessions: %j", async (patch) => {
     const f = await fixture();
     f.exporter.stage(record, [turn]);

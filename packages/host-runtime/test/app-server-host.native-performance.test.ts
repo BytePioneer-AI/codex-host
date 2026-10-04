@@ -67,7 +67,9 @@ it("exports settled history and registers its index before stopping the native b
       file.endsWith(".jsonl"),
     );
     expect(files).toHaveLength(1);
-    expect(await readFile(path.join(home, files[0]!), "utf8")).toContain("Historical reply");
+    const file = files[0];
+    if (!file) throw new Error("Missing exported history");
+    expect(await readFile(path.join(home, file), "utf8")).toContain("Historical reply");
     expect(f.official.stdin.read()).toBeNull();
   } finally {
     f.host.close();

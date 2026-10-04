@@ -1286,3 +1286,214 @@ describe("Claude native Turn interpretation", () => {
     ).toEqual({ fiveHour: { utilizationPercent: 45 } });
   });
 });
+
+describe("Claude native Workflow interpretation", () => {
+  const script = "export const meta = { name: 'count', description: 'Count lines', phases: [] }";
+
+  function taskFrame(subtype: string, input: Record<string, unknown> = {}) {
+    return {
+      type: "system",
+      subtype,
+      task_id: "workflow-task",
+      tool_use_id: "workflow-call",
+      ...input,
+    };
+  }
+
+  it("maps the Workflow tool, its task frames, and its launch result", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(turn.consume(toolUse("Workflow", "workflow-call", { script })).events).toEqual([
+      { type: "workflow.started", callId: "workflow-call" },
+      {
+        type: "message.completed",
+        messageId: "assistant-workflow-call",
+        checkpointId: "assistant-workflow-call",
+      },
+    ]);
+    expect(
+      turn.consume(
+        taskFrame("task_started", {
+          description: "Count lines",
+          task_type: "local_workflow",
+          workflow_name: "count",
+          prompt: script,
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "workflow.updated",
+        callId: "workflow-call",
+        taskId: "workflow-task",
+        description: "Count lines",
+      },
+    ]);
+    expect(
+      turn.consume(
+        toolResult("workflow-call", {
+          content: "Workflow launched in background. Task ID: workflow-task",
+          nativeResult: {
+            status: "async_launched",
+            taskId: "workflow-task",
+            taskType: "local_workflow",
+            workflowName: "count",
+            runId: "wf_1",
+          },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "workflow.launched",
+        callId: "workflow-call",
+        isError: false,
+        background: true,
+        taskId: "workflow-task",
+        resultSummary: "Workflow launched in background. Task ID: workflow-task",
+      },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("reads agent states from workflow progress and reports other frames as activity", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    turn.consume(toolUse("Workflow", "workflow-call", { name: "review" }));
+
+    const progress = turn.consume(
+      taskFrame("task_progress", {
+        description: "Count lines",
+        workflow_progress: [
+          { type: "workflow_phase", index: 1, title: "Count" },
+          { type: "workflow_agent", index: 1, label: "queued", state: "start", queuedAt: 1 },
+          {
+            type: "workflow_agent",
+            index: 2,
+            label: "count:a.txt",
+            phaseTitle: "Count",
+            agentId: "agent-a",
+            model: "claude-sonnet-5-5",
+            state: "start",
+            startedAt: 2,
+          },
+          { type: "workflow_agent", index: 3, label: "count:b.txt", state: "progress" },
+          {
+            type: "workflow_agent",
+            index: 4,
+            label: "count:c.txt",
+            agentId: "agent-c",
+            state: "done",
+            resultPreview: "3 lines",
+          },
+          {
+            type: "workflow_agent",
+            index: 5,
+            label: "blocked",
+            state: "error",
+            error: "blocked by safety classifier",
+          },
+          { type: "workflow_agent", index: 6, label: "future", state: "paused" },
+          { type: "workflow_agent", index: -1, label: "invalid", state: "done" },
+        ],
+      }),
+    );
+    expect(progress.events).toEqual([
+      {
+        type: "workflow.updated",
+        callId: "workflow-call",
+        taskId: "workflow-task",
+        agents: [
+          { index: 1, label: "queued", state: "queued" },
+          {
+            index: 2,
+            label: "count:a.txt",
+            state: "running",
+            agentId: "agent-a",
+            phaseTitle: "Count",
+            model: "claude-sonnet-5-5",
+          },
+          { index: 3, label: "count:b.txt", state: "running" },
+          {
+            index: 4,
+            label: "count:c.txt",
+            state: "done",
+            agentId: "agent-c",
+            resultPreview: "3 lines",
+          },
+          { index: 5, label: "blocked", state: "error", error: "blocked by safety classifier" },
+        ],
+      },
+    ]);
+    expect(
+      turn.consume(
+        taskFrame("task_progress", { description: "Count: count:a.txt", last_tool_name: "Bash" }),
+      ).events,
+    ).toEqual([{ type: "workflow.activity", callId: "workflow-call" }]);
+    // Workflow task frames never become Tool progress or Agent lifecycle events.
+    expect(
+      turn.consume({ type: "tool_progress", tool_use_id: "workflow-call", elapsed_time_seconds: 3 })
+        .events,
+    ).toEqual([]);
+    expect(
+      turn.consume(taskFrame("task_updated", { patch: { status: "completed" } })).events,
+    ).toEqual([]);
+  });
+
+  it("recognizes a run launched by an earlier Segment", () => {
+    const idle = new ClaudeNativeTurnAccumulator();
+
+    expect(
+      idle.consume(
+        taskFrame("task_progress", {
+          workflow_progress: [
+            { type: "workflow_agent", index: 1, label: "a", agentId: "agent-a", state: "done" },
+          ],
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "workflow.updated",
+        callId: "workflow-call",
+        taskId: "workflow-task",
+        agents: [{ index: 1, label: "a", state: "done", agentId: "agent-a" }],
+      },
+    ]);
+    expect(idle.consume(taskFrame("task_progress", { description: "a" })).events).toEqual([
+      { type: "workflow.activity", callId: "workflow-call" },
+    ]);
+    expect(
+      idle.consume(taskFrame("task_notification", { status: "completed", summary: "Count lines" }))
+        .events,
+    ).toEqual([
+      {
+        type: "subagent.settled",
+        nativeSubagentId: "workflow-task",
+        status: "completed",
+        callId: "workflow-call",
+        resultSummary: "Count lines",
+      },
+    ]);
+  });
+
+  it("reports a Workflow tool that returned without launching a run", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    turn.consume(toolUse("Workflow", "workflow-call", { script }));
+
+    expect(
+      turn.consume(
+        toolResult("workflow-call", {
+          content: "Script syntax check failed",
+          isError: true,
+          nativeResult: { status: "async_launched", taskId: "workflow-task", error: "syntax" },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "workflow.launched",
+        callId: "workflow-call",
+        isError: true,
+        background: false,
+        taskId: "workflow-task",
+        resultSummary: "Script syntax check failed",
+      },
+    ]);
+  });
+});

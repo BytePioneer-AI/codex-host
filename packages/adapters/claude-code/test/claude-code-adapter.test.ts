@@ -5460,6 +5460,22 @@ describe("Claude Code HarnessAdapter", () => {
   });
 });
 
+async function nextOutputMatching(
+  iterator: AsyncIterator<HarnessOutput>,
+  predicate: (output: HarnessOutput) => boolean,
+): Promise<HarnessOutput[]> {
+  const outputs: HarnessOutput[] = [];
+  for (;;) {
+    const output = await iterator.next();
+    if (output.done) throw new Error("Harness output ended unexpectedly");
+    outputs.push(output.value);
+    if (predicate(output.value)) return outputs;
+  }
+}
+
+const eventOutputs = (outputs: HarnessOutput[]) =>
+  outputs.flatMap((output) => (output.kind === "event" ? [output.event] : []));
+
 describe("Claude Code Ultracode selection", () => {
   const ultracode = harnessThinkingOptionIdSchema.parse("ultracode");
 
@@ -5546,6 +5562,242 @@ describe("Claude Code Ultracode selection", () => {
       type: "session.state.changed",
       state: { effectiveThinkingOptionId: "high", effectiveModel: CLAUDE_DEFAULT_MODEL_REF },
     });
+    await session.close();
+  });
+});
+
+describe("Claude Code Workflow runs", () => {
+  async function launchWorkflow() {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("run a workflow"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({ type: "workflow.started", callId: "workflow-call" });
+    transport.event({
+      type: "workflow.updated",
+      callId: "workflow-call",
+      taskId: "workflow-task",
+      description: "Count lines",
+    });
+    const started = eventOutputs(
+      await nextOutputMatching(
+        iterator,
+        (output) =>
+          output.kind === "event" &&
+          output.event.type === "item.started" &&
+          output.event.item.type === "subagentDelegation",
+      ),
+    ).at(-1);
+    expect(started).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "subagentDelegation",
+        operation: "spawn",
+        prompt: "Count lines",
+        subagents: [],
+      },
+    });
+    transport.event({
+      type: "workflow.launched",
+      callId: "workflow-call",
+      isError: false,
+      background: true,
+      taskId: "workflow-task",
+    });
+    transport.event({
+      type: "workflow.updated",
+      callId: "workflow-call",
+      agents: [
+        {
+          index: 1,
+          label: "count:a.txt",
+          state: "running",
+          agentId: "agent-a",
+          phaseTitle: "Count",
+        },
+      ],
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "subagents.replace",
+        subagents: [
+          {
+            subagentId: "workflow-call:1",
+            nativeSubagentId: "agent-a",
+            description: "count:a.txt",
+            role: "Count",
+            status: "running",
+          },
+        ],
+      },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "subagent.transcript.changed",
+      nativeSubagentId: "agent-a",
+    });
+    return { iterator, session, transport };
+  }
+
+  it("holds the Turn for a launched run and keeps agent approvals answerable", async () => {
+    const { iterator, session, transport } = await launchWorkflow();
+    transport.event({
+      type: "interaction.requested",
+      request: { type: "approval", requestId: "agent-approval", title: "count:a.txt: Bash" },
+      agentScoped: true,
+    });
+    const interaction = await nextInteraction(iterator);
+    expect(interaction).toMatchObject({ type: "approval", title: "count:a.txt: Bash" });
+    transport.delta("The workflow is running", "root-1");
+    transport.event({ type: "message.completed", messageId: "root-1" });
+    transport.finish({ status: "succeeded" });
+    const rootOutputs = eventOutputs(
+      await nextOutputMatching(
+        iterator,
+        (output) =>
+          output.kind === "event" &&
+          output.event.type === "item.completed" &&
+          output.event.snapshot.item.type === "agentMessage",
+      ),
+    );
+    expect(rootOutputs.some(({ type }) => type === "interaction.closed")).toBe(false);
+    await expect(session.execute(textTurn("follow-up"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+
+    // Agent activity during the held Turn refreshes the running agent's transcript.
+    transport.event({ type: "workflow.activity", callId: "workflow-call" });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "subagent.transcript.changed",
+      nativeSubagentId: "agent-a",
+    });
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: { type: "approval", actionId: "allowOnce" },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(transport.respondToInteraction).toHaveBeenLastCalledWith({
+      type: "approval",
+      requestId: "agent-approval",
+      decision: "allowOnce",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: interaction.interactionId,
+      reason: "responded",
+    });
+
+    transport.event({
+      type: "subagent.settled",
+      nativeSubagentId: "workflow-task",
+      callId: "workflow-call",
+      status: "completed",
+      resultSummary: "Count lines",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        outcome: { status: "succeeded" },
+        item: {
+          type: "subagentDelegation",
+          subagents: [{ nativeSubagentId: "agent-a", status: "completed" }],
+        },
+      },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "subagent.transcript.changed",
+      nativeSubagentId: "agent-a",
+    });
+
+    transport.delta("Total: 3 lines", "continuation-1");
+    transport.event({ type: "message.completed", messageId: "continuation-1" });
+    transport.finish({ status: "succeeded" });
+    const completion = eventOutputs(
+      await nextOutputMatching(
+        iterator,
+        (output) => output.kind === "event" && output.event.type === "turn.completed",
+      ),
+    );
+    expect(completion.at(-1)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    expect(transport.idleLive).toBe(false);
+    await session.close();
+  });
+
+  it("stops a held run natively when the user cancels the Turn", async () => {
+    const { iterator, session, transport } = await launchWorkflow();
+    transport.finish({ status: "succeeded" });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    await expect(
+      session.execute({
+        type: "turn.cancel",
+        turnId: hostTurnIdSchema.parse("run a workflow"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { cancellationRequested: true } });
+    expect(transport.stopBackgroundTaskCalls).toEqual(["workflow-task"]);
+    expect(transport.abort).not.toHaveBeenCalled();
+    const outputs = eventOutputs(
+      await nextOutputMatching(
+        iterator,
+        (output) => output.kind === "event" && output.event.type === "turn.completed",
+      ),
+    );
+    expect(outputs).toContainEqual(
+      expect.objectContaining({
+        type: "item.completed",
+        snapshot: expect.objectContaining({
+          outcome: { status: "cancelled", reason: "Cancelled by user" },
+          item: expect.objectContaining({
+            type: "subagentDelegation",
+            subagents: [expect.objectContaining({ status: "interrupted" })],
+          }),
+        }),
+      }),
+    );
+    expect(outputs.at(-1)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+    await session.close();
+  });
+
+  it("fails a successful Root result that leaves the Workflow tool unanswered", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("broken workflow"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({ type: "workflow.started", callId: "workflow-call" });
+    transport.finish({ status: "succeeded" });
+
+    const outputs = eventOutputs(
+      await nextOutputMatching(
+        iterator,
+        (output) => output.kind === "event" && output.event.type === "turn.completed",
+      ),
+    );
+    expect(outputs.at(-1)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed", error: { code: "protocolError" } },
+    });
+    expect(outputs.some((event) => event.type === "item.started")).toBe(false);
     await session.close();
   });
 });

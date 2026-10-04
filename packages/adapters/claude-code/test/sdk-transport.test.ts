@@ -2619,3 +2619,176 @@ describe("ClaudeSdkTransport Ultracode", () => {
     await value.transport.close();
   });
 });
+
+describe("ClaudeSdkTransport Workflow agent Interactions", () => {
+  const workflowProgress = {
+    type: "system",
+    subtype: "task_progress",
+    task_id: "workflow-task",
+    tool_use_id: "workflow-call",
+    description: "Count lines",
+    workflow_progress: [
+      { type: "workflow_phase", index: 1, title: "Count" },
+      {
+        type: "workflow_agent",
+        index: 1,
+        label: "count:a.txt",
+        agentId: "agent-a",
+        state: "start",
+        startedAt: 1,
+      },
+    ],
+    session_id: "00000000-0000-4000-8000-000000000001",
+  } as unknown as SDKMessage;
+
+  it("keeps an agent approval pending across the Root terminal and names the agent", async () => {
+    const value = fixture();
+    const idleEvents: ClaudeTurnEvent[] = [];
+    value.transport.setIdleTurnHandler({
+      onEvent: (event) => idleEvents.push(event),
+      onTerminal: () => undefined,
+    });
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000010",
+      (event) => events.push(event),
+    );
+    value.fakeQuery.push(workflowProgress);
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(expect.objectContaining({ type: "workflow.updated" })),
+    );
+
+    const permission = canUseTool(
+      "Bash",
+      { command: "wc -l a.txt" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "agent-bash-tool",
+        requestId: "agent-bash-control",
+        displayName: "Bash",
+        description: "Count lines",
+        agentID: "agent-a",
+      },
+    );
+    expect(events.at(-1)).toEqual({
+      type: "interaction.requested",
+      request: {
+        type: "approval",
+        requestId: "claude-approval-1",
+        title: "count:a.txt: Bash",
+        description: "Count lines",
+      },
+      agentScoped: true,
+    });
+
+    completeTurn(value.fakeQuery);
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    expect(events.filter(({ type }) => type === "interaction.closed")).toEqual([]);
+
+    value.transport.setIdleLive(true);
+    await value.transport.respondToInteraction({
+      type: "approval",
+      requestId: "claude-approval-1",
+      decision: "allowOnce",
+    });
+    await expect(permission).resolves.toMatchObject({
+      behavior: "allow",
+      toolUseID: "agent-bash-tool",
+    });
+    expect(idleEvents).toContainEqual({
+      type: "interaction.closed",
+      requestId: "claude-approval-1",
+      reason: "responded",
+    });
+    await value.transport.close();
+  });
+
+  it("shows held continuation approvals and denies agent approvals once the held Turn ends", async () => {
+    const value = fixture();
+    const idleEvents: ClaudeTurnEvent[] = [];
+    const terminals: ClaudeTransportTurnResult[] = [];
+    value.transport.setIdleTurnHandler({
+      onEvent: (event) => idleEvents.push(event),
+      onTerminal: (result) => terminals.push(result),
+    });
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    value.transport.setIdleLive(true);
+
+    const rootPermission = canUseTool(
+      "Edit",
+      { file_path: "/synthetic/file" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "root-edit-tool",
+        requestId: "root-edit-control",
+        displayName: "Edit file",
+      },
+    );
+    const agentPermission = canUseTool(
+      "Bash",
+      { command: "ls" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "agent-bash-tool",
+        requestId: "agent-bash-control",
+        displayName: "Bash",
+        agentID: "agent-unlabeled",
+      },
+    );
+    expect(idleEvents).toEqual([
+      {
+        type: "interaction.requested",
+        request: { type: "approval", requestId: "claude-approval-1", title: "Edit file" },
+      },
+      {
+        type: "interaction.requested",
+        request: { type: "approval", requestId: "claude-approval-2", title: "Bash" },
+        agentScoped: true,
+      },
+    ]);
+
+    completeTurn(value.fakeQuery);
+    await expect(rootPermission).resolves.toMatchObject({ behavior: "deny" });
+    await vi.waitFor(() => expect(terminals).toEqual([{ status: "succeeded" }]));
+    expect(idleEvents.at(-1)).toEqual({
+      type: "interaction.closed",
+      requestId: "claude-approval-1",
+      reason: "superseded",
+    });
+
+    const closedEvents = idleEvents.length;
+    value.transport.setIdleLive(false);
+    await expect(agentPermission).resolves.toMatchObject({ behavior: "deny" });
+    // The Host Turn already closed its Interactions; nothing is left to notify.
+    expect(idleEvents).toHaveLength(closedEvents);
+    await value.transport.close();
+  });
+
+  it("denies agent approvals when no Host Turn can show them", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+
+    await expect(
+      canUseTool(
+        "Bash",
+        { command: "ls" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "agent-bash-tool",
+          requestId: "agent-bash-control",
+          displayName: "Bash",
+          agentID: "agent-a",
+        },
+      ),
+    ).resolves.toMatchObject({ behavior: "deny" });
+    await value.transport.close();
+  });
+});

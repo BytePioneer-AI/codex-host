@@ -105,6 +105,7 @@ import {
 import { claudeDynamicCommandPrompt, claudeLiveCommandCatalog } from "./slash-commands.js";
 import { claudePlanReviewResponse, createClaudePlanReview } from "./plan-review.js";
 import { ClaudeSubagentLifecycle } from "./subagent-lifecycle.js";
+import { ClaudeWorkflowLifecycle } from "./workflow-lifecycle.js";
 import { ClaudeTaskTracker } from "./task-tracker.js";
 import { ClaudeBackgroundCommandItems } from "./background-command-items.js";
 import { ClaudeToolLifecycle } from "./tool-lifecycle.js";
@@ -178,9 +179,12 @@ interface ActiveTurn {
   reasoningOrdinal: number;
   pendingSubagentTranscriptCalls: Set<string>;
   subagents: ClaudeSubagentLifecycle;
+  workflows: ClaudeWorkflowLifecycle;
   tools: ClaudeToolLifecycle;
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByRequestId: Map<string, HostInteractionId>;
+  /** Native requests raised by agents; they stay open while a held Turn waits for them. */
+  agentScopedRequestIds: Set<string>;
   checkpointId: string | null;
   nativeTurnKey: string;
   nativeTurnRef: NativeTurnRef | null;
@@ -872,6 +876,10 @@ class ClaudeHarnessSession implements HarnessSession {
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),
       }),
+      workflows: new ClaudeWorkflowLifecycle({
+        newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
+        emit: (event) => this.#event(event),
+      }),
       tools: new ClaudeToolLifecycle({
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
@@ -883,6 +891,7 @@ class ClaudeHarnessSession implements HarnessSession {
       }),
       interactions: new Map(),
       interactionByRequestId: new Map(),
+      agentScopedRequestIds: new Set(),
       checkpointId: null,
       nativeTurnKey,
       nativeTurnRef: null,
@@ -1004,6 +1013,10 @@ class ClaudeHarnessSession implements HarnessSession {
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),
       }),
+      workflows: new ClaudeWorkflowLifecycle({
+        newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
+        emit: (event) => this.#event(event),
+      }),
       tools: new ClaudeToolLifecycle({
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
@@ -1015,6 +1028,7 @@ class ClaudeHarnessSession implements HarnessSession {
       }),
       interactions: new Map(),
       interactionByRequestId: new Map(),
+      agentScopedRequestIds: new Set(),
       checkpointId: null,
       nativeTurnKey,
       nativeTurnRef: null,
@@ -1427,6 +1441,12 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     active.cancellationRequested = true;
     if (active.held) {
+      // A Workflow run belongs to this Turn, so cancelling stops it natively. Its stop
+      // notification arrives after the Turn has ended.
+      const transport = this.#transport;
+      for (const taskId of active.workflows.taskIds()) {
+        void transport?.stopBackgroundTask(taskId).catch(() => undefined);
+      }
       this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
       return { ok: true, value: { cancellationRequested: true } };
     }
@@ -1669,7 +1689,8 @@ class ClaudeHarnessSession implements HarnessSession {
         if (
           active.tools.size > 0 ||
           active.subagents.size > 0 ||
-          active.interactions.size > 0 ||
+          active.workflows.pendingCount > 0 ||
+          this.#hasRootInteractions(active) ||
           active.compactionItem
         ) {
           return;
@@ -1741,6 +1762,30 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#occupancy.release(event.callId, subagent.nativeSubagentId);
         return;
       }
+      case "workflow.started":
+        this.#observeRootOutput(active);
+        for (const messageId of [...active.reasoningItems.keys()]) {
+          this.#completeReasoning(active, messageId, { status: "succeeded" });
+        }
+        this.#completeAgentItem(active, { status: "succeeded" }, false);
+        active.workflows.start(event);
+        return;
+      case "workflow.updated":
+        this.#refreshSubagentTranscripts(active.workflows.update(active.command.turnId, event));
+        return;
+      case "workflow.activity":
+        this.#refreshSubagentTranscripts(active.workflows.activity(event.callId));
+        return;
+      case "workflow.launched": {
+        const launched = active.workflows.launched(
+          active.command.turnId,
+          event,
+          active.cancellationRequested,
+        );
+        // A launched run owes the Root a continuation, like a background Subagent.
+        if (launched) this.#occupancy.occupySpawn(launched.callId, launched.taskId);
+        return;
+      }
       case "subagent.settled":
         this.#settleNativeTask(event);
         return;
@@ -1754,7 +1799,11 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       }
       case "interaction.requested":
-        this.#observeRootOutput(active);
+        if (event.agentScoped) {
+          active.agentScopedRequestIds.add(event.request.requestId);
+        } else {
+          this.#observeRootOutput(active);
+        }
         this.#startInteraction(active, event.request);
         return;
       case "interaction.closed":
@@ -1884,6 +1933,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (!interactionId)
       throw new Error("Claude Code Interaction close references an unknown request");
     active.interactionByRequestId.delete(requestId);
+    active.agentScopedRequestIds.delete(requestId);
     active.interactions.delete(interactionId);
     this.#event({
       type: "interaction.closed",
@@ -1893,16 +1943,35 @@ class ClaudeHarnessSession implements HarnessSession {
     });
   }
 
-  #closeActiveInteractions(active: ActiveTurn, reason: "cancelled" | "superseded"): void {
+  #closeActiveInteractions(
+    active: ActiveTurn,
+    reason: "cancelled" | "superseded",
+    keepAgentScoped = false,
+  ): void {
     for (const [interactionId, pending] of active.interactions) {
+      if (keepAgentScoped && active.agentScopedRequestIds.has(pending.request.requestId)) continue;
       active.interactions.delete(interactionId);
       active.interactionByRequestId.delete(pending.request.requestId);
+      active.agentScopedRequestIds.delete(pending.request.requestId);
       this.#event({
         type: "interaction.closed",
         interactionId,
         turnId: active.command.turnId,
         reason,
       });
+    }
+  }
+
+  #hasRootInteractions(active: ActiveTurn): boolean {
+    for (const requestId of active.interactionByRequestId.keys()) {
+      if (!active.agentScopedRequestIds.has(requestId)) return true;
+    }
+    return false;
+  }
+
+  #refreshSubagentTranscripts(nativeSubagentIds: readonly string[]): void {
+    for (const nativeSubagentId of new Set(nativeSubagentIds)) {
+      this.#event({ type: "subagent.transcript.changed", nativeSubagentId });
     }
   }
 
@@ -2020,6 +2089,10 @@ class ClaudeHarnessSession implements HarnessSession {
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),
       }),
+      workflows: new ClaudeWorkflowLifecycle({
+        newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
+        emit: (event) => this.#event(event),
+      }),
       tools: new ClaudeToolLifecycle({
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
@@ -2031,6 +2104,7 @@ class ClaudeHarnessSession implements HarnessSession {
       }),
       interactions: new Map(),
       interactionByRequestId: new Map(),
+      agentScopedRequestIds: new Set(),
       checkpointId: null,
       nativeTurnKey,
       nativeTurnRef: nativeTurnRefSchema.parse({
@@ -2071,6 +2145,15 @@ class ClaudeHarnessSession implements HarnessSession {
    */
   #settleNativeTask(event: Extract<ClaudeTurnEvent, { type: "subagent.settled" }>): void {
     if (this.#backgroundCommands.settle(event)) return;
+    const active = this.#active;
+    const workflow = active?.workflows.settle(active.command.turnId, event);
+    if (workflow) {
+      this.#refreshSubagentTranscripts(workflow.nativeSubagentIds);
+      // The run stopped, but its Root continuation runs in a later Segment.
+      this.#occupancy.notify(workflow.callId, workflow.taskId);
+      if (active?.held) this.#armContinuationQuiescence(active);
+      return;
+    }
     this.#settleBackgroundSubagent(
       event.status,
       event.nativeSubagentId,
@@ -2108,7 +2191,10 @@ class ClaudeHarnessSession implements HarnessSession {
     // A late native terminal cannot substitute for the process shutdown already in progress.
     if (this.#active !== active || this.#hardCancelTask) return;
     active.rootSegmentActive = false;
-    if (result.status === "succeeded" && (active.tools.size > 0 || active.subagents.size > 0)) {
+    if (
+      result.status === "succeeded" &&
+      (active.tools.size > 0 || active.subagents.size > 0 || active.workflows.pendingCount > 0)
+    ) {
       this.#finishFailed(active, transportFailure("protocol"));
     } else if (result.status === "succeeded") {
       this.#finish(active, { status: "succeeded" });
@@ -2441,11 +2527,14 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#closeActiveInteractions(
       active,
       outcome.status === "succeeded" ? "superseded" : "cancelled",
+      hold,
     );
     const itemOutcome: HostItemOutcome = outcome;
     if (active.compactionItem) this.#completeCompactionItem(active, itemOutcome);
     active.tools.finalize(active.command.turnId, itemOutcome);
     active.subagents.finalize(active.command.turnId, itemOutcome);
+    // Launched Workflow runs stay open on a held Turn; their agents report while it waits.
+    if (!hold) active.workflows.finalize(active.command.turnId, itemOutcome);
     for (const messageId of [...active.reasoningItems.keys()]) {
       this.#completeReasoning(active, messageId, itemOutcome);
     }

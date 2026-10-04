@@ -24,7 +24,11 @@ import {
   readClaudeUserModelPicker,
   type ClaudeModelInspectionSnapshot,
 } from "./model-catalog.js";
-import { ClaudeNativeTurnAccumulator, parseClaudePlanLimitEvent } from "./native-message.js";
+import {
+  ClaudeNativeTurnAccumulator,
+  parseClaudePlanLimitEvent,
+  parseClaudeWorkflowAgents,
+} from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
 import { closeClaudeProcessGroup } from "./process-fence.js";
 import {
@@ -56,6 +60,8 @@ const SESSION_ENTRYPOINT = "codexhost-sdk";
 const APPROVAL_TITLE_MAX_LENGTH = 120;
 const APPROVAL_DESCRIPTION_MAX_LENGTH = 500;
 const DEFAULT_ABORT_TIMEOUT_MS = 2_000;
+/** Bounds the Workflow agent labels kept to name agent approvals. */
+const WORKFLOW_AGENT_LABEL_LIMIT = 1_000;
 const INTERRUPT_TIMEOUT_MESSAGE = "Claude SDK interrupt timed out";
 
 class PushableInput<T> implements AsyncIterable<T> {
@@ -89,6 +95,8 @@ class PushableInput<T> implements AsyncIterable<T> {
 }
 
 interface PendingInteraction {
+  /** Raised by a native agent; it stays pending across the Root Segment terminal. */
+  agentScoped: boolean;
   controlRequestId: string;
   input: Record<string, unknown>;
   onAbort(): void;
@@ -101,8 +109,6 @@ interface PendingInteraction {
 
 interface ActiveTurn {
   accumulator: ClaudeNativeTurnAccumulator;
-  controlRequestIds: Set<string>;
-  interactions: Map<string, PendingInteraction>;
   onEvent(event: ClaudeTurnEvent): void;
   resolve(result: ClaudeTransportTurnResult): void;
   reject(error: unknown): void;
@@ -314,11 +320,16 @@ function parseApprovalRequest(
   requestId: string,
   toolName: string,
   options: Parameters<CanUseTool>[2],
+  agentLabel?: string,
 ): ClaudeApprovalRequest | null {
-  const title = [options.title, options.displayName, options.description, toolName]
+  const toolTitle = [options.title, options.displayName, options.description, toolName]
     .map((value) => boundedDisplayText(value, APPROVAL_TITLE_MAX_LENGTH))
     .find((value): value is string => value !== null);
-  if (!title) return null;
+  if (!toolTitle) return null;
+  // Name the Workflow agent asking, since several agents may ask for the same tool at once.
+  const title = agentLabel
+    ? `${agentLabel}: ${toolTitle}`.slice(0, APPROVAL_TITLE_MAX_LENGTH)
+    : toolTitle;
   const description = boundedDisplayText(options.description, APPROVAL_DESCRIPTION_MAX_LENGTH);
   const suggestedScope = permissionSuggestionScope(options.suggestions);
   return {
@@ -368,6 +379,16 @@ function canDeliverSettlementImmediately(
       return event.callId !== undefined && pending.callId === event.callId;
     }
     if (
+      pending.type === "workflow.started" ||
+      pending.type === "workflow.updated" ||
+      pending.type === "workflow.launched"
+    ) {
+      return (
+        (event.callId !== undefined && pending.callId === event.callId) ||
+        (pending.type !== "workflow.started" && pending.taskId === event.nativeSubagentId)
+      );
+    }
+    if (
       pending.type !== "subagent.started" &&
       pending.type !== "subagent.updated" &&
       pending.type !== "subagent.completed"
@@ -412,6 +433,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #threadEventHandler: ((event: ClaudeTurnEvent) => void) | null = null;
   #idleLive = false;
   #idleAccumulator: ClaudeNativeTurnAccumulator | null = null;
+  readonly #interactions = new Map<string, PendingInteraction>();
+  readonly #controlRequestIds = new Set<string>();
+  readonly #workflowAgentLabels = new Map<string, string>();
   #closePromise: Promise<void> | null = null;
   #consumeTask: Promise<void> | null = null;
   #stderrTail = "";
@@ -456,7 +480,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
   setIdleLive(live: boolean): void {
     this.#idleLive = live;
-    if (!live) this.#idleAccumulator = null;
+    if (live) return;
+    this.#idleAccumulator = null;
+    // The held Host Turn is over; agent approvals have no Turn left to answer them.
+    if (!this.#active) this.#closeInteractions("all", "cancelled");
   }
 
   async start(): Promise<void> {
@@ -666,8 +693,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         accumulator: new ClaudeNativeTurnAccumulator(
           this.#provider ? { provider: this.#provider } : {},
         ),
-        controlRequestIds: new Set(),
-        interactions: new Map(),
         onEvent,
         resolve,
         reject,
@@ -685,9 +710,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void> {
-    const active = this.#active;
-    const pending = active?.interactions.get(response.requestId);
-    if (!active || !pending) {
+    const pending = this.#interactions.get(response.requestId);
+    if (!pending) {
       return Promise.reject(new Error("Claude SDK Interaction is not pending"));
     }
     if (response.type === "approval") {
@@ -718,7 +742,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         }
         result = allowed(pending.toolUseId, pending.input, pending.suggestions);
       }
-      this.#settleInteraction(active, pending, result, "responded");
+      this.#settleInteraction(pending, result, "responded");
       return Promise.resolve();
     }
     if (pending.request.type !== "question") {
@@ -726,7 +750,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
     if ("cancelled" in response) {
       this.#settleInteraction(
-        active,
         pending,
         denied(pending.toolUseId, "User cancelled the Question"),
         "cancelled",
@@ -744,7 +767,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       return Promise.reject(new Error("Claude SDK Question answers do not match the request"));
     }
     this.#settleInteraction(
-      active,
       pending,
       {
         behavior: "allow",
@@ -790,23 +812,27 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     input: Record<string, unknown>,
     options: Parameters<CanUseTool>[2],
   ): Promise<PermissionResult> {
-    const active = this.#active;
+    const sink = this.#interactionSink();
     const validToolName = boundedDisplayText(toolName, APPROVAL_TITLE_MAX_LENGTH);
     if (
-      !active ||
+      !sink ||
       !validToolName ||
       typeof options.requestId !== "string" ||
       options.requestId.length === 0 ||
       typeof options.toolUseID !== "string" ||
       options.toolUseID.length === 0 ||
       options.signal.aborted ||
-      active.controlRequestIds.has(options.requestId)
+      this.#controlRequestIds.has(options.requestId)
     ) {
       return Promise.resolve(
         denied(options.toolUseID, "Claude Tool permission request is invalid"),
       );
     }
 
+    const agentId =
+      typeof options.agentID === "string" && options.agentID.length > 0
+        ? options.agentID
+        : undefined;
     this.#interactionOrdinal += 1;
     const requestId = `claude-${toolName === "AskUserQuestion" ? "question" : "approval"}-${this.#interactionOrdinal}`;
     let request: ClaudeInteractionRequest | null;
@@ -820,7 +846,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         plan: typeof input.plan === "string" && input.plan.trim().length > 0 ? input.plan : null,
       };
     } else {
-      request = parseApprovalRequest(requestId, toolName, options);
+      request = parseApprovalRequest(
+        requestId,
+        toolName,
+        options,
+        agentId ? this.#workflowAgentLabels.get(agentId) : undefined,
+      );
     }
     if (!request) {
       return Promise.resolve(
@@ -830,6 +861,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
     return new Promise<PermissionResult>((resolve) => {
       const pending: PendingInteraction = {
+        agentScoped: agentId !== undefined,
         controlRequestId: options.requestId,
         input,
         request,
@@ -841,7 +873,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         toolUseId: options.toolUseID,
         onAbort: () => {
           this.#settleInteraction(
-            active,
             pending,
             denied(
               pending.toolUseId,
@@ -853,23 +884,38 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           );
         },
       };
-      active.interactions.set(request.requestId, pending);
-      active.controlRequestIds.add(options.requestId);
+      this.#interactions.set(request.requestId, pending);
+      this.#controlRequestIds.add(options.requestId);
       options.signal.addEventListener("abort", pending.onAbort, { once: true });
-      active.onEvent({ type: "interaction.requested", request });
+      sink({
+        type: "interaction.requested",
+        request,
+        ...(pending.agentScoped ? { agentScoped: true } : {}),
+      });
     });
   }
 
+  /**
+   * Where Interaction lifecycle events go: the active Turn, else the held Turn's idle
+   * Segments. Without either there is no Host Turn that could answer a request.
+   */
+  #interactionSink(): ((event: ClaudeTurnEvent) => void) | null {
+    const active = this.#active;
+    if (active) return (event) => active.onEvent(event);
+    const idle = this.#idleHandler;
+    if (this.#idleLive && idle) return (event) => idle.onEvent(event);
+    return null;
+  }
+
   #settleInteraction(
-    active: ActiveTurn,
     pending: PendingInteraction,
     result: PermissionResult,
     reason: "responded" | "cancelled" | "superseded",
   ): void {
-    if (!active.interactions.delete(pending.request.requestId)) return;
-    active.controlRequestIds.delete(pending.controlRequestId);
+    if (!this.#interactions.delete(pending.request.requestId)) return;
+    this.#controlRequestIds.delete(pending.controlRequestId);
     pending.signal.removeEventListener("abort", pending.onAbort);
-    active.onEvent({
+    this.#interactionSink()?.({
       type: "interaction.closed",
       requestId: pending.request.requestId,
       reason,
@@ -877,10 +923,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     pending.resolve(result);
   }
 
-  #closeInteractions(active: ActiveTurn, reason: "cancelled" | "superseded"): void {
-    for (const pending of [...active.interactions.values()]) {
+  /** A Root terminal settles Root requests; agent requests stay while their agent runs. */
+  #closeInteractions(scope: "root" | "all", reason: "cancelled" | "superseded"): void {
+    for (const pending of [...this.#interactions.values()]) {
+      if (scope === "root" && pending.agentScoped) continue;
       this.#settleInteraction(
-        active,
         pending,
         denied(
           pending.toolUseId,
@@ -895,7 +942,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
   async #close(): Promise<void> {
     const failures: unknown[] = [];
-    if (this.#active) this.#closeInteractions(this.#active, "cancelled");
+    this.#closeInteractions("all", "cancelled");
     try {
       const timeout = rejectAfter(this.#closeTimeoutMs, "Claude background tasks did not stop");
       try {
@@ -1000,10 +1047,29 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
+  /** Remembers Workflow agent labels so their approvals can name the agent asking. */
+  #observeWorkflowAgents(message: unknown): void {
+    if (!isRecord(message) || message.type !== "system" || message.subtype !== "task_progress") {
+      return;
+    }
+    for (const agent of parseClaudeWorkflowAgents(message.workflow_progress) ?? []) {
+      if (!agent.agentId) continue;
+      if (
+        !this.#workflowAgentLabels.has(agent.agentId) &&
+        this.#workflowAgentLabels.size >= WORKFLOW_AGENT_LABEL_LIMIT
+      ) {
+        const oldest = this.#workflowAgentLabels.keys().next();
+        if (!oldest.done) this.#workflowAgentLabels.delete(oldest.value);
+      }
+      this.#workflowAgentLabels.set(agent.agentId, agent.label);
+    }
+  }
+
   async #consume(activeQuery: Query): Promise<void> {
     try {
       for await (const message of activeQuery) {
         this.#observeBackgroundTasks(message);
+        this.#observeWorkflowAgents(message);
         this.#observeSlashCommands(message);
         const permissionMode = permissionModeFromMessage(message);
         if (permissionMode && permissionMode !== this.#permissionMode) {
@@ -1017,7 +1083,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           const interpreted = active.accumulator.consume(message);
           for (const event of interpreted.events) active.onEvent(event);
           if (interpreted.terminal) {
-            this.#closeInteractions(active, "superseded");
+            this.#closeInteractions("root", "superseded");
             this.#active = null;
             active.resolve(interpreted.terminal);
           }
@@ -1032,6 +1098,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           const interpreted = idle.consume(message);
           for (const event of interpreted.events) this.#idleHandler.onEvent(event);
           if (interpreted.terminal) {
+            this.#closeInteractions("root", "superseded");
             this.#idleAccumulator = null;
             this.#idleHandler.onTerminal(interpreted.terminal);
           }
@@ -1081,7 +1148,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       if (!this.#closePromise) throw new Error("Claude SDK Query ended unexpectedly");
     } catch (error) {
       const active = this.#active;
-      if (active) this.#closeInteractions(active, "cancelled");
+      this.#closeInteractions("all", "cancelled");
       this.#active = null;
       active?.reject(error);
       if (!this.#closePromise) this.#onFault(error);

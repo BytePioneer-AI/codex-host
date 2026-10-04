@@ -101,6 +101,14 @@ const { outputFiles } = await build({
             costSource: "publicPrice",
           }, "zh-CN");
         };
+        globalThis.updateRendererUsagePartialCost = () => {
+          renderRendererUsageControl(usage, {
+            cacheHitRatePercent: 99.6,
+            totalCostUsd: 12.232,
+            costSource: "publicPrice",
+            unpricedModels: ["gpt-5.3-codex-spark"],
+          }, "zh-CN");
+        };
         globalThis.updateRendererUsageChinese = () => {
           renderRendererUsageControl(usage, {
             cacheHitRatePercent: 92.9,
@@ -404,6 +412,25 @@ test("shows Host-metered usage rows", async ({ page }) => {
   ]);
   await expect(popover).toContainText("费用估算$0.780");
   await expect(popover).not.toContainText("按公开 API 价格计算");
+});
+
+test("marks a cost that leaves unpriced Models out as a lower bound", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0;padding-top:320px"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererUsagePartialCost");
+    if (typeof update !== "function") throw new Error("Partial cost update is unavailable");
+    update();
+  });
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await expect(usage).toHaveText("CH 99.6% · ≥$12.23");
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
+  await expect(popover).toContainText("费用估算≥$12.23");
+  await expect(popover).toContainText("未计价：gpt-5.3-codex-spark");
 });
 
 test("omits plan limits from the Usage trigger and popover", async ({ page }) => {

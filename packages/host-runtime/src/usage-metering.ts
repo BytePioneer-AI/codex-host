@@ -108,8 +108,9 @@ export class UsageMeter {
       if (this.#historyComplete && !this.#invalidRecord) {
         const cost = this.#cost(prices);
         if (cost !== null) {
-          usage.totalCostUsd = cost;
+          usage.totalCostUsd = cost.total;
           usage.costSource = "publicPrice";
+          if (cost.unpricedModels.length > 0) usage.unpricedModels = cost.unpricedModels;
         }
         const cacheHitRate = this.#sessionCacheHitRatePercent();
         if (cacheHitRate !== null) usage.sessionCacheHitRatePercent = cacheHitRate;
@@ -131,8 +132,15 @@ export class UsageMeter {
     }
   }
 
-  #cost(prices: ModelPriceLookup): number | null {
+  /**
+   * Sums every priced request. A request whose Model has no price is left out and its Model
+   * named, so the total is a lower bound; a request without Model or cache data voids the total,
+   * as does a Session with no priced request at all.
+   */
+  #cost(prices: ModelPriceLookup): { total: number; unpricedModels: string[] } | null {
     let total = 0;
+    let priced = 0;
+    const unpriced = new Set<string>();
     for (const request of this.#requests.values()) {
       const cacheRead = request.cachedInputTokens;
       const cacheWrite = request.cacheWriteInputTokens;
@@ -140,9 +148,15 @@ export class UsageMeter {
         return null;
       }
       const price = prices.find(request.model, request.provider);
-      if (!price) return null;
-      if (cacheRead > 0 && price.cacheRead === undefined) return null;
-      if (cacheWrite > 0 && price.cacheWrite === undefined) return null;
+      if (
+        !price ||
+        (cacheRead > 0 && price.cacheRead === undefined) ||
+        (cacheWrite > 0 && price.cacheWrite === undefined)
+      ) {
+        unpriced.add(request.model);
+        continue;
+      }
+      priced += 1;
       total +=
         ((request.inputTokens - cacheRead - cacheWrite) * price.input +
           cacheRead * (price.cacheRead ?? 0) +
@@ -150,7 +164,8 @@ export class UsageMeter {
           request.outputTokens * price.output) /
         TOKENS_PER_PRICE_UNIT;
     }
-    return total;
+    if (priced === 0 && unpriced.size > 0) return null;
+    return { total, unpricedModels: [...unpriced].sort() };
   }
 
   #sessionCacheHitRatePercent(): number | null {

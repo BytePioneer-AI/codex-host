@@ -43,6 +43,7 @@ interface RendererUsageMessages {
   readonly totalTokens: string;
   readonly inputOutput: string;
   readonly sessionCostEstimate: string;
+  readonly unpricedModels: string;
   readonly threadUsage: string;
   readonly threadUsageDetails: string;
   readonly tokensSummary: string;
@@ -68,6 +69,7 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   totalTokens: "Total",
   inputOutput: "Input / output",
   sessionCostEstimate: "Cost estimate",
+  unpricedModels: "Not priced: ",
   threadUsage: "Thread Usage",
   threadUsageDetails: "Thread Usage details",
   tokensSummary: "tokens",
@@ -93,6 +95,7 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   totalTokens: "总数",
   inputOutput: "输入 / 输出",
   sessionCostEstimate: "费用估算",
+  unpricedModels: "未计价：",
   threadUsage: "对话用量",
   threadUsageDetails: "对话用量详情",
   tokensSummary: "Token",
@@ -114,6 +117,12 @@ export function formatRendererCacheHitRate(value: number): string {
 /** Cents from one dollar up; below that a third digit keeps small costs from reading $0.00. */
 export function formatRendererCost(value: number): string {
   return `$${value.toFixed(Math.abs(value) >= 1 ? 2 : 3)}`;
+}
+
+/** A cost that leaves unpriced Models out is a lower bound. */
+function formatUsageCost(usage: ThreadUsageSnapshot & { totalCostUsd: number }): string {
+  const cost = formatRendererCost(usage.totalCostUsd);
+  return usage.unpricedModels?.length ? `≥${cost}` : cost;
 }
 
 export function formatRendererCredits(value: number): string {
@@ -339,12 +348,26 @@ function addContextRow(
   parent.append(track);
 }
 
-type DetailRow = readonly [label: string, value: string];
+type DetailRow = readonly [label: string, value: string, note?: string | undefined];
+
+function addNote(parent: HTMLElement, text: string): void {
+  const note = document.createElement("div");
+  note.textContent = text;
+  note.style.fontSize = "11px";
+  note.style.color = "color-mix(in srgb, currentColor 52%, transparent)";
+  note.style.textAlign = "right";
+  note.style.overflowWrap = "anywhere";
+  note.style.marginTop = "-2px";
+  parent.append(note);
+}
 
 function addGroup(parent: HTMLElement, label: string, rows: readonly DetailRow[]): void {
   if (rows.length === 0) return;
   addGroupHeading(parent, label);
-  for (const [rowLabel, value] of rows) addDetailRow(parent, rowLabel, value);
+  for (const [rowLabel, value, note] of rows) {
+    addDetailRow(parent, rowLabel, value);
+    if (note) addNote(parent, note);
+  }
 }
 
 function renderDetails(
@@ -387,7 +410,14 @@ function renderDetails(
 
   const session: DetailRow[] = [];
   if (usage?.totalCostUsd !== undefined) {
-    session.push([messages.sessionCostEstimate, formatRendererCost(usage.totalCostUsd)]);
+    const unpriced = usage.unpricedModels?.length
+      ? `${messages.unpricedModels}${usage.unpricedModels.join(", ")}`
+      : undefined;
+    session.push([
+      messages.sessionCostEstimate,
+      formatUsageCost({ ...usage, totalCostUsd: usage.totalCostUsd }),
+      unpriced,
+    ]);
   }
   if (usage?.totalCredits !== undefined) {
     session.push([messages.recordedCredits, formatRendererCredits(usage.totalCredits)]);
@@ -663,7 +693,7 @@ export function renderRendererUsageControl(
     outputTokensPerSecond !== undefined
       ? formatRendererTokenRate(outputTokensPerSecond, locale)
       : null,
-    totalCostUsd !== undefined ? formatRendererCost(totalCostUsd) : null,
+    usage && totalCostUsd !== undefined ? formatUsageCost({ ...usage, totalCostUsd }) : null,
   ].filter((value): value is string => value !== null);
   const contextPercent = usage?.contextUsagePercent;
   if (contextPercent !== undefined && summary.length === 0) summary.push(messages.usage);

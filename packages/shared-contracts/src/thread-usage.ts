@@ -28,6 +28,7 @@ export const threadUsageSnapshotSchema = z
     sessionCacheHitRatePercent: cacheHitRatePercentSchema.optional(),
     timeToFirstOutputMs: nonNegativeSafeIntegerSchema.optional(),
     costSource: z.enum(["publicPrice", "native"]).optional(),
+    unpricedModels: z.array(z.string().min(1)).min(1).optional(),
   })
   .strict()
   .superRefine((usage, context) => {
@@ -55,6 +56,13 @@ export const threadUsageSnapshotSchema = z
         code: "custom",
         message: "Thread Usage costSource must be provided with totalCostUsd",
         path: ["costSource"],
+      });
+    }
+    if (usage.unpricedModels !== undefined && usage.costSource !== "publicPrice") {
+      context.addIssue({
+        code: "custom",
+        message: "Thread Usage unpricedModels must be provided with a publicPrice cost",
+        path: ["unpricedModels"],
       });
     }
     if (

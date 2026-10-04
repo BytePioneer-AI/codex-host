@@ -72,7 +72,7 @@ Host 在收到 `complete: true` 之前，以及处于不完整状态时，不发
 位于 `host-runtime`，按 External Thread 持有内存状态（请求记录、回合计时）：
 
 - **不覆盖** Adapter 上报的 Token 累计、上下文、套餐、积分、`cacheHitRatePercent` 等字段，只写入派生字段：`totalCostUsd`、`costSource`、`sessionCacheHitRatePercent`、`timeToFirstOutputMs`、`outputTokensPerSecond`。
-- 费用：每次发布时用当前价格表对全部记录重算，价格刷新或用户补价后自然更新。单条记录费用 = `(input − cacheRead − cacheWrite) × in + cacheRead × cacheReadPrice + cacheWrite × cacheWritePrice + output × out`。记录缺 `model`、模型无精确匹配、或有缓存读/写 Token 但缺对应单价时，整个会话省略费用。
+- 费用：每次发布时用当前价格表对全部记录重算，价格刷新或用户补价后自然更新。单条记录费用 = `(input − cacheRead − cacheWrite) × in + cacheRead × cacheReadPrice + cacheWrite × cacheWritePrice + output × out`。记录缺 `model` 或缓存字段时整个会话省略费用；模型查不到价格或缺对应缓存单价时，该请求不计入，费用作为下限发布并以 `unpricedModels` 列出这些模型，界面显示为 `≥$…`。没有任何可计价请求时省略费用。
 - 会话平均缓存命中率 = Σ `cachedInputTokens` ÷ Σ `inputTokens`（分母为 0 时省略）。
 - 首字延迟：Turn 开始到首个 `reasoning.delta` 或正文 `text.append` 的 Host 观测时长，仅保留最近一轮。
 - 回合平均速度：速度 = Σ 输出 Token ÷ Σ (`completedAtMs` − `startedAtMs`)，只计入本 Turn 内带两个时间且时长大于零的实时记录，每计入一条记录即更新为本 Turn 至今的平均值，计入第一条前保留上一 Turn 的值。缺计时、时长为零、Turn 结束后才到达的记录和历史记录不计入速度，但照常计费。按请求关联计时，排除了工具执行时间，也不受请求交错到达的影响；不含预填充。
@@ -83,7 +83,7 @@ Host 在收到 `complete: true` 之前，以及处于不完整状态时，不发
 ### D5. 价格表
 
 - 数据：构建脚本从 models.dev 生成快照，值为每百万 Token 的 `input`、`output`、`cacheRead`、`cacheWrite`（缺失保持缺失）。
-- 查找：有 `provider` 时先按 `provider/model` 精确匹配；再按模型 ID 精确匹配，同 ID 多服务商时取模型所属官方服务商，无法确定则视为未匹配。不做模糊匹配。
+- 查找：有 `provider` 时先按 `provider/model` 精确匹配；再按模型 ID 精确匹配，同 ID 多服务商时沿 `canonical_model_id` 链（官方条目本身可能指向更新的型号）确定官方厂商，厂商自己列出该 ID 时用厂商价格，无法确定则视为未匹配。仅大小写不同的 ID 可匹配，前提是所有能计价的写法价格一致。不做模糊或前缀匹配。
 - 刷新：Host 启动时本地缓存超过 7 天则后台请求 `models.dev/api.json`，校验后原子替换；失败静默沿用。
 - 用户覆盖：数据目录 `pricing.json`，条目优先于默认表；格式错误时忽略整个文件并记录诊断。
 

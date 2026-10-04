@@ -23,6 +23,11 @@ export interface HostUsage {
   timeToFirstOutputMs?: number;
   /** How `totalCostUsd` was obtained; present only with `totalCostUsd`. */
   costSource?: HostUsageCostSource;
+  /**
+   * Host-derived: Models whose requests have no price and are left out of `totalCostUsd`, which
+   * is then a lower bound. Present only with a `publicPrice` cost; omitted when complete.
+   */
+  unpricedModels?: string[];
 }
 
 export type HostUsageCostSource = "publicPrice" | "native";
@@ -32,6 +37,7 @@ export const hostDerivedUsageFields = [
   "sessionCacheHitRatePercent",
   "timeToFirstOutputMs",
   "costSource",
+  "unpricedModels",
 ] as const satisfies ReadonlyArray<keyof HostUsage>;
 
 const tokenFields = [
@@ -67,6 +73,7 @@ const usageFields = new Set<keyof HostUsage>([
   "contextUsagePercent",
   "outputTokensPerSecond",
   "costSource",
+  "unpricedModels",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -162,6 +169,20 @@ export function parseHostUsage(value: unknown): HostUsage {
     if (value.totalCostUsd === undefined) {
       throw new Error("Harness Usage 'costSource' must be provided with 'totalCostUsd'");
     }
+  }
+  if (value.unpricedModels !== undefined) {
+    const models = value.unpricedModels;
+    if (
+      !Array.isArray(models) ||
+      models.length === 0 ||
+      !models.every((model) => typeof model === "string" && model.length > 0)
+    ) {
+      throw new Error("Harness Usage 'unpricedModels' must be a non-empty list of Model IDs");
+    }
+    if (value.costSource !== "publicPrice") {
+      throw new Error("Harness Usage 'unpricedModels' must be provided with a 'publicPrice' cost");
+    }
+    return { ...value, unpricedModels: [...models] } as HostUsage;
   }
   return { ...value } as HostUsage;
 }

@@ -52,13 +52,32 @@ describe("UsageMeter cost", () => {
 
   it.each([
     ["missing model", request("x", { model: undefined })],
-    ["unknown model", request("x", { model: "auto" })],
     ["unknown cache", request("x", { cachedInputTokens: undefined })],
-    ["missing cache price", request("x", { model: "gpt-mini", cacheWriteInputTokens: 10 })],
   ])("omits the whole cost for %s", (_label, value) => {
     const usage = completeMeter(request("a"), value).derive({ outputTokens: 1 }, prices);
     expect(usage?.totalCostUsd).toBeUndefined();
     expect(usage?.costSource).toBeUndefined();
+  });
+
+  it("leaves unpriced Models out of a lower-bound cost and names them", () => {
+    const usage = completeMeter(
+      request("a"),
+      request("x", { model: "auto" }),
+      request("y", { model: "gpt-mini", cacheWriteInputTokens: 10 }),
+      request("z", { model: "auto" }),
+    ).derive({ outputTokens: 1 }, prices);
+    expect(usage?.totalCostUsd).toBeCloseTo(4.5, 10);
+    expect(usage?.costSource).toBe("publicPrice");
+    expect(usage?.unpricedModels).toEqual(["auto", "gpt-mini"]);
+  });
+
+  it("publishes no cost when no request has a price", () => {
+    const usage = completeMeter(request("x", { model: "auto" })).derive(
+      { outputTokens: 1 },
+      prices,
+    );
+    expect(usage?.totalCostUsd).toBeUndefined();
+    expect(usage?.unpricedModels).toBeUndefined();
   });
 
   it("recomputes cost against the current price table", () => {

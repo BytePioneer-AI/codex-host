@@ -122,5 +122,19 @@ describe("Thread Usage contracts", () => {
     };
     expect(threadUsageSnapshotSchema.parse(usage)).toEqual(usage);
     expect(threadUsageSnapshotSchema.safeParse({ costSource: "native" }).success).toBe(false);
+    expect(
+      threadUsageSnapshotSchema.safeParse({
+        totalCostUsd: 1,
+        costSource: "publicPrice",
+        unpricedModels: ["auto"],
+      }).success,
+    ).toBe(true);
+    expect(
+      threadUsageSnapshotSchema.safeParse({
+        totalCostUsd: 1,
+        costSource: "native",
+        unpricedModels: ["auto"],
+      }).success,
+    ).toBe(false);
   });
 });

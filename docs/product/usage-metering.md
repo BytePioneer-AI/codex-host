@@ -26,9 +26,11 @@ Pi、OMP、OpenCode v2。其余 Harness 继续显示原生费用，后续分批�
 
 宁可不显示，也不显示错的数字。以下任一情况会省略整个会话的费用：
 
-- 某次请求的模型在价格表中查不到（如 `auto`），或缺少需要的缓存单价；
-- 某次请求的缓存数据未知；
-- 原生历史读取失败或不完整，或运行中某次请求的用量缺失。
+- 某次请求的模型或缓存数据未知；
+- 原生历史读取失败或不完整，或运行中某次请求的用量缺失；
+- 会话中没有任何一次请求能计价。
+
+某些请求的模型在价格表中查不到（如 `auto`、`gpt-5.3-codex-spark`），或缺少需要的缓存单价时，这些请求不计入，费用显示为下限，例如 `≥$12.23`，浮窗中注明“未计价：模型 ID”。在 `pricing.json` 中补上价格后即恢复完整费用。
 
 缓存数据未知或历史不完整时，平均缓存命中也不显示。首 token 与输出速度只依赖本次观测，不受影响。
 
@@ -43,7 +45,7 @@ Pi、OMP、OpenCode v2。其余 Harness 继续显示原生费用，后续分批�
 
 - 默认价格来自 [models.dev](https://models.dev)（MIT），随版本打包快照。
 - Host 启动时若本地价格表超过 7 天，会在后台请求 `https://models.dev/api.json` 并缓存到 `<数据目录>/pricing/models-dev.json`；失败时静默沿用现有价格。
-- 查找只做精确匹配：先按“服务商/模型”，再按模型 ID；同一模型 ID 被多个服务商列出时，取它们共同指向的官方条目（`canonical_model_id`），无法确定则视为未匹配。
+- 查找不做模糊匹配：先按“服务商/模型”，再按模型 ID。同一模型 ID 被多个服务商列出时，沿 `canonical_model_id` 链确定官方厂商；厂商自己列出该 ID 时用厂商价格，无法确定则视为未匹配。仅大小写不同的 ID（如 `Deepseek-v4-flash`）也能匹配，前提是各写法的价格一致。
 - 更新打包快照：`npm run build:typescript && node packages/host-runtime/scripts/update-model-prices.mjs`。
 
 数据目录默认是 `~/.codexhost`，可用 `CODEXHOST_DATA_DIR` 修改。

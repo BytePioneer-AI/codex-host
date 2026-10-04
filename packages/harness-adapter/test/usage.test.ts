@@ -98,6 +98,15 @@ describe("Harness Usage", () => {
     expect(parseHostUsage(usage)).toEqual(usage);
     expect(() => parseHostUsage({ costSource: "native" })).toThrow();
     expect(() => parseHostUsage({ totalCostUsd: 1, costSource: "guess" })).toThrow();
+    expect(
+      parseHostUsage({ totalCostUsd: 1, costSource: "publicPrice", unpricedModels: ["auto"] }),
+    ).toMatchObject({ unpricedModels: ["auto"] });
+    expect(() =>
+      parseHostUsage({ totalCostUsd: 1, costSource: "native", unpricedModels: ["auto"] }),
+    ).toThrow();
+    expect(() =>
+      parseHostUsage({ totalCostUsd: 1, costSource: "publicPrice", unpricedModels: [] }),
+    ).toThrow();
     expect(() => parseHostUsage({ sessionCacheHitRatePercent: 101 })).toThrow();
     expect(() => parseHostUsage({ timeToFirstOutputMs: 1.5 })).toThrow();
   });

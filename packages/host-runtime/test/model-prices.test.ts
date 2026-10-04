@@ -23,6 +23,15 @@ const table: ModelPriceTableData = {
     beta: { shared: [2, 2] },
     deepseek: { "deepseek-flash": [0.15, 0.6, 0.003, null, "deepseek/deepseek-v4.1-flash"] },
     "302ai": { "deepseek-flash": [0.15, 0.6, 0.003, null, "deepseek/deepseek-v4.1-flash"] },
+    vendor: {
+      "v-flash": [0.15, 0.6, 0.003, null, "vendor/v-next"],
+      "v-old": [1, 2, null, null, "vendor/v-flash"],
+    },
+    resellerA: {
+      "v-flash": [0.1, 0.2, null, null, "vendor/v-flash"],
+      "v-old": [1.1, 2.2, null, null, "vendor/v-old"],
+    },
+    resellerB: { "v-flash": [0.12, 0.3, null, null, "vendor/v-flash-0731"] },
     reseller2: { "orphan-alias": [9, 9, null, null, "nowhere/orphan"] },
     reseller3: { "orphan-alias": [8, 8, null, null, "nowhere/orphan"] },
   },
@@ -69,11 +78,25 @@ describe("ModelPriceLookup", () => {
     expect(lookup.find("orphan-alias")).toBeNull();
   });
 
+  it("prefers the vendor's own listing when resellers disagree on its version", () => {
+    expect(lookup.find("v-flash")).toEqual({ input: 0.15, output: 0.6, cacheRead: 0.003 });
+  });
+
+  it("follows canonical links to the final official listing", () => {
+    // v-old's resellers name vendor/v-old and vendor/v-flash; both are the vendor's.
+    expect(lookup.find("v-old")).toEqual({ input: 1, output: 2 });
+  });
+
+  it("matches a differently cased ID only when its priced spellings agree", () => {
+    expect(lookup.find("Claude-Sonnet-4-5")).toEqual(lookup.find("claude-sonnet-4-5"));
+    expect(lookup.find("V-Flash")).toEqual(lookup.find("v-flash"));
+  });
+
   it("uses a single listing and refuses to guess between unrelated listings", () => {
     expect(lookup.find("lonely-model")).toEqual({ input: 1, output: 2 });
     expect(lookup.find("shared")).toBeNull();
     expect(lookup.find("auto")).toBeNull();
-    expect(lookup.find("Claude-Sonnet-4-5")).toBeNull();
+    expect(lookup.find("Shared")).toBeNull();
   });
 
   it("prefers user overrides by provider/model, then model", () => {

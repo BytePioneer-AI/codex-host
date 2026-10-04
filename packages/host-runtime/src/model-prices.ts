@@ -149,11 +149,21 @@ function entryPrice(entry: ModelPriceEntry): ModelPrice {
   };
 }
 
+function samePrice(left: ModelPrice, right: ModelPrice): boolean {
+  return (
+    left.input === right.input &&
+    left.output === right.output &&
+    left.cacheRead === right.cacheRead &&
+    left.cacheWrite === right.cacheWrite
+  );
+}
+
 /** Exact-match lookup; never guesses between differently priced listings. */
 export class ModelPriceLookup {
   readonly #providers: ModelPriceTableData["providers"];
   readonly #overrides: ReadonlyMap<string, ModelPrice>;
   readonly #listings = new Map<string, Array<{ provider: string; entry: ModelPriceEntry }>>();
+  readonly #foldedIds = new Map<string, Set<string>>();
 
   constructor(table: ModelPriceTableData, overrides: ReadonlyMap<string, ModelPrice> = new Map()) {
     this.#providers = table.providers;
@@ -166,11 +176,34 @@ export class ModelPriceLookup {
           this.#listings.set(model, listings);
         }
         listings.push({ provider, entry });
+        const folded = model.toLowerCase();
+        let ids = this.#foldedIds.get(folded);
+        if (!ids) {
+          ids = new Set();
+          this.#foldedIds.set(folded, ids);
+        }
+        ids.add(model);
       }
     }
   }
 
   find(model: string, provider?: string): ModelPrice | null {
+    const exact = this.#find(model, provider);
+    if (exact) return exact;
+    // A configured ID may differ from the catalog only in case, such as `Deepseek-v4-flash`;
+    // use it only when every catalog spelling that has a price agrees on it.
+    let found: ModelPrice | null = null;
+    for (const catalogId of this.#foldedIds.get(model.toLowerCase()) ?? []) {
+      if (catalogId === model) continue;
+      const candidate = this.#find(catalogId, provider);
+      if (!candidate) continue;
+      if (found && !samePrice(found, candidate)) return null;
+      found = candidate;
+    }
+    return found;
+  }
+
+  #find(model: string, provider?: string): ModelPrice | null {
     const override =
       (provider ? this.#overrides.get(`${provider}/${model}`) : undefined) ??
       this.#overrides.get(model);
@@ -180,23 +213,56 @@ export class ModelPriceLookup {
     const listings = this.#listings.get(model) ?? [];
     const [only] = listings;
     if (only && listings.length === 1) return entryPrice(only.entry);
-    // Several providers list this ID: use it only when they all name one official listing.
-    const officials = new Set<string>();
+    // Several providers list this ID: use it only when they all lead to one official listing.
+    const officials = new Map<string, ModelPriceEntry | undefined>();
     for (const { provider: listedBy, entry } of listings) {
       const canonical = entry[4];
-      if (canonical === true) officials.add(`${listedBy}/${model}`);
-      else if (typeof canonical === "string") officials.add(canonical);
+      if (canonical === true) officials.set(`${listedBy}/${model}`, entry);
+      else if (typeof canonical === "string") {
+        const official = this.#resolveCanonical(canonical);
+        officials.set(official.id, official.entry);
+      }
     }
-    const [official] = officials;
-    if (official === undefined || officials.size !== 1) return null;
-    const separator = official.indexOf("/");
-    const officialProvider = official.slice(0, separator);
-    // An alias such as `deepseek-flash` may name a canonical model the catalog does not list;
-    // the official provider's own listing of this ID is then the official price.
-    const officialEntry =
-      this.#providers[officialProvider]?.[official.slice(separator + 1)] ??
+    // When every official ID belongs to one vendor that lists this exact ID itself, the vendor's
+    // own price wins, even if resellers disagree on which of its versions the ID names.
+    const vendors = new Set([...officials.keys()].map((id) => id.slice(0, id.indexOf("/"))));
+    const [vendor] = vendors;
+    const vendorListing =
+      vendor !== undefined && vendors.size === 1
+        ? listings.find(({ provider: listedBy }) => listedBy === vendor)
+        : undefined;
+    if (vendorListing) return entryPrice(vendorListing.entry);
+    const [resolved] = officials;
+    if (resolved === undefined || officials.size !== 1) return null;
+    const [official, officialEntry] = resolved;
+    // The official ID may be absent from the catalog, as for an alias of a newer model; the
+    // official provider's own listing of this ID is then the official price.
+    const officialProvider = official.slice(0, official.indexOf("/"));
+    const entry =
+      officialEntry ??
       listings.find(({ provider: listedBy }) => listedBy === officialProvider)?.entry;
-    return officialEntry ? entryPrice(officialEntry) : null;
+    return entry ? entryPrice(entry) : null;
+  }
+
+  /**
+   * Follows `canonical_model_id` links to the final official ID, since an official listing may
+   * itself point to a newer model. Returns the last listed entry on the way, if any.
+   */
+  #resolveCanonical(start: string): { id: string; entry: ModelPriceEntry | undefined } {
+    let id = start;
+    let entry: ModelPriceEntry | undefined;
+    const seen = new Set<string>();
+    while (!seen.has(id)) {
+      seen.add(id);
+      const separator = id.indexOf("/");
+      const listed = this.#providers[id.slice(0, separator)]?.[id.slice(separator + 1)];
+      if (!listed) break;
+      entry = listed;
+      const next = listed[4];
+      if (typeof next !== "string" || next === id) break;
+      id = next;
+    }
+    return { id, entry };
   }
 }
 

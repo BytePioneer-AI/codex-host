@@ -18,7 +18,8 @@ export function v2UsageRequest(
     requestId: message.id,
     ...(historical ? { historical: true } : {}),
     model: message.model.id,
-    // OpenCode provider IDs are models.dev provider IDs.
+    // Built-in OpenCode providers use models.dev IDs. A custom provider ID matches no price
+    // entry, so Host falls back to the exact model ID.
     provider: message.model.providerID,
     inputTokens: input + cache.read + cache.write,
     cachedInputTokens: cache.read,

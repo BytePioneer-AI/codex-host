@@ -2670,6 +2670,7 @@ export function installRendererBindingProbe(
     refreshTargetsOnNextScan = false;
     if (disposed) return;
     settingsLifecycle.refresh();
+    const transferredComposers = new Set<Element>();
     for (const [target, replacement] of pendingReplacements) {
       const sourceState = controller.get(replacement.source.composer);
       const replacementTarget = findComposerModelTarget(target);
@@ -2689,6 +2690,8 @@ export function installRendererBindingProbe(
         )
       ) {
         pendingReplacements.delete(target);
+      } else {
+        transferredComposers.add(replacement.source.composer);
       }
     }
     for (const [composer, mounted] of mountedByComposer) {
@@ -2708,7 +2711,7 @@ export function installRendererBindingProbe(
         mounted.codexUsageGate.dispose();
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
-        controller.detach(composer);
+        controller.detach(composer, transferredComposers.has(composer));
         continue;
       }
       const state = controller.get(composer);

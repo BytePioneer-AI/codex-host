@@ -127,6 +127,8 @@ export interface RendererSettingsMessages {
   readonly accountCreditsFailed: string;
   readonly accountCreditsRetry: string;
   readonly accountCreditsRefresh: string;
+  readonly accountEmailsHide: string;
+  readonly accountEmailsShow: string;
   readonly accountLoadFailed: string;
   readonly accountCreditsUsed: string;
   readonly accountCreditsResetAt: string;
@@ -397,6 +399,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "Could not load limits",
   accountCreditsRetry: "Retry",
   accountCreditsRefresh: "Refresh limits",
+  accountEmailsHide: "Hide emails",
+  accountEmailsShow: "Show emails",
   accountLoadFailed: "Could not load Codex Accounts.",
   accountCreditsUsed: "Used",
   accountCreditsResetAt: "Quota resets: {time}",
@@ -695,6 +699,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "额度读取失败",
   accountCreditsRetry: "重试",
   accountCreditsRefresh: "刷新额度",
+  accountEmailsHide: "隐藏邮箱",
+  accountEmailsShow: "显示邮箱",
   accountLoadFailed: "无法加载 Codex 账号。",
   accountCreditsUsed: "已用",
   accountCreditsResetAt: "额度重置时间：{time}",

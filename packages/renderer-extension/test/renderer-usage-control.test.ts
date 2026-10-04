@@ -27,7 +27,7 @@ describe("Renderer Usage localization", () => {
       context: "上下文",
       latestCacheHit: "最近缓存命中率",
       inputOutput: "输入 / 输出",
-      sessionCostEstimate: "会话费用估算",
+      sessionCostEstimate: "费用估算",
     });
     expect(formatRendererTokenRate(42.5, "zh-CN")).toBe("42.5 Token/秒");
     expect(rendererUsageMessages("en")).toMatchObject({
@@ -35,7 +35,7 @@ describe("Renderer Usage localization", () => {
       context: "Context",
       latestCacheHit: "Latest cache hit",
       inputOutput: "Input / output",
-      sessionCostEstimate: "Session cost estimate",
+      sessionCostEstimate: "Cost estimate",
     });
     expect(formatRendererTokenRate(42.5, "en")).toBe("42.5 tok/s");
   });
@@ -108,7 +108,7 @@ describe("Renderer Usage Host metering", () => {
   });
   it("labels the cost source in both locales", () => {
     expect(rendererUsageMessages("zh-CN")).toMatchObject({
-      sessionCacheHit: "会话平均缓存命中率",
+      sessionCacheHit: "平均缓存命中率",
       timeToFirstOutput: "首字延迟",
       costAtPublicPrices: "按公开 API 价格计算，不含子代理",
       costReportedByHarness: "Harness 上报",

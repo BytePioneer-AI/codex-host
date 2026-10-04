@@ -102,10 +102,9 @@ jobs:
       # Keep packaging evidence even when an unrelated check fails; reuse this runner.
       - name: Smoke-test Linux npm package
         if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
-        run: >
-          node scripts/release/smoke-npm-package.mjs
-          --target linux-x64
-          --version 0.1.6-ci.0
+        run: |
+          npm run build:typescript
+          node scripts/release/smoke-npm-package.mjs --target linux-x64 --version 0.1.6-ci.0
 
   check-linux-arm64:
     name: Check Linux ARM64
@@ -148,7 +147,6 @@ jobs:
 
       - name: Smoke-test Linux ARM64 npm package
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: >
-          node scripts/release/smoke-npm-package.mjs
-          --target linux-arm64
-          --version 0.1.6-ci.0
+        run: |
+          npm run build:typescript
+          node scripts/release/smoke-npm-package.mjs --target linux-arm64 --version 0.1.6-ci.0

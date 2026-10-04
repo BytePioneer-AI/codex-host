@@ -95,7 +95,7 @@ CODEXHOST_TEST_SCOPE=platform npm run test:typescript -- \
   --exclude 'tools/gate-claude-code/run.test.mjs'
 ```
 
-工作流将格式、Lint、类型检查、TypeScript 和 Rust 分为独立 step，便于观察瓶颈。Linux 两个平台的安装包 smoke 在依赖安装成功且任务未取消时，即使前面的检查失败仍会执行；复用当前 runner，不新增重复安装和构建的 job，也不掩盖前面的失败。修改执行范围后的实际耗时以 Actions 运行结果为准。
+工作流将格式、Lint、类型检查、TypeScript 和 Rust 分为独立 step，便于观察瓶颈。Linux 两个平台的安装包 smoke 在依赖安装成功且任务未取消时，即使前面的检查失败仍会执行；冒烟步骤先显式执行 `npm run build:typescript`，确保打包脚本导入的 Workspace 构建产物存在，不依赖测试命令的构建副作用；复用当前 runner，不新增重复安装和构建的 job，也不掩盖前面的失败。修改执行范围后的实际耗时以 Actions 运行结果为准。
 
 `release-packages.yml` 的发布校验继续保留，不属于 PR 评论功能：
 

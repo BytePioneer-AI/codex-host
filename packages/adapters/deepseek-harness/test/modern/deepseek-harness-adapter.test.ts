@@ -1,3 +1,4 @@
+import type { HarnessOutput } from "@codexhost/harness-adapter";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -10,6 +11,28 @@ import {
 } from "../../src/modern/deepseek-harness-adapter.js";
 import { ModernRemoteConnectionError } from "../../src/modern/remote-connection.js";
 import type { ModernRemoteFailure, ModernRemoteResult } from "../../src/modern/wire.js";
+
+/** Lifecycle assertions skip Host usage metering events, which have their own tests. */
+function lifecycleOutputs(session: {
+  outputs: AsyncIterable<HarnessOutput>;
+}): AsyncIterator<HarnessOutput> {
+  const iterator = session.outputs[Symbol.asyncIterator]();
+  return {
+    async next() {
+      for (;;) {
+        const next = await iterator.next();
+        if (
+          next.done ||
+          next.value.kind !== "event" ||
+          (next.value.event.type !== "usage.request" && next.value.event.type !== "usage.history")
+        )
+          return next;
+      }
+    },
+    return: async (value?: unknown) =>
+      (await iterator.return?.(value)) ?? { done: true, value: undefined },
+  };
+}
 
 /** The CLI release the install guide pins; every profile binds its probed version. */
 const DSH_VERSION = "0.2.0-rc.2";
@@ -1156,7 +1179,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       const opened = await adapter.open({ kind: "create", cwd });
       expect(opened.ok).toBe(true);
       if (!opened.ok) return;
-      const outputs = opened.value.outputs[Symbol.asyncIterator]();
+      const outputs = lifecycleOutputs(opened.value);
 
       await expect(
         opened.value.execute({
@@ -1201,7 +1224,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const opened = await adapter.open({ kind: "create", cwd });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const outputs = opened.value.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(opened.value);
 
     await expect(
       opened.value.execute({
@@ -1280,7 +1303,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const opened = await adapter.open({ kind: "create", cwd });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const outputs = opened.value.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(opened.value);
     await opened.value.execute({
       type: "turn.start",
       turnId: "host-turn-close" as never,
@@ -1353,7 +1376,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const opened = await adapter.open({ kind: "create", cwd });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const outputs = opened.value.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(opened.value);
     await opened.value.execute({
       type: "turn.start",
       turnId: "host-turn-replace" as never,
@@ -1527,7 +1550,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const opened = await adapter.open({ kind: "create", cwd });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const outputs = opened.value.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(opened.value);
     await expect(
       opened.value.execute({
         type: "turn.start",
@@ -1643,7 +1666,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       const opened = await adapter.open({ kind: "create", cwd });
       expect(opened.ok).toBe(true);
       if (!opened.ok) return;
-      const outputs = opened.value.outputs[Symbol.asyncIterator]();
+      const outputs = lifecycleOutputs(opened.value);
       const first = connection.follows.get(sessionId);
       if (!first) throw new Error("missing initial follow");
       first.finish();
@@ -1671,7 +1694,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const opened = await adapter.open({ kind: "create", cwd });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const outputs = opened.value.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(opened.value);
     const first = connection.follows.get(sessionId);
     if (!first) throw new Error("missing initial follow");
     first.finish();
@@ -1704,7 +1727,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const opened = await adapter.open({ kind: "create", cwd });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const outputs = opened.value.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(opened.value);
     const first = connection.follows.get(sessionId);
     if (!first) throw new Error("missing initial follow");
     connection.autoOpenJournal = false;
@@ -1731,7 +1754,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const opened = await adapter.open({ kind: "create", cwd });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const outputs = opened.value.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(opened.value);
     const first = connection.follows.get(sessionId);
     if (!first) throw new Error("missing initial follow");
     connection.autoOpenJournal = false;
@@ -2908,7 +2931,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     const opened = await adapter.open({ kind: "create", cwd });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const outputs = opened.value.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(opened.value);
 
     connection.events.push({ invalid: true });
     await expect(outputs.next()).resolves.toMatchObject({
@@ -2975,7 +2998,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     expect(broken.ok).toBe(true);
     expect(healthy.ok).toBe(true);
     if (!broken.ok || !healthy.ok) return;
-    const brokenOutputs = broken.value.outputs[Symbol.asyncIterator]();
+    const brokenOutputs = lifecycleOutputs(broken.value);
 
     connection.events.push({
       type: "waterfall",

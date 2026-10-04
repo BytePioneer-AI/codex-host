@@ -18,7 +18,7 @@ Token 累计、上下文、套餐等字段仍由 Adapter 原生上报，Host 不
 
 ## 已接入的 Harness
 
-Pi、OMP、OpenCode v2、Claude Code。其余 Harness 继续显示原生费用，后续分批接入；OpenCode v1 不接入。
+Pi、OMP、OpenCode v2、Claude Code、DeepSeek Harness（dsh）。其余 Harness 继续显示原生费用，后续分批接入；OpenCode v1 不接入。
 
 接入的 Adapter 在每次打开会话时回放原生历史中的全部请求，再声明历史是否完整；运行中每完成一次模型请求发布一条请求记录。Host 只在内存中计量，不持久化，重启后重新回放即可得到相同结果。
 

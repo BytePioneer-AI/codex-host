@@ -726,6 +726,33 @@ export function createConnectionsSettingsPage(
       const hostNames = new Map<string, string>();
       let latestSnapshot: RendererConnectionSnapshot | null = null;
       let disposeHostScroller = (): void => undefined;
+      let disposed = false;
+      let renderQueued = false;
+      let renderFrame: number | null = null;
+
+      // Inspections arrive per Harness. Render their latest state once per
+      // frame rather than rebuilding every row for each notification.
+      const scheduleRender = (): void => {
+        if (disposed || context.signal.aborted || renderQueued) return;
+        renderQueued = true;
+        const flush = (): void => {
+          renderFrame = null;
+          renderQueued = false;
+          if (!disposed && !context.signal.aborted) {
+            render(diagnostics?.snapshot() ?? latestSnapshot);
+          }
+        };
+        if (document.defaultView?.requestAnimationFrame) {
+          renderFrame = document.defaultView.requestAnimationFrame(flush);
+        } else {
+          queueMicrotask(flush);
+        }
+      };
+      const cancelRender = (): void => {
+        disposed = true;
+        if (renderFrame !== null) document.defaultView?.cancelAnimationFrame(renderFrame);
+        renderFrame = null;
+      };
 
       const diagnostics = getDiagnostics();
       const installs = diagnostics ? harnessInstallStore(diagnostics) : null;
@@ -1198,20 +1225,20 @@ export function createConnectionsSettingsPage(
         );
       // Keep the Main / More grouping in sync with any other open picker or
       // settings instance (e.g. the Agent picker's "Manage" shortcut).
-      const unsubscribeGroup = groupPreference.subscribe(() =>
-        render(diagnostics?.snapshot() ?? latestSnapshot),
-      );
+      const unsubscribeGroup = groupPreference.subscribe(scheduleRender);
       if (!diagnostics) {
         refresh.disabled = true;
         return () => {
+          cancelRender();
           disposeHostScroller();
           unsubscribeGroup();
         };
       }
       refresh.addEventListener("click", runRefresh);
-      const unsubscribe = diagnostics.subscribe(() => render(diagnostics.snapshot()));
-      const unsubscribeInstalls = installs?.subscribe(() => render(diagnostics.snapshot()));
+      const unsubscribe = diagnostics.subscribe(scheduleRender);
+      const unsubscribeInstalls = installs?.subscribe(scheduleRender);
       return () => {
+        cancelRender();
         disposeHostScroller();
         unsubscribeInstalls?.();
         unsubscribe();

@@ -86,8 +86,34 @@ export function createHarnessVersionPanel(
     }
   };
   update.addEventListener("click", () => void run("update"));
-  signal.addEventListener("abort", render, { once: true });
+  const owner = document.defaultView;
+  let checkFrame: number | null = null;
+  let checkTimer: number | null = null;
+  signal.addEventListener(
+    "abort",
+    () => {
+      if (checkFrame !== null) owner?.cancelAnimationFrame(checkFrame);
+      if (checkTimer !== null) owner?.clearTimeout(checkTimer);
+      render();
+    },
+    { once: true },
+  );
+  status.textContent = messages.harnessVersionChecking;
   render();
-  void run("check");
+  // Resolving a native Host can synchronously walk React fibers. Let the
+  // selected inspector paint before doing that work, even when the RPC itself
+  // is async. A microtask or work inside the first frame would still block it.
+  if (!signal.aborted && owner?.requestAnimationFrame) {
+    checkFrame = owner.requestAnimationFrame(() => {
+      checkFrame = null;
+      if (signal.aborted) return;
+      checkTimer = owner.setTimeout(() => {
+        checkTimer = null;
+        void run("check");
+      }, 0);
+    });
+  } else {
+    void run("check");
+  }
   return panel;
 }

@@ -10,10 +10,11 @@ import type { SessionMessageInfo } from "@opencode/client";
 export function v2UsageRequest(
   message: SessionMessageInfo,
   historical: boolean,
+  firstOutputAtMs?: number,
 ): HostUsageRequest | null {
   if (message.type !== "assistant" || !message.tokens) return null;
   const { input, output, reasoning, cache } = message.tokens;
-  const { streamed, completed } = message.time;
+  const { completed } = message.time;
   return parseHostUsageRequest({
     requestId: message.id,
     ...(historical ? { historical: true } : {}),
@@ -26,9 +27,14 @@ export function v2UsageRequest(
     cacheWriteInputTokens: cache.write,
     outputTokens: output + reasoning,
     reasoningOutputTokens: reasoning,
-    // From the first streamed output to completion, excluding prefill.
-    ...(!historical && streamed !== undefined && completed !== undefined && completed >= streamed
-      ? { startedAtMs: streamed, completedAtMs: completed }
+    // From the Adapter-observed first output event to native completion, excluding prefill.
+    // OpenCode's own `time.streamed` marks the end of streaming, not its start. The local
+    // OpenCode server shares this machine's clock.
+    ...(!historical &&
+    firstOutputAtMs !== undefined &&
+    completed !== undefined &&
+    completed >= firstOutputAtMs
+      ? { startedAtMs: firstOutputAtMs, completedAtMs: completed }
       : {}),
   });
 }

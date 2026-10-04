@@ -47,7 +47,7 @@ External Harness 的用量当前由各 Adapter 在 `HostUsage` 快照中自行�
 - `model` 为原生实际模型 ID（非 UI 别名、非 `HarnessModelRef` 编码）。`provider` 仅当 Adapter 能给出标准服务商标识时填写；用户自定义的服务商别名（如 Pi 的 `codex-pi`）不填。
 - 合计型 Harness 可发布合计增量；只有当 Adapter 能证明增量全部属于同一模型（例如原生按模型分别给出合计）时才带 `model`，否则省略 `model`，该记录只计 Token、使整个会话费用不可计算。
 - 缓存字段：已知为零 MUST 填 `0`；缺失表示未知。未知时依赖缓存的费用与平均缓存命中率不显示，不按零处理。
-- 计时：Adapter 把同一原生请求的首个输出 Token 与完成事件关联，给出 `startedAtMs`、`completedAtMs`；无法可靠关联时省略。首个输出 Token 是最早的思考、正文或工具调用块的开始或增量（Pi/OMP 的 `thinking_start`、`text_start`、`toolcall_start` 及对应 delta；OpenCode v2 的 `time.streamed`）。口径与 DeepSeek dsh 的 decode 时间一致（首个 token → 消息完成，含工具调用块），不含预填充；从请求开始计时会把预填充算入，使智能体场景下的短输出请求显著偏低。实测（Pi，2026-10-04）：GPT（`codex-pi/gpt-6-sol`）的 `thinking_start` 在后台思考开始时到达（`message_start` 后约 5 秒预填充，再约 3 秒才出现首个可见内容），因此不流式输出思考的模型也计入了思考时间；DeepSeek flash 按此口径为 219 tok/s，与 dsh 一致。
+- 计时：Adapter 把同一原生请求的首个输出 Token 与完成事件关联，给出 `startedAtMs`、`completedAtMs`；无法可靠关联时省略。首个输出 Token 是最早的思考、正文或工具调用块的开始或增量（Pi/OMP 的 `thinking_start`、`text_start`、`toolcall_start` 及对应 delta；OpenCode v2 由 Adapter 观测每条 assistant 消息首个 `session.reasoning/text/tool.input` 的 `started` 或 `delta` 事件，完成时间取原生 `time.completed`；原生 `time.streamed` 是流式结束时间，不能作为起点）。口径与 DeepSeek dsh 的 decode 时间一致（首个 token → 消息完成，含工具调用块），不含预填充；从请求开始计时会把预填充算入，使智能体场景下的短输出请求显著偏低。实测（Pi，2026-10-04）：GPT（`codex-pi/gpt-6-sol`）的 `thinking_start` 在后台思考开始时到达（`message_start` 后约 5 秒预填充，再约 3 秒才出现首个可见内容），因此不流式输出思考的模型也计入了思考时间；DeepSeek flash 按此口径为 219 tok/s，与 dsh 一致。
 - 子代理的原生请求不作为父会话记录发布，父会话费用不包含子代理。
 - 不属于对话消息、且原生不给出模型的后台请求（如 OpenCode v2 `session.usage.recorded` 的标题生成与压缩）不发布记录，不视为缺口；会话费用因此不含这部分。
 - 原生失败请求：带 Token 时照常发布；原生未给出 Token 时视为没有用量，不视为缺口。

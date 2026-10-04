@@ -429,10 +429,20 @@ describe("OpenCode v2 Session lifecycle", () => {
     ]);
 
     await f.turn();
+    const beforeOutput = Date.now();
+    f.emit("session.step.started", { assistantMessageID: "assistant-live" });
+    f.emit("session.reasoning.delta", {
+      assistantMessageID: "assistant-live",
+      ordinal: 0,
+      delta: "thinking",
+    });
+    const afterOutput = Date.now();
+    const completed = afterOutput + 2_000;
     f.messages.push({
       ...assistant("live answer"),
       id: "assistant-live",
-      time: { created: 10, streamed: 1_000, completed: 3_000 },
+      // OpenCode's `streamed` marks the end of streaming, just before completion.
+      time: { created: beforeOutput - 5_000, streamed: completed - 40, completed },
       tokens: { input: 1, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
     });
     f.emit("session.step.ended", { assistantMessageID: "assistant-live" });
@@ -445,14 +455,14 @@ describe("OpenCode v2 Session lifecycle", () => {
     expect(live).toEqual([
       {
         type: "usage.request",
-        request: expect.objectContaining({
-          outputTokens: 8,
-          startedAtMs: 1_000,
-          completedAtMs: 3_000,
-        }),
+        request: expect.objectContaining({ outputTokens: 8, completedAtMs: completed }),
       },
     ]);
     expect(live[0]).not.toHaveProperty("request.historical");
+    const started = live[0]?.type === "usage.request" ? live[0].request.startedAtMs : undefined;
+    // Timed from the observed first output, not from creation or OpenCode's `streamed`.
+    expect(started).toBeGreaterThanOrEqual(beforeOutput);
+    expect(started).toBeLessThanOrEqual(afterOutput);
   });
   it("rejects concurrent starts and emits no lifecycle for rejected admission", async () => {
     const f = fixture();

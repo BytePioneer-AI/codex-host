@@ -72,6 +72,16 @@ export function v2Capabilities(catalog: HarnessModelCatalog): HarnessSessionCapa
   };
 }
 
+/** Stream events that carry a step's first output token, matching Pi's first-block timing. */
+const FIRST_OUTPUT_EVENTS = new Set<string>([
+  "session.reasoning.started",
+  "session.reasoning.delta",
+  "session.text.started",
+  "session.text.delta",
+  "session.tool.input.started",
+  "session.tool.input.delta",
+]);
+
 export class V2Session implements HarnessSession {
   readonly harnessId = harnessId;
   readonly capabilities;
@@ -90,6 +100,8 @@ export class V2Session implements HarnessSession {
   #configuring = false;
   /** Assistant messages already published as usage requests. */
   readonly #meteredMessages = new Set<string>();
+  /** Adapter receive time of each assistant message's first reasoning, text or tool input. */
+  readonly #firstOutputAt = new Map<string, number>();
 
   constructor(
     readonly client: OpenCodeClient,
@@ -342,6 +354,13 @@ export class V2Session implements HarnessSession {
       event.data.sessionID !== this.info.id
     )
       return;
+    if (
+      FIRST_OUTPUT_EVENTS.has(event.type) &&
+      "assistantMessageID" in event.data &&
+      typeof event.data.assistantMessageID === "string" &&
+      !this.#firstOutputAt.has(event.data.assistantMessageID)
+    )
+      this.#firstOutputAt.set(event.data.assistantMessageID, Date.now());
     if (event.type === "session.step.started") active.assistants.add(event.data.assistantMessageID);
     if (
       (event.type === "session.text.delta" || event.type === "session.reasoning.delta") &&
@@ -371,7 +390,7 @@ export class V2Session implements HarnessSession {
       if (this.#meteredMessages.has(message.id)) continue;
       let request;
       try {
-        request = v2UsageRequest(message, historical);
+        request = v2UsageRequest(message, historical, this.#firstOutputAt.get(message.id));
       } catch {
         this.#meteredMessages.add(message.id);
         if (!historical) this.#emit({ type: "usage.history", complete: false });
@@ -380,6 +399,7 @@ export class V2Session implements HarnessSession {
       }
       if (!request) continue;
       this.#meteredMessages.add(message.id);
+      this.#firstOutputAt.delete(message.id);
       this.#emit({ type: "usage.request", request });
     }
     return usable;

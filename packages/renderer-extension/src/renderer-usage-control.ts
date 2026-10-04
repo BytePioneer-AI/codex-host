@@ -41,8 +41,6 @@ interface RendererUsageMessages {
   readonly totalTokens: string;
   readonly inputOutput: string;
   readonly sessionCostEstimate: string;
-  readonly costAtPublicPrices: string;
-  readonly costReportedByHarness: string;
   readonly threadUsage: string;
   readonly threadUsageDetails: string;
   readonly tokensSummary: string;
@@ -66,8 +64,6 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   totalTokens: "Total",
   inputOutput: "Input / output",
   sessionCostEstimate: "Cost estimate",
-  costAtPublicPrices: "Tokens at public API prices, excluding subagents",
-  costReportedByHarness: "Reported by the Harness",
   threadUsage: "Thread Usage",
   threadUsageDetails: "Thread Usage details",
   tokensSummary: "tokens",
@@ -91,8 +87,6 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   totalTokens: "总数",
   inputOutput: "输入 / 输出",
   sessionCostEstimate: "费用估算",
-  costAtPublicPrices: "按公开 API 价格计算，不含子代理",
-  costReportedByHarness: "Harness 上报",
   threadUsage: "对话用量",
   threadUsageDetails: "对话用量详情",
   tokensSummary: "Token",
@@ -306,16 +300,6 @@ function addGroupHeading(parent: HTMLElement, label: string): void {
   parent.append(heading);
 }
 
-function addNote(parent: HTMLElement, text: string): void {
-  const note = document.createElement("div");
-  note.textContent = text;
-  note.style.fontSize = "11px";
-  note.style.color = "color-mix(in srgb, currentColor 52%, transparent)";
-  note.style.textAlign = "right";
-  note.style.marginTop = "-2px";
-  parent.append(note);
-}
-
 function addContextRow(
   parent: HTMLElement,
   label: string,
@@ -343,15 +327,12 @@ function addContextRow(
   parent.append(track);
 }
 
-type DetailRow = readonly [label: string, value: string, note?: string | undefined];
+type DetailRow = readonly [label: string, value: string];
 
 function addGroup(parent: HTMLElement, label: string, rows: readonly DetailRow[]): void {
   if (rows.length === 0) return;
   addGroupHeading(parent, label);
-  for (const [rowLabel, value, note] of rows) {
-    addDetailRow(parent, rowLabel, value);
-    if (note) addNote(parent, note);
-  }
+  for (const [rowLabel, value] of rows) addDetailRow(parent, rowLabel, value);
 }
 
 function renderDetails(
@@ -394,13 +375,7 @@ function renderDetails(
 
   const session: DetailRow[] = [];
   if (usage?.totalCostUsd !== undefined) {
-    const source =
-      usage.costSource === "publicPrice"
-        ? messages.costAtPublicPrices
-        : usage.costSource === "native"
-          ? messages.costReportedByHarness
-          : undefined;
-    session.push([messages.sessionCostEstimate, formatRendererCost(usage.totalCostUsd), source]);
+    session.push([messages.sessionCostEstimate, formatRendererCost(usage.totalCostUsd)]);
   }
   if (usage?.totalCredits !== undefined) {
     session.push([messages.recordedCredits, formatRendererCredits(usage.totalCredits)]);

@@ -106,15 +106,10 @@ describe("Renderer Usage Host metering", () => {
     expect(formatRendererLatency(1_250)).toBe("1.3 s");
     expect(formatRendererLatency(2_000)).toBe("2 s");
   });
-  it("labels the cost source in both locales", () => {
+  it("labels the Host-metered rows in Chinese", () => {
     expect(rendererUsageMessages("zh-CN")).toMatchObject({
       sessionCacheHit: "平均缓存命中率",
       timeToFirstOutput: "首字延迟",
-      costAtPublicPrices: "按公开 API 价格计算，不含子代理",
-      costReportedByHarness: "Harness 上报",
     });
-    expect(rendererUsageMessages("en").costAtPublicPrices).toBe(
-      "Tokens at public API prices, excluding subagents",
-    );
   });
 });

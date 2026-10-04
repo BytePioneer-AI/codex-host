@@ -89,7 +89,7 @@ Host 在收到 `complete: true` 之前，以及处于不完整状态时，不发
 
 ### D6. 契约与界面
 
-`HostUsage` 与 `threadUsageSnapshotSchema` 新增 `sessionCacheHitRatePercent`（0–100）、`timeToFirstOutputMs`（非负安全整数）、`costSource`（`publicPrice` | `native`）。用量浮窗新增“平均缓存命中”“首字延迟”两行；费用行按 `costSource` 说明“按公开 API 价格计算”或“Harness 上报”。
+`HostUsage` 与 `threadUsageSnapshotSchema` 新增 `sessionCacheHitRatePercent`（0–100）、`timeToFirstOutputMs`（非负安全整数）、`costSource`（`publicPrice` | `native`）。用量浮窗新增“平均缓存命中”“首字延迟”两行；`costSource` 只作数据字段，界面不显示说明。
 
 ## Risks / Trade-offs
 

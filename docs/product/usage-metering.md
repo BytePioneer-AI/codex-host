@@ -14,8 +14,6 @@
 
 Token 累计、上下文、套餐等字段仍由 Adapter 原生上报，Host 不覆盖。
 
-费用下方注明来源：“按公开 API 价格计算，不含子代理”表示 Host 计算；“Harness 上报”表示尚未接入的 Harness 的原生费用。
-
 ## 已接入的 Harness
 
 Pi、OMP、OpenCode v2。其余 Harness 继续显示原生费用，后续分批接入；OpenCode v1 不接入。

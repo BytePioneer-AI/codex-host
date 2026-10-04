@@ -377,7 +377,7 @@ test("renders the Usage popover in Chinese when the settings locale is Chinese",
   await expect(popover).not.toContainText("Latest cache hit");
 });
 
-test("shows Host-metered usage rows and the cost source", async ({ page }) => {
+test("shows Host-metered usage rows", async ({ page }) => {
   await page.setContent('<!doctype html><body style="margin:0;padding-top:320px"></body>');
   await page.addScriptTag({ content: browserBundle });
   await page.evaluate(() => {
@@ -402,7 +402,7 @@ test("shows Host-metered usage rows and the cost source", async ({ page }) => {
     "Token",
   ]);
   await expect(popover).toContainText("费用估算$0.780");
-  await expect(popover).toContainText("按公开 API 价格计算，不含子代理");
+  await expect(popover).not.toContainText("按公开 API 价格计算");
 });
 
 test("omits plan limits from the Usage trigger and popover", async ({ page }) => {

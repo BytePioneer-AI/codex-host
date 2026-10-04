@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { historyUsageRequests } from "../src/history.js";
+import { historyUsage, historyUsageRequests } from "../src/history.js";
 
 // `providerData.rawUsage` captured from local CodeBuddy history (deepseek-v4.1-flash).
 const rawUsage = {
@@ -84,6 +84,14 @@ describe("CodeBuddy usage records", () => {
     expect(
       historyUsageRequests(history(row("r1", null, "reasoning", writes)), true).requests[0],
     ).toMatchObject({ inputTokens: 24966, cachedInputTokens: 0, cacheWriteInputTokens: 24963 });
+  });
+
+  it("reports the same cached input in the native session snapshot", () => {
+    expect(historyUsage(history(row("r1", null, "reasoning", provider)))).toMatchObject({
+      inputTokens: 20093,
+      cachedInputTokens: 17664,
+      cacheWriteInputTokens: 0,
+    });
   });
 
   it("skips subagent requests recorded in the parent history", () => {

@@ -768,18 +768,22 @@ export function historyUsage(contents: string): HostUsage | null {
       requests.set(text(data.messageId), usage);
   }
   if (!requests.size) return null;
+  // Cache fields as verified in `historyUsageRequests`: cached input is
+  // `prompt_tokens_details.cached_tokens` and writes are `prompt_cache_write_tokens`; the
+  // Anthropic-style `cache_read_input_tokens` stayed zero even for cached DeepSeek requests.
   const fields = {
-    inputTokens: "prompt_tokens",
-    outputTokens: "completion_tokens",
-    totalTokens: "total_tokens",
-    cachedInputTokens: "cache_read_input_tokens",
-    cacheWriteInputTokens: "cache_creation_input_tokens",
-    reasoningOutputTokens: "completion_thinking_tokens",
-    totalCredits: "credit",
+    inputTokens: (usage: Record<string, unknown>) => usage.prompt_tokens,
+    outputTokens: (usage: Record<string, unknown>) => usage.completion_tokens,
+    totalTokens: (usage: Record<string, unknown>) => usage.total_tokens,
+    cachedInputTokens: (usage: Record<string, unknown>) =>
+      record(usage.prompt_tokens_details).cached_tokens,
+    cacheWriteInputTokens: (usage: Record<string, unknown>) => usage.prompt_cache_write_tokens,
+    reasoningOutputTokens: (usage: Record<string, unknown>) => usage.completion_thinking_tokens,
+    totalCredits: (usage: Record<string, unknown>) => usage.credit,
   } as const;
   const result: HostUsage = {};
   for (const [host, native] of Object.entries(fields)) {
-    const values = [...requests.values()].map((usage) => usage[native]);
+    const values = [...requests.values()].map((usage) => native(usage));
     if (
       values.every(
         (value): value is number =>

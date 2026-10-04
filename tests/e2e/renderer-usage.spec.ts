@@ -197,10 +197,10 @@ test("renders Usage immediately to the left of the model control", async ({ page
     update();
   });
   await expect(usage).toBeVisible();
-  await expect(usage).toHaveText("Cache 99.9% · $0.822");
+  await expect(usage).toHaveText("CH 99.9% · $0.822");
   await expect(usage.locator("button")).toHaveAttribute(
     "aria-label",
-    "Thread Usage: Cache 99.9% · $0.822",
+    "Thread Usage: CH 99.9% · $0.822",
   );
   await expect(usage.locator("svg")).toHaveCount(0);
   const [usageBox, modelBox] = await Promise.all([usage.boundingBox(), model.boundingBox()]);
@@ -272,7 +272,7 @@ test("keeps Usage in place and shows credits after the leading composer control"
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
   const credits = page.locator('[data-codexhost-credits-control="usage-composer"]');
   const trigger = usage.locator("button");
-  await expect(usage).toHaveText("Cache 99.9% · $0.822");
+  await expect(usage).toHaveText("CH 99.9% · $0.822");
   await expect(credits).toBeHidden();
   await expect(trigger).toHaveCSS("max-width", "180px");
   await expect(usage.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
@@ -285,7 +285,7 @@ test("keeps Usage in place and shows credits after the leading composer control"
     if (typeof update !== "function") throw new Error("Credits usage update is unavailable");
     update();
   });
-  await expect(usage).toHaveText("Cache 99.3% · $0.822");
+  await expect(usage).toHaveText("CH 99.3% · $0.822");
   await expect(credits).toBeVisible();
   await expect(credits).toHaveText("53%");
   await expect(credits.locator("button")).toHaveAttribute("aria-label", "Weekly limit 53%");
@@ -361,7 +361,7 @@ test("renders the Usage popover in Chinese when the settings locale is Chinese",
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
   await expect(usage.locator("button")).toHaveAttribute(
     "aria-label",
-    "对话用量: 缓存命中 92.9% · $0.780",
+    "对话用量: CH 92.9% · $0.780",
   );
   await usage.hover();
   const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
@@ -393,7 +393,7 @@ test("shows Host-metered usage rows", async ({ page }) => {
   await usage.hover();
   const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
   await expect(popover).toBeVisible();
-  await expect(popover).toContainText("最近缓存命中92.9%");
+  await expect(popover).toContainText("最近缓存命中（CH）92.9%");
   await expect(popover).toContainText("平均缓存命中81.3%");
   await expect(popover).toContainText("输出速度（TPS）64.2 tok/s");
   await expect(popover).toContainText("首 token（TTFT）1.3 秒");
@@ -420,7 +420,7 @@ test("omits plan limits from the Usage trigger and popover", async ({ page }) =>
 
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
   await expect(usage).toBeVisible();
-  await expect(usage).toHaveText("Cache 99% · $1.37");
+  await expect(usage).toHaveText("CH 99% · $1.37");
   await expect(usage).not.toContainText("5-hour");
   await expect(usage).not.toContainText("45%");
 

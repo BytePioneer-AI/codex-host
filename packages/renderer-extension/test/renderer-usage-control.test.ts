@@ -27,7 +27,7 @@ describe("Renderer Usage localization", () => {
     expect(rendererUsageMessages("zh-CN")).toMatchObject({
       usage: "用量",
       context: "上下文",
-      latestCacheHit: "最近缓存命中",
+      latestCacheHit: "最近缓存命中（CH）",
       inputOutput: "输入 / 输出",
       sessionCostEstimate: "费用估算",
     });
@@ -35,7 +35,7 @@ describe("Renderer Usage localization", () => {
     expect(rendererUsageMessages("en")).toMatchObject({
       usage: "Usage",
       context: "Context",
-      latestCacheHit: "Latest cache hit",
+      latestCacheHit: "Latest cache hit (CH)",
       inputOutput: "Input / output",
       sessionCostEstimate: "Cost estimate",
     });

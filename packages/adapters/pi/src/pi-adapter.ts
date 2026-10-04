@@ -47,6 +47,7 @@ import {
   type PermissionModeSelectCompleted,
   type HostThreadSnapshot,
   type HostUsage,
+  type HostUsageRequest,
   type ThinkingSelectCommand,
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
@@ -113,6 +114,7 @@ import {
   type PiNativeModel,
   type PiNativeModelRef,
 } from "./pi-model-catalog.js";
+import { piUsageHistory, piUsageRecord, type PiUsageObservation } from "./pi-usage.js";
 import {
   piDynamicCommandPrompt,
   piLiveCommandCatalog,
@@ -134,6 +136,8 @@ export interface PiTurnTransport {
   setSubagentStatusHandler?(handler: (runs: PiSubagentNode[]) => void): void;
   inspectSubagent?(id: string): Promise<PiSubagentInspection>;
   setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void;
+  /** Finished assistant messages, for Host usage metering; absent on transports without it. */
+  setUsageHandler?(handler: (observation: PiUsageObservation) => void): void;
   start(): Promise<unknown>;
   getAvailableModels(): Promise<PiNativeModel[]>;
   getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null>;
@@ -621,6 +625,7 @@ class PiHarnessSession implements HarnessSession {
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ) {
     this.#cwd = cwd;
@@ -654,6 +659,14 @@ class PiHarnessSession implements HarnessSession {
     this.#usage = this.initialUsage;
     this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
+    // A created Session has no native history yet; an opened one replays it for Host metering.
+    const usageHistory =
+      options.usageHistory ??
+      (options.startedTransport
+        ? { requests: [], complete: false }
+        : { requests: [], complete: true });
+    for (const request of usageHistory.requests) this.#event({ type: "usage.request", request });
+    this.#event({ type: "usage.history", complete: usageHistory.complete });
     if (this.#transport) this.#bindAutonomousTurnHandler(this.#transport);
   }
 
@@ -1330,6 +1343,13 @@ class PiHarnessSession implements HarnessSession {
       if (this.#phase !== "open") return;
       if (this.#transport !== transport) this.#pendingSubagentStatus = runs;
       else this.#subagents.observe(runs);
+    });
+    transport.setUsageHandler?.((observation) => {
+      if (this.#phase !== "open") return;
+      const record = piUsageRecord(observation.message, observation);
+      if (record?.kind === "request")
+        this.#event({ type: "usage.request", request: record.request });
+      else if (record?.kind === "missing") this.#event({ type: "usage.history", complete: false });
     });
     transport.setAutonomousTurnHandler((turn) => {
       if (this.#phase !== "open") return;
@@ -2462,7 +2482,12 @@ export class PiAdapter implements HarnessAdapter {
       const startedThinkingLevels = await transport.getAvailableThinkingLevels();
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
       const initialUsage = await transport.getSessionUsage().catch(() => null);
+      const usageHistory = await transport
+        .getEntries()
+        .then(piUsageHistory)
+        .catch(() => ({ requests: [], complete: false }));
       session = this.#trackSession(input.cwd, {
+        usageHistory,
         ...(input.environment ? { environment: input.environment } : {}),
         startedTransport: transport,
         startedThinkingLevels,
@@ -2494,6 +2519,7 @@ export class PiAdapter implements HarnessAdapter {
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ): PiHarnessSession {
     const environment = options.environment;
@@ -2528,6 +2554,7 @@ export class PiAdapter implements HarnessAdapter {
           ? { startedThinkingLevels: options.startedThinkingLevels }
           : {}),
         ...(options.initialUsage !== undefined ? { initialUsage: options.initialUsage } : {}),
+        ...(options.usageHistory ? { usageHistory: options.usageHistory } : {}),
       },
     );
     this.#sessions.add(session);

@@ -31,6 +31,7 @@ import {
   type PiSubagentNode,
 } from "../src/pi-subagents.js";
 import type { PiSessionHistory } from "../src/pi-history.js";
+import type { PiUsageObservation } from "../src/pi-usage.js";
 import { encodePiModelRef } from "../src/pi-model-catalog.js";
 import type { PiNativeCommand } from "../src/pi-slash-commands.js";
 import {
@@ -49,6 +50,10 @@ class FakePiTransport implements PiTurnTransport {
   autonomousHandler: ((turn: PiAutonomousTurn) => void) | null = null;
   readonly setAutonomousTurnHandler = vi.fn((handler: (turn: PiAutonomousTurn) => void) => {
     this.autonomousHandler = handler;
+  });
+  usageHandler: ((observation: PiUsageObservation) => void) | null = null;
+  readonly setUsageHandler = vi.fn((handler: (observation: PiUsageObservation) => void) => {
+    this.usageHandler = handler;
   });
   state: PiSessionState = {
     sessionId: "pi-session-1",
@@ -366,10 +371,20 @@ function autonomousTurn(
   };
 }
 
+function isUsageMetering(output: HarnessOutput): boolean {
+  return (
+    output.kind === "event" &&
+    (output.event.type === "usage.request" || output.event.type === "usage.history")
+  );
+}
+
+/** Lifecycle assertions skip Host usage metering events, which have their own tests. */
 async function nextOutput(iterator: AsyncIterator<HarnessOutput>): Promise<HarnessOutput> {
-  const result = await iterator.next();
-  if (result.done) throw new Error("Harness output stream ended unexpectedly");
-  return result.value;
+  for (;;) {
+    const result = await iterator.next();
+    if (result.done) throw new Error("Harness output stream ended unexpectedly");
+    if (!isUsageMetering(result.value)) return result.value;
+  }
 }
 
 async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
@@ -1890,6 +1905,124 @@ describe("Pi HarnessAdapter Session", () => {
       outcome: { status: "failed", error: { message: "reasoning conflict" } },
     });
     await session.close();
+  });
+
+  it("declares an empty complete usage history for a created Session", async () => {
+    const { adapter } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toEqual({
+      kind: "event",
+      event: { type: "usage.history", complete: true },
+    });
+    await session.close();
+    await adapter.close();
+  });
+
+  it("replays every native request on resume, then meters live assistant messages", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.history = {
+        leafId: "second",
+        entries: [
+          {
+            type: "message",
+            id: "first",
+            parentId: null,
+            message: {
+              role: "assistant",
+              model: "synthetic-model",
+              responseId: "resp-first",
+              usage: { input: 10, output: 2, cacheRead: 30, cacheWrite: 0 },
+            },
+          },
+          {
+            type: "message",
+            id: "second",
+            parentId: null,
+            message: {
+              role: "assistant",
+              model: "synthetic-model",
+              responseId: "resp-abandoned-branch",
+              usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+            },
+          },
+        ],
+      };
+      transports.push(transport);
+      return transport;
+    });
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/synthetic",
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "pi-session-1",
+        locator: { sessionFile: "/synthetic/pi-session.jsonl" },
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    const events = [];
+    for (let index = 0; index < 3; index += 1) events.push((await iterator.next()).value);
+    expect(events).toEqual([
+      {
+        kind: "event",
+        event: {
+          type: "usage.request",
+          request: {
+            requestId: "resp-first",
+            historical: true,
+            model: "synthetic-model",
+            inputTokens: 40,
+            cachedInputTokens: 30,
+            cacheWriteInputTokens: 0,
+            outputTokens: 2,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: expect.objectContaining({
+          type: "usage.request",
+          request: expect.objectContaining({ requestId: "resp-abandoned-branch" }),
+        }),
+      },
+      { kind: "event", event: { type: "usage.history", complete: true } },
+    ]);
+
+    const transport = transports[0];
+    if (!transport?.usageHandler) throw new Error("Usage handler was not bound");
+    transport.usageHandler({
+      message: {
+        role: "assistant",
+        model: "synthetic-model",
+        responseId: "resp-live",
+        usage: { input: 1, output: 4, cacheRead: 0, cacheWrite: 0 },
+      },
+      outputStartedAtMs: 100,
+      completedAtMs: 300,
+    });
+    transport.usageHandler({
+      message: { role: "assistant", responseId: "resp-broken" },
+      outputStartedAtMs: null,
+      completedAtMs: 400,
+    });
+    expect((await iterator.next()).value).toMatchObject({
+      event: {
+        type: "usage.request",
+        request: { requestId: "resp-live", outputStartedAtMs: 100, completedAtMs: 300 },
+      },
+    });
+    expect((await iterator.next()).value).toEqual({
+      kind: "event",
+      event: { type: "usage.history", complete: false },
+    });
+    await opened.value.close();
+    await adapter.close();
   });
 
   it("publishes Usage after the first Assistant message while the Turn remains active", async () => {

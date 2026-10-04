@@ -14,6 +14,7 @@ import {
   type PiRpcProcessOptions,
   type PiTurnEvent,
 } from "../src/pi-rpc-session.js";
+import type { PiUsageObservation } from "../src/pi-usage.js";
 
 type Scenario =
   | "final-only"
@@ -966,6 +967,29 @@ describe("Pi RPC Turn aggregation", () => {
       child.stderr.end();
       child.emit("exit", 0, null);
       await Promise.all([first, second]);
+    }
+  });
+
+  it("reports each finished assistant message with its output timing for usage metering", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const observations: PiUsageObservation[] = [];
+    rpc.setUsageHandler((observation) => observations.push(observation));
+    rpc.setAutonomousTurnHandler(() => undefined);
+    await rpc.start();
+    try {
+      fakeProcess().emitAutonomousTurn({ includeTool: true });
+      await waitFor(() => observations.length === 1);
+      expect(observations[0]).toMatchObject({
+        message: { role: "assistant", responseId: "autonomous-response" },
+        outputStartedAtMs: expect.any(Number),
+        completedAtMs: expect.any(Number),
+      });
+      const [observation] = observations;
+      expect(observation?.completedAtMs).toBeGreaterThanOrEqual(
+        observation?.outputStartedAtMs ?? Infinity,
+      );
+    } finally {
+      await rpc.close();
     }
   });
 

@@ -36,7 +36,11 @@ import {
   claudeThinkingFlagSettings,
   parseClaudeThinkingOptionId,
 } from "./thinking-options.js";
-import { ClaudeUltracodeUnavailableError, claudeUltracodeUnavailableReason } from "./ultracode.js";
+import {
+  ClaudeUltracodeUnavailableError,
+  claudeUltracodeActive,
+  claudeUltracodeUnavailableReason,
+} from "./ultracode.js";
 import type {
   ClaudeApprovalRequest,
   ClaudeApprovalSuggestionScope,
@@ -590,6 +594,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         await this.#restoreOrFault(async () => {
           await activeQuery.setModel(previousModel);
           await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, null));
+          // A write Claude Code accepts may still not take effect; confirm the restored state.
+          await this.#verifyUltracode(activeQuery);
         });
         throw error;
       }
@@ -609,9 +615,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         await this.#verifyUltracode(activeQuery);
       } catch (error) {
         // Restore the confirmed selection, including clearing the requested Ultracode flag.
-        await this.#restoreOrFault(() =>
-          activeQuery.applyFlagSettings(claudeThinkingFlagSettings(previous, thinking)),
-        );
+        await this.#restoreOrFault(async () => {
+          await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(previous, thinking));
+          await (previous.ultracode
+            ? this.#verifyUltracode(activeQuery)
+            : this.#verifyUltracodeOff(activeQuery));
+        });
         throw error;
       }
     }
@@ -632,18 +641,30 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
    * effective state is read back from the native Session settings. Fails closed.
    */
   async #verifyUltracode(activeQuery: Query): Promise<void> {
+    const reason = claudeUltracodeUnavailableReason(
+      await this.#readSettings(activeQuery),
+      this.#environment,
+    );
+    if (reason) throw new ClaudeUltracodeUnavailableError(reason);
+  }
+
+  /** Confirms a restored selection without Ultracode left it off. */
+  async #verifyUltracodeOff(activeQuery: Query): Promise<void> {
+    if (claudeUltracodeActive(await this.#readSettings(activeQuery))) {
+      throw new Error("Claude Code kept Ultracode on after it was cleared");
+    }
+  }
+
+  async #readSettings(activeQuery: Query): Promise<unknown> {
     // `getSettings` is a native control request the SDK implements without a public type.
     const getSettings = (activeQuery as unknown as { getSettings?: () => Promise<unknown> })
       .getSettings;
-    let settings: unknown;
     try {
       if (typeof getSettings !== "function") throw new Error("Claude SDK cannot read settings");
-      settings = await getSettings.call(activeQuery);
+      return await getSettings.call(activeQuery);
     } catch {
       throw new ClaudeUltracodeUnavailableError("unverifiable");
     }
-    const reason = claudeUltracodeUnavailableReason(settings, this.#environment);
-    if (reason) throw new ClaudeUltracodeUnavailableError(reason);
   }
 
   async setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void> {

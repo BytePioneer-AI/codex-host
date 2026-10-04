@@ -17,7 +17,7 @@ Claude Code 从 2.1.154 起提供会话级的 Ultracode：开启后 Claude 会�
   - Workflows 关闭：`configurationRequired`，提示在 Claude Code `/config` 打开 Dynamic workflows；
   - Workflows 已明确打开但仍不可用：`unsupported`，提示当前模型不支持；
   - 无法判断原因或读不到设置：给出同时涵盖前述条件的提示。
-- 会话中切换到 Ultracode 未生效：恢复原档位并返回原因，原档位保持不变。
+- 会话中切换到 Ultracode 未生效：恢复原档位并读回确认，返回原因，原档位保持不变。
 - Ultracode 下切换模型后无法保持：撤回模型切换并返回原因，保持原模型与 Ultracode；撤回本身失败时会话进入故障态，不在未知状态下继续。
 - 只有进入或离开 Ultracode 时，原生写入才带 `ultracode` 键：进入发 `effortLevel: "xhigh"` 与 `ultracode: true`，离开追加 `ultracode: false`；其他档位间切换的载荷与现在完全相同。
 

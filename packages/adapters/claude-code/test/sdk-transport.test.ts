@@ -2536,11 +2536,16 @@ describe("ClaudeSdkTransport Ultracode", () => {
     const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("high"));
     await value.transport.start();
     // Claude Code before 2.1.154 merges the unknown key and reports no Ultracode state.
-    value.fakeQuery.getSettings.mockResolvedValueOnce({ applied: { effort: "xhigh" } });
+    value.fakeQuery.getSettings
+      .mockResolvedValueOnce({ applied: { effort: "xhigh" } })
+      .mockResolvedValueOnce({ applied: { effort: "high" } });
 
     await expect(value.transport.setThinkingOption(ultracode)).rejects.toMatchObject({
       reason: "unsupportedVersion",
     });
+    // The restored selection is read back as well.
+    expect(value.fakeQuery.getSettings).toHaveBeenCalledTimes(2);
+    expect(value.onFault).not.toHaveBeenCalled();
     await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("medium"));
 
     expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
@@ -2585,6 +2590,9 @@ describe("ClaudeSdkTransport Ultracode", () => {
     });
     expect(value.fakeQuery.setModel.mock.calls).toEqual([["haiku"], [undefined]]);
     expect(value.fakeQuery.applyFlagSettings.mock.calls.at(-1)).toEqual([enter]);
+    // Ultracode is confirmed on again with the previous Model.
+    expect(value.fakeQuery.getSettings).toHaveBeenCalledTimes(3);
+    expect(value.onFault).not.toHaveBeenCalled();
 
     await value.transport.setModel("sonnet");
     await value.transport.setModel("opus");
@@ -2603,6 +2611,42 @@ describe("ClaudeSdkTransport Ultracode", () => {
       reason: "notApplied",
     });
     expect(value.onFault).toHaveBeenCalledWith(restoreFailure);
+    await value.transport.close();
+  });
+
+  it("faults the Session when the previous Model does not bring Ultracode back", async () => {
+    const value = fixture("create", "default", ultracode);
+    await value.transport.start();
+    const unavailable = {
+      applied: { ultracode: false, ultracodeRequested: true, ultracodeAvailable: false },
+      effective: { enableWorkflows: true },
+    };
+    value.fakeQuery.getSettings
+      .mockResolvedValueOnce(unavailable)
+      .mockResolvedValueOnce(unavailable);
+
+    await expect(value.transport.setModel("haiku")).rejects.toMatchObject({
+      reason: "modelUnsupported",
+    });
+    expect(value.onFault).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "modelUnsupported" }),
+    );
+    await value.transport.close();
+  });
+
+  it("faults the Session when Claude Code keeps Ultracode on after a rejected switch", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("high"));
+    await value.transport.start();
+    value.fakeQuery.getSettings
+      .mockResolvedValueOnce({ applied: { ultracode: false } })
+      .mockResolvedValueOnce({ applied: { ultracode: true } });
+
+    await expect(value.transport.setThinkingOption(ultracode)).rejects.toMatchObject({
+      reason: "notApplied",
+    });
+    expect(value.onFault).toHaveBeenCalledWith(
+      new Error("Claude Code kept Ultracode on after it was cleared"),
+    );
     await value.transport.close();
   });
 

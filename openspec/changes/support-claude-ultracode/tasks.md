@@ -12,7 +12,7 @@
 - [x] 2.1 `thinking-options.ts` 新增 `ultracode`（"Ultracode"），配置为 xhigh + `ultracode`；所有模型都列出。
 - [x] 2.2 纯函数 `claudeThinkingFlagSettings`：只在进入或离开 Ultracode 时带 `ultracode` 键。
 - [x] 2.3 `ultracode.ts`：读回判定（失败即关闭）、原因分类（版本、Workflows 关闭、模型不支持、无法判断、读不到）与错误映射；Workflows 开关同时参考设置与 `CLAUDE_CODE_WORKFLOWS`/`CLAUDE_CODE_DISABLE_WORKFLOWS`。
-- [x] 2.4 Transport：启动时在写入用户消息前写入并读回；会话中切换与 Ultracode 下换模型时读回，未生效则恢复原状；恢复失败时 `onFault`。
+- [x] 2.4 Transport：启动时在写入用户消息前写入并读回；会话中切换与 Ultracode 下换模型时读回，未生效则恢复原状并读回确认；恢复失败或读回不符时 `onFault`。
 - [x] 2.5 Adapter：启动、切换、换模型三处把读回失败映射为对应错误；启动失败时消息不发送、档位保持 Ultracode。
 - [x] 2.6 测试：载荷、读回判定、启动成功/失败/读不到、切换恢复、离开时清除、换模型撤回与故障、非 Ultracode 档位不读回、Adapter 错误映射与档位保持。
 

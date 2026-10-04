@@ -60,8 +60,8 @@ The Adapter SHALL include the `ultracode` key in a native flag-settings write on
 #### Scenario: Claude Code does not honor a live Ultracode selection
 
 - **WHEN** the readback after a live selection does not confirm Ultracode
-- **THEN** the Adapter SHALL restore the prior option natively, including `ultracode: false`, return the reason's error, and keep the prior confirmed Thinking option
-- **AND** if that restore fails, the Session SHALL fault rather than continue with unknown Thinking state
+- **THEN** the Adapter SHALL restore the prior option natively, including `ultracode: false`, read the settings back to confirm Ultracode is off, return the reason's error, and keep the prior confirmed Thinking option
+- **AND** if that restore fails or its readback still reports Ultracode on, the Session SHALL fault rather than continue with unknown Thinking state
 
 #### Scenario: Live selection leaves Ultracode
 
@@ -76,8 +76,8 @@ The Adapter SHALL include the `ultracode` key in a native flag-settings write on
 #### Scenario: Model change cannot keep Ultracode
 
 - **WHEN** a Session in `ultracode` changes Model and the readback after re-entering Ultracode does not confirm it
-- **THEN** the Adapter SHALL restore the prior Model and Ultracode, keep `ultracode`, and return the reason's error without publishing the new Model
-- **AND** if that restore fails, the Session SHALL fault rather than continue with unknown Model or Thinking state
+- **THEN** the Adapter SHALL restore the prior Model and Ultracode, read the settings back to confirm Ultracode is in effect again, keep `ultracode`, and return the reason's error without publishing the new Model
+- **AND** if that restore fails or its readback does not confirm Ultracode, the Session SHALL fault rather than continue with unknown Model or Thinking state
 
 #### Scenario: Caller supplies an invalid Thinking option
 

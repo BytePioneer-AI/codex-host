@@ -100,6 +100,17 @@ function workflowsSwitch(settings: Record<string, unknown>, environment: NodeJS.
 }
 
 /**
+ * True when native Session settings report Ultracode on. Settings without Ultracode state
+ * come from a Claude Code release that cannot run it.
+ */
+export function claudeUltracodeActive(settings: unknown): boolean {
+  if (!isRecord(settings) || !isRecord(settings.applied)) {
+    throw new ClaudeUltracodeUnavailableError("unverifiable");
+  }
+  return settings.applied.ultracode === true;
+}
+
+/**
  * Reads the effective Ultracode state from a native `get_settings` response. Ultracode counts
  * as on only when Claude Code reports `applied.ultracode === true`; anything else fails closed.
  */

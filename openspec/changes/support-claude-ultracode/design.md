@@ -46,7 +46,7 @@
 6. **发送消息前确认，未生效则中止该消息。** 懒启动时以 `effort: "xhigh"` 启动，`initializationResult()` 后写入并读回，确认后才写入用户消息。未生效时 Transport 关闭这次启动的进程，`startTurn` 返回带原因的错误（与"未安装"同样在回合被接受前失败，不产生回合事件），保存的档位仍为 Ultracode，用户改档位或打开 Workflows 后重发即可。恢复、Fork、回滚、编辑重发、委派都经同一启动路径。
    备选：降级为 xhigh 继续执行。会让用户以为在用 Ultracode，不采用。
 
-7. **会话中切换与换模型未生效时恢复原状。** 切换：恢复原档位载荷（含 `ultracode: false`），返回原因，不发布新档位。换模型：`setModel` 后重新写入 Ultracode 并读回，未生效则改回原模型并重新写入 Ultracode，返回原因，不发布新模型。恢复本身失败时原生状态未知，Transport 通过 `onFault` 让会话进入故障态。
+7. **会话中切换与换模型未生效时恢复原状。** 切换：恢复原档位载荷（含 `ultracode: false`），返回原因，不发布新档位。换模型：`setModel` 后重新写入 Ultracode 并读回，未生效则改回原模型并重新写入 Ultracode，返回原因，不发布新模型。恢复后同样读回确认：切换的恢复确认 Ultracode 已关闭，换模型的恢复确认 Ultracode 重新生效。恢复本身失败或读回不符时原生状态未知，Transport 通过 `onFault` 让会话进入故障态。
 
 ### Workflow 子智能体
 

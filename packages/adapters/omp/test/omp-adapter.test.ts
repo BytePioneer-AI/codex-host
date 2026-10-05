@@ -61,7 +61,7 @@ class FakeOmpTransport implements OmpTurnTransport {
     return [{ provider: "synthetic", id: "model", reasoning: true }];
   }
 
-  async getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[]> {
+  async getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null> {
     return [harnessThinkingOptionIdSchema.parse("high")];
   }
 
@@ -261,6 +261,84 @@ afterEach(async () => {
 });
 
 describe("OMP Adapter Session environment", () => {
+  it("starts a non-reasoning Model with Off without requiring a native Thinking selector", async () => {
+    const transport = new FakeOmpTransport();
+    transport.state = {
+      ...transport.state,
+      thinkingLevel: null,
+      availableThinkingLevels: null,
+    };
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue(null);
+    vi.spyOn(transport, "getAvailableModels").mockResolvedValue([
+      { provider: "synthetic", id: "model", reasoning: false },
+    ]);
+    const selectThinking = vi.spyOn(transport, "selectThinkingOption");
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("off"),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({ ok: true });
+      expect(selectThinking).not.toHaveBeenCalled();
+      await expect(
+        opened.value.execute({
+          type: "turn.start",
+          turnId: "non-reasoning-turn" as HostTurnId,
+          input: [{ type: "text", text: "Reply OK" }],
+        }),
+      ).resolves.toMatchObject({ ok: true });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("accepts an already confirmed Off state when older OMP omits Thinking capabilities", async () => {
+    const transport = new FakeOmpTransport();
+    transport.state.thinkingLevel = harnessThinkingOptionIdSchema.parse("off");
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue(null);
+    const selectThinking = vi.spyOn(transport, "selectThinkingOption");
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("off"),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({ ok: true });
+      expect(selectThinking).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each(["off", "high"])(
+    "rejects unconfirmed %s on a reasoning Model without a native Thinking selector",
+    async (level) => {
+      const transport = new FakeOmpTransport();
+      transport.state.thinkingLevel = null;
+      vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue(null);
+      const adapter = new OmpAdapter({}, { createTransport: () => transport });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse(level),
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "unsupported" },
+        });
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
   it("uses OMP's native yolo default without changing ordinary create semantics", async () => {
     const transport = new FakeOmpTransport();
     const createTransport = vi.fn(() => transport);

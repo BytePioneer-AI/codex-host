@@ -4,6 +4,7 @@ import { ZcodeError } from "./errors.js";
 import { record, text } from "./protocol.js";
 import { resolveInstallation, type ZcodeInstallation } from "./installation.js";
 import { accountConfig, providerRuntimeHeaders } from "./account.js";
+import type { PersonalCodingPlanAccount } from "./personal-coding-plan.js";
 import { DEFAULT_TIMEOUT_MS, nativeCall, type CallContext, type NativeMethod } from "./methods.js";
 import type { ZcodeVerifier } from "./verification/index.js";
 
@@ -47,6 +48,7 @@ export class CliTransport {
   // Aborting these cancels only this transport's running and queued shared verifications.
   #headerRequests = new Map<string, AbortController>();
   #startPlan = false;
+  #codingPlan!: PersonalCodingPlanAccount;
   #fault: Error | undefined;
   #closed = false;
   #closePromise: Promise<void> | undefined;
@@ -69,12 +71,14 @@ export class CliTransport {
     if (this.#child || this.#closed)
       throw new ZcodeError("invalidState", "ZCode transport already started or closed");
     const installation = await resolveInstallation(this.options.environment, this.options.app);
-    const { params: accountParams, startPlan } = await accountConfig(
-      installation,
-      this.options.environment,
-    );
+    const {
+      params: accountParams,
+      startPlan,
+      codingPlan,
+    } = await accountConfig(installation, this.options.environment);
     this.#installation = installation;
     this.#startPlan = startPlan;
+    this.#codingPlan = codingPlan;
     // ZCode Desktop runs its Agent CLI on its own Electron build as Node; the CLI's native
     // plugin modules are built for that runtime. Its tool children inherit the variable, as there.
     const child = spawn(
@@ -220,11 +224,12 @@ export class CliTransport {
       try {
         reply({
           result: await providerRuntimeHeaders(
-            params.accountAccess,
+            params,
             controller.signal,
             this.#installation,
             this.options.environment,
             () => this.options.verifier(this.#installation.version),
+            this.#codingPlan,
           ),
         });
       } finally {

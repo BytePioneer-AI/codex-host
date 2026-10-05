@@ -100,7 +100,7 @@ export class ZcodeAdapter implements HarnessAdapter {
           error: {
             code: "authenticationRequired",
             message:
-              "ZCode has no available models. Sign in to ZCode Desktop with a Start Plan account or add a personal provider in ZCode.",
+              "ZCode has no available models. Connect Start Plan or Personal Coding Plan in ZCode Desktop, or add a personal provider, then re-detect ZCode. Team Coding Plan is not supported.",
             retryable: true,
           },
         };

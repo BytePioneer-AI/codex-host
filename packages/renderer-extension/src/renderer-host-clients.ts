@@ -2,7 +2,11 @@ import type {
   RendererHostRoute,
   RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
-import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
+import {
+  createRendererModelClient,
+  THREAD_USAGE_UPDATED_METHOD,
+  type RendererModelClient,
+} from "./renderer-model-client.js";
 import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
 import { restoreThreadReferenceCapability } from "./renderer-thread-reference-capability.js";
@@ -24,7 +28,7 @@ export function createRendererHostClients(
     {
       route: RendererHostRoute;
       client: RendererModelClient;
-      cleanups: (() => void)[];
+      cleanups: Set<() => void>;
     }
   >();
   const retire = (hostId: string): void => {
@@ -44,6 +48,7 @@ export function createRendererHostClients(
     if (cached?.route === route) return cached.client;
     retire(route.hostId);
     const target = route.manager;
+    const cleanups = new Set<() => void>();
     const nativeClient = createRendererModelClient([
       {
         sendRequest(method, params, options) {
@@ -55,7 +60,53 @@ export function createRendererHostClients(
             : target.sendRequest(method, params, options);
         },
         ...(target.addNotificationCallback
-          ? { addNotificationCallback: target.addNotificationCallback.bind(target) }
+          ? {
+              addNotificationCallback(
+                methods: string | readonly string[],
+                listener: (notification: unknown) => void,
+              ) {
+                const unsubscribe = target.addNotificationCallback?.(methods, listener);
+                if (
+                  !messages ||
+                  !(typeof methods === "string" ? [methods] : methods).includes(
+                    THREAD_USAGE_UPDATED_METHOD,
+                  )
+                )
+                  return () => unsubscribe?.();
+                // Like manual compaction, observe the real Host frame before Desktop's
+                // app-server method table drops custom notifications. No synthetic Tokens.
+                const onMessage: Parameters<RendererMessageTarget["addEventListener"]>[1] = (
+                  event,
+                ) => {
+                  if (event.source != null && event.source !== messages) return;
+                  const message = event.data;
+                  if (
+                    disposed ||
+                    readRouting()?.forHost(route.hostId) !== route ||
+                    !message ||
+                    typeof message !== "object" ||
+                    !("type" in message) ||
+                    message.type !== "mcp-notification" ||
+                    !("hostId" in message) ||
+                    message.hostId !== route.hostId ||
+                    !("method" in message) ||
+                    message.method !== THREAD_USAGE_UPDATED_METHOD
+                  )
+                    return;
+                  listener(message);
+                };
+                const remove = () => {
+                  messages.removeEventListener("message", onMessage);
+                  cleanups.delete(remove);
+                };
+                messages.addEventListener("message", onMessage);
+                cleanups.add(remove);
+                return () => {
+                  remove();
+                  unsubscribe?.();
+                };
+              },
+            }
           : {}),
       },
     ]);
@@ -65,7 +116,6 @@ export function createRendererHostClients(
       target,
       () => !disposed && readRouting()?.forHost(route.hostId) === route,
     );
-    const cleanups: (() => void)[] = [];
     entries.set(route.hostId, { route, client, cleanups });
     try {
       for (const install of [
@@ -74,7 +124,7 @@ export function createRendererHostClients(
         () => installRendererManualCompaction(target, route.hostId, messages),
       ]) {
         const cleanup = install();
-        if (cleanup) cleanups.push(cleanup);
+        if (cleanup) cleanups.add(cleanup);
       }
     } catch (error) {
       retire(route.hostId);

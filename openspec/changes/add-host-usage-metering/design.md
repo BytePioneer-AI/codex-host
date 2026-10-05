@@ -60,7 +60,7 @@ ZCode 3.14.4 的 `session/resume`、`session/read` 返回 assistant `info.tokens
 
 实时仅关联本 Session 的 `main_turn`：`model_request_started.requestId` → `model.streaming.assistantMessageId` → 同一 `model_request_completed.requestId`。只接受单一消息、无交错且模型一致的关联，否则等轮末原生快照；不根据当前选择模型归属历史。`info.tokens` 在通用快照 schema 中保留为 unknown，由计量模块独立校验，坏用量不影响正常会话。回放和实时记录以消息 ID 去重；最终记录矛盾时声明不完整。已确认的原生失败/取消零占位（无 total）按失败请求无用量规则跳过。
 
-计时使用同一原生事件流的首个正文/思考 delta 或工具输入开始到请求完成，不使用可能包含工具执行的 assistant `time.completed`。流缓存字段缺失时先不发布，轮末快照补齐时保留已观测计时。原生协议过滤 reasoning_start，不能证明隐藏思考的开始；明确 `reasoningTokens > 0` 的请求暂不发布计时，费用照常计算。历史记录不带计时，跨 Turn 的迟到记录不借用新 Turn 计时。界面刷新仍依赖原生用量通知，不在此接入中另加轮询。
+计时使用同一原生事件流的首个正文/思考 delta 或工具输入开始到请求完成，不使用可能包含工具执行的 assistant `time.completed`。流缓存字段缺失时先不发布，轮末快照补齐时保留已观测计时。原生协议过滤 reasoning_start，不能证明隐藏思考的开始；明确 `reasoningTokens > 0` 的请求暂不发布计时，费用照常计算。历史记录不带计时，跨 Turn 的迟到记录不借用新 Turn 计时。Host 已计入的指标通过共用用量通知刷新；Renderer 从按 Host 隔离的原始窗口消息接收自定义通知，避免被 Desktop 的方法分发器过滤，不增加轮询。
 
 ### D3. 历史回放与完整性
 

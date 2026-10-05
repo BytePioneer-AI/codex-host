@@ -1128,7 +1128,15 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
     const turnId = await startPiTurn(fixture, threadId, 81);
     await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    const notifications = () =>
+      fixture.collector.messages.filter(
+        (message) =>
+          method(message, "codexhost/thread/usage/updated") &&
+          messageParams(message).threadId === threadId,
+      ).length;
+    const beforeOutput = notifications();
     session.appendText("answer");
+    await vi.waitFor(() => expect(notifications()).toBe(beforeOutput + 1));
     session.emitEvent({
       type: "usage.request",
       request: {
@@ -1143,8 +1151,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
         completedAtMs: 3_000,
       },
     });
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await vi.waitFor(() => expect(notifications()).toBe(beforeOutput + 2));
+    // No Context usage, native Token notification or Turn completion is required to refresh.
+    expect(
+      fixture.collector.messages.some((message) => method(message, "thread/tokenUsage/updated")),
+    ).toBe(false);
 
     writeRequest(fixture.desktopInput, {
       id: 82,
@@ -1163,6 +1174,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(response.result.usage.totalCostUsd).not.toBe(99);
     expect(response.result.usage.totalCostUsd).toBeGreaterThan(0);
     expect(response.result.usage.timeToFirstOutputMs).toEqual(expect.any(Number));
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
     await stopFixture(fixture);
   });
 

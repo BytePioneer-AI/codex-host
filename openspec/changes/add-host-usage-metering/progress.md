@@ -50,7 +50,7 @@ Adapter 约定：打开会话时先发布全部历史请求（`historical: true`
 - 浮窗：上下文（带进度条，≥90% 变橙）；会话组：费用估算（部分计价时下方注明“未计价：模型 ID”）、平均缓存命中、最近缓存命中（CH）；本轮组：输出速度（TPS）、首 token（TTFT）；Token 组：输入/输出、缓存读取（有写入时为“缓存读取 / 写入”）、推理、总数。
 - 格式：速度 ≥100 取整，否则一位小数，单位 `tok/s`；费用 ≥$1 两位小数，否则三位；数量用 K/M/B；时间中文“2.6 秒/840 毫秒”，英文 `2.6s/840ms`。只支持 `en`、`zh-CN`。
 - 用户明确删除的内容：费用来源说明（“按公开 API 价格计算，不含子代理”“Harness 上报”）不要再加回。
-- Desktop 不会把 Host 自定义通知 `codexhost/thread/usage/updated` 转给渲染层；界面只在 `thread/tokenUsage/updated`（Adapter 上报原生用量时 Host 转发）、`turn/completed`、打开浮窗时刷新。
+- Desktop 会把 `codexhost/thread/usage/updated` 送到 Renderer 窗口，但原生通知分发器会过滤它。已在 `renderer-host-clients.ts` 沿用手动压缩通知的窗口消息路径，按 Host/source 校验后交给既有用量订阅，连接替换或退订时移除监听。首个输出和每条新请求可直接触发刷新；保留 `thread/tokenUsage/updated`、`turn/completed` 和浮窗刷新入口。不伪造 Token/上下文，不增加轮询。
 
 ## 3. 各 Harness 状态
 
@@ -61,7 +61,7 @@ Adapter 约定：打开会话时先发布全部历史请求（`historical: true`
 | OpenCode v2 | 完成 | assistant 消息 `tokens`（input 不含缓存，output 不含思考）；**`time.streamed` 是流式结束时间，不能作起点**，改为 Adapter 观测首个 `session.reasoning/text/tool.input` 的 started/delta，结束用 `time.streamed`，排除工具执行；缺少流结束时间时不计速度 | MiniMax 费用与原生完全一致；用户实测发现过 8 万 tok/s 的 bug，已修 |
 | Claude Code | 完成 | 实时：`stream_event` `message_start`（ID、模型、输入与缓存）、首个 `content_block_start`、`message_delta`（最终输出与 `thinking_tokens`）、`message_stop`；**`assistant` 消息里的 usage 是起始值（`output_tokens: 1`），不能用**。历史：转录文件 `~/.claude/projects/<proj>/<id>.jsonl`，按 `message.id` 去重，跳过 `<synthetic>`。`cache_creation.ephemeral_1h_input_tokens` 为 1 小时档 | 实时与回放逐字段一致；费用与 `costUSD` 的差额 = 流和转录中都没有的后台请求（约 4%）。192 会话、11952 请求全部可回放可计价。空闲时（无活动轮次）的请求也计量 |
 | DeepSeek Harness（dsh） | 完成 | 日志（`openModernJournal`）中 `assistant/message`（`surfaceOp: append`）：`message.id`、`message.source.model`（`provider` 是 dsh 路由名如 `deepseek-official`，不发布）、`stream` 中最后一个 `usage` 块（`inputTokens` 不含缓存，`totalTokens`=输入+输出+缓存读+缓存写）；中断消息无 usage，视为无用量。计时用 `expandAssistantStream` 展开后首个非空 reasoning/text delta 或带名字的 tool-call delta → 事件时间 | 23 会话速度与输出 token 与 dsh 自身 `sessionStats` 的 `decodeTokens/decodeMs` 完全一致 |
-| CodeBuddy / WorkBuddy | 完成（无速度） | ACP 不上报逐次用量；打开会话与每轮结束（`#snapshot`）读原生历史（`~/.codebuddy/projects`、`~/.workbuddy-ai/projects`），全部原生分支上按 `providerData.messageId` 去重的 `rawUsage`（原生 Token 快照仍沿用活动分支）：`prompt_tokens` 含缓存（= hit + miss + `prompt_cache_write_tokens`，368 行全部成立），缓存读 = `prompt_tokens_details.cached_tokens`，`completion_tokens` 含 `completion_thinking_tokens`；`cache_read_input_tokens`/`cache_creation_input_tokens` 恒为 0，非 0 时视为含义未知不计量；跳过 `isSubAgent` | 65 会话 token 合计与原生汇总零差异；原生快照的缓存字段已改为同一组字段。WorkBuddy 自动路由的 `default-model` 无法计价 |
+| CodeBuddy / WorkBuddy | 完成（无速度） | ACP 不上报逐次用量；打开会话、原生用量通知、浮窗请求刷新与每轮结束时读原生历史（`~/.codebuddy/projects`、`~/.workbuddy-ai/projects`），全部原生分支上按 `providerData.messageId` 去重的 `rawUsage`（原生 Token 快照仍沿用活动分支）：`prompt_tokens` 含缓存（= hit + miss + `prompt_cache_write_tokens`，368 行全部成立），缓存读 = `prompt_tokens_details.cached_tokens`，`completion_tokens` 含 `completion_thinking_tokens`；`cache_read_input_tokens`/`cache_creation_input_tokens` 恒为 0，非 0 时视为含义未知不计量；跳过 `isSubAgent` | 65 会话 token 合计与原生汇总零差异；原生快照的缓存字段已改为同一组字段。WorkBuddy 自动路由的 `default-model` 无法计价 |
 | Qoder / Qoder CN | **暂缓** | 本机无会话、无登录凭证、无运行时（首次使用从 download.qoder.com 下载）；现有 `qoder-usage.ts` 对字段理解自相矛盾 | 需用户登录 Qoder 跑会话后再做 |
 | Grok | **待用户决定** | `~/.grok/sessions/<cwd>/<id>/updates.jsonl` 的 `turn_completed.usage.modelUsage` 与 `usage.json`：按“轮 × 模型”合计（`modelCalls`），`totalTokens = inputTokens + outputTokens`（输入含缓存读，输出含思考），`costUsdTicks`（1 美元 = 10¹⁰），`apiDurationMs` | models.dev 无 `grok-4.6-build`/`grok-4.7-build(-fast)` 价格；原生费用合计约 $74。决定：请求记录是否携带原生费用（无价时使用），还是 Grok 保持原生费用不接入 |
 | Hermes | 暂缓 | `~/.hermes/state.db` 表 `session_model_usage`：仅会话 × 模型合计，本机只有 2 行（其一为标题生成），该行缓存读远大于输入 | 数据不足以确认字段含义 |
@@ -86,8 +86,8 @@ Adapter 约定：打开会话时先发布全部历史请求（`historical: true`
 - Claude Code 中途取消/失败的请求若没有 `message_stop`，会声明历史不完整，不显示漏计的会话费用与平均缓存；重新打开后由原生历史重建。找不到转录文件也标记不完整，不当作空会话。
 - OMP 历史读取跳过损坏记录时保留可读消息，但标记不完整，计量不再把缺少记录的结果作为完整总量发布。
 - CodeBuddy/WorkBuddy 没有输出速度（无逐次计时）。
-- ZCode 明确包含思考 Token 的请求暂不计速度；流缓存明细缺失时等轮末原生快照补齐。失败/取消只有原生零占位、没有 Provider 用量时跳过，不能表示实际扣费为零。轮内 UI 刷新仍依赖既有原生用量通知。
-- OpenCode v2 一轮进行中界面不刷新（只在轮末上报原生用量）；所有 Harness 的首 token 要等下一次界面刷新才显示。修法思路：首 token 出现或请求计量后，若本轮已有原生用量，Host 带当前轮次 ID 重发 `thread/tokenUsage/updated`。
+- ZCode 明确包含思考 Token 的请求暂不计速度；流缓存明细缺失时等轮末原生快照补齐。失败/取消只有原生零占位、没有 Provider 用量时跳过，不能表示实际扣费为零。已计入 Host 的指标通过共用用量通知刷新，不再依赖原生 Token 通知。
+- 已修复 OpenCode v2 轮内派生指标和各 Harness 首 token 的通知丢失：Renderer 直接接收 Host 自定义用量通知，即使没有原生上下文也能刷新。原生 Token 快照仍按 Adapter 原有时机更新；ZCode 流中没有的明细不会提前出现。回归覆盖无 Context/无轮末通知、Host 隔离、退订和连接替换；Desktop GUI 待验收。
 - 已接入的 Pi 会话会覆盖 #489 `pi-token-speed` 插件上报的原生速度（未决）。
 - OpenCode 自定义服务商仍作为 `provider` 传入（查不到时退回模型 ID），与 spec“不传自定义别名”措辞需统一（未决）。
 - OpenCode v2 一轮结束时原生会话总数可能尚未汇总，浮窗 Token 组可能显示 0/0（原有读取时机问题，未修）。
@@ -98,7 +98,7 @@ Adapter 约定：打开会话时先发布全部历史请求（`historical: true`
 2. Qoder：需用户登录并产生会话数据。
 3. #489 Pi 插件速度与 Host 速度的取舍。
 4. OpenCode 自定义服务商 `provider` 的处理与 spec 措辞。
-5. 是否做“一轮进行中实时刷新首 token / OpenCode v2”（见第 4 节修法）。
+5. 共用轮内用量刷新已修复，Desktop GUI 待验收（见第 4 节）。
 6. 按钮显示最近缓存命中（当前做法，理由：所有 Harness 都有、能及时反映缓存失效）还是平均缓存命中——用户问过，当前保持最近值。
 
 ## 6. 接入新 Harness 的步骤（每个都要做）

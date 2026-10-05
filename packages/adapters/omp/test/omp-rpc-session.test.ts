@@ -12,6 +12,9 @@ import {
   type OmpRpcProcessAdapter,
   type OmpTurnEvent,
 } from "../src/omp-rpc-session.js";
+import { OmpSubagentLifecycle } from "../src/omp-subagent-lifecycle.js";
+import type { HostEvent } from "@codexhost/harness-adapter";
+import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 class FakeOmpProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -408,7 +411,7 @@ describe("OMP RPC session", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         type: "subagent.started",
-        callId: "tool-1",
+        callId: "subagent-1",
         nativeSubagentId: "subagent-1",
         description: "Inspect the repository",
       }),
@@ -946,7 +949,7 @@ describe("OMP RPC session", () => {
       expect.objectContaining({
         type: "subagent.started",
         nativeSubagentId: "subagent-1",
-        callId: "tool-1",
+        callId: "subagent-1",
       }),
     );
     expect(events).toContainEqual(
@@ -964,6 +967,194 @@ describe("OMP RPC session", () => {
       }),
     );
     await session.close();
+  });
+
+  it("projects every child in one native task batch without colliding on the parent Tool call", async () => {
+    const process = new FakeOmpProcess("complete", undefined, "none", "none", (child) => {
+      for (let index = 0; index < 4; index++) {
+        child.sendFrame({
+          type: "subagent_lifecycle",
+          payload: {
+            id: `batch-child-${index}`,
+            parentToolCallId: "shared-task-call",
+            status: "started",
+            description: `Child ${index}`,
+          },
+        });
+      }
+      for (const index of [2, 0, 3, 1]) {
+        child.sendFrame({
+          type: "subagent_progress",
+          payload: {
+            parentToolCallId: "shared-task-call",
+            progress: {
+              id: `batch-child-${index}`,
+              status: "running",
+              recentOutput: [`Working ${index}`],
+            },
+          },
+        });
+        child.sendFrame({
+          type: "subagent_lifecycle",
+          payload: {
+            id: `batch-child-${index}`,
+            parentToolCallId: "shared-task-call",
+            status: "completed",
+            resultSummary: `Result ${index}`,
+          },
+        });
+      }
+    });
+    const onFault = vi.fn();
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, onFault },
+      { spawn: () => process as never },
+    );
+    const events: HostEvent[] = [];
+    let nextItemId = 0;
+    const lifecycle = new OmpSubagentLifecycle({
+      newItemId: () => hostItemIdSchema.parse(`delegation-${nextItemId++}`),
+      emit: (event) => events.push(event),
+    });
+    const turnId = hostTurnIdSchema.parse("batch-turn");
+    try {
+      await session.start();
+      await expect(
+        session.runTurn("delegate batch", (event) => {
+          if (event.type === "subagent.started") lifecycle.start(turnId, event);
+          if (event.type === "subagent.updated") lifecycle.update(turnId, event);
+          if (event.type === "subagent.completed") lifecycle.complete(turnId, event, false);
+        }),
+      ).resolves.toMatchObject({ text: "PONG", cancelled: false });
+      expect(onFault).not.toHaveBeenCalled();
+      const completed = events.filter(
+        (event): event is Extract<HostEvent, { type: "item.completed" }> =>
+          event.type === "item.completed" &&
+          event.snapshot.item.type === "subagentDelegation" &&
+          event.snapshot.item.subagents[0]?.nativeSubagentId?.startsWith("batch-child-") === true,
+      );
+      expect(completed).toHaveLength(4);
+      expect(new Set(completed.map((event) => event.snapshot.item.itemId)).size).toBe(4);
+      for (const event of completed) {
+        if (event.snapshot.item.type !== "subagentDelegation") throw new Error("Wrong Item type");
+        const subagent = event.snapshot.item.subagents[0];
+        const index = subagent?.nativeSubagentId?.slice("batch-child-".length);
+        expect(subagent).toMatchObject({ status: "completed", resultSummary: `Result ${index}` });
+        expect(event.snapshot.outcome).toEqual({ status: "succeeded" });
+      }
+      expect(lifecycle.size).toBe(0);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("keeps frame-handler faults distinct from invalid JSON", async () => {
+    const process = new FakeOmpProcess();
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000 },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      await expect(
+        session.runTurn("delegate", () => {
+          throw new Error("Synthetic projection failure");
+        }),
+      ).rejects.toThrow("Omp RPC frame handling failed: Synthetic projection failure");
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("keeps genuine duplicate child starts as faults", async () => {
+    const process = new FakeOmpProcess("complete", undefined, "none", "none", (child) => {
+      const frame = {
+        type: "subagent_lifecycle",
+        payload: { id: "same-child", parentToolCallId: "shared-task-call", status: "started" },
+      };
+      child.sendFrame(frame);
+      child.sendFrame(frame);
+    });
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000 },
+      { spawn: () => process as never },
+    );
+    const lifecycle = new OmpSubagentLifecycle({
+      newItemId: () => hostItemIdSchema.parse("duplicate-delegation"),
+      emit: () => undefined,
+    });
+    try {
+      await session.start();
+      await expect(
+        session.runTurn("duplicate", (event) => {
+          if (event.type === "subagent.started") {
+            lifecycle.start(hostTurnIdSchema.parse("duplicate-turn"), event);
+          }
+        }),
+      ).rejects.toThrow(
+        "Omp RPC frame handling failed: Omp Subagent delegation started more than once",
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("preserves child identity for background Subagents sharing one parent Tool call", async () => {
+    const process = new FakeOmpProcess();
+    const events: OmpTurnEvent[] = [];
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onSubagentEvent: (event) => events.push(event) },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      for (const id of ["background-child-1", "background-child-2"]) {
+        process.sendFrame({
+          type: "subagent_lifecycle",
+          payload: {
+            id,
+            parentToolCallId: "shared-background-tool",
+            status: "started",
+            detached: true,
+          },
+        });
+      }
+      expect(events).toMatchObject([
+        {
+          type: "subagent.started",
+          callId: "background-child-1",
+          nativeSubagentId: "background-child-1",
+        },
+        {
+          type: "subagent.started",
+          callId: "background-child-2",
+          nativeSubagentId: "background-child-2",
+        },
+      ]);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("still reports malformed JSONL as a parsing fault", async () => {
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, onFault },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      process.stdout.write("{not-json}\n");
+      expect(onFault).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "protocolError",
+          message: expect.stringContaining("invalid JSONL"),
+        }),
+      );
+    } finally {
+      await session.close();
+    }
   });
 
   it("correlates manual Compact RPC events without an active Prompt Turn", async () => {

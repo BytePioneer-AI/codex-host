@@ -7,6 +7,19 @@ import {
 } from "@codexhost/shared-contracts";
 
 describe("Thread Usage contracts", () => {
+  it("keeps API average speed separate from generation TPS", () => {
+    const usage = {
+      apiOutputTokensPerSecond: 82.4,
+      totalCostUsd: 0.09920104,
+      costSource: "native",
+    };
+    expect(threadUsageInspectionSchema.parse({ threadId: "grok", usage }).usage).toEqual(usage);
+    for (const value of [-1, NaN, Infinity, "82.4"]) {
+      expect(threadUsageSnapshotSchema.safeParse({ apiOutputTokensPerSecond: value }).success).toBe(
+        false,
+      );
+    }
+  });
   it("carries credits and independent context percent through usage inspection", () => {
     const usage = { totalCredits: 0.125, contextUsagePercent: 102 };
     expect(threadUsageInspectionSchema.parse({ threadId: "kiro", usage }).usage).toEqual(usage);

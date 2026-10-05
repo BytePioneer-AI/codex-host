@@ -3,7 +3,7 @@ import type {
   PromptResponse,
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
-import type { HarnessOutput } from "@codexhost/harness-adapter";
+import type { HarnessOutput, HostEvent } from "@codexhost/harness-adapter";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path, { resolve } from "node:path";
@@ -1101,6 +1101,53 @@ describe("Grok Adapter ACP projection", () => {
       outcome: { status: "succeeded" },
     });
     await adapter.close();
+  });
+
+  it("publishes native API average speed and clears it when the next Turn has no valid timing", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    try {
+      for (const [index, duration] of [19057, 0].entries()) {
+        const turnId = hostTurnIdSchema.parse(`api-speed-${index}`);
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "test" }],
+        });
+        expect((await nextEvent(iterator)).type).toBe("turn.started");
+        transport.finish(
+          { stopReason: "end_turn" },
+          {
+            inputTokens: 78636,
+            outputTokens: 1571,
+            totalTokens: 80207,
+            cachedReadTokens: 23680,
+            cacheCreationTokens: 0,
+            reasoningTokens: 925,
+            modelCalls: 3,
+            apiDurationMs: duration,
+            costUsdTicks: 992010400,
+          },
+        );
+        const events: HostEvent[] = [];
+        for (;;) {
+          const event = await nextEvent(iterator);
+          events.push(event);
+          if (event.type === "turn.completed") break;
+        }
+        const usage = events.find((e) => e.type === "session.usage.changed")?.usage;
+        if (index === 0) expect(usage?.apiOutputTokensPerSecond).toBeCloseTo(82.4369, 4);
+        else expect(usage?.apiOutputTokensPerSecond).toBeUndefined();
+        expect(usage?.totalCostUsd).toBeCloseTo(0.09920104 * (index + 1), 8);
+        expect(usage?.outputTokensPerSecond).toBeUndefined();
+        expect(events.some((e) => e.type === "usage.history" || e.type === "usage.request")).toBe(
+          false,
+        );
+      }
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("publishes cache hit and cost from persisted turn_completed Usage", async () => {

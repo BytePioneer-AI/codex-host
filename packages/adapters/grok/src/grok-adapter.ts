@@ -1395,7 +1395,8 @@ class GrokHarnessSession implements HarnessSession {
       });
     }
     this.#active = null;
-    if (usage) this.#publishUsage(usage, active.command.turnId);
+    if (usage || this.#usage?.apiOutputTokensPerSecond !== undefined)
+      this.#publishUsage(usage ?? {}, active.command.turnId, true);
     this.#event({
       type: "turn.completed",
       turnId: active.command.turnId,
@@ -1405,8 +1406,15 @@ class GrokHarnessSession implements HarnessSession {
     active.resolveCompletion();
   }
 
-  #publishUsage(usage: HostUsage, observedForTurnId?: TurnStartCommand["turnId"]): void {
+  #publishUsage(
+    usage: HostUsage,
+    observedForTurnId?: TurnStartCommand["turnId"],
+    turnCompleted = false,
+  ): void {
     const merged = combineUsage(this.#usage, usage);
+    // Context updates keep the last rate; a completed Turn without valid timing clears it.
+    if (merged && turnCompleted && usage.apiOutputTokensPerSecond === undefined)
+      delete merged.apiOutputTokensPerSecond;
     if (merged === null || JSON.stringify(merged) === JSON.stringify(this.#usage)) return;
     this.#usage = merged;
     this.#event({

@@ -89,6 +89,16 @@ const { outputFiles } = await build({
             planFiveHourResetsAtUnix: 1_756_130_400,
           });
         };
+        globalThis.updateRendererGrokUsage = (locale) => {
+          renderRendererUsageControl(usage, {
+            apiOutputTokensPerSecond: 1571 / 19.057,
+            timeToFirstOutputMs: 1250,
+            totalCostUsd: 0.09920104,
+            costSource: "native",
+            inputTokens: 78636,
+            outputTokens: 1571,
+          }, locale);
+        };
         globalThis.updateRendererUsageMetered = () => {
           renderRendererUsageControl(usage, {
             cacheHitRatePercent: 92.9,
@@ -137,6 +147,36 @@ const { outputFiles } = await build({
 
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer Usage bundle was not generated");
+
+for (const locale of ["zh-CN", "en"]) {
+  test(`Grok API average speed is not generation TPS (${locale})`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 650, height: 650 });
+    await page.setContent(
+      '<!doctype html><body style="margin:16px;padding-top:350px;font:14px system-ui"></body>',
+    );
+    await page.addScriptTag({ content: browserBundle });
+    await page.evaluate((language) => {
+      Reflect.get(globalThis, "setupRendererUsage")();
+      Reflect.get(globalThis, "updateRendererGrokUsage")(language);
+    }, locale);
+    const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+    await expect(usage).toContainText("API 82.4 tok/s");
+    await expect(usage).toContainText("$0.099");
+    await usage.hover();
+    const popover = page.getByRole("dialog");
+    await expect(popover).toBeVisible();
+    await expect(popover).toContainText(locale === "zh-CN" ? "API 平均速度" : "API average speed");
+    await expect(popover).toContainText(
+      locale === "zh-CN" ? "含首字等待" : "including first-token wait",
+    );
+    await expect(popover).not.toContainText(
+      locale === "zh-CN" ? "输出速度（TPS）" : "Output speed (TPS)",
+    );
+    await expect(popover).toContainText("TTFT");
+    await expect(popover).toContainText(locale === "zh-CN" ? "1.3 秒" : "1.3s");
+    await page.screenshot({ path: testInfo.outputPath(`grok-api-${locale}.png`) });
+  });
+}
 
 for (const width of [1280, 375]) {
   test(`Kiro credits and context popover at ${width}px`, async ({ page }, testInfo) => {

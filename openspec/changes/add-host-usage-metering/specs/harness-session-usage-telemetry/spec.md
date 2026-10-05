@@ -173,6 +173,23 @@ Host MUST 按 `requestId` 在 Thread 内去重请求记录，并用请求记录�
 - **WHEN** Session 发布了 `usage.history { complete: false }` 且尚无任何请求记录，随后 `session.usage.changed` 携带原生 `totalCostUsd`
 - **THEN** Host MUST NOT 发布该原生费用
 
+### Requirement: 原生 API 平均速度必须与生成 TPS 分开表达
+
+Adapter MAY 从原生最近完成轮次的输出 Token 与该轮 API 累计耗时计算 `apiOutputTokensPerSecond`，该字段 MUST 是有限非负数。API 耗时包含首字等待，Adapter MUST NOT 将该比值作为排除预填充的 `outputTokensPerSecond` 发布。界面 MUST 将其标为 API 平均速度并说明包含首字等待。该指标 MUST NOT 强制 Session 进入 Host 请求级计费模式；未进入计费模式的原生费用 MUST 保留。
+
+#### Scenario: Grok 有可靠的原生 API 用量
+
+- **WHEN** Grok 最新完成轮次提供非负安全整数输出 Token、正安全整数 `apiDurationMs` 与 `modelCalls`，且未声明用量不完整
+- **THEN** Adapter MAY 发布 `apiOutputTokensPerSecond = outputTokens / (apiDurationMs / 1000)`
+- **AND** 输出中已有的思考 Token MUST NOT 再次加算，原生费用 MUST NOT 被公开价格替换
+- **AND** 恢复会话时 MAY 从原生历史恢复最近完成轮次的该值，而非用累计会话输出计算
+
+#### Scenario: 新轮次缺少可靠 API 计时
+
+- **WHEN** 新轮次完成但耗时缺失、为零或无效，调用数无效，或原生声明用量不完整
+- **THEN** Adapter MUST 省略 API 平均速度并清除旧轮次的该值
+- **AND** 该速度的缺失 MUST NOT 删除其他可靠原生用量字段或阻塞会话
+
 ### Requirement: Host 必须维护可刷新、可覆盖的价格表
 
 Host MUST 随版本携带价格表快照，包含每百万 Token 的输入、输出、缓存读、缓存写单价（缺失项保持缺失）。Host 启动时若本地价格表超过 7 天 MUST 在后台请求一次最新数据，校验通过后原子替换，失败时 MUST 静默沿用现有价格表且不得阻塞启动或会话。用户数据目录中的价格覆盖文件 MUST 优先于默认价格；文件无效时 Host MUST 忽略整个文件并记录诊断。查找 MUST NOT 做模糊或前缀匹配：有标准 `provider` 时先匹配服务商与模型，再匹配模型 ID；同一模型 ID 对应多个服务商价格时，沿 `canonical_model_id` 链确定官方厂商，厂商自己列出该 ID 时 MUST 使用厂商价格，无法确定时 MUST 视为未匹配。仅大小写不同的模型 ID MAY 匹配，前提是所有能计价的写法价格一致。

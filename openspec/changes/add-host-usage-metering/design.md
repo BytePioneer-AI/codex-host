@@ -101,6 +101,14 @@ Host 在收到 `complete: true` 之前，以及处于不完整状态时，不发
 
 `HostUsage` 与 `threadUsageSnapshotSchema` 新增 `sessionCacheHitRatePercent`（0–100）、`timeToFirstOutputMs`（非负安全整数）、`costSource`（`publicPrice` | `native`）。用量浮窗新增“平均缓存命中”“首字延迟”两行；`costSource` 只作数据字段，界面不显示说明。
 
+### D7. Grok 保留原生费用，区分 API 平均速度
+
+用户确认 Grok 不需要公开价格重算。Adapter 不发布 `usage.request` / `usage.history`，继续按原生 ticks 展示费用，由 Host 标记 `costSource: native`；无需价格表补价或扩展请求级费用契约。
+
+`HostUsage` 与浏览器快照增加可选非负有限数 `apiOutputTokensPerSecond`，由 Adapter 从原生最近完成轮次的 `outputTokens / (apiDurationMs / 1000)` 得到，不与 `outputTokensPerSecond` 混用。输出已含思考，API 耗时含首字等待；界面独立标为“API 平均速度”，紧凑按钮加 `API` 前缀并在浮窗说明口径。有效调用数和正耗时缺失，或原生声明 `usageIsIncomplete` 时省略；新轮次结束但无有效计时会清除旧值。历史回放恢复最后一轮的 API 平均速度，不用会话累计输出除以最后一轮耗时；后台任务完成记录不计入。
+
+TTFT 继续由 Host 实时观测首个思考或正文，不从历史重建。严格排除预填充的生成 TPS 尚未具备可靠边界，不实现；也不新增工具或审批耗时展示、文件轮询或遥测采集器。
+
 ## Risks / Trade-offs
 
 - [公开价格不等于实际支出，部分 Harness 显示值与其自身界面不同] → 浮窗说明计算方式；测试中用原生费用对比偏差。

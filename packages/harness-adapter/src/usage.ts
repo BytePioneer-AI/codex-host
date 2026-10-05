@@ -4,6 +4,8 @@ export interface HostUsage {
   cacheWriteInputTokens?: number;
   outputTokens?: number;
   outputTokensPerSecond?: number;
+  /** Latest Turn output / native API duration, including first-output wait; not generation TPS. */
+  apiOutputTokensPerSecond?: number;
   reasoningOutputTokens?: number;
   totalTokens?: number;
   totalCostUsd?: number;
@@ -72,6 +74,7 @@ const usageFields = new Set<keyof HostUsage>([
   "totalCredits",
   "contextUsagePercent",
   "outputTokensPerSecond",
+  "apiOutputTokensPerSecond",
   "costSource",
   "unpricedModels",
 ]);
@@ -89,7 +92,11 @@ export function parseHostUsage(value: unknown): HostUsage {
       throw new Error(`Harness Usage contains unknown field '${key}'`);
     }
   }
-  for (const field of ["totalCredits", "contextUsagePercent"] as const) {
+  for (const field of [
+    "totalCredits",
+    "contextUsagePercent",
+    "apiOutputTokensPerSecond",
+  ] as const) {
     const candidate = value[field];
     if (
       candidate !== undefined &&

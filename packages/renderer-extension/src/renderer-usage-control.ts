@@ -32,6 +32,8 @@ interface RendererUsageMessages {
   readonly latestCacheHit: string;
   readonly sessionCacheHit: string;
   readonly outputSpeed: string;
+  readonly apiOutputSpeed: string;
+  readonly apiOutputSpeedDescription: string;
   readonly timeToFirstOutput: string;
   readonly cacheRead: string;
   readonly cacheReadWrite: string;
@@ -58,6 +60,9 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   latestCacheHit: "Latest cache hit (CH)",
   sessionCacheHit: "Average cache hit",
   outputSpeed: "Output speed (TPS)",
+  apiOutputSpeed: "API average speed",
+  apiOutputSpeedDescription:
+    "Output tokens / native API time, including first-token wait; not generation TPS.",
   timeToFirstOutput: "Time to first token (TTFT)",
   cacheRead: "Cache read",
   cacheReadWrite: "Cache read / write",
@@ -84,6 +89,8 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   latestCacheHit: "最近缓存命中（CH）",
   sessionCacheHit: "平均缓存命中",
   outputSpeed: "输出速度（TPS）",
+  apiOutputSpeed: "API 平均速度",
+  apiOutputSpeedDescription: "输出 Token ÷ 原生 API 耗时，含首字等待；不是生成 TPS。",
   timeToFirstOutput: "首 token（TTFT）",
   cacheRead: "缓存读取",
   cacheReadWrite: "缓存读取 / 写入",
@@ -249,6 +256,7 @@ export function rendererUsageHasDisplayData(usage: ThreadUsageSnapshot | null): 
     usage?.cacheHitRatePercent !== undefined ||
     usage?.sessionCacheHitRatePercent !== undefined ||
     usage?.outputTokensPerSecond !== undefined ||
+    usage?.apiOutputTokensPerSecond !== undefined ||
     usage?.timeToFirstOutputMs !== undefined ||
     usage?.totalCostUsd !== undefined ||
     usage?.totalCredits !== undefined ||
@@ -436,6 +444,13 @@ function renderDetails(
   const turn: DetailRow[] = [];
   if (usage?.outputTokensPerSecond !== undefined) {
     turn.push([messages.outputSpeed, formatRendererTokenRate(usage.outputTokensPerSecond, locale)]);
+  }
+  if (usage?.apiOutputTokensPerSecond !== undefined) {
+    turn.push([
+      messages.apiOutputSpeed,
+      formatRendererTokenRate(usage.apiOutputTokensPerSecond, locale),
+      messages.apiOutputSpeedDescription,
+    ]);
   }
   if (usage?.timeToFirstOutputMs !== undefined) {
     turn.push([
@@ -692,7 +707,9 @@ export function renderRendererUsageControl(
       : null,
     outputTokensPerSecond !== undefined
       ? formatRendererTokenRate(outputTokensPerSecond, locale)
-      : null,
+      : usage?.apiOutputTokensPerSecond !== undefined
+        ? `API ${formatRendererTokenRate(usage.apiOutputTokensPerSecond, locale)}`
+        : null,
     usage && totalCostUsd !== undefined ? formatUsageCost({ ...usage, totalCostUsd }) : null,
   ].filter((value): value is string => value !== null);
   const contextPercent = usage?.contextUsagePercent;

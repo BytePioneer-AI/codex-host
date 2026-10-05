@@ -22,6 +22,27 @@ export function combineUsage(base: HostUsage | null, next: HostUsage | null): Ho
   return base === null ? next : parseHostUsage({ ...base, ...next });
 }
 
+/** Native per-Turn API time includes first-output wait; never label this generation TPS. */
+function apiOutputRate(value: Record<string, unknown>): number | undefined {
+  const output = value.outputTokens,
+    duration = value.apiDurationMs,
+    calls = value.modelCalls;
+  if (
+    (value.usageIsIncomplete !== undefined && value.usageIsIncomplete !== false) ||
+    typeof output !== "number" ||
+    !Number.isSafeInteger(output) ||
+    output < 0 ||
+    typeof duration !== "number" ||
+    !Number.isSafeInteger(duration) ||
+    duration <= 0 ||
+    typeof calls !== "number" ||
+    !Number.isSafeInteger(calls) ||
+    calls <= 0
+  )
+    return undefined;
+  return output / (duration / 1000);
+}
+
 export function usageFromNative(value: unknown): HostUsage | null {
   if (!isRecord(value)) return null;
   const inputTokens = optionalToken(value.inputTokens);
@@ -29,6 +50,7 @@ export function usageFromNative(value: unknown): HostUsage | null {
   const cachedWrite = optionalToken(value.cacheCreationTokens ?? value.cachedWriteTokens);
   const reasoning = optionalToken(value.reasoningTokens ?? value.thoughtTokens);
   const totalCostUsd = optionalCostUsd(value.costUsdTicks);
+  const apiOutputTokensPerSecond = apiOutputRate(value);
   const cacheHitRatePercent =
     inputTokens !== undefined &&
     cachedRead !== undefined &&
@@ -47,6 +69,7 @@ export function usageFromNative(value: unknown): HostUsage | null {
       ...(cachedWrite !== undefined ? { cacheWriteInputTokens: cachedWrite } : {}),
       ...(reasoning !== undefined ? { reasoningOutputTokens: reasoning } : {}),
       ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+      ...(apiOutputTokensPerSecond !== undefined ? { apiOutputTokensPerSecond } : {}),
       ...(cacheHitRatePercent !== undefined ? { cacheHitRatePercent } : {}),
     });
   } catch {
@@ -98,6 +121,7 @@ export function sessionUsageFromHistory(
 ): HostUsage | null {
   const latestByKey = new Map<string, { usage: HostUsage; ticks?: number }>();
   let lastCacheHitRatePercent: number | undefined;
+  let lastApiOutputRate: number | undefined;
   let index = 0;
   for (const event of events) {
     if (event?.type !== "turn.completed") continue;
@@ -105,6 +129,7 @@ export function sessionUsageFromHistory(
     index += 1;
     if (key === null) continue;
     const usage = usageFromNative(event.usage);
+    lastApiOutputRate = (usage ?? latestByKey.get(key)?.usage)?.apiOutputTokensPerSecond;
     if (!usage) continue;
     const ticks = nativeCostTicks(event.usage);
     latestByKey.set(key, ticks === undefined ? { usage } : { usage, ticks });
@@ -132,6 +157,7 @@ export function sessionUsageFromHistory(
     return parseHostUsage({
       ...totals,
       ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+      ...(lastApiOutputRate !== undefined ? { apiOutputTokensPerSecond: lastApiOutputRate } : {}),
       ...(lastCacheHitRatePercent !== undefined
         ? { cacheHitRatePercent: lastCacheHitRatePercent }
         : {}),

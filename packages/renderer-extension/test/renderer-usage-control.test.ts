@@ -15,6 +15,17 @@ import {
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer Usage localization", () => {
+  it("labels API average speed without calling it generation TPS", () => {
+    expect(rendererUsageHasDisplayData({ apiOutputTokensPerSecond: 82.4 })).toBe(true);
+    expect(rendererUsageMessages("zh-CN")).toMatchObject({
+      apiOutputSpeed: "API 平均速度",
+      apiOutputSpeedDescription: expect.stringContaining("含首字等待"),
+    });
+    expect(rendererUsageMessages("en")).toMatchObject({
+      apiOutputSpeed: "API average speed",
+      apiOutputSpeedDescription: expect.stringContaining("including first-token wait"),
+    });
+  });
   it("shows credit-only and context-only data without dollar conversion", () => {
     expect(rendererUsageHasDisplayData({ totalCredits: 0.05 })).toBe(true);
     expect(rendererUsageHasDisplayData({ contextUsagePercent: 9.5 })).toBe(true);

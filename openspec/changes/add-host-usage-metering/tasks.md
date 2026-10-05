@@ -38,6 +38,6 @@
 - [x] 7.2 DeepSeek Harness（dsh）：按日志 `assistant/message` 的 `usage` 块计量。
 - [x] 7.3 CodeBuddy / WorkBuddy：从原生历史计量，修复缓存字段。
 - [ ] 7.4 Qoder / Qoder CN：待本机有真实会话后核对结构。
-- [ ] 7.5 Grok：待决定是否携带原生费用。
+- [x] 7.5 Grok：保留原生费用；独立发布 API 平均速度并明确包含首字等待，验证 Host TTFT。已核实原生历史与合成端到端链路；真实 Desktop 新轮次验收待用户。与 Pi 同口径的生成 TPS 不在本次实现内。
 - [ ] 7.6 Hermes、Kimi、Antigravity：数据不足或无缓存字段，实测口径后再定；Kiro、Cursor 不接入。
 - [x] 7.7 ZCode：核对 3.14.4 原生 RPC 与本机历史，按消息回放/主请求事件计量；覆盖缓存/思考口径、去重、换模型、取消、实时与恢复一致性。明确包含思考 Token 时暂不计速度；GUI 验收待用户。

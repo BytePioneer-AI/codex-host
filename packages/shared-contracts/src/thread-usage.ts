@@ -13,6 +13,7 @@ export const threadUsageSnapshotSchema = z
     cacheWriteInputTokens: nonNegativeSafeIntegerSchema.optional(),
     outputTokens: nonNegativeSafeIntegerSchema.optional(),
     outputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
+    apiOutputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
     reasoningOutputTokens: nonNegativeSafeIntegerSchema.optional(),
     totalTokens: nonNegativeSafeIntegerSchema.optional(),
     totalCostUsd: finiteNonNegativeNumberSchema.optional(),

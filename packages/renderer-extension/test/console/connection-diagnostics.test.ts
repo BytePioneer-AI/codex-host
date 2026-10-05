@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createConsoleConnectionDiagnostics } from "../../src/console/connection-diagnostics.js";
+import { ConsoleState, type ConsoleOverview } from "../../src/console/state.js";
 import type { RendererModelClient } from "../../src/renderer-model-client.js";
 
 function client(overrides: Partial<RendererModelClient>): RendererModelClient {
@@ -8,6 +9,25 @@ function client(overrides: Partial<RendererModelClient>): RendererModelClient {
 }
 
 describe("console connection diagnostics", () => {
+  it("separates daemon availability from the managed Renderer adapter", () => {
+    const state = new ConsoleState();
+    state.overview = {
+      desktopManaged: { running: false },
+      summary: { state: "stopped", detail: null },
+      launchAvailable: true,
+    } as ConsoleOverview;
+    const diagnostics = createConsoleConnectionDiagnostics(
+      client({ inspectHarness: vi.fn(async () => ({ status: "ready" })) as never }),
+      state,
+    );
+
+    expect(diagnostics.snapshot().adapter.state).toBe("unsupported");
+    expect(diagnostics.launchRenderer).toBeTypeOf("function");
+
+    state.overview.desktopManaged.running = true;
+    expect(diagnostics.snapshot().adapter.state).toBe("ready");
+  });
+
   it("derives availability, errors and Web UI from Harness inspections", async () => {
     const inspectHarness = vi.fn(async ({ harnessId }: { harnessId: string }) => {
       if (harnessId === "pi") return { status: "ready", webUi: { open: true } };

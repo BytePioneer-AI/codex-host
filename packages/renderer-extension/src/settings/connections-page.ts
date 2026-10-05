@@ -62,11 +62,13 @@ export interface RendererConnectionDiagnostics {
     path: string | null | undefined,
     connectionMode?: HarnessConnectionMode,
   ): Promise<HarnessLaunchSettings>;
+  /** Console-only action that starts the managed Codex Desktop renderer bridge. */
+  launchRenderer?(): Promise<void>;
   subscribe(listener: () => void): () => void;
 }
 
 type ConnectionAvailability =
-  RendererAgentAvailability | RendererAdapterStatus["state"] | "updating";
+  RendererAgentAvailability | RendererAdapterStatus["state"] | "updating" | "stopped";
 type ConnectionTone = "ready" | "checking" | "setup" | "failed";
 
 interface ConnectionListItem {
@@ -78,6 +80,7 @@ interface ConnectionListItem {
   readonly openWebUi?: () => Promise<void>;
   readonly install?: () => void;
   readonly installError?: string;
+  readonly launchRenderer?: () => Promise<void>;
 }
 
 function connectionStatusLabel(
@@ -86,6 +89,7 @@ function connectionStatusLabel(
   hasError = false,
 ): string {
   if (availability === "updating") return messages.connectionStatusUpdating;
+  if (availability === "stopped") return messages.connectionStatusStopped;
   if (hasError && availability !== "notInstalled") return messages.connectionStatusError;
   if (availability === "ready") return messages.connectionStatusReady;
   if (availability === "checking") return messages.connectionStatusChecking;
@@ -105,6 +109,7 @@ function connectionStatusTone(
   hasError = false,
 ): ConnectionTone {
   if (availability === "updating") return "checking";
+  if (availability === "stopped") return "setup";
   if (hasError && availability !== "notInstalled") return "failed";
   if (availability === "ready") return "ready";
   if (availability === "checking" || availability === "installing") return "checking";
@@ -555,9 +560,29 @@ function renderConnectionInspector(
         ? messages.harnessVersionUpdating
         : item.availability === "ready"
           ? messages.connectionReadyDescription
-          : messages.connectionUnavailableDescription;
+          : item.availability === "stopped" && item.launchRenderer
+            ? messages.connectionRendererStoppedDescription
+            : messages.connectionUnavailableDescription;
     status.append(title, description);
     if (!item.agentSnapshot || item.availability !== "ready") body.append(status);
+    if (item.availability === "stopped" && item.launchRenderer) {
+      const launch = document.createElement("button");
+      launch.type = "button";
+      launch.className = "settings-command-button";
+      launch.dataset.connectionAction = "launch-renderer";
+      launch.append(createRendererSettingsIcon("play", 14), messages.connectionStartRenderer);
+      launch.addEventListener("click", () => {
+        if (launch.disabled) return;
+        launch.disabled = true;
+        void item
+          .launchRenderer?.()
+          .catch(() => undefined)
+          .finally(() => {
+            launch.disabled = false;
+          });
+      });
+      body.append(launch);
+    }
     if (item.openWebUi) {
       const open = document.createElement("button");
       open.type = "button";
@@ -618,8 +643,14 @@ function connectionItems(
     {
       key: "renderer-adapter",
       name: messages.connectionAdapter,
-      availability: snapshot.adapter.state,
+      availability:
+        diagnostics?.launchRenderer && snapshot.adapter.state === "unsupported"
+          ? "stopped"
+          : snapshot.adapter.state,
       error: null,
+      ...(diagnostics?.launchRenderer
+        ? { launchRenderer: () => diagnostics.launchRenderer?.() ?? Promise.resolve() }
+        : {}),
     },
     ...host.agents.map((agent): ConnectionListItem => ({
       key: agent.agent,

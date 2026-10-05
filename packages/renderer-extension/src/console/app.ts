@@ -52,17 +52,8 @@ function statusCard(
   const card = h(document, "div", { className: "console-status-card", role: "status" });
   const render = (): void => {
     const overview = state.overview;
-    const running = overview?.inspect?.runtime.running ?? false;
-    const summary = overview?.summary.state;
-    const tone = state.offline
-      ? "bad"
-      : summary === "running"
-        ? "ok"
-        : summary === "integration-unavailable"
-          ? "warn"
-          : summary === "startup-failed" || summary === "desktop-missing"
-            ? "bad"
-            : "idle";
+    const running = overview?.daemon.running ?? false;
+    const tone = state.offline ? "bad" : running ? "ok" : "idle";
     const version = overview?.console.distribution?.version ?? overview?.console.version ?? "";
     card.replaceChildren(
       h(
@@ -78,11 +69,9 @@ function statusCard(
             ? messages.consoleOffline
             : !overview
               ? messages.statusLoading
-              : summary === "starting"
-                ? messages.starting
-                : running
-                  ? messages.hostRunning
-                  : messages.hostStopped,
+              : running
+                ? messages.hostRunning
+                : messages.hostStopped,
         ),
       ),
       h(
@@ -124,7 +113,7 @@ export function startConsoleApp(document: Document): void {
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) stopGroupSync();
   });
-  const diagnostics = createConsoleConnectionDiagnostics(modelClient);
+  const diagnostics = createConsoleConnectionDiagnostics(modelClient, state);
   const sessionImportClient = createRendererSessionImportClient((method, params) =>
     manager.sendRequest(method, params),
   );

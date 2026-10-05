@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { UPDATE_RUNTIME_ENV } from "@codexhost/update-manager";
 
 import { AppServerHost, officialEnvironment } from "./app-server-host.js";
+import { daemonDesktopAvailable, runDaemonDesktopBridge } from "./daemon-desktop-bridge.js";
 import { prepareLocalCodex } from "./native-account-host.js";
 import { SingleNativeCodexAccount } from "./account/codex-account-control.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
@@ -21,10 +22,7 @@ import {
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
 } from "./delegation-types.js";
-import {
-  createProductionExternalThreadStore,
-  createSharedOwnerFrontendStore,
-} from "./external-thread-repository.js";
+import { createProductionExternalThreadStore } from "./external-thread-repository.js";
 import { SharedThreadOwner } from "./shared-thread-owner.js";
 import {
   SharedThreadBridge,
@@ -76,14 +74,6 @@ export function externalUiEnabled(environment: NodeJS.ProcessEnv): boolean {
     Boolean(environment.CODEXHOST_LAUNCHER_EXECUTABLE) &&
     environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1"
   );
-}
-
-async function sharedExternalDaemonAvailable(environment: NodeJS.ProcessEnv): Promise<boolean> {
-  if (process.platform === "win32") return false;
-  const peer = await connectSharedThreads(environment).catch(() => null);
-  if (!peer) return false;
-  peer.close();
-  return true;
 }
 
 export function hasLauncherManagedUpdateRuntime(
@@ -229,6 +219,16 @@ export async function runHostRuntime(input: {
       environment: input.environment,
       ...(hostRuntimePath ? { hostRuntimePath } : {}),
     });
+    if (!remoteControlPlan && (await daemonDesktopAvailable(input.environment))) {
+      process.stderr.write("codexhost: Desktop attached to shared daemon\n");
+      return runDaemonDesktopBridge({
+        arguments: input.arguments,
+        environment: input.environment,
+        stockCodexPath,
+        defaultAgent,
+        diagnosticOutput: process.stderr,
+      });
+    }
     const environment = remoteControlPlan?.environment ?? input.environment;
     return prepareDelegationRuntime({
       environment,
@@ -243,43 +243,6 @@ export async function runHostRuntime(input: {
           officialRuntimeScope: official.officialRuntimeScope,
           accountControl: official.accountControl,
         };
-        const sharedDaemonAvailable =
-          enableExternalUi && (await sharedExternalDaemonAvailable(delegationEnvironment));
-        if (!remoteControlPlan && sharedDaemonAvailable) {
-          const mappingStore = createSharedOwnerFrontendStore();
-          try {
-            const host = new AppServerHost({
-              stockCodexPath,
-              arguments: input.arguments,
-              defaultAgent,
-              environment: delegationEnvironment,
-              ...shared,
-              sharedThreads: new SharedThreadBridge({
-                connect: () => connectSharedThreads(delegationEnvironment),
-                delegateCreates: true,
-                diagnose: (error) =>
-                  process.stderr.write(`codexhost shared daemon: ${String(error)}\n`),
-              }),
-              mappingStore,
-              closeMappingStoreOnExit: false,
-              onDelegationApi,
-              ...(updateCoordinator ? { updateCoordinator } : {}),
-              ...(consoleOpener ? { consoleOpener } : {}),
-            });
-            process.stderr.write("codexhost: using shared External/Harness daemon\n");
-            return await runWithConsoleControl(
-              host,
-              consoleOpener !== undefined,
-              delegationEnvironment,
-            );
-          } finally {
-            try {
-              await official.close();
-            } finally {
-              await mappingStore.close();
-            }
-          }
-        }
         if (!remoteControlPlan) {
           if (!enableExternalUi) {
             try {

@@ -49,6 +49,7 @@ export interface ConsoleOverview {
   };
   issueUrl: string;
   hostAvailable: boolean;
+  desktopManaged: { running: boolean };
   daemon: {
     running: boolean;
     pid: number | null;

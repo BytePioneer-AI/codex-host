@@ -152,7 +152,7 @@ describe("external UI session lifecycle", () => {
       await once(client, "open");
       client.close();
       await once(client, "close");
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await vi.waitFor(() => expect(disconnectSession).toHaveBeenCalledOnce());
 
       expect(disconnectSession).toHaveBeenCalledOnce();
       expect(closeSession).not.toHaveBeenCalled();

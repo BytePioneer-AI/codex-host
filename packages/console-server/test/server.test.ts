@@ -62,9 +62,9 @@ function fakeUpdates(): ConsoleUpdates {
   };
 }
 
-function fakeDaemon(): ConsoleDaemon {
+function fakeDaemon(running = false): ConsoleDaemon {
   const status = {
-    running: false,
+    running,
     pid: null,
     port: null,
     startedAt: null,
@@ -100,7 +100,12 @@ function fakeHarnesses(): ConsoleHarnesses {
 }
 
 async function start(
-  options: { codexRunning?: boolean; launch?: () => void; host?: ConsoleHostClient } = {},
+  options: {
+    codexRunning?: boolean;
+    daemonRunning?: boolean;
+    launch?: () => void;
+    host?: ConsoleHostClient;
+  } = {},
 ) {
   const updates = fakeUpdates();
   const onExit = vi.fn();
@@ -115,7 +120,7 @@ async function start(
     paths: consolePaths({ CODEXHOST_DATA_DIR: directory }),
     updates,
     harnesses: fakeHarnesses(),
-    daemon: fakeDaemon(),
+    daemon: fakeDaemon(options.daemonRunning ?? false),
     pageScript: "window.consoleLoaded = true;\n",
     host: options.host ?? { available: vi.fn(async () => false), request: vi.fn() },
     inspect: async () => inspectDocument(options.codexRunning ?? false),
@@ -181,6 +186,7 @@ describe("console server", () => {
         "issueUrl",
         "hostAvailable",
         "daemon",
+        "desktopManaged",
       ].sort(),
     );
     expect(overview).toHaveProperty("console", { version: "1.0.0", distribution: null });
@@ -190,6 +196,18 @@ describe("console server", () => {
       /^https:\/\/github\.com\/BytePioneer-AI\/codex-host\/issues\/new\?/u,
     );
     expect(decodeURIComponent(overview.issueUrl)).toContain("26.924.20706");
+  });
+
+  it("does not treat a running daemon as a running managed Desktop", async () => {
+    const { base } = await start({ daemonRunning: true });
+    const overview = (await (await fetch(`${base}/api/overview`)).json()) as {
+      summary: { state: string };
+      desktopManaged: { running: boolean };
+      launchAvailable: boolean;
+    };
+    expect(overview.desktopManaged.running).toBe(false);
+    expect(overview.summary.state).toBe("stopped");
+    expect(overview.launchAvailable).toBe(true);
   });
 
   it("reports a live Launcher startup, then failure without leaving a stale starting state", async () => {
@@ -228,9 +246,23 @@ describe("console server", () => {
     expect((await fetch(`${base}/api/host`)).status).toBe(404);
   });
 
+  it("requires the daemon before launching managed Codex Desktop", async () => {
+    const launch = vi.fn();
+    const { base } = await start({ launch, daemonRunning: false });
+    const response = await fetch(`${base}/api/launch`, {
+      method: "POST",
+      headers: { origin: base, ...CHANGE },
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Start the codexhost daemon before Codex Desktop",
+    });
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   it("accepts changes only from the console page", async () => {
     const launch = vi.fn();
-    const { base } = await start({ launch });
+    const { base } = await start({ launch, daemonRunning: true });
     const post = (headers: Record<string, string>) =>
       fetch(`${base}/api/launch`, { method: "POST", headers });
 

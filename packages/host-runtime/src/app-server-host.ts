@@ -310,6 +310,12 @@ export interface AppServerHostOptions {
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+  /** Internal daemon bridge handshake; never part of the public External UI contract. */
+  onRuntimeAttach?: (input: {
+    stockCodexPath: string;
+    arguments: string[];
+    defaultAgent: "codex" | "pi";
+  }) => Promise<void> | void;
 }
 
 interface TurnProjectionGate {
@@ -815,6 +821,12 @@ export class AppServerHost {
       typeof unregisterDelegationApi === "function" ? unregisterDelegationApi : undefined;
   }
 
+  async enableOfficialRuntime(defaultAgent?: "codex" | "pi"): Promise<void> {
+    if (defaultAgent) this.#options.defaultAgent = defaultAgent;
+    this.#options.externalOnly = false;
+    await this.#officialRuntime.initialize();
+  }
+
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
@@ -1133,6 +1145,35 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    if (request.method === "codexhost/runtime/attach") {
+      const params = isRecord(request.params) ? request.params : {};
+      const stockCodexPath = typeof params.stockCodexPath === "string" ? params.stockCodexPath : "";
+      const arguments_ = Array.isArray(params.arguments)
+        ? params.arguments.filter((value): value is string => typeof value === "string")
+        : [];
+      const defaultAgent = params.defaultAgent;
+      if (
+        !this.#options.onRuntimeAttach ||
+        !stockCodexPath ||
+        arguments_.length !== (Array.isArray(params.arguments) ? params.arguments.length : -1) ||
+        (defaultAgent !== "codex" && defaultAgent !== "pi")
+      ) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid daemon runtime attach"));
+        return;
+      }
+      try {
+        await this.#options.onRuntimeAttach({
+          stockCodexPath,
+          arguments: arguments_,
+          defaultAgent,
+        });
+        await this.enableOfficialRuntime(defaultAgent);
+        await this.#writer.json(rpcEnvelope(request, { result: { attached: true } }));
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32090, errorMessage(error)));
+      }
+      return;
+    }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
       await this.#writer.json(
         rpcEnvelope(request, {

@@ -57,6 +57,14 @@ export function installedLauncherCandidates(
   return candidates;
 }
 
+function sourceRepositoryRoot(appDirectory: string): string | null {
+  return path.basename(appDirectory) === "dist" &&
+    path.basename(path.dirname(appDirectory)) === "console-server" &&
+    path.basename(path.resolve(appDirectory, "../..")) === "packages"
+    ? path.resolve(appDirectory, "../../..")
+    : null;
+}
+
 export function resolveLauncherExecutable(
   appDirectory: string,
   environment: NodeJS.ProcessEnv = process.env,
@@ -65,7 +73,13 @@ export function resolveLauncherExecutable(
 ): string | null {
   const configured = environment[LAUNCHER_EXECUTABLE_ENV];
   if (configured && path.isAbsolute(configured) && exists(configured)) return configured;
-  return installedLauncherCandidates(appDirectory, platform).find(exists) ?? null;
+  const root = sourceRepositoryRoot(appDirectory);
+  const candidates = installedLauncherCandidates(appDirectory, platform);
+  if (root)
+    candidates.push(
+      path.join(root, "target", "debug", platform === "win32" ? "codexhost.exe" : "codexhost"),
+    );
+  return candidates.find(exists) ?? null;
 }
 
 export async function resolveInstallation(
@@ -130,6 +144,23 @@ export function launchCommand(
       return { command: node, args: [wrapper] };
     }
     return null;
+  }
+  const root = sourceRepositoryRoot(installation.appDirectory);
+  if (root && installation.launcherExecutable) {
+    const suffix = process.platform === "win32" ? ".exe" : "";
+    const resources = [
+      "--shim",
+      path.join(root, "target", "debug", `codexhost-shim${suffix}`),
+      "--node",
+      process.execPath,
+      "--host-runtime",
+      path.join(root, "packages", "host-runtime", "dist", "main.js"),
+      "--desktop-controller",
+      path.join(root, "packages", "desktop-control", "dist", "release-main.js"),
+      "--renderer",
+      path.join(root, "packages", "renderer-extension", "dist", "production.js"),
+    ];
+    return { command: installation.launcherExecutable, args: ["launch", ...resources] };
   }
   return installation.launcherExecutable
     ? { command: installation.launcherExecutable, args: ["launch"] }

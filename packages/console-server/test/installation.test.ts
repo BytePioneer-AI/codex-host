@@ -83,6 +83,38 @@ describe("console installation", () => {
     },
   );
 
+  it("discovers and launches a source checkout with explicit built resources", () => {
+    const root = path.resolve("/source/codexhost");
+    const appDirectory = path.join(root, "packages", "console-server", "dist");
+    const launcher = path.join(root, "target", "debug", "codexhost");
+    expect(resolveLauncherExecutable(appDirectory, {}, "darwin", (file) => file === launcher)).toBe(
+      launcher,
+    );
+    const command = launchCommand(
+      { appDirectory, launcherExecutable: launcher, distribution: null },
+      {},
+    );
+    expect(command?.command).toBe(launcher);
+    expect(command?.args).toEqual([
+      "launch",
+      "--shim",
+      path.join(
+        root,
+        "target",
+        "debug",
+        process.platform === "win32" ? "codexhost-shim.exe" : "codexhost-shim",
+      ),
+      "--node",
+      process.execPath,
+      "--host-runtime",
+      path.join(root, "packages", "host-runtime", "dist", "main.js"),
+      "--desktop-controller",
+      path.join(root, "packages", "desktop-control", "dist", "release-main.js"),
+      "--renderer",
+      path.join(root, "packages", "renderer-extension", "dist", "production.js"),
+    ]);
+  });
+
   it("rejects inspect output from an unknown schema", () => {
     expect(() => parseInspectDocument({ schemaVersion: 2, runtime: {} })).toThrow("schema");
   });

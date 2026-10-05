@@ -58,7 +58,10 @@ async function descriptor(file: string): Promise<RuntimeDescriptor | null> {
 function runtimePath(appDirectory: string, environment: NodeJS.ProcessEnv): string {
   const configured = environment.CODEXHOST_HOST_RUNTIME_PATH;
   if (configured && path.isAbsolute(configured)) return configured;
-  if (path.basename(appDirectory) === "dist" && path.basename(path.dirname(appDirectory)) === "console-server") {
+  if (
+    path.basename(appDirectory) === "dist" &&
+    path.basename(path.dirname(appDirectory)) === "console-server"
+  ) {
     return path.resolve(appDirectory, "..", "..", "host-runtime", "dist", "main.js");
   }
   return path.join(appDirectory, "host-runtime.mjs");
@@ -159,7 +162,20 @@ export function createConsoleDaemon(options: {
       return { ...current, error: null };
     }
     process.kill(current.pid, "SIGTERM");
-    const stopped = await waitForStatus(readStatus, false, 10_000);
+    // Listener shutdown precedes Mapping Store release. A restart must wait
+    // for process exit as well, otherwise the replacement races the old lock.
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      try {
+        process.kill(current.pid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") break;
+        throw error;
+      }
+      if (Date.now() >= deadline) throw new Error("codexhost daemon did not stop");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const stopped = await readStatus();
     if (stopped.running) throw new Error("codexhost daemon did not stop");
     return { ...stopped, error: null };
   };

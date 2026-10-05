@@ -70,7 +70,7 @@ Desktop 通过现有 `SharedThreadBridge` 访问 daemon 所拥有的 External/Ha
 
 5. 第一阶段启动策略：
    - 提供显式 daemon 启动入口，开发阶段可独立启动和验证。
-   - Launcher 自动 ensure-daemon 可在本阶段后半加入；不依赖第二步。
+   - daemon 不做开机自启；由 CodexHost Web 管理端按需 start / stop / restart。
 
 ### 验收
 
@@ -102,11 +102,12 @@ Web UI --------------------------------┘        │
 ### 实现项
 
 1. Desktop 首次 attach 时把真实 app-server invocation 参数交给 daemon。
-2. daemon 根据 Desktop attach 参数 lazy 创建/更新 `OfficialRuntimeScope`。
-3. Shim 不再 spawn 完整 Host Runtime，只做 stdio <-> daemon transport。
-4. Launcher 负责登录会话级 daemon 的 ensure/start/upgrade。
-5. 删除 Desktop-owned `LocalRuntimeLease` 的 Host Runtime 所有权语义，改成 daemon 单实例所有权。
-6. 统一 Official/External Session、账号、更新与 shutdown 生命周期。
+2. daemon 根据 Desktop attach 参数 lazy 启动并长期持有唯一 `OfficialRuntimeScope`。
+3. Desktop Host Runtime 检测到 daemon 后退化为 stdio <-> daemon 的 thin bridge，不再创建本地 `AppServerHost` 或 Official Codex。
+4. daemon 仍由 CodexHost Web 管理端按需启动，不做开机自启；daemon 不存在时 Desktop 保留旧链路回退。
+5. 保留现有 Desktop-owned `LocalRuntimeLease`，但它只拥有 thin bridge / fallback Host，不拥有 daemon。
+6. daemon 内每个 Desktop 连接创建独立轻量 frontend，共享唯一 Official Runtime，并把 External/Harness 请求路由到唯一 `SharedThreadOwner`。
+7. Web console Host channel 迁到 daemon；账号、Harness 设置、更新与 shutdown 生命周期由 daemon 承担。
 
 ### 验收
 
@@ -122,7 +123,7 @@ Web UI --------------------------------┘        │
 
 - [x] 规划为两步
 - [x] 第一步：独立 External/Harness Daemon
-- [ ] 第二步：统一 Official Codex 到 Daemon
+- [x] 第二步：统一 Official Codex 到 Daemon
 
 ### 第一步已完成
 
@@ -138,3 +139,18 @@ Web UI --------------------------------┘        │
 - Web 管理端已提供 daemon `status / start / stop / restart`。
 - Web 总览页已增加 Daemon 状态与启动、停止、重启控制。
 - 不做开机自启；daemon 由 CodexHost Web 管理端按需启动。
+
+### 第二步已完成
+
+- 新增 daemon Desktop 私有 socket：`codexhost-daemon-desktop.sock`。
+- Desktop Host Runtime 检测到 daemon 后只运行 thin bridge，不再创建本地 `AppServerHost` / Official Codex。
+- thin bridge 首次 attach 把真实 stock Codex 路径、app-server 参数和 default agent 交给 daemon。
+- daemon lazy 启动并长期持有唯一 `OfficialRuntimeScope` / Official Codex 子进程。
+- 每个 Desktop 连接在 daemon 内拥有独立 frontend protocol session，多个 Desktop 复用同一个 Official Codex 进程。
+- Desktop bridge 退出后 daemon 与 Official Codex 继续存活。
+- Web console Host control channel 由 daemon 发布；Desktop 关闭后 Harness 设置仍可管理。
+- Desktop attach 后 Web console 的 Codex account 请求继续由 daemon 提供。
+- daemon Host control 接入 update coordinator，避免 daemon 运行时阻断正式安装版更新。
+- daemon 不存在时保留原有本地 Host Runtime 路径作为兼容回退。
+- 真实 Codex app-server 冒烟验证：两个不同 clientInfo 的 Desktop 重连前后 Official Codex PID 保持不变。
+- Phase 2 回归：5 个关键测试文件、37 tests passed，全量 TypeScript typecheck passed。

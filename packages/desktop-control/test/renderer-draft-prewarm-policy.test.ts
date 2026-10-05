@@ -291,7 +291,7 @@ describe("Renderer draft prewarm policy", () => {
     });
   });
 
-  it("routes the current request client's direct and prewarm Thread starts", async () => {
+  it("starts external Threads on send without creating a prewarm Thread", async () => {
     const sendRequest = vi.fn<(method: string, parameters: unknown) => Promise<void>>(
       async () => undefined,
     );
@@ -308,22 +308,45 @@ describe("Renderer draft prewarm policy", () => {
 
     policy.select("codexhost/pi-native");
     await bridge.sendRequest("thread/start", { cwd: "/tmp/project", model: "gpt-5" });
-    await bridge.prewarmThreadStart?.({ cwd: "/tmp/project", model: "gpt-5" });
-    await bridge.prewarmThreadStart?.({ ephemeral: true, model: "gpt-5" });
+    await expect(
+      bridge.prewarmThreadStart({ cwd: "/tmp/project", model: "gpt-5" }),
+    ).rejects.toThrow("created on first send");
+    await bridge.prewarmThreadStart({ ephemeral: true, model: "gpt-5" });
 
     expect(sendRequest).toHaveBeenCalledWith("thread/start", {
       cwd: "/tmp/project",
       model: "codexhost/pi-native",
     });
-    expect(prewarmThreadStart).toHaveBeenNthCalledWith(1, {
-      cwd: "/tmp/project",
-      model: "codexhost/pi-native",
-    });
-    expect(prewarmThreadStart).toHaveBeenNthCalledWith(2, {
+    expect(target.__codexhostDraftWorkspacesV1).toEqual({ local: "/tmp/project" });
+    expect(prewarmThreadStart).toHaveBeenCalledOnce();
+    expect(prewarmThreadStart).toHaveBeenCalledWith({
       ephemeral: true,
       model: "gpt-5",
     });
   });
+
+  it.each(["local", "remote-ssh-discovered:mac", "remote-control:windows"])(
+    "does not dispatch an explicit external prewarm on %s",
+    async (hostId) => {
+      const sendRequest = vi.fn();
+      const prewarmThreadStart = vi.fn();
+      const bridge = requestBridgeFixture({ sendRequest, prewarmThreadStart });
+      installDraftPrewarmPolicyBridge(
+        requestManagerFixture(),
+        bridge,
+        hostId,
+        {},
+        {
+          discardAllPrewarmedThreads: vi.fn(),
+        },
+      );
+      await expect(
+        bridge.prewarmThreadStart({ cwd: "/project", model: "codexhost/deepseek-harness-native" }),
+      ).rejects.toThrow("created on first send");
+      expect(sendRequest).not.toHaveBeenCalled();
+      expect(prewarmThreadStart).not.toHaveBeenCalled();
+    },
+  );
 
   it("publishes the prewarmed draft's workspace for the Composer", async () => {
     const prewarmThreadStart = vi.fn(async (parameters: unknown) => parameters);
@@ -369,24 +392,21 @@ describe("Renderer draft prewarm policy", () => {
       clear(): Promise<void>;
     };
 
-    policy.select("codexhost/pi-native");
-    const pendingPi = bridge.prewarmThreadStart({ model: "native-model" }) as Promise<unknown>;
+    const pendingOfficial = bridge.prewarmThreadStart({
+      model: "native-model",
+    }) as Promise<unknown>;
     policy.select("codexhost/claude-code-native");
     await policy.clear();
-    stalePrewarm.resolve({ thread: { id: "stale-pi" } });
+    stalePrewarm.resolve({ thread: { id: "stale-official" } });
 
-    await expect(pendingPi).rejects.toThrow(
+    await expect(pendingOfficial).rejects.toThrow(
       "Renderer draft prewarm was invalidated by a configuration change",
     );
-    await expect(bridge.prewarmThreadStart({ model: "native-model" })).resolves.toEqual({
-      model: "codexhost/claude-code-native",
-    });
-    expect(prewarmThreadStart).toHaveBeenNthCalledWith(1, {
-      model: "codexhost/pi-native",
-    });
-    expect(prewarmThreadStart).toHaveBeenNthCalledWith(2, {
-      model: "codexhost/claude-code-native",
-    });
+    await expect(bridge.prewarmThreadStart({ model: "native-model" })).rejects.toThrow(
+      "created on first send",
+    );
+    expect(prewarmThreadStart).toHaveBeenCalledOnce();
+    expect(prewarmThreadStart).toHaveBeenCalledWith({ model: "native-model" });
     expect(discardAllPrewarmedThreads).toHaveBeenCalledOnce();
   });
 

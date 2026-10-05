@@ -172,7 +172,9 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     };
   };
 
-  const sourceInspect = async (startup: Awaited<ReturnType<typeof readStartupRecords>>): Promise<InspectDocument> => {
+  const sourceInspect = async (
+    startup: Awaited<ReturnType<typeof readStartupRecords>>,
+  ): Promise<InspectDocument> => {
     const latestDesktop = startup.find((record) => record.desktop !== null)?.desktop ?? null;
     const running = await options.host.available();
     return {
@@ -217,7 +219,9 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     }
     const controllerAlive = controller !== null && processIsAlive(controller.pid);
     const summary = summarize({
-      running: inspectDocument?.runtime.running ?? false,
+      // Phase 2: runtime.running describes the daemon. Desktop integration is
+      // alive only while the Launcher-owned Desktop Controller is alive.
+      running: controllerAlive,
       desktopError: inspectDocument?.desktopError ?? null,
       latestStartup: startup[0] ?? null,
       launcherAlive: startup[0]?.outcome === "starting" && processIsAlive(startup[0].pid),
@@ -247,10 +251,13 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       inspect: inspectDocument,
       startup,
       controller,
-      launchAvailable: launchCommand(options.installation, environment) !== null,
+      launchAvailable:
+        launchCommand(options.installation, environment) !== null &&
+        (await options.daemon.status()).running,
       summary,
       issueUrl: reportIssueUrl,
       hostAvailable: await options.host.available(),
+      desktopManaged: { running: collected.controllerAlive },
       daemon: await options.daemon.status(),
     };
   }
@@ -472,6 +479,11 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       return;
     }
     if (route === "POST /api/launch") {
+      const daemon = await options.daemon.status();
+      if (!daemon.running) {
+        sendJson(response, 409, { error: "Start the codexhost daemon before Codex Desktop" });
+        return;
+      }
       const command = launchCommand(options.installation, environment);
       if (!command) {
         sendJson(response, 409, { error: "This installation cannot be started from the console" });

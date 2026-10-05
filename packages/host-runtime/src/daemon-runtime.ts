@@ -1,16 +1,24 @@
 import { setTimeout as delay } from "node:timers/promises";
-import type { Writable } from "node:stream";
+import { PassThrough, type Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 
 import { AppServerHost } from "./app-server-host.js";
-import { createProductionExternalThreadStore } from "./external-thread-repository.js";
+import { startConsoleControlServer, type ConsoleControlServer } from "./console-control-server.js";
+import { daemonDesktopSocketPath } from "./daemon-desktop-bridge.js";
+import { createDaemonOfficialRuntime } from "./daemon-official-runtime.js";
+import {
+  createProductionExternalThreadStore,
+  createSharedOwnerFrontendStore,
+} from "./external-thread-repository.js";
 import { startExternalUiServer, type ExternalUiServer } from "./external-ui-server.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import {
   createRemoteAppServerWebSocketListener,
   type RemoteAppServerWebSocketListener,
 } from "./remote-app-server.js";
-import { sharedThreadSocketPath } from "./shared-thread-bridge.js";
+import { SharedThreadBridge, sharedThreadSocketPath } from "./shared-thread-bridge.js";
 import { SharedThreadOwner } from "./shared-thread-owner.js";
+import { createHostUpdateCoordinator } from "./update-coordinator.js";
 
 export const DAEMON_RUNTIME_ARGUMENT = "--codexhost-daemon";
 export const DAEMON_PROCESS_TITLE = "codexhost daemon";
@@ -29,12 +37,10 @@ export interface RunExternalHarnessDaemonOptions {
 }
 
 /**
- * Long-lived owner for External/Harness Threads.
- *
- * Official Codex deliberately remains outside this runtime in phase one. The
- * external-only AppServerHost never initializes its placeholder Official scope;
- * every UI attaches to one SharedThreadOwner instead of constructing its own
- * AppServerHost.
+ * Long-lived owner for External/Harness Threads and the single Official Codex
+ * runtime. External Sessions stay on one SharedThreadOwner; each Desktop gets
+ * a lightweight frontend AppServerHost so its native client protocol state is
+ * independent while all frontends share the same OfficialRuntimeScope.
  */
 export async function runExternalHarnessDaemon(
   options: RunExternalHarnessDaemonOptions,
@@ -42,6 +48,12 @@ export async function runExternalHarnessDaemon(
   const diagnosticOutput = options.diagnosticOutput ?? process.stderr;
   const environment = options.environment;
   const mappingStore = createProductionExternalThreadStore(environment);
+  const updateCoordinator = options.hostRuntimeUrl
+    ? createHostUpdateCoordinator({
+        hostRuntimePath: fileURLToPath(options.hostRuntimeUrl),
+        environment,
+      })
+    : undefined;
 
   // Mapping Store already has a cross-process PID-aware lock. Acquiring it
   // before publishing either listener gives the daemon a single-instance gate
@@ -49,11 +61,12 @@ export async function runExternalHarnessDaemon(
   await mappingStore.initialize();
 
   const owner = new SharedThreadOwner();
+  const official = await createDaemonOfficialRuntime({
+    environment,
+    diagnosticOutput,
+  });
   const host = new AppServerHost({
     externalOnly: true,
-    // External-only mode never starts Official Codex. Keep these values valid
-    // for the existing AppServerHost contract until phase two makes Official
-    // ownership explicitly optional.
     stockCodexPath: environment.CODEXHOST_STOCK_CODEX_PATH ?? process.execPath,
     arguments: ["app-server"],
     defaultAgent: "codex",
@@ -66,8 +79,46 @@ export async function runExternalHarnessDaemon(
     closeMappingStoreOnExit: false,
   });
 
+  const controlInput = new PassThrough();
+  const controlOutput = new PassThrough();
+  controlOutput.resume();
+  const controlHost = new AppServerHost({
+    externalOnly: true,
+    stockCodexPath: process.execPath,
+    arguments: [],
+    defaultAgent: "codex",
+    environment,
+    desktopInput: controlInput,
+    desktopOutput: controlOutput,
+    diagnosticOutput,
+    sharedThreads: new SharedThreadBridge({
+      connect: async () => owner.connect(),
+      delegateCreates: true,
+      diagnose: (error) =>
+        diagnosticOutput.write(
+          `codexhost daemon console shared Threads: ${error instanceof Error ? error.message : String(error)}\n`,
+        ),
+    }),
+    mappingStore: createSharedOwnerFrontendStore(),
+    closeMappingStoreOnExit: false,
+    officialRuntimeScope: official.scope,
+    accountControl: official.accountControl,
+    ...(updateCoordinator ? { updateCoordinator } : {}),
+  });
+  const controlHostRunning = controlHost.run();
+  const attachOfficial = async (attach: {
+    stockCodexPath: string;
+    arguments: string[];
+    defaultAgent: "codex" | "pi";
+  }): Promise<void> => {
+    await official.attach(attach);
+    await controlHost.enableOfficialRuntime(attach.defaultAgent);
+  };
+
   let externalUi: ExternalUiServer | undefined;
   let sharedListener: RemoteAppServerWebSocketListener | undefined;
+  let desktopListener: RemoteAppServerWebSocketListener | undefined;
+  let consoleControl: ConsoleControlServer | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let signalCount = 0;
   const hostRunning = host.run();
@@ -80,13 +131,28 @@ export async function runExternalHarnessDaemon(
   const shutdown = (): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
-      await Promise.allSettled([externalUi?.close(), sharedListener?.close()]);
+      await Promise.allSettled([
+        externalUi?.close(),
+        sharedListener?.close(),
+        desktopListener?.close(),
+        consoleControl?.close(),
+      ]);
       owner.close();
       host.close();
+      controlHost.close();
       // run() settles once its desktop-input loop ends; bound the wait so a
       // stuck child cannot keep the daemon alive indefinitely.
-      await Promise.race([hostRunning.catch(() => undefined), delay(DAEMON_SHUTDOWN_GRACE_MILLIS)]);
+      await Promise.race([
+        Promise.allSettled([hostRunning, controlHostRunning]),
+        delay(DAEMON_SHUTDOWN_GRACE_MILLIS),
+      ]);
       owner.output.end();
+      controlOutput.end();
+      await official.close().catch((error: unknown) => {
+        diagnosticOutput.write(
+          `codexhost daemon Official Runtime close: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
       await mappingStore.close().catch((error: unknown) => {
         diagnosticOutput.write(
           `codexhost daemon Mapping Store close: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -150,6 +216,37 @@ export async function runExternalHarnessDaemon(
         createSession: (streams) => owner.createSession(streams),
       });
       await sharedListener.listen();
+
+      desktopListener = createRemoteAppServerWebSocketListener({
+        socketPath: daemonDesktopSocketPath(environment),
+        diagnosticOutput,
+        createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) =>
+          new AppServerHost({
+            externalOnly: true,
+            stockCodexPath: process.execPath,
+            arguments: [],
+            defaultAgent: "codex",
+            environment,
+            desktopInput,
+            desktopOutput,
+            diagnosticOutput,
+            sharedThreads: new SharedThreadBridge({
+              connect: async () => owner.connect(),
+              delegateCreates: true,
+              diagnose: (error) =>
+                diagnosticOutput.write(
+                  `codexhost daemon shared Threads: ${error instanceof Error ? error.message : String(error)}\n`,
+                ),
+            }),
+            mappingStore: createSharedOwnerFrontendStore(),
+            closeMappingStoreOnExit: false,
+            officialRuntimeScope: official.scope,
+            accountControl: official.accountControl,
+            onRuntimeAttach: attachOfficial,
+            ...(updateCoordinator ? { updateCoordinator } : {}),
+          }),
+      });
+      await desktopListener.listen();
     }
 
     externalUi = await startExternalUiServer({
@@ -158,9 +255,19 @@ export async function runExternalHarnessDaemon(
       createSession: (streams) => owner.createSession(streams),
     });
 
+    consoleControl = await startConsoleControlServer({
+      target: controlHost,
+      environment,
+    }).catch((error: unknown) => {
+      diagnosticOutput.write(
+        `codexhost daemon console control unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      return undefined;
+    });
+
     process.title = DAEMON_PROCESS_TITLE;
     diagnosticOutput.write(
-      `codexhost: daemon ready external-ui=ws://${externalUi.descriptor.host}:${externalUi.descriptor.port}${process.platform === "win32" ? "" : ` shared-threads=${sharedThreadSocketPath(environment)}`}\n`,
+      `codexhost: daemon ready external-ui=ws://${externalUi.descriptor.host}:${externalUi.descriptor.port}${process.platform === "win32" ? "" : ` shared-threads=${sharedThreadSocketPath(environment)} desktop=${daemonDesktopSocketPath(environment)}`}\n`,
     );
 
     // Race the app-server against stop completion: once a signal (or abort)

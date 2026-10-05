@@ -6,6 +6,8 @@ import {
   type RendererAgentAvailability,
 } from "../agent-selection-state.js";
 import type { RendererModelClient } from "../renderer-model-client.js";
+import { consolePost } from "./api.js";
+import type { ConsoleState } from "./state.js";
 import type {
   RendererConnectionDiagnostics,
   RendererConnectionSnapshot,
@@ -21,6 +23,7 @@ const EXTERNAL_AGENTS = KNOWN_RENDERER_AGENTS.filter(
  */
 export function createConsoleConnectionDiagnostics(
   client: RendererModelClient,
+  state?: ConsoleState,
 ): RendererConnectionDiagnostics {
   const availability = new Map<ExternalRendererAgent, RendererAgentAvailability>();
   const errors = new Map<ExternalRendererAgent, CodexhostError | null>();
@@ -30,6 +33,7 @@ export function createConsoleConnectionDiagnostics(
   const publish = (): void => {
     for (const listener of [...listeners]) listener();
   };
+  state?.subscribe(publish);
 
   const inspectAll = (refresh: boolean): Promise<void> => {
     if (pending) return pending;
@@ -102,8 +106,21 @@ export function createConsoleConnectionDiagnostics(
         started = true;
         void inspectAll(false);
       }
+      const managedRunning = state?.overview?.desktopManaged.running;
+      const managedStarting = state?.overview?.summary.state === "starting";
       return {
-        adapter: { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+        adapter: state
+          ? managedRunning
+            ? { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" }
+            : managedStarting
+              ? { state: "installing", reason: "installing", modelUpdates: 0, hook: null }
+              : {
+                  state: "unsupported",
+                  reason: "installation-failed",
+                  modelUpdates: 0,
+                  hook: null,
+                }
+          : { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
         hosts: [
           {
             hostId: "local",
@@ -119,6 +136,17 @@ export function createConsoleConnectionDiagnostics(
       };
     },
     refresh: () => inspectAll(true),
+    ...(state
+      ? {
+          async launchRenderer() {
+            if (!state.overview?.launchAvailable) {
+              throw new Error("Managed Codex Desktop launch is unavailable");
+            }
+            await consolePost("/api/launch");
+            setTimeout(() => void state.refresh(), 500);
+          },
+        }
+      : {}),
     async openWebUi(_hostId, agent) {
       if (!client.openHarnessWebUi) throw new Error("Harness Web UI is unavailable");
       await client.openHarnessWebUi({ harnessId: agent as never });

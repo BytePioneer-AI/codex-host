@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ModelPriceLookup } from "../src/model-prices.js";
+import { bundledModelPrices } from "../src/model-prices.generated.js";
 import { UsageMeter } from "../src/usage-metering.js";
 
 const prices = new ModelPriceLookup({
@@ -42,6 +43,21 @@ describe("UsageMeter cost", () => {
     expect(usage?.totalCostUsd).toBeCloseTo(3.03 + 0.55, 10);
     expect(usage?.costSource).toBe("publicPrice");
     expect(usage?.inputTokens).toBe(7);
+  });
+
+  it("estimates the ZCode GLM sample using official prices rather than another provider's plan", () => {
+    const meter = completeMeter(
+      request("glm-sample", {
+        model: "GLM-5.3-Flash",
+        inputTokens: 18_761,
+        cachedInputTokens: 1_536,
+        outputTokens: 67,
+      }),
+    );
+    const usage = meter.derive(null, new ModelPriceLookup(bundledModelPrices));
+    expect(usage?.costSource).toBe("publicPrice");
+    expect(usage?.totalCostUsd).toBeCloseTo(0.00266333, 10);
+    expect(usage?.totalCostUsd?.toFixed(3)).toBe("0.003");
   });
 
   it("counts a request once across history replay and live delivery", () => {

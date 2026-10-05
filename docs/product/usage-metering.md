@@ -53,7 +53,7 @@ Pi、OMP、OpenCode v2、Claude Code、DeepSeek Harness（dsh）、CodeBuddy、W
 
 - 默认价格来自 [models.dev](https://models.dev)（MIT），随版本打包快照。
 - Host 启动时若本地价格表超过 7 天，会在后台请求 `https://models.dev/api.json` 并缓存到 `<数据目录>/pricing/models-dev.json`；失败时静默沿用现有价格。
-- 查找不做模糊匹配：先按“服务商/模型”，再按模型 ID。同一模型 ID 被多个服务商列出时，沿 `canonical_model_id` 链确定官方厂商；厂商自己列出该 ID 时用厂商价格，无法确定则视为未匹配。仅大小写不同的 ID（如 `Deepseek-v4-flash`）也能匹配，前提是各写法的价格一致。
+- 查找不做模糊匹配：先按“服务商/模型”，再按模型 ID。未命中明确的服务商价格时，带 `canonical_model_id` 的条目即使只有一个，也沿该链确定官方厂商，不能直接采用另一服务商的套餐零价；厂商自己列出该 ID 时用厂商价格，无法确定则视为未匹配。明确指定服务商的价格（包括零价）和用户自定义价格仍优先。仅大小写不同的 ID（如 `Deepseek-v4-flash`）也能匹配，前提是各写法的价格一致。
 - 更新打包快照：`npm run build:typescript && node packages/host-runtime/scripts/update-model-prices.mjs`。
 
 数据目录默认是 `~/.codexhost`，可用 `CODEXHOST_DATA_DIR` 修改。

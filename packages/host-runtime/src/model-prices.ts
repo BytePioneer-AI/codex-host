@@ -224,8 +224,11 @@ export class ModelPriceLookup {
     if (exact) return entryPrice(exact);
     const listings = this.#listings.get(model) ?? [];
     const [only] = listings;
-    if (only && listings.length === 1) return entryPrice(only.entry);
-    // Several providers list this ID: use it only when they all lead to one official listing.
+    // Even a single listing may be another provider's plan price. Follow its canonical
+    // model unless the caller explicitly selected that provider (handled above).
+    if (only && listings.length === 1 && typeof only.entry[4] !== "string")
+      return entryPrice(only.entry);
+    // Canonical listings must lead to one official listing, regardless of their count.
     const officials = new Map<string, ModelPriceEntry | undefined>();
     for (const { provider: listedBy, entry } of listings) {
       const canonical = entry[4];

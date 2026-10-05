@@ -18,7 +18,13 @@ const table: ModelPriceTableData = {
   providers: {
     anthropic: { "claude-sonnet-4-5": [3, 15, 0.3, 3.75, true] },
     openrouter: { "claude-sonnet-4-5": [3.3, 16, null, null, "anthropic/claude-sonnet-4-5"] },
-    reseller: { "lonely-model": [1, 2] },
+    reseller: {
+      "lonely-model": [1, 2],
+      "lonely-alias": [0, 0, 0, 0, "lab/lab-v2-flash"],
+      "orphan-single": [0, 0, 0, 0, "nowhere/missing"],
+    },
+    zhipuai: { "glm-5.3-flash": [0.15, 0.5, 0.03, 0, true] },
+    "scnet-token-plan": { "GLM-5.3-Flash": [0, 0, 0, null, "zhipuai/glm-5.3-flash"] },
     alpha: { shared: [1, 1] },
     beta: { shared: [2, 2] },
     deepseek: { "deepseek-flash": [0.15, 0.6, 0.003, null, "deepseek/deepseek-v4.1-flash"] },
@@ -108,6 +114,34 @@ describe("ModelPriceLookup", () => {
     expect(lookup.find("shared")).toBeNull();
     expect(lookup.find("auto")).toBeNull();
     expect(lookup.find("Shared")).toBeNull();
+  });
+
+  it("resolves a single canonical listing instead of assuming its plan price applies", () => {
+    const official = { input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0 };
+    expect(lookup.find("GLM-5.3-Flash")).toEqual(official);
+    expect(lookup.find("GLM-5.3-Flash", "start-plan")).toEqual(official);
+    expect(lookup.find("Glm-5.3-Flash")).toEqual(official);
+  });
+
+  it("preserves an explicitly selected provider's zero plan price and user overrides", () => {
+    expect(lookup.find("GLM-5.3-Flash", "scnet-token-plan")).toEqual({
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+    });
+    const overridden = new ModelPriceLookup(
+      table,
+      parseModelPriceOverrides({ models: { "GLM-5.3-Flash": { input: 2, output: 3 } } }),
+    );
+    expect(overridden.find("GLM-5.3-Flash")).toEqual({ input: 2, output: 3 });
+  });
+
+  it("resolves a single reseller listing through the official vendor's agreeing aliases", () => {
+    expect(lookup.find("lonely-alias")).toEqual({ input: 0.15, output: 0.6, cacheRead: 0.003 });
+  });
+
+  it("leaves a single canonical listing unpriced when its official price cannot be resolved", () => {
+    expect(lookup.find("orphan-single")).toBeNull();
   });
 
   it("prefers user overrides by provider/model, then model", () => {

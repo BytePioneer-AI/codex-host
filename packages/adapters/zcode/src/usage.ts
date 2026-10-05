@@ -39,10 +39,10 @@ export function zcodeUsageRecord(message: NativeMessage): UsageRecord {
   if (info.time.completed === undefined) return { kind: "missing" };
   const tokens = record(info.tokens),
     cache = record(tokens.cache);
-  // A cancelled/failed native message has a zero placeholder, not provider usage. Follow the
-  // shared failed-request policy: omit it rather than fabricate a priced zero-token request.
+  // A cancelled/failed native message has a zero placeholder, not provider usage. Admission
+  // retries use a finish status without an error. Omit only these verified placeholders.
   if (
-    info.error &&
+    (info.error || info.finish === "start_plan_admission_retry_discarded") &&
     tokens.total === undefined &&
     tokens.input === 0 &&
     tokens.output === 0 &&

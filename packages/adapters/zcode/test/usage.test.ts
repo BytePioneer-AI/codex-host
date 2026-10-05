@@ -328,6 +328,60 @@ describe("ZCode history and live metering", () => {
     expect(h.requests()).toHaveLength(0);
     expect(h.events.at(-1)).toEqual({ type: "usage.history", complete: true });
   });
+  it.each([true, false])(
+    "keeps metering complete through admission retries (historical: %s)",
+    (historical) => {
+      const f = fixture();
+      if (!historical) f.meter.replay([message()], true);
+      // ZCode 3.14.4 persists admission retries with this finish status but no error.
+      const placeholder = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+      const messages = [
+        message(),
+        message({ messageId: "second" }),
+        message({ messageId: "third" }),
+        ...["retry-one", "retry-two"].map((messageId) =>
+          message({
+            messageId,
+            finish: "start_plan_admission_retry_discarded",
+            tokens: placeholder,
+          }),
+        ),
+        message({
+          messageId: "failed",
+          error: { name: "StartPlanBusyAutoRetryExhaustedError" },
+          tokens: placeholder,
+        }),
+      ];
+      f.meter.replay(messages, historical);
+      f.meter.replay(messages, false);
+      expect(f.requests().map((request) => request.requestId)).toEqual([
+        "message",
+        "second",
+        "third",
+      ]);
+      expect(f.events.filter((event) => event.type === "usage.history")).toEqual([
+        { type: "usage.history", complete: true },
+      ]);
+    },
+  );
+  it("does not discard valid usage or arbitrary malformed rows with a retry finish status", () => {
+    const retry = { finish: "start_plan_admission_retry_discarded" };
+    expect(zcodeUsageRecord(message(retry)).kind).toBe("request");
+    for (const tokens of [
+      undefined,
+      { input: 1, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      { input: 0, output: 0, reasoning: 0, cache: { read: 0 } },
+    ])
+      expect(zcodeUsageRecord(message({ ...retry, tokens }))).toEqual({ kind: "missing" });
+    expect(
+      zcodeUsageRecord(
+        message({
+          finish: "unknown_finish",
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        }),
+      ),
+    ).toEqual({ kind: "missing" });
+  });
   it("invalidates instead of silently keeping a conflicting final request", () => {
     const f = fixture();
     f.start();

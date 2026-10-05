@@ -1727,8 +1727,8 @@ describe("Renderer Connections page", () => {
       descendants(content).filter((candidate) =>
         candidate.className.split(" ").includes("settings-connection-row__mark--logo"),
       ),
-    ).toHaveLength(3);
-    expect(visibleText(content)).toContain("CH");
+    ).toHaveLength(4);
+    expect(visibleText(content)).toContain("Codex");
     expect(visibleText(content)).toContain("公司");
     expect(visibleText(content)).toContain("pi exited with code 1");
     expect(visibleText(content)).toContain("~/.pi/agent/settings.json");

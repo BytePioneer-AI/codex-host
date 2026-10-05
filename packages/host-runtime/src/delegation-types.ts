@@ -40,6 +40,7 @@ export interface DelegationProgress {
 }
 
 export interface DelegationThreadSnapshot {
+  hostId?: string;
   threadId: string;
   harnessId: RoutedHarnessId;
   status: DelegationThreadStatus;
@@ -128,6 +129,8 @@ export interface ThreadCancelResult {
 }
 
 export interface ThreadReadInput {
+  /** Explicit Desktop Host identity; never inferred from the Thread ID. */
+  hostId?: string;
   threadId: string;
   view: "result" | "messages";
   cursor?: string;

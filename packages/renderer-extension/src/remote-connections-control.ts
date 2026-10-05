@@ -1,4 +1,5 @@
 import type {
+  DelegationReadParams,
   RemoteSshSetupParams,
   RemoteSshSetupResult,
   RuntimeStatus,
@@ -10,12 +11,14 @@ import {
 } from "./codex-ssh-adapter.js";
 
 export interface RemoteRuntimeClient {
+  readDelegationThread?(input: DelegationReadParams): Promise<unknown>;
   setupSsh?(input: RemoteSshSetupParams): Promise<RemoteSshSetupResult>;
   runtimeStatus?(): Promise<RuntimeStatus>;
   updateRemote?(version: string): Promise<RuntimeStatus>;
 }
 export interface RemoteConnectionsControl {
   ssh: CodexSshClient;
+  readThread?(hostId: string, input: DelegationReadParams): Promise<unknown>;
   setup(
     connection: CodexSshConnection,
     action: RemoteSshSetupParams["action"],
@@ -71,6 +74,13 @@ export function createRemoteConnectionsControl(
   }
   const control: RemoteConnectionsControl = {
     ssh: createCodexSshClient(ownerWindow),
+    async readThread(hostId, input) {
+      if (!hostId || hostId === "local") throw new Error("Choose an explicit remote Host");
+      const client = getClient(hostId);
+      if (!client?.readDelegationThread)
+        throw new Error("Remote Thread reading is unavailable; update codexhost and reconnect");
+      return bounded(client.readDelegationThread(input));
+    },
     async setup(connection, action, version, uninstallPackage) {
       const client = getClient("local");
       if (!client?.setupSsh)

@@ -461,6 +461,12 @@ export class ClaudeNativeTurnAccumulator {
     }
 
     if (message.type !== "result") return { events };
+    if (this.#usageRequest) {
+      // Cancellation/failure can end a request without message_stop. Its final usage is
+      // unknown: invalidate metering rather than silently publish a partial Session total.
+      this.#usageRequest = null;
+      events.push({ type: "usage.request", record: { kind: "missing" } });
+    }
     const usageEvent = parseResultUsageEvent(message);
     if (usageEvent) events.push(usageEvent);
     this.#completed = true;

@@ -694,8 +694,8 @@ function usageCount(value: unknown): number | null {
 }
 
 /**
- * Host usage metering for CodeBuddy and WorkBuddy. Each `providerData.messageId` on the active
- * branch is one model request; its rows share one OpenAI-compatible `rawUsage`. Verified against
+ * Host usage metering for CodeBuddy and WorkBuddy. Each `providerData.messageId` across all
+ * native branches is one model request; its rows share one OpenAI-compatible `rawUsage`. Verified against
  * local CodeBuddy history (deepseek-v4.1-flash, hy4-preview-f): `prompt_tokens` includes cached
  * input and cache writes (= `prompt_cache_hit_tokens` + `prompt_cache_miss_tokens` +
  * `prompt_cache_write_tokens` on all 368 local CodeBuddy and WorkBuddy rows), cached input is
@@ -710,7 +710,10 @@ export function historyUsageRequests(
   historical: boolean,
 ): { requests: HostUsageRequest[]; complete: boolean } {
   const usages = new Map<string, Record<string, unknown>>();
-  for (const row of nativeHistoryRows(contents)) {
+  // Transcript display follows the active branch; metering must also replay older requests
+  // already counted while this Session was open, or reopening would silently reduce its cost.
+  for (const row of nativeRawHistoryRows(contents)) {
+    if (!NATIVE_MESSAGE_TYPES.has(text(row.type))) continue;
     const data = record(row.providerData);
     if (data.isSubAgent === true || !Object.keys(record(data.rawUsage)).length) continue;
     if (text(data.messageId)) usages.set(text(data.messageId), data);

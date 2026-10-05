@@ -14,7 +14,7 @@ export function v2UsageRequest(
 ): HostUsageRequest | null {
   if (message.type !== "assistant" || !message.tokens) return null;
   const { input, output, reasoning, cache } = message.tokens;
-  const { completed } = message.time;
+  const { streamed } = message.time;
   return parseHostUsageRequest({
     requestId: message.id,
     ...(historical ? { historical: true } : {}),
@@ -27,14 +27,13 @@ export function v2UsageRequest(
     cacheWriteInputTokens: cache.write,
     outputTokens: output + reasoning,
     reasoningOutputTokens: reasoning,
-    // From the Adapter-observed first output event to native completion, excluding prefill.
-    // OpenCode's own `time.streamed` marks the end of streaming, not its start. The local
-    // OpenCode server shares this machine's clock.
+    // End at stream completion, not step completion, which can include tool execution.
+    // Without a native stream end, keep the usage but do not guess its generation duration.
     ...(!historical &&
     firstOutputAtMs !== undefined &&
-    completed !== undefined &&
-    completed >= firstOutputAtMs
-      ? { startedAtMs: firstOutputAtMs, completedAtMs: completed }
+    streamed !== undefined &&
+    streamed >= firstOutputAtMs
+      ? { startedAtMs: firstOutputAtMs, completedAtMs: streamed }
       : {}),
   });
 }

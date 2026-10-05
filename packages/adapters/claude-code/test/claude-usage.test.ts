@@ -66,6 +66,44 @@ describe("Claude Code usage records", () => {
     expect(request?.kind === "request" && request.request.startedAtMs).toEqual(expect.any(Number));
   });
 
+  it.each(["aborted_streaming", "api_error"])(
+    "marks an unfinished request missing at %s",
+    (reason) => {
+      const turn = new ClaudeNativeTurnAccumulator();
+      turn.consume(
+        stream({
+          type: "message_start",
+          message: { id: "msg_partial", model: "claude-haiku-4-5-20251001", usage: startUsage },
+        }),
+      );
+      turn.consume(
+        stream({ type: "content_block_start", index: 0, content_block: { type: "thinking" } }),
+      );
+      if (reason === "aborted_streaming") turn.requestCancel();
+      const { events } = turn.consume({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: reason,
+      });
+      expect(events.filter((event) => event.type === "usage.request")).toEqual([
+        { type: "usage.request", record: { kind: "missing" } },
+      ]);
+    },
+  );
+
+  it("does not invent a usage gap when cancellation precedes any model request", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    turn.requestCancel();
+    const { events } = turn.consume({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      terminal_reason: "aborted_streaming",
+    });
+    expect(events.filter((event) => event.type === "usage.request")).toEqual([]);
+  });
+
   it("replays one request per message ID and skips synthetic messages", () => {
     const entry = (
       id: string,

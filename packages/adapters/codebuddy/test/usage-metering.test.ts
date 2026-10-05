@@ -57,6 +57,19 @@ describe("CodeBuddy usage records", () => {
     });
   });
 
+  it("replays all native branches so reopening retains requests already counted live", () => {
+    const root = row("root", null, "message", provider);
+    const oldBranch = row("old", "root", "message", { ...provider, messageId: "msg-old" });
+    const newBranch = row("new", "root", "message", { ...provider, messageId: "msg-new" });
+    const before = historyUsageRequests(history(root, oldBranch), true);
+    const live = historyUsageRequests(history(root, oldBranch, newBranch), false);
+    const reopened = historyUsageRequests(history(root, oldBranch, newBranch), true);
+    const liveIds = new Set([...before.requests, ...live.requests].map((r) => r.requestId));
+    expect([...liveIds]).toEqual(["msg-1", "msg-old", "msg-new"]);
+    expect(reopened.requests.map((r) => r.requestId)).toEqual([...liveIds]);
+    expect(reopened.complete).toBe(true);
+  });
+
   it("leaves requests with unverified Anthropic-style cache fields unmetered", () => {
     const unverified = { ...provider, rawUsage: { ...rawUsage, cache_read_input_tokens: 5 } };
     expect(historyUsageRequests(history(row("r1", null, "reasoning", unverified)), true)).toEqual({

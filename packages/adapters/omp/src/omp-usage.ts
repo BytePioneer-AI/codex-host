@@ -164,7 +164,7 @@ export function ompUsageHistory(history: OmpSessionHistory): {
   complete: boolean;
 } {
   const requests: HostUsageRequest[] = [];
-  let complete = true;
+  let complete = history.incomplete !== true;
   for (const entry of history.entries) {
     if (entry.type !== "message") continue;
     const record = ompUsageRecord(entry.message, { historical: true });

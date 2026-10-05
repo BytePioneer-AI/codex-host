@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 import { describe, expect, it, vi } from "vitest";
@@ -352,6 +352,44 @@ describe("Claude Code usage metering", () => {
     cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 8643 },
     output_tokens: 247,
   };
+
+  it.each([false, true])(
+    "distinguishes a missing transcript from an empty one (exists: %s)",
+    async (exists) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "claude-metering-history-"));
+      const adapter = new ClaudeCodeAdapter({ environment: { CLAUDE_CONFIG_DIR: directory } });
+      try {
+        if (exists) {
+          const project = path.join(
+            directory,
+            "projects",
+            directory.replace(/[^A-Za-z0-9]/gu, "-"),
+          );
+          await mkdir(project, { recursive: true });
+          await writeFile(path.join(project, "source-session.jsonl"), "");
+        }
+        // Opening is lazy: exercise the real transcript reader without launching a model request.
+        const opened = await adapter.open({
+          kind: "resume",
+          cwd: directory,
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "claude-code",
+            nativeSessionId: "source-session",
+            formatVersion: 1,
+          }),
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const iterator = opened.value.outputs[Symbol.asyncIterator]();
+        expect((await iterator.next()).value).toEqual({
+          kind: "event",
+          event: { type: "usage.history", complete: exists },
+        });
+      } finally {
+        await adapter.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("replays the transcript on resume, then meters live requests", async () => {
     const { adapter, history, transports } = fixture();

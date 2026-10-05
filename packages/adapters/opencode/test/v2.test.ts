@@ -18,6 +18,7 @@ import { openCodeMajor } from "../src/version.js";
 import { assistantItems, projectHistory, readMessages } from "../src/v2/history.js";
 import { v2Locator, v2Permissions, v2Ref } from "../src/v2/state.js";
 import { V2Session } from "../src/v2/session.js";
+import { v2UsageRequest } from "../src/v2/usage.js";
 import { formInteraction, replyInteraction } from "../src/v2/interactions.js";
 import { readCatalog } from "../src/v2/catalog.js";
 
@@ -437,12 +438,13 @@ describe("OpenCode v2 Session lifecycle", () => {
       delta: "thinking",
     });
     // The native event stream is consumed asynchronously, so the observation can land later.
-    const completed = Date.now() + 2_000;
+    const streamed = Date.now() + 2_000;
+    const completed = streamed + 68_000;
     f.messages.push({
       ...assistant("live answer"),
       id: "assistant-live",
-      // OpenCode's `streamed` marks the end of streaming, just before completion.
-      time: { created: beforeOutput - 5_000, streamed: completed - 40, completed },
+      // Native steps can finish long after streaming while their tools execute.
+      time: { created: beforeOutput - 5_000, streamed, completed },
       tokens: { input: 1, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
     });
     f.emit("session.step.ended", { assistantMessageID: "assistant-live" });
@@ -455,14 +457,28 @@ describe("OpenCode v2 Session lifecycle", () => {
     expect(live).toEqual([
       {
         type: "usage.request",
-        request: expect.objectContaining({ outputTokens: 8, completedAtMs: completed }),
+        request: expect.objectContaining({ outputTokens: 8, completedAtMs: streamed }),
       },
     ]);
     expect(live[0]).not.toHaveProperty("request.historical");
     const started = live[0]?.type === "usage.request" ? live[0].request.startedAtMs : undefined;
     // Timed from the observed first output, not from creation or OpenCode's `streamed`.
     expect(started).toBeGreaterThanOrEqual(beforeOutput);
-    expect(started).toBeLessThan(completed - 40); // earlier than OpenCode's streamed time
+    expect(started).toBeLessThan(streamed);
+  });
+  it("keeps usage but omits timing when the stream end is unavailable", () => {
+    const request = v2UsageRequest(
+      {
+        ...assistant("interrupted"),
+        time: { created: 1, completed: 70_000 },
+        tokens: { input: 1, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+      false,
+      1_000,
+    );
+    expect(request).toMatchObject({ outputTokens: 8 });
+    expect(request).not.toHaveProperty("startedAtMs");
+    expect(request).not.toHaveProperty("completedAtMs");
   });
   it("rejects concurrent starts and emits no lifecycle for rejected admission", async () => {
     const f = fixture();

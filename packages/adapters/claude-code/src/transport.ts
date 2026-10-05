@@ -278,7 +278,8 @@ export interface ClaudeAdapterDependencies {
   }): Promise<{ sessionId: string }>;
   getSessionInfo(input: { sessionId: string }): Promise<{ cwd?: string } | undefined>;
   inspectInstallation(): void;
-  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[]>;
+  /** Null means the native transcript is absent, not a successfully read empty history. */
+  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[] | null>;
   readSubagentMessages(input: {
     cwd: string;
     sessionId: string;

@@ -708,10 +708,11 @@ class ClaudeHarnessSession implements HarnessSession {
         // Native result frames can arrive before the transcript batch is written.
         const deadline = Date.now() + this.#closeTimeoutMs;
         for (;;) {
-          messages = await this.#readSessionMessages({
-            cwd: this.#cwd,
-            sessionId: this.#sessionId,
-          });
+          messages =
+            (await this.#readSessionMessages({
+              cwd: this.#cwd,
+              sessionId: this.#sessionId,
+            })) ?? [];
           const ids = new Set(
             messages.flatMap((message) =>
               isRecord(message) && typeof message.uuid === "string" ? [message.uuid] : [],
@@ -2254,7 +2255,7 @@ class ClaudeHarnessSession implements HarnessSession {
         ) {
           return;
         }
-        const usage = transcriptRequestUsage(messages, request.messageId);
+        const usage = transcriptRequestUsage(messages ?? [], request.messageId);
         if (!usage) continue;
         const active = this.#active;
         if (!active || active.command.turnId !== request.turnId) return;
@@ -2624,7 +2625,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             messages,
             input.parent.nativeSessionId,
             input.nativeSubagentId,
-            parentMessages,
+            parentMessages ?? [],
           ),
         };
       } catch {
@@ -2720,7 +2721,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           environment: options.environment ?? process.env,
           sessionId,
         });
-        return transcript ?? [];
+        return transcript;
       },
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
         getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
@@ -3015,7 +3016,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             cwd,
             sessionId: durableRef.nativeSessionId,
           });
-          if (messages.length > 0 || (input.kind === "resume" && input.knownTurnRefs?.length))
+          if (
+            (messages?.length ?? 0) > 0 ||
+            (input.kind === "resume" && input.knownTurnRefs?.length)
+          )
             throw new Error("Pending Session unexpectedly contains history");
           openMode = "create";
         }
@@ -3093,7 +3097,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   ): Promise<{ requests: HostUsageRequest[]; complete: boolean }> {
     if (openMode === "create") return { requests: [], complete: true };
     try {
-      return claudeUsageHistory(await this.#dependencies.readSessionMessages({ cwd, sessionId }));
+      const messages = await this.#dependencies.readSessionMessages({ cwd, sessionId });
+      return messages === null ? { requests: [], complete: false } : claudeUsageHistory(messages);
     } catch {
       return { requests: [], complete: false };
     }

@@ -20,6 +20,7 @@ Claude Code 从 2.1.154 起提供会话级的 Ultracode：开启后 Claude 会�
 - 会话中切换到 Ultracode 未生效：恢复原档位并读回确认，返回原因，原档位保持不变。
 - Ultracode 下切换模型后无法保持：撤回模型切换并返回原因，保持原模型与 Ultracode；撤回本身失败时会话进入故障态，不在未知状态下继续。
 - 只有进入或离开 Ultracode 时，原生写入才带 `ultracode` 键：进入发 `effortLevel: "xhigh"` 与 `ultracode: true`，离开追加 `ultracode: false`；其他档位间切换的载荷与现在完全相同。
+- 会话中切换模型或档位被拒绝时，Renderer 在模型按钮上方弹出提示，直接显示 Host 返回的原因，并在按钮上显示失败标记，直到下一次切换成功。此前选择器会悄悄回到原选项，原因只在按钮的悬停提示里，看起来像"切不过去"。
 
 **Workflow 子智能体显示**
 
@@ -44,11 +45,13 @@ Claude Code 从 2.1.154 起提供会话级的 Ultracode：开启后 Claude 会�
 ### Modified Capabilities
 
 - `claude-code-text-session`：Thinking 选择由"未支持"改为"使用原生 effort 与会话级 Ultracode"，规定读回判定、未生效时中止消息、切换与模型变更的处理；新增 Workflow 运行到公共子智能体契约的映射。
+- `versioned-renderer-agent-routing`：Claude 模型或档位切换被 Host 拒绝时，在模型按钮旁直接显示原因，不只放在悬停提示里。
 
 ## Impact
 
 - `packages/adapters/claude-code`：思考档位定义、Ultracode 读回判定（新文件 `ultracode.ts`）、SDK Transport（启动与切换时的读回、智能体审批作用域）、原生消息解析（Workflow 工具与进度）、Workflow 委派生命周期（新文件 `workflow-lifecycle.ts`）、Adapter（错误映射、回合占用、取消时停止后台工作、审批保留）、子线程首条提示、相关测试。
 - 依赖：`@anthropic-ai/claude-agent-sdk` 0.3.220 → 0.3.273（根与 Claude Adapter 的 `package.json`、`package-lock.json`）。
 - `docs/harnesses/claude-code/`：新增 Ultracode 与 Workflow 显示说明。
-- 不改变共享契约、Host、Renderer、Mapping Store 或其他 Harness。
+- `packages/renderer-extension`：模型选择器在切换被拒绝时显示提示与失败标记（新文件 `renderer-model-selection-notice.ts`）及相关测试。
+- 不改变共享契约、Host、Mapping Store 或其他 Harness。
 - 不包含：独立于档位的 Ultracode 开关；替用户打开 Workflows；Workflow 阶段映射到计划面板、运行日志输出、单个智能体的停止/续跑；冷读取历史时把 Workflow 还原为委派卡片（与现有 Agent 子智能体一致，历史中仍为普通工具项）；`workflowKeywordTriggerEnabled` 等 Workflow 设置。

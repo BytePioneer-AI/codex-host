@@ -32,6 +32,11 @@
 - [x] 3A.2 Adapter：取消时停止本回合的后台子智能体与 Workflow，确认后经续写静默窗口结束回合，期间开始的回复片段被中断；停止或中断未确认时关闭进程；未证实的中断仍判失败。
 - [x] 3A.3 测试：停止确认、已结束任务、确认超时、拦截自动回复、挂起与回复中取消、停止失败关闭进程、普通 Agent 审批在前台/挂起/取消/断连/迟到回复下的处理、恢复后读回。
 
+## 3B. 切换失败原因直接显示（Desktop 实测后补充）
+
+- [x] 3B.1 Renderer：模型或档位切换被拒绝时标记 `selectionRejected` 与递增的 `selectionErrorId`；模型按钮显示失败标记，按钮上方弹出带原因的提示，每次拒绝只弹一次，目录或检查失败不弹。
+- [x] 3B.2 测试：提示判定与文案、拒绝档位时的视图状态、成功切换后清除标记；`versioned-renderer-agent-routing` 规格增量。
+
 ## 4. 规格与文档
 
 - [x] 4.1 `claude-code-text-session` 规格增量：删除过时的 Thinking 需求，新增 Ultracode 与 Workflow 映射需求。
@@ -45,5 +50,5 @@
   - 2.1.153：返回 `unsupported` 并提示升级；
   - `CLAUDE_CODE_WORKFLOWS=1`（仅本次进程）：Workflow 审批、委派卡片与两个智能体的状态变化、智能体审批在主回合结束后作答、回合在汇总后完成、子线程读取首条任务；
   - 会话中切换：Low → Ultracode 成功；Ultracode 下换 Haiku 被拒并保持原模型；换 Opus 成功；Ultracode → High 成功。
-- [ ] 5.3 用户在 Codex Desktop 上确认档位菜单、失败提示、Workflow 卡片与子线程、审批、取消表现，提供脱敏截图。
-- [ ] 5.4 以中文提交信息提交，推送到 fork 并开 Draft PR（推送前与用户确认）。
+- [x] 5.3 用户在 Codex Desktop（Windows 10，SSH Remote Host）上确认档位菜单、失败提示、Workflow 卡片与子线程、审批、取消表现，提供截图。已知显示问题：挂起期间作答的智能体审批在回合结束前仍显示"待批准"（见文档"已知限制"）。
+- [x] 5.4 以中文提交信息提交，推送到 fork 并开 Draft PR（推送前与用户确认）。

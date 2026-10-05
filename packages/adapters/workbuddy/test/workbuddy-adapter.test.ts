@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
   codeBuddyProjectSlug,
   CodeBuddyError,
@@ -9,7 +10,7 @@ import {
   type CodeBuddyClient,
   type CodeBuddyClientFactory,
 } from "@codexhost/adapter-codebuddy";
-import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
+import { hostTurnIdSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import { WorkBuddyAdapter } from "../src/workbuddy-adapter.js";
 import { WORKBUDDY_RUNTIME_PROFILE } from "../src/common.js";
 
@@ -58,6 +59,150 @@ function fakeFactory(): CodeBuddyClientFactory {
 }
 
 describe("WorkBuddy Adapter identity", () => {
+  it.each(["notification", "explicit refresh"])(
+    "publishes persisted requests before Turn completion on %s",
+    async (trigger) => {
+      let context: Parameters<CodeBuddyClientFactory>[0] | undefined;
+      let history = "";
+      const pending = Promise.withResolvers<Record<string, unknown>>();
+      const adapter = new WorkBuddyAdapter({
+        readHistory: async () => history,
+        clientFactory: (options) => {
+          context = options;
+          return { ...fakeFactory()(options), prompt: () => pending.promise };
+        },
+      });
+      adapters.push(adapter);
+      const opened = await adapter.open({ kind: "create", cwd: process.cwd(), environment: {} });
+      if (!opened.ok) throw Error(opened.error.message);
+      const session = opened.value;
+      const outputs: HarnessOutput[] = [];
+      const collected = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      try {
+        expect(
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("usage-turn"),
+            input: [{ type: "text", text: "inspect" }],
+          }),
+        ).toMatchObject({ ok: true });
+        // Two persisted requests matching the reported WorkBuddy token totals. The native
+        // prompt remains pending (e.g. waiting for a tool permission), not a finished Turn.
+        history =
+          [
+            { id: "user", type: "message", role: "user", content: "inspect" },
+            ...[28905, 28931].map((input, index) => ({
+              id: `assistant-${index}`,
+              parentId: index ? "assistant-0" : "user",
+              type: "message",
+              role: "assistant",
+              content: "reply",
+              providerData: {
+                messageId: `request-${index}`,
+                model: "deepseek-v4.1-flash",
+                rawUsage: {
+                  prompt_tokens: input,
+                  completion_tokens: index ? 204 : 9,
+                  total_tokens: input + (index ? 204 : 9),
+                  prompt_tokens_details: { cached_tokens: 28672 },
+                  prompt_cache_write_tokens: 0,
+                  completion_thinking_tokens: index ? 35 : 0,
+                  credit: 0,
+                },
+              },
+            })),
+          ]
+            .map((row) => JSON.stringify(row))
+            .join("\n") + "\n";
+        if (!context) throw Error("No native client");
+        const refresh = async () => {
+          if (trigger === "explicit refresh") await session.refreshUsage?.();
+          else
+            context?.handlers.update({
+              sessionId: "workbuddy-native",
+              update: {
+                sessionUpdate: "usage_update",
+                used: 28931,
+                size: 185000,
+              },
+            });
+        };
+        await refresh();
+        await vi.waitFor(() =>
+          expect(outputs).toContainEqual({
+            kind: "event",
+            event: {
+              type: "session.usage.changed",
+              usage: expect.objectContaining({
+                inputTokens: 57836,
+                outputTokens: 213,
+                cachedInputTokens: 57344,
+                reasoningOutputTokens: 35,
+              }),
+            },
+          }),
+        );
+        const requests = () =>
+          outputs.filter((o) => o.kind === "event" && o.event.type === "usage.request");
+        expect(requests()).toHaveLength(2);
+        expect(requests()[0]).toMatchObject({
+          event: {
+            request: {
+              model: "deepseek-v4.1-flash",
+              cachedInputTokens: 28672,
+            },
+          },
+        });
+        await refresh();
+        await session.refreshUsage?.();
+        expect(requests()).toHaveLength(2);
+        expect(outputs.some((o) => o.kind === "event" && o.event.type === "turn.completed")).toBe(
+          false,
+        );
+      } finally {
+        await session.close();
+        pending.resolve({ stopReason: "cancelled" });
+        await collected;
+      }
+    },
+  );
+  it("keeps refresh failures and late reads from changing Session lifecycle", async () => {
+    const read = Promise.withResolvers<string>();
+    const readHistory = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error("Native history is mid-append"))
+      .mockReturnValueOnce(read.promise);
+    const adapter = new WorkBuddyAdapter({ clientFactory: fakeFactory(), readHistory });
+    adapters.push(adapter);
+    const opened = await adapter.open({ kind: "create", cwd: process.cwd(), environment: {} });
+    if (!opened.ok) throw Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    const collected = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    try {
+      await expect(session.refreshUsage?.()).resolves.toBeUndefined();
+      const refresh = session.refreshUsage?.();
+      // An overlapping notification must not start another file read.
+      await session.refreshUsage?.();
+      expect(readHistory).toHaveBeenCalledTimes(2);
+      await session.close();
+      read.resolve("");
+      await refresh;
+      await collected;
+      expect(outputs).toEqual([
+        { kind: "event", event: { type: "usage.history", complete: true } },
+      ]);
+    } finally {
+      read.resolve("");
+      await session.close();
+      await collected;
+    }
+  });
+
   it("opens WorkBuddy Sessions with WorkBuddy native identity and honest history capabilities", async () => {
     const adapter = new WorkBuddyAdapter({ clientFactory: fakeFactory() });
     adapters.push(adapter);

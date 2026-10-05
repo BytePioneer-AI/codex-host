@@ -23,6 +23,9 @@ integration. [CLI ACP](https://cursor.com/docs/cli/acp) is the selected interfac
 ## Implemented boundary
 
 - Native create, text prompt, streaming text/reasoning, tool progress and cancellation.
+  Text/reasoning ends when a new tool or native Task first appears, not on progress,
+  completion or duplicate notifications for an existing call. Live output and ACP
+  history replay preserve the same reply boundaries for final-answer projection.
   Cursor can stream `Error: RetriableError: WritableIterable is closed` (also the
   `T:` and unqualified variants) as assistant text and still return `end_turn`.
   The adapter buffers a possible trailing diagnostic until the terminal response,

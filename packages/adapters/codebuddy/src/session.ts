@@ -132,7 +132,13 @@ export class CodeBuddySession implements HarnessSession {
       parent: () => this.#ref,
       cwd: input.cwd,
       environment,
-      emit: (event) => this.#emit(event),
+      emit: (event) => {
+        // Agent Tools are routed before ordinary output, but have the same
+        // parent-message boundary. Child progress/completion is not a boundary.
+        if (event.type === "item.started" && event.item.type === "subagentDelegation")
+          this.#active?.output.completeMessage();
+        this.#emit(event);
+      },
       profile,
     });
     this.#interactions = new CodeBuddyInteractions(

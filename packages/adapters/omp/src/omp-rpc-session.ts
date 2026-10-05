@@ -234,8 +234,11 @@ interface ActiveTurn {
   tools: Map<string, string>;
   interactions: Map<string, { request: OmpInteractionRequest; timeout: NodeJS.Timeout | null }>;
   settlement: "pending" | "confirming" | "confirmed";
+  terminalEnd: boolean;
   cancellation: "none" | "requesting" | "accepted";
   cancellationTimeout: NodeJS.Timeout | null;
+  cancellationRecheck: NodeJS.Timeout | null;
+  cancellationChecking: boolean;
   abortPromise: Promise<void> | null;
 }
 
@@ -901,8 +904,11 @@ export class OmpRpcSession {
         tools: new Map(),
         interactions: new Map(),
         settlement: "pending",
+        terminalEnd: false,
         cancellation: "none",
         cancellationTimeout: null,
+        cancellationRecheck: null,
+        cancellationChecking: false,
         abortPromise: null,
       };
     });
@@ -983,9 +989,7 @@ export class OmpRpcSession {
         active.cancellation = "accepted";
         // Aborting an idle/yielded run need not publish another agent_end.
         // The acknowledgement alone is not proof that background work drained.
-        if (active.settlement !== "confirming") {
-          await this.#confirmCancelledTurn(active);
-        }
+        await this.#confirmCancelledTurn(active);
       })
       .catch((error: unknown) => {
         if (this.#activeTurn !== active) throw error;
@@ -1136,8 +1140,12 @@ export class OmpRpcSession {
     }
     const active = this.#activeTurn;
     if (this.#handleSubagentFrame(active, value)) return;
-    if (value.type === "session_settled" && active?.cancellation === "accepted") {
-      if (active.settlement === "pending") void this.#confirmCancelledTurn(active);
+    if (value.type === "agent_start" && active) active.terminalEnd = false;
+    if (
+      (value.type === "session_settled" || value.type === "agent_start") &&
+      active?.cancellation === "accepted"
+    ) {
+      void this.#confirmCancelledTurn(active);
       return;
     }
     if (!active) {
@@ -1234,6 +1242,11 @@ export class OmpRpcSession {
       }
     }
     if (value.type === "agent_end" && value.isTerminal !== false) {
+      active.terminalEnd = true;
+      if (active.cancellation !== "none") {
+        if (active.cancellation === "accepted") void this.#confirmCancelledTurn(active);
+        return;
+      }
       if (active.settlement !== "pending") return;
       active.settlement = "confirming";
       void this.#confirmSettledTurn(active);
@@ -1535,14 +1548,38 @@ export class OmpRpcSession {
   }
 
   async #confirmCancelledTurn(active: ActiveTurn): Promise<void> {
+    if (
+      this.#activeTurn !== active ||
+      active.cancellation !== "accepted" ||
+      active.cancellationChecking
+    )
+      return;
+    active.cancellationChecking = true;
+    if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
+    active.cancellationRecheck = null;
     try {
-      const response = await this.#send("get_state", {});
+      let response = await this.#send("get_state", {});
+      if (this.#activeTurn !== active) return;
+      if (parseSessionStreaming(response)) {
+        // Native Abort stops the current run, but a background delivery can
+        // start a follow-up afterwards. Keep the user's cancellation in force.
+        await this.#send("abort", {});
+        if (this.#activeTurn !== active) return;
+        response = await this.#send("get_state", {});
+      }
       const state = parseSessionState(response);
       if (this.#activeTurn !== active || active.cancellation !== "accepted") return;
       // isStreaming:false alone also describes a session waiting for background
       // jobs. Modern OMP supplies isSettled; older versions still need agent_end.
-      if (!cancellationSettled(response, active.settlement === "confirmed")) {
+      if (!cancellationSettled(response, active.terminalEnd)) {
         active.settlement = "pending";
+        // A settle notification can precede an in-flight busy state response,
+        // or no further terminal frame may arrive after cleanup. Reconfirm
+        // serially within the original deadline; never infer native quiescence.
+        active.cancellationRecheck = setTimeout(() => {
+          active.cancellationRecheck = null;
+          void this.#confirmCancelledTurn(active);
+        }, 250);
         return;
       }
       this.#state = state;
@@ -1558,6 +1595,8 @@ export class OmpRpcSession {
               `Omp RPC cancelled Turn state could not be confirmed: ${message(error)}`,
             );
       this.#terminateFailedCancellation(active, fault);
+    } finally {
+      active.cancellationChecking = false;
     }
   }
 
@@ -1566,8 +1605,9 @@ export class OmpRpcSession {
       const response = await this.#send("get_state", {});
       const state = parseSessionState(response);
       if (this.#activeTurn !== active) return;
-      if (active.cancellation === "accepted" && !cancellationSettled(response, true)) {
+      if (active.cancellation !== "none") {
         active.settlement = "pending";
+        if (active.cancellation === "accepted") void this.#confirmCancelledTurn(active);
         return;
       }
       if (parseSessionStreaming(response)) {
@@ -1599,6 +1639,8 @@ export class OmpRpcSession {
     }
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     active.cancellationTimeout = null;
+    if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
+    active.cancellationRecheck = null;
     this.#closeInteractions(
       active,
       active.cancellation === "accepted" ? "cancelled" : "superseded",
@@ -1770,6 +1812,7 @@ export class OmpRpcSession {
     const active = this.#activeTurn;
     if (!active) return;
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
+    if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
     this.#closeInteractions(active, "cancelled");
     this.#activeTurn = null;
     active.reject(error);

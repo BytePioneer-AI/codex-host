@@ -330,6 +330,106 @@ class FakeOmpProcess extends EventEmitter {
 }
 
 describe("OMP RPC session", () => {
+  it.each(["background wake", "silent drain", "settled during state check"])(
+    "keeps cancellation active through %s and permits the next Turn",
+    async (scenario) => {
+      vi.useFakeTimers();
+      const process = new FakeOmpProcess();
+      const onFault = vi.fn();
+      let cancelling = false;
+      let streaming = false;
+      let background = true;
+      let aborts = 0;
+      let stateChecks = 0;
+      let pendingChecks = 0;
+      let maxPendingChecks = 0;
+      process.handleCommand = (command) => {
+        if (command.type === "prompt" && !cancelling) {
+          process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+          return true;
+        }
+        if (command.type === "abort") {
+          cancelling = true;
+          aborts++;
+          streaming = false;
+          process.sendFrame({ type: "agent_end", isTerminal: true });
+          process.sendFrame({ type: "response", id: command.id, command: "abort", success: true });
+          return true;
+        }
+        if (command.type !== "get_state" || !cancelling) return false;
+        stateChecks++;
+        pendingChecks++;
+        maxPendingChecks = Math.max(maxPendingChecks, pendingChecks);
+        const data = {
+          sessionId: "omp-session",
+          isStreaming: streaming,
+          isSettled: !streaming && !background,
+          hasPendingAsyncWork: background,
+          queuedMessageCount: 0,
+        };
+        const respond = () => {
+          pendingChecks--;
+          process.sendFrame({
+            type: "response",
+            id: command.id,
+            command: "get_state",
+            success: true,
+            data,
+          });
+        };
+        if (scenario === "settled during state check" && stateChecks === 1) {
+          setTimeout(() => {
+            background = false;
+            process.sendFrame({ type: "session_settled" });
+          }, 100);
+          setTimeout(respond, 300);
+        } else respond();
+        return true;
+      };
+      const session = new OmpRpcSession(
+        { cwd: "/synthetic", cancelTimeoutMs: 1_000, onFault },
+        { spawn: () => process as never },
+      );
+      try {
+        await session.start();
+        const outcome = session
+          .runTurn("cancel with pending job", () => undefined)
+          .then(
+            (value) => ({ value }),
+            (error: Error) => ({ error: error.message }),
+          );
+        const aborting = session.abort();
+        if (scenario !== "settled during state check") {
+          setTimeout(() => {
+            background = false;
+            if (scenario === "background wake") {
+              streaming = true;
+              process.sendFrame({ type: "agent_start" });
+            }
+          }, 300);
+        }
+        await vi.advanceTimersByTimeAsync(1_001);
+        await aborting;
+        await expect(outcome).resolves.toEqual({ value: { text: "", cancelled: true } });
+        expect(aborts).toBe(scenario === "background wake" ? 2 : 1);
+        expect(maxPendingChecks).toBe(1);
+        expect(onFault).not.toHaveBeenCalled();
+        const checks = stateChecks;
+        process.handleCommand = null;
+        await expect(session.runTurn("continue", () => undefined)).resolves.toMatchObject({
+          text: "PONG",
+          cancelled: false,
+        });
+        // A cancelled Turn's delayed check must not query or abort its successor.
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(stateChecks).toBe(checks);
+      } finally {
+        await session.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("waits through slow native cancellation and accepts another Turn afterwards", async () => {
     vi.useFakeTimers();
     const process = new FakeOmpProcess();

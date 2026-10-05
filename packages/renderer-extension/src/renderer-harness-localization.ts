@@ -16,6 +16,8 @@ export interface RendererHarnessMessages {
   readonly permissionsUnavailable: string;
   readonly permissionModeFixedAtCreate: string;
   readonly codexUsageGateUnavailable: string;
+  readonly modelSelectionRejected: string;
+  readonly thinkingSelectionRejected: string;
 }
 
 const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
@@ -34,6 +36,8 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
     "Grok fixes its Permission Mode when the Session is created. Start a new Thread to change it.",
   codexUsageGateUnavailable:
     "Could not separate this Harness from the Codex usage limit in this Desktop version. Codex usage limits still apply to sending.",
+  modelSelectionRejected: "Couldn't switch Model",
+  thinkingSelectionRejected: "Couldn't switch Thinking option",
 });
 
 const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
@@ -51,6 +55,8 @@ const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   permissionModeFixedAtCreate: "Grok 的权限模式在会话创建时确定，如需更改请新建会话",
   codexUsageGateUnavailable:
     "当前 Desktop 版本无法将此 Harness 与 Codex 额度限制分离，发送仍受 Codex 额度限制",
+  modelSelectionRejected: "无法切换模型",
+  thinkingSelectionRejected: "无法切换思考选项",
 });
 
 // Some Harness catalogs expose preset IDs as labels. Keep IDs untouched and

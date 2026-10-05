@@ -9,13 +9,18 @@ import {
   rendererModelPickerMainMenuPlacement,
   rendererModelPickerModelMenuPlacement,
   rendererModelPickerStandaloneModelMenuPlacement,
+  rendererModelSelectionNoticePlacement,
 } from "../src/renderer-model-picker-positioning.js";
 
 import {
   isRendererModelPickerDisabled,
   rendererModelPickerPresentation,
+  rendererModelSelectionFailed,
+  rendererModelSelectionNoticeContent,
   shouldCloseRendererModelPicker,
+  shouldOpenRendererModelSelectionNotice,
   syncRendererLabelText,
+  type RendererModelControlView,
 } from "../src/renderer-model-picker.js";
 
 const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
@@ -322,5 +327,108 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
       showThinkingSection: false,
       thinkingSelectionEnabled: false,
     });
+  });
+});
+
+describe("Renderer Model selection rejection notice", () => {
+  const ultracodeRejection =
+    "Claude Code reports Ultracode is unavailable for the selected Model; choose another Model or Thinking option";
+  const rejectedCatalog = catalog(["high", "ultracode"]);
+  const rejected: RendererModelControlView = {
+    status: "error",
+    catalog: rejectedCatalog,
+    selected: model,
+    selectedThinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    error: ultracodeRejection,
+    selectionRejected: "model",
+    selectionErrorId: 3,
+  };
+
+  it("marks only rejected user selections, not catalog or inspection failures", () => {
+    expect(rendererModelSelectionFailed(rejected)).toBe(true);
+    expect(rendererModelSelectionFailed({ ...rejected, selectionRejected: "thinking" })).toBe(true);
+    const catalogFailure: RendererModelControlView = {
+      status: "error",
+      catalog: rejectedCatalog,
+      selected: model,
+      error: "Existing Thread Model is absent from the current Catalog",
+    };
+    expect(rendererModelSelectionFailed(catalogFailure)).toBe(false);
+    expect(rendererModelSelectionFailed({ status: "error", error: "inspection failed" })).toBe(
+      false,
+    );
+    // A later selection or reload replaces the view, which clears the trigger mark.
+    expect(rendererModelSelectionFailed({ ...rejected, status: "selecting" })).toBe(false);
+    expect(rendererModelSelectionFailed({ ...rejected, status: "ready" })).toBe(false);
+    expect(rendererModelSelectionFailed({ ...rejected, error: "" })).toBe(false);
+  });
+
+  it("opens the notice once per rejection id, so re-renders never replay it", () => {
+    expect(shouldOpenRendererModelSelectionNotice(rejected, 0)).toBe(true);
+    expect(shouldOpenRendererModelSelectionNotice(rejected, 2)).toBe(true);
+    expect(shouldOpenRendererModelSelectionNotice(rejected, 3)).toBe(false);
+    // A remounted Composer starts from the newest presented id and skips older ones.
+    expect(shouldOpenRendererModelSelectionNotice(rejected, 5)).toBe(false);
+    // Repeating the same rejected choice gets a new id and shows the notice again.
+    expect(shouldOpenRendererModelSelectionNotice({ ...rejected, selectionErrorId: 4 }, 3)).toBe(
+      true,
+    );
+    const withoutId: RendererModelControlView = { ...rejected };
+    delete withoutId.selectionErrorId;
+    expect(shouldOpenRendererModelSelectionNotice(withoutId, 0)).toBe(false);
+    expect(
+      shouldOpenRendererModelSelectionNotice(
+        {
+          status: "error",
+          catalog: rejectedCatalog,
+          error: "External configuration control is unavailable",
+          selectionErrorId: 9,
+        },
+        0,
+      ),
+    ).toBe(false);
+  });
+
+  it("titles the notice by the rejected choice and keeps the Host message", () => {
+    expect(rendererModelSelectionNoticeContent(rejected)).toEqual({
+      heading: "Couldn't switch Model",
+      message: ultracodeRejection,
+    });
+    expect(rendererModelSelectionNoticeContent(rejected, "zh-CN")).toEqual({
+      heading: "无法切换模型",
+      message: ultracodeRejection,
+    });
+    expect(
+      rendererModelSelectionNoticeContent({ ...rejected, selectionRejected: "thinking" }, "en"),
+    ).toEqual({ heading: "Couldn't switch Thinking option", message: ultracodeRejection });
+    expect(
+      rendererModelSelectionNoticeContent({ ...rejected, selectionRejected: "thinking" }, "zh-CN")
+        .heading,
+    ).toBe("无法切换思考选项");
+  });
+
+  it("places the notice just above the Model trigger with right edges aligned", () => {
+    expect(
+      rendererModelSelectionNoticePlacement(
+        { left: 700, right: 900, top: 820 },
+        { width: 1200, height: 900 },
+      ),
+    ).toEqual({ right: 300, bottom: 88, maxWidth: 320, maxHeight: 804 });
+  });
+
+  it("keeps the notice inside a narrow viewport whatever its text width", () => {
+    const placement = rendererModelSelectionNoticePlacement(
+      { left: 0, right: 50, top: 820 },
+      { width: 240, height: 900 },
+    );
+    expect(placement).toEqual({ right: 8, bottom: 88, maxWidth: 224, maxHeight: 804 });
+    // Widest possible notice still starts at the left collision padding.
+    expect(240 - placement.right - placement.maxWidth).toBe(8);
+    expect(
+      rendererModelSelectionNoticePlacement(
+        { left: 1150, right: 1199, top: 820 },
+        { width: 1200, height: 900 },
+      ).right,
+    ).toBe(8);
   });
 });

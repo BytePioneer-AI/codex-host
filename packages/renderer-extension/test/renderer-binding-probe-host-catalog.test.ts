@@ -1,10 +1,11 @@
 import { harnessIdSchema } from "@codexhost/shared-contracts";
-import { harnessModelRefSchema } from "@codexhost/shared-contracts";
+import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
 import type * as RendererComposerDom from "../src/renderer-composer-dom.js";
 import {
   isRendererModelPickerDisabled,
+  rendererModelSelectionFailed,
   type RendererModelControlView,
 } from "../src/renderer-model-picker.js";
 import type { RendererRequestOptions } from "../src/renderer-request-sender.js";
@@ -19,6 +20,7 @@ const testState = vi.hoisted(() => ({
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as RendererModelControlView[],
   selectModel: null as null | ((modelId: string) => void),
+  selectThinking: null as null | ((thinkingOptionId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
   getSessionImportClient: null as null | (() => RendererSessionImportClient | null),
   sidebarOptions: null as null | Parameters<typeof installRendererSidebarAgentIcons>[0],
@@ -42,6 +44,7 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
       ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
     ) => {
       testState.selectModel = args[7];
+      testState.selectThinking = args[8];
       return {
         composer: testState.composer,
         composerId: "composer-1",
@@ -190,6 +193,7 @@ function installFakeBrowser(): void {
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
   testState.selectModel = null;
+  testState.selectThinking = null;
   testState.getConnectionDiagnostics = null;
   testState.getSessionImportClient = null;
   testState.documentListeners.clear();
@@ -638,7 +642,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       expect(preventDefault).toHaveBeenCalledTimes(blocked ? 1 : 0);
       expect(stopImmediatePropagation).toHaveBeenCalledTimes(blocked ? 1 : 0);
     };
-    const expectRecoverableView = (error: string) => {
+    const expectRecoverableView = (error: string, selectionRejected: boolean) => {
       const view = testState.renderedModelViews.at(-1);
       assert(view);
       expect(view).toMatchObject({
@@ -649,12 +653,16 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         error,
       });
       expect(isRendererModelPickerDisabled(view)).toBe(false);
+      // Only a rejected user choice pops the picker notice; a catalog mismatch does not.
+      expect(rendererModelSelectionFailed(view)).toBe(selectionRejected);
+      expect(view.selectionRejected).toBe(selectionRejected ? "model" : undefined);
+      expect(typeof view.selectionErrorId).toBe(selectionRejected ? "number" : "undefined");
       expect(probe.lockedSelection()?.model).toEqual(oldModel);
       expectSubmissionBlocked(true);
     };
 
     await vi.waitFor(() => {
-      expectRecoverableView("Existing Thread Model is absent from the current Catalog");
+      expectRecoverableView("Existing Thread Model is absent from the current Catalog", false);
     });
     expect(host.selectThreadModel).not.toHaveBeenCalled();
     expect(applyAgent).not.toHaveBeenCalled();
@@ -662,7 +670,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     const selectModel = testState.selectModel;
     assert(selectModel);
     selectModel(newModel.id);
-    await vi.waitFor(() => expectRecoverableView("Model selection failed"));
+    await vi.waitFor(() => expectRecoverableView("Model selection failed", true));
     expect(host.selectThreadModel).toHaveBeenCalledExactlyOnceWith({
       threadId: "thread-a",
       model: newModel,
@@ -673,6 +681,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       status: "selecting",
       selected: oldModel,
     });
+    expect(testState.renderedModelViews.at(-1)).not.toHaveProperty("selectionRejected");
     expect(probe.lockedSelection()?.model).toEqual(oldModel);
     expectSubmissionBlocked(true);
     resolveSelection({ effectiveModel: newModel });
@@ -683,10 +692,111 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         selected: newModel,
       });
     });
+    expect(testState.renderedModelViews.at(-1)).not.toHaveProperty("selectionRejected");
+    expect(testState.renderedModelViews.at(-1)).not.toHaveProperty("selectionErrorId");
     expect(host.selectThreadModel).toHaveBeenCalledTimes(2);
     expect(probe.lockedSelection()?.model).toEqual(newModel);
     expectSubmissionBlocked(false);
     expect(applyAgent).not.toHaveBeenCalled();
+  });
+
+  it("marks each rejected Thinking choice with a new notice id and keeps the confirmed option", async () => {
+    installFakeBrowser();
+    const model = harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" });
+    const high = harnessThinkingOptionIdSchema.parse("high");
+    const ultracode = harnessThinkingOptionIdSchema.parse("ultracode");
+    const inspection = readyInspection(model.id);
+    inspection.capabilities.configuration.selectThinkingOption = true;
+    const catalog = {
+      ...inspection.catalog,
+      models: [{ ref: model, label: "Haiku", supportedThinkingOptionIds: [high, ultracode] }],
+      thinkingOptions: [
+        { id: high, label: "High" },
+        { id: ultracode, label: "Ultracode" },
+      ],
+      defaultThinkingOptionId: high,
+    };
+    const rejection =
+      "Claude Code reports Ultracode is unavailable for the selected Model; choose another Model or Thinking option";
+    const host = {
+      inspectHarness: vi.fn(async () => ({ ...inspection, catalog })),
+      inspectThread: vi.fn(async () => ({
+        owner: "external" as const,
+        harnessId: "claude-code",
+        transportModelId:
+          "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@high",
+        effectiveModel: model,
+        effectiveThinkingOptionId: high,
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        locked: true,
+      })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({
+        threadId: "thread-a",
+        usage: null,
+        accountCredits: null,
+      })),
+      selectThreadThinking: vi.fn(async () => {
+        throw new Error(rejection);
+      }),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const modelControl = {
+      ...host,
+      currentHostId: () => "local",
+      clientForHost: () => host,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      vi.fn(() => true),
+      modelControl as never,
+    );
+    await vi.waitFor(() => {
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        selected: model,
+        selectedThinkingOptionId: high,
+      });
+    });
+
+    const rejectedView = async (): Promise<RendererModelControlView> => {
+      const selectThinking = testState.selectThinking;
+      assert(selectThinking);
+      const rendered = testState.renderedModelViews.length;
+      selectThinking(ultracode);
+      await vi.waitFor(() => {
+        expect(testState.renderedModelViews.length).toBeGreaterThan(rendered);
+        expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "error" });
+      });
+      const view = testState.renderedModelViews.at(-1);
+      assert(view);
+      expect(view).toMatchObject({
+        status: "error",
+        selected: model,
+        selectedThinkingOptionId: high,
+        error: rejection,
+        selectionRejected: "thinking",
+      });
+      expect(rendererModelSelectionFailed(view)).toBe(true);
+      expect(isRendererModelPickerDisabled(view)).toBe(false);
+      return view;
+    };
+
+    const first = await rejectedView();
+    const second = await rejectedView();
+    expect(host.selectThreadThinking).toHaveBeenCalledTimes(2);
+    expect(host.selectThreadThinking).toHaveBeenLastCalledWith({
+      threadId: "thread-a",
+      thinkingOptionId: ultracode,
+    });
+    // Same choice, same message: only the id tells the picker to show the notice again.
+    expect(second.selectionErrorId).toBeGreaterThan(first.selectionErrorId ?? Infinity);
   });
 
   it("routes Session import to local while the current Composer Host is remote", async () => {

@@ -41,6 +41,15 @@ function overview(): ConsoleOverview {
     summary: { state: "running", detail: null },
     issueUrl: "",
     hostAvailable: false,
+    desktopManaged: { running: false },
+    daemon: {
+      running: false,
+      pid: null,
+      port: null,
+      startedAt: null,
+      runtimePath: "/repo/packages/host-runtime/dist/main.js",
+      error: null,
+    },
   };
 }
 
@@ -51,7 +60,7 @@ function render(value: ConsoleOverview): string {
 }
 
 describe("overview startup diagnostics", () => {
-  it("shows starting without a launch button, and enables retry only after failure", () => {
+  it("keeps Desktop launch controls out of Overview startup diagnostics", () => {
     const state = new ConsoleState();
     state.overview = overview();
     state.overview.summary.state = "starting";
@@ -69,24 +78,25 @@ describe("overview startup diagnostics", () => {
     } as unknown as RendererSettingsPageMountContext;
     createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
     const initial = JSON.stringify(replaceChildren.mock.calls.at(-1));
-    expect(initial).toContain("codexhost 正在启动");
-    expect(initial).not.toContain('"tag":"button"');
+    expect(initial).toContain("正在启动…");
+    expect(initial).not.toContain("启动 Codex Desktop");
     expect(initial).not.toContain("启动成功");
-    expect(initial).not.toContain("codexhost 未运行");
 
     state.overview.summary = { state: "startup-failed", detail: "failed to start" };
     latest.outcome = "failed";
+    latest.error = "failed to start";
     refresh?.();
     const failed = JSON.stringify(replaceChildren.mock.calls.at(-1));
-    expect(failed).toContain('"tag":"button"');
-    expect(failed).toContain("启动 codexhost");
+    expect(failed).toContain("failed to start");
+    expect(failed).not.toContain("启动 Codex Desktop");
 
     state.overview.summary = { state: "running", detail: null };
     latest.outcome = "ready";
+    latest.error = null;
     refresh?.();
     const ready = JSON.stringify(replaceChildren.mock.calls.at(-1));
-    expect(ready).toContain("codexhost 正在运行");
-    expect(ready).not.toContain('"tag":"button"');
+    expect(ready).toContain("启动成功");
+    expect(ready).not.toContain("启动 Codex Desktop");
   });
 
   it("does not present an abandoned starting record as a successful startup", () => {

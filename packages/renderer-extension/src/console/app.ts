@@ -1,4 +1,4 @@
-import { hostRequestManager, consoleUpdateClient } from "./api.js";
+import { hostRequestManager, consolePost, consoleUpdateClient } from "./api.js";
 import { mountConsoleAnnouncement } from "./announcement.js";
 import { startAgentGroupSync } from "../agent-group-sync.js";
 import { getSharedAgentGroupPreferenceStore } from "../agent-group-preference.js";
@@ -9,6 +9,7 @@ import { consoleMessages, type ConsoleMessages } from "./messages.js";
 import { createOfflineHarnessesPage } from "./pages/harnesses-offline.js";
 import { hostPage } from "./pages/host-required.js";
 import { createOverviewPage } from "./pages/overview.js";
+import { createChatPage } from "./pages/chat.js";
 import { ConsoleState } from "./state.js";
 import { createRendererModelClient } from "../renderer-model-client.js";
 import { createRendererSessionImportClient } from "../renderer-session-import-client.js";
@@ -51,17 +52,8 @@ function statusCard(
   const card = h(document, "div", { className: "console-status-card", role: "status" });
   const render = (): void => {
     const overview = state.overview;
-    const running = overview?.inspect?.runtime.running ?? false;
-    const summary = overview?.summary.state;
-    const tone = state.offline
-      ? "bad"
-      : summary === "running"
-        ? "ok"
-        : summary === "integration-unavailable"
-          ? "warn"
-          : summary === "startup-failed" || summary === "desktop-missing"
-            ? "bad"
-            : "idle";
+    const running = overview?.daemon.running ?? false;
+    const tone = state.offline ? "bad" : running ? "ok" : "idle";
     const version = overview?.console.distribution?.version ?? overview?.console.version ?? "";
     card.replaceChildren(
       h(
@@ -77,11 +69,9 @@ function statusCard(
             ? messages.consoleOffline
             : !overview
               ? messages.statusLoading
-              : summary === "starting"
-                ? messages.starting
-                : running
-                  ? messages.hostRunning
-                  : messages.hostStopped,
+              : running
+                ? messages.hostRunning
+                : messages.hostStopped,
         ),
       ),
       h(
@@ -123,7 +113,7 @@ export function startConsoleApp(document: Document): void {
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) stopGroupSync();
   });
-  const diagnostics = createConsoleConnectionDiagnostics(modelClient);
+  const diagnostics = createConsoleConnectionDiagnostics(modelClient, state);
   const sessionImportClient = createRendererSessionImportClient((method, params) =>
     manager.sendRequest(method, params),
   );
@@ -142,7 +132,7 @@ export function startConsoleApp(document: Document): void {
   const sections: NavigationSection[] = [
     {
       label: "",
-      pages: [createOverviewPage(messages, state, navigate, locale)],
+      pages: [createOverviewPage(messages, state, navigate, locale), createChatPage()],
     },
     {
       label: messages.settingsSection,
@@ -215,6 +205,30 @@ export function startConsoleApp(document: Document): void {
       h(document, "span", {}, messages.starOnGitHub),
     ),
   );
+
+  const exitLabel = h(document, "span", {}, messages.exitConsole);
+  const exitButton = h(
+    document,
+    "button",
+    { type: "button", className: "settings-nav-button console-exit-button" },
+    createRendererSettingsIcon("close", 17),
+    exitLabel,
+  );
+  exitButton.addEventListener("click", () => {
+    if (exitButton.disabled) return;
+    exitButton.disabled = true;
+    exitLabel.textContent = messages.exitingConsole;
+    void consolePost("/api/shutdown").then(
+      () => {
+        exitLabel.textContent = messages.consoleExited;
+      },
+      () => {
+        exitLabel.textContent = messages.consoleExitFailed;
+        exitButton.disabled = false;
+      },
+    );
+  });
+  navigation.append(exitButton);
 
   const brand = h(
     document,

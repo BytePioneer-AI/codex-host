@@ -49,6 +49,15 @@ export interface ConsoleOverview {
   };
   issueUrl: string;
   hostAvailable: boolean;
+  desktopManaged: { running: boolean };
+  daemon: {
+    running: boolean;
+    pid: number | null;
+    port: number | null;
+    startedAt: number | null;
+    runtimePath: string | null;
+    error: string | null;
+  };
 }
 
 export interface UpdateSummary {

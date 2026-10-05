@@ -47,7 +47,7 @@ type: warning
 
 Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAtMs: null`）。只要该记录对应的 Launcher 仍存活，总览和侧边栏显示“正在启动”，不再提示重复启动；启动完成或失败后由同一条记录更新结果。超时沿用 Launcher 原有的超时与失败处理，不在网页额外设置倒计时。如果 Launcher 异常退出而留下未完成记录，控制台显示启动失败，不会永久停在“正在启动”。
 
-从已打开的 Web 控制台点击“启动”时，安装版调用 Launcher 的显式 `launch` 命令，npm 版通过 npm 包装脚本启动；两者都不再打开浏览器标签页。原页面通过状态轮询展示启动结果。
+从已打开的 Web 控制台点击“启动”时，安装版调用 Launcher 的显式 `launch` 命令，npm 版通过 npm 包装脚本启动；两者都不再打开浏览器标签页。原页面通过状态轮询展示启动结果。 源码控制台（`packages/console-server/dist/main.js serve`）从当前仓库发现 `target/debug/codexhost`，并显式传递已构建的 Shim、Node、Host Runtime、Desktop Controller 和 Renderer 路径；首次使用前需完成 `npm run build`。
 
 设置 `CODEXHOST_CONSOLE=0` 可关闭以上行为。其他打开方式：
 
@@ -58,6 +58,8 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 | Codex 设置页 | “关于”页的“打开控制台”，通过本地 Host 的 `codexhost/console/open` 打开；远程 Host 不支持 |
 
 地址为 `http://127.0.0.1:26339/`。命令会复用已运行的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），先让旧实例退出再以当前安装启动。控制台不需要登录，直接访问即可。
+
+侧栏底部的“退出控制台”会关闭本地控制台服务，不会停止 codexhost 或 Codex Desktop。之后可通过 `codexhost console`、Codex 设置页入口或再次启动 codexhost 打开控制台。若希望 codexhost 启动时不再自动启动控制台，可在启动环境中设置 `CODEXHOST_CONSOLE=0`；显式运行 `codexhost console` 仍会打开它。
 
 ## 端口
 
@@ -97,6 +99,8 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 - codexhost 未运行：连接页显示离线的插件列表并可修改安装路径；账号、会话导入提示先启动 codexhost。
 - codexhost 运行但控制通道不可用（例如旧版本）：提示重新启动 codexhost。
 - Web 会话导入成功后显示“导入成功，请在 Codex 中查看”，不尝试导航，也不提供“重试打开”；导入失败仍显示实际错误。Codex 内置设置页保留导入后打开会话的行为。
+
+启动 daemon 后，Desktop 通过专用本地 socket 接入。Desktop 启动探测与主连接可能携带不同的原生插件配置覆盖项；空闲时仅替换官方 Codex 后端，外部 Harness 会话仍由原 daemon 持有。Codex 忙碌时拒绝配置替换，需待其空闲后重试。daemon 重启会等待旧进程退出、释放存储锁后再启动新进程。
 
 ## Harness 排序与分组
 

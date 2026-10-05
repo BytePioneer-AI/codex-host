@@ -390,6 +390,18 @@ describe("shared external Threads", () => {
     await desktop.collector.waitFor((m) => m.method === "turn/completed");
   });
 
+  it("routes Harness control RPCs to the shared owner without touching the frontend adapter", async () => {
+    const { front, adapter } = setup();
+    const desktop = front(true);
+    const result = await rpc(desktop, 19, "codexhost/harness/inspect", {
+      harnessId: "pi",
+      cwd: "/synthetic",
+    });
+    expect(result).toMatchObject({ result: { status: "ready" } });
+    expect(adapter.inspectionCalls).toBe(1);
+    expect(desktop.adapter.inspectionCalls).toBe(0);
+  });
+
   it("merges shared Threads into the local list without importing them or changing native routing", async () => {
     const { front } = setup();
     const ssh = front(true);

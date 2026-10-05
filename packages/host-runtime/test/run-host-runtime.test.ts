@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   createRemoteOfficialAppServerPlan,
   delegationCliEnvironment,
+  externalUiEnabled,
   hasLauncherManagedUpdateRuntime,
   MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE,
 } from "../src/run-host-runtime.js";
@@ -30,6 +31,27 @@ describe("Host Runtime composition", () => {
       }),
     ).toEqual({ CODEXHOST_CLI_PATH: launcher });
     expect(delegationCliEnvironment({})).toEqual({});
+  });
+
+
+  it("enables External UI for local Launcher hosts with an explicit opt-out", () => {
+    expect(externalUiEnabled({})).toBe(false);
+    expect(externalUiEnabled({ CODEXHOST_EXTERNAL_UI: "1" })).toBe(true);
+    expect(
+      externalUiEnabled({ CODEXHOST_LAUNCHER_EXECUTABLE: "/Applications/codexhost.app/launcher" }),
+    ).toBe(true);
+    expect(
+      externalUiEnabled({
+        CODEXHOST_LAUNCHER_EXECUTABLE: "/Applications/codexhost.app/launcher",
+        CODEXHOST_EXTERNAL_UI: "0",
+      }),
+    ).toBe(false);
+    expect(
+      externalUiEnabled({
+        CODEXHOST_LAUNCHER_EXECUTABLE: "/opt/codexhost/bin/codexhost",
+        CODEXHOST_REMOTE_SSH_MANAGED: "1",
+      }),
+    ).toBe(false);
   });
 
   it("keeps the managed listener outside the official Desktop bootstrap kill selector", () => {

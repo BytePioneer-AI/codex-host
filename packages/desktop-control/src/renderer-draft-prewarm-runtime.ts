@@ -561,6 +561,18 @@ export function createDraftPrewarmPolicyBridge(
     const routedParameters = routeThreadStart(parameters);
     const generation = prewarmGeneration;
     publishDraftWorkspace(routedParameters);
+    if (
+      isRecord(routedParameters) &&
+      routedParameters.ephemeral !== true &&
+      typeof routedParameters.model === "string" &&
+      routedParameters.model.startsWith("codexhost/")
+    ) {
+      // Desktop treats failed prewarms as an optional cache miss and starts
+      // the Thread on send. Harness creation is durable and its notifications
+      // are shared with every viewer, so it cannot be used as a native draft
+      // cache entry without publishing an unused Thread in the sidebar.
+      return Promise.reject(new Error("External Harness Threads are created on first send"));
+    }
     const pending = shouldUseBridge("thread/start", routedParameters)
       ? routedSend("thread/start", routedParameters, options)
       : options === undefined

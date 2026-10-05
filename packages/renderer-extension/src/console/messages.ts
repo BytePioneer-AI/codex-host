@@ -77,6 +77,10 @@ const ENGLISH = {
   consoleOfflineBody: "Start codexhost or run `codexhost console`, then reload this page.",
   openInCodex: "Open this Thread in Codex Desktop.",
   starOnGitHub: "Star on GitHub",
+  exitConsole: "Exit console",
+  exitingConsole: "Exiting…",
+  consoleExited: "Console service stopped",
+  consoleExitFailed: "Could not stop console; retry",
 };
 
 type ConsoleMessages = typeof ENGLISH;
@@ -157,6 +161,10 @@ const CHINESE: ConsoleMessages = {
   consoleOfflineBody: "启动 codexhost，或在终端运行 codexhost console，然后刷新本页。",
   openInCodex: "请在 Codex Desktop 中打开这个会话。",
   starOnGitHub: "star支持",
+  exitConsole: "退出控制台",
+  exitingConsole: "正在退出…",
+  consoleExited: "控制台服务已退出",
+  consoleExitFailed: "退出失败，请重试",
 };
 
 export type { ConsoleMessages };

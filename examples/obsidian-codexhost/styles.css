@@ -1,0 +1,106 @@
+.codexhost-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 10px;
+  padding: 10px;
+}
+
+.codexhost-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.codexhost-toolbar select {
+  flex: 1;
+}
+
+.codexhost-messages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.codexhost-message {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.codexhost-user {
+  background: var(--background-secondary);
+}
+
+.codexhost-assistant {
+  background: var(--background-primary-alt);
+}
+
+.codexhost-system {
+  border-color: var(--text-error);
+}
+
+.codexhost-message-role {
+  font-size: var(--font-smallest);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 5px;
+}
+
+.codexhost-message-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.codexhost-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.codexhost-composer textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.codexhost-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.codexhost-reasoning {
+  opacity: 0.8;
+  font-size: var(--font-ui-small);
+}
+
+.codexhost-tool {
+  font-family: var(--font-monospace);
+  background: var(--background-secondary-alt);
+}
+
+.codexhost-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.codexhost-question {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.codexhost-question-title {
+  font-weight: var(--font-semibold);
+}
+
+.codexhost-question input,
+.codexhost-question select {
+  width: 100%;
+}

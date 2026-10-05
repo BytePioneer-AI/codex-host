@@ -265,6 +265,7 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 export function createFixture(
   options: {
     sharedThreads?: SharedThreadBridge;
+    externalOnly?: boolean;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
@@ -280,6 +281,11 @@ export function createFixture(
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+    onRuntimeAttach?: (input: {
+      stockCodexPath: string;
+      arguments: string[];
+      defaultAgent: "codex" | "pi";
+    }) => Promise<void> | void;
   } = {},
 ) {
   const adapter =
@@ -300,9 +306,10 @@ export function createFixture(
     return official as unknown as ChildProcessWithoutNullStreams;
   });
   const createOfficialConnection = options.createOfficialConnection;
-  if (options.officialRuntimeScope) startup.resolve(undefined);
+  if (options.officialRuntimeScope || options.externalOnly) startup.resolve(undefined);
   const host = new AppServerHost({
     ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
+    ...(options.externalOnly === undefined ? {} : { externalOnly: options.externalOnly }),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
     defaultAgent: "codex",
@@ -336,6 +343,7 @@ export function createFixture(
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),
+    ...(options.onRuntimeAttach ? { onRuntimeAttach: options.onRuntimeAttach } : {}),
   });
   const running = host.run();
   void running.then(

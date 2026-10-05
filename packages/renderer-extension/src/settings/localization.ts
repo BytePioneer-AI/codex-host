@@ -150,6 +150,8 @@ export interface RendererSettingsMessages {
   readonly connectionReason: string;
   readonly connectionRefresh: string;
   readonly connectionRefreshing: string;
+  readonly connectionStartRenderer: string;
+  readonly connectionRendererStoppedDescription: string;
   readonly connectionViewError: string;
   readonly connectionCopyDetails: string;
   readonly connectionCopied: string;
@@ -157,6 +159,7 @@ export interface RendererSettingsMessages {
   readonly connectionErrorMessage: string;
   readonly connectionNoRuntime: string;
   readonly connectionStatusReady: string;
+  readonly connectionStatusStopped: string;
   readonly connectionStatusConnected: string;
   readonly connectionLoginRequired: string;
   readonly connectionConfigurationRequired: string;
@@ -423,6 +426,9 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionReason: "Reason",
   connectionRefresh: "Run connection diagnostics",
   connectionRefreshing: "Running diagnostics...",
+  connectionStartRenderer: "Start Codex Desktop with renderer injection",
+  connectionRendererStoppedDescription:
+    "Start Codex Desktop here to inject the renderer UI and connect it to the daemon.",
   connectionViewError: "View error",
   connectionCopyDetails: "Copy diagnostics",
   connectionCopied: "Copied",
@@ -430,6 +436,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionErrorMessage: "Error message",
   connectionNoRuntime: "The renderer request bridge is not available yet.",
   connectionStatusReady: "Ready",
+  connectionStatusStopped: "Not running",
   connectionStatusConnected: "Connected",
   connectionLoginRequired: "Login required",
   connectionConfigurationRequired: "Setup required",
@@ -725,6 +732,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionReason: "原因",
   connectionRefresh: "重新诊断连接",
   connectionRefreshing: "正在诊断...",
+  connectionStartRenderer: "启动 Codex Desktop 并注入界面",
+  connectionRendererStoppedDescription:
+    "从这里启动 Codex Desktop，codexhost 会注入 Renderer 界面并连接到 daemon。",
   connectionViewError: "查看错误",
   connectionCopyDetails: "复制诊断信息",
   connectionCopied: "已复制",
@@ -732,6 +742,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionErrorMessage: "错误信息",
   connectionNoRuntime: "Renderer 请求桥尚未可用。",
   connectionStatusReady: "正常",
+  connectionStatusStopped: "未运行",
   connectionStatusConnected: "已连接",
   connectionLoginRequired: "需要登录",
   connectionConfigurationRequired: "需要配置",

@@ -276,6 +276,8 @@ has enqueueRequest
 
 ### 优先检查清理动作
 
+外部 Harness 草稿仅记录工作目录，不创建预热 Thread；首次发送才调用 `thread/start`。外部会话的创建与通知由共享 Host 持久化并广播，不能作为 Desktop 原生预热缓存，否则未使用的空会话也会出现在侧栏。官方 Codex 仍使用原生预热，短生命周期 `ephemeral` 请求保留原行为。
+
 Agent 切换通常先清理旧的 prewarm Thread。当前版本应检查：
 
 ```text

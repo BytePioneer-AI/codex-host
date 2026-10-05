@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { UPDATE_RUNTIME_ENV } from "@codexhost/update-manager";
 
 import { AppServerHost, officialEnvironment } from "./app-server-host.js";
+import { daemonDesktopAvailable, runDaemonDesktopBridge } from "./daemon-desktop-bridge.js";
 import { prepareLocalCodex } from "./native-account-host.js";
 import { SingleNativeCodexAccount } from "./account/codex-account-control.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
@@ -43,6 +44,7 @@ import {
 import { watchRemoteListenerSupervisor } from "./remote-listener-supervisor.js";
 import { remoteOfficialAppServerSocketPath } from "./remote-official-app-server.js";
 import { startConsoleControlServer } from "./console-control-server.js";
+import { startExternalUiServer } from "./external-ui-server.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 
@@ -63,6 +65,15 @@ export function createRemoteOfficialAppServerPlan(
     socketPath,
     listenerArguments: officialListenerArgumentsForRemoteListener(arguments_, socketPath),
   };
+}
+
+export function externalUiEnabled(environment: NodeJS.ProcessEnv): boolean {
+  if (environment.CODEXHOST_EXTERNAL_UI === "1") return true;
+  if (environment.CODEXHOST_EXTERNAL_UI === "0") return false;
+  return (
+    Boolean(environment.CODEXHOST_LAUNCHER_EXECUTABLE) &&
+    environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1"
+  );
 }
 
 export function hasLauncherManagedUpdateRuntime(
@@ -202,11 +213,22 @@ export async function runHostRuntime(input: {
     : undefined;
 
   if (!isRemoteUnixListenerInvocation(input.arguments)) {
+    const enableExternalUi = externalUiEnabled(input.environment);
     const remoteControlPlan = createRemoteControlAppServerPlan({
       arguments: input.arguments,
       environment: input.environment,
       ...(hostRuntimePath ? { hostRuntimePath } : {}),
     });
+    if (!remoteControlPlan && (await daemonDesktopAvailable(input.environment))) {
+      process.stderr.write("codexhost: Desktop attached to shared daemon\n");
+      return runDaemonDesktopBridge({
+        arguments: input.arguments,
+        environment: input.environment,
+        stockCodexPath,
+        defaultAgent,
+        diagnosticOutput: process.stderr,
+      });
+    }
     const environment = remoteControlPlan?.environment ?? input.environment;
     return prepareDelegationRuntime({
       environment,
@@ -222,8 +244,38 @@ export async function runHostRuntime(input: {
           accountControl: official.accountControl,
         };
         if (!remoteControlPlan) {
+          if (!enableExternalUi) {
+            try {
+              const host = new AppServerHost({
+                stockCodexPath,
+                arguments: input.arguments,
+                defaultAgent,
+                environment: delegationEnvironment,
+                ...shared,
+                ...installedHarnessPluginOptions(
+                  delegationEnvironment,
+                  false,
+                  input.hostRuntimeUrl,
+                ),
+                onDelegationApi,
+                ...(updateCoordinator ? { updateCoordinator } : {}),
+                ...(consoleOpener ? { consoleOpener } : {}),
+              });
+              return await runWithConsoleControl(
+                host,
+                consoleOpener !== undefined,
+                delegationEnvironment,
+              );
+            } finally {
+              await official.close();
+            }
+          }
+
+          const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
+          let externalUi: Awaited<ReturnType<typeof startExternalUiServer>> | undefined;
           try {
-            const host = new AppServerHost({
+            await mappingStore.initialize();
+            const common = {
               ...(process.platform !== "win32"
                 ? {
                     sharedThreads: new SharedThreadBridge({
@@ -235,22 +287,47 @@ export async function runHostRuntime(input: {
                   }
                 : {}),
               stockCodexPath,
-              arguments: input.arguments,
               defaultAgent,
               environment: delegationEnvironment,
               ...shared,
               ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
-              onDelegationApi,
+              mappingStore,
+              closeMappingStoreOnExit: false,
               ...(updateCoordinator ? { updateCoordinator } : {}),
               ...(consoleOpener ? { consoleOpener } : {}),
+            };
+            const host = new AppServerHost({
+              ...common,
+              arguments: input.arguments,
+              onDelegationApi,
             });
-            return await runWithConsoleControl(
-              host,
-              consoleOpener !== undefined,
-              delegationEnvironment,
+            externalUi = await startExternalUiServer({
+              environment: delegationEnvironment,
+              diagnosticOutput: process.stderr,
+              createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) =>
+                new AppServerHost({
+                  ...common,
+                  arguments: [],
+                  desktopInput,
+                  desktopOutput,
+                  diagnosticOutput,
+                  onDelegationApi: (api) => registry.register(api),
+                }),
+            });
+            process.stderr.write(
+              `codexhost: external UI ws://${externalUi.descriptor.host}:${externalUi.descriptor.port}\n`,
             );
+            return await runWithConsoleControl(host, true, delegationEnvironment);
           } finally {
-            await official.close();
+            try {
+              await externalUi?.close();
+            } finally {
+              try {
+                await official.close();
+              } finally {
+                await mappingStore.close();
+              }
+            }
           }
         }
         const mappingStore = createProductionExternalThreadStore(delegationEnvironment);

@@ -21,6 +21,12 @@ class FakeOmpProcess extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   readonly commands: Record<string, unknown>[] = [];
+  reloadState: Record<string, unknown> = {
+    isSettled: true,
+    isCompacting: false,
+    hasPendingAsyncWork: false,
+    queuedMessageCount: 0,
+  };
   #buffer = "";
   #sessionId = "omp-session";
 
@@ -87,6 +93,7 @@ class FakeOmpProcess extends EventEmitter {
       },
       thinkingLevel: "high",
       isStreaming: false,
+      ...this.reloadState,
       contextUsage: { tokens: 4, contextWindow: 100 },
       sessionId: this.#sessionId,
       ...(this.sessionFile ? { sessionFile: this.sessionFile } : {}),
@@ -234,7 +241,48 @@ class FakeOmpProcess extends EventEmitter {
       return;
     }
     if (command.type === "prompt") {
+      if (command.message === "/local-output") {
+        this.#output({ type: "command_output", text: "Refreshed commands" });
+        this.#response(command, { agentInvoked: false });
+        return;
+      }
       this.#response(command);
+      if (command.message === "/duo-invalid") {
+        this.#output({
+          type: "extension_ui_request",
+          id: "notify-error",
+          method: "notify",
+          message: "Select a Git project",
+          level: "error",
+        });
+        this.#output({
+          type: "prompt_result",
+          id: command.id,
+          agentInvoked: false,
+          status: "completed",
+          sessionSettled: true,
+        });
+        return;
+      }
+      if (command.message === "/duo-status") {
+        this.#output({
+          type: "message_end",
+          message: {
+            role: "custom",
+            customType: "duo-status",
+            content: "Duo ready",
+            display: true,
+          },
+        });
+        this.#output({
+          type: "prompt_result",
+          id: command.id,
+          agentInvoked: false,
+          status: "completed",
+          sessionSettled: true,
+        });
+        return;
+      }
       queueMicrotask(() => {
         if (this.toolFrameMode !== "none") this.#toolFrames(this.toolFrameMode);
         this.onPrompt?.(this);
@@ -427,6 +475,88 @@ describe("OMP RPC session", () => {
     });
     expect(events).toContainEqual({ type: "text.delta", messageId: "assistant-1", delta: "PONG" });
     await session.close();
+  });
+
+  it("displays and settles an extension command that does not invoke the agent", async () => {
+    const process = new FakeOmpProcess();
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000 },
+      { spawn: () => process as never },
+    );
+    await session.start();
+    const events: OmpTurnEvent[] = [];
+    try {
+      const turn = session.runTurn("/duo-status", (event) => events.push(event));
+      const outcome = await Promise.race([
+        turn,
+        new Promise((resolve) => setTimeout(() => resolve("stalled"), 50)),
+      ]);
+      expect(outcome).toEqual({ text: "Duo ready", cancelled: false, localOnly: true });
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: "text.delta", delta: "Duo ready" }),
+      );
+      await session.runTurn("hello", () => undefined);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("settles response-local output and reports extension validation failures without killing the session", async () => {
+    const process = new FakeOmpProcess();
+    const session = new OmpRpcSession({ cwd: "/synthetic" }, { spawn: () => process as never });
+    try {
+      await session.start();
+      await expect(session.runTurn("/local-output", () => undefined)).resolves.toEqual({
+        text: "Refreshed commands",
+        localOnly: true,
+        cancelled: false,
+      });
+      const events: OmpTurnEvent[] = [];
+      await expect(session.runTurn("/duo-invalid", (event) => events.push(event))).rejects.toThrow(
+        "Select a Git project",
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: "text.delta", delta: "Select a Git project" }),
+      );
+      await expect(session.runTurn("hello", () => undefined)).resolves.toMatchObject({
+        text: "PONG",
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("requires affirmative native quiescence before a command reload", async () => {
+    const process = new FakeOmpProcess();
+    const session = new OmpRpcSession({ cwd: "/synthetic" }, { spawn: () => process as never });
+    try {
+      await session.start();
+      for (const override of [
+        { hasPendingAsyncWork: true },
+        { queuedMessageCount: 1 },
+        { isStreaming: true },
+        { isCompacting: true },
+        { isSettled: false },
+      ]) {
+        process.reloadState = {
+          isSettled: true,
+          isCompacting: false,
+          hasPendingAsyncWork: false,
+          queuedMessageCount: 0,
+          ...override,
+        };
+        await expect(session.getReloadState()).resolves.toBeNull();
+      }
+      process.reloadState = {
+        isSettled: true,
+        isCompacting: false,
+        hasPendingAsyncWork: false,
+        queuedMessageCount: 0,
+      };
+      await expect(session.getReloadState()).resolves.toMatchObject({ sessionId: "omp-session" });
+    } finally {
+      await session.close();
+    }
   });
 
   it("subscribes to subagent frames during startup so native delegations are not silent", async () => {

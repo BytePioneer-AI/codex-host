@@ -156,6 +156,7 @@ export interface OmpTurnTransport {
   close(): Promise<void>;
   /** Latest native command list of the running process; absent on older transports. */
   readonly availableCommands?: readonly OmpAvailableCommand[] | null;
+  getReloadState?(): Promise<OmpSessionState | null>;
 }
 
 export interface OmpAdapterDependencies {
@@ -704,6 +705,7 @@ class OmpHarnessSession implements HarnessSession {
     };
     this.commands = {
       list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
+      refresh: () => this.#refreshCommands(),
       execute: (command) => this.#executeHarnessCommand(command),
     };
     this.#transport = options.startedTransport ?? null;
@@ -1050,6 +1052,10 @@ class OmpHarnessSession implements HarnessSession {
         .runTurn(text, (event) => this.#handleTurnEvent(active, event))
         .then(async (result) => {
           try {
+            if (result.localOnly) {
+              this.#completeTurn(active, { status: "succeeded" }, result.text);
+              return;
+            }
             const identity = await this.#completedTurnIdentity(active, transport);
             this.#completeTurn(
               active,
@@ -1450,6 +1456,94 @@ class OmpHarnessSession implements HarnessSession {
       OMP_LIVE_COMMAND_ID_PREFIX,
       native ? ompLiveCommands(native) : null,
     );
+  }
+
+  async #refreshCommands(): Promise<HarnessResult<HarnessCommandCatalog>> {
+    if (this.#phase !== "open")
+      return { ok: false, error: invalidState("Omp Session is not open") };
+    if (
+      this.#active ||
+      this.#acceptingTurn ||
+      this.#configuring ||
+      this.#backgroundSubagents.size > 0
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Omp commands cannot reload while work is active",
+          retryable: true,
+        },
+      };
+    }
+    this.#configuring = true;
+    let replacement: OmpTurnTransport | null = null;
+    let stopped = false;
+    try {
+      const transport = this.#transport;
+      if (!transport?.getReloadState)
+        return { ok: false, error: invalidState("Omp command reload requires a live transport") };
+      const state = await transport.getReloadState();
+      if (!state)
+        return {
+          ok: false,
+          error: {
+            code: "sessionBusy",
+            message: "Omp still has native or queued work; retry after it settles",
+            retryable: true,
+          },
+        };
+      if (!state.sessionFile)
+        return {
+          ok: false,
+          error: invalidState("Omp command reload requires a persisted Native Session"),
+        };
+      await transport.verifySessionCwd(this.#cwd);
+      await stat(state.sessionFile);
+      replacement = this.#createTransport({
+        cwd: this.#cwd,
+        sessionFile: state.sessionFile,
+        permissionMode: this.#permissionMode,
+        onFault: (error) => queueMicrotask(() => this.#fault(error)),
+        onSubagentEvent: (event) => this.handleTransportEvent(event),
+      });
+      await transport.close();
+      stopped = true;
+      await replacement.start();
+      if (this.#phase !== "open") throw new Error("Omp Session closed during command reload");
+      if (replacement.state.sessionId !== state.sessionId)
+        throw new Error("Omp command reload changed Native Session identity");
+      await replacement.verifySessionCwd(this.#cwd);
+      if (state.provider && state.modelId) {
+        const model = { provider: state.provider, id: state.modelId };
+        // Native restore and startup --model are mutually exclusive. Restore first,
+        // then reconcile the live selection through OMP's normal RPC command.
+        if (!sameOmpModel(nativeModelFromState(replacement.state), model))
+          await replacement.selectModel(model);
+        if (!sameOmpModel(nativeModelFromState(replacement.state), model))
+          throw new Error("Omp command reload changed the Model");
+      }
+      const levels = await replacement.getAvailableThinkingLevels();
+      if (state.thinkingLevel && replacement.state.thinkingLevel !== state.thinkingLevel) {
+        await replacement.selectThinkingOption(state.thinkingLevel);
+        if (replacement.state.thinkingLevel !== state.thinkingLevel)
+          throw new Error("Omp command reload changed Thinking");
+      }
+      this.#transport = replacement;
+      this.#publishTransportState(replacement.state, levels);
+      this.#invalidateUsage();
+      return { ok: true, value: this.#liveCommandCatalog() };
+    } catch (error) {
+      await replacement?.close().catch(() => undefined);
+      const normalized = normalizedError(error, "nativeFailure");
+      if (stopped) {
+        this.#transport = null;
+        this.#fault(new OmpAdapterFaultError(normalized));
+      }
+      return { ok: false, error: normalized };
+    } finally {
+      this.#configuring = false;
+    }
   }
 
   async #executeHarnessCommand(

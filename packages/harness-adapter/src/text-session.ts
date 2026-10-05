@@ -246,6 +246,8 @@ export interface HarnessCommandAccepted {
 
 export interface HarnessCommandCapability {
   list(): Promise<HarnessResult<HarnessCommandCatalog>>;
+  /** Rediscover commands without changing Native Session identity or stopping active work. */
+  refresh?(): Promise<HarnessResult<HarnessCommandCatalog>>;
   execute(command: HarnessCommandInvocation): Promise<HarnessResult<HarnessCommandAccepted>>;
 }
 

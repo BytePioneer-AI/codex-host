@@ -132,6 +132,8 @@ export type OmpTurnEvent =
 export interface OmpTurnResult {
   text: string;
   cancelled: boolean;
+  /** A local command did not create a native User Entry. */
+  localOnly?: boolean;
 }
 
 export interface OmpCompactResult {
@@ -219,6 +221,8 @@ interface ManualCompaction {
 }
 
 interface ActiveTurn {
+  promptId: string;
+  localOnly: boolean;
   text: string;
   assistantMessageId: string | null;
   sawStreamedMessageText: boolean;
@@ -870,8 +874,11 @@ export class OmpRpcSession {
     if (this.#activeTurn) throw new Error("Omp RPC Session already has an active Turn");
     if (text.length === 0) throw new Error("Omp text Turn must not be empty");
 
+    const promptId = `codexhost-${randomUUID()}`;
     const settled = new Promise<OmpTurnResult>((resolve, reject) => {
       this.#activeTurn = {
+        promptId,
+        localOnly: false,
         text: "",
         assistantMessageId: null,
         sawStreamedMessageText: false,
@@ -893,11 +900,40 @@ export class OmpRpcSession {
       };
     });
     try {
-      await this.#send("prompt", { message: text });
+      const response = await this.#send("prompt", { message: text }, promptId);
+      if (isRecord(response.data) && response.data.agentInvoked === false) {
+        this.#settleLocalPrompt(promptId);
+      }
     } catch (error) {
       this.#rejectActiveTurn(error instanceof Error ? error : new Error(message(error)));
     }
     return settled;
+  }
+
+  /** Recycle only at confirmed native quiescence, including background jobs. */
+  async getReloadState(): Promise<OmpSessionState | null> {
+    if (this.#activeTurn || this.#manualCompaction || this.#compactionActive) return null;
+    const response = await this.#send("get_state", {});
+    const data = isRecord(response.data) ? response.data : null;
+    if (
+      !data ||
+      data.isSettled !== true ||
+      data.isStreaming !== false ||
+      data.isCompacting === true ||
+      data.hasPendingAsyncWork !== false ||
+      data.queuedMessageCount !== 0
+    )
+      return null;
+    this.#state = parseSessionState(response);
+    return this.#state;
+  }
+
+  #settleLocalPrompt(id: string): void {
+    const active = this.#activeTurn;
+    if (!active || active.promptId !== id || active.settlement !== "pending") return;
+    active.localOnly = true;
+    active.settlement = "confirming";
+    void this.#confirmSettledTurn(active);
   }
 
   respondToInteraction(response: OmpInteractionResponse): Promise<void> {
@@ -1126,6 +1162,11 @@ export class OmpRpcSession {
       return;
     }
     if (value.type === "extension_ui_request") {
+      if (value.method === "notify" && typeof value.message === "string") {
+        this.#displayLocalText(active, value.message);
+        if (value.level === "error") active.failure = new Error(value.message);
+        return;
+      }
       this.#startInteraction(active, value);
       return;
     }
@@ -1177,6 +1218,41 @@ export class OmpRpcSession {
           assistantFailure(value.message) ??
           new Error("Omp assistant message failed");
       }
+      return;
+    }
+    if (value.type === "prompt_result" && value.id === active.promptId) {
+      if (value.status === "failed" || value.status === "error") {
+        active.failure = new Error(
+          typeof value.error === "string" ? value.error : "Omp extension command failed",
+        );
+      }
+      if (value.agentInvoked === false) this.#settleLocalPrompt(active.promptId);
+      return;
+    }
+    if (value.type === "command_output" && typeof value.text === "string") {
+      this.#displayLocalText(active, value.text);
+      return;
+    }
+    if (
+      value.type === "message_end" &&
+      isRecord(value.message) &&
+      value.message.role === "custom" &&
+      value.message.display === true
+    ) {
+      const content = value.message.content;
+      const text =
+        typeof content === "string"
+          ? content
+          : Array.isArray(content)
+            ? content
+                .flatMap((part) =>
+                  isRecord(part) && part.type === "text" && typeof part.text === "string"
+                    ? [part.text]
+                    : [],
+                )
+                .join("")
+            : "";
+      this.#displayLocalText(active, text);
       return;
     }
     if (value.type === "message_end") {
@@ -1557,11 +1633,23 @@ export class OmpRpcSession {
       active.resolve({ text: active.text, cancelled: true });
     } else if (active.failure) {
       active.reject(active.failure);
-    } else if (active.text.trim().length === 0 && !active.sawTool) {
+    } else if (active.text.trim().length === 0 && !active.sawTool && !active.localOnly) {
       active.reject(new Error("Omp RPC settled without displayable output"));
     } else {
-      active.resolve({ text: active.text, cancelled: false });
+      active.resolve({
+        text: active.text,
+        cancelled: false,
+        ...(active.localOnly ? { localOnly: true } : {}),
+      });
     }
+  }
+
+  #displayLocalText(active: ActiveTurn, text: string): void {
+    if (!text) return;
+    const messageId = randomUUID();
+    active.text += text;
+    active.onEvent({ type: "text.delta", messageId, delta: text });
+    active.onEvent({ type: "message.completed", messageId });
   }
 
   #startAssistantMessage(active: ActiveTurn, value: unknown): string {
@@ -1632,12 +1720,15 @@ export class OmpRpcSession {
     });
   }
 
-  #send(type: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  #send(
+    type: string,
+    payload: Record<string, unknown>,
+    id = `codexhost-${randomUUID()}`,
+  ): Promise<Record<string, unknown>> {
     const child = this.#child;
     if (!child?.stdin.writable || this.#closed || this.#failed) {
       return Promise.reject(new Error("Omp RPC stdin is unavailable"));
     }
-    const id = `codexhost-${randomUUID()}`;
     return new Promise((resolve, reject) => {
       const pending: PendingCommand = {
         command: type,

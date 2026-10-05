@@ -12,9 +12,10 @@ Omit --model and --thinking to use the Harness native defaults.
 Reuse --request-id for an idempotent retry. Identical recent parent/target/task/configuration requests are also deduplicated briefly.
 --watch true also registers thread watch on the child with the resolved parent as the notified Thread; the response's watch field reports whether it was registered.
 The response confirms cwd and parent. Use its Thread reference with thread read, wait, send, cancel, or watch.`,
-  "thread send": `codexhost thread send <thread> --message <text> [--format json|compact]
+  "thread send": `codexhost thread send <thread> --message <text> [--wait-idle-ms <n>] [--format json|compact]
 Start a new Turn in an idle writable Thread and return immediately.
 THREAD_BUSY means the current Turn is still active: wait or cancel before sending. Messages are not queued.
+--wait-idle-ms waits in this CLI process for at most the given time (maximum 1800000 ms), then sends a new Turn without cancelling current work. Only THREAD_BUSY is retried; unknown delivery failures are not retried. An idle-wait timeout reports notDelivered=true and retains no pending message; a send request timeout may leave delivery unknown. Keep the CLI running until it returns.
 To be notified when that Turn ends, run thread watch after sending.`,
   "thread cancel": `codexhost thread cancel <thread> [--format json|compact]
 Request cancellation of the active Turn while preserving the Thread and history.

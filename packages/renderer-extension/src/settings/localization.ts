@@ -451,7 +451,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathLabel: "Installed application path",
   connectionModeLabel: "Connection mode",
   connectionModeHelp:
-    "auto detects the selected CLI source; desktop connects to DeepSeek Desktop (start it first); web starts a managed Web instance. Changes are saved automatically and apply after restarting codexhost.",
+    "web starts a managed Web instance (default); desktop connects to DeepSeek Desktop (start it first); auto detects the selected CLI source. Changes are saved automatically and apply after restarting codexhost.",
   connectionModeSaveError:
     "Could not save the connection mode. Check configuration permissions and try again.",
   launchPathPlaceholder: "Installation folder, e.g. D:\\program\\WorkBuddy",
@@ -752,7 +752,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathLabel: "应用安装路径",
   connectionModeLabel: "连接模式",
   connectionModeHelp:
-    "auto 按所选 CLI 来源自动识别；desktop 连接 DeepSeek Desktop（需先启动）；web 启动托管 Web 实例。选择后自动保存，重启 codexhost 生效。",
+    "web 启动托管 Web 实例（默认）；desktop 连接 DeepSeek Desktop（需先启动）；auto 按所选 CLI 来源自动识别。选择后自动保存，重启 codexhost 生效。",
   connectionModeSaveError: "无法保存连接模式，请确认配置目录可写后重试。",
   launchPathPlaceholder: "填写安装目录，例如 D:\\program\\WorkBuddy",
   launchPathWorkbuddyHelp:

@@ -1,4 +1,5 @@
 import { resolveDesktopEndpoint, type DeepSeekConnectionMode } from "./desktop-connection.js";
+import { resolveDesktopBundledCommand } from "./executable.js";
 import { deepSeekHarnessCommandCatalog } from "./harness-commands.js";
 
 import type {
@@ -250,9 +251,12 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     }
     let executable: DeepSeekExecutableGeneration | undefined;
     let executableFailure: HarnessError | undefined;
+    const command =
+      this.#options.command ??
+      (this.#options.connectionMode === "desktop" ? resolveDesktopBundledCommand() : undefined);
     try {
       executable = await this.#probeExecutable({
-        ...(this.#options.command ? { command: this.#options.command } : {}),
+        ...(command ? { command } : {}),
         ...(this.#options.environment ? { environment: this.#options.environment } : {}),
         signal,
       });
@@ -283,7 +287,11 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           this.#options.endpoint,
         )
       : undefined;
-    if (!desktopEndpoint && (await hasDeepSeekModernAuthenticationFingerprint(endpoint, signal))) {
+    if (
+      this.#options.connectionMode !== "desktop" &&
+      !desktopEndpoint &&
+      (await hasDeepSeekModernAuthenticationFingerprint(endpoint, signal))
+    ) {
       throw new DelegateSelectionError({
         code: "authenticationRequired",
         message: EXTERNAL_MODERN_WEB_MESSAGE,

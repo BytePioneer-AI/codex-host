@@ -941,7 +941,7 @@ describe("Renderer Connections page", () => {
       }) as unknown as FakeElement;
       const select = descendants(section).find(({ tagName }) => tagName === "select");
       assert(select);
-      expect(select.value).toBe("auto");
+      expect(select.value).toBe("web");
       expect(select.disabled).toBe(true);
       expect(
         descendants(select)

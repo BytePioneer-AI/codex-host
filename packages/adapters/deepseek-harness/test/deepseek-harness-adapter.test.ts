@@ -396,6 +396,29 @@ describe("DeepSeek public generation selector", () => {
     expect(modernDelegate.closeCalls).toBe(1);
   });
 
+  it("reports a missing CLI in explicit Desktop mode without probing an unrelated Web endpoint", async () => {
+    const fetch = vi.fn(() => Promise.reject(new TypeError("fetch failed")));
+    vi.stubGlobal("fetch", fetch);
+    const adapter = new DeepSeekHarnessAdapter(
+      { connectionMode: "desktop" },
+      {
+        probeExecutable: () =>
+          Promise.reject(
+            new DeepSeekGenerationProbeError(
+              "notInstalled",
+              "No local DeepSeek Harness executable was found",
+            ),
+          ),
+      },
+    );
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "notInstalled",
+      error: { code: "notInstalled", stage: "resolve-executable" },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
   it.each([401, 403])(
     "does not identify an arbitrary HTTP %i service as Modern DSH",
     async (status) => {

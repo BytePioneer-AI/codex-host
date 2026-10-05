@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deepSeekProcessInvocation,
   killDeepSeekProcessTree,
+  resolveDesktopBundledCommand,
   resolveDeepSeekCommand,
   resolveWindowsTaskkillPath,
 } from "../src/executable.js";
@@ -45,6 +46,26 @@ afterEach(() => {
 });
 
 describe("DeepSeek executable helpers", () => {
+  it("finds the standard macOS Desktop CLI without a PATH symlink", () => {
+    platform("darwin");
+    const bundled = "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh";
+    entries.set(bundled, "file");
+    expect(resolveDesktopBundledCommand()).toBe(bundled);
+    entries.clear();
+    expect(resolveDesktopBundledCommand()).toBeUndefined();
+    platform("linux");
+    expect(resolveDesktopBundledCommand()).toBeUndefined();
+  });
+  it("finds the Windows NSIS-installed Desktop CLI below LOCALAPPDATA", () => {
+    platform("win32");
+    vi.stubEnv("LOCALAPPDATA", "C:\\Users\\tester\\AppData\\Local");
+    const bundled =
+      "C:\\Users\\tester\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd";
+    entries.set(bundled, "file");
+    expect(resolveDesktopBundledCommand()).toBe(bundled);
+    entries.clear();
+    expect(resolveDesktopBundledCommand()).toBeUndefined();
+  });
   it("resolves taskkill from SystemRoot without consulting PATH", () => {
     expect(
       resolveWindowsTaskkillPath({

@@ -16,7 +16,7 @@ mod system_proxy_environment;
 
 use std::env;
 use std::error::Error;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::fmt::{self, Display, Formatter};
 use std::io::{Read, Write};
@@ -455,16 +455,55 @@ fn resolve_resource_path(
     }
 }
 
+fn resolve_node_resource(
+    explicit: Option<PathBuf>,
+    bundled: &Path,
+    search_path: Option<&OsStr>,
+) -> Result<PathBuf, Box<dyn Error>> {
+    if explicit.is_some() || bundled.is_absolute() {
+        return resolve_resource_path(explicit, bundled, "--node", "bundled Node.js runtime");
+    }
+
+    if let Some(search_path) = search_path {
+        for directory in env::split_paths(search_path).filter(|directory| directory.is_absolute()) {
+            let candidate = directory.join(bundled);
+            if !candidate.is_file() {
+                continue;
+            }
+            // A PATH entry may be a shim (for example Volta). Ask Node for the
+            // real executable instead of canonicalizing the shim itself.
+            let Ok(output) = Command::new(&candidate)
+                .args(["-p", "process.execPath"])
+                .output()
+            else {
+                continue;
+            };
+            if !output.status.success() {
+                continue;
+            }
+            let Ok(stdout) = String::from_utf8(output.stdout) else {
+                continue;
+            };
+            if let Ok(node) = absolute_file(
+                Path::new(stdout.trim_end_matches(['\r', '\n'])),
+                "bundled Node.js runtime",
+            ) {
+                return Ok(node);
+            }
+        }
+    }
+    Err("Node.js runtime was not found on PATH; pass --node <absolute-file>".into())
+}
+
 impl LaunchOptions {
     fn resolve(self) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
         let installed = InstalledResources::from_current_executable()?;
         Ok(ResolvedLaunchOptions {
             shim: resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?,
-            node: resolve_resource_path(
+            node: resolve_node_resource(
                 self.node,
                 &installed.node,
-                "--node",
-                "bundled Node.js runtime",
+                env::var_os("PATH").as_deref(),
             )?,
             host_runtime: resolve_resource_path(
                 self.host_runtime,
@@ -1370,7 +1409,6 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "windows")]
     use std::ffi::OsStr;
     use std::ffi::OsString;
     use std::io::{BufRead, BufReader, Write};
@@ -1406,7 +1444,7 @@ mod tests {
         allocate_runtime_control, delegation_node, desktop_controller_command, desktop_environment,
         emit_ready_line, managed_desktop_data_directory, npm_update_runtime_environment,
         parse_inspect_options, parse_launch_options, read_bounded_controller_line,
-        read_bounded_loopback_url, validate_loopback_root_url,
+        read_bounded_loopback_url, resolve_node_resource, validate_loopback_root_url,
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{DESKTOP_TREE_REFRESH_INTERVAL, desktop_tree_refresh_due};
@@ -1747,6 +1785,45 @@ mod tests {
             .expect_err("a relative Host Node is rejected");
         assert!(error.contains("CODEXHOST_CLI_NODE_PATH"), "{error}");
         assert!(delegation_node(&missing, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_launcher_resolves_the_real_node_reported_by_a_path_shim() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "codexhost-node-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture directory");
+        let shim = root.join("node");
+        std::fs::write(&shim, "#!/bin/sh\nprintf '/bin/sh\\n'\n").expect("write node shim");
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("make node shim executable");
+
+        let resolved = resolve_node_resource(None, Path::new("node"), Some(root.as_os_str()))
+            .expect("resolve source checkout Node");
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize("/bin/sh").expect("resolve shell")
+        );
+        assert_ne!(
+            resolved,
+            std::fs::canonicalize(&shim).expect("resolve shim")
+        );
+        assert!(
+            resolve_node_resource(None, Path::new("node"), Some(OsStr::new("")))
+                .expect_err("missing PATH Node")
+                .to_string()
+                .contains("pass --node")
+        );
+
+        std::fs::remove_dir_all(root).expect("remove fixture directory");
     }
 
     #[test]

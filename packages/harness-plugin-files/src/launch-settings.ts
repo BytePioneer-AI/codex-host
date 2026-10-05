@@ -69,7 +69,7 @@ export class HarnessLaunchSettingsStore {
     const value = await this.#read(id);
     return {
       ...value,
-      ...(includeConnectionMode ? { connectionMode: value.connectionMode ?? "auto" } : {}),
+      ...(includeConnectionMode ? { connectionMode: value.connectionMode ?? "web" } : {}),
       restartRequired:
         value.path !== initial.path || value.connectionMode !== initial.connectionMode,
     };

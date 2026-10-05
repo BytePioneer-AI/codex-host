@@ -42,7 +42,16 @@ describe("DeepSeek Desktop connection", () => {
     vi.mocked(realpath).mockResolvedValueOnce(
       String.raw`C:\Apps\DeepSeek Harness.app\Contents\Resources\runtime\cli\bin\dsh`,
     );
-    expect(await resolveDesktopEndpoint("dsh")).toBe(endpoint);
+    expect(await resolveDesktopEndpoint("dsh")).toBeUndefined();
+    expect(await resolveDesktopEndpoint("dsh", "auto")).toBe(endpoint);
+  });
+
+  it("recognizes the Windows NSIS-installed CLI layout in auto mode", async () => {
+    vi.mocked(realpath).mockResolvedValueOnce(
+      String.raw`C:\Users\tester\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`,
+    );
+    expect(await resolveDesktopEndpoint("dsh", "auto")).toBe(endpoint);
+    expect(await resolveDesktopEndpoint("dsh", "web")).toBeUndefined();
   });
 
   it("recognizes the Desktop-installed CLI through its symlink and respects web override", async () => {
@@ -51,12 +60,13 @@ describe("DeepSeek Desktop connection", () => {
     await writeFile(cli, "");
     const link = path.join(home, "dsh");
     await symlink(cli, link);
-    expect(await resolveDesktopEndpoint(link)).toBe(endpoint);
+    expect(await resolveDesktopEndpoint(link)).toBeUndefined();
+    expect(await resolveDesktopEndpoint(link, "auto")).toBe(endpoint);
     expect(await resolveDesktopEndpoint(link, "web")).toBeUndefined();
     expect(await resolveDesktopEndpoint(cli, "auto", "http://127.0.0.1:1234/")).toBe(
       "http://127.0.0.1:1234/",
     );
-    expect(await resolveDesktopEndpoint("missing")).toBeUndefined();
+    expect(await resolveDesktopEndpoint("missing", "auto")).toBeUndefined();
     expect(await resolveDesktopEndpoint("missing", "desktop")).toBe(endpoint);
   });
 

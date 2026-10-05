@@ -1,5 +1,6 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 
 function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
@@ -44,6 +45,34 @@ function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): str
     }
   }
   return null;
+}
+
+/** Explicit Desktop mode can probe the bundled CLI even without a PATH symlink. */
+export function resolveDesktopBundledCommand(): string | undefined {
+  const candidates: string[] = [];
+  if (process.platform === "darwin") {
+    for (const applications of ["/Applications", path.join(homedir(), "Applications")]) {
+      candidates.push(
+        path.join(applications, "DeepSeek Harness.app", "Contents/Resources/runtime/cli/bin/dsh"),
+      );
+    }
+  } else if (process.platform === "win32") {
+    // The NSIS installer fixes the per-user directory and forbids changing it.
+    const localAppData =
+      environmentValue(process.env, "LOCALAPPDATA") ?? path.join(homedir(), "AppData", "Local");
+    candidates.push(
+      path.win32.join(
+        localAppData,
+        "Programs",
+        "DeepSeek Harness",
+        "resources/runtime/cli/bin/dsh.cmd",
+      ),
+    );
+  }
+  for (const command of candidates) {
+    if (resolveExecutable(command, process.env)) return command;
+  }
+  return undefined;
 }
 
 export function resolveDeepSeekCommand(

@@ -54,6 +54,7 @@ npm-debug.log*
 *.swp
 *.swo
 *~
+.history
 
 # Operating systems
 .DS_Store

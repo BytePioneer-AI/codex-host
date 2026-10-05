@@ -12,7 +12,7 @@ export const DEFAULT_DESKTOP_ENDPOINT = "http://127.0.0.1:19387/";
 
 export async function resolveDesktopEndpoint(
   command: string,
-  mode: DeepSeekConnectionMode = "auto",
+  mode: DeepSeekConnectionMode = "web",
   endpoint?: string,
 ): Promise<string | undefined> {
   if (!["auto", "web", "desktop"].includes(mode)) {
@@ -20,10 +20,15 @@ export async function resolveDesktopEndpoint(
   }
   if (mode === "web") return undefined;
   if (mode === "auto") {
-    // The Desktop-installed public CLI resolves through its installation symlink.
+    // The Desktop-installed public CLI resolves through its installation layout:
+    // the macOS bundle nests under `*.app/Contents/Resources`, the Windows NSIS
+    // installer under `<install>/resources`. Probe the resolved real path so a
+    // PATH symlink or shim still identifies its Desktop origin.
     const resolved = await realpath(command).catch(() => "");
+    const normalized = resolved.replaceAll("\\", "/");
     if (
-      !/\.app\/Contents\/Resources\/runtime\/cli\/bin\/dsh$/u.test(resolved.replaceAll("\\", "/"))
+      !/\.app\/Contents\/Resources\/runtime\/cli\/bin\/dsh$/u.test(normalized) &&
+      !/\/resources\/runtime\/cli\/bin\/dsh\.cmd$/u.test(normalized)
     ) {
       return undefined;
     }

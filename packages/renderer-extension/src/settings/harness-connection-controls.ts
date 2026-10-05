@@ -26,7 +26,7 @@ export function createHarnessConnectionControls(
     option.textContent = mode;
     select.append(option);
   }
-  select.value = "auto";
+  select.value = "web";
   select.disabled = true;
   label.append(select);
   const help = document.createElement("p");
@@ -36,9 +36,9 @@ export function createHarnessConnectionControls(
   status.setAttribute("aria-live", "polite");
   status.textContent = messages.launchPathLoading;
   section.append(label, help, status);
-  let savedMode: HarnessConnectionMode = "auto";
+  let savedMode: HarnessConnectionMode = "web";
   const show = (value: HarnessLaunchSettings) => {
-    savedMode = value.connectionMode ?? "auto";
+    savedMode = value.connectionMode ?? "web";
     select.value = savedMode;
     status.textContent = value.restartRequired ? messages.launchPathRestart : "";
   };

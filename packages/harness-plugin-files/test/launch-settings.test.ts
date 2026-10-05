@@ -19,12 +19,12 @@ async function setup() {
 
 describe("Host-owned Harness launch settings", () => {
   const id = "sample-agent";
-  it("defaults connection mode to auto and applies saved modes only on restart", async () => {
+  it("defaults connection mode to web and applies saved modes only on restart", async () => {
     const { store, environment } = await setup();
     expect(await store.initialConnectionMode(id)).toBeUndefined();
     expect(await store.get(id, true)).toEqual({
       path: null,
-      connectionMode: "auto",
+      connectionMode: "web",
       restartRequired: false,
     });
     expect(await store.set(id, undefined, "desktop")).toEqual({

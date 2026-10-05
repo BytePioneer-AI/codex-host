@@ -70,6 +70,7 @@ describe.skipIf(!app)("Personal Coding Plan with the installed ZCode CLI", () =>
       if (!app) throw new Error("CODEXHOST_TEST_ZCODE_APP is required");
       const root = await realpath(await mkdtemp(path.join(tmpdir(), "zcode-coding-native-")));
       const apiKey = `synthetic-${family}-personal-key`;
+      const labelPrefix = family === "bigmodel" ? "BigModel Coding /" : "Z.AI Coding /";
       const providerId = `account:${family}-individual-coding-plan`;
       const requests: Array<{ url: string; headers: IncomingHttpHeaders; model: string }> = [];
       const subscriptions: IncomingHttpHeaders[] = [];
@@ -231,16 +232,14 @@ describe.skipIf(!app)("Personal Coding Plan with the installed ZCode CLI", () =>
         const inspected = await adapter.inspect({ cwd: root });
         if (inspected.status !== "ready") throw new Error(JSON.stringify(inspected));
         expect(inspected.catalog.models.length).toBeGreaterThan(0);
-        expect(
-          inspected.catalog.models.every((model) =>
-            model.label.includes("Individual Coding Plan /"),
-          ),
-        ).toBe(true);
+        expect(inspected.catalog.models.every((model) => model.label.startsWith(labelPrefix))).toBe(
+          true,
+        );
         expect(requests).toHaveLength(0);
         const opened = await adapter.open({ kind: "create", cwd: root });
         if (!opened.ok) throw new Error(JSON.stringify(opened.error));
         const first = observe(opened.value);
-        expect(opened.value.initialState.resolvedModelLabel).toContain("Individual Coding Plan /");
+        expect(opened.value.initialState.resolvedModelLabel).toContain(labelPrefix);
         await first.turn(`${family}-first`);
         const ref = opened.value.initialState.nativeRef;
         if (!ref) throw new Error("No session identity");
@@ -251,9 +250,7 @@ describe.skipIf(!app)("Personal Coding Plan with the installed ZCode CLI", () =>
         await writePersonalProviderFixture(root, `${origin}/personal`);
         const combined = await adapter.inspect({ cwd: root });
         if (combined.status !== "ready") throw new Error(JSON.stringify(combined));
-        const paid = combined.catalog.models.find((model) =>
-          model.label.includes("Individual Coding Plan /"),
-        );
+        const paid = combined.catalog.models.find((model) => model.label.startsWith(labelPrefix));
         const personal = combined.catalog.models.find(
           (model) => model.label === "Fixture / fixture-model",
         );

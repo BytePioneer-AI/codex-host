@@ -414,15 +414,15 @@ describe("OMP RPC session", () => {
         expect(aborts).toBe(scenario === "background wake" ? 2 : 1);
         expect(maxPendingChecks).toBe(1);
         expect(onFault).not.toHaveBeenCalled();
-        const checks = stateChecks;
         process.handleCommand = null;
         await expect(session.runTurn("continue", () => undefined)).resolves.toMatchObject({
           text: "PONG",
           cancelled: false,
         });
         // A cancelled Turn's delayed check must not query or abort its successor.
+        const commands = process.commands.length;
         await vi.advanceTimersByTimeAsync(1_000);
-        expect(stateChecks).toBe(checks);
+        expect(process.commands).toHaveLength(commands);
       } finally {
         await session.close();
         vi.useRealTimers();

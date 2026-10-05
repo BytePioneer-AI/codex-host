@@ -1551,6 +1551,7 @@ export class OmpRpcSession {
     if (
       this.#activeTurn !== active ||
       active.cancellation !== "accepted" ||
+      active.settlement === "confirming" ||
       active.cancellationChecking
     )
       return;

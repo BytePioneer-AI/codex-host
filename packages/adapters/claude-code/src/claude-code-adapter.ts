@@ -183,6 +183,7 @@ interface ActiveTurn {
   checkpointId: string | null;
   nativeTurnKey: string;
   nativeTurnRef: NativeTurnRef | null;
+  userMessageId: string | null;
   cancellationRequested: boolean;
   usageRequestIds: Set<string>;
   estimatedInputTokens: number;
@@ -884,6 +885,7 @@ class ClaudeHarnessSession implements HarnessSession {
       checkpointId: null,
       nativeTurnKey,
       nativeTurnRef: null,
+      userMessageId: null,
       cancellationRequested: false,
       usageRequestIds: new Set(),
       estimatedInputTokens: 0,
@@ -913,6 +915,7 @@ class ClaudeHarnessSession implements HarnessSession {
       });
       // Claude preserves caller-assigned User Message UUIDs in native history.
       active.nativeTurnRef = nativeTurnRef;
+      active.userMessageId = nativeTurnRef.nativeTurnKey;
       void running.then(
         (result) => this.#finishResult(active, result),
         () => this.#handleTurnTransportFailure(active),
@@ -1016,6 +1019,7 @@ class ClaudeHarnessSession implements HarnessSession {
       checkpointId: null,
       nativeTurnKey,
       nativeTurnRef: null,
+      userMessageId: null,
       cancellationRequested: false,
       usageRequestIds: new Set(),
       estimatedInputTokens: 0,
@@ -2031,6 +2035,7 @@ class ClaudeHarnessSession implements HarnessSession {
         nativeTurnKey,
         formatVersion: 1,
       }),
+      userMessageId: turn.userMessageId ?? null,
       cancellationRequested: false,
       usageRequestIds: new Set(),
       estimatedInputTokens: 0,
@@ -2463,7 +2468,8 @@ class ClaudeHarnessSession implements HarnessSession {
       : null;
     this.#unpersistedMessageIds = [
       ...new Set([
-        ...(active.nativeTurnRef ? [active.nativeTurnRef.nativeTurnKey] : []),
+        // Autonomous Turn identity may be synthetic and never appear in the transcript.
+        ...(active.userMessageId ? [active.userMessageId] : []),
         ...(active.checkpointId ? [active.checkpointId] : []),
       ]),
     ];

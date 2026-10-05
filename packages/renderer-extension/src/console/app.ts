@@ -1,4 +1,4 @@
-import { hostRequestManager, consoleUpdateClient } from "./api.js";
+import { hostRequestManager, consolePost, consoleUpdateClient } from "./api.js";
 import { mountConsoleAnnouncement } from "./announcement.js";
 import { startAgentGroupSync } from "../agent-group-sync.js";
 import { getSharedAgentGroupPreferenceStore } from "../agent-group-preference.js";
@@ -205,6 +205,30 @@ export function startConsoleApp(document: Document): void {
       h(document, "span", {}, messages.starOnGitHub),
     ),
   );
+
+  const exitLabel = h(document, "span", {}, messages.exitConsole);
+  const exitButton = h(
+    document,
+    "button",
+    { type: "button", className: "settings-nav-button console-exit-button" },
+    createRendererSettingsIcon("close", 17),
+    exitLabel,
+  );
+  exitButton.addEventListener("click", () => {
+    if (exitButton.disabled) return;
+    exitButton.disabled = true;
+    exitLabel.textContent = messages.exitingConsole;
+    void consolePost("/api/shutdown").then(
+      () => {
+        exitLabel.textContent = messages.consoleExited;
+      },
+      () => {
+        exitLabel.textContent = messages.consoleExitFailed;
+        exitButton.disabled = false;
+      },
+    );
+  });
+  navigation.append(exitButton);
 
   const brand = h(
     document,

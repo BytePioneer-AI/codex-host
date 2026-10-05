@@ -26,6 +26,20 @@
   padding-top: 4px;
 }
 
+.console-exit-button {
+  margin-top: auto;
+  color: var(--settings-danger);
+}
+
+.console-exit-button:hover {
+  background: var(--settings-danger-bg);
+}
+
+.console-exit-button:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
 .console-brand {
   display: flex;
   align-items: center;
@@ -593,6 +607,11 @@
   .console-sidebar .settings-nav {
     flex-direction: row;
     overflow-x: auto;
+  }
+
+  .console-sidebar .console-exit-button {
+    margin-top: 0;
+    margin-left: auto;
   }
 
   .console-sidebar .settings-nav-section-label,

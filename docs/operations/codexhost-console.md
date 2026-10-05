@@ -59,6 +59,8 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 
 地址为 `http://127.0.0.1:26339/`。命令会复用已运行的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），先让旧实例退出再以当前安装启动。控制台不需要登录，直接访问即可。
 
+侧栏底部的“退出控制台”会关闭本地控制台服务，不会停止 codexhost 或 Codex Desktop。之后可通过 `codexhost console`、Codex 设置页入口或再次启动 codexhost 打开控制台。若希望 codexhost 启动时不再自动启动控制台，可在启动环境中设置 `CODEXHOST_CONSOLE=0`；显式运行 `codexhost console` 仍会打开它。
+
 ## 端口
 
 - 默认 `26339`，只监听 `127.0.0.1`。可用 `CODEXHOST_CONSOLE_PORT` 修改（1024–65535）。

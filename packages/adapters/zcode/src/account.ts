@@ -1,14 +1,14 @@
-import { createDecipheriv, createHash } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { homedir, platform, userInfo } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { ZcodeError } from "./errors.js";
 import type { ZcodeInstallation } from "./installation.js";
 import type { ZcodeVerifier } from "./verification/index.js";
+import { readCredential } from "./credentials.js";
+import { PersonalCodingPlanAccount } from "./personal-coding-plan.js";
 
-// The account layer reads ZCode Desktop's sign-in state without writing it. The Start Plan JWT
-// is decrypted only while answering one header request and never leaves this module otherwise.
+// Account configuration and request auth are read-only projections of ZCode Desktop state.
 const SIGN_IN = "Sign in to ZCode Desktop with a Start Plan account, then try again";
 const builtinSchema = z.object({
   revision: z.union([z.number(), z.string()]),
@@ -26,56 +26,6 @@ const builtinSchema = z.object({
     }),
   }),
 });
-
-/** ZCode's credential cipher: `enc:v1:<iv>.<tag>.<ciphertext>`, AES-256-GCM, sha256 key. */
-function decrypt(value: string, environment: NodeJS.ProcessEnv) {
-  if (!value.startsWith("enc:v1:")) return value;
-  let username = "unknown";
-  try {
-    username = userInfo().username;
-  } catch {
-    // ZCode derives the same fallback when the platform has no user record.
-  }
-  const secret =
-    environment.ZCODE_CREDENTIAL_SECRET ||
-    `zcode-credential-fallback:${platform()}:${environment.HOME || homedir()}:${username}`;
-  const [iv, tag, data, extra] = value.slice(7).split(".");
-  try {
-    if (!iv || !tag || !data || extra !== undefined) throw new Error();
-    const decipher = createDecipheriv(
-      "aes-256-gcm",
-      createHash("sha256").update(secret).digest(),
-      Buffer.from(iv, "base64url"),
-    );
-    decipher.setAuthTag(Buffer.from(tag, "base64url"));
-    return Buffer.concat([decipher.update(Buffer.from(data, "base64url")), decipher.final()])
-      .toString("utf8")
-      .trim();
-  } catch {
-    throw new ZcodeError(
-      "authenticationRequired",
-      "Cannot decrypt ZCode credentials; ZCODE_CREDENTIAL_SECRET must match ZCode Desktop",
-    );
-  }
-}
-
-async function readCredential(
-  installation: ZcodeInstallation,
-  environment: NodeJS.ProcessEnv,
-  key: "oauth:active_provider" | "zcodejwttoken",
-): Promise<string> {
-  let store: unknown;
-  try {
-    store = JSON.parse(
-      await readFile(path.join(installation.dataRoot, "credentials.json"), "utf8"),
-    );
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw new ZcodeError("authenticationRequired", "Cannot read ZCode credentials");
-  }
-  const value = z.record(z.string(), z.string()).safeParse(store).data?.[key];
-  return value ? decrypt(value, environment) : "";
-}
 
 // Start Plan entitlement, as ZCode Desktop decides it: the account's balance names the active plans
 // and, per balance, the Models the plan allows. An account without such a plan must not be offered
@@ -216,7 +166,7 @@ async function queryStartPlanBalance(
   }
 }
 
-/** `provider/updateAccountConfig` params: the Start Plan overlay for the signed-in account family. */
+/** `provider/updateAccountConfig`: Start and Personal Coding Plan overlays; no credentials. */
 export async function accountConfig(
   installation: ZcodeInstallation,
   environment: NodeJS.ProcessEnv,
@@ -228,6 +178,7 @@ export async function accountConfig(
     states: Record<string, unknown>;
   };
   startPlan: boolean;
+  codingPlan: PersonalCodingPlanAccount;
 }> {
   const file = installation.builtinProviderConfig;
   const builtin = builtinSchema.parse(JSON.parse(await readFile(file, "utf8")));
@@ -238,19 +189,33 @@ export async function accountConfig(
   const family = await readCredential(installation, environment, "oauth:active_provider");
   let balanceData: BalanceData | undefined;
   if (family) {
-    const jwt = await readCredential(installation, environment, "zcodejwttoken");
-    const deviceMid = await readDeviceMid(installation);
-    if (jwt && deviceMid) {
-      const origin = resolveEndpointOrigin(environment);
-      balanceData = await queryStartPlanBalance(origin, installation.version, jwt, deviceMid);
+    try {
+      const jwt = await readCredential(installation, environment, "zcodejwttoken");
+      const deviceMid = await readDeviceMid(installation);
+      if (jwt && deviceMid) {
+        const origin = resolveEndpointOrigin(environment);
+        balanceData = await queryStartPlanBalance(origin, installation.version, jwt, deviceMid);
+      }
+    } catch {
+      // A damaged Start credential must not disable a valid Coding Plan or personal Provider.
     }
   }
   let startPlan = false;
+  const codingPlan = new PersonalCodingPlanAccount(installation, environment);
   const providers: Record<string, unknown> = {};
   const states: Record<string, unknown> = {};
   for (const rule of builtin.config.providerConfigRules.providerRules) {
     const access = rule.config.access;
-    if (!family || access?.mode !== "start-plan" || access.accountType !== family) continue;
+    if (!family || access?.accountType !== family) continue;
+    if (access.mode === "individual-coding-plan" && (family === "zai" || family === "bigmodel")) {
+      const state = await codingPlan.inspect(rule.providerId, family);
+      providers[rule.providerId] = {
+        access: { type: "zhipu-account", entitled: state.entitled },
+      };
+      states[rule.providerId] = state;
+      continue;
+    }
+    if (access.mode !== "start-plan") continue;
     const allowedModels = resolveStartPlanModels(balanceData, rule.config.builtinModelIds);
     if (allowedModels.length > 0) {
       startPlan = true;
@@ -283,23 +248,29 @@ export async function accountConfig(
       states,
     },
     startPlan,
+    codingPlan,
   };
 }
 
 /** Answers `interaction/requestProviderRuntimeHeaders`; failures are reported, never thrown. */
 export async function providerRuntimeHeaders(
-  accountAccess: unknown,
+  request: Record<string, unknown>,
   signal: AbortSignal,
   installation: ZcodeInstallation,
   environment: NodeJS.ProcessEnv,
   verifier: () => ZcodeVerifier,
+  codingPlan: PersonalCodingPlanAccount,
 ) {
-  if (z.object({ mode: z.literal("start-plan") }).safeParse(accountAccess).success !== true)
-    return {
-      headersApplied: false,
-      errorMessage: "codexhost supports only the ZCode Start Plan account",
-    };
+  const mode = z.object({ mode: z.string() }).safeParse(request.accountAccess).data?.mode;
   try {
+    if (mode === "individual-coding-plan")
+      return { headersApplied: true, requestAuth: await codingPlan.requestAuth(request, signal) };
+    if (mode !== "start-plan")
+      return {
+        headersApplied: false,
+        errorMessage:
+          "codexhost supports ZCode Start Plan and Personal Coding Plan; Team Coding Plan is not supported",
+      };
     const apiKey = await readCredential(installation, environment, "zcodejwttoken");
     if (!apiKey) return { headersApplied: false, errorMessage: SIGN_IN };
     const headers = await verifier().verify(signal);
@@ -308,7 +279,7 @@ export async function providerRuntimeHeaders(
     return {
       headersApplied: false,
       errorMessage:
-        error instanceof ZcodeError ? error.message : "ZCode Start Plan verification failed",
+        error instanceof ZcodeError ? error.message : "ZCode account authentication failed",
     };
   }
 }

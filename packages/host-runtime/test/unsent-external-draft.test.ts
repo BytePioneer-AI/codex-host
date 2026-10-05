@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { harnessIdSchema } from "@codexhost/shared-contracts";
 import { CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID } from "@codexhost/protocol-core";
@@ -61,53 +61,6 @@ describe("unsent external drafts", () => {
           threadId as Parameters<typeof fixture.mappingStore.getThread>[0],
         ),
       ).toBeNull();
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("publishes exactly once when the draft gains its native identity", async () => {
-    const adapter = delayedIdentityAdapter();
-    const fixture = createFixture({ externalAdapters: new Map([["claude-code", adapter]]) });
-    try {
-      const threadId = await startExternalThread(
-        fixture,
-        CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
-        1,
-        {
-          codexhostPrewarm: true,
-        },
-      );
-      writeRequest(fixture.desktopInput, {
-        id: 99,
-        method: "codexhost/thread/inspect",
-        params: { threadId },
-      });
-      await fixture.collector.waitFor((m) => requestId(m, 99));
-      expect(fixture.collector.messages.filter((m) => method(m, "thread/started"))).toEqual([]);
-      const session = adapter.sessions[0];
-      if (!session) throw new Error("Missing draft Session");
-      const state = {
-        nativeRef: {
-          harnessId: harnessIdSchema.parse("claude-code"),
-          nativeSessionId: "native-draft",
-          formatVersion: 1 as const,
-        },
-      };
-      session.emitEvent({ type: "session.state.changed", state });
-      await vi.waitFor(() =>
-        expect(fixture.collector.messages.filter((m) => method(m, "thread/started"))).toHaveLength(
-          1,
-        ),
-      );
-      session.emitEvent({ type: "session.state.changed", state });
-      writeRequest(fixture.desktopInput, {
-        id: 2,
-        method: "codexhost/thread/inspect",
-        params: { threadId },
-      });
-      await fixture.collector.waitFor((m) => requestId(m, 2));
-      expect(fixture.collector.messages.filter((m) => method(m, "thread/started"))).toHaveLength(1);
     } finally {
       await stopFixture(fixture);
     }

@@ -57,6 +57,30 @@ describe("remote settings Controller channel", () => {
     }
   });
 
+  it.each([2, 17])("handles a %i MiB Thread reply with an explicit byte contract", async (mib) => {
+    const port = await availablePort();
+    const server = await startControllerAttachmentServer({
+      port,
+      nonce,
+      attach: async () => {},
+      remoteConnections: async () => ({ result: { text: "x".repeat(mib * 1024 * 1024) } }),
+    });
+    try {
+      const reply = await requestDesktopRemoteConnections(
+        { CODEXHOST_CONTROL_PORT: String(port), CODEXHOST_CONTROL_NONCE: nonce },
+        { action: "read-thread", hostId: "mac", input: { threadId: "t", view: "result" } },
+      );
+      if (mib === 2)
+        expect(reply).toMatchObject({ result: { text: expect.stringMatching(/^x+$/u) } });
+      else
+        expect(reply).toMatchObject({
+          error: { code: -32094, message: expect.stringContaining("16 MiB") },
+        });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("does not replay a mutation after a timeout", async () => {
     const port = await availablePort();
     const pending = Promise.withResolvers<{ result: null }>();

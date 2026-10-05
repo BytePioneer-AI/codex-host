@@ -1,5 +1,7 @@
 import { createConnection } from "node:net";
 import {
+  REMOTE_THREAD_REPLY_MAX_BYTES,
+  REMOTE_THREAD_CONTROL_TIMEOUT_MS,
   remoteConnectionsReplySchema,
   remoteConnectionsRequestSchema,
   type RemoteConnectionsReply,
@@ -26,11 +28,14 @@ export function remoteConnectionsExpression(input: RemoteConnectionsRequest): st
 export async function requestDesktopRemoteConnections(
   environment: NodeJS.ProcessEnv,
   input: unknown,
-  timeoutMs = 30_000,
+  timeoutMs?: number,
 ): Promise<RemoteConnectionsReply> {
   const request = remoteConnectionsRequestSchema.safeParse(input);
   if (!request.success)
     return { error: { code: -32602, message: "Invalid remote connection request" } };
+  const readThread = request.data.action === "read-thread";
+  const maxReplyBytes = readThread ? REMOTE_THREAD_REPLY_MAX_BYTES : MAX_REPLY_BYTES;
+  const deadline = timeoutMs ?? (readThread ? REMOTE_THREAD_CONTROL_TIMEOUT_MS : 30_000);
   const port = Number(environment.CODEXHOST_CONTROL_PORT);
   const nonce = environment.CODEXHOST_CONTROL_NONCE;
   if (
@@ -72,7 +77,7 @@ export async function requestDesktopRemoteConnections(
             message: "Remote connection request timed out. Refresh before retrying",
           },
         }),
-      timeoutMs,
+      deadline,
     );
     socket.setEncoding("utf8");
     socket.once("error", fail);
@@ -82,8 +87,14 @@ export async function requestDesktopRemoteConnections(
     socket.once("connect", () => socket.write(`REMOTE ${nonce} ${JSON.stringify(request.data)}\n`));
     socket.on("data", (chunk: string) => {
       output += chunk;
-      if (Buffer.byteLength(output) > MAX_REPLY_BYTES) {
-        fail();
+      if (Buffer.byteLength(output) > maxReplyBytes) {
+        finish({
+          error: {
+            code: -32094,
+            message:
+              "Controller reply exceeds the response byte limit; request fewer messages or a smaller result",
+          },
+        });
         return;
       }
       const end = output.indexOf("\n");

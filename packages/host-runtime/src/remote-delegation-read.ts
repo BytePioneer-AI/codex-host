@@ -46,7 +46,10 @@ export async function readRemoteDelegationThread(
     input: delegationReadParamsSchema.parse(read),
   });
   if ("error" in reply)
-    throw new DelegationControlError("RUNTIME_UNREACHABLE", reply.error.message);
+    throw new DelegationControlError(
+      reply.error.code === -32094 ? "RESPONSE_TOO_LARGE" : "RUNTIME_UNREACHABLE",
+      reply.error.message,
+    );
   const parsed = snapshot.safeParse(reply.result);
   if (!parsed.success || parsed.data.threadId !== input.threadId)
     throw new DelegationControlError(

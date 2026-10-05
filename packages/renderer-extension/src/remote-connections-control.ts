@@ -1,3 +1,4 @@
+import { REMOTE_THREAD_READ_TIMEOUT_MS } from "@codexhost/shared-contracts";
 import type {
   DelegationReadParams,
   RemoteSshSetupParams,
@@ -56,7 +57,7 @@ export function createRemoteConnectionsControl(
   ownerWindow: Window,
   getClient: (hostId: string) => RemoteRuntimeClient | null,
 ): RemoteConnectionsControl {
-  async function bounded<T>(operation: Promise<T>): Promise<T> {
+  async function bounded<T>(operation: Promise<T>, timeoutMs = 8_000): Promise<T> {
     let timer: number | undefined;
     try {
       return await Promise.race([
@@ -64,7 +65,7 @@ export function createRemoteConnectionsControl(
         new Promise<never>((_, reject) => {
           timer = ownerWindow.setTimeout(
             () => reject(new Error("Remote service did not respond; reconnect and retry")),
-            8_000,
+            timeoutMs,
           );
         }),
       ]);
@@ -79,7 +80,7 @@ export function createRemoteConnectionsControl(
       const client = getClient(hostId);
       if (!client?.readDelegationThread)
         throw new Error("Remote Thread reading is unavailable; update codexhost and reconnect");
-      return bounded(client.readDelegationThread(input));
+      return bounded(client.readDelegationThread(input), REMOTE_THREAD_READ_TIMEOUT_MS);
     },
     async setup(connection, action, version, uninstallPackage) {
       const client = getClient("local");

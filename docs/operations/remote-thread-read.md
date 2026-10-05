@@ -28,6 +28,17 @@ or local fallback on remote failure. Requests are bounded and not retried.
 the returned Host-qualified link and `nextCursor` when requesting another page.
 Remote send, cancel, wait and watch are outside this feature's scope.
 
+Serialized Controller replies (including the envelope and newline) are limited to
+16 MiB for Thread reads; settings operations retain their 1 MiB limit. Oversized
+Thread replies return `RESPONSE_TOO_LARGE`, not a connection failure. Reduce the
+message page size when possible; individual results larger than this limit are
+not supported. No message text is silently truncated.
+
+Thread reads have a 35-second renderer deadline and a 40-second Controller
+transport deadline, allowing the underlying 30-second Desktop RPC to finish.
+Other renderer management operations retain their 8-second deadline. Expiry does
+not cancel an already dispatched native read and never triggers a retry.
+
 ## Validation boundary
 
 Source regression tests cover CLI Host preservation, explicit remote routing,

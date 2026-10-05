@@ -102,6 +102,19 @@ export class UsageMeter {
         ([field]) => !(hostDerivedUsageFields as readonly string[]).includes(field),
       ),
     ) as HostUsage;
+    const sessionCacheUsage = usage.sessionCacheUsage;
+    delete usage.sessionCacheUsage;
+    if (!this.#metered && sessionCacheUsage) {
+      try {
+        parseHostUsage({ sessionCacheUsage });
+        if (sessionCacheUsage.inputTokens > 0) {
+          usage.sessionCacheHitRatePercent =
+            (sessionCacheUsage.cachedInputTokens / sessionCacheUsage.inputTokens) * 100;
+        }
+      } catch {
+        // Bad native cache facts must not discard independent native cost or speed.
+      }
+    }
     if (this.#metered) {
       delete usage.totalCostUsd;
       delete usage.outputTokensPerSecond;

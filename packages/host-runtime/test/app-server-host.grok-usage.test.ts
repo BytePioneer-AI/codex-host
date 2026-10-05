@@ -48,15 +48,35 @@ describe("Grok native usage and Host TTFT", () => {
           totalCostUsd: 0.09920104,
           outputTokens: 1571,
           outputTokensPerSecond: 50,
+          cacheHitRatePercent: 25,
+          sessionCacheUsage: { inputTokens: 300, cachedInputTokens: 70 },
         });
-        session.succeedTurn();
-        await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+        // Usage is available before turn.completed, not only after native settlement.
         writeRequest(fixture.desktopInput, {
           id: 3,
           method: "codexhost/thread/usage/inspect",
           params: { threadId },
         });
-        const response = await fixture.collector.waitFor((message) => requestId(message, 3));
+        const running = await fixture.collector.waitFor((message) => requestId(message, 3));
+        expect(running).toMatchObject({
+          result: {
+            usage: {
+              outputTokensPerSecond: 50,
+              cacheHitRatePercent: 25,
+              sessionCacheHitRatePercent: (70 / 300) * 100,
+              totalCostUsd: 0.09920104,
+              costSource: "native",
+            },
+          },
+        });
+        session.succeedTurn();
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+        writeRequest(fixture.desktopInput, {
+          id: 4,
+          method: "codexhost/thread/usage/inspect",
+          params: { threadId },
+        });
+        const response = await fixture.collector.waitFor((message) => requestId(message, 4));
         expect(response).toMatchObject({
           result: {
             usage: {
@@ -64,11 +84,13 @@ describe("Grok native usage and Host TTFT", () => {
               costSource: "native",
               timeToFirstOutputMs: 1250,
               outputTokensPerSecond: 50,
+              cacheHitRatePercent: 25,
+              sessionCacheHitRatePercent: (70 / 300) * 100,
             },
           },
         });
         expect(response).not.toHaveProperty("result.usage.apiOutputTokensPerSecond");
-        expect(response).not.toHaveProperty("result.usage.sessionCacheHitRatePercent");
+        expect(response).not.toHaveProperty("result.usage.sessionCacheUsage");
       } finally {
         await stopFixture(fixture);
         clock.mockRestore();

@@ -1,6 +1,7 @@
 export const GROK_SESSION_UPDATE_EXTENSION_METHODS = [
   "_x.ai/session/update",
   "x.ai/session_notification",
+  "_x.ai/session_notification",
 ] as const;
 
 export type GrokCompactionOutcome = "succeeded" | "cancelled" | "failed";

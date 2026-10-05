@@ -19,6 +19,12 @@ export interface HostUsage {
   planFiveHourResetsAtUnix?: number;
   planSevenDayUsedPercent?: number;
   planSevenDayResetsAtUnix?: number;
+  /**
+   * Complete native Session cache facts in the unified input convention (including cache).
+   * Host consumes these to derive the session average without changing native billing.
+   * Omit when incomplete. These facts are not part of the published UI snapshot.
+   */
+  sessionCacheUsage?: { inputTokens: number; cachedInputTokens: number };
   /** Host-derived: cumulative cache reads / cumulative input across the Session's requests. */
   sessionCacheHitRatePercent?: number;
   /** Host-derived: latest Turn start to its first reasoning or text output, as observed by Host. */
@@ -70,6 +76,7 @@ const usageFields = new Set<keyof HostUsage>([
   ...tokenFields,
   ...safeIntegerFields,
   ...percentFields,
+  "sessionCacheUsage",
   "totalCostUsd",
   "totalCredits",
   "contextUsagePercent",
@@ -149,6 +156,24 @@ export function parseHostUsage(value: unknown): HostUsage {
         candidate > 100)
     ) {
       throw new Error(`Harness Usage '${field}' must be between 0 and 100`);
+    }
+  }
+  if (value.sessionCacheUsage !== undefined) {
+    const totals = value.sessionCacheUsage;
+    if (
+      !isRecord(totals) ||
+      Object.keys(totals).some((key) => key !== "inputTokens" && key !== "cachedInputTokens") ||
+      typeof totals.inputTokens !== "number" ||
+      !Number.isSafeInteger(totals.inputTokens) ||
+      totals.inputTokens < 0 ||
+      typeof totals.cachedInputTokens !== "number" ||
+      !Number.isSafeInteger(totals.cachedInputTokens) ||
+      totals.cachedInputTokens < 0 ||
+      totals.cachedInputTokens > totals.inputTokens
+    ) {
+      throw new Error(
+        "Harness Usage 'sessionCacheUsage' must contain complete bounded token totals",
+      );
     }
   }
   const hasContextUsed = value.contextUsedTokens !== undefined;

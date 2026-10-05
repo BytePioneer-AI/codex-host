@@ -173,23 +173,62 @@ Host MUST 按 `requestId` 在 Thread 内去重请求记录，并用请求记录�
 - **WHEN** Session 发布了 `usage.history { complete: false }` 且尚无任何请求记录，随后 `session.usage.changed` 携带原生 `totalCostUsd`
 - **THEN** Host MUST NOT 发布该原生费用
 
+### Requirement: Grok 默认使用原生支持的 500K 上下文窗口
+
+Grok Adapter 在打开 Session（含恢复）及切换模型时，对原生 `contextWindows` 包含 500,000 的模型 MUST 默认选择原生 500K 窗口。MUST 在原生配置成功后同步用量上限，MUST NOT 仅修改显示数字或修改用户全局配置。
+
+#### Scenario: 四个 Grok 模型支持两档窗口
+
+- **WHEN** 原生模型声明支持 256,000 与 500,000 Token 窗口
+- **THEN** Adapter MUST 使用 `session/set_model` 的 `_meta.contextWindow` 选择 500,000
+- **AND** 后续上下文用量 MUST 使用生效的 500,000 上限；恢复时 MUST NOT 被旧信号中的 256,000 覆盖
+
+#### Scenario: 未支持或被拒绝的窗口
+
+- **WHEN** 原生模型未声明支持 500,000，或原生拒绝窗口设置
+- **THEN** Adapter MUST NOT 虚报已生效的 500K；未支持的模型 MUST 保留原生窗口，拒绝配置 MUST 返回错误
+
+### Requirement: Grok 实时费用必须保留原生计费与累计范围
+
+Grok Adapter MUST 在实时模型响应完成后异步查询原生 `_x.ai/session/usage` 刷新费用，不使用公开价格替代，不通过周期轮询实现。费用 MUST 使用固定历史基线加当前原生运行累计，MUST NOT 重复累加各次查询快照。查询失败、字段缺失或费用不完整时 MUST 保留已有值并允许轮末原生历史核对；迟到或乱序响应 MUST NOT 覆盖已结算或更新的费用。
+
+#### Scenario: 工具等待期间展示原生费用
+
+- **WHEN** 模型请求已完成且原生查询提供有效 `costUsdTicks`，但本轮仍在等待工具
+- **THEN** Adapter MUST 在 Turn 结束前发布对应原生费用，不阻塞工具执行
+- **AND** TPS、缓存统计及原生计费来源 MUST 保持不变
+
+#### Scenario: 冷恢复后费用不丢失也不重复累计
+
+- **WHEN** 历史费用为 $0.05，新进程的原生累计依次为 $0.01、$0.03
+- **THEN** 展示的会话费用 MUST 依次为 $0.06、$0.08，而不是 $0.01、$0.03 或 $0.09
+- **AND** 历史回放 MUST NOT 触发实时费用查询
+
 ### Requirement: Grok 速度必须采用生成 TPS 口径，不使用 API 平均速度替代
 
-Grok 的速度 MUST 为最近一轮输出 Token（含思考）除以可靠的各请求生成时长之和，排除首输出前等待、工具执行和审批等待。Adapter MUST NOT 发布 `apiOutputTokensPerSecond` 作为替代，也 MUST NOT 将 `outputTokens / apiDurationMs` 或 API 总耗时减 Host TTFT 的结果当作生成 TPS。缺少可靠计时边界时 MUST 省略速度，MUST 保留可靠的原生费用与 Token；速度缺失 MUST NOT 强制 Session 进入请求级计费模式或阻塞会话。
+Grok 的速度 MUST 为最近一轮已完成且有可靠计时的请求输出 Token（含思考）之和，除以这些请求的生成时长之和，排除首输出前等待、工具执行和审批等待。Adapter MUST NOT 发布 `apiOutputTokensPerSecond` 作为替代，也 MUST NOT 将 `outputTokens / apiDurationMs` 或 API 总耗时减 Host TTFT 的结果当作生成 TPS。缺少可靠计时边界时 MUST 省略速度，MUST 保留可靠的原生费用与 Token；速度缺失 MUST NOT 强制 Session 进入请求级计费模式或阻塞会话。
 
 #### Scenario: Grok 完整实时流计时
 
-- **WHEN** 成功轮次的各请求均观测到首思考/正文和流结束，且段数与原生 `modelCalls` 相同
-- **THEN** Adapter MUST 通过 `outputTokensPerSecond` 发布本轮输出 Token 除以各生成段耗时之和
+- **WHEN** 实时收到首个非空思考、正文或工具参数增量，随后收到对应 `response_completed` 及输出用量
+- **THEN** Adapter MUST 立即更新 `outputTokensPerSecond`，按本轮已完成且计时有效请求的输出之和除以其时长之和，无需等待 Turn 结束
 - **AND** 工具/审批等待、下一请求首输出前等待及轮末历史/Credits 刷新 MUST NOT 计入时长
 - **AND** 并行工具调用 MUST NOT 重复累计同一生成段
 - **AND** `streamStartMs` MUST 仅用作请求分组，MUST NOT 将空角色帧时间当首 Token 时间
 - **AND** Host MUST 保留原生费用，MUST NOT 为计算 TPS 切换到公开价格计费
 
+#### Scenario: Grok 有思考与纯正文请求混合
+
+- **WHEN** 一轮中部分请求产生思考，其他请求直接输出正文，且所有请求均有完整实时计时边界
+- **THEN** 各请求 MUST 独立从首个实际思考或正文事件起算
+- **AND** Adapter MUST NOT 因纯正文请求没有思考事件而丢弃整轮速度
+- **AND** 本轮输出 Token 中已有的推理 Token MUST NOT 重复加算
+
 #### Scenario: Grok 新轮无可靠速度
 
-- **WHEN** 下一轮取消、失败、发生无法计时的重试/压缩、缺少输出开始/结束、时长非正、原生用量不完整，或用量与计时段数不一致
+- **WHEN** 下一轮没有任何输出用量已知且计时有效的已完成请求
 - **THEN** Adapter MUST 在轮末清除上一轮 TPS
+- **AND** 取消或失败 MUST NOT 丢弃本轮此前已完成请求的有效计时
 - **AND** 恢复历史 MUST NOT 利用回放接收时间重建速度
 
 #### Scenario: Grok 只有原生 API 聚合用量
@@ -199,11 +238,35 @@ Grok 的速度 MUST 为最近一轮输出 Token（含思考）除以可靠的各
 - **AND** 原生费用 MUST NOT 被公开价格替换
 - **AND** 历史恢复 MUST NOT 从 API 聚合耗时恢复速度
 
-#### Scenario: Grok 的思考或生成结束边界缺失
+#### Scenario: Grok 报告推理用量但未流式展示思考
 
-- **WHEN** 原生数据和实时流未提供可验证的首生成输出（含思考）或逐请求生成结束边界，或者整轮推理用量非零但并非每段都观测到思考
-- **THEN** Adapter MUST 省略速度，不能用可见正文时间代表隐藏思考开始时间
+- **WHEN** 原生用量包含推理 Token，但实时流只有正文事件，且用量和计时边界完整
+- **THEN** Adapter MUST 从首个正文事件计时，以原生输出 Token 计算客户端观测 TPS
+- **AND** Adapter MUST NOT 因没有思考事件而隐藏速度
+- **AND** 此时的观测时窗 MUST NOT 被解释为包含隐藏推理的服务端完整生成时长
+
+#### Scenario: Grok 缺少输出或结束边界
+
+- **WHEN** 实时流没有可验证的首个输出或逐请求生成结束边界
+- **THEN** Adapter MUST 将该请求排除在速度分子和分母之外，MUST NOT 猜测缺失的计时时间
 - **AND** Host MUST 继续按真实新轮次输出观测 TTFT，其他可靠用量字段 MUST 保留
+
+### Requirement: 原生计费的缓存统计必须独立于公开价格计费
+
+Adapter MAY 通过 `sessionCacheUsage` 提供完整累计输入（含缓存）与缓存读取事实；Host MUST 验证非负安全整数及缓存不超过输入，独立于原生费用计算平均缓存命中。缺失、不完整或零分母时 MUST 省略平均值。辅助事实 MUST NOT 进入 UI 快照；请求计费模式 MUST 继续以完整请求 ledger 为准。
+
+#### Scenario: Grok 运行中缓存更新
+
+- **WHEN** `_x.ai/session_notification` 提供一条 `response_completed`
+- **THEN** Adapter MUST 将未缓存输入、缓存读和缓存写相加归一，并更新最新请求缓存率
+- **AND** 已知完整历史与实时累计缓存事实 MUST 支持 Host 更新会话平均值，不改变原生费用
+- **AND** 轮末累计用量校准 MUST NOT 用整轮缓存率覆盖最近请求缓存率
+
+#### Scenario: Grok 仅有整轮历史
+
+- **WHEN** 冷恢复只有原生整轮用量
+- **THEN** 完整累计数据 MUST 支持会话平均缓存命中
+- **AND** Adapter MUST NOT 把最后整轮缓存率冒充最近请求缓存率
 
 ### Requirement: Host 必须维护可刷新、可覆盖的价格表
 

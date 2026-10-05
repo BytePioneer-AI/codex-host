@@ -10,7 +10,7 @@ External Harness 的用量当前由各 Adapter 在 `HostUsage` 快照中自行�
 | Pi / OMP | 每条 assistant message | 否 | 是（另有 `reasoning` 子项） | 每消息 | total = input + output + cacheRead + cacheWrite |
 | OpenCode v2 | 每个 step（assistant message，`session.step.ended` 带 tokens） | 否 | **否**（`reasoning` 单列） | 每消息 | total = input + output + reasoning + cache |
 | DeepSeek | 流式 usage chunk | 否 | 是 | 会话 | total = input + output + cacheRead |
-| Grok | 每 Turn（含多次模型调用） | **是** | 是 | 仅 Turn 主模型 | total = input + output |
+| Grok | 实时每请求；历史每 Turn | Turn 输入已含缓存；实时输入需加缓存读/写 | 是 | 保留原生费用 | total = input + output |
 | ZCode | 每条 assistant 消息；主请求完成事件 | **是** | 是 | 每请求/消息 | 3.14.4 原生 RPC、本机 9 会话 26 请求：total = input + output；缓存、思考为子项 |
 | CodeBuddy / WorkBuddy | 每消息（Turn 末读历史） | **是** | 是 | 每消息 | `prompt_tokens` = hit + miss |
 | Hermes | 会话合计；本地 DB 有按模型合计 | 否 | 待实测 | 按模型 | input < cache_read |
@@ -103,13 +103,13 @@ Host 在收到 `complete: true` 之前，以及处于不完整状态时，不发
 
 ### D7. Grok 保留原生费用，速度只接受生成 TPS 口径
 
-用户确认 Grok 不需要公开价格重算。Adapter 不发布 `usage.request` / `usage.history`，继续按原生 ticks 展示费用，由 Host 标记 `costSource: native`；无需价格表补价或扩展请求级费用契约。
+用户确认 Grok 不需要公开价格重算。Adapter 不发布 `usage.request` / `usage.history`，继续按原生 ticks 展示费用，由 Host 标记 `costSource: native`；无需价格表补价或扩展请求级费用契约。每个去重后的实时 `response_completed` 异步触发 `_x.ai/session/usage` 查询；费用为打开时固定历史基线加本次原生运行累计，不能叠加各次快照，冷恢复后也不能以新进程累计覆盖历史。查询失败或费用缺失/不完整时保留已有值，旧查询与已结束 Turn 的迟到响应不覆盖新值；轮末继续以原生历史核对。不增加轮询或新的计费层。
 
-用户后续撤回 API 平均速度方案，要求与其他 Harness 相同的最近一轮平均生成 TPS。Grok 停止发布 `apiOutputTokensPerSecond`，实时与历史恢复都不再把 `outputTokens / apiDurationMs` 当作替代速度。既有可选 API 速度字段及通用 Renderer 支持保留协议兼容性，本次不修改公共接口或增加 Grok 专用 UI 分支。
+用户后续撤回 API 平均速度方案，要求与其他 Harness 相同的最近一轮平均生成 TPS。Grok 停止发布 `apiOutputTokensPerSecond`，实时与历史恢复都不再把 `outputTokens / apiDurationMs` 当作替代速度。既有可选 API 速度字段及通用 Renderer 支持保留协议兼容性，不增加 Grok 专用 UI 分支。
 
-Grok 1.0.46 隔离模拟 Provider 实测：`tool.call` 在模型流结束后、工具执行/审批之前到达。Adapter 复用 Pi 的客户端观测方式，在首个实时思考/正文回调记录时间，到 `tool.call` 或审批请求结束一段；最后一段到实时轮末通知或 `prompt` 返回结束，先结束计时再读取历史、刷新 Credits。`streamStartMs` 只作请求分组标识：空角色帧也会触发它，不能当首生成 Token 时间。原生轮次用量在成功轮末提供分子，按 Σ输出 / Σ各段耗时发布既有 `outputTokensPerSecond`；Host 保留该值和原生费用，不新增公共事件或 Grok 专用分支。
+Grok 1.0.46 原始 ACP 流已验证 `_x.ai/session_notification` 在每次模型响应完成时发送 `response_completed`，早于工具执行；同时提供 `tool_call_delta_chunk`。Adapter 从首个非空思考/正文/工具参数增量计时，在对应响应完成时累计该请求的原生输出与观测时长，立即发布本轮加权 TPS 和最近请求缓存率。`streamStartMs` 只用于识别重试切换，不作为时间起点。不再使用整轮输出配对所有计时段，也不要求轮次成功或 `modelCalls` 匹配；取消/失败保留已完成请求的有效统计，未计时请求不加入速度分子或分母。无有效计时的新轮清除旧 TPS；历史不补造速度。未流式展示的推理仍包含在原生输出中，但隐藏推理开始时间不可见，因此不宣称服务端完整生成速率。
 
-仅当所有段计时完整且段数等于原生 `modelCalls` 才发布。缺首输出的工具专用请求、未闭合的重试、压缩、取消及非正时长不发布；原生仅有整轮推理用量，若其非零则保守要求每段均观测到思考，避免隐藏思考造成虚高。无可靠计时的新轮在轮末清除旧速度，历史恢复不重建速度。此指标是客户端观测的生成 TPS，不宣称服务端精确时长；不使用 API 总耗时或 API 减 Host TTFT。
+实时响应使用不相交的 `input_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`；三者之和才是完整输入。`HostUsage.sessionCacheUsage` 提供完整累计输入/缓存读取事实，Host 验证后计算平均缓存命中，并从公开 UI 快照中移除原始辅助事实；缺失、不完整或零分母不发布平均值。请求计费模式仍优先使用自己的完整 ledger，不接受这些事实覆盖。此契约不改变原生费用，也不要求伪造历史请求。轮末累计用量以原生历史校准；最近缓存率保持最新实时请求口径，只有整轮记录的冷恢复不发布最近请求值。
 
 TTFT 继续由 Host 实时观测首个思考或正文，不从历史重建。费用、缓存与 Token 不受速度缺失影响；不为凑出速度新增文件轮询或推测性遥测采集器。
 

@@ -63,7 +63,7 @@ Adapter 约定：打开会话时先发布全部历史请求（`historical: true`
 | DeepSeek Harness（dsh） | 完成 | 日志（`openModernJournal`）中 `assistant/message`（`surfaceOp: append`）：`message.id`、`message.source.model`（`provider` 是 dsh 路由名如 `deepseek-official`，不发布）、`stream` 中最后一个 `usage` 块（`inputTokens` 不含缓存，`totalTokens`=输入+输出+缓存读+缓存写）；中断消息无 usage，视为无用量。计时用 `expandAssistantStream` 展开后首个非空 reasoning/text delta 或带名字的 tool-call delta → 事件时间 | 23 会话速度与输出 token 与 dsh 自身 `sessionStats` 的 `decodeTokens/decodeMs` 完全一致 |
 | CodeBuddy / WorkBuddy | 完成（无速度） | ACP 不上报逐次用量；打开会话、原生用量通知、浮窗请求刷新与每轮结束时读原生历史（`~/.codebuddy/projects`、`~/.workbuddy-ai/projects`），全部原生分支上按 `providerData.messageId` 去重的 `rawUsage`（原生 Token 快照仍沿用活动分支）：`prompt_tokens` 含缓存（= hit + miss + `prompt_cache_write_tokens`，368 行全部成立），缓存读 = `prompt_tokens_details.cached_tokens`，`completion_tokens` 含 `completion_thinking_tokens`；`cache_read_input_tokens`/`cache_creation_input_tokens` 恒为 0，非 0 时视为含义未知不计量；跳过 `isSubAgent` | 65 会话 token 合计与原生汇总零差异；原生快照的缓存字段已改为同一组字段。WorkBuddy 自动路由的 `default-model` 无法计价 |
 | Qoder / Qoder CN | **暂缓** | 本机无会话、无登录凭证、无运行时（首次使用从 download.qoder.com 下载）；现有 `qoder-usage.ts` 对字段理解自相矛盾 | 需用户登录 Qoder 跑会话后再做 |
-| Grok | 原生费用 + TTFT + 实时客户端观测生成 TPS | Adapter 按首思考/正文至工具调用/审批或 prompt 返回分段，成功轮末以本轮输出除以总生成时长；保留原生费用、不使用 API 耗时、不补造历史速度 | Grok 1.0.46 + 隔离模拟 Provider 验证两次请求、1.2s 工具等待、1.2s 审批等待及 stream_tool_calls=true：约21tok/s，API平均约17.7tok/s；缺首输出的工具专用请求不发布速度。单测覆盖计时完整性、隐藏思考、重试、并行工具、取消、旧值清除、历史及结算 I/O；22文件223测试、typecheck、定向lint/格式、边界与严格OpenSpec校验通过。生产改动限 Grok 两个文件，无新增公共契约；未重启 Desktop 或进行新 GUI 验收 |
+| Grok | 原生费用 + TTFT + 逐请求 TPS/缓存 + 会话平均缓存 | 原始 ACP `response_completed` 更新实时统计，工具参数增量支持工具专用输出计时；Host 从完整 `sessionCacheUsage` 事实计算平均值，不切换计费模式 | Grok 1.0.46 隔离原始 ACP 验证：第一请求在工具前输出20 Token、最近缓存20%；第二请求输出30 Token、最近缓存25%，会话累计输入300/缓存70，平均23.33%；实际 Adapter 在 Turn 结束前发布两次统计。24文件264项回归和typecheck通过；已随原生费用与默认 500K 更新重启加载，尚未重新进行完整 GUI 验收 |
 | Hermes | 暂缓 | `~/.hermes/state.db` 表 `session_model_usage`：仅会话 × 模型合计，本机只有 2 行（其一为标题生成），该行缓存读远大于输入 | 数据不足以确认字段含义 |
 | ZCode | 已接入（GUI 待验收） | **更正旧判断**：3.14.4 `session/resume` / `session/read` 每条 assistant 的 `info.tokens` 有缓存、思考与实际模型；输入含缓存，输出含思考。主请求的 `model_request_started` / `model.streaming.assistantMessageId` / `model_request_completed` 可关联实时计量，轮末快照补齐 | 本机 9 会话、26 条有效历史请求与原生消息逐字段一致；已装 CLI + 隔离 Provider 验证两步工具请求、实时/恢复一致。明确含思考 Token 时不计速度，流缺缓存字段时等轮末 |
 | Antigravity | 未做 | 按步 input/output/thinking，无缓存字段 | 同上 |
@@ -94,7 +94,7 @@ Adapter 约定：打开会话时先发布全部历史请求（`historical: true`
 
 ## 5. 待决事项（需用户）
 
-1. Grok 已接入实时客户端观测生成 TPS，保留原生费用与 Host TTFT，不恢复 API 平均速度。`streamStartMs` 仅作请求标识，空角色帧会触发它，不能直接用于时长。未完整观测的请求、工具专用无首输出、隐藏思考、重试边界缺失、压缩或取消时仍省略速度；历史不补造 TPS。实现与隔离原生验证已完成，当前 Desktop 尚未加载此改动。
+1. Grok 的思考资格修正此前已重启加载；最新逐请求用量接线、工具参数计时及会话平均缓存支持已通过聚焦回归与隔离原生探针，并随原生实时费用更新重启加载。原生实时费用也已接入：响应完成后查询 `_x.ai/session/usage`，使用固定历史基线加本次运行累计，查询失败不阻塞轮次。真实 Grok 1.0.46 + Adapter 隔离验证了工具等待中发布 $0.01、轮末前 $0.03，冷恢复后历史 $0.03 加新费用成为 $0.05；新增回归覆盖重复、乱序、迟到、失败及无效费用。本次聚焦 24 文件 242 项、typecheck、定向 lint/格式、边界与严格 OpenSpec 检查通过；费用接线已重启加载。后续增加了 Grok 默认 500K：通过原生 `_meta.contextWindow` 在打开和模型切换时选择受支持窗口；原生四模型及真实 Adapter 配置探针通过，全局配置哈希保持不变，未调用模型。25 文件 251 项回归和 Grok 包构建通过；500K 默认选择已重新构建并重启加载，Host 与 Renderer 就绪；尚未重新进行完整 GUI 验收。本次修正原生扩展方法名匹配并接入 `response_completed`，替代旧的轮末整段推算；不把只含整轮聚合的历史伪装成最近请求数据，不宣称客户端观测包含隐藏推理的服务端完整耗时。
 2. Qoder：需用户登录并产生会话数据。
 3. #489 Pi 插件速度与 Host 速度的取舍。
 4. OpenCode 自定义服务商 `provider` 的处理与 spec 措辞。

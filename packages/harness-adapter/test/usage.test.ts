@@ -3,6 +3,24 @@ import { describe, expect, it } from "vitest";
 import { parseHostUsage, parseHostUsageRequest } from "../src/index.js";
 
 describe("Harness Usage", () => {
+  it("accepts complete normalized session cache totals independently of billing", () => {
+    const sessionCacheUsage = { inputTokens: 100, cachedInputTokens: 40 };
+    expect(parseHostUsage({ sessionCacheUsage })).toEqual({ sessionCacheUsage });
+    expect(
+      parseHostUsage({ sessionCacheUsage: { inputTokens: 0, cachedInputTokens: 0 } }),
+    ).toBeDefined();
+    for (const invalid of [
+      null,
+      {},
+      { inputTokens: 100 },
+      { inputTokens: 10, cachedInputTokens: 11 },
+      { inputTokens: -1, cachedInputTokens: 0 },
+      { inputTokens: 1.5, cachedInputTokens: 0 },
+      { inputTokens: 100, cachedInputTokens: NaN },
+    ]) {
+      expect(() => parseHostUsage({ sessionCacheUsage: invalid })).toThrow();
+    }
+  });
   it.each(["outputTokensPerSecond", "apiOutputTokensPerSecond"])(
     "accepts fractional %s without relaxing token counts",
     (field) => {

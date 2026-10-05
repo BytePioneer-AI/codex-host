@@ -92,7 +92,7 @@ describe("sessionUsageFromHistory", () => {
     ).toBeNull();
   });
 
-  it("sums ticks once and keeps the latest cache hit rate", () => {
+  it("sums ticks once and supplies complete session cache facts, not a Turn-scoped recent rate", () => {
     expect(
       sessionUsageFromHistory([
         {
@@ -139,8 +139,35 @@ describe("sessionUsageFromHistory", () => {
       cacheWriteInputTokens: 2,
       reasoningOutputTokens: 5,
       totalCostUsd: 0.25154905,
-      cacheHitRatePercent: 90,
+      sessionCacheUsage: { inputTokens: 150, cachedInputTokens: 125 },
     });
+  });
+
+  it.each([
+    undefined,
+    { inputTokens: 10 },
+    { inputTokens: 10, cachedReadTokens: 11 },
+    { inputTokens: 10, cachedReadTokens: 5, usageIsIncomplete: true },
+    { inputTokens: 10, cachedReadTokens: 5, usageIsIncomplete: "unknown" },
+  ])("withholds session cache facts when any historical Turn is incomplete: %j", (usage) => {
+    const result = sessionUsageFromHistory([
+      { type: "turn.completed", nativeTurnKey: "known", usage: nativeApiUsage },
+      { type: "turn.completed", nativeTurnKey: "incomplete", usage },
+    ]);
+    expect(result).not.toHaveProperty("sessionCacheUsage");
+    expect(result?.totalCostUsd).toBe(0.09920104);
+  });
+
+  it("retains explicit zero cache totals", () => {
+    expect(
+      sessionUsageFromHistory([
+        {
+          type: "turn.completed",
+          nativeTurnKey: "zero",
+          usage: { inputTokens: 0, cachedReadTokens: 0 },
+        },
+      ])?.sessionCacheUsage,
+    ).toEqual({ inputTokens: 0, cachedInputTokens: 0 });
   });
 
   it("builds context usage from succeeded compact token counts", () => {

@@ -32,6 +32,48 @@ function completeMeter(...requests: unknown[]) {
 }
 
 describe("UsageMeter cost", () => {
+  it("derives native session cache average without taking over fees or TPS", () => {
+    const meter = new UsageMeter();
+    expect(
+      meter.derive(
+        {
+          totalCostUsd: 0.123,
+          outputTokensPerSecond: 25,
+          cacheHitRatePercent: 80,
+          sessionCacheUsage: { inputTokens: 300, cachedInputTokens: 120 },
+        },
+        prices,
+      ),
+    ).toEqual({
+      totalCostUsd: 0.123,
+      costSource: "native",
+      outputTokensPerSecond: 25,
+      cacheHitRatePercent: 80,
+      sessionCacheHitRatePercent: 40,
+    });
+    expect(meter.metered).toBe(false);
+    expect(
+      meter.derive({ sessionCacheUsage: { inputTokens: 0, cachedInputTokens: 0 } }, prices),
+    ).toBeNull();
+    expect(meter.derive({ inputTokens: 300, cachedInputTokens: 120 }, prices)).not.toHaveProperty(
+      "sessionCacheHitRatePercent",
+    );
+    expect(meter.derive({ totalCostUsd: 0.123 }, prices)).not.toHaveProperty(
+      "sessionCacheHitRatePercent",
+    );
+  });
+
+  it("uses the complete request ledger rather than native cache facts in metered mode", () => {
+    const meter = completeMeter(request("one", { cachedInputTokens: 250_000 }));
+    expect(
+      meter.derive({ sessionCacheUsage: { inputTokens: 100, cachedInputTokens: 100 } }, prices)
+        ?.sessionCacheHitRatePercent,
+    ).toBe(25);
+    meter.recordHistory(false);
+    expect(
+      meter.derive({ sessionCacheUsage: { inputTokens: 100, cachedInputTokens: 100 } }, prices),
+    ).toBeNull();
+  });
   it("prices every request by its own model and cache category", () => {
     const meter = completeMeter(
       request("a", { cachedInputTokens: 600_000, cacheWriteInputTokens: 200_000 }),

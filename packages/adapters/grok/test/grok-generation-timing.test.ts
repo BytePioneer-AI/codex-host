@@ -1,168 +1,161 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GrokGenerationTiming } from "../src/grok-usage.js";
+import { GrokTurnUsage } from "../src/grok-usage.js";
 import type { GrokTransportEvent } from "../src/acp-transport.js";
 
-const metadata = (streamStartMs = 1) => ({ streamStartMs, promptId: "prompt" });
-const text = (stream = 1): GrokTransportEvent => ({
-  type: "agent.text",
-  text: "answer",
-  metadata: metadata(stream),
+const response = (output = 20, messageId = "one"): GrokTransportEvent => ({
+  type: "response.completed",
+  messageId,
+  usage: {
+    input_tokens: 70,
+    cache_read_input_tokens: 20,
+    cache_creation_input_tokens: 10,
+    output_tokens: output,
+    reasoning_tokens: 5,
+  },
 });
-const thought = (stream = 1): GrokTransportEvent => ({
-  type: "agent.thought",
-  text: "thinking",
-  metadata: metadata(stream),
-});
-const tool = (stream = 1, callId = "tool"): GrokTransportEvent => ({
-  type: "tool.call",
-  callId,
-  title: "Fixture",
-  metadata: metadata(stream),
-});
-const usage = { inputTokens: 100, outputTokens: 60, reasoningTokens: 10, modelCalls: 1 };
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("Grok live generation timing", () => {
-  it("starts at received thought, not streamStartMs, text, or API request start", () => {
-    const clock = vi.spyOn(Date, "now").mockReturnValue(10000);
-    const timing = new GrokGenerationTiming();
-    timing.observe(thought());
-    clock.mockReturnValue(11000);
-    timing.observe(text());
-    clock.mockReturnValue(12000);
-    timing.endStream();
-    expect(timing.rate({ ...usage, apiDurationMs: 999999 }, "prompt")).toBe(30);
-  });
-
-  it("weights all streams and excludes tool/permission waits and next-request prefill", () => {
+describe("Grok live response usage", () => {
+  it("updates after each request, excluding tool waits and weighting durations", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-    const timing = new GrokGenerationTiming();
-    timing.observe(thought());
-    clock.mockReturnValue(3000);
-    timing.observe(tool());
-    clock.mockReturnValue(5000);
-    timing.observe(tool(1, "parallel"));
-    timing.endStream(); // Permission requested after the first tool call; no double counting.
-    clock.mockReturnValue(15000);
-    timing.observe({ type: "tool.update", callId: "tool", status: "completed" });
-    clock.mockReturnValue(20000);
-    timing.observe(thought(2));
-    clock.mockReturnValue(20500);
-    timing.observe(tool(1, "late-parallel"));
-    timing.observe(text(2));
-    clock.mockReturnValue(21000);
-    timing.endStream();
-    expect(timing.rate({ ...usage, modelCalls: 2 }, "prompt")).toBe(20);
-  });
-
-  it("can end at permission before waiting, without an extra tool notification", () => {
-    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-    const timing = new GrokGenerationTiming();
-    timing.observe(text());
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe({ type: "agent.thought", text: "thinking" });
     clock.mockReturnValue(2000);
-    timing.endStream();
-    clock.mockReturnValue(30000);
-    timing.endStream();
-    expect(timing.rate({ ...usage, reasoningTokens: 0 }, "prompt")).toBe(60);
-  });
-
-  it("uses a live terminal once, ignoring background task terminals and settlement delay", () => {
-    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-    const timing = new GrokGenerationTiming();
-    timing.observe(thought());
-    clock.mockReturnValue(2000);
-    timing.observe({
-      type: "turn.completed",
-      nativeTurnKey: "task-completed-1",
-      stopReason: "end_turn",
+    expect(usage.observe(response())).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 20,
+      reasoningOutputTokens: 5,
+      cacheHitRatePercent: 20,
+      outputTokensPerSecond: 20,
+      sessionCacheUsage: { inputTokens: 100, cachedInputTokens: 20 },
     });
     clock.mockReturnValue(3000);
-    timing.observe({ type: "turn.completed", nativeTurnKey: "prompt", stopReason: "end_turn" });
-    clock.mockReturnValue(50000);
-    timing.endStream();
-    expect(timing.rate(usage, "prompt")).toBe(30);
+    usage.observe({ type: "tool.call", callId: "tool", title: "sleep" });
+    clock.mockReturnValue(10000);
+    usage.observe({ type: "agent.text", text: "answer" });
+    clock.mockReturnValue(13000);
+    expect(usage.observe(response(100, "two"))).toMatchObject({
+      inputTokens: 200,
+      outputTokens: 120,
+      outputTokensPerSecond: 30,
+      sessionCacheUsage: { inputTokens: 200, cachedInputTokens: 40 },
+    });
   });
 
-  it.each([
-    ["incomplete usage", { ...usage, usageIsIncomplete: true }],
-    ["invalid completeness flag", { ...usage, usageIsIncomplete: "unknown" }],
-    ["missing call count", { ...usage, modelCalls: undefined }],
-    ["missing stream", { ...usage, modelCalls: 2 }],
-    ["missing output", { ...usage, outputTokens: undefined }],
-    ["zero output", { ...usage, outputTokens: 0 }],
-    ["invalid output", { ...usage, outputTokens: -1 }],
-  ])("omits speed for %s", (_name, value) => {
+  it("times tool-only output from native tool argument deltas", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-    const timing = new GrokGenerationTiming();
-    timing.observe(thought());
-    clock.mockReturnValue(3000);
-    timing.endStream();
-    expect(timing.rate(value, "prompt")).toBeUndefined();
-  });
-
-  it.each([0, -1000])("rejects a nonpositive duration (%s)", (elapsed) => {
-    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-    const timing = new GrokGenerationTiming();
-    timing.observe(thought());
-    clock.mockReturnValue(1000 + elapsed);
-    timing.endStream();
-    expect(timing.rate(usage, "prompt")).toBeUndefined();
-  });
-
-  it("omits missing endings, foreign turn usage and entirely unobserved turns", () => {
-    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-    const timing = new GrokGenerationTiming();
-    expect(timing.rate(usage, "prompt")).toBeUndefined();
-    timing.observe(thought());
-    expect(timing.rate(usage, "prompt")).toBeUndefined();
-    clock.mockReturnValue(3000);
-    timing.endStream();
-    expect(timing.rate(usage, "other-prompt")).toBeUndefined();
-  });
-
-  it.each([
-    { type: "agent.text", text: "no metadata" },
-    { ...text(), metadata: { promptId: "prompt", streamStartMs: NaN } },
-    { ...text(), metadata: { streamStartMs: 1 } },
-    { ...text(2), metadata: { streamStartMs: 2, promptId: "other-prompt" } },
-    { type: "compaction.started" },
-    tool(2), // No observed first output for this tool-only request.
-    thought(2), // Retry/new stream without the previous stream's end.
-  ] satisfies GrokTransportEvent[])(
-    "omits incomplete/ambiguous stream observations: $type",
-    (event) => {
-      const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-      const timing = new GrokGenerationTiming();
-      timing.observe(thought());
-      clock.mockReturnValue(2000);
-      timing.observe(event);
-      clock.mockReturnValue(3000);
-      timing.endStream();
-      expect(timing.rate(usage, "prompt")).toBeUndefined();
-    },
-  );
-
-  it("does not include hidden reasoning in a text-only timing window", () => {
-    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-    const timing = new GrokGenerationTiming();
-    timing.observe(text());
-    clock.mockReturnValue(3000);
-    timing.endStream();
-    expect(timing.rate(usage, "prompt")).toBeUndefined();
-    expect(timing.rate({ ...usage, reasoningTokens: 0 }, "prompt")).toBe(30);
-  });
-
-  it("requires observable reasoning in every request when only aggregate reasoning is known", () => {
-    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-    const timing = new GrokGenerationTiming();
-    timing.observe(thought());
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe({ type: "tool.input.delta", text: '{"command":' });
     clock.mockReturnValue(2000);
-    timing.observe(tool());
-    clock.mockReturnValue(5000);
-    timing.observe(text(2));
-    clock.mockReturnValue(6000);
-    timing.endStream();
-    expect(timing.rate({ ...usage, modelCalls: 2 }, "prompt")).toBeUndefined();
+    expect(usage.observe(response())?.outputTokensPerSecond).toBe(20);
+  });
+
+  it("counts native reasoning once even when only text is observable", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe({ type: "agent.text", text: "answer" });
+    clock.mockReturnValue(3000);
+    expect(usage.observe(response(100))?.outputTokensPerSecond).toBe(50);
+  });
+
+  it("retains valid timed requests when another request has no observable output", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe({ type: "agent.text", text: "answer" });
+    clock.mockReturnValue(2000);
+    usage.observe(response());
+    clock.mockReturnValue(9000);
+    expect(usage.observe(response(100, "untimed"))).toMatchObject({
+      outputTokens: 120,
+      outputTokensPerSecond: 20,
+    });
+  });
+
+  it("deduplicates native message IDs without discarding a new request's start", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe({ type: "agent.text", text: "one" });
+    clock.mockReturnValue(2000);
+    usage.observe(response());
+    clock.mockReturnValue(3000);
+    usage.observe({ type: "agent.text", text: "two" });
+    expect(usage.observe(response())).toBeNull();
+    clock.mockReturnValue(4000);
+    expect(usage.observe(response(100, "two"))).toMatchObject({
+      inputTokens: 200,
+      outputTokens: 120,
+      outputTokensPerSecond: 60,
+    });
+  });
+
+  it("adds live usage to complete history, not to previous live snapshots", () => {
+    const usage = new GrokTurnUsage({
+      inputTokens: 300,
+      cachedInputTokens: 200,
+      outputTokens: 50,
+      sessionCacheUsage: { inputTokens: 300, cachedInputTokens: 200 },
+    });
+    expect(usage.observe(response())).toMatchObject({
+      inputTokens: 400,
+      cachedInputTokens: 220,
+      outputTokens: 70,
+      cacheHitRatePercent: 20,
+      sessionCacheUsage: { inputTokens: 400, cachedInputTokens: 220 },
+    });
+    expect(usage.observe(response(20, "two"))?.inputTokens).toBe(500);
+  });
+
+  it("does not promote incomplete history or missing cache buckets to complete totals", () => {
+    const unknown = new GrokTurnUsage({ inputTokens: 100 });
+    expect(unknown.observe(response())).not.toHaveProperty("sessionCacheUsage");
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe(response());
+    const snapshot = usage.observe({ type: "response.completed", usage: { output_tokens: 10 } });
+    expect(snapshot).not.toHaveProperty("cacheHitRatePercent");
+    expect(snapshot).not.toHaveProperty("sessionCacheUsage");
+    expect(usage.observe(response(20, "later"))).not.toHaveProperty("sessionCacheUsage");
+  });
+
+  it("excludes compaction output and starts fresh after compaction", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe({ type: "agent.text", text: "discarded" });
+    usage.observe({ type: "compaction.started" });
+    usage.observe({ type: "agent.text", text: "summary" });
+    expect(usage.observe(response())).toBeNull();
+    usage.observe({ type: "compaction.completed", outcome: "succeeded" });
+    clock.mockReturnValue(10000);
+    usage.observe({ type: "agent.text", text: "answer" });
+    clock.mockReturnValue(11000);
+    expect(usage.observe(response())?.outputTokensPerSecond).toBe(20);
+  });
+
+  it("resets a discarded retry window when the native stream key changes", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe({ type: "agent.text", text: "failed attempt", metadata: { streamStartMs: 1 } });
+    clock.mockReturnValue(10000);
+    usage.observe({ type: "agent.text", text: "retry", metadata: { streamStartMs: 2 } });
+    clock.mockReturnValue(11000);
+    expect(usage.observe(response())?.outputTokensPerSecond).toBe(20);
+  });
+
+  it.each([0, -1])("omits speed for a nonpositive observed duration: %s", (duration) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe({ type: "agent.text", text: "answer" });
+    clock.mockReturnValue(1000 + duration);
+    expect(usage.observe(response())).not.toHaveProperty("outputTokensPerSecond");
+  });
+
+  it("accepts known-zero output and never uses API duration", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe({ type: "agent.text", text: "answer" });
+    clock.mockReturnValue(2000);
+    const event = response(0);
+    expect(usage.observe(event)?.outputTokensPerSecond).toBe(0);
+    expect(usage.metrics()).not.toHaveProperty("apiOutputTokensPerSecond");
   });
 });

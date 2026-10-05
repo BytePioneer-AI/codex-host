@@ -180,6 +180,8 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 
 本机与远程均保留 Desktop 原生的草稿预热；它只提前创建 Session，不发送用户消息。Desktop Control 只给外部、非 ephemeral 的预热 `thread/start` 加上 `codexhostPrewarm: true`，正式创建与官方 Codex 请求不加此标记。配置变更、策略清理或退役时，已返回的外部预热与之后迟到的结果通过 `codexhost/thread/prewarm/discard { threadId }` 请求释放，不能只在前端丢弃结果。
 
+未提交的外部预热不进入侧栏：即使 Harness 已返回 Native Session 身份，Host 也只在当前 Session 状态中保留它，映射仍为 `creating`，不发出 `thread/started`，普通与分区会话列表均不展示。首次提交消息或执行原生命令时，Host 先提交已知身份再执行；身份仍未就绪时由后续原生状态事件提交并发布。真实原生自主 Turn 也会将预热转为正式 Thread。单纯读取、恢复或配置选择不发布草稿；清理不会留下已公布的空会话入口，重启时沿用 Mapping Store 对无原生身份的 provisional 记录的清理规则。普通非预热 Thread 的创建行为不变。
+
 Host 在现有每 Thread 请求队列内裁决接管与释放：Turn、原生命令、配置选择、恢复等操作接管后，迟到清理返回 `discarded: false`，不关闭 Session；普通空 Thread 也不能被此接口删除。未接管且没有活动工作或历史的预热先关闭 Session、等待输出结束，再移除 Host 映射；重复清理无副作用，关闭报告失败时保留映射并阻止继续使用这个未确认关闭的预热。该标记只是当前 Host 的内存所有权，不把预分配身份持久化为原生历史。
 
 清理是尽力发送的维护请求，传输已断开时不重放用户操作，也不因界面断开而取消已经接管的远程工作。清理成功不是其他独立会话得以创建的前提：Claude Code 的 Broker 按预留的原生写入身份隔离会话，见 [Aqua Broker](../platforms/macos/native-aqua-broker.md)。旧 Host/Broker 需要一并更新才能获得完整修复。

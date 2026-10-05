@@ -3514,6 +3514,9 @@ export class AppServerHost {
     else this.#manualCompactionTurns.delete(thread);
 
     try {
+      if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+        await this.#notifyExternalThreadStarted(thread.thread);
+      }
       const result = await commands.execute({
         turnId,
         commandId: descriptor.id,
@@ -3866,7 +3869,7 @@ export class AppServerHost {
     const session = sessionResult.value;
     await this.#externalRuntime.idleRelease.runOperation(record.hostThreadId, async () => {
       try {
-        if (session.initialState.nativeRef) {
+        if (session.initialState.nativeRef && params[EXTERNAL_THREAD_PREWARM_PARAM] !== true) {
           record = await this.#repository.commitNative(
             record.hostThreadId,
             session.initialState.nativeRef,
@@ -3880,6 +3883,7 @@ export class AppServerHost {
         const externalThread = this.#registerExternalThread({
           record,
           session,
+          unsubmittedPrewarm: params[EXTERNAL_THREAD_PREWARM_PARAM] === true,
           sessionId: record.hostThreadId,
           thread,
           turns: [],
@@ -3913,8 +3917,8 @@ export class AppServerHost {
             },
           }),
         );
-        // A prewarmed draft without a native identity cannot be restored after
-        // release. Publish it only once the Harness commits that identity.
+        // Draft prewarms remain provisional even when the Harness already has
+        // an identity. Only user submission may publish them to Desktop history.
         if (record.state === "ready") await this.#notifyExternalThreadStarted(thread);
       } catch {
         this.#externalRuntime.remove(record.hostThreadId);
@@ -3937,6 +3941,7 @@ export class AppServerHost {
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
     requestedPermissionModeId?: HarnessPermissionModeId;
+    unsubmittedPrewarm?: boolean;
   }): ExternalThread {
     return this.#externalRuntime.register(input);
   }
@@ -4582,6 +4587,9 @@ export class AppServerHost {
     thread.responseGates.set(turnId, gate);
 
     try {
+      if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+        await this.#notifyExternalThreadStarted(thread.thread);
+      }
       const result = await thread.session.execute({
         type: "turn.start",
         turnId,
@@ -4755,14 +4763,17 @@ export class AppServerHost {
     if (event.type === "session.state.changed") {
       try {
         if (event.state.nativeRef) {
-          if (!thread.record.nativeSessionRef) {
-            thread.record = await this.#repository.commitNative(thread.id, event.state.nativeRef);
-            await this.#notifyExternalThreadStarted(thread.thread);
-          } else if (
-            thread.record.nativeSessionRef.harnessId !== event.state.nativeRef.harnessId ||
-            thread.record.nativeSessionRef.nativeSessionId !== event.state.nativeRef.nativeSessionId
+          const nativeRef = thread.record.nativeSessionRef ?? thread.stateObserver.state.nativeRef;
+          if (
+            nativeRef &&
+            (nativeRef.harnessId !== event.state.nativeRef.harnessId ||
+              nativeRef.nativeSessionId !== event.state.nativeRef.nativeSessionId)
           ) {
             throw new Error("External Session changed Native identity");
+          }
+          if (!thread.record.nativeSessionRef && !thread.unsubmittedPrewarm) {
+            thread.record = await this.#repository.commitNative(thread.id, event.state.nativeRef);
+            await this.#notifyExternalThreadStarted(thread.thread);
           }
         }
         thread.stateObserver.update(event.state);
@@ -4858,6 +4869,11 @@ export class AppServerHost {
         promise: Promise.resolve(),
         resolve: () => undefined,
       });
+      // Real native work is no longer a disposable draft, even when it was
+      // initiated by the Harness rather than a Desktop submission.
+      if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+        await this.#notifyExternalThreadStarted(thread.thread);
+      }
       return;
     }
 

@@ -78,6 +78,8 @@ export const messageSchema = z.object({
     parentMessageId: z.string().optional(),
     time: z.object({ created: z.number(), completed: z.number().optional() }),
     model: nativeModelSchema.optional(),
+    // Keep telemetry unvalidated here: bad usage must not break history or the Turn.
+    tokens: z.unknown().optional(),
     finish: z.string().optional(),
     error: recordSchema.optional(),
     synthetic: z.boolean().optional(),

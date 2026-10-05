@@ -18,7 +18,7 @@ Token 累计、上下文、套餐等字段仍由 Adapter 原生上报，Host 不
 
 ## 已接入的 Harness
 
-Pi、OMP、OpenCode v2、Claude Code、DeepSeek Harness（dsh）、CodeBuddy、WorkBuddy。其余 Harness 继续显示原生费用，后续分批接入；OpenCode v1 不接入。
+Pi、OMP、OpenCode v2、Claude Code、DeepSeek Harness（dsh）、CodeBuddy、WorkBuddy、ZCode。其余 Harness 继续显示原生费用，后续分批接入；OpenCode v1 不接入。
 
 接入的 Adapter 在每次打开会话时回放原生历史中的全部请求，再声明历史是否完整；运行中每完成一次模型请求发布一条请求记录。Host 只在内存中计量，不持久化，重启后重新回放即可得到相同结果。
 
@@ -41,6 +41,7 @@ Pi、OMP、OpenCode v2、Claude Code、DeepSeek Harness（dsh）、CodeBuddy、W
 - 缓存写入分两档：默认（5 分钟）按价格表的缓存写入单价；1 小时档按输入单价 × 2，与 Claude Code 内置价格一致（models.dev 只提供 5 分钟档），可在 `pricing.json` 用 `cacheWrite1h` 覆盖。
 - Claude Code：费用与其 `costUSD` 的差额来自它在流与转录之外发出的后台请求；不计网页搜索按次费用（$0.01/次）与美国地域推理 1.1 倍系数。
 - CodeBuddy / WorkBuddy：ACP 不上报逐次请求用量，打开会话和每轮结束后从原生历史读取，因此没有输出速度；WorkBuddy 自动路由的 `default-model` 不是具体模型，无法计价。
+- ZCode：恢复时从原生 `session/resume` 快照回放每条 assistant 消息；实时按主请求边界关联 `assistantMessageId`，轮末用 `session/read` 快照补齐并核对。输入已含缓存，输出已含思考；`v4/conversation/usage` 的输入是上下文增量累计，不能作为费用或平均缓存的分母，原生 Token 展示仍保留该口径。流事件缓存字段不全时延迟到轮末计量；未知口径或矛盾记录使会话级指标失效。失败/取消只有零占位、没有 Provider 用量时不计入。协议没有思考开始事件，明确带思考 Token 的请求暂不计速度；其他请求使用原生流事件时间，不拿包含工具执行的消息落盘时间作终点。界面仍沿用原生用量通知刷新，轮内计算不保证立即显示。
 - 不计入：子代理、原生不给出模型的后台请求（如 OpenCode v2 的标题生成与压缩）、按次收费项目和长上下文分档价格。
 - 分叉会话按原生历史计算，包含从父会话复制来的轮次；撤销上一轮后，被撤销轮次不再计入。
 

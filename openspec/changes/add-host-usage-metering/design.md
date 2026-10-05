@@ -11,7 +11,7 @@ External Harness 的用量当前由各 Adapter 在 `HostUsage` 快照中自行�
 | OpenCode v2 | 每个 step（assistant message，`session.step.ended` 带 tokens） | 否 | **否**（`reasoning` 单列） | 每消息 | total = input + output + reasoning + cache |
 | DeepSeek | 流式 usage chunk | 否 | 是 | 会话 | total = input + output + cacheRead |
 | Grok | 每 Turn（含多次模型调用） | **是** | 是 | 仅 Turn 主模型 | total = input + output |
-| ZCode | 仅会话合计 | **是** | 待实测 | 会话 | total = input + output |
+| ZCode | 每条 assistant 消息；主请求完成事件 | **是** | 是 | 每请求/消息 | 3.14.4 原生 RPC、本机 9 会话 26 请求：total = input + output；缓存、思考为子项 |
 | CodeBuddy / WorkBuddy | 每消息（Turn 末读历史） | **是** | 是 | 每消息 | `prompt_tokens` = hit + miss |
 | Hermes | 会话合计；本地 DB 有按模型合计 | 否 | 待实测 | 按模型 | input < cache_read |
 | Kimi Code | 每请求 `usage.record` | 否（`inputOther`） | 待实测 | 每请求 | 代码 |
@@ -53,6 +53,14 @@ External Harness 的用量当前由各 Adapter 在 `HostUsage` 快照中自行�
 - 原生失败请求：带 Token 时照常发布；原生未给出 Token 时视为没有用量，不视为缺口。
 
 备选“Host 对 `HostUsage` 累计值做差”无法确定归属，否决。
+
+### ZCode 接入依据与降级
+
+ZCode 3.14.4 的 `session/resume`、`session/read` 返回 assistant `info.tokens`（`input`、`output`、`total`、`reasoning`、`cache.read/write`）及实际 `info.model.modelId`；`step-finish` 的重复字段不再计一次。`v4/conversation/usage` 按上下文增量累计输入、主请求的缓存计数为零，不用它推导请求用量。原生 Token 快照仍保持原语义，Host 只派生费用与会话平均缓存。
+
+实时仅关联本 Session 的 `main_turn`：`model_request_started.requestId` → `model.streaming.assistantMessageId` → 同一 `model_request_completed.requestId`。只接受单一消息、无交错且模型一致的关联，否则等轮末原生快照；不根据当前选择模型归属历史。`info.tokens` 在通用快照 schema 中保留为 unknown，由计量模块独立校验，坏用量不影响正常会话。回放和实时记录以消息 ID 去重；最终记录矛盾时声明不完整。已确认的原生失败/取消零占位（无 total）按失败请求无用量规则跳过。
+
+计时使用同一原生事件流的首个正文/思考 delta 或工具输入开始到请求完成，不使用可能包含工具执行的 assistant `time.completed`。流缓存字段缺失时先不发布，轮末快照补齐时保留已观测计时。原生协议过滤 reasoning_start，不能证明隐藏思考的开始；明确 `reasoningTokens > 0` 的请求暂不发布计时，费用照常计算。历史记录不带计时，跨 Turn 的迟到记录不借用新 Turn 计时。界面刷新仍依赖原生用量通知，不在此接入中另加轮询。
 
 ### D3. 历史回放与完整性
 

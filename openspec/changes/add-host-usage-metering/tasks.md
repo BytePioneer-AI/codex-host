@@ -39,4 +39,5 @@
 - [x] 7.3 CodeBuddy / WorkBuddy：从原生历史计量，修复缓存字段。
 - [ ] 7.4 Qoder / Qoder CN：待本机有真实会话后核对结构。
 - [ ] 7.5 Grok：待决定是否携带原生费用。
-- [ ] 7.6 Hermes、Kimi、ZCode、Antigravity：数据不足或无缓存字段，实测口径后再定；Kiro、Cursor 不接入。
+- [ ] 7.6 Hermes、Kimi、Antigravity：数据不足或无缓存字段，实测口径后再定；Kiro、Cursor 不接入。
+- [x] 7.7 ZCode：核对 3.14.4 原生 RPC 与本机历史，按消息回放/主请求事件计量；覆盖缓存/思考口径、去重、换模型、取消、实时与恢复一致性。明确包含思考 Token 时暂不计速度；GUI 验收待用户。

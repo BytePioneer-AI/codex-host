@@ -65,17 +65,27 @@ Adapter 约定：打开会话时先发布全部历史请求（`historical: true`
 | Qoder / Qoder CN | **暂缓** | 本机无会话、无登录凭证、无运行时（首次使用从 download.qoder.com 下载）；现有 `qoder-usage.ts` 对字段理解自相矛盾 | 需用户登录 Qoder 跑会话后再做 |
 | Grok | **待用户决定** | `~/.grok/sessions/<cwd>/<id>/updates.jsonl` 的 `turn_completed.usage.modelUsage` 与 `usage.json`：按“轮 × 模型”合计（`modelCalls`），`totalTokens = inputTokens + outputTokens`（输入含缓存读，输出含思考），`costUsdTicks`（1 美元 = 10¹⁰），`apiDurationMs` | models.dev 无 `grok-4.6-build`/`grok-4.7-build(-fast)` 价格；原生费用合计约 $74。决定：请求记录是否携带原生费用（无价时使用），还是 Grok 保持原生费用不接入 |
 | Hermes | 暂缓 | `~/.hermes/state.db` 表 `session_model_usage`：仅会话 × 模型合计，本机只有 2 行（其一为标题生成），该行缓存读远大于输入 | 数据不足以确认字段含义 |
-| ZCode | 未做 | `getTaskTokenUsage` 任务合计，无缓存 | 无法计费与缓存；首 token 已对所有 Harness 生效 |
+| ZCode | 已接入（GUI 待验收） | **更正旧判断**：3.14.4 `session/resume` / `session/read` 每条 assistant 的 `info.tokens` 有缓存、思考与实际模型；输入含缓存，输出含思考。主请求的 `model_request_started` / `model.streaming.assistantMessageId` / `model_request_completed` 可关联实时计量，轮末快照补齐 | 本机 9 会话、26 条有效历史请求与原生消息逐字段一致；已装 CLI + 隔离 Provider 验证两步工具请求、实时/恢复一致。明确含思考 Token 时不计速度，流缺缓存字段时等轮末 |
 | Antigravity | 未做 | 按步 input/output/thinking，无缓存字段 | 同上 |
 | Kiro | 不接入 | 只有积分 | 继续显示积分 |
 | Cursor | 不接入 | ACP 无用量 | — |
 | Kimi | 未调查完 | ACP `usage_update`（按轮），本机未找到数据目录 | — |
+
+### ZCode 本次接入与证据
+
+- 代码：`packages/adapters/zcode/src/usage.ts`，接线仅在 `session.ts`；`protocol.ts` 保留 `info.tokens` 为 unknown，让计量独立校验，坏记录不破坏聊天。没有新增 Host 专属分支、公共契约或依赖。
+- 原生依据：通过 Adapter 自己的 `CliTransport` 对 ZCode 3.14.4 执行 resume/read；9 个真实本机会话共有 26 条可计量消息（含原生历史继承部分），与只读数据库中的消息模型、input/output/cache 逐字段核对一致。没有把 `model_usage` 表的 24 行当成回放范围：该表与消息历史的继承/保留语义不同。
+- 示例：12 请求的 GLM 会话总输入为 256777、缓存读为 236160，平均缓存 91.970854%；`v4/conversation/usage` 的输入仅 22921，是上下文增量累计，不可作计费输入。原生 Token 展示保留原来的增量口径。当前打包价格表将 `GLM-5.3-Flash` 匹配为零价，这是查价结果，不代表验证了实际账单。
+- 实时协议：只关联同 Session、同 native Turn 的 `main_turn` 请求，requestId 起止一致、期间只有一个 assistantMessageId、模型一致才发布；交错/不明归属退回最终消息，不按当前选中模型猜。流缓存字段不全时先不发布，轮末补齐，避免 Host first-wins 去重把未知字段锁死。原生最终计数与已发布记录冲突时标记不完整。
+- 速度：用首个原生思考/正文 delta 或工具输入开始到原生请求完成事件，不使用可能覆盖工具执行的消息落盘时间。ZCode 过滤 reasoning_start，`reasoningTokens > 0` 时不能证明隐藏思考起点，因此不发布计时。只有最终快照能补齐的请求可在轮末计速度；历史无计时。
+- 本机验证没有调用收费模型：真实历史是只读核对；实时验证运行已安装 CLI，HOME 和数据目录隔离，Provider 是本地合成服务。聚焦测试 13 文件 / 164 用例通过，包括 Adapter、Host 计量/价格表、真实 Loader → Host → ZCode 路由测试。尚未在 Desktop GUI 验收，也没有重启用户的开发实例。
 
 ## 4. 已知限制（不是缺陷）
 
 - Claude Code 费用比其 `costUSD` 低约 4%：后台请求不在流与转录中；未计网页搜索按次费（$0.01/次）与美国地域推理 1.1 倍系数。
 - Claude Code 中途取消的请求没有 `message_stop`，实时不计入，重新打开时由转录补回。
 - CodeBuddy/WorkBuddy 没有输出速度（无逐次计时）。
+- ZCode 明确包含思考 Token 的请求暂不计速度；流缓存明细缺失时等轮末原生快照补齐。失败/取消只有原生零占位、没有 Provider 用量时跳过，不能表示实际扣费为零。轮内 UI 刷新仍依赖既有原生用量通知。
 - OpenCode v2 一轮进行中界面不刷新（只在轮末上报原生用量）；所有 Harness 的首 token 要等下一次界面刷新才显示。修法思路：首 token 出现或请求计量后，若本轮已有原生用量，Host 带当前轮次 ID 重发 `thread/tokenUsage/updated`。
 - 已接入的 Pi 会话会覆盖 #489 `pi-token-speed` 插件上报的原生速度（未决）。
 - OpenCode 自定义服务商仍作为 `provider` 传入（查不到时退回模型 ID），与 spec“不传自定义别名”措辞需统一（未决）。

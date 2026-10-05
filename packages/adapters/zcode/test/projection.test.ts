@@ -22,12 +22,8 @@ describe("ZCode native projections", () => {
   });
   it("shortens official Coding Plan labels without changing model identities or custom names", () => {
     for (const [providerId, providerLabel, prefix] of [
-      [
-        "account:bigmodel-individual-coding-plan",
-        "BigModel Individual Coding Plan",
-        "BigModel Coding",
-      ],
-      ["account:zai-individual-coding-plan", "Z.AI Individual Coding Plan", "Z.AI Coding"],
+      ["account:bigmodel-individual-coding-plan", "BigModel Individual Coding Plan", "BigModel"],
+      ["account:zai-individual-coding-plan", "Z.AI Individual Coding Plan", "Z.AI"],
       ["account:bigmodel-start-plan", "Start Plan", "Start Plan"],
       ["custom-provider", "BigModel Individual Coding Plan", "BigModel Individual Coding Plan"],
     ]) {

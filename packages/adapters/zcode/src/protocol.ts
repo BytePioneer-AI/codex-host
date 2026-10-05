@@ -32,9 +32,9 @@ export const modelSchema = z
     // Shorten only official personal account names, so the picker can show the model suffix.
     const provider =
       model.ref.providerId === "account:bigmodel-individual-coding-plan"
-        ? "BigModel Coding"
+        ? "BigModel"
         : model.ref.providerId === "account:zai-individual-coding-plan"
-          ? "Z.AI Coding"
+          ? "Z.AI"
           : providerLabel;
     return { ...model, label: provider ? `${provider} / ${model.label}` : model.label };
   });

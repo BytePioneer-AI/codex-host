@@ -70,7 +70,7 @@ describe.skipIf(!app)("Personal Coding Plan with the installed ZCode CLI", () =>
       if (!app) throw new Error("CODEXHOST_TEST_ZCODE_APP is required");
       const root = await realpath(await mkdtemp(path.join(tmpdir(), "zcode-coding-native-")));
       const apiKey = `synthetic-${family}-personal-key`;
-      const labelPrefix = family === "bigmodel" ? "BigModel Coding /" : "Z.AI Coding /";
+      const labelPrefix = family === "bigmodel" ? "BigModel /" : "Z.AI /";
       const providerId = `account:${family}-individual-coding-plan`;
       const requests: Array<{ url: string; headers: IncomingHttpHeaders; model: string }> = [];
       const subscriptions: IncomingHttpHeaders[] = [];

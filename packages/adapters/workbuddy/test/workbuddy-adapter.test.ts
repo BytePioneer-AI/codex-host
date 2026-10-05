@@ -139,6 +139,7 @@ describe("WorkBuddy Adapter identity", () => {
                 inputTokens: 57836,
                 outputTokens: 213,
                 cachedInputTokens: 57344,
+                cacheHitRatePercent: (28672 / 28931) * 100,
                 reasoningOutputTokens: 35,
               }),
             },

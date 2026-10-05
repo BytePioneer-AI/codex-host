@@ -107,6 +107,60 @@ describe("CodeBuddy usage records", () => {
     });
   });
 
+  it("reports the latest request's cache rate, not the cumulative rate or duplicate tool rows", () => {
+    const latest = {
+      ...provider,
+      messageId: "latest",
+      rawUsage: {
+        ...rawUsage,
+        prompt_tokens: 200,
+        prompt_tokens_details: { cached_tokens: 20 },
+        prompt_cache_write_tokens: 50,
+      },
+    };
+    const contents = history(
+      row("old", null, "message", provider),
+      row("tool", "old", "function_call", latest),
+      row("reply", "tool", "message", latest),
+    );
+    expect(historyUsage(contents)).toMatchObject({
+      inputTokens: 20293,
+      cachedInputTokens: 17684,
+      cacheHitRatePercent: 10,
+    });
+    // Restore an earlier native branch: CH follows that branch, not append-only file order.
+    expect(
+      historyUsage(contents + JSON.stringify({ type: "resend-fork-notice", parentId: "old" })),
+    ).toMatchObject({ cacheHitRatePercent: (17664 / 20093) * 100 });
+  });
+
+  it.each([
+    [100, 0, 0],
+    [100, 100, 100],
+    [0, 0, undefined],
+    [100, undefined, undefined],
+    [100, -1, undefined],
+    [100, 101, undefined],
+  ])(
+    "handles recent input %s / cache %s without fabricating a percentage",
+    (input, cached, expected) => {
+      const latest = {
+        ...provider,
+        messageId: "latest",
+        rawUsage: {
+          ...rawUsage,
+          prompt_tokens: input,
+          prompt_tokens_details: { cached_tokens: cached },
+        },
+      };
+      const usage = historyUsage(
+        history(row("old", null, "message", provider), row("latest", "old", "message", latest)),
+      );
+      expect(usage?.cacheHitRatePercent).toBe(expected);
+      if (expected === undefined) expect(usage).not.toHaveProperty("cacheHitRatePercent");
+    },
+  );
+
   it("skips subagent requests recorded in the parent history", () => {
     const sub = { ...provider, messageId: "msg-sub", isSubAgent: true };
     expect(historyUsageRequests(history(row("r1", null, "reasoning", sub)), true).requests).toEqual(

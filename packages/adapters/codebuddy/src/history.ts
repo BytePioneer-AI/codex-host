@@ -785,6 +785,11 @@ export function historyUsage(contents: string): HostUsage | null {
     totalCredits: (usage: Record<string, unknown>) => usage.credit,
   } as const;
   const result: HostUsage = {};
+  const latest = [...requests.values()].at(-1);
+  const input = usageCount(latest?.prompt_tokens);
+  const cached = usageCount(record(latest?.prompt_tokens_details).cached_tokens);
+  if (input !== null && input > 0 && cached !== null && cached <= input)
+    result.cacheHitRatePercent = (cached / input) * 100;
   for (const [host, native] of Object.entries(fields)) {
     const values = [...requests.values()].map((usage) => native(usage));
     if (

@@ -101,13 +101,17 @@ Host 在收到 `complete: true` 之前，以及处于不完整状态时，不发
 
 `HostUsage` 与 `threadUsageSnapshotSchema` 新增 `sessionCacheHitRatePercent`（0–100）、`timeToFirstOutputMs`（非负安全整数）、`costSource`（`publicPrice` | `native`）。用量浮窗新增“平均缓存命中”“首字延迟”两行；`costSource` 只作数据字段，界面不显示说明。
 
-### D7. Grok 保留原生费用，区分 API 平均速度
+### D7. Grok 保留原生费用，速度只接受生成 TPS 口径
 
 用户确认 Grok 不需要公开价格重算。Adapter 不发布 `usage.request` / `usage.history`，继续按原生 ticks 展示费用，由 Host 标记 `costSource: native`；无需价格表补价或扩展请求级费用契约。
 
-`HostUsage` 与浏览器快照增加可选非负有限数 `apiOutputTokensPerSecond`，由 Adapter 从原生最近完成轮次的 `outputTokens / (apiDurationMs / 1000)` 得到，不与 `outputTokensPerSecond` 混用。输出已含思考，API 耗时含首字等待；界面独立标为“API 平均速度”，紧凑按钮加 `API` 前缀并在浮窗说明口径。有效调用数和正耗时缺失，或原生声明 `usageIsIncomplete` 时省略；新轮次结束但无有效计时会清除旧值。历史回放恢复最后一轮的 API 平均速度，不用会话累计输出除以最后一轮耗时；后台任务完成记录不计入。
+用户后续撤回 API 平均速度方案，要求与其他 Harness 相同的最近一轮平均生成 TPS。Grok 停止发布 `apiOutputTokensPerSecond`，实时与历史恢复都不再把 `outputTokens / apiDurationMs` 当作替代速度。既有可选 API 速度字段及通用 Renderer 支持保留协议兼容性，本次不修改公共接口或增加 Grok 专用 UI 分支。
 
-TTFT 继续由 Host 实时观测首个思考或正文，不从历史重建。严格排除预填充的生成 TPS 尚未具备可靠边界，不实现；也不新增工具或审批耗时展示、文件轮询或遥测采集器。
+Grok 1.0.46 隔离模拟 Provider 实测：`tool.call` 在模型流结束后、工具执行/审批之前到达。Adapter 复用 Pi 的客户端观测方式，在首个实时思考/正文回调记录时间，到 `tool.call` 或审批请求结束一段；最后一段到实时轮末通知或 `prompt` 返回结束，先结束计时再读取历史、刷新 Credits。`streamStartMs` 只作请求分组标识：空角色帧也会触发它，不能当首生成 Token 时间。原生轮次用量在成功轮末提供分子，按 Σ输出 / Σ各段耗时发布既有 `outputTokensPerSecond`；Host 保留该值和原生费用，不新增公共事件或 Grok 专用分支。
+
+仅当所有段计时完整且段数等于原生 `modelCalls` 才发布。缺首输出的工具专用请求、未闭合的重试、压缩、取消及非正时长不发布；原生仅有整轮推理用量，若其非零则保守要求每段均观测到思考，避免隐藏思考造成虚高。无可靠计时的新轮在轮末清除旧速度，历史恢复不重建速度。此指标是客户端观测的生成 TPS，不宣称服务端精确时长；不使用 API 总耗时或 API 减 Host TTFT。
+
+TTFT 继续由 Host 实时观测首个思考或正文，不从历史重建。费用、缓存与 Token 不受速度缺失影响；不为凑出速度新增文件轮询或推测性遥测采集器。
 
 ## Risks / Trade-offs
 

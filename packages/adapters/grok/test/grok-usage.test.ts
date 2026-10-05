@@ -15,10 +15,10 @@ const nativeApiUsage = {
   costUsdTicks: 992010400,
 };
 
-describe("Grok native API average speed", () => {
-  it("uses total output / summed API duration, retaining native cost without inventing TPS", () => {
+describe("Grok speed omission without verified generation boundaries", () => {
+  it("retains native usage without substituting API average speed for generation TPS", () => {
     const usage = usageFromNative(nativeApiUsage);
-    expect(usage?.apiOutputTokensPerSecond).toBeCloseTo(82.4369, 4);
+    expect(usage).not.toHaveProperty("apiOutputTokensPerSecond");
     expect(usage?.totalCostUsd).toBe(0.09920104);
     expect(usage?.outputTokens).toBe(1571); // reasoning is already included
     expect(usage).not.toHaveProperty("outputTokensPerSecond");
@@ -39,15 +39,16 @@ describe("Grok native API average speed", () => {
     expect(usage).not.toHaveProperty("apiOutputTokensPerSecond");
     expect(usage?.totalCostUsd).toBe(0.09920104);
   });
-  it("accepts explicitly zero output but not missing output", () => {
-    expect(usageFromNative({ ...nativeApiUsage, outputTokens: 0 })?.apiOutputTokensPerSecond).toBe(
-      0,
-    );
-    expect(usageFromNative({ ...nativeApiUsage, outputTokens: undefined })).not.toHaveProperty(
-      "apiOutputTokensPerSecond",
-    );
-  });
-  it("restores the last Turn rate rather than dividing session output by the last duration", () => {
+  it.each([0, 70, undefined])(
+    "does not derive speed for a single model call with output %s",
+    (outputTokens) => {
+      const usage = usageFromNative({ ...nativeApiUsage, modelCalls: 1, outputTokens });
+      expect(usage).not.toHaveProperty("apiOutputTokensPerSecond");
+      expect(usage).not.toHaveProperty("outputTokensPerSecond");
+      expect(usage?.totalCostUsd).toBe(0.09920104);
+    },
+  );
+  it("replays native totals without restoring an API-derived speed", () => {
     const events = [
       { type: "turn.completed", nativeTurnKey: "one", usage: nativeApiUsage },
       {
@@ -66,7 +67,8 @@ describe("Grok native API average speed", () => {
         usage: nativeApiUsage,
       },
     ]);
-    expect(usage?.apiOutputTokensPerSecond).toBe(50);
+    expect(usage).not.toHaveProperty("apiOutputTokensPerSecond");
+    expect(usage).not.toHaveProperty("outputTokensPerSecond");
     expect(usage?.outputTokens).toBe(1671);
     expect(usage?.totalCostUsd).toBe(0.19840208);
     expect(

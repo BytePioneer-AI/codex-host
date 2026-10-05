@@ -127,6 +127,7 @@ import { fetchGrokAccount, fetchGrokCredits, type GrokCreditsSnapshot } from "./
 import type { HarnessAccountSnapshot } from "@codexhost/shared-contracts";
 import {
   combineUsage,
+  GrokGenerationTiming,
   sessionUsageFromHistory,
   usageFromCompact,
   usageFromPrompt,
@@ -195,6 +196,7 @@ interface ActiveApproval {
 
 interface ActiveTurn {
   command: TurnStartCommand;
+  generationTiming?: GrokGenerationTiming;
   agent: HostAgentMessageItem | null;
   agentMessageId: string | null;
   rawAgentText: string;
@@ -502,6 +504,7 @@ class GrokHarnessSession implements HarnessSession {
     });
     const active: ActiveTurn = {
       command,
+      generationTiming: new GrokGenerationTiming(),
       agent: null,
       agentMessageId: null,
       rawAgentText: "",
@@ -896,6 +899,7 @@ class GrokHarnessSession implements HarnessSession {
     if (this.#active !== active || active.cancellationRequested) {
       return Promise.resolve({ outcome: { outcome: "cancelled" } });
     }
+    active.generationTiming?.endStream();
     const projectedOptions = projectGrokPermissionOptions(request.options);
     if (projectedOptions.length === 0) {
       return Promise.resolve({ outcome: { outcome: "cancelled" } });
@@ -919,6 +923,7 @@ class GrokHarnessSession implements HarnessSession {
 
   #handleEvent(active: ActiveTurn, event: GrokTransportEvent): void {
     if (this.#active !== active || this.#phase !== "open") return;
+    active.generationTiming?.observe(event);
     const contextUsage = usageFromUpdate(
       event.type === "usage" ? event.update : undefined,
       event.metadata,
@@ -1338,6 +1343,7 @@ class GrokHarnessSession implements HarnessSession {
     outcome: TurnOutcome,
     response?: PromptResponse,
   ): Promise<void> {
+    active.generationTiming?.endStream();
     let history: GrokTransportEvent[] = [];
     let nativeTurnRef: NativeTurnRef | undefined;
     let checkpoint: NativeCheckpointRef | undefined;
@@ -1358,11 +1364,20 @@ class GrokHarnessSession implements HarnessSession {
         outcome = { status: "failed", error: normalizeError(error, "protocolError") };
       }
     }
+    const usage = sessionUsageFromHistory(history) ?? (response ? usageFromPrompt(response) : null);
+    const turnUsage = history.findLast(
+      (event): event is Extract<GrokTransportEvent, { type: "turn.completed" }> =>
+        event.type === "turn.completed" && event.nativeTurnKey === nativeTurnRef?.nativeTurnKey,
+    )?.usage;
+    const speed =
+      outcome.status === "succeeded" && !active.cancellationRequested
+        ? active.generationTiming?.rate(turnUsage ?? response?.usage, nativeTurnRef?.nativeTurnKey)
+        : undefined;
     await this.#refreshCredits().catch(() => undefined);
     this.#finish(
       active,
       checkpoint ? { ...outcome, checkpoint } : outcome,
-      sessionUsageFromHistory(history) ?? (response ? usageFromPrompt(response) : null),
+      speed === undefined ? usage : { ...usage, outputTokensPerSecond: speed },
       nativeTurnRef,
     );
   }
@@ -1395,7 +1410,7 @@ class GrokHarnessSession implements HarnessSession {
       });
     }
     this.#active = null;
-    if (usage || this.#usage?.apiOutputTokensPerSecond !== undefined)
+    if (usage || this.#usage?.outputTokensPerSecond !== undefined)
       this.#publishUsage(usage ?? {}, active.command.turnId, true);
     this.#event({
       type: "turn.completed",
@@ -1411,10 +1426,9 @@ class GrokHarnessSession implements HarnessSession {
     observedForTurnId?: TurnStartCommand["turnId"],
     turnCompleted = false,
   ): void {
-    const merged = combineUsage(this.#usage, usage);
-    // Context updates keep the last rate; a completed Turn without valid timing clears it.
-    if (merged && turnCompleted && usage.apiOutputTokensPerSecond === undefined)
-      delete merged.apiOutputTokensPerSecond;
+    const base = this.#usage ? { ...this.#usage } : null;
+    if (base && turnCompleted) delete base.outputTokensPerSecond;
+    const merged = combineUsage(base, usage);
     if (merged === null || JSON.stringify(merged) === JSON.stringify(this.#usage)) return;
     this.#usage = merged;
     this.#event({

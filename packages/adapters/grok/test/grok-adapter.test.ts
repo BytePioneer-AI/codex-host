@@ -1103,7 +1103,7 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
-  it("publishes native API average speed and clears it when the next Turn has no valid timing", async () => {
+  it("keeps native costs without publishing API-derived speeds across Turns", async () => {
     const transport = new FakeGrokTransport();
     const { adapter, session } = await openedSession(transport);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -1137,8 +1137,7 @@ describe("Grok Adapter ACP projection", () => {
           if (event.type === "turn.completed") break;
         }
         const usage = events.find((e) => e.type === "session.usage.changed")?.usage;
-        if (index === 0) expect(usage?.apiOutputTokensPerSecond).toBeCloseTo(82.4369, 4);
-        else expect(usage?.apiOutputTokensPerSecond).toBeUndefined();
+        expect(usage?.apiOutputTokensPerSecond).toBeUndefined();
         expect(usage?.totalCostUsd).toBeCloseTo(0.09920104 * (index + 1), 8);
         expect(usage?.outputTokensPerSecond).toBeUndefined();
         expect(events.some((e) => e.type === "usage.history" || e.type === "usage.request")).toBe(
@@ -1149,6 +1148,81 @@ describe("Grok Adapter ACP projection", () => {
       await adapter.close();
     }
   });
+
+  it.each(["untimed", "cancelled", "missing-usage"] as const)(
+    "publishes live TPS without repricing, then clears it on a %s Turn",
+    async (next) => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+      const transport = new FakeGrokTransport();
+      const { adapter, session } = await openedSession(transport);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      const nativeUsage = {
+        inputTokens: 100,
+        outputTokens: 60,
+        reasoningTokens: 10,
+        modelCalls: 1,
+        apiDurationMs: 9000,
+        costUsdTicks: 100000000,
+      };
+      try {
+        for (const index of [1, 2]) {
+          const turnId = hostTurnIdSchema.parse(`timed-${index}`);
+          await session.execute({
+            type: "turn.start",
+            turnId,
+            input: [{ type: "text", text: "test" }],
+          });
+          expect((await nextEvent(iterator)).type).toBe("turn.started");
+          clock.mockReturnValue(10000 * index);
+          if (index === 1 || next === "cancelled") {
+            transport.event({
+              type: "agent.thought",
+              text: "thinking",
+              metadata: { promptId: `grok-prompt-${index}`, streamStartMs: index },
+            });
+          }
+          clock.mockReturnValue(10000 * index + 2000);
+          if (index === 1) {
+            const readHistory = transport.readHistory.bind(transport);
+            vi.spyOn(transport, "readHistory").mockImplementationOnce(async (id) => {
+              clock.mockReturnValue(999999); // Must not include settlement I/O in generation time.
+              return readHistory(id);
+            });
+          }
+          const cancelled = index === 2 && next === "cancelled";
+          if (cancelled) await session.execute({ type: "turn.cancel", turnId });
+          transport.finish(
+            { stopReason: cancelled ? "cancelled" : "end_turn" },
+            index === 2 && next === "missing-usage" ? undefined : nativeUsage,
+          );
+          const events: HostEvent[] = [];
+          for (;;) {
+            const event = await nextEvent(iterator);
+            events.push(event);
+            if (event.type === "turn.completed") break;
+          }
+          const usage = events.findLast((e) => e.type === "session.usage.changed")?.usage;
+          expect(usage?.outputTokensPerSecond).toBe(index === 1 ? 30 : undefined);
+          expect(usage?.apiOutputTokensPerSecond).toBeUndefined();
+          expect(usage?.totalCostUsd).toBeCloseTo(next === "missing-usage" ? 0.01 : 0.01 * index);
+          expect(events.some((e) => e.type === "usage.history" || e.type === "usage.request")).toBe(
+            false,
+          );
+          if (index === 1) {
+            const replay = new FakeGrokTransport();
+            replay.replay = [...transport.replay];
+            const resumed = await openedSession(replay, "resume");
+            expect(resumed.session.initialUsage?.outputTokensPerSecond).toBeUndefined();
+            expect(resumed.session.initialUsage?.totalCostUsd).toBe(0.01);
+            await resumed.adapter.close();
+          }
+        }
+      } finally {
+        await adapter.close();
+        vi.restoreAllMocks();
+      }
+    },
+  );
 
   it("publishes cache hit and cost from persisted turn_completed Usage", async () => {
     const transport = new FakeGrokTransport();

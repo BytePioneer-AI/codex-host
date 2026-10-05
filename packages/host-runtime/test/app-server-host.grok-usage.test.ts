@@ -18,7 +18,7 @@ import {
 
 describe("Grok native usage and Host TTFT", () => {
   it.each(["agentMessage", "reasoning"] as const)(
-    "observes first %s output while preserving native cost and API rate",
+    "observes first %s output while preserving native cost and Adapter generation TPS",
     async (type) => {
       const clock = vi.spyOn(Date, "now").mockReturnValue(100000);
       const id = harnessIdSchema.parse("grok");
@@ -46,8 +46,8 @@ describe("Grok native usage and Host TTFT", () => {
         // Same public event shape as GrokAdapter. No usage.history: native cost stays authoritative.
         session.publishUsage({
           totalCostUsd: 0.09920104,
-          apiOutputTokensPerSecond: 1571 / 19.057,
           outputTokens: 1571,
+          outputTokensPerSecond: 50,
         });
         session.succeedTurn();
         await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
@@ -62,12 +62,12 @@ describe("Grok native usage and Host TTFT", () => {
             usage: {
               totalCostUsd: 0.09920104,
               costSource: "native",
-              apiOutputTokensPerSecond: 1571 / 19.057,
               timeToFirstOutputMs: 1250,
+              outputTokensPerSecond: 50,
             },
           },
         });
-        expect(response).not.toHaveProperty("result.usage.outputTokensPerSecond");
+        expect(response).not.toHaveProperty("result.usage.apiOutputTokensPerSecond");
         expect(response).not.toHaveProperty("result.usage.sessionCacheHitRatePercent");
       } finally {
         await stopFixture(fixture);

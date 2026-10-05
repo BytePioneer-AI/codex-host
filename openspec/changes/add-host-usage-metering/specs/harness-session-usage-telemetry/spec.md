@@ -173,22 +173,37 @@ Host MUST 按 `requestId` 在 Thread 内去重请求记录，并用请求记录�
 - **WHEN** Session 发布了 `usage.history { complete: false }` 且尚无任何请求记录，随后 `session.usage.changed` 携带原生 `totalCostUsd`
 - **THEN** Host MUST NOT 发布该原生费用
 
-### Requirement: 原生 API 平均速度必须与生成 TPS 分开表达
+### Requirement: Grok 速度必须采用生成 TPS 口径，不使用 API 平均速度替代
 
-Adapter MAY 从原生最近完成轮次的输出 Token 与该轮 API 累计耗时计算 `apiOutputTokensPerSecond`，该字段 MUST 是有限非负数。API 耗时包含首字等待，Adapter MUST NOT 将该比值作为排除预填充的 `outputTokensPerSecond` 发布。界面 MUST 将其标为 API 平均速度并说明包含首字等待。该指标 MUST NOT 强制 Session 进入 Host 请求级计费模式；未进入计费模式的原生费用 MUST 保留。
+Grok 的速度 MUST 为最近一轮输出 Token（含思考）除以可靠的各请求生成时长之和，排除首输出前等待、工具执行和审批等待。Adapter MUST NOT 发布 `apiOutputTokensPerSecond` 作为替代，也 MUST NOT 将 `outputTokens / apiDurationMs` 或 API 总耗时减 Host TTFT 的结果当作生成 TPS。缺少可靠计时边界时 MUST 省略速度，MUST 保留可靠的原生费用与 Token；速度缺失 MUST NOT 强制 Session 进入请求级计费模式或阻塞会话。
 
-#### Scenario: Grok 有可靠的原生 API 用量
+#### Scenario: Grok 完整实时流计时
 
-- **WHEN** Grok 最新完成轮次提供非负安全整数输出 Token、正安全整数 `apiDurationMs` 与 `modelCalls`，且未声明用量不完整
-- **THEN** Adapter MAY 发布 `apiOutputTokensPerSecond = outputTokens / (apiDurationMs / 1000)`
-- **AND** 输出中已有的思考 Token MUST NOT 再次加算，原生费用 MUST NOT 被公开价格替换
-- **AND** 恢复会话时 MAY 从原生历史恢复最近完成轮次的该值，而非用累计会话输出计算
+- **WHEN** 成功轮次的各请求均观测到首思考/正文和流结束，且段数与原生 `modelCalls` 相同
+- **THEN** Adapter MUST 通过 `outputTokensPerSecond` 发布本轮输出 Token 除以各生成段耗时之和
+- **AND** 工具/审批等待、下一请求首输出前等待及轮末历史/Credits 刷新 MUST NOT 计入时长
+- **AND** 并行工具调用 MUST NOT 重复累计同一生成段
+- **AND** `streamStartMs` MUST 仅用作请求分组，MUST NOT 将空角色帧时间当首 Token 时间
+- **AND** Host MUST 保留原生费用，MUST NOT 为计算 TPS 切换到公开价格计费
 
-#### Scenario: 新轮次缺少可靠 API 计时
+#### Scenario: Grok 新轮无可靠速度
 
-- **WHEN** 新轮次完成但耗时缺失、为零或无效，调用数无效，或原生声明用量不完整
-- **THEN** Adapter MUST 省略 API 平均速度并清除旧轮次的该值
-- **AND** 该速度的缺失 MUST NOT 删除其他可靠原生用量字段或阻塞会话
+- **WHEN** 下一轮取消、失败、发生无法计时的重试/压缩、缺少输出开始/结束、时长非正、原生用量不完整，或用量与计时段数不一致
+- **THEN** Adapter MUST 在轮末清除上一轮 TPS
+- **AND** 恢复历史 MUST NOT 利用回放接收时间重建速度
+
+#### Scenario: Grok 只有原生 API 聚合用量
+
+- **WHEN** Grok 最新完成轮次提供输出 Token、有效 `apiDurationMs` 与 `modelCalls`，但没有可靠的逐请求生成计时边界
+- **THEN** Adapter MUST NOT 发布 API 平均速度或据此推算的生成 TPS
+- **AND** 原生费用 MUST NOT 被公开价格替换
+- **AND** 历史恢复 MUST NOT 从 API 聚合耗时恢复速度
+
+#### Scenario: Grok 的思考或生成结束边界缺失
+
+- **WHEN** 原生数据和实时流未提供可验证的首生成输出（含思考）或逐请求生成结束边界，或者整轮推理用量非零但并非每段都观测到思考
+- **THEN** Adapter MUST 省略速度，不能用可见正文时间代表隐藏思考开始时间
+- **AND** Host MUST 继续按真实新轮次输出观测 TTFT，其他可靠用量字段 MUST 保留
 
 ### Requirement: Host 必须维护可刷新、可覆盖的价格表
 

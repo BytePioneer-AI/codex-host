@@ -1,5 +1,6 @@
 import type { PromptResponse, SessionUpdate } from "@agentclientprotocol/sdk";
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
+import type { GrokTransportEvent } from "./acp-transport.js";
 
 /** Grok documents `costUsdTicks` as integer ticks where 1 USD = 10^10. */
 const USD_TICKS_PER_DOLLAR = 10_000_000_000;
@@ -22,27 +23,7 @@ export function combineUsage(base: HostUsage | null, next: HostUsage | null): Ho
   return base === null ? next : parseHostUsage({ ...base, ...next });
 }
 
-/** Native per-Turn API time includes first-output wait; never label this generation TPS. */
-function apiOutputRate(value: Record<string, unknown>): number | undefined {
-  const output = value.outputTokens,
-    duration = value.apiDurationMs,
-    calls = value.modelCalls;
-  if (
-    (value.usageIsIncomplete !== undefined && value.usageIsIncomplete !== false) ||
-    typeof output !== "number" ||
-    !Number.isSafeInteger(output) ||
-    output < 0 ||
-    typeof duration !== "number" ||
-    !Number.isSafeInteger(duration) ||
-    duration <= 0 ||
-    typeof calls !== "number" ||
-    !Number.isSafeInteger(calls) ||
-    calls <= 0
-  )
-    return undefined;
-  return output / (duration / 1000);
-}
-
+// Persisted API duration includes prefill. Only live stream observations below supply TPS.
 export function usageFromNative(value: unknown): HostUsage | null {
   if (!isRecord(value)) return null;
   const inputTokens = optionalToken(value.inputTokens);
@@ -50,7 +31,6 @@ export function usageFromNative(value: unknown): HostUsage | null {
   const cachedWrite = optionalToken(value.cacheCreationTokens ?? value.cachedWriteTokens);
   const reasoning = optionalToken(value.reasoningTokens ?? value.thoughtTokens);
   const totalCostUsd = optionalCostUsd(value.costUsdTicks);
-  const apiOutputTokensPerSecond = apiOutputRate(value);
   const cacheHitRatePercent =
     inputTokens !== undefined &&
     cachedRead !== undefined &&
@@ -69,11 +49,95 @@ export function usageFromNative(value: unknown): HostUsage | null {
       ...(cachedWrite !== undefined ? { cacheWriteInputTokens: cachedWrite } : {}),
       ...(reasoning !== undefined ? { reasoningOutputTokens: reasoning } : {}),
       ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
-      ...(apiOutputTokensPerSecond !== undefined ? { apiOutputTokensPerSecond } : {}),
       ...(cacheHitRatePercent !== undefined ? { cacheHitRatePercent } : {}),
     });
   } catch {
     return null;
+  }
+}
+
+/**
+ * Grok 1.0.46 emits tool.call after stream completion, before tool/permission waits.
+ * The final stream ends when prompt resolves, before history/credits refresh. Like Pi,
+ * time starts at received output, not request start. streamStartMs only identifies a
+ * request: even an empty role frame can set it, so it is NOT a generation timestamp.
+ */
+export class GrokGenerationTiming {
+  readonly #streams = new Map<
+    number,
+    { startedAtMs: number; completedAtMs?: number; reasoning: boolean }
+  >();
+  #current: { startedAtMs: number; completedAtMs?: number; reasoning: boolean } | undefined;
+  #nativeTurnKey: string | undefined;
+  #invalid = false;
+
+  observe(event: GrokTransportEvent): void {
+    if (event.type === "compaction.started") this.#invalid = true;
+    if (event.type === "turn.completed" && event.nativeTurnKey === this.#nativeTurnKey)
+      this.endStream();
+    if (event.type !== "agent.text" && event.type !== "agent.thought" && event.type !== "tool.call")
+      return;
+    if (event.type !== "tool.call" && !event.text) return;
+    const key = event.metadata?.streamStartMs;
+    const promptId = event.metadata?.promptId;
+    if (
+      typeof key !== "number" ||
+      !Number.isSafeInteger(key) ||
+      key < 0 ||
+      typeof promptId !== "string" ||
+      !promptId
+    ) {
+      this.#invalid = true;
+      return;
+    }
+    this.#nativeTurnKey ??= promptId;
+    if (promptId !== this.#nativeTurnKey) {
+      this.#invalid = true;
+      return;
+    }
+    let stream = this.#streams.get(key);
+    if (event.type === "tool.call") {
+      // Parallel calls close the same stream once. Tool-only requests have no observed start.
+      if (stream) stream.completedAtMs ??= Date.now();
+      else this.#invalid = true;
+      return;
+    }
+    if (!stream) {
+      // A retry or missing end must not turn intervening waiting into generation time.
+      if (this.#current && this.#current.completedAtMs === undefined) this.#invalid = true;
+      stream = { startedAtMs: Date.now(), reasoning: false };
+      this.#streams.set(key, stream);
+      this.#current = stream;
+    }
+    if (stream.completedAtMs !== undefined) this.#invalid = true;
+    if (event.type === "agent.thought") stream.reasoning = true;
+  }
+
+  endStream(): void {
+    if (this.#current) this.#current.completedAtMs ??= Date.now();
+  }
+
+  rate(value: unknown, nativeTurnKey: string | undefined): number | undefined {
+    if (
+      this.#invalid ||
+      nativeTurnKey !== this.#nativeTurnKey ||
+      !isRecord(value) ||
+      (value.usageIsIncomplete !== undefined && value.usageIsIncomplete !== false)
+    )
+      return undefined;
+    const usage = usageFromNative(value);
+    if (!usage?.outputTokens || value.modelCalls !== this.#streams.size || !this.#streams.size)
+      return undefined;
+    let durationMs = 0;
+    for (const stream of this.#streams.values()) {
+      // Turn-level reasoning cannot be attributed to individual requests. Require an
+      // observed thought in every stream if any reasoning was billed; never time hidden thought.
+      if ((usage.reasoningOutputTokens ?? 0) > 0 && !stream.reasoning) return undefined;
+      const duration = (stream.completedAtMs ?? stream.startedAtMs) - stream.startedAtMs;
+      if (duration <= 0) return undefined;
+      durationMs += duration;
+    }
+    return (usage.outputTokens * 1000) / durationMs;
   }
 }
 
@@ -121,7 +185,6 @@ export function sessionUsageFromHistory(
 ): HostUsage | null {
   const latestByKey = new Map<string, { usage: HostUsage; ticks?: number }>();
   let lastCacheHitRatePercent: number | undefined;
-  let lastApiOutputRate: number | undefined;
   let index = 0;
   for (const event of events) {
     if (event?.type !== "turn.completed") continue;
@@ -129,7 +192,6 @@ export function sessionUsageFromHistory(
     index += 1;
     if (key === null) continue;
     const usage = usageFromNative(event.usage);
-    lastApiOutputRate = (usage ?? latestByKey.get(key)?.usage)?.apiOutputTokensPerSecond;
     if (!usage) continue;
     const ticks = nativeCostTicks(event.usage);
     latestByKey.set(key, ticks === undefined ? { usage } : { usage, ticks });
@@ -157,7 +219,6 @@ export function sessionUsageFromHistory(
     return parseHostUsage({
       ...totals,
       ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
-      ...(lastApiOutputRate !== undefined ? { apiOutputTokensPerSecond: lastApiOutputRate } : {}),
       ...(lastCacheHitRatePercent !== undefined
         ? { cacheHitRatePercent: lastCacheHitRatePercent }
         : {}),

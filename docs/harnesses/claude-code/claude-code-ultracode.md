@@ -67,7 +67,7 @@ Ultracode 下（以及提示中出现 "ultracode" 关键词时），Claude 会�
 
 已在 Linux x64 上用 Claude Code 2.1.287 实测：Workflows 关闭时发送消息被中止且未调用模型；`CLAUDE_CODE_WORKFLOWS=1` 时完整运行一次两个智能体的 Workflow（审批、卡片状态、主回复结束后作答智能体审批、汇总后完成、子线程首条任务）；会话中切换到 Ultracode、Ultracode 下换模型被拒并撤回。另用 Claude Code 2.1.153 确认旧版本提示升级。2.1.154–2.1.283 区间未实机验证。
 
-Codex Desktop（Windows 10，通过 SSH Remote Host 连接 Linux）上实测：档位菜单与 Workflows 关闭时的报错、Workflow 卡片与子线程、智能体审批、挂起期间的取消与发新消息、拒绝 Workflow 审批、Ultracode 下切换到 Haiku 被拒绝时的提示。
+另在 Codex Desktop（Windows 10，通过 SSH Remote Host 连接 Linux，Claude Code 2.1.289）上实测：档位菜单与 Workflows 关闭时的报错、Workflow 卡片与子线程、智能体审批、挂起期间的取消与发新消息、拒绝 Workflow 审批、Ultracode 下切换到 Haiku 被拒绝时的提示。
 
 定向回归：
 

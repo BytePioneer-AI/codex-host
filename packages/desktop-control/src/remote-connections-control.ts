@@ -53,7 +53,8 @@ export async function requestDesktopRemoteConnections(
     };
   return new Promise((resolve) => {
     const socket = createConnection({ host: "127.0.0.1", port });
-    let output = "";
+    const chunks: string[] = [];
+    let replyBytes = 0;
     let settled = false;
     const finish = (reply: RemoteConnectionsReply): void => {
       if (settled) return;
@@ -86,8 +87,9 @@ export async function requestDesktopRemoteConnections(
     });
     socket.once("connect", () => socket.write(`REMOTE ${nonce} ${JSON.stringify(request.data)}\n`));
     socket.on("data", (chunk: string) => {
-      output += chunk;
-      if (Buffer.byteLength(output) > maxReplyBytes) {
+      if (settled) return;
+      replyBytes += Buffer.byteLength(chunk, "utf8");
+      if (replyBytes > maxReplyBytes) {
         finish({
           error: {
             code: -32094,
@@ -97,10 +99,11 @@ export async function requestDesktopRemoteConnections(
         });
         return;
       }
-      const end = output.indexOf("\n");
+      const end = chunk.indexOf("\n");
+      chunks.push(end < 0 ? chunk : chunk.slice(0, end));
       if (end < 0) return;
       try {
-        finish(remoteConnectionsReplySchema.parse(JSON.parse(output.slice(0, end))));
+        finish(remoteConnectionsReplySchema.parse(JSON.parse(chunks.join(""))));
       } catch {
         fail();
       }

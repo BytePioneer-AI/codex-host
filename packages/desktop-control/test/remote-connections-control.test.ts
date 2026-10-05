@@ -81,6 +81,45 @@ describe("remote settings Controller channel", () => {
     }
   });
 
+  it.each([false, true])(
+    "counts fragmented UTF-8 replies before appending (oversized=%s)",
+    async (oversized) => {
+      const text = "界🙂".repeat(oversized ? 160_000 : 100);
+      const bytes = Buffer.from(JSON.stringify({ result: { text } }) + "\n");
+      const server = createServer((socket) => {
+        socket.on("error", () => {});
+        socket.once("data", () => {
+          let offset = 0;
+          const send = (): void => {
+            if (socket.destroyed) return;
+            if (offset >= bytes.length) {
+              socket.end();
+              return;
+            }
+            // Deliberately split inside multi-byte code points.
+            const next = Math.min(offset + (oversized ? 4093 : 5), bytes.length);
+            socket.write(bytes.subarray(offset, next), () => setImmediate(send));
+            offset = next;
+          };
+          send();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("No port");
+      try {
+        const reply = await requestDesktopRemoteConnections(
+          { CODEXHOST_CONTROL_PORT: String(address.port), CODEXHOST_CONTROL_NONCE: nonce },
+          { action: "list" },
+        );
+        if (oversized) expect(reply).toMatchObject({ error: { code: -32094 } });
+        else expect(reply).toEqual({ result: { text } });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
   it("does not replay a mutation after a timeout", async () => {
     const port = await availablePort();
     const pending = Promise.withResolvers<{ result: null }>();

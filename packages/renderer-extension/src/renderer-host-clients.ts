@@ -5,6 +5,7 @@ import type {
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
+import { createRemoteAttachmentSender } from "./renderer-remote-attachments.js";
 import { restoreThreadReferenceCapability } from "./renderer-thread-reference-capability.js";
 import {
   installRendererManualCompaction,
@@ -70,7 +71,15 @@ export function createRendererHostClients(
     try {
       for (const install of [
         () => installRendererExternalQueue(target),
-        () => installRendererExternalSteering(target),
+        () =>
+          installRendererExternalSteering(
+            target,
+            createRemoteAttachmentSender(
+              target,
+              route.hostId,
+              () => !disposed && readRouting()?.forHost(route.hostId) === route,
+            ),
+          ),
         () => installRendererManualCompaction(target, route.hostId, messages),
       ]) {
         const cleanup = install();

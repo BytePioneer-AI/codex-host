@@ -138,7 +138,10 @@ async function preserveQueuedFollowUps(
  * Only this operation's outgoing start RPC becomes steer; Host owns stop/wait/start.
  * Official Threads retain the original steer implementation and response semantics.
  */
-export function installRendererExternalSteering(target: unknown): (() => void) | null {
+export function installRendererExternalSteering(
+  target: unknown,
+  sendTurnStart?: (params: unknown, send: (params: unknown) => unknown) => unknown,
+): (() => void) | null {
   if (!isManager(target)) return null;
   const manager = target;
   const originalSteer = manager.steerTurn;
@@ -162,6 +165,14 @@ export function installRendererExternalSteering(target: unknown): (() => void) |
       !route ||
       route.threadId !== params.threadId
     ) {
+      // The same outgoing boundary also covers Desktop's locally queued starts.
+      // Attachment preparation is connection-scoped and leaves native/local input alone.
+      if (method === "turn/start" && sendTurnStart) {
+        return sendTurnStart(params, (input) => {
+          if (disposed) throw new Error("External submission binding was disposed");
+          return originalSend.call(manager, method, input, options);
+        });
+      }
       return originalSend.call(manager, method, params, options);
     }
     if (disposed) return Promise.reject(new Error("External steering binding was disposed"));

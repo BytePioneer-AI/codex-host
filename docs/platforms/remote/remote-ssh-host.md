@@ -44,6 +44,16 @@ You can work in local and remote projects at the same time. Each shows the tools
 
 If you only use Codex's built-in remote coding features, you do not need codexhost on the remote computer.
 
+### Image and file attachments
+
+External Harnesses continue to receive text and file paths, not Harness-specific image inputs. Ordinary files use Desktop's native upload and remote path references. Reading files, interpreting images, and parsing their formats depend on the Harness's tools and the selected model.
+
+For ordinary submissions to remote external Threads (including automatic submission from Desktop's local queue), if Desktop supplies inline images without a complete set of image paths in the message, codexhost uses **that same remote connection's native attachment store**, waits for successful storage, then adds remote paths to the text. Complete native image references are reused without another upload. Local Threads and native Codex Threads are unchanged; changing direction retains its existing rejection of non-text input.
+
+Fallback storage uses Desktop's `$CODEX_HOME/attachments/` directory and native management, not a separate SSH transfer channel or Host attachment database. When native paths are only partially available, their correspondence to individual inline images is ambiguous, so all inline images are stored rather than guessing which is missing. Fallback storage allows up to 20 images, 20 MiB per image and 32 MiB total (decoded image data). Invalid data, an unavailable native storage interface, upload failure or replacement of the connection prevents submission. Files are retained when a dispatched Turn's outcome is unknown; the message is not automatically retried.
+
+This binding follows the attachment storage and request interfaces in Desktop 26.930.31730 and requires compatibility review after Desktop updates.
+
 ## Manage connections
 
 Use **Remote connections** to edit connection details, disconnect, or remove a connection you no longer use.

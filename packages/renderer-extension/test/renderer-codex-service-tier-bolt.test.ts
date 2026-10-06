@@ -515,6 +515,143 @@ describe("Composer service-tier speed control", () => {
     control.dispose();
   });
 
+  describe("pointer travelling from the button to the flyout", () => {
+    /**
+     * The flyout opens past the menu's inline end, so the pointer's path from the
+     * button crosses the official Model row. A real Radix row takes focus when it
+     * is touched; here that is a `focusin` on the row.
+     */
+    function hoverOpened() {
+      const { document, menu, viewControls, viewToggle, trigger } = officialMenuFixture();
+      menu.rect = { left: 300, top: 120, width: 254, height: 300 };
+      const control = controlOf({ trigger: asElement(trigger) });
+      const toggle = toggleOf(viewControls);
+      toggle.rect = { left: 316, top: 380, width: 32, height: 32 };
+      const flyout = flyoutOf(menu);
+      toggle.dispatch("pointerenter", { pointerType: "mouse" });
+      vi.advanceTimersByTime(200);
+      expect(flyout.popoverOpen).toBe(true);
+      const pointer = (x: number, y: number, timeStamp: number, target: FakeNode = viewToggle) =>
+        document.dispatchDocument("pointermove", {
+          pointerType: "mouse",
+          clientX: x,
+          clientY: y,
+          timeStamp,
+          target,
+        });
+      const rowTakesFocus = () => {
+        viewToggle.focus();
+        document.dispatchDocument("focusin", { target: viewToggle });
+      };
+      return { document, control, toggle, flyout, viewToggle, pointer, rowTakesFocus };
+    }
+
+    it("keeps the flyout open when a slow pointer crosses the Model row on the way", () => {
+      vi.useFakeTimers();
+      try {
+        const { control, toggle, flyout, pointer, rowTakesFocus } = hoverOpened();
+        pointer(332, 396, 1000, toggle);
+        // 1.2 s from the button to the flyout: far slower than a 300 ms grace.
+        for (let step = 1; step <= 12; step += 1) {
+          pointer(348 + step * 18, 396, 1000 + step * 100);
+          if (step === 3) rowTakesFocus();
+          expect(flyout.popoverOpen).toBe(true);
+        }
+        // Arriving on the flyout settles the trip; nothing closes it afterwards.
+        pointer(600, 420, 2300, flyout);
+        vi.advanceTimersByTime(1000);
+        expect(flyout.popoverOpen).toBe(true);
+        control.dispose();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("still closes when the pointer then heads somewhere else", () => {
+      vi.useFakeTimers();
+      try {
+        const { control, toggle, flyout, pointer, rowTakesFocus } = hoverOpened();
+        pointer(332, 396, 1000, toggle);
+        pointer(380, 396, 1100);
+        rowTakesFocus();
+        expect(flyout.popoverOpen).toBe(true);
+        // Straight down, out of the corridor to the flyout.
+        pointer(380, 600, 1200);
+        expect(flyout.popoverOpen).toBe(false);
+        control.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("closes when the pointer stops short of the flyout", () => {
+      vi.useFakeTimers();
+      try {
+        const { control, toggle, flyout, pointer, rowTakesFocus } = hoverOpened();
+        pointer(332, 396, 1000, toggle);
+        pointer(380, 396, 1100);
+        rowTakesFocus();
+        expect(flyout.popoverOpen).toBe(true);
+        vi.advanceTimersByTime(400);
+        expect(flyout.popoverOpen).toBe(false);
+        control.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not hold back a focus move that was not caused by this pointer trip", () => {
+      vi.useFakeTimers();
+      try {
+        // A pointer resting on the button while focus moves (keyboard Tab) is not travelling.
+        const first = hoverOpened();
+        first.viewToggle.focus();
+        first.document.dispatchDocument("focusin", { target: first.viewToggle });
+        expect(first.flyout.popoverOpen).toBe(false);
+        first.control.dispose();
+
+        // Opened from the keyboard with the pointer elsewhere: there is no trip to protect.
+        const { document, menu, viewControls, viewToggle, trigger } = officialMenuFixture();
+        menu.rect = { left: 300, top: 120, width: 254, height: 300 };
+        const control = controlOf({ trigger: asElement(trigger) });
+        const toggle = toggleOf(viewControls);
+        toggle.rect = { left: 316, top: 380, width: 32, height: 32 };
+        toggle.dispatch("keydown", keyEvent("Enter"));
+        const flyout = flyoutOf(menu);
+        expect(flyout.popoverOpen).toBe(true);
+        document.dispatchDocument("pointermove", {
+          pointerType: "mouse",
+          clientX: 380,
+          clientY: 396,
+          timeStamp: 5000,
+          target: viewToggle,
+        });
+        viewToggle.focus();
+        document.dispatchDocument("focusin", { target: viewToggle });
+        expect(flyout.popoverOpen).toBe(false);
+        control.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("leaves no pointer listener behind once the flyout is closed", () => {
+      vi.useFakeTimers();
+      try {
+        const { document, control, toggle, flyout } = hoverOpened();
+        expect(document.documentListenerCount("pointermove")).toBe(1);
+        toggle.dispatch("click", clickEvent());
+        toggle.dispatch("click", clickEvent());
+        expect(flyout.popoverOpen).toBe(false);
+        expect(document.documentListenerCount("pointermove")).toBe(0);
+        control.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("takes an open flyout away when the Desktop hides or inerts the panel", () => {
     vi.useFakeTimers();
     try {

@@ -5,6 +5,12 @@ import {
   CODEX_SERVICE_TIER_BOLT_PATHS,
   CODEX_SERVICE_TIER_SCOPE_ATTRIBUTE,
 } from "./renderer-codex-service-tier-style.js";
+import {
+  FLYOUT_TRAVEL_IDLE_MS,
+  createFlyoutTravelTracker,
+  pointInRect,
+  type PointerZone,
+} from "./renderer-flyout-pointer-travel.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
 import { rendererSettingsMessages } from "./settings/localization.js";
 
@@ -381,6 +387,8 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
   let hoverTimer: ReturnType<typeof setTimeout> | null = null;
   /** A click right after a hover-open confirms it instead of toggling it shut. */
   let openedByHover = false;
+  /** A mouse is over the button now; a click or hover open starts a trip from here. */
+  let pointerOnButton = false;
   let removeOpenListeners: (() => void) | null = null;
   /** Frames left in the current visibility grace; 0 means none is scheduled. */
   let graceFramesLeft = 0;
@@ -554,11 +562,60 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
       const onPointerDown = (event: Event): void => {
         if (!isInside(event.target as Node | null)) closeFlyout(false);
       };
+      // The flyout opens beside the menu, so the pointer's way from the button
+      // runs over the official Model row, which takes focus as soon as it is
+      // touched. While the pointer keeps heading for the flyout that focus move
+      // is not "leaving": it is remembered, and only applied if the pointer then
+      // turns away or stops short.
+      const tracker = createFlyoutTravelTracker({ armed: byHover || pointerOnButton });
+      let travelling = false;
+      let focusLeftDuringTravel = false;
+      let travelIdleTimer: ReturnType<typeof setTimeout> | null = null;
+      const clearTravelIdleTimer = (): void => {
+        if (travelIdleTimer !== null) clearTimeout(travelIdleTimer);
+        travelIdleTimer = null;
+      };
+      const endTravel = (): void => {
+        clearTravelIdleTimer();
+        travelling = false;
+        if (focusLeftDuringTravel) closeFlyout(false);
+      };
+      const onPointerMove = (event: Event): void => {
+        const pointer = event as PointerEvent;
+        if (pointer.pointerType !== "mouse" || !button || !flyout) return;
+        const point = { x: pointer.clientX, y: pointer.clientY };
+        const trigger = button.getBoundingClientRect();
+        const flyoutRect = flyout.getBoundingClientRect();
+        const target = pointer.target as Node | null;
+        let zone: PointerZone = "outside";
+        if (pointInRect(point, trigger) || (target != null && button.contains(target))) {
+          zone = "trigger";
+        } else if (pointInRect(point, flyoutRect) || (target != null && flyout.contains(target))) {
+          zone = "flyout";
+        }
+        const time = pointer.timeStamp || Date.now();
+        const side = flyoutRect.left >= trigger.left ? "right" : "left";
+        const wasTravelling = travelling;
+        travelling = tracker.move({ trigger, flyout: flyoutRect, side }, { point, time, zone });
+        clearTravelIdleTimer();
+        if (travelling) {
+          travelIdleTimer = setTimeout(endTravel, FLYOUT_TRAVEL_IDLE_MS + 10);
+        } else if (zone !== "outside") {
+          focusLeftDuringTravel = false;
+        } else if (wasTravelling) {
+          endTravel();
+        }
+      };
       // Tabbing out of the flyout closes it here rather than in the option's
       // own keydown: the browser performs its normal focus move (no trap, no
       // preventDefault) and this listener records that the flyout was left.
       const onFocusIn = (event: Event): void => {
-        if (!isInside(event.target as Node | null)) closeFlyout(false);
+        if (isInside(event.target as Node | null)) return;
+        if (travelling) {
+          focusLeftDuringTravel = true;
+          return;
+        }
+        closeFlyout(false);
       };
       // The top layer does not follow the panel's visibility, so an open flyout
       // is taken away by the same conditions the Desktop uses to switch panels.
@@ -585,12 +642,15 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
         subtree: true,
       });
       ownerDocument.addEventListener("pointerdown", onPointerDown, true);
+      ownerDocument.addEventListener("pointermove", onPointerMove, true);
       ownerDocument.addEventListener("focusin", onFocusIn, true);
       view?.addEventListener("resize", reposition);
       ownerDocument.addEventListener("scroll", reposition, true);
       removeOpenListeners = () => {
         observer?.disconnect();
+        clearTravelIdleTimer();
         ownerDocument.removeEventListener("pointerdown", onPointerDown, true);
+        ownerDocument.removeEventListener("pointermove", onPointerMove, true);
         ownerDocument.removeEventListener("focusin", onFocusIn, true);
         view?.removeEventListener("resize", reposition);
         ownerDocument.removeEventListener("scroll", reposition, true);
@@ -734,7 +794,9 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
     });
     nextButton.addEventListener("pointerenter", (event) => {
       if (!isLive()) return;
-      if ((event as PointerEvent).pointerType !== "mouse" || isOpen()) return;
+      if ((event as PointerEvent).pointerType !== "mouse") return;
+      pointerOnButton = true;
+      if (isOpen()) return;
       cancelHover();
       hoverTimer = setTimeout(() => {
         hoverTimer = null;
@@ -742,6 +804,7 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
       }, FLYOUT_HOVER_DELAY_MS);
     });
     nextButton.addEventListener("pointerleave", () => {
+      pointerOnButton = false;
       if (isLive()) cancelHover();
     });
 

@@ -1232,9 +1232,7 @@ export class OmpRpcSession {
       throw new OmpRpcFaultError("protocolError", "Omp RPC Subagent frame has no stable ID");
     }
     const nativeSubagentId = nativeIdValue;
-    const callId = nonBlankString(payload.parentToolCallId)
-      ? payload.parentToolCallId
-      : nativeSubagentId;
+    const callId = nativeSubagentId;
     const emit = active?.onEvent ?? this.#options.onSubagentEvent;
     if (value.type === "subagent_event") {
       emit?.({ type: "subagent.transcript.changed", callId, nativeSubagentId });

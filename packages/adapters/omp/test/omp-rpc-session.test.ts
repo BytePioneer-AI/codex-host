@@ -6,12 +6,16 @@ import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
+import type { HostEvent } from "@codexhost/harness-adapter";
+import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+
 import {
   OmpRpcSession,
   ompRpcProcessCommand,
   type OmpRpcProcessAdapter,
   type OmpTurnEvent,
 } from "../src/omp-rpc-session.js";
+import { OmpSubagentLifecycle } from "../src/omp-subagent-lifecycle.js";
 
 class FakeOmpProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -442,7 +446,6 @@ describe("OMP RPC session", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         type: "subagent.started",
-        callId: "tool-1",
         nativeSubagentId: "subagent-1",
         description: "Inspect the repository",
       }),
@@ -969,36 +972,145 @@ describe("OMP RPC session", () => {
     },
   );
 
-  it("projects Subagent lifecycle frames from the RPC stream", async () => {
-    const process = new FakeOmpProcess();
-    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
-    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
-    await session.start();
-    const events: OmpTurnEvent[] = [];
-    await session.runTurn("delegate", (event) => events.push(event));
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "subagent.started",
-        nativeSubagentId: "subagent-1",
-        callId: "tool-1",
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "subagent.updated",
-        nativeSubagentId: "subagent-1",
-        status: "running",
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "subagent.completed",
-        nativeSubagentId: "subagent-1",
-        isError: false,
-      }),
-    );
-    await session.close();
-  });
+  it.each(["active", "idle"] as const)(
+    "keeps batch siblings separate through progress and completion while %s",
+    async (phase) => {
+      const process = new FakeOmpProcess();
+      const emitted: HostEvent[] = [];
+      let nextItem = 0;
+      const turnId = hostTurnIdSchema.parse("batch-turn");
+      const lifecycle = new OmpSubagentLifecycle({
+        newItemId: () => hostItemIdSchema.parse(`batch-item-${++nextItem}`),
+        emit: (event) => emitted.push(event),
+      });
+      const onEvent = (event: OmpTurnEvent) => {
+        switch (event.type) {
+          case "subagent.started":
+            lifecycle.start(turnId, event);
+            break;
+          case "subagent.updated":
+            lifecycle.update(turnId, event);
+            break;
+          case "subagent.completed":
+            lifecycle.complete(turnId, event, false);
+            break;
+        }
+      };
+      const sendBatch = (child: FakeOmpProcess) => {
+        for (const [index, id] of ["batch-a", "batch-b"].entries()) {
+          child.sendFrame({
+            type: "subagent_lifecycle",
+            payload: {
+              id,
+              index,
+              agent: "scout",
+              status: "started",
+              description: id,
+              parentToolCallId: "shared-parent-call",
+              detached: phase === "idle",
+            },
+          });
+        }
+        expect(emitted.filter((event) => event.type === "item.started")).toMatchObject([
+          {
+            turnId,
+            item: {
+              itemId: "batch-item-1",
+              type: "subagentDelegation",
+              subagents: [{ nativeSubagentId: "batch-a", status: "running" }],
+            },
+          },
+          {
+            turnId,
+            item: {
+              itemId: "batch-item-2",
+              type: "subagentDelegation",
+              subagents: [{ nativeSubagentId: "batch-b", status: "running" }],
+            },
+          },
+        ]);
+        expect(emitted.filter((event) => event.type === "item.completed")).toHaveLength(0);
+        for (const [id, status, summary] of [
+          ["batch-b", "failed", "Second child failed"],
+          ["batch-a", "completed", "First child finished"],
+        ]) {
+          child.sendFrame({
+            type: "subagent_progress",
+            payload: {
+              parentToolCallId: "shared-parent-call",
+              progress: { id, status: "running", recentOutput: [summary] },
+            },
+          });
+          expect(emitted.at(-1)).toMatchObject({
+            type: "item.updated",
+            turnId,
+            itemId: id === "batch-a" ? "batch-item-1" : "batch-item-2",
+            update: {
+              type: "subagents.replace",
+              subagents: [{ nativeSubagentId: id, status: "running", resultSummary: summary }],
+            },
+          });
+          child.sendFrame({ type: "subagent_lifecycle", payload: { id, status } });
+        }
+      };
+      const session = new OmpRpcSession(
+        { cwd: "/synthetic", commandTimeoutMs: 2_000, onSubagentEvent: onEvent },
+        { spawn: () => process as never },
+      );
+      try {
+        await session.start();
+        if (phase === "active") {
+          const running = session.runTurn("delegate batch", onEvent);
+          sendBatch(process);
+          await expect(running).resolves.toEqual({ text: "PONG", cancelled: false });
+        } else {
+          sendBatch(process);
+        }
+        const completed = emitted
+          .filter((event) => event.type === "item.completed")
+          .filter(
+            (event) =>
+              event.snapshot.item.type === "subagentDelegation" &&
+              event.snapshot.item.subagents[0]?.nativeSubagentId?.startsWith("batch-"),
+          );
+        expect(completed).toMatchObject([
+          {
+            snapshot: {
+              item: {
+                itemId: "batch-item-2",
+                subagents: [
+                  {
+                    nativeSubagentId: "batch-b",
+                    status: "failed",
+                    resultSummary: "Second child failed",
+                  },
+                ],
+              },
+              outcome: { status: "failed" },
+            },
+          },
+          {
+            snapshot: {
+              item: {
+                itemId: "batch-item-1",
+                subagents: [
+                  {
+                    nativeSubagentId: "batch-a",
+                    status: "completed",
+                    resultSummary: "First child finished",
+                  },
+                ],
+              },
+              outcome: { status: "succeeded" },
+            },
+          },
+        ]);
+        expect(lifecycle.size).toBe(0);
+      } finally {
+        await session.close();
+      }
+    },
+  );
 
   it("correlates manual Compact RPC events without an active Prompt Turn", async () => {
     const process = new FakeOmpProcess();

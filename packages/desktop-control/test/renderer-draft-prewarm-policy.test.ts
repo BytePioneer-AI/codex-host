@@ -1132,13 +1132,15 @@ describe("Renderer draft prewarm policy", () => {
   });
 
   it("installs the owned request bridge through direct Renderer evaluation", async () => {
-    const evaluate = vi.fn(async (expression: string): Promise<unknown> => {
-      void expression;
-      return {
-        state: "ready",
-        reason: "owned-request-bridge",
-      };
-    });
+    const evaluate = vi
+      .fn(async (expression: string): Promise<unknown> => {
+        void expression;
+        return {
+          state: "ready",
+          reason: "owned-request-bridge",
+        };
+      })
+      .mockResolvedValueOnce(null);
     const renderer = {
       async evaluate<T>(expression: string): Promise<T> {
         return (await evaluate(expression)) as T;
@@ -1149,7 +1151,8 @@ describe("Renderer draft prewarm policy", () => {
       state: "ready",
       reason: "owned-request-bridge",
     });
-    const expression = evaluate.mock.calls[0]?.[0];
+    expect(evaluate).toHaveBeenCalledTimes(2);
+    const expression = evaluate.mock.calls.at(-1)?.[0];
     expect(expression).toContain("discoverRendererHosts");
     expect(expression).toContain("installRendererHostRouting");
     expect(expression).not.toContain("webContents.fromId");

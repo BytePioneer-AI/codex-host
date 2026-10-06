@@ -23,24 +23,12 @@ export interface RendererDraftPrewarmPolicyStatus {
 const REQUEST_MANAGER_WAIT_TIMEOUT_MS = 60_000;
 const REQUEST_MANAGER_POLL_INTERVAL_MS = 25;
 
-function directRendererInstaller(): string {
+function rendererPolicyStatusExpression(): string {
   return `(() => {
-    const committedReactAncestors = ${committedReactAncestors.toString()};
-    const requestManagerFromHookState = ${requestManagerFromHookState.toString()};
-    const discoverRendererHosts = ${discoverRendererHosts.toString()};
-    const resolveRendererHostManager = ${resolveRendererHostManager.toString()};
-    const retainRendererHostResponses = ${retainRendererHostResponses.toString()};
-    const createDraftPrewarmPolicyBridge = ${createDraftPrewarmPolicyBridge.toString()};
-    const routing = (${installRendererHostRouting.toString()})(
-      document, window,
-      (root) => discoverRendererHosts(root, committedReactAncestors, requestManagerFromHookState),
-      (discovery, hostId) => resolveRendererHostManager(discovery, hostId, requestManagerFromHookState),
-      (manager, bridge, hostId, target, prewarmed, isCurrent) => createDraftPrewarmPolicyBridge(
-        manager, bridge, hostId, target, prewarmed, isCurrent, retainRendererHostResponses,
-      ),
-    );
-    // Publish a default draft policy only when its Host is unambiguous. Host
-    // connections can be ready even when multiple Composers coexist.
+    const routing = window.__codexhostHostRoutingV1;
+    if (!routing) return null;
+    // Resolve current owners even when the hooks already exist. A healthy
+    // status must not hide a replaced or disconnected native Host manager.
     const composerRoute = routing.forComposer();
     const connected = composerRoute !== null ||
       ['local', ...(routing.knownHostIds?.() ?? [])].some((hostId) => routing.forHost(hostId) !== null);
@@ -49,7 +37,27 @@ function directRendererInstaller(): string {
   })()`;
 }
 
-function mainProcessInstaller(rendererWebContentsId: number): string {
+function directRendererInstaller(): string {
+  return `(() => {
+    const committedReactAncestors = ${committedReactAncestors.toString()};
+    const requestManagerFromHookState = ${requestManagerFromHookState.toString()};
+    const discoverRendererHosts = ${discoverRendererHosts.toString()};
+    const resolveRendererHostManager = ${resolveRendererHostManager.toString()};
+    const retainRendererHostResponses = ${retainRendererHostResponses.toString()};
+    const createDraftPrewarmPolicyBridge = ${createDraftPrewarmPolicyBridge.toString()};
+    (${installRendererHostRouting.toString()})(
+      document, window,
+      (root) => discoverRendererHosts(root, committedReactAncestors, requestManagerFromHookState),
+      (discovery, hostId) => resolveRendererHostManager(discovery, hostId, requestManagerFromHookState),
+      (manager, bridge, hostId, target, prewarmed, isCurrent) => createDraftPrewarmPolicyBridge(
+        manager, bridge, hostId, target, prewarmed, isCurrent, retainRendererHostResponses,
+      ),
+    );
+    return ${rendererPolicyStatusExpression()};
+  })()`;
+}
+
+function mainProcessExpression(rendererWebContentsId: number, rendererExpression: string): string {
   // Both transports evaluate the same browser implementation. Do not maintain a
   // second manager-discovery path through Inspector object IDs.
   return `(async () => {
@@ -61,18 +69,17 @@ function mainProcessInstaller(rendererWebContentsId: number): string {
     if (!contents || contents.isDestroyed() || contents.getType() !== 'window') {
       throw new Error('Owned Renderer is unavailable for draft prewarm policy');
     }
-    return contents.executeJavaScript(${JSON.stringify(directRendererInstaller())});
+    return contents.executeJavaScript(${JSON.stringify(rendererExpression)});
   })()`;
 }
 
 async function waitForDraftPrewarmPolicy(
-  evaluate: (expression: string) => Promise<unknown>,
-  expression: string,
+  evaluate: () => Promise<unknown>,
 ): Promise<RendererDraftPrewarmPolicyStatus> {
   const deadline = Date.now() + REQUEST_MANAGER_WAIT_TIMEOUT_MS;
   while (true) {
     try {
-      const value = await evaluate(expression);
+      const value = await evaluate();
       if (
         typeof value !== "object" ||
         value === null ||
@@ -99,10 +106,11 @@ async function waitForDraftPrewarmPolicy(
 export function installRendererDraftPrewarmPolicyDirect(
   renderer: Pick<CdpClient, "evaluate"> | InspectorEvaluator,
 ): Promise<RendererDraftPrewarmPolicyStatus> {
-  return waitForDraftPrewarmPolicy(
-    (expression) => renderer.evaluate<unknown>(expression),
-    directRendererInstaller(),
-  );
+  return waitForDraftPrewarmPolicy(async () => {
+    const existing = await renderer.evaluate<unknown>(rendererPolicyStatusExpression());
+    // Serialize and evaluate the bootstrap only for an uninstalled document.
+    return existing === null ? renderer.evaluate<unknown>(directRendererInstaller()) : existing;
+  });
 }
 
 export async function installRendererDraftPrewarmPolicy(
@@ -111,8 +119,14 @@ export async function installRendererDraftPrewarmPolicy(
 ): Promise<RendererDraftPrewarmPolicyStatus> {
   if (!Number.isInteger(rendererWebContentsId) || rendererWebContentsId <= 0)
     throw new Error("Renderer webContents ID must be a positive integer");
-  return waitForDraftPrewarmPolicy(
-    (expression) => inspector.evaluate<unknown>(expression),
-    mainProcessInstaller(rendererWebContentsId),
-  );
+  return waitForDraftPrewarmPolicy(async () => {
+    const existing = await inspector.evaluate<unknown>(
+      mainProcessExpression(rendererWebContentsId, rendererPolicyStatusExpression()),
+    );
+    return existing === null
+      ? inspector.evaluate<unknown>(
+          mainProcessExpression(rendererWebContentsId, directRendererInstaller()),
+        )
+      : existing;
+  });
 }

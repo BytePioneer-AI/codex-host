@@ -175,6 +175,101 @@ describe("production Desktop Controller", () => {
     expect(attach).toEqual(expect.any(Function));
   });
 
+  it("bounds default healthy monitoring to twelve checks per simulated minute", async () => {
+    const abort = new AbortController();
+    let elapsed = 0;
+    let checks = 0;
+    const ensureInstalled = vi.fn(async () => {
+      checks += 1;
+      if (checks === 12) abort.abort();
+      return controllerSnapshot();
+    });
+    const install = vi.fn(async (): Promise<RendererCdpControlSession> => ({
+      snapshot: controllerSnapshot(),
+      ensureInstalled,
+      activateDesktop: vi.fn(async () => 1),
+      executeRenderer: vi.fn(),
+      close: vi.fn(),
+    }));
+    const sleep = vi.fn(async (milliseconds: number) => {
+      elapsed += milliseconds;
+    });
+    await runDesktopController(controllerOptions(), abort.signal, {
+      readRenderer: vi.fn(async () => "production renderer"),
+      install,
+      startAttachmentServer: vi.fn(async () => attachmentServer()),
+      ready: vi.fn(),
+      sleep,
+      now: () => elapsed,
+    });
+    expect(install).toHaveBeenCalledOnce();
+    expect(ensureInstalled).toHaveBeenCalledTimes(12);
+    expect(sleep.mock.calls.map(([milliseconds]) => milliseconds)).toEqual(Array(12).fill(5_000));
+    expect(elapsed).toBe(60_000);
+  });
+
+  it("serves an explicit attachment during the default background monitor wait", async () => {
+    const abort = new AbortController();
+    const ensureInstalled = vi.fn(async () => controllerSnapshot());
+    const activateDesktop = vi.fn(async () => 1);
+    let attach: (() => Promise<void>) | undefined;
+    const sleep = vi.fn(async () => {
+      await attach?.();
+      abort.abort();
+    });
+    await runDesktopController(controllerOptions(), abort.signal, {
+      readRenderer: vi.fn(async () => "production renderer"),
+      install: vi.fn(async () => ({
+        snapshot: controllerSnapshot(),
+        ensureInstalled,
+        activateDesktop,
+        executeRenderer: vi.fn(),
+        close: vi.fn(),
+      })),
+      startAttachmentServer: vi.fn(async (options) => {
+        attach = options.attach;
+        return attachmentServer();
+      }),
+      ready: vi.fn(),
+      sleep,
+    });
+    expect(sleep).toHaveBeenCalledWith(5_000, abort.signal);
+    expect(ensureInstalled).toHaveBeenCalledOnce();
+    expect(activateDesktop).toHaveBeenCalledOnce();
+  });
+
+  it("interrupts the monitor wait on shutdown instead of waiting for the next check", async () => {
+    const abort = new AbortController();
+    const close = vi.fn();
+    const ensureInstalled = vi.fn();
+    const sleep = vi.fn(
+      (_milliseconds: number, signal?: AbortSignal) =>
+        new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("Timer aborted")), {
+            once: true,
+          });
+          queueMicrotask(() => abort.abort());
+        }),
+    );
+    await expect(
+      runDesktopController(controllerOptions(), abort.signal, {
+        readRenderer: vi.fn(async () => "production renderer"),
+        install: vi.fn(async () => ({
+          snapshot: controllerSnapshot(),
+          ensureInstalled,
+          activateDesktop: vi.fn(async () => 1),
+          executeRenderer: vi.fn(),
+          close,
+        })),
+        startAttachmentServer: vi.fn(async () => attachmentServer()),
+        ready: vi.fn(),
+        sleep,
+      }),
+    ).resolves.toBeUndefined();
+    expect(ensureInstalled).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("publishes readiness before a pending Renderer install finishes", async () => {
     const abort = new AbortController();
     const close = vi.fn();
@@ -294,7 +389,7 @@ describe("production Desktop Controller", () => {
     });
 
     expect(install).toHaveBeenCalledTimes(2);
-    expect(sleep).toHaveBeenCalledWith(1);
+    expect(sleep).toHaveBeenCalledWith(1, abort.signal);
     expect(ready).toHaveBeenCalledWith({ schemaVersion: 2, state: "compatible", issues: [] });
     expect(close).toHaveBeenCalledOnce();
   });

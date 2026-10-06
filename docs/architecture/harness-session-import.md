@@ -11,6 +11,39 @@
 - 本次没有增加远程扫描、Claude Code Broker 导入，也没有完成整个 Agent Picker 的动态插件化。
 - **Antigravity 未接入**：其 CLI 不向 headless 客户端提供已持久化的 Assistant 历史，codexhost 展示的历史来自按 Host Thread 保存的插件侧记录。导入的原生 Conversation 打开后没有可展示的历史，不满足“打开后恢复历史”的前提。
 
+## 关闭 CodexHost 后在官方 Codex 查看历史（实验性）
+
+会话导入仍然只登记原生 Session 映射。另有一个默认关闭的历史导出开关：启动 Host Runtime 时设置 `CODEXHOST_EXPORT_HISTORY_ON_EXIT=1`。Windows PowerShell 示例：
+
+```powershell
+$env:CODEXHOST_EXPORT_HISTORY_ON_EXIT = "1"
+codexhost
+```
+
+启用后，Host 在完成外部 Turn 或读取完整历史时，将已结束的 Transcript 快照暂存到 `CODEXHOST_DATA_DIR/history-export`（默认 `~/.codexhost/history-export`），不在流式 token 路径读写原生历史。Host 正常退出时，将当前未归档的顶层持久化 Thread 快照投影为独立的 Codex legacy rollout，保存到原生运行时使用的 `CODEX_HOME/sessions`，再通过仍由 Host 拥有的官方后端执行 `thread/read(includeTurns=false)` 登记索引。已有原生数据库时，仅新增 rollout 文件不会出现在 `useStateDbOnly` 列表中，这一步不可省略。随后单独打开官方 Codex，即可由其 `thread/list` / `thread/read` 读取已登记的副本。
+
+副本第一条消息标记 Harness、原标题和来源 Host Thread ID。用户消息、回复及工具观察均保留为可阅读的历史；工具观察以文本保存。副本使用独立、由快照内容确定的 UUID：相同快照重复退出不创建新副本，改变过的历史会产生新快照。已有原生文件一律不覆盖，包括在官方 Codex 中继续过的副本；旧快照保留供用户自行整理。
+
+边界：
+
+- 这是历史副本。继续发送消息使用原生 Codex；外部 Harness 的 Native Session、账号、权限和续接能力仍由原来的 Adapter 拥有。
+- 不为导出启动 Harness、读取所有未打开的会话或发送 Model Turn。过去的对话须先在启用导出的 CodexHost 中打开一次，以取得正文；仅登记了映射的会话不会被伪造为空历史。
+- 跳过临时、Subagent、创建中、已删除和当前归档的 Thread；拒绝 Native Session 已被替换或 Turn 映射已变化的旧暂存快照。仍在执行的 Turn 不写入已结束的快照。
+- 导出需要 Host Runtime 正常退出。强制结束进程时不能保证退出钩子运行；仅断开共享 Host 的一个 GUI 不会结束外部 Session owner。已完成的暂存快照留在 Host 目录，可在下次正常退出时发布。
+- 正常退出先关闭外部 Session 并等待其输出任务结算，再发布快照和登记索引，最后关闭官方后端。关闭过程中最后结算的 Turn 也纳入本次快照。
+- 索引登记共用 1 秒等待预算；后端不可用或超时会诊断失败并保留文件，避免阻塞退出。未登记成功的文件不保证出现在已有数据库的列表中；下次正常退出可重试登记相同副本。
+- 依赖 Codex 本地 legacy rollout 格式，目前以 stock Codex CLI **0.159.2** 的隔离 `thread/list`（含 `useStateDbOnly`）及 `thread/read(includeTurns=true)` 验证。该格式不是稳定的公开导入 API，因此保留显式开关；Desktop/Framework 更新后应重新验证。尚未在运行中的 Desktop GUI 验收。
+- 不直接修改官方 SQLite；索引更新由官方 `thread/read` 完成。不重写用户既有 rollout，不复制外部登录凭据。新增副本不会继承 Harness 的模型配置。
+
+隔离验证使用虚构对话和单独的 `CODEX_HOME`，不连接或关闭正在运行的 Desktop：
+
+```text
+npm run build:typescript
+node tools/native-history/verify.mjs <absolute-stock-codex> <absolute-output-directory>
+```
+
+该脚本只启动其自己的测试 app-server 子进程，使用不可连接的本地 Provider 地址；验证完成、失败、取消状态及用户消息、回复、工具观察，结束时只关闭自己的子进程。它不验证原生 GUI 的渲染耗时。
+
 ## Adapter 契约与职责
 
 定义位于 `packages/harness-adapter/src/text-session.ts`：

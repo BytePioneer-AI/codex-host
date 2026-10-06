@@ -597,7 +597,10 @@ describe("OMP faulted history", () => {
       const first = new FakeOmpTransport();
       const sessionFile = path.join(directory, "session.jsonl");
       first.state.sessionFile = sessionFile;
-      const createTransport = vi.fn((_options: OmpRpcSessionOptions) => first);
+      const createTransport = vi.fn((options: OmpRpcSessionOptions) => {
+        expect(options.cwd).toBe(directory);
+        return first;
+      });
       const adapter = new OmpAdapter({}, { createTransport });
       const opened = await adapter.open({
         kind: "resume",

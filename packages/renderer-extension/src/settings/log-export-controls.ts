@@ -24,11 +24,14 @@ interface SaveFilePickerWindow extends Window {
   }) => Promise<DiagnosticLogFileHandle>;
 }
 
-async function pickDiagnosticLogFile(ownerWindow: Window): Promise<DiagnosticLogFileHandle> {
+async function pickDiagnosticLogFile(
+  ownerWindow: Window,
+  suggestedName: string,
+): Promise<DiagnosticLogFileHandle> {
   const picker = (ownerWindow as SaveFilePickerWindow).showSaveFilePicker;
   if (!picker) throw new Error("Save dialog is unavailable");
   return picker({
-    suggestedName: "codexhost-diagnostics.jsonl.gz",
+    suggestedName,
     types: [{ description: "Gzip JSONL diagnostics", accept: { "application/gzip": [".gz"] } }],
   });
 }
@@ -79,10 +82,37 @@ export function mountLogExportControls(
   const filePath = document.createElement("code");
   filePath.className = "block break-all px-4 pb-3 text-xs";
   filePath.hidden = true;
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "settings-command-button settings-command-button--secondary";
+  save.append(createRendererSettingsIcon("download", 16), text.save);
+  save.hidden = true;
+  // The Host prepares the archive first; a separate click saves it, because the save dialog
+  // must open while that click's user activation is still valid.
+  let prepared: DiagnosticLogExportResult | null = null;
+  const readyText = (result: DiagnosticLogExportResult): string =>
+    text.ready.replace("{count}", String(result.fileCount));
+  const failureText = (error: unknown): string =>
+    `${text.failed} ${error instanceof Error ? error.message : ""}`.trim();
+  const setBusy = (busy: boolean): void => {
+    button.disabled = busy;
+    select.disabled = busy;
+    save.disabled = busy;
+  };
+  const discardPrepared = (): void => {
+    prepared = null;
+    save.hidden = true;
+  };
+  select.addEventListener("change", () => {
+    discardPrepared();
+    status.hidden = true;
+    filePath.hidden = true;
+  });
   button.addEventListener("click", () => {
     if (button.disabled) return;
     const client = getClient();
     const exportLogs = client?.exportDiagnosticLogs?.bind(client);
+    discardPrepared();
     status.hidden = false;
     filePath.hidden = true;
     const scope = scopes[Number(select.value)];
@@ -90,33 +120,46 @@ export function mountLogExportControls(
       status.textContent = text.unavailable;
       return;
     }
-    button.disabled = true;
-    select.disabled = true;
+    setBusy(true);
     status.textContent = text.exporting;
-    void context.runLatest(
-      async () => {
-        const result = await exportLogs(scope);
-        const handle = await pickDiagnosticLogFile(document.defaultView ?? window);
-        return { name: await saveDiagnosticLog(handle, result), result };
+    void context.runLatest(() => exportLogs(scope), {
+      success(result) {
+        setBusy(false);
+        prepared = result;
+        save.hidden = false;
+        status.textContent = readyText(result);
       },
-      {
-        success({ name, result }) {
-          button.disabled = false;
-          select.disabled = false;
-          status.textContent = text.saved.replace("{count}", String(result.fileCount));
-          filePath.textContent = name;
-          filePath.hidden = false;
-        },
-        failure(error) {
-          button.disabled = false;
-          select.disabled = false;
-          status.textContent =
-            `${text.failed} ${error instanceof Error ? error.message : ""}`.trim();
-        },
+      failure(error) {
+        setBusy(false);
+        status.textContent = failureText(error);
       },
-    );
+    });
   });
-  row.item.append(select, button);
+  save.addEventListener("click", () => {
+    const result = prepared;
+    if (save.disabled || !result) return;
+    // Open the dialog before any await so it still runs within this click's activation.
+    const picking = pickDiagnosticLogFile(document.defaultView ?? window, result.fileName);
+    setBusy(true);
+    void context.runLatest(async () => saveDiagnosticLog(await picking, result), {
+      success(name) {
+        setBusy(false);
+        discardPrepared();
+        status.textContent = text.saved.replace("{count}", String(result.fileCount));
+        filePath.textContent = name;
+        filePath.hidden = false;
+      },
+      failure(error) {
+        setBusy(false);
+        // A cancelled dialog keeps the prepared archive for another attempt.
+        status.textContent =
+          error instanceof Error && error.name === "AbortError"
+            ? readyText(result)
+            : failureText(error);
+      },
+    });
+  });
+  row.item.append(select, button, save);
   card.append(row.item, status, filePath);
   context.content.append(group);
   const client = getClient();

@@ -37,6 +37,8 @@ export interface RendererSettingsMessages {
     description: string;
     export: string;
     exporting: string;
+    ready: string;
+    save: string;
     saved: string;
     failed: string;
     unavailable: string;
@@ -307,9 +309,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     loading: "Loading log sources…",
     empty: "No diagnostic logs are available yet.",
     description:
-      "Choose a Harness or runtime logs, then select a new location to save the JSONL.gz export. Review the file before sharing.",
+      "Choose a Harness or runtime logs and export them, then save the JSONL.gz archive to a new location. Review the file before sharing.",
     export: "Export logs",
     exporting: "Exporting logs…",
+    ready: "Prepared {count} log files. Choose Save to pick a location.",
+    save: "Save",
     saved: "Exported {count} log files to:",
     failed: "Could not export logs.",
     unavailable: "Log export is unavailable. Connect to an updated local Host and try again.",
@@ -627,9 +631,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     loading: "正在读取日志来源…",
     empty: "暂无可导出的诊断日志。",
     description:
-      "按 Harness 选择本机对话日志，或单独选择进程日志，再选择新的保存位置导出 JSONL.gz。分享前请检查内容。",
+      "按 Harness 选择本机对话日志，或单独选择进程日志，导出后再将 JSONL.gz 保存到新位置。分享前请检查内容。",
     export: "导出日志",
     exporting: "正在导出日志…",
+    ready: "已准备 {count} 个日志文件，点击“保存”选择位置。",
+    save: "保存",
     saved: "已导出 {count} 个日志文件，保存到：",
     failed: "日志导出失败。",
     unavailable: "日志导出不可用，请连接更新后的本机 Host 再试。",

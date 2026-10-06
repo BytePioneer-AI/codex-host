@@ -259,13 +259,13 @@ function visibleText(root: FakeElement): string {
 }
 
 describe("Diagnostic log export controls", () => {
-  it("selects a Harness or runtime and reports export progress, paths, and failures", async () => {
+  it("prepares the selected export, then saves it from a separate click", async () => {
     const document = new FakeDocument();
     const writable = { write: vi.fn(async () => undefined), close: vi.fn(async () => undefined) };
-    const saveFilePicker = vi.fn(async () => ({
-      name: "chosen/pi.jsonl.gz",
-      createWritable: async () => writable,
-    }));
+    const saveFilePicker = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("cancelled"), { name: "AbortError" }))
+      .mockResolvedValueOnce({ name: "chosen/pi.jsonl.gz", createWritable: async () => writable });
     (document.defaultView as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker =
       saveFilePicker;
     const content = document.createElement("main");
@@ -279,7 +279,8 @@ describe("Diagnostic log export controls", () => {
     const exportLogs = vi
       .fn()
       .mockReturnValueOnce(pending.promise)
-      .mockRejectedValueOnce(new Error("disk full"));
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockResolvedValueOnce({ fileName: "claude.jsonl.gz", data: "AQI=", fileCount: 1, bytes: 9 });
     const client = {
       listDiagnosticLogs: vi
         .fn()
@@ -299,10 +300,11 @@ describe("Diagnostic log export controls", () => {
       rendererSettingsMessages("zh-CN"),
       () => client,
     );
-    const button = descendants(content).find((node) => node.tagName === "button");
+    const [button, save] = descendants(content).filter((node) => node.tagName === "button");
     const select = descendants(content).find((node) => node.tagName === "select");
-    if (!button || !select) throw new Error("Export controls were not mounted");
+    if (!button || !save || !select) throw new Error("Export controls were not mounted");
     expect(button.disabled).toBe(true);
+    expect(save.hidden).toBe(true);
     await vi.waitFor(() => expect(button.disabled).toBe(false));
     expect(visibleText(content)).toContain("进程日志（不区分 Harness）");
     select.value = "1";
@@ -314,15 +316,37 @@ describe("Diagnostic log export controls", () => {
     expect(button.disabled).toBe(true);
     expect(select.disabled).toBe(true);
     pending.resolve({ fileName: "pi.jsonl.gz", data: "AQI=", fileCount: 2, bytes: 128 });
+    await vi.waitFor(() => expect(save.hidden).toBe(false));
+    expect(visibleText(content)).toContain("已准备 2 个日志文件");
+    // Preparing the archive never opens the dialog; only the Save click does.
+    expect(saveFilePicker).not.toHaveBeenCalled();
+    save.dispatch("click");
+    expect(saveFilePicker).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ suggestedName: "pi.jsonl.gz" }),
+    );
+    await vi.waitFor(() => expect(save.disabled).toBe(false));
+    expect(save.hidden).toBe(false);
+    expect(visibleText(content)).toContain("已准备 2 个日志文件");
+    save.dispatch("click");
     await vi.waitFor(() => expect(visibleText(content)).toContain("chosen/pi.jsonl.gz"));
+    expect(writable.write).toHaveBeenCalledExactlyOnceWith(Uint8Array.from([1, 2]));
     expect(visibleText(content)).toContain("已导出 2 个日志文件");
+    expect(save.hidden).toBe(true);
     expect(button.disabled).toBe(false);
     select.value = "2";
     button.dispatch("click");
     await vi.waitFor(() => expect(visibleText(content)).toContain("日志导出失败。 disk full"));
     expect(exportLogs).toHaveBeenLastCalledWith({ kind: "runtime" });
-    expect(saveFilePicker).toHaveBeenCalledTimes(1);
+    expect(saveFilePicker).toHaveBeenCalledTimes(2);
+    expect(save.hidden).toBe(true);
     expect(button.disabled).toBe(false);
+    select.value = "0";
+    button.dispatch("click");
+    await vi.waitFor(() => expect(save.hidden).toBe(false));
+    select.dispatch("change");
+    expect(save.hidden).toBe(true);
+    save.dispatch("click");
+    expect(saveFilePicker).toHaveBeenCalledTimes(2);
     scope.dispose();
   });
 });

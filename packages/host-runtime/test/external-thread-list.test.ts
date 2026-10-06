@@ -50,6 +50,19 @@ function query(params: JsonObject = {}) {
 }
 
 describe("External Thread metadata catalog", () => {
+  it("lists an unsent Session only while its authoritative runtime is alive", () => {
+    const provisional = record("unsent", { state: "creating" });
+    delete provisional.nativeSessionRef;
+    const list = (live: boolean) =>
+      listExternalThreadMetadata({
+        records: [provisional],
+        query: query(),
+        runtimeFor: () => (live ? { running: false } : null),
+      }).data;
+    expect(list(true)).toMatchObject([{ thread: { id: "unsent", modelProvider: "codexhost" } }]);
+    expect(list(false)).toEqual([]);
+  });
+
   it("lists scoped native Subagent children and descendants for Desktop summary hydration", () => {
     const parent = record("parent");
     const child = record("child", {

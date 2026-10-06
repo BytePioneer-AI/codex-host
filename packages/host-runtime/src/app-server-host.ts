@@ -1,4 +1,12 @@
 import {
+  type MobileModelProtocol,
+  MOBILE_MODEL_CATALOG,
+  MOBILE_MODEL_INSPECT,
+  MOBILE_TURN_START,
+} from "./mobile-model-protocol.js";
+import { mobileModelCatalog } from "./mobile-model-catalog.js";
+import { applyMobileTurnSelection } from "./mobile-turn-selection.js";
+import {
   EXTERNAL_THREAD_PREWARM_PARAM,
   THREAD_PREWARM_DISCARD_METHOD,
   threadPrewarmDiscardParamsSchema,
@@ -297,6 +305,7 @@ export interface AppServerHostOptions {
   externalOnly?: boolean;
   /** GUI connection to the single external-session owner. */
   sharedThreads?: SharedThreadBridge;
+  mobileModels?: MobileModelProtocol;
   /** In-process SSH fronts send external Delegations to the same owner as GUI requests. */
   sharedDelegation?: DelegationControlRegistration;
   stockCodexPath: string;
@@ -1248,6 +1257,29 @@ export class AppServerHost {
       );
       return;
     }
+    if (this.#options.mobileModels) {
+      try {
+        const reply = await this.#options.mobileModels.handle(request, (method, params) =>
+          this.#requestOfficial(method, params),
+        );
+        if (reply) {
+          await this.#writer.json(reply);
+          return;
+        }
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32090, errorMessage(error)));
+        return;
+      }
+    }
+    if (this.#options.externalOnly && request.method === MOBILE_MODEL_CATALOG) {
+      await this.#waitForPlugins();
+      const data = await mobileModelCatalog(
+        this.#externalAdapters,
+        new Map(this.#pluginDescriptors.map((descriptor) => [descriptor.id, descriptor])),
+      );
+      await this.#writer.json(rpcEnvelope(request, { result: { data } }));
+      return;
+    }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
       await this.#writer.json(
         rpcEnvelope(request, {
@@ -1265,7 +1297,15 @@ export class AppServerHost {
       try {
         const reply = await this.#options.sharedThreads.route(request);
         if (reply) {
-          await this.#writer.json(reply);
+          const result = isRecord(reply.result) ? reply.result : undefined;
+          const thread = result && isRecord(result.thread) ? result.thread : undefined;
+          const projected =
+            this.#options.mobileModels &&
+            typeof thread?.id === "string" &&
+            ["thread/start", "thread/resume", "thread/fork"].includes(request.method)
+              ? await this.#options.mobileModels.projectThreadReply(reply, thread.id)
+              : reply;
+          await this.#writer.json(projected);
           return;
         }
       } catch (error) {
@@ -1560,7 +1600,7 @@ export class AppServerHost {
       await this.#forkExternalThreadFromRenderer(request);
       return;
     }
-    if (request.method === "codexhost/thread/inspect") {
+    if (request.method === "codexhost/thread/inspect" || request.method === MOBILE_MODEL_INSPECT) {
       await this.#inspectThread(request);
       return;
     }
@@ -1824,7 +1864,7 @@ export class AppServerHost {
         return;
       }
     }
-    if (request.method === "turn/start") {
+    if (request.method === "turn/start" || request.method === MOBILE_TURN_START) {
       const params = routingParams(request);
       const threadId = params.threadId;
       const resolution =
@@ -1841,10 +1881,13 @@ export class AppServerHost {
       }
       if (await this.#writeResolutionError(request, resolution)) return;
       if (resolution.kind === "external") {
-        this.#dispatchDesktopReply(
-          request,
-          () => this.#startExternalTurn(request, resolution.thread),
-          resolution.thread.id,
+        // Keep configuration confirmation and turn admission in the owner's per-Thread queue.
+        await this.#startExternalTurn(request, resolution.thread);
+        return;
+      }
+      if (request.method === MOBILE_TURN_START) {
+        await this.#writer.json(
+          rpcError(request, -32602, "Mobile Harness turn requires an external Thread"),
         );
         return;
       }
@@ -2689,7 +2732,7 @@ export class AppServerHost {
       records,
       runtimeFor: (threadId) => {
         const thread = this.#externalRuntime.get(threadId);
-        return thread ? { running: thread.running } : null;
+        return thread && !thread.unsubmittedPrewarm ? { running: thread.running } : null;
       },
       requestOfficialPage: async (params) =>
         officialThreadListPageFromResponse(await this.#requestOfficial("thread/list", params)),
@@ -2763,7 +2806,7 @@ export class AppServerHost {
     const subagentStatus = this.#subagentThreadStatuses.get(threadId);
     if (subagentStatus) return { running: subagentStatus === "active" };
     const thread = this.#externalRuntime.get(threadId);
-    return thread ? { running: thread.running } : null;
+    return thread && !thread.unsubmittedPrewarm ? { running: thread.running } : null;
   }
 
   /** `section_position` lists merge External section placements into the official order. */
@@ -4446,6 +4489,8 @@ export class AppServerHost {
       return;
     }
     try {
+      if (request.method === MOBILE_TURN_START)
+        await applyMobileTurnSelection(thread, params, this.#repository);
       const started = await this.#beginExternalInputTurn(
         thread,
         text,

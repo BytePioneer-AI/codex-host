@@ -42,6 +42,7 @@ export async function prepareLocalCodex(input: {
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
+    ...(input.environment.CODEXHOST_REMOTE_HOST_SOCKET ? { recovery: {} } : {}),
     createBackend: () =>
       createOwnedLoopbackBackend({
         stockCodexPath: input.stockCodexPath,

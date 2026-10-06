@@ -1718,6 +1718,64 @@ describe("OpenCode HarnessAdapter", () => {
     await session.close();
     await adapter.close();
   });
+  it("keeps an acknowledged but unadmitted prompt owned until cancellation reaches native execution", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    // Native prompt_async returns before publishing the user message.
+    const submit = transport.promptAsync.bind(transport);
+    let admitted: (() => Promise<void>) | undefined;
+    transport.promptAsync = async (input) => {
+      admitted = () => submit(input);
+    };
+    const active = turn("cancel-before-admission");
+    await session.execute(active);
+    await nextEvent(iterator);
+    await session.execute({ type: "turn.cancel", turnId: active.turnId });
+    transport.emit({
+      id: "pre-admission-idle",
+      type: "session.idle",
+      properties: { sessionID: "session-1" },
+    });
+    await flush();
+    await expect(session.execute(turn("too-early"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    await admitted?.();
+    let releaseAbort = (): void => undefined;
+    const abortReply = new Promise<void>((resolve) => {
+      releaseAbort = resolve;
+    });
+    transport.abort = async () => {
+      transport.aborts += 1;
+      await abortReply;
+    };
+    transport.status = { type: "busy" };
+    transport.emit({
+      id: "admitted-busy",
+      type: "session.status",
+      properties: { sessionID: "session-1", status: { type: "busy" } },
+    });
+    await vi.waitFor(() => expect(transport.aborts).toBe(2));
+    transport.status = { type: "idle" };
+    transport.emit({
+      id: "cancelled-idle",
+      type: "session.idle",
+      properties: { sessionID: "session-1" },
+    });
+    await flush();
+    await expect(session.execute(turn("abort-still-in-flight"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    releaseAbort();
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+    await adapter.close();
+  });
+
   it("settles idle cancellation even before an Assistant message is persisted", async () => {
     const { adapter, session, transport } = await openFixture();
     const iterator = session.outputs[Symbol.asyncIterator]();

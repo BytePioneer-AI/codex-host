@@ -115,6 +115,7 @@
 | [`platforms/remote/remote-ssh-host.md`](platforms/remote/remote-ssh-host.md) | SSH 远程使用教程的英文版；修改对应中文教程时同步核对。 |
 | [`platforms/remote/remote-control-host.zh-CN.md`](platforms/remote/remote-control-host.zh-CN.md) | 在被控 Windows 主机运行 Harness 的 Remote Control 说明；修改该链路时阅读。 |
 | [`platforms/remote/remote-control-host.md`](platforms/remote/remote-control-host.md) | Remote Control Harness Host 的英文说明；修改对应中文说明时同步核对。 |
+| [`platforms/remote/mobile-harness-probe.zh-CN.md`](platforms/remote/mobile-harness-probe.zh-CN.md) | 手机外部 Harness：共享会话、运行时匹配、构建与验收边界。 |
 | [`platforms/macos/macos-native-tools.md`](platforms/macos/macos-native-tools.md) | macOS Browser 与 Computer Use 辅助 app-server 路由；修改原生工具兼容性时阅读。 |
 | [`platforms/macos/native-aqua-broker.md`](platforms/macos/native-aqua-broker.md) | 在 macOS Aqua 会话运行远程原生 Harness 插件的 Broker；修改 Broker 时阅读。 |
 | [`platforms/macos/macos-process-observation.md`](platforms/macos/macos-process-observation.md) | macOS shim 进程树观察、路径读取优化与安全不变量；修改进程监管时阅读。 |

@@ -164,6 +164,7 @@ interface ActiveTurn {
   preexistingUserMessageIds: Set<string>;
   assistantMessageIds: Set<string>;
   cancellationRequested: boolean;
+  cancellationInFlight: number;
   admissionCompleted: boolean;
   admissionFailure: HarnessError | null;
   admissionFailurePromise: Promise<void>;
@@ -588,10 +589,21 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     }
     active.cancellationRequested = true;
     try {
-      await this.#transport.abort(this.#session.id);
+      await this.#abortActive(active);
       return { ok: true, value: { cancellationRequested: true } };
     } catch (error) {
       return { ok: false, error: normalizeError(error, "nativeFailure") };
+    }
+  }
+
+  async #abortActive(active: ActiveTurn): Promise<void> {
+    active.cancellationInFlight += 1;
+    try {
+      await this.#transport.abort(this.#session.id);
+    } finally {
+      active.cancellationInFlight -= 1;
+      // Do not let an in-flight abort reach a subsequently admitted Turn.
+      if (this.#active === active) void this.#reconcileAndFinish(active);
     }
   }
 
@@ -815,7 +827,15 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     const active = this.#active;
     if (event.type === "session.status" && event.properties.sessionID === this.#session.id) {
       if (!active) return;
-      if (event.properties.status.type === "busy") active.sawBusy = true;
+      if (event.properties.status.type === "busy" && !active.sawBusy) {
+        active.sawBusy = true;
+        // prompt_async can acknowledge before executing. An earlier abort may
+        // have hit an idle Session; apply the pending cancellation on admission.
+        if (active.cancellationRequested)
+          void this.#abortActive(active).catch((error) => {
+            if (this.#active === active) this.#fault(error);
+          });
+      }
       if (event.properties.status.type === "idle") void this.#reconcileAndFinish(active);
       return;
     }
@@ -1154,14 +1174,17 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         this.#transport.getStatus(this.#session.id),
         this.#transport.getMessages(this.#session.id),
       ]);
-      if (this.#active !== active || status.type !== "idle") return;
+      if (this.#active !== active || status.type !== "idle" || active.cancellationInFlight > 0)
+        return;
       this.#resolveUserMessage(active, messages);
       const lifecycleObserved =
         active.sawBusy || active.reconciledAfterReconnect || active.cancellationRequested;
       if (!lifecycleObserved) return;
       const userIndex = messages.findIndex(({ info }) => info.id === active.userMessageID);
       if (userIndex < 0) {
-        if (active.cancellationRequested) {
+        // Idle before the queued prompt has appeared is not a cancellation
+        // terminal. Keep ownership so a follow-up cannot overtake that prompt.
+        if (active.cancellationRequested && active.sawBusy) {
           this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
         }
         return;
@@ -1336,6 +1359,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       admissionBuffer: [],
       admissionSequence: 0,
       cancellationRequested: false,
+      cancellationInFlight: 0,
       admissionCompleted: false,
       admissionFailure: null,
       admissionFailurePromise,

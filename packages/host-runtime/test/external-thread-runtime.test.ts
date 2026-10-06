@@ -11,6 +11,7 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
+  hostTurnIdSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import {
@@ -53,6 +54,50 @@ function record(): StoredThreadRecordV1 {
 }
 
 describe("ExternalThreadRuntime register", () => {
+  it("reads an empty live Session before native identity exists without persisting a fictional identity", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const provisional = record();
+    delete provisional.nativeSessionRef;
+    provisional.state = "creating";
+    const alignSnapshot = vi.fn(async () => {
+      throw new Error("Identity is not committed");
+    });
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: { alignSnapshot } as unknown as ExternalThreadRepository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+    const thread = runtime.register({
+      record: provisional,
+      session: opened.value,
+      sessionId: hostThreadId,
+      thread: { id: hostThreadId },
+      turns: [],
+    });
+    try {
+      expect(await runtime.refresh(thread)).toBeNull();
+      expect(alignSnapshot).not.toHaveBeenCalled();
+      expect(thread.record).toBe(provisional);
+      expect(thread.record.nativeSessionRef).toBeUndefined();
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Missing fake Session");
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("nonempty-turn"),
+        input: [{ type: "text", text: "test" }],
+      });
+      session.appendText("Native history now exists");
+      session.succeedTurn();
+      expect(await runtime.refresh(thread)).toMatchObject({ code: -32081 });
+      expect(alignSnapshot).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("exposes the requested create Model before the Session publishes state", async () => {
     const adapter = new FakeHarnessAdapter(harnessId);
     const model = adapter.catalog.models[1]?.ref;

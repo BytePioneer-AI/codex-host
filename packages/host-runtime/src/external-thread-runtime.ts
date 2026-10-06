@@ -466,7 +466,18 @@ export class ExternalThreadRuntime {
     const snapshot = await thread.session.readSnapshot();
     if (!snapshot.ok) return mapExternalThreadHarnessError(snapshot.error, "read");
     try {
-      const aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
+      const record = thread.record;
+      // Some native Harnesses allocate their persistent identity on the first Turn.
+      // A second frontend may open that live, empty Session before this happens.
+      // Keep its current projection; there is no native history to align or invent.
+      if (
+        record.state === "creating" &&
+        !record.nativeSessionRef &&
+        record.turnMappings.length === 0 &&
+        snapshot.value.turns.length === 0
+      )
+        return null;
+      const aligned = await this.#repository.alignSnapshot(record, snapshot.value);
       thread.record = aligned.record;
       thread.turns = aligned.turns;
       thread.historyHydrated = true;

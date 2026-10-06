@@ -1,0 +1,11 @@
+{
+  "tag": "rust-v0.160.0",
+  "commit": "a956835d020762cb2b570053af06f643a11c0ecc",
+  "archiveSha256": "351a23896ba75c2c32c2d9d2050a0987079d683ea4e92d3429b3e1833945e927",
+  "patchSha256": "33eee16bc75d631c3949365de25abe76c64e7aeb59d8b2cfc42d9b52fecb6432",
+  "notes": [
+    "Cargo.lock workspace versions normalized to 0.160.0; external dependencies unchanged.",
+    "chatgpt recursion_limit=256 required by local Rust 1.98 compiler.",
+    "Experimental authenticated mobile forwarding; integration requires matching Codex 0.160.0."
+  ]
+}

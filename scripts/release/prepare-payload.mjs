@@ -1,3 +1,9 @@
+import {
+  buildMobileCodex,
+  installMobileCodex,
+  MOBILE_CODEX_PATHS,
+  packageMobileCodex,
+} from "./mobile-codex.mjs";
 import { spawn } from "node:child_process";
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -250,6 +256,7 @@ export function expectedPayloadPaths(target) {
     "app/console-web.js",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
+    ...(packageMobileCodex(target) ? MOBILE_CODEX_PATHS : []),
     "app/renderer-extension.js",
     ...preinstalledHarnessPluginPaths(),
     "licenses/Node.js-LICENSE.txt",
@@ -436,6 +443,13 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     cacheDirectory: path.join(root, ".codexhost", "release-cache", "node"),
   });
   await extractNodeRuntime({ target, archivePath, payloadRoot });
+  if (packageMobileCodex(target)) {
+    const artifact = await buildMobileCodex({ root, target });
+    await installMobileCodex({
+      artifact,
+      outputDirectory: path.join(payloadRoot, "app/mobile-codex"),
+    });
+  }
   await writeThirdPartyNotices(root, payloadRoot);
   await validatePayload({ payloadRoot, target, root });
   return { version, installerVersion, outputRoot, payloadRoot };

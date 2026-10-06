@@ -90,8 +90,12 @@ function includesExternalRecord(
   query: DecodedThreadListRequest,
   byId: ReadonlyMap<string, StoredThreadRecordV1>,
   sectionId: string | null,
+  live: boolean,
 ): boolean {
-  if (record.state !== "ready" || !record.nativeSessionRef) return false;
+  const ready = record.state === "ready" && record.nativeSessionRef !== undefined;
+  // Unsent native Sessions can be opened by another client while their owner is alive.
+  // A persisted provisional record alone never establishes a recoverable Session.
+  if (!ready && !(live && record.state === "creating" && !record.nativeSessionRef)) return false;
   // Rollback retains old records for historical links, but only rebound children
   // belong to the parent's current Native Session (including nested children).
   let current = record;
@@ -214,6 +218,7 @@ export function externalThreadListEntries(input: ExternalThreadListInput): Threa
         input.query,
         byId,
         input.placementOf?.(record.hostThreadId)?.section.id ?? null,
+        input.runtimeFor(record.hostThreadId) !== null,
       ),
     )
     .map((record): ThreadListEntry => {

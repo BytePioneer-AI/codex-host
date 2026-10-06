@@ -39,7 +39,8 @@ export class SharedThreadOwner {
 
   #request(method: string, params: JsonObject): Promise<JsonObject> {
     const key =
-      method === "turn/start" && typeof params.clientUserMessageId === "string"
+      (method === "turn/start" || method === "codexhost/thread/mobile-turn/start") &&
+      typeof params.clientUserMessageId === "string"
         ? `${params.threadId}\u0000${params.clientUserMessageId}`
         : null;
     if (!key) return this.#peer.request(method, params);

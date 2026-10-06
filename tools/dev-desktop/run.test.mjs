@@ -463,3 +463,47 @@ describe("development Desktop start", () => {
     ).resolves.toBe(9);
   });
 });
+
+describe("background restart safety", () => {
+  it("rejects an incomplete no-build launch before stopping the current Desktop", async () => {
+    const spawnImplementation = vi.fn();
+    await expect(
+      runDevelopmentDesktop({
+        arguments_: ["--no-build"],
+        root: temporaryDirectory(),
+        platform: "darwin",
+        environment: {},
+        spawnImplementation,
+      }),
+    ).rejects.toThrow();
+    expect(spawnImplementation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent-initiated Desktop restart before spawning cleanup", async () => {
+    const spawnImplementation = vi.fn();
+    await expect(
+      runDevelopmentDesktop({
+        arguments_: ["--no-build"],
+        platform: "darwin",
+        environment: { CODEX_THREAD_ID: "test-thread" },
+        spawnImplementation,
+      }),
+    ).rejects.toThrow("Refusing Desktop restart from a Codex agent session");
+    expect(spawnImplementation).not.toHaveBeenCalled();
+  });
+
+  it("rejects repeated launchd service invocations before stopping any process", async () => {
+    const spawnImplementation = vi.fn();
+    for (let invocation = 0; invocation < 3; invocation += 1) {
+      await expect(
+        runDevelopmentDesktop({
+          arguments_: ["--no-build"],
+          platform: "darwin",
+          environment: { XPC_SERVICE_NAME: "com.codexhost.mobile-acceptance-test" },
+          spawnImplementation,
+        }),
+      ).rejects.toThrow("Refusing Desktop restart from a launchd service");
+    }
+    expect(spawnImplementation).not.toHaveBeenCalled();
+  });
+});

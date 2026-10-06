@@ -1,3 +1,5 @@
+import { prepareMobileRemoteRuntime } from "./mobile-remote-runtime.js";
+import { localSharedHostSocket, startLocalSharedHost } from "./local-shared-host.js";
 import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
@@ -166,6 +168,7 @@ async function runWithConsoleControl(
   host: AppServerHost,
   enabled: boolean,
   environment: NodeJS.ProcessEnv,
+  run: () => Promise<number> = () => host.run(),
 ): Promise<number> {
   const control = enabled
     ? await startConsoleControlServer({ target: host, environment }).catch((error: unknown) => {
@@ -176,7 +179,7 @@ async function runWithConsoleControl(
       })
     : undefined;
   try {
-    return await host.run();
+    return await run();
   } finally {
     await control?.close().catch(() => undefined);
   }
@@ -230,18 +233,75 @@ export async function runHostRuntime(input: {
     return prepareDelegationRuntime({
       environment,
       createHost: async (delegationEnvironment, onDelegationApi, registry) => {
-        const official = await prepareLocalCodex({
-          stockCodexPath,
-          arguments: remoteControlPlan?.officialArguments ?? input.arguments,
-          environment: delegationEnvironment,
-          diagnosticOutput: process.stderr,
-        });
+        const mobileRuntime =
+          !remoteControlPlan && !localSharedHostSocket(delegationEnvironment)
+            ? await prepareMobileRemoteRuntime({
+                stockCodexPath,
+                environment: delegationEnvironment,
+                ...(input.hostRuntimeUrl ? { hostRuntimeUrl: input.hostRuntimeUrl } : {}),
+                diagnose: (message) => process.stderr.write(`codexhost: ${message}\n`),
+              })
+            : undefined;
+        if (mobileRuntime)
+          delegationEnvironment = {
+            ...delegationEnvironment,
+            CODEXHOST_REMOTE_HOST_SOCKET: mobileRuntime.socketPath,
+          };
+        let official;
+        try {
+          official = await prepareLocalCodex({
+            stockCodexPath: mobileRuntime?.executable ?? stockCodexPath,
+            arguments: remoteControlPlan?.officialArguments ?? input.arguments,
+            environment: delegationEnvironment,
+            diagnosticOutput: process.stderr,
+          });
+        } catch (error) {
+          await mobileRuntime?.close();
+          throw error;
+        }
         const shared = {
           officialRuntimeScope: official.officialRuntimeScope,
           accountControl: official.accountControl,
         };
         if (!remoteControlPlan) {
           try {
+            const mobileSocket = localSharedHostSocket(delegationEnvironment);
+            if (mobileSocket) {
+              const local = await startLocalSharedHost({
+                socketPath: mobileSocket,
+                common: {
+                  stockCodexPath,
+                  arguments: input.arguments,
+                  environment: delegationEnvironment,
+                  ...shared,
+                  ...installedHarnessPluginOptions(
+                    delegationEnvironment,
+                    false,
+                    input.hostRuntimeUrl,
+                  ),
+                  ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+                  ...(updateCoordinator ? { updateCoordinator } : {}),
+                  ...(consoleOpener ? { consoleOpener } : {}),
+                },
+                onOwnerDelegation: (api) => registry.register(api, { harnessCatalog: true }),
+                onFrontendDelegation: onDelegationApi,
+              });
+              try {
+                const desktop = local.createFrontend({
+                  input: process.stdin,
+                  output: process.stdout,
+                  diagnosticOutput: process.stderr,
+                });
+                return await runWithConsoleControl(
+                  desktop.host,
+                  consoleOpener !== undefined,
+                  delegationEnvironment,
+                  () => desktop.run(),
+                );
+              } finally {
+                await local.close();
+              }
+            }
             const host = new AppServerHost({
               ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
               ...(process.platform !== "win32"
@@ -269,7 +329,11 @@ export async function runHostRuntime(input: {
               delegationEnvironment,
             );
           } finally {
-            await official.close();
+            try {
+              await official.close();
+            } finally {
+              await mobileRuntime?.close();
+            }
           }
         }
         const mappingStore = createProductionExternalThreadStore(delegationEnvironment);

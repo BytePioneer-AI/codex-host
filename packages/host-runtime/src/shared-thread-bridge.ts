@@ -1,3 +1,4 @@
+import { MOBILE_TURN_START } from "./mobile-model-protocol.js";
 import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
@@ -54,6 +55,7 @@ export class SharedThreadBridge {
     readonly options: {
       connect(): Promise<SharedThreadPeer | null>;
       delegateCreates: boolean;
+      mobile?: boolean;
       diagnose(error: unknown): void;
     },
   ) {}
@@ -147,7 +149,13 @@ export class SharedThreadBridge {
     if (!shared) return null;
     const peer = await this.#connect();
     if (!peer) throw new Error("Shared Thread Host is disconnected");
-    return { ...(await peer.request(request.method, params)), id: request.id };
+    return {
+      ...(await peer.request(
+        this.options.mobile && request.method === "turn/start" ? MOBILE_TURN_START : request.method,
+        params,
+      )),
+      id: request.id,
+    };
   }
 
   async #rows(peer: SharedThreadPeer, params: JsonObject): Promise<JsonObject[]> {

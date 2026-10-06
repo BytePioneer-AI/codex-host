@@ -417,6 +417,25 @@ export async function runDevelopmentDesktop({
     );
   }
 
+  if ((platform === "darwin" || platform === "win32") && environment.CODEX_THREAD_ID) {
+    throw new Error(
+      "Refusing Desktop restart from a Codex agent session. Quit Desktop manually and run npm start from an independent terminal.",
+    );
+  }
+
+  // launchctl submit may supervise and restart even a successful short-lived
+  // job. A destructive Desktop restart must never run inside such a service.
+  const service = environment.XPC_SERVICE_NAME;
+  if (platform === "darwin" && service && service !== "0" && !service.startsWith("application.")) {
+    throw new Error(
+      "Refusing Desktop restart from a launchd service. Quit Desktop manually and run npm start from a terminal; do not use launchctl submit.",
+    );
+  }
+
+  const artifacts = developmentArtifacts(root, platform, nodePath);
+  // A missing development build must fail before touching the current Desktop.
+  if (!options.build) validateDevelopmentArtifacts(artifacts);
+
   const startedAt = performance.now();
   const logElapsed = (label, since) => {
     console.log(`codexhost dev: ${label}: ${((performance.now() - since) / 1000).toFixed(2)}s`);
@@ -452,7 +471,6 @@ export async function runDevelopmentDesktop({
     console.log("codexhost dev: build skipped (--no-build)");
   }
 
-  const artifacts = developmentArtifacts(root, platform, nodePath);
   validateDevelopmentArtifacts(artifacts);
   const piPath = findPathExecutable("pi", { environment, platform });
   if (piPath) console.log(`codexhost dev: using Pi at ${piPath}`);

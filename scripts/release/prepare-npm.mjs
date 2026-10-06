@@ -1,3 +1,9 @@
+import {
+  buildMobileCodex,
+  installMobileCodex,
+  MOBILE_CODEX_PATHS,
+  packageMobileCodex,
+} from "./mobile-codex.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import {
   chmod,
@@ -234,6 +240,7 @@ export function expectedNpmPackagePaths(target) {
     "app/console-web.js",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
+    ...(packageMobileCodex(target) ? MOBILE_CODEX_PATHS : []),
     "app/renderer-extension.js",
     ...preinstalledHarnessPluginPaths(),
     "licenses/Anthropic-SDK-LICENSE.txt",
@@ -1094,6 +1101,13 @@ export async function prepareNpmPackage({
     repositoryRoot: root,
     outputDirectory: path.join(packageRoot, "app", "plugins"),
   });
+  if (packageMobileCodex(target)) {
+    const artifact = await buildMobileCodex({ root, target });
+    await installMobileCodex({
+      artifact,
+      outputDirectory: path.join(packageRoot, "app/mobile-codex"),
+    });
+  }
   await runCommand(
     {
       label: "Desktop Controller Bundle build",

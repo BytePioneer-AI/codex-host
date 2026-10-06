@@ -97,11 +97,39 @@ describe("Codex service-tier stylesheet", () => {
       '[class*="ViewTrack"][aria-hidden="true"] [data-codexhost-service-tier-toggle]',
     );
     expect(css).toContain('[class*="ViewTrack"][inert] [data-codexhost-service-tier-toggle]');
-    // Both tiers get their own official glyph through a mask, never text.
+    // All three tiers get their own official glyph through a mask, never text.
+    expect(css).toContain('[data-codexhost-service-tier-scope="standard"]');
     expect(css).toContain('[data-codexhost-service-tier-scope="fast"]');
     expect(css).toContain('[data-codexhost-service-tier-scope="ultrafast"]');
     expect(css).toContain('mask-image: url("data:image/svg+xml,');
     expect(css).toContain('-webkit-mask-image: url("data:image/svg+xml,');
+  });
+
+  it("draws Standard with the official bolt at rest and no particle layer", () => {
+    const css = codexServiceTierStyleText();
+    // Standard shares the single official bolt glyph with Fast, but restates
+    // the resting tertiary color instead of the trigger's own text color.
+    const standardStart = css.indexOf('[data-codexhost-service-tier-scope="standard"]');
+    const standardRule = css.slice(
+      standardStart,
+      css.indexOf('[data-codexhost-service-tier-scope="fast"]', standardStart),
+    );
+    expect(standardRule).toContain("background-color: var(--color-text-tertiary");
+    expect(standardRule).toContain('mask-image: url("data:image/svg+xml,');
+    // Particles stay keyed on the speed tiers only: Standard paints no accent.
+    expect(css).not.toContain(
+      '[data-codexhost-service-tier-scope="standard"] [data-model-picker-power-slider]',
+    );
+    // The particle keying exists for both speed tiers (the shared layer plus the
+    // per-tier backgrounds), and the standard scope appears exactly once, for
+    // the trigger bolt alone.
+    for (const tier of ["fast", "ultrafast"]) {
+      const keyed =
+        css.split(`[data-codexhost-service-tier-scope="${tier}"] [data-model-picker-power-slider]`)
+          .length - 1;
+      expect(keyed).toBeGreaterThanOrEqual(2);
+    }
+    expect(css.split('[data-codexhost-service-tier-scope="standard"]').length - 1).toBe(1);
   });
 
   it("styles the official 32px speed button and its 233px flyout", () => {

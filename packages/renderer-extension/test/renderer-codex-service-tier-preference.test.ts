@@ -64,6 +64,11 @@ describe("codex service tier preference", () => {
       enabled: true,
       tier: "ultrafast",
     });
+    // Standard is a real stored tier, not a disabled flag.
+    expect(writeCodexServiceTierPreference(f.owner, { enabled: true, tier: "standard" })).toBe(
+      true,
+    );
+    expect(readCodexServiceTierPreference(f.owner)).toEqual({ enabled: true, tier: "standard" });
     expect(
       writeCodexServiceTierPreference(f.owner, { enabled: true, tier: "turbo" as "fast" }),
     ).toBe(false);
@@ -242,6 +247,14 @@ describe("codex service tier Composer marker", () => {
     writeCodexServiceTierPreference(f.owner, { enabled: true, tier: "ultrafast" });
     await flush();
     expect(f.dataset.codexhostServiceTier).toBe("ultrafast");
+
+    // Standard is a confirmed active effect too, so the marker carries it and
+    // the Composer keeps showing the control (the CSS keys on the scope stamp,
+    // not this attribute, so a standard marker paints no extra accent).
+    writeCodexServiceTierPreference(f.owner, { enabled: true, tier: "standard" });
+    await flush();
+    expect(f.dataset.codexhostServiceTier).toBe("standard");
+    expect(f.statuses.at(-1)).toEqual({ status: "applied", effect: { state: "active" } });
 
     // Turning the tier off reaches the Host as an off effect.
     f.send.mockImplementation(async (_method: string, params: unknown) =>

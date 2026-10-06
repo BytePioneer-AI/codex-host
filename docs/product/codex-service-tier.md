@@ -9,15 +9,16 @@ codexhost 设置 → 通用 →「Codex 请求档位」只有一个开关（默�
 | 设置页开关 | 决定是否在本地强制档位。开启后开关下方给出说明性提示，不弹确认对话框，任何 Host 结果都不阻止继续操作。 |
 | 官方模型触发器上的闪电 | 档位生效时，本地 Composer 的官方模型触发器（`data-codex-intelligence-trigger="true"` + `data-composer-navigation-target="reasoning"`）内部、官方 inline 图标槽位（模型名前、14px、间距 4px）显示官方单闪（Fast）/ 双闪（Ultrafast），由样式表按本地展示作用域绘制，不写入官方文本节点或 React 子节点。 |
 | 官方模型菜单里的速度按钮 | 打开官方模型菜单后，在官方 `_ViewControls_` 行内、DOM 中紧随官方模型视图切换按钮插入插件自己的 32px 闪电按钮（视觉定位为绝对定位在行的 inline start，与官方 `_FastModeToggle_` 相同；几何 32px 盒 / 26px 内容方块 / 16px 图标；Fast 用官方 `bolt-fill-light-16`，Ultrafast 用官方双闪 `hU`；档位生效时官方 chart-blue 配色）。点击、Enter/Space 或鼠标悬停 200ms（官方 `FlyoutSubmenuItem` 的延时）打开真实的 233px 档位浮层。 |
-| 233px 档位浮层 | 与官方 `FlyoutSubmenuItem` 相同：内容渲染在独立 overlay 层（此处为 DOM 原生 `popover="manual"` top layer），因此不会被菜单 `_ViewTrack_` 的 `overflow:clip`、`ModelPickerDropdownContent` 的 `overflow-hidden` 或祖先 transform 裁剪或错位；4px 贴菜单 inline end 展开，空间不足时镜像到另一侧并约束在视口内（RTL 方向对应翻转）。列官方三项（标准 / 快速 / 超快）并带官方描述与 17px 对勾。点「标准」等于关闭本设置。选择后写偏好并触发同步，外层菜单保持打开、仅浮层收起且焦点回到按钮（对应官方 `keepOpenOnSelect`）；重选当前档位同样会上报。 |
+| 233px 档位浮层 | 与官方 `FlyoutSubmenuItem` 相同：内容渲染在独立 overlay 层（此处为 DOM 原生 `popover="manual"` top layer），因此不会被菜单 `_ViewTrack_` 的 `overflow:clip`、`ModelPickerDropdownContent` 的 `overflow-hidden` 或祖先 transform 裁剪或错位；4px 贴菜单 inline end 展开，空间不足时镜像到另一侧并约束在视口内（RTL 方向对应翻转）。列官方三项（标准 / 快速 / 超快）并带官方描述与 17px 对勾。点「标准」保持开关开启并撤销强制档位。选择后写偏好并触发同步，外层菜单保持打开、仅浮层收起且焦点回到按钮（对应官方 `keepOpenOnSelect`）；重选当前档位同样会上报。 |
 
-菜单三档对应本设置的三种选择：**标准** = 关闭（`enabled: false`，撤销 codexhost 的强制档位，保留请求原有档位且不注入）、**快速** = Fast、**超快** = Ultrafast。标准项保留上次选择的 Fast / Ultrafast，供重新开启时使用。设置页开关与菜单选择共享同一份偏好，菜单展示最近一次 Host 确认的档位。关闭不强制原生请求变成 `"default"`：官方速度控件或原生配置仍可决定请求档位。
+菜单三档对应本设置的三种选择：**标准** = 保持开关开启并撤销 codexhost 的强制档位（请求按原生字段透传，不注入）、**快速** = Fast、**超快** = Ultrafast。设置页开关与菜单选择共享同一份偏好，菜单展示最近一次 Host 确认的档位；只有设置页开关才会关闭本功能并隐藏控件。关闭不强制原生请求变成 `"default"`：官方速度控件或原生配置仍可决定请求档位。
 
 滑条粒子是纯装饰：Desktop 自身的运动设置（滑条 Root 的 `data-reduced-motion="true"`）或系统「减少运动」偏好（`prefers-reduced-motion: reduce`）任一成立时都不绘制，两条更严格的访问性门控都保留。
 
 | 本地自定义供应商的下一回合 | `turn/start.params.serviceTierForTurn` |
 | --- | --- |
-| 关闭 | 保留原值；未携带时不注入 |
+| 关闭（设置开关关闭） | 保留原值；不注入；控件隐藏 |
+| 标准（开关开启） | 保留原值；不注入；控件保留 |
 | Fast | `"priority"` |
 | Ultrafast | `"ultrafast"` |
 
@@ -38,7 +39,7 @@ codexhost 设置 → 通用 →「Codex 请求档位」只有一个开关（默�
 - 适用于本地 Codex 自定义 Provider，按原生 Thread 的 `modelProvider` 判断；`openai` Provider 的 Thread 保持原生行为（`effect: inactive / officialProvider`）。
 - 设置同步始终连接本地 Host，不沿当前远程路由发送。远程 Thread 和其他 Harness 的 Thread 不应用此设置；外部 Harness 在进入官方请求转发前已由各自 Adapter 接管。展示按每个已挂载 Composer 的 `hostId === "local"`、当前 Agent 和切换状态判断，不使用全局当前路由代替。只有本地原生 Codex Composer 及其官方菜单获得 `data-codexhost-service-tier-scope="fast|ultrafast"`；菜单即使以 portal 挂载在 Composer 之外，也由对应控件管理作用域。远程或外部 Composer 不显示本地档位闪电、速度按钮或滑条粒子。
 - 展示作用域由控件生命周期管理：原生草稿在同一 Composer 内切换 Host 时立即刷新，不等待模型目录或全局路由变化；触发器或菜单替换，以及卸载时清理旧标记。相同档位不重复写 DOM。`<html>` 上的已确认状态不直接作为 CSS 作用域。
-- 闪电与速度按钮只在设置开关开启、当前是本机原生 Codex Composer，且最近一次结果是 `active`（含带 `notAdvertised` 提示）时出现；`officialProvider`、`off`、失败或未连接时移除。按钮只在官方模型菜单打开时存在（按触发器的 `aria-controls` 定位），菜单关闭、菜单被官方重建、切换 Agent 或卸载时都会移除并可在重建后恢复；顶层 popover 不可用时按钮不注入。选择写偏好并触发同步（重选当前档位也会上报，与官方行一致），展示的是已确认档位，不是草稿选择。
+- 闪电与速度按钮只在设置开关开启、当前是本机原生 Codex Composer，且最近一次结果是 `active`（含带 `notAdvertised` 提示）时出现；`officialProvider`、`off`、失败或未连接时移除。「标准」档位下闪电为官方静止态配色（无强调色、无滑条粒子），控件本身保留。按钮只在官方模型菜单打开时存在（按触发器的 `aria-controls` 定位），菜单关闭、菜单被官方重建、切换 Agent 或卸载时都会移除并可在重建后恢复；顶层 popover 不可用时按钮不注入。选择写偏好并触发同步（重选当前档位也会上报，与官方行一致），展示的是已确认档位，不是草稿选择。
 - 原生 Codex 必须支持 `serviceTierForTurn` 与自定义模型目录。模型目录在原生进程启动时加载，运行中更换 Provider、模型目录或 Codex 版本不保证获得新能力；切换本设置本身不会重启进程。
 - 本功能不解锁 Desktop 自带的档位选择器，不修改官方应用文件，也不改写用户原始 `config.toml` 或模型目录文件。闪电用官方闪电路径按 mask 绘制在官方 inline 图标槽位；速度按钮与 233px 浮层是插件自有节点，注入位置为官方 simple 面板顶行（`_SliderTopRowMotion_` 下的 `_ViewControls_`），不修改官方菜单的既有行与 React 管理的节点；同一菜单里检测到官方 `_FastModeToggle_` 时让位，不并排出现两份速度入口。浮层是 `popover="manual"` 的 top layer 节点，视觉上脱离菜单裁剪上下文，但仍留在菜单 DOM 子树内，因此外部点击判定与官方菜单自身的 dismissal 语义不变；浮层打开期间对菜单的可见性属性挂局部 observer，面板被隐藏或替换时立即关闭。
 - max-power（purple）：官方 `_FastModeToggle_` 依据 `data-max-power-selection` 从 chart-blue 变 chart-purple，该状态由官方推理档位（`reasoningEffort: "ultra"` / `isMaximum`）派生。codexhost 的速度按钮不持有官方推理档位状态，也没有独立可靠来源判断「最大功率」，因此按钮只在档位生效时使用官方 chart-blue，不伪造 purple 状态（可验证限制：若未来官方在可读 DOM 上暴露 `data-max-power-selection`，可再派生该配色）。
@@ -64,19 +65,19 @@ Host 返回 `{ settings, effect }`：`effect` 为 `off`、`active`（可选 `not
 
 `OfficialRuntimeScope` 中的 `CodexServiceTierControl` 由同一 native runtime 的所有客户端共享，串行处理修改，并被动缓存每个 Thread 的 Provider（上限 512）；进程退出时 `reset()`。
 
-在最终官方 `turn/start` 转发处，Host 等待已排队的设置修改：关闭时保留原生 `serviceTier` / `serviceTierForTurn`，不为档位决策读取 Thread；开启时读取 Thread 的原生 Provider，仅对自定义 Provider 写入 `"priority"` / `"ultrafast"`。开启时缓存命中零次 native 往返，未命中最多一次 `thread/read`。`turn/steer` 不修改；Host 不设置 sticky 的 `serviceTier`，关闭无需清理持久化档位，并保留待转发请求的其他字段。该局部改写是[官方流量归属](../architecture/official-traffic-ownership.md)的明确例外：不改变官方请求归属，不提前严格校验未知官方参数；无需覆写时走原帧转发路径，转发后保留请求回复保护。
+在最终官方 `turn/start` 转发处，Host 等待已排队的设置修改：设置关闭或选择「标准」时保留原生 `serviceTier` / `serviceTierForTurn`，不为档位决策读取 Thread；开启 Fast / Ultrafast 时读取 Thread 的原生 Provider，仅对自定义 Provider 写入 `"priority"` / `"ultrafast"`。开启 Fast / Ultrafast 时缓存命中零次 native 往返，未命中最多一次 `thread/read`。`turn/steer` 不修改；Host 不设置 sticky 的 `serviceTier`，关闭或标准档均无需清理持久化档位，并保留待转发请求的其他字段。该局部改写是[官方流量归属](../architecture/official-traffic-ownership.md)的明确例外：不改变官方请求归属，不提前严格校验未知官方参数；无需覆写时走原帧转发路径，转发后保留请求回复保护。
 
 ## 验证
 
 定向测试覆盖以下行为；测试执行结果由对应验证运行报告，不在功能文档中维护会话记录：
 
-- `packages/host-runtime/test/app-server-host.codex-service-tier.test.ts`：同一 Thread 的 Fast、Ultrafast、关闭透传与再次 Fast，首次默认关闭和开启后关闭时保留原生档位且不读取 Thread，开启时旧 Composer 参数覆写，原请求不被原地修改，观察缓存，未声明档位仍强制注入，openai 与已开启设置下的外部 Harness 隔离，失败保留已接受设置，Host RPC 与最终转发；开启时未知官方参数仍透传给原生校验，`turn/steer` 不改写。
+- `packages/host-runtime/test/app-server-host.codex-service-tier.test.ts`：同一 Thread 的 Fast、Ultrafast、标准透传、关闭透传与再次 Fast，首次默认关闭和开启后关闭时保留原生档位且不读取 Thread，开启标准档不读取模型目录、effect 为 active 且零原生读取，openai 上标准档同样交给官方，开启时旧 Composer 参数覆写，原请求不被原地修改，观察缓存，未声明档位仍强制注入，openai 与已开启设置下的外部 Harness 隔离，失败保留已接受设置，Host RPC 与最终转发；开启时未知官方参数仍透传给原生校验，`turn/steer` 不改写。
 - `packages/host-runtime/test/codex-service-tier-catalog.test.ts`：UTF-8 模型元数据提取、档位不重复、用户目录保留、旧式 profile 自带目录与根级覆盖选中同一副本、不可准确表达的 profile 名称回退、**带 `@` 的真实 Desktop 参数回归**（`plugins.codex-app-tools@openai-bundled...`）、损坏目录修复、完整内容复用、并发发布、写入或重命名失败回退与临时数据清理。
 - `packages/renderer-extension/test/renderer-codex-service-tier-preference.test.ts`：偏好校验与存储回退、重连与过期结果丢弃、快速修改合并、Host 不支持或拒绝时不标记已生效，以及 `<html>` 标记只在确认 `active` 时镜像（含 `notAdvertised`）。
 - `packages/renderer-extension/test/renderer-codex-service-tier-bolt.test.ts`：用官方菜单 DOM 结构（`role="menu"` + `aria-controls` 指向 + `_ModelPickerDropdownContent_` + `_ViewTrack_` + `_ViewControls_`）覆盖 32px 按钮紧跟官方视图切换、官方三档顺序与文案、官方 17px 对勾、选中态、标准项回调 `null`、重选当前档位仍上报、Hover 200ms 后 click 的竞争、Escape / 方向键 / Home / End / Tab 行为与焦点回收、外部 pointerdown / focusin 关闭、菜单可见性 observer 关闭浮层、菜单关闭/重建/外部 Harness/触发器缺失/超快警告/顶层 popover 不可用时移除、dispose 清理与旧节点不再上报、重复渲染零 DOM 写入、RTL 与视口边缘的浮层定位、en/zh 官方文案；另覆盖本地展示判定、root 与 portal 作用域建立/清理，以及同一 Composer 重建菜单时释放旧 portal。
 - `packages/renderer-extension/test/renderer-binding-probe-host-catalog.test.ts`：通过实际 probe 的渲染调用验证 per-Composer Host 与全局路由不一致时的本地隔离，以及同一原生草稿在全局路由不变时从本地切到远程、再回本地的即时刷新。
 - `packages/renderer-extension/test/settings/codex-service-tier-controls.test.ts`：设置页只有开关（无档位选择、无对话框），提示随 effect 变化，不同步阻断开关。
 - `packages/renderer-extension/test/renderer-codex-service-tier-style.test.ts`：粒子和触发器闪电样式限定在控件管理的本地作用域，不以全局 `<html>` 状态直接键控；保留官方滑条标识、两项 reduced motion 门控、官方 inline 图标组片段与闪电路径 mask；速度按钮 32px / 26px / 16px 几何、官方 chart-blue enabled 色与 `_ViewControls_` 16px inline padding、233px popover 浮层与 `:not(:popover-open)`、17px 对勾，并断言旧 row/list/panel 规则已不存在。
-- `tests/e2e/renderer-codex-service-tier.spec.ts`：浏览器中的开关、状态 pill、信息提示、触发器闪电（computed style）、速度按钮注入与官方键盘 capture 交互、233px 浮层在真实裁剪/变换和 125% CSS zoom 下的可见性与定位、档位选择与写偏好、标准档回退关闭开关、菜单关闭/重建后的恢复、外部行为与卸载后的官方菜单完整性；同页旁置本地/远程 Composer 与 menu portal，验证 Fast/Ultrafast 的闪电和粒子只出现在本地，且全局路由变化不影响各 Composer 的归属判定。
+- `tests/e2e/renderer-codex-service-tier.spec.ts`：浏览器中的开关、状态 pill、信息提示、触发器闪电（computed style）、速度按钮注入与官方键盘 capture 交互、233px 浮层在真实裁剪/变换和 125% CSS zoom 下的可见性与定位、档位选择与写偏好、标准档保持开关开启且控件常驻、触发器闪电为静止态配色，菜单关闭/重建后的恢复、外部行为与卸载后的官方菜单完整性；同页旁置本地/远程 Composer 与 menu portal，验证 Fast/Ultrafast 的闪电和粒子只出现在本地，且全局路由变化不影响各 Composer 的归属判定。
 
 原生链路验证使用独立临时 `CODEX_HOME` 与本地模拟 Responses Provider，观察 `prepareLocalCodex` → `AppServerHost` → 原生 Codex → HTTP 请求的档位字段。目录与启动覆盖测试另行覆盖带 `@` 的 Desktop 参数、profile 和畸形覆盖的回退行为；这些验证不等同于真实 Provider 的速度、计费或服务端支持验证。

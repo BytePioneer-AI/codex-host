@@ -34,7 +34,7 @@ function calls(request: ReturnType<typeof nativeRequest>, method: string): numbe
   return request.mock.calls.filter(([called]) => called === method).length;
 }
 
-it("switches the same thread between Fast and Ultrafast and forwards disabled turns untouched", async () => {
+it("switches the same thread between Standard, Fast and Ultrafast and forwards disabled turns untouched", async () => {
   const control = new CodexServiceTierControl();
   const request = nativeRequest();
   const params: JsonObject = {
@@ -47,6 +47,8 @@ it("switches the same thread between Fast and Ultrafast and forwards disabled tu
   for (const [settings, expected] of [
     [{ enabled: true, tier: "fast" }, "priority"],
     [{ enabled: true, tier: "ultrafast" }, "ultrafast"],
+    // Standard is a real selection that sends nothing, so the turn forwards unchanged.
+    [{ enabled: true, tier: "standard" }, null],
     // Disabled settings never neutralize or replace the caller's own tier fields.
     [{ enabled: false, tier: "ultrafast" }, null],
     [{ enabled: true, tier: "fast" }, "priority"],
@@ -99,6 +101,29 @@ it("reports the effect of each setting instead of rejecting inactive tiers", asy
   });
 });
 
+it("activates Standard without reading the model catalog", async () => {
+  const control = new CodexServiceTierControl();
+  const request = nativeRequest();
+  await expect(control.apply({ enabled: true, tier: "standard" }, request)).resolves.toEqual({
+    settings: { enabled: true, tier: "standard" },
+    effect: { state: "active" },
+  });
+  // Standard sends no request value, so nothing can be unadvertised: the catalog is not read.
+  expect(calls(request, "config/read")).toBe(1);
+  expect(calls(request, "model/list")).toBe(0);
+});
+
+it("leaves an official provider to the official client even when Standard is enabled", async () => {
+  const control = new CodexServiceTierControl();
+  const request = nativeRequest();
+  request.mockResolvedValueOnce({ result: { config: { model_provider: "openai" } } });
+  await expect(control.apply({ enabled: true, tier: "standard" }, request)).resolves.toEqual({
+    settings: { enabled: true, tier: "standard" },
+    effect: { state: "inactive", reason: "officialProvider" },
+  });
+  expect(calls(request, "model/list")).toBe(0);
+});
+
 it("forwards turns unchanged and without native reads when nothing would change", async () => {
   const control = new CodexServiceTierControl();
   const request = nativeRequest();
@@ -106,6 +131,24 @@ it("forwards turns unchanged and without native reads when nothing would change"
   await control.apply({ enabled: false, tier: "fast" }, request);
   expect(await control.tierForTurn({ threadId: "t", input: [] }, request)).toBeNull();
   expect(await control.tierForTurn({ input: [] }, request)).toBeNull();
+  expect(request).not.toHaveBeenCalled();
+});
+
+it("forwards every turn shape with no native reads while Standard is enabled", async () => {
+  const control = new CodexServiceTierControl();
+  const request = nativeRequest();
+  await control.apply({ enabled: true, tier: "standard" }, request);
+  request.mockClear();
+  for (const params of [
+    { threadId: "t", serviceTier: "fast" },
+    { threadId: "t", serviceTierForTurn: "priority" },
+    { threadId: "t", input: [] },
+  ] satisfies JsonObject[]) {
+    const snapshot = structuredClone(params);
+    expect(await control.tierForTurn(params, request)).toBeNull();
+    expect(params).toEqual(snapshot);
+  }
+  // Standard is decided before the thread lookup, so no provider read is needed either.
   expect(request).not.toHaveBeenCalled();
 });
 
@@ -355,6 +398,47 @@ it.each<JsonObject>([
     }
   },
 );
+
+it("forwards turns unchanged and reads no thread while Standard is enabled through the Host RPC", async () => {
+  const fixture = createFixture();
+  try {
+    await fixture.ready;
+    writeRequest(fixture.desktopInput, {
+      id: 850,
+      method: CODEX_SERVICE_TIER_SETTINGS_METHOD,
+      params: { enabled: true, tier: "standard" },
+    });
+    // Standard is active on a custom provider without a catalog read.
+    const outgoing = await readJsonLine(fixture.official.stdin);
+    expect(outgoing.method).toBe("config/read");
+    writeRequest(fixture.official.stdout, {
+      id: requiredMessageId(outgoing),
+      result: { config: { model_provider: "custom", model: "model-a" } },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 850))).toMatchObject({
+      result: { settings: { enabled: true, tier: "standard" }, effect: { state: "active" } },
+    });
+    expect(fixture.official.stdin.readableLength).toBe(0);
+    const params: JsonObject = {
+      threadId: "native",
+      input: [{ type: "text", text: "hello" }],
+      serviceTier: "fast",
+    };
+    writeRequest(fixture.desktopInput, { id: 851, method: "turn/start", params });
+    const turn = await readJsonLine(fixture.official.stdin);
+    expect(turn.method).toBe("turn/start");
+    expect(turn.params).toEqual(params);
+    writeRequest(fixture.official.stdout, {
+      id: requiredMessageId(turn),
+      result: { turn: { id: "standard-turn" } },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 851));
+    // Nothing further was sent to the native process: no thread/read, no tier field.
+    expect(fixture.official.stdin.readableLength).toBe(0);
+  } finally {
+    await stopFixture(fixture);
+  }
+});
 
 it("rejects invalid settings and maps native read failures to a settings error", async () => {
   const fixture = createFixture();

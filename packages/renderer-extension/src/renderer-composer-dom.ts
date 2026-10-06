@@ -99,8 +99,8 @@ export interface ComposerAgentControl {
   composerId: string;
   harnessCommands: RendererHarnessCommandControl;
   serviceTier: RendererServiceTierControl;
-  /** The preference writer for the Composer speed button; null means "Standard". */
-  onSelectServiceTier: (tier: CodexServiceTierId | null) => void;
+  /** The preference writer for the Composer speed button; every tier is real. */
+  onSelectServiceTier: (tier: CodexServiceTierId) => void;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
 }
@@ -698,7 +698,7 @@ export function mountComposerAgentControl(
   onSelectThinking: (thinkingOptionId: string) => void,
   onSelectPermissionMode: (permissionModeId: string) => void,
   onOpenCommandMenu: () => void,
-  onSelectServiceTier: (tier: CodexServiceTierId | null) => void,
+  onSelectServiceTier: (tier: CodexServiceTierId) => void,
 ): ComposerAgentControl {
   // External Harnesses inject more footer chips than native Codex. Let the
   // thread column shrink under sidebar / narrow-window pressure so those chips

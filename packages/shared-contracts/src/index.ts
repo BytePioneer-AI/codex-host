@@ -34,6 +34,7 @@ export {
   type CodexServiceTierEffect,
   type CodexServiceTierId,
   type CodexServiceTierNotice,
+  type CodexServiceTierRequestTier,
   type CodexServiceTierResult,
   type CodexServiceTierSettings,
 } from "./codex-service-tier.js";

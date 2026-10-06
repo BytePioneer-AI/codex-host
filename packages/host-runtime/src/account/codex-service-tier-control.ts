@@ -115,6 +115,10 @@ export class CodexServiceTierControl {
         const configModel = stringOrNull(config.model);
         if (provider === null || provider === "openai") {
           effect = { state: "inactive", reason: "officialProvider" };
+        } else if (parsed.tier === "standard") {
+          // Standard sends no request value, so nothing can be unadvertised and the
+          // catalog is not read for it.
+          effect = { state: "active" };
         } else {
           // The tier is forced either way; the catalog only decides the informational notice.
           const catalog = await this.#tierCatalog(request).catch(() => null);
@@ -135,8 +139,10 @@ export class CodexServiceTierControl {
   /**
    * The `serviceTierForTurn` value for an official `turn/start`, or null to forward unchanged.
    * Disabled settings forward the caller's own tier fields untouched; the Host never wrote a
-   * sticky `serviceTier`, so there is nothing to neutralize. Never rejects: a tier that cannot
-   * be confirmed must not block or fail the user's turn.
+   * sticky `serviceTier`, so there is nothing to neutralize. Standard selects no request value,
+   * so it also forwards unchanged, and it is decided before any thread lookup: the answer cannot
+   * depend on the thread's provider. Never rejects: a tier that cannot be confirmed must not
+   * block or fail the user's turn.
    */
   async tierForTurn(
     params: Readonly<Record<string, unknown>>,
@@ -147,6 +153,7 @@ export class CodexServiceTierControl {
     await this.#pending;
     const settings = this.#settings;
     if (!settings || !settings.enabled) return null;
+    if (settings.tier === "standard") return null;
     const provider = this.#threads.get(threadId) ?? (await this.#readThread(threadId, request));
     if (!provider || provider === "openai") return null;
     // Forced locally: whether the provider honors the tier is the provider's decision.

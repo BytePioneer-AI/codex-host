@@ -213,6 +213,29 @@ describe("Codex service tier settings controls", () => {
     );
     f.owner.dispatchEvent(effectEvent({ status: "applied", effect: { state: "active" } }));
     expect(f.status.textContent).toBe("已生效 · 快速");
+
+    // Standard is a confirmed tier too, and its label is the official 标准.
+    f.owner.storage.set(
+      "codexhost.codex-service-tier.v1",
+      JSON.stringify({ enabled: true, tier: "standard" }),
+    );
+    f.owner.dispatchEvent(effectEvent({ status: "applied", effect: { state: "active" } }));
+    expect(f.status.textContent).toBe("已生效 · 标准");
+
+    f.owner.storage.set(
+      "codexhost.codex-service-tier.v1",
+      JSON.stringify({ enabled: true, tier: "standard" }),
+    );
+    f.dispose();
+  });
+
+  it("tells the user Standard keeps the switch on and the switch is the off control", () => {
+    const f = fixture();
+    const text = descendants(f.content)
+      .map((element) => `${element.textContent}`)
+      .join(" | ");
+    expect(text).toContain("Choosing Standard keeps this switch on");
+    expect(text).toContain("use this switch to turn the feature off");
     f.dispose();
   });
 

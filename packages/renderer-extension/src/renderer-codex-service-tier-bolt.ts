@@ -41,8 +41,12 @@ import { rendererSettingsMessages } from "./settings/localization.js";
  *
  * While the flyout is open, a menu-scoped MutationObserver watches the
  * visibility attributes the Desktop uses to swap panels, because the top layer
- * does not inherit them. Every DOM write is a comparison guard, so a re-render
- * with no change touches nothing and cannot feed the probe's observer.
+ * does not inherit them. A visibility flip is re-checked after a short grace,
+ * because the official menu toggles those attributes on its own rows while the
+ * pointer crosses them; a real swap stays invalid and still closes, and losing
+ * the button, flyout or menu closes at once. Every DOM write is a comparison
+ * guard, so a re-render with no change touches nothing and cannot feed the
+ * probe's observer.
  */
 
 /** The codexhost speed button inside the official `_ViewControls_` row. */
@@ -101,9 +105,21 @@ const VISIBILITY_ATTRIBUTES = [
   "data-ultra-warning-visible",
 ] as const;
 
-/** The official tier list, in the official order; `null` is the Standard option. */
-export const CODEX_SERVICE_TIER_VALUES: readonly (CodexServiceTierId | null)[] = [
-  null,
+/**
+ * Consecutive frame checks a visibility flip gets before it closes an open
+ * flyout. The official menu toggles these attributes on its own rows while the
+ * pointer crosses them; a real panel swap keeps them set past the grace.
+ */
+const FLYOUT_VISIBILITY_GRACE_FRAMES = 2;
+/** The same grace in milliseconds where the view cannot schedule frames. */
+export const FLYOUT_VISIBILITY_GRACE_MS = 72;
+
+/**
+ * The official tier list, in the official order. `standard` is a real
+ * selection: it keeps the feature on and selects no outgoing request value.
+ */
+export const CODEX_SERVICE_TIER_VALUES: readonly CodexServiceTierId[] = [
+  "standard",
   "fast",
   "ultrafast",
 ];
@@ -122,8 +138,8 @@ export interface RendererServiceTierView {
   /** The official Model trigger: both the menu locator and the open signal. */
   readonly trigger: HTMLElement | null;
   readonly locale: RendererSettingsLocale;
-  /** Reports a choice; null is the official Standard option (codexhost off). */
-  readonly onSelect: (tier: CodexServiceTierId | null) => void;
+  /** Reports a choice; every value is a real tier, `standard` included. */
+  readonly onSelect: (tier: CodexServiceTierId) => void;
 }
 
 /**
@@ -135,7 +151,8 @@ export interface RendererServiceTierView {
  *   a local-machine setting, and a remote Host's native Composer keeps its own
  *   speed UI;
  * - a switching Composer hides it;
- * - an unconfirmed (null) tier hides the control and clears the scope stamp.
+ * - an unconfirmed (null) tier hides the control and clears the scope stamp;
+ *   `standard` is a confirmed tier like any other, so the control stays.
  */
 export function rendererServiceTierPlacement(input: {
   readonly agent: RendererAgent;
@@ -225,13 +242,13 @@ export function rendererServiceTierMessages(locale: RendererSettingsLocale): Ser
   };
 }
 
-function tierLabel(messages: ServiceTierMessages, tier: CodexServiceTierId | null): string {
+function tierLabel(messages: ServiceTierMessages, tier: CodexServiceTierId): string {
   if (tier === "fast") return messages.fastLabel;
   if (tier === "ultrafast") return messages.ultrafastLabel;
   return messages.standardLabel;
 }
 
-function optionDescription(messages: ServiceTierMessages, tier: CodexServiceTierId | null): string {
+function optionDescription(messages: ServiceTierMessages, tier: CodexServiceTierId): string {
   if (tier === "fast") return messages.fastDescription;
   if (tier === "ultrafast") return messages.ultrafastDescription;
   return messages.standardDescription;
@@ -285,12 +302,8 @@ function tierIcon(ownerDocument: Document, tier: CodexServiceTierId): SVGElement
   return svg;
 }
 
-function optionValue(tier: CodexServiceTierId | null): string {
-  return tier ?? "standard";
-}
-
 interface FlyoutOption {
-  readonly tier: CodexServiceTierId | null;
+  readonly tier: CodexServiceTierId;
   readonly element: HTMLButtonElement;
   readonly label: HTMLSpanElement;
   readonly description: HTMLSpanElement;
@@ -300,10 +313,13 @@ interface FlyoutOption {
 /**
  * Place the flyout beside the menu like the official submenu: 4px past the
  * menu's inline end when it fits, mirrored to the other side when it does not,
- * and finally clamped inside the viewport. The flyout is `position: fixed` in
- * the top layer, so ancestor overflow and ancestor transforms (including the
- * containing-block ones the menu itself establishes) cannot clip or displace
- * it, and only viewport coordinates matter.
+ * and finally clamped inside the viewport. Vertically the flyout anchors to the
+ * speed button's own row, not the menu's top edge: with a side panel or a tall
+ * menu the official trigger row can sit far below `menu.top`, and anchoring to
+ * it would strand the flyout away from the button the user just pressed.
+ * The flyout is `position: fixed` in the top layer, so ancestor overflow and
+ * ancestor transforms (including the containing-block ones the menu itself
+ * establishes) cannot clip or displace it, and only viewport coordinates matter.
  *
  * Measured quantities are viewport pixels. An ancestor CSS `zoom` scales the
  * rendered (viewport) size of everything inside it, and the top layer is not
@@ -331,6 +347,7 @@ function positionFlyout(flyout: HTMLElement, menu: HTMLElement, button: HTMLElem
   const baseLeft = origin.left - currentLeft * scale;
   const baseTop = origin.top - currentTop * scale;
   const menuRect = menu.getBoundingClientRect();
+  const buttonRect = button.getBoundingClientRect();
   const width = origin.width;
   const height = origin.height;
   const margin = FLYOUT_VIEWPORT_MARGIN_PX * scale;
@@ -346,7 +363,7 @@ function positionFlyout(flyout: HTMLElement, menu: HTMLElement, button: HTMLElem
     Math.max(margin, viewportWidth - margin - width),
   );
   const maxTop = Math.max(margin, viewportHeight - margin - height);
-  const top = Math.min(Math.max(menuRect.top, margin), maxTop);
+  const top = Math.min(Math.max(buttonRect.top, margin), maxTop);
   const nextLeft = `${Math.round((left - baseLeft) / scale)}px`;
   const nextTop = `${Math.round((top - baseTop) / scale)}px`;
   if (nextLeft === flyout.style.left && nextTop === flyout.style.top) return;
@@ -365,6 +382,9 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
   /** A click right after a hover-open confirms it instead of toggling it shut. */
   let openedByHover = false;
   let removeOpenListeners: (() => void) | null = null;
+  /** Frames left in the current visibility grace; 0 means none is scheduled. */
+  let graceFramesLeft = 0;
+  let graceTimer: ReturnType<typeof setTimeout> | null = null;
   /** The last elements this control stamped with its ownership scope. */
   let scopeRoot: Element | null = null;
   let scopeMenu: Element | null = null;
@@ -377,16 +397,85 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
   const isOpen = (): boolean =>
     flyout !== null && typeof flyout.matches === "function" && flyout.matches(":popover-open");
 
+  /** The button, flyout and menu are still part of their document. */
+  const attachedValid = (): boolean => {
+    if (!button || !flyout || !menu) return false;
+    return button.isConnected && flyout.isConnected && menu.isConnected;
+  };
+
   /** The button is still in a panel the Desktop has not hidden, inert or replaced. */
   const stillValid = (): boolean => {
-    if (!button || !flyout || !menu) return false;
-    if (!button.isConnected || !flyout.isConnected || !menu.isConnected) return false;
+    if (!attachedValid()) return false;
+    if (!button || !menu) return false;
     if (hiddenByAncestors(menu) || hiddenByAncestors(button)) return false;
     return button.parentElement?.getAttribute("data-ultra-warning-visible") !== "true";
   };
 
+  const cancelVisibilityGrace = (): void => {
+    graceFramesLeft = 0;
+    if (graceTimer !== null) {
+      clearTimeout(graceTimer);
+      graceTimer = null;
+    }
+  };
+
+  /**
+   * One grace check, scheduled by the tick below. Restoring the attributes
+   * inside the grace keeps the flyout open; a flip that survives the whole
+   * grace is the official panel swap and closes it.
+   */
+  const settleVisibilityGrace = (): void => {
+    if (!isOpen()) {
+      cancelVisibilityGrace();
+      return;
+    }
+    if (!attachedValid()) {
+      cancelVisibilityGrace();
+      closeFlyout(false);
+      return;
+    }
+    if (stillValid()) {
+      cancelVisibilityGrace();
+      return;
+    }
+    graceFramesLeft -= 1;
+    if (graceFramesLeft <= 0) {
+      cancelVisibilityGrace();
+      closeFlyout(false);
+      return;
+    }
+    scheduleVisibilityGraceTick();
+  };
+
+  /**
+   * Prefer real frames where the view renders them; a view without rAF (a test
+   * double) gets one `FLYOUT_VISIBILITY_GRACE_MS` deadline instead, which is
+   * the same grace expressed in milliseconds so it stays testable without a
+   * frame loop.
+   */
+  const scheduleVisibilityGraceTick = (): void => {
+    const ownerWindow = button?.ownerDocument.defaultView ?? null;
+    if (typeof ownerWindow?.requestAnimationFrame === "function") {
+      ownerWindow.requestAnimationFrame(() => settleVisibilityGrace());
+      return;
+    }
+    if (graceTimer !== null) return;
+    graceTimer = setTimeout(() => {
+      graceTimer = null;
+      graceFramesLeft = 1;
+      settleVisibilityGrace();
+    }, FLYOUT_VISIBILITY_GRACE_MS);
+  };
+
+  const startVisibilityGrace = (): void => {
+    if (graceFramesLeft > 0 || graceTimer !== null) return;
+    graceFramesLeft = FLYOUT_VISIBILITY_GRACE_FRAMES;
+    scheduleVisibilityGraceTick();
+  };
+
   const closeFlyout = (restoreFocus: boolean): void => {
     cancelHover();
+    cancelVisibilityGrace();
     openedByHover = false;
     removeOpenListeners?.();
     removeOpenListeners = null;
@@ -397,7 +486,7 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
     if (restoreFocus && button?.isConnected && stillValid()) button.focus();
   };
 
-  const syncOptions = (tier: CodexServiceTierId | null): void => {
+  const syncOptions = (tier: CodexServiceTierId): void => {
     for (const option of options) {
       const checked = option.tier === tier;
       setAttributeIfChanged(option.element, "aria-checked", String(checked));
@@ -405,13 +494,15 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
     }
   };
 
-  const syncLabel = (messages: ServiceTierMessages, tier: CodexServiceTierId | null): void => {
+  const syncLabel = (messages: ServiceTierMessages, tier: CodexServiceTierId): void => {
     if (!button) return;
     setAttributeIfChanged(
       button,
       "aria-label",
       messages.rowAriaLabel.replace("{speed}", tierLabel(messages, tier)),
     );
+    // Standard is a real selection but sends nothing, so the button keeps the
+    // official resting (tertiary) color instead of the chart-blue active one.
     setAttributeIfChanged(
       button,
       "data-fast-mode-enabled",
@@ -430,8 +521,9 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
     }
   };
 
-  const syncButtonIcon = (tier: CodexServiceTierId | null): void => {
+  const syncButtonIcon = (tier: CodexServiceTierId): void => {
     if (!button) return;
+    // Standard shows the same single-bolt glyph as Fast; only the color differs.
     const shown = tier === "ultrafast" ? "ultrafast" : "fast";
     const holder = button.querySelector("[data-codexhost-service-tier-toggle-content]");
     if (!holder) return;
@@ -470,11 +562,20 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
       };
       // The top layer does not follow the panel's visibility, so an open flyout
       // is taken away by the same conditions the Desktop uses to switch panels.
+      // A lost node is definitive and closes at once; a pure visibility flip
+      // waits out the grace, because the official menu toggles those attributes
+      // on its own rows under the pointer while a real swap never restores them.
       const MutationObserverCtor = view?.MutationObserver;
       const observer =
         typeof MutationObserverCtor === "function"
           ? new MutationObserverCtor(() => {
-              if (!stillValid() || !isOpen()) closeFlyout(false);
+              if (!isOpen()) return;
+              if (!attachedValid()) {
+                closeFlyout(false);
+                return;
+              }
+              if (stillValid()) cancelVisibilityGrace();
+              else startVisibilityGrace();
             })
           : null;
       observer?.observe(menu, {
@@ -533,7 +634,7 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
    * tier, and only the flyout closes: the outer menu stays open and focus
    * returns to the button (the official `keepOpenOnSelect` behaviour).
    */
-  const select = (tier: CodexServiceTierId | null): void => {
+  const select = (tier: CodexServiceTierId): void => {
     const current = view;
     closeFlyout(true);
     if (!current) return;
@@ -548,13 +649,13 @@ export function mountRendererServiceTierControl(): RendererServiceTierControl {
 
   const buildOption = (
     ownerDocument: Document,
-    tier: CodexServiceTierId | null,
+    tier: CodexServiceTierId,
     index: number,
   ): FlyoutOption => {
     const element = ownerDocument.createElement("button");
     element.type = "button";
     element.setAttribute("role", "menuitemradio");
-    element.setAttribute(CODEX_SERVICE_TIER_OPTION_ATTRIBUTE, optionValue(tier));
+    element.setAttribute(CODEX_SERVICE_TIER_OPTION_ATTRIBUTE, tier);
     // The official menu's capture keydown walks
     // `[role^="menuitem"]:not([data-disabled]):not([data-interactive="false"])`
     // and moves focus itself. These rows own their own arrow/Home/End handling,

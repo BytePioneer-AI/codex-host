@@ -1,15 +1,17 @@
 /**
- * Pure-CSS reinforcements for the Codex request tier (Fast / Ultrafast).
+ * Pure-CSS reinforcements for the Codex request tier (Standard / Fast / Ultrafast).
  *
  * Paints only inside scope elements the local tier control itself marks with
  * `data-codexhost-service-tier-scope` (renderer-codex-service-tier-bolt.ts):
  * the local Composer root for the trigger bolt and the official menu portal
  * the local control owns for the slider particles. A remote Host Composer,
  * an external Harness, or a switching Composer is never marked, so it cannot
- * inherit the accent. The `<html data-codexhost-service-tier>` attribute
- * remains the Host-confirmed state contract the probe reads; no CSS keys on
- * it, and this module never writes any attribute. No MutationObserver, no
- * per-frame JS, no DOM scans.
+ * inherit the accent. Standard is a scope value too: the trigger bolt stays in
+ * the official resting color and no particle layer is keyed on it, so a
+ * Standard selection paints nothing beyond the resting glyph. The `<html
+ * data-codexhost-service-tier>` attribute remains the Host-confirmed state
+ * contract the probe reads; no CSS keys on it, and this module never writes
+ * any attribute. No MutationObserver, no per-frame JS, no DOM scans.
  *
  * Two surfaces are drawn here, both from the same stylesheet:
  * 1. Particles on the official reasoning-power slider (`data-model-picker-power-slider`),
@@ -246,6 +248,20 @@ export function codexServiceTierStyleText(): string {
   mask-position: center;
   -webkit-mask-size: contain;
   mask-size: contain;
+}
+/* Standard draws the same official bolt at the same 14px geometry, but is a
+   resting state: the glyph keeps the official tertiary (at-rest) color rather
+   than the trigger's own text color, and no particle layer is keyed on it, so
+   a Standard selection adds no accent beyond the resting glyph. */
+[${CODEX_SERVICE_TIER_SCOPE_ATTRIBUTE}="standard"]
+  :is(
+    [data-codex-intelligence-trigger] [class*="ModelPickerTriggerModelGroup"],
+    [data-codex-intelligence-trigger]
+      [class~="tabular-nums"]:not([class*="ModelPickerTriggerModelGroup"] *)
+  ):not(:has([data-daybreak-indicator]))::before {
+  background-color: var(--color-text-tertiary, #8f8f8f);
+  -webkit-mask-image: url("data:image/svg+xml,${boltMaskUrl("fast")}");
+  mask-image: url("data:image/svg+xml,${boltMaskUrl("fast")}");
 }
 [${CODEX_SERVICE_TIER_SCOPE_ATTRIBUTE}="fast"]
   :is(

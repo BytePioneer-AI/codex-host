@@ -373,11 +373,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   codexServiceTierHelp: Object.freeze([
     "The selected tier applies from your next message, including in an existing conversation. A turn already in progress is unchanged; switching never restarts the app.",
     "Fast sends priority; Ultrafast sends ultrafast. The request is forced locally — whether the server honors, ignores or rejects it is entirely up to your provider.",
-    "Switch the tier through the bolt button in the model picker menu (Standard / Fast / Ultrafast).",
+    "Switch the tier through the bolt button in the model picker menu (Standard / Fast / Ultrafast). Choosing Standard keeps this switch on and only stops forcing a tier; use this switch to turn the feature off.",
     "Only local custom Codex providers are affected. Official OpenAI threads, remote Hosts and external Agents keep their native behavior.",
   ]),
   codexServiceTierToggleHint:
-    "Applies to local custom providers: the tier is forced on every request and the server decides whether to honor it. Switch tiers through the bolt button in the model picker menu.",
+    "Applies to local custom providers: the tier is forced on every request and the server decides whether to honor it. Switch tiers through the bolt button in the model picker menu; Standard keeps this switch on without forcing a tier.",
   codexServiceTierPending: "Syncing…",
   codexServiceTierUnavailable: "Not supported by this Host",
   codexServiceTierFailed: "Sync failed, try again",
@@ -709,11 +709,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   codexServiceTierHelp: Object.freeze([
     "所选档位从下一条消息开始生效，同一会话内也可切换。正在进行的回合保持原档位，切换不会重启客户端。",
     "Fast 发送 priority，Ultrafast 发送 ultrafast。档位在本地强制发送，服务端是否支持、忽略或拒绝由服务端决定。",
-    "在模型选择器菜单的闪电按钮中切换档位（标准 / 快速 / 超快）。",
+    "在模型选择器菜单的闪电按钮中切换档位（标准 / 快速 / 超快）。选择「标准」只停止强制档位并保持本开关开启；如需关闭功能，请使用本开关。",
     "仅作用于本地自定义 Codex 供应商。官方 OpenAI 会话、远程 Host 和外部 Agent 保持原有行为。",
   ]),
   codexServiceTierToggleHint:
-    "对本地自定义供应商生效：本地强制发送所选档位，服务端是否支持由服务端决定。档位在模型选择器菜单的闪电按钮中选择。",
+    "对本地自定义供应商生效：本地强制发送所选档位，服务端是否支持由服务端决定。档位在模型选择器菜单的闪电按钮中选择；选择「标准」保持开关开启但不强制档位。",
   codexServiceTierPending: "同步中…",
   codexServiceTierUnavailable: "当前 Host 不支持",
   codexServiceTierFailed: "同步失败，请重试",

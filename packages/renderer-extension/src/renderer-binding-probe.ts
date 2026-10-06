@@ -995,7 +995,7 @@ export function installRendererBindingProbe(
    */
   const confirmedServiceTier = (): CodexServiceTierId | null => {
     const value = document.documentElement?.getAttribute(CODEX_SERVICE_TIER_ATTRIBUTE);
-    return value === "fast" || value === "ultrafast" ? value : null;
+    return value === "standard" || value === "fast" || value === "ultrafast" ? value : null;
   };
 
   const renderServiceTier = (mounted: MountedComposer): void => {
@@ -2673,19 +2673,14 @@ export function installRendererBindingProbe(
         if (editor) delegationMention?.openFor(editor);
       },
       (tier) => {
-        // The official Standard option means the default speed, which is this
-        // feature's off state: it turns the shared preference off, exactly like
-        // the settings switch. Only `enabled` changes — the remembered tier is
-        // a separate dimension (the official Standard entry is just the option
-        // whose value is null), so returning to Standard must not discard the
-        // tier the user will get back when they re-enable the feature.
+        // Every reported value is a real tier; picking Standard keeps the
+        // feature on and selects no outgoing request value. Only `tier`
+        // changes — `enabled` is the settings switch's dimension, so a pick
+        // never turns the feature off behind the user's back.
         const owner = document.defaultView;
         if (!owner) return;
         const current = readCodexServiceTierPreference(owner);
-        writeCodexServiceTierPreference(
-          owner,
-          tier === null ? { ...current, enabled: false } : { ...current, enabled: true, tier },
-        );
+        writeCodexServiceTierPreference(owner, { ...current, enabled: true, tier });
       },
     );
     const mounted: MountedComposer = {

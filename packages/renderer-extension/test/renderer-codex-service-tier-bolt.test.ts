@@ -5,6 +5,7 @@ import {
   CODEX_SERVICE_TIER_OPTION_ATTRIBUTE,
   CODEX_SERVICE_TIER_TOGGLE_ATTRIBUTE,
   CODEX_SERVICE_TIER_VALUES,
+  FLYOUT_VISIBILITY_GRACE_MS,
   mountRendererServiceTierControl,
   rendererServiceTierMenuFor,
   rendererServiceTierMessages,
@@ -284,15 +285,20 @@ describe("Composer service-tier speed control", () => {
     control.dispose();
   });
 
-  it("positions the flyout beside the menu, mirrored when it does not fit", () => {
+  it("positions the flyout beside the menu, anchored to the button row, mirrored when it does not fit", () => {
     const { document, menu, trigger, viewControls } = officialMenuFixture();
     menu.rect = { left: 300, top: 120, width: 254, height: 300 };
     const control = controlOf({ trigger: asElement(trigger) });
     const flyout = flyoutOf(menu);
-    toggleOf(viewControls).dispatch("click", clickEvent());
+    const toggle = toggleOf(viewControls);
+    // The button row sits deep inside a tall menu (a side panel pushes the
+    // trigger below `menu.top`); the flyout must follow the row, not the menu top.
+    toggle.rect = { left: 316, top: 380, width: 32, height: 32 };
+    toggle.dispatch("click", clickEvent());
     // 4px past the menu's inline end (300 + 254 + 4).
     expect(flyout.style.left).toBe("558px");
-    expect(flyout.style.top).toBe("120px");
+    // Vertically anchored to the speed button's own row, not the menu top.
+    expect(flyout.style.top).toBe("380px");
 
     // A menu hugging the right edge mirrors the flyout to its inline start.
     // Geometry changes arrive through the real reposition trigger (resize).
@@ -301,7 +307,14 @@ describe("Composer service-tier speed control", () => {
     // Mirrored: 4px before the menu's inline start (1020 - 4 - 233).
     expect(flyout.style.left).toBe(`${menu.rect.left - 4 - flyout.rect.width}px`);
 
-    // RTL flips both, and a small viewport clamps the flyout inside it.
+    // A button row past the viewport bottom clamps the flyout inside.
+    toggle.rect = { left: 316, top: 760, width: 32, height: 32 };
+    document.view.dispatch("resize", {});
+    expect(Number.parseFloat(flyout.style.top)).toBe(
+      document.view.innerHeight - 8 - flyout.rect.height,
+    );
+
+    // RTL flips the inline side, and a small viewport clamps the flyout inside it.
     viewControls.direction = "rtl";
     document.view.innerWidth = 500;
     document.view.dispatch("resize", {});
@@ -428,7 +441,7 @@ describe("Composer service-tier speed control", () => {
 
     toggle.dispatch("click", clickEvent());
     optionOf(menu, "standard").dispatch("click", clickEvent());
-    expect(onSelect).toHaveBeenLastCalledWith(null);
+    expect(onSelect).toHaveBeenLastCalledWith("standard");
     toggle.dispatch("click", clickEvent());
     optionOf(menu, "ultrafast").dispatch("click", clickEvent());
     expect(onSelect).toHaveBeenLastCalledWith("ultrafast");
@@ -503,40 +516,95 @@ describe("Composer service-tier speed control", () => {
   });
 
   it("takes an open flyout away when the Desktop hides or inerts the panel", () => {
-    const { document, menu, track, viewControls, trigger } = officialMenuFixture();
+    vi.useFakeTimers();
+    try {
+      const { document, menu, track, viewControls, trigger } = officialMenuFixture();
+      const control = controlOf({ trigger: asElement(trigger) });
+      const toggle = toggleOf(viewControls);
+      toggle.dispatch("click", clickEvent());
+
+      const observers = document.view.mutationObservers;
+      expect(observers).toHaveLength(1);
+      const observer = observers[0] as FakeMutationObserver;
+      // Scoped to the menu itself, watching the visibility attributes the Desktop
+      // uses to swap panels; never a document-wide observer.
+      expect(observer.targets).toEqual([menu]);
+      expect(observer.observedOptions?.attributeFilter).toEqual([
+        "hidden",
+        "aria-hidden",
+        "inert",
+        "data-ultra-warning-visible",
+      ]);
+
+      // The advanced list replaces the panel: aria-hidden + inert on the track.
+      // The flip must persist past the grace before the flyout closes.
+      track.setAttribute("aria-hidden", "true");
+      track.setAttribute("inert", "");
+      observer.fire();
+      expect(flyoutOf(menu).popoverOpen).toBe(true);
+      vi.advanceTimersByTime(FLYOUT_VISIBILITY_GRACE_MS);
+      expect(flyoutOf(menu).popoverOpen).toBe(false);
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      // The panel was hidden by the Desktop, so the close did not steal focus back.
+      expect(document.activeElement).not.toBe(toggle);
+
+      // The observer is gone with the close; the next open installs a fresh one.
+      expect(observer.disconnected).toBe(true);
+      track.removeAttribute("aria-hidden");
+      track.removeAttribute("inert");
+      control.render(view({ trigger: asElement(trigger) }));
+      toggle.dispatch("click", clickEvent());
+      expect(document.view.mutationObservers).toHaveLength(2);
+      control.dispose();
+      // Teardown left no live grace timer behind.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an open flyout through a visibility flip that is restored inside the grace", () => {
+    vi.useFakeTimers();
+    try {
+      const { document, menu, track, viewControls, trigger } = officialMenuFixture();
+      const control = controlOf({ trigger: asElement(trigger) });
+      const toggle = toggleOf(viewControls);
+      toggle.dispatch("click", clickEvent());
+      const observer = document.view.mutationObservers[0] as FakeMutationObserver;
+
+      // The official menu flips these attributes on its own rows while the
+      // pointer crosses them; a flip that is restored inside the grace must
+      // leave the flyout exactly as it was.
+      track.setAttribute("aria-hidden", "true");
+      observer.fire();
+      vi.advanceTimersByTime(FLYOUT_VISIBILITY_GRACE_MS - 1);
+      track.removeAttribute("aria-hidden");
+      observer.fire();
+      vi.advanceTimersByTime(FLYOUT_VISIBILITY_GRACE_MS * 2);
+      expect(flyoutOf(menu).popoverOpen).toBe(true);
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      // The grace is armed again for the next flip instead of being spent.
+      track.setAttribute("aria-hidden", "true");
+      observer.fire();
+      vi.advanceTimersByTime(FLYOUT_VISIBILITY_GRACE_MS);
+      expect(flyoutOf(menu).popoverOpen).toBe(false);
+      control.dispose();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes at once when the button, flyout or menu itself is torn out", () => {
+    const { document, menu, viewControls, trigger } = officialMenuFixture();
     const control = controlOf({ trigger: asElement(trigger) });
     const toggle = toggleOf(viewControls);
     toggle.dispatch("click", clickEvent());
-
-    const observers = document.view.mutationObservers;
-    expect(observers).toHaveLength(1);
-    const observer = observers[0] as FakeMutationObserver;
-    // Scoped to the menu itself, watching the visibility attributes the Desktop
-    // uses to swap panels; never a document-wide observer.
-    expect(observer.targets).toEqual([menu]);
-    expect(observer.observedOptions?.attributeFilter).toEqual([
-      "hidden",
-      "aria-hidden",
-      "inert",
-      "data-ultra-warning-visible",
-    ]);
-
-    // The advanced list replaces the panel: aria-hidden + inert on the track.
-    track.setAttribute("aria-hidden", "true");
-    track.setAttribute("inert", "");
+    const observer = document.view.mutationObservers[0] as FakeMutationObserver;
+    // Losing a node is definitive, never a transient attribute flip: no grace.
+    toggle.remove();
     observer.fire();
     expect(flyoutOf(menu).popoverOpen).toBe(false);
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    // The panel was hidden by the Desktop, so the close did not steal focus back.
-    expect(document.activeElement).not.toBe(toggle);
-
-    // The observer is gone with the close; the next open installs a fresh one.
-    expect(observer.disconnected).toBe(true);
-    track.removeAttribute("aria-hidden");
-    track.removeAttribute("inert");
-    control.render(view({ trigger: asElement(trigger) }));
-    toggle.dispatch("click", clickEvent());
-    expect(document.view.mutationObservers).toHaveLength(2);
     control.dispose();
   });
 
@@ -671,8 +739,8 @@ describe("Composer service-tier speed control", () => {
     control.dispose();
   });
 
-  it("marks exactly the selected tier and keeps Standard as a plain choice", () => {
-    const { menu, viewControls, trigger } = officialMenuFixture();
+  it("marks exactly the selected tier and keeps Standard as a real, visible choice", () => {
+    const { content, menu, viewControls, trigger } = officialMenuFixture();
     const control = mountRendererServiceTierControl();
     const checked = () =>
       menu
@@ -688,15 +756,28 @@ describe("Composer service-tier speed control", () => {
     expect(checkMarks()).toEqual(["false", "false", "true"]);
     control.render(view({ tier: "fast", trigger: asElement(trigger) }));
     expect(checked()).toEqual(["false", "true", "false"]);
-    // Turning the feature off removes the button entirely; Standard is a choice
-    // inside the flyout, not a state the button can show while the feature is off.
+    // Standard is a confirmed tier like any other: the control stays, the row
+    // is checked, and the button reports the resting state.
+    control.render(view({ tier: "standard", trigger: asElement(trigger) }));
+    expect(checked()).toEqual(["true", "false", "false"]);
+    expect(checkMarks()).toEqual(["true", "false", "false"]);
+    const toggle = toggleOf(viewControls);
+    expect(toggle.getAttribute("aria-label")).toBe("Speed Standard");
+    expect(toggle.getAttribute("data-fast-mode-enabled")).toBe("false");
+    // The same single-bolt glyph as Fast; color is the CSS distinction.
+    expect(
+      toggle
+        .querySelector("[data-codexhost-service-tier-icon]")
+        ?.getAttribute("data-codexhost-service-tier-icon"),
+    ).toBe("fast");
+    // Turning the feature off still removes the button entirely.
     control.render(view({ tier: null, trigger: asElement(trigger) }));
-    expect(viewControls.querySelector(`[${CODEX_SERVICE_TIER_TOGGLE_ATTRIBUTE}]`)).toBeNull();
+    expect(content.querySelector(`[${CODEX_SERVICE_TIER_TOGGLE_ATTRIBUTE}]`)).toBeNull();
     control.dispose();
   });
 
   it("uses the official option values and the official en/zh wording", () => {
-    expect(CODEX_SERVICE_TIER_VALUES).toEqual([null, "fast", "ultrafast"]);
+    expect(CODEX_SERVICE_TIER_VALUES).toEqual(["standard", "fast", "ultrafast"]);
     expect(rendererServiceTierMessages("en")).toEqual({
       rowAriaLabel: "Speed {speed}",
       standardLabel: "Standard",

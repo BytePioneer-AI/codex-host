@@ -314,22 +314,50 @@ test("a pending Host never claims the new tier until the confirmation arrives", 
   await expect(localToggle(page)).toHaveAttribute("aria-label", "Speed Ultrafast");
 });
 
-test("Standard turns the feature off and keeps the remembered tier", async ({ page }) => {
+test("Standard keeps the feature on, the controls resident and the switch checked", async ({
+  page,
+}) => {
   await setup(page);
   await enableTier(page);
   await openMenu(page);
   await localToggle(page).click();
   await option(page, "standard").click();
-  expect(await selections(page)).toBe("[null]");
+  // The pick is reported as a real tier, not as a feature-off signal.
+  expect(await selections(page)).toBe('["standard"]');
+  await accept(page);
+  await expect(marker(page)).toHaveAttribute("data-codexhost-service-tier", "standard");
+  // The switch stays on and both controls stay resident with the tier checked.
+  await expect(settingsSwitch(page)).toBeChecked();
+  await expect(toggle(page)).toHaveCount(1);
+  await expect(localToggle(page)).toHaveAttribute("aria-label", "Speed Standard");
+  await expect(localToggle(page)).toHaveAttribute("data-fast-mode-enabled", "false");
+  await expect(option(page, "standard")).toHaveAttribute("aria-checked", "true");
+  await expect(page.evaluate(() => Reflect.get(globalThis, "storedTier"))).resolves.toBe(
+    "standard",
+  );
+  // The scope stamp follows the standard tier, so the resting bolt paints.
+  const scope = await scopedElements(page);
+  expect(scope.map(({ tier }) => tier)).toEqual(["standard", "standard"]);
+  // No speed accent: the bolt is a resting glyph and no particle layer draws,
+  // exactly like the official at-rest trigger.
+  const accents = await accentState(page, "local-menu-host", "native-trigger");
+  expect(accents.triggerSlot).not.toBe("none");
+  expect(accents.rangeAfter).toBe("none");
+  expect(accents.rangeBefore).toBe("none");
+
+  // Only switching the settings switch off hides the controls.
+  await settingsSwitch(page).uncheck();
   await accept(page);
   await expect(marker(page)).not.toHaveAttribute("data-codexhost-service-tier");
   await expect(toggle(page)).toHaveCount(0);
-  await expect(settingsSwitch(page)).not.toBeChecked();
-  // Re-enabling restores the remembered Fast tier.
-  await expect(page.evaluate(() => Reflect.get(globalThis, "storedTier"))).resolves.toBe("fast");
+  // Re-enabling keeps Standard as the remembered tier. Pressing the switch is
+  // an outside press that closed the model menu, so it is reopened first.
   await settingsSwitch(page).check();
   await accept(page);
-  await expect(marker(page)).toHaveAttribute("data-codexhost-service-tier", "fast");
+  await expect(marker(page)).toHaveAttribute("data-codexhost-service-tier", "standard");
+  await openMenu(page);
+  await expect(localToggle(page)).toHaveCount(1);
+  await expect(localToggle(page)).toHaveAttribute("aria-label", "Speed Standard");
 });
 
 test("the official provider manages its own tier and the control yields", async ({ page }) => {
@@ -425,6 +453,65 @@ test("rebuilding the menu re-injects the control and old handles are inert", asy
   await expect(
     page.evaluate(() => JSON.stringify(Reflect.get(globalThis, "tierSelections"))),
   ).resolves.toBe("[]");
+});
+
+test("a side panel pushing the menu to the right edge keeps the flyout in view beside the button row", async ({
+  page,
+}) => {
+  await setup(page);
+  await enableTier(page);
+  await openMenu(page);
+  await page.locator("#menu-right-edge").click();
+  const button = localToggle(page);
+  await button.click();
+  const box = await flyout(page).boundingBox();
+  const buttonBox = await button.boundingBox();
+  const viewport = page.viewportSize();
+  if (!box || !buttonBox || !viewport) throw new Error("Missing geometry");
+  // The flyout stays fully inside the viewport...
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+  // ...and vertically hugs the speed button's own row instead of drifting to
+  // the menu's top edge (the header above the row pushes the row down).
+  expect(Math.abs(box.y - buttonBox.y)).toBeLessThanOrEqual(2);
+  // It is clickable in place: a real pick lands without moving first.
+  await option(page, "fast").click();
+  await accept(page);
+  await expect(marker(page)).toHaveAttribute("data-codexhost-service-tier", "fast");
+
+  // A button row near the viewport bottom still clamps the flyout inside it.
+  await page.evaluate(() => {
+    const host = document.getElementById("local-menu-host");
+    if (host) host.style.bottom = "4px";
+  });
+  await button.click();
+  const clamped = await flyout(page).boundingBox();
+  const clampedButton = await button.boundingBox();
+  if (!clamped || !clampedButton) throw new Error("Missing clamped geometry");
+  expect(clamped.y + clamped.height).toBeLessThanOrEqual(viewport.height);
+  // The row no longer fits below the clamped flyout's height, so the flyout
+  // slides up and stays wholly above the row instead of being cropped.
+  expect(clamped.y).toBeLessThanOrEqual(clampedButton.y);
+});
+
+test("a transient visibility flip under the pointer never closes the flyout", async ({ page }) => {
+  await setup(page);
+  await enableTier(page);
+  await openMenu(page);
+  await localToggle(page).click();
+  expect(await isOpen(page)).toBe(true);
+  // The official menu flips a visibility attribute on its own rows for one
+  // frame while the pointer crosses them, then restores it. That must not be
+  // mistaken for a panel swap. Driven through the fixture hook: an outside
+  // pointer press is itself a dismissal and would confound the case.
+  await page.evaluate(() => Reflect.get(globalThis, "__fixture").transientFlip());
+  await page.waitForTimeout(300);
+  expect(await isOpen(page)).toBe(true);
+  await expect(localToggle(page)).toHaveAttribute("aria-expanded", "true");
+  // The flyout is still fully usable afterwards.
+  await option(page, "ultrafast").click();
+  await accept(page);
+  await expect(marker(page)).toHaveAttribute("data-codexhost-service-tier", "ultrafast");
 });
 
 test("switching to the advanced panel or the ultra warning takes an open flyout away", async ({

@@ -1,4 +1,8 @@
-import type { CodexServiceTierEffect, CodexServiceTierSettings } from "@codexhost/shared-contracts";
+import type {
+  CodexServiceTierEffect,
+  CodexServiceTierId,
+  CodexServiceTierSettings,
+} from "@codexhost/shared-contracts";
 import {
   CODEX_SERVICE_TIER_CHANGE_EVENT,
   CODEX_SERVICE_TIER_STATUS_EVENT,
@@ -17,8 +21,9 @@ import {
 } from "./preference-ui.js";
 
 /** The official zh-CN / en tier names, so the badge reads in the UI language. */
-function tierLabels(messages: RendererSettingsMessages): Record<"fast" | "ultrafast", string> {
+function tierLabels(messages: RendererSettingsMessages): Record<CodexServiceTierId, string> {
   return {
+    standard: messages.codexServiceTierStandardLabel,
     fast: messages.codexServiceTierFastLabel,
     ultrafast: messages.codexServiceTierUltrafastLabel,
   };

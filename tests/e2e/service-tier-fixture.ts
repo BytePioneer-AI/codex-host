@@ -128,6 +128,7 @@ export async function serviceTierFixtureHtml(): Promise<string> {
         let menuSerial = 0;
         const menuHtml = (id) => \`
           <div class="_ModelPickerDropdownContent_1ndnu_2 overflow-x-hidden overflow-y-hidden" data-state="open">
+            <div class="fixture-menu-header">Search and sections above the view controls</div>
             <div class="_ViewTrack_1d00n_65" data-active="true" id="\${id}-simple">
               <div class="_SliderTopRowMotion_1d00n_8" data-active="true">
                 <div class="_ViewControls_1d00n_170" data-ultra-warning-visible="false">
@@ -289,14 +290,12 @@ export async function serviceTierFixtureHtml(): Promise<string> {
 
         // ---- The tier controls -------------------------------------------------
         // The production probe writes the preference from the picked option:
-        // Standard only clears the enabled flag, keeping the remembered tier.
+        // every value is a real tier, Standard included, and a pick never
+        // turns the feature off (only the settings switch does).
         const onSelect = (tier) => {
           const owner = document.defaultView;
           const current = readCodexServiceTierPreference(owner);
-          const next =
-            tier === null
-              ? { ...current, enabled: false }
-              : { ...current, enabled: true, tier };
+          const next = { ...current, enabled: true, tier };
           localStorage.setItem("codexhost.codex-service-tier.v1", JSON.stringify(next));
           window.dispatchEvent(new Event("codexhost:codex-service-tier-changed"));
           tierSelections.push(tier);
@@ -307,7 +306,8 @@ export async function serviceTierFixtureHtml(): Promise<string> {
         const renderContext = (name) => {
           const context = contexts[name];
           const value = document.documentElement.getAttribute(${JSON.stringify("data-codexhost-service-tier")});
-          const confirmedTier = value === "fast" || value === "ultrafast" ? value : null;
+          const confirmedTier =
+            value === "standard" || value === "fast" || value === "ultrafast" ? value : null;
           const placement = rendererServiceTierPlacement({
             agent: context.agent,
             hostId: context.hostId,
@@ -341,6 +341,14 @@ export async function serviceTierFixtureHtml(): Promise<string> {
         query("#remote-rebuild-menu").onclick = () => rebuildContextMenu(contexts.remote);
         query("#zoom-toggle").onclick = () => {
           zoomHost.style.zoom = zoomHost.style.zoom === "1.25" ? "" : "1.25";
+        };
+        // Moving the local menu host to the right viewport edge reproduces the
+        // measured report: a side panel occupies the right rail, so the real
+        // menu (and its popover) is pushed against the right edge.
+        query("#menu-right-edge").onclick = () => {
+          const host = contexts.local.menuHost;
+          host.style.left = "auto";
+          host.style.right = "8px";
         };
         query("#local-agent").onchange = (event) => {
           contexts.local.agent = event.target.value;
@@ -390,6 +398,19 @@ export async function serviceTierFixtureHtml(): Promise<string> {
         query("#ultra-warning").onclick = () => {
           const controls_ = menuFor(contexts.local)?.querySelector('[class*="ViewControls"]');
           setUltraWarning(controls_?.getAttribute("data-ultra-warning-visible") !== "true");
+        };
+        // The official menu can flip a visibility attribute on its own rows for
+        // one frame while the pointer crosses them; this stands in for that
+        // traffic so the spec can prove the grace keeps the flyout open. The
+        // restore lands on the first frame, always inside the two-frame grace,
+        // whatever the display's refresh rate turns out to be. Driven through
+        // the fixture hook rather than a button click: an outside pointer press
+        // is itself a dismissal and cannot carry this case.
+        const transientFlip = () => {
+          const simple = menuFor(contexts.local)?.querySelector('[class*="ViewTrack"][data-active="true"]');
+          if (!simple) return;
+          simple.setAttribute("aria-hidden", "true");
+          requestAnimationFrame(() => simple.removeAttribute("aria-hidden"));
         };
         query("#dispose-tier").onclick = () => {
           controls.local.dispose();
@@ -441,6 +462,7 @@ export async function serviceTierFixtureHtml(): Promise<string> {
           remoteMenu: () => menuFor(contexts.remote),
           setView,
           setUltraWarning,
+          transientFlip,
           settle: () => new Promise((resolve) => setTimeout(() => resolve(records.length), 0)),
           recordCount: () => records.length,
           clearRecords: () => { records.length = 0; },
@@ -510,12 +532,15 @@ export async function serviceTierFixtureHtml(): Promise<string> {
        the rebuilt menu must keep the same open/closed styling. */
     .fixture-model-menu { display: none; width: 254px; padding: 4px; border: 1px solid #ddd; border-radius: 12px; background: #fff; }
     .fixture-model-menu[data-open="true"] { display: block; }
+    /* Real menus carry content above the view controls, so the trigger row is
+       not at the menu's top edge; this stands in for that layout. */
+    .fixture-menu-header { height: 96px; display: flex; align-items: center; color: #666; }
     [class*="ViewTrack"][data-active="false"] { height: auto; }
     .fixture-trigger { display: inline-flex; align-items: center; gap: 4px; height: 28px; border: 0; background: transparent; }
     .fixture-trigger > span, .fixture-trigger [class~="tabular-nums"] { display: inline-flex; align-items: center; gap: 4px; }
     aside { position: fixed; z-index: 99999; bottom: 0; left: 0; right: 0; height: 72px; background: #eee; padding: 8px 20px; }
     aside button, aside select { margin-right: 8px; } output { display: block; margin-top: 8px; }
   </style></head><body><nav data-app-navigation-rail="true"><button data-sidebar-destination="builtin:home" aria-current="page">Home</button></nav><main></main><div data-composer-footer><div id="local-composer" data-codex-composer-root="true"><button id="native-trigger" class="fixture-trigger" type="button" aria-haspopup="menu" data-codex-intelligence-trigger="true" data-composer-navigation-target="reasoning"><span class="flex max-w-40 min-w-0 items-center gap-1.5"><span class="flex min-w-0 items-center gap-1 tabular-nums"><span>6 Astra</span></span></span></button></div><div id="remote-composer" data-codex-composer-root="true"><button id="remote-trigger" class="fixture-trigger" type="button" aria-haspopup="menu" data-codex-intelligence-trigger="true" data-composer-navigation-target="reasoning"><span class="flex max-w-40 min-w-0 items-center gap-1.5"><span class="flex min-w-0 items-center gap-1 tabular-nums"><span>6 Astra</span></span></span></button></div></div><div id="zoom-host"><div id="local-menu-host"></div></div><div id="remote-menu-host"></div><aside aria-label="Test Host">
-  <button id="accept">Confirm pending save</button><button id="reject">Reject pending save</button><button id="reconnect">Reconnect Host</button><button id="remount">Reopen settings</button><button id="dispose">Dispose settings</button><button id="open-menu">Open model menu</button><button id="close-menu">Close model menu</button><button id="rebuild-menu">Rebuild model menu</button><button id="remote-open-menu">Open remote model menu</button><button id="remote-close-menu">Close remote model menu</button><button id="remote-rebuild-menu">Rebuild remote model menu</button><button id="zoom-toggle">Toggle zoom</button><button id="ultra-warning">Toggle ultra warning</button><button id="switch-view">Switch view</button><button id="local-switching">Toggle local switching</button><button id="dispose-tier">Dispose tier control</button><button id="remount-tier">Remount tier control</button><label for="effect">Host effect</label><select id="effect"><option value="active" selected>active</option><option value="off">off</option><option value="officialProvider">inactive:officialProvider</option><option value="notAdvertised">active:notAdvertised</option></select><label for="local-agent">Local agent</label><select id="local-agent"><option value="codex" selected>codex</option><option value="claude-code">claude-code</option></select><label for="local-host">Local Composer host</label><select id="local-host"><option value="local" selected>local</option><option value="remote-ssh:linux">remote-ssh:linux</option></select><label for="remote-host">Remote Composer host</label><select id="remote-host"><option value="remote-ssh:linux" selected>remote-ssh:linux</option><option value="local">local</option></select><label for="global-route">Global route</label><select id="global-route"><option value="remote-ssh:linux" selected>remote-ssh:linux</option><option value="local">local</option></select><output aria-label="Pending Host settings"></output>
+  <button id="accept">Confirm pending save</button><button id="reject">Reject pending save</button><button id="reconnect">Reconnect Host</button><button id="remount">Reopen settings</button><button id="dispose">Dispose settings</button><button id="open-menu">Open model menu</button><button id="close-menu">Close model menu</button><button id="rebuild-menu">Rebuild model menu</button><button id="remote-open-menu">Open remote model menu</button><button id="remote-close-menu">Close remote model menu</button><button id="remote-rebuild-menu">Rebuild remote model menu</button><button id="zoom-toggle">Toggle zoom</button><button id="menu-right-edge">Move menu to right edge</button><button id="ultra-warning">Toggle ultra warning</button><button id="switch-view">Switch view</button><button id="local-switching">Toggle local switching</button><button id="dispose-tier">Dispose tier control</button><button id="remount-tier">Remount tier control</button><label for="effect">Host effect</label><select id="effect"><option value="active" selected>active</option><option value="off">off</option><option value="officialProvider">inactive:officialProvider</option><option value="notAdvertised">active:notAdvertised</option></select><label for="local-agent">Local agent</label><select id="local-agent"><option value="codex" selected>codex</option><option value="claude-code">claude-code</option></select><label for="local-host">Local Composer host</label><select id="local-host"><option value="local" selected>local</option><option value="remote-ssh:linux">remote-ssh:linux</option></select><label for="remote-host">Remote Composer host</label><select id="remote-host"><option value="remote-ssh:linux" selected>remote-ssh:linux</option><option value="local">local</option></select><label for="global-route">Global route</label><select id="global-route"><option value="remote-ssh:linux" selected>remote-ssh:linux</option><option value="local">local</option></select><output aria-label="Pending Host settings"></output>
   </aside><script>${script.replaceAll("</script", "<\\/script")}</script></body></html>`;
 }

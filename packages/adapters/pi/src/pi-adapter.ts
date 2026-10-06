@@ -1,4 +1,6 @@
+import { fetchPiAccounts } from "./account-balance.js";
 import { createPiCredentialImports } from "./pi-credential-imports.js";
+import { PI_FAST_COMMAND, piFastModelKeys, withPiFast } from "./pi-fast-mode.js";
 import { persistEmptyPiSession, readPiEmptySessionConfiguration } from "./pi-empty-session.js";
 import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
@@ -21,7 +23,6 @@ import {
   type HarnessSessionCapabilities,
   type HarnessSessionImportCapability,
   type HarnessSubagentCapability,
-  type HarnessSessionImportSource,
   type HarnessSessionState,
   type HarnessThinkingOptionId,
   type InspectHarnessInput,
@@ -75,6 +76,7 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import { resolvePiInspectCwd } from "./command.js";
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
 import {
   PiSubagents,
@@ -88,6 +90,7 @@ import { readPiWorkflowChild } from "./pi-workflow-child-history.js";
 import { restorePiSubagents } from "./pi-subagent-history.js";
 import { rollbackPiLastTurn } from "./pi-last-turn-rollback.js";
 import { PiSessionImportIndex } from "./pi-session-import.js";
+import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import {
   PiRpcFaultError,
   PiRpcSession,
@@ -142,6 +145,8 @@ export interface PiTurnTransport {
   clone(): Promise<PiSessionState>;
   verifySessionCwd(expectedCwd: string): Promise<void>;
   selectModel(model: PiNativeModelRef): Promise<PiSessionState>;
+  supportsFastMode?(): Promise<boolean>;
+  selectFastMode?(enabled: boolean): Promise<PiSessionState>;
   selectThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<PiSessionState>;
   compact(
     customInstructions: string | undefined,
@@ -256,7 +261,7 @@ function nativeModelFromState(state: PiSessionState): PiNativeModelRef | null {
 
 function effectiveModelFromState(state: PiSessionState): HarnessModelRef | undefined {
   const model = nativeModelFromState(state);
-  return model ? encodePiModelRef(model) : undefined;
+  return model ? encodePiModelRef({ ...model, ...(state.fast ? { fast: true } : {}) }) : undefined;
 }
 
 function harnessStateFromPi(
@@ -587,6 +592,7 @@ class PiHarnessSession implements HarnessSession {
   readonly #requestedModel: HarnessModelRef | undefined;
   readonly #requestedThinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #toolOutputLimit: number;
+  readonly #isFastSupported: (ref: HarnessModelRef, transport: PiTurnTransport) => Promise<boolean>;
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
@@ -611,6 +617,7 @@ class PiHarnessSession implements HarnessSession {
       thinkingOptionId?: HarnessThinkingOptionId;
       toolOutputLimit: number;
       supportsThinkingSelection: boolean;
+      isFastSupported: (ref: HarnessModelRef, transport: PiTurnTransport) => Promise<boolean>;
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
@@ -623,6 +630,7 @@ class PiHarnessSession implements HarnessSession {
     this.#requestedModel = options.model;
     this.#requestedThinkingOptionId = options.thinkingOptionId;
     this.#toolOutputLimit = options.toolOutputLimit;
+    this.#isFastSupported = options.isFastSupported;
     this.capabilities = {
       configuration: {
         selectModel: true,
@@ -953,21 +961,29 @@ class PiHarnessSession implements HarnessSession {
         error: invalidState("Pi Model selection requires a started Native Session"),
       };
     }
-    let requested: PiNativeModelRef;
-    try {
-      requested = decodePiModelRef(command.model);
-    } catch (error) {
-      return { ok: false, error: normalizedError(error, "invalidRequest") };
-    }
-
     const previousModel = this.#state.effectiveModel;
     this.#configuring = true;
     try {
+      let requested: PiNativeModelRef;
+      try {
+        requested = decodePiModelRef(command.model);
+        if (requested.fast && !(await this.#isFastSupported(command.model, transport)))
+          throw new Error("Fast is unavailable for this Pi Model");
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "invalidRequest") };
+      }
       let state: PiSessionState;
       let thinkingLevels: HarnessThinkingOptionId[] | null;
       try {
-        state = await transport.selectModel(requested);
+        state = samePiModel(nativeModelFromState(transport.state), requested)
+          ? transport.state
+          : await transport.selectModel(requested);
+        // Complete fallible discovery before changing request policy, then publish immediately.
         thinkingLevels = await transport.getAvailableThinkingLevels();
+        if (requested.fast || state.fast) {
+          if (!transport.selectFastMode) throw new Error("Pi Fast extension is unavailable");
+          state = await transport.selectFastMode(requested.fast === true);
+        }
         this.#publishTransportState(state, thinkingLevels);
       } catch (error) {
         if (error instanceof PiRpcFaultError) this.#fault(error);
@@ -1107,7 +1123,10 @@ class PiHarnessSession implements HarnessSession {
     const transport = this.#transport;
     if (this.#phase === "open" && transport?.getCommands) {
       try {
-        this.#liveCommands = piLiveCommandCatalog(piCommandCatalog, await transport.getCommands());
+        this.#liveCommands = piLiveCommandCatalog(
+          piCommandCatalog,
+          (await transport.getCommands()).filter((command) => command.name !== PI_FAST_COMMAND),
+        );
       } catch {
         // Keep the last known catalog.
       }
@@ -1265,6 +1284,14 @@ class PiHarnessSession implements HarnessSession {
           if (!samePiModel(nativeModelFromState(state), requested)) {
             this.#publishTransportState(state, thinkingLevels);
             throw new Error("Pi did not activate the requested create Model");
+          }
+          if (requested.fast) {
+            if (
+              !(await this.#isFastSupported(this.#requestedModel, transport)) ||
+              !transport.selectFastMode
+            )
+              throw new Error("Fast is unavailable for this Pi Model");
+            state = await transport.selectFastMode(true);
           }
         }
         if (this.#requestedThinkingOptionId) {
@@ -2045,34 +2072,21 @@ export class PiAdapter implements HarnessAdapter {
   };
   readonly sessionImport = Object.freeze({
     listCandidates: async () => {
-      const result = await this.#readImport((signal) => this.#importIndex.list(signal));
+      const result = await this.#importScope.read((signal) => this.#importIndex.list(signal));
       return result.ok
         ? { ok: true as const, value: result.value.map(({ candidate }) => candidate) }
         : result;
     },
-    resolveCandidate: async (
-      nativeSessionId: string,
-    ): Promise<HarnessResult<HarnessSessionImportSource>> => {
-      const result = await this.#readImport((signal) =>
-        this.#importIndex.resolve(nativeSessionId, signal),
-      );
-      if (!result.ok) return result;
-      const source = result.value;
-      return source
-        ? { ok: true, value: source }
-        : {
-            ok: false,
-            error: {
-              code: "sessionNotFound",
-              message: "Pi Session is no longer importable",
-              retryable: false,
-            },
-          };
-    },
+    resolveCandidate: (nativeSessionId: string) =>
+      this.#importScope.resolve((signal) => this.#importIndex.resolve(nativeSessionId, signal)),
   } satisfies HarnessSessionImportCapability);
   readonly #importIndex: PiSessionImportIndex;
-  readonly #importAbort = new AbortController();
-  readonly #importRequests = new Set<Promise<unknown>>();
+  readonly #importScope = new SessionImportScope({
+    closedMessage: "Pi Adapter is closed",
+    unavailableMessage:
+      "Pi Session discovery failed; check storage access and duplicate Session identities, then retry after closing native clients",
+    notFoundMessage: "Pi Session is no longer importable",
+  });
   readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
@@ -2080,6 +2094,7 @@ export class PiAdapter implements HarnessAdapter {
   readonly #inspections = new Set<PiTurnTransport>();
   readonly #sessions = new Set<PiHarnessSession>();
   readonly #toolOutputLimit: number;
+  readonly #environment: NodeJS.ProcessEnv;
   #closePromise: Promise<void> | null = null;
   #thinkingSelectionSupported: boolean | null = null;
 
@@ -2103,28 +2118,21 @@ export class PiAdapter implements HarnessAdapter {
       remove: (name) => updateCatalog(imports.remove(name)),
     };
     this.#createTransport = dependencies.createTransport;
+    this.#environment = options.environment ?? process.env;
     this.#importIndex = new PiSessionImportIndex({ ...process.env, ...options.environment });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
 
-  #readImport<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<HarnessResult<T>> {
-    if (this.#importAbort.signal.aborted)
-      return Promise.resolve({ ok: false, error: invalidState("Pi Adapter is closed") });
-    const request = operation(this.#importAbort.signal)
-      .then((value): HarnessResult<T> => ({ ok: true, value }))
-      .catch((): HarnessResult<T> => ({
-        ok: false,
-        error: {
-          code: "unavailable",
-          message:
-            "Pi Session discovery failed; check storage access and duplicate Session identities, then retry after closing native clients",
-          retryable: true,
-        },
-      }))
-      .finally(() => this.#importRequests.delete(request));
-    this.#importRequests.add(request);
-    return request;
+  /** Pi itself holds no Account; this reports configured Provider balances. */
+  async inspectAccounts() {
+    if (this.#closePromise) return [];
+    return fetchPiAccounts({ environment: this.#environment });
+  }
+
+  async inspectAccount() {
+    const accounts = await this.inspectAccounts();
+    return accounts[0] ?? null;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -2138,7 +2146,7 @@ export class PiAdapter implements HarnessAdapter {
         },
       };
     }
-    const cwd = input.cwd ?? process.cwd();
+    const cwd = resolvePiInspectCwd(input.cwd);
     const inFlight = this.#inspectionInFlight.get(cwd);
     if (inFlight) return inFlight;
     if (!input.refresh) {
@@ -2171,12 +2179,16 @@ export class PiAdapter implements HarnessAdapter {
       stage = "capabilities";
       const thinkingLevels = await transport.getAvailableThinkingLevels();
       this.#thinkingSelectionSupported = thinkingLevels !== null;
-      const catalog = normalizePiModelCatalog(
+      const normalized = normalizePiModelCatalog(
         models,
         nativeModelFromState(transport.state),
         thinkingLevels,
         transport.state.thinkingLevel,
       );
+      const fastModels = (await transport.supportsFastMode?.())
+        ? await piFastModelKeys(models, this.#environment)
+        : new Set<string>();
+      const catalog = withPiFast(normalized, fastModels);
       await transport.close();
       return {
         status: "ready",
@@ -2215,6 +2227,26 @@ export class PiAdapter implements HarnessAdapter {
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closePromise) {
       return { ok: false, error: invalidState("Pi Adapter is closed") };
+    }
+    if ("model" in input && input.model) {
+      let model: PiNativeModelRef;
+      try {
+        model = decodePiModelRef(input.model);
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "invalidRequest") };
+      }
+      if (model.fast) {
+        if (!this.#isFastSupported(input.model, input.cwd)) await this.inspect({ cwd: input.cwd });
+        if (!this.#isFastSupported(input.model, input.cwd) && input.kind !== "resume")
+          return {
+            ok: false,
+            error: {
+              code: "unsupported",
+              message: "Fast is unavailable for this Pi Model",
+              retryable: false,
+            },
+          };
+      }
     }
     if (input.cwd.length === 0) {
       return {
@@ -2416,6 +2448,17 @@ export class PiAdapter implements HarnessAdapter {
         }
       }
 
+      // Native history restores Model/Thinking; Host's opaque Model ref restores only Fast.
+      if (
+        input.kind === "resume" &&
+        input.model &&
+        this.#isFastSupported(input.model, input.cwd) &&
+        decodePiModelRef(input.model).fast &&
+        samePiModel(nativeModelFromState(transport.state), decodePiModelRef(input.model))
+      ) {
+        if (!transport.selectFastMode) throw new Error("Pi Fast extension is unavailable");
+        await transport.selectFastMode(true);
+      }
       const startedThinkingLevels = await transport.getAvailableThinkingLevels();
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
       const initialUsage = await transport.getSessionUsage().catch(() => null);
@@ -2431,6 +2474,14 @@ export class PiAdapter implements HarnessAdapter {
       await transport?.close().catch(() => undefined);
       return { ok: false, error: normalizedError(error, "nativeFailure") };
     }
+  }
+
+  #isFastSupported(ref: HarnessModelRef, cwd: string): boolean {
+    return (
+      this.#inspectionCache
+        .get(cwd)
+        ?.catalog.models.some((model) => model.fastModel?.id === ref.id) ?? false
+    );
   }
 
   #trackSession(
@@ -2461,6 +2512,17 @@ export class PiAdapter implements HarnessAdapter {
         ...(options.thinkingOptionId ? { thinkingOptionId: options.thinkingOptionId } : {}),
         toolOutputLimit: this.#toolOutputLimit,
         supportsThinkingSelection: options.supportsThinkingSelection,
+        isFastSupported: async (ref, transport) => {
+          if (this.#inspectionCache.has(cwd)) return this.#isFastSupported(ref, cwd);
+          // The picker may have inspected another cwd. Check the live Session instead
+          // of treating a cache miss as unsupported or spawning another Pi process.
+          if (!(await transport.supportsFastMode?.())) return false;
+          const fastModels = await piFastModelKeys(
+            await transport.getAvailableModels(),
+            environment ?? this.#environment,
+          );
+          return fastModels.has(encodePiModelRef({ ...decodePiModelRef(ref), fast: false }).id);
+        },
         ...(options.startedTransport ? { startedTransport: options.startedTransport } : {}),
         ...(options.startedThinkingLevels !== undefined
           ? { startedThinkingLevels: options.startedThinkingLevels }
@@ -2474,9 +2536,8 @@ export class PiAdapter implements HarnessAdapter {
 
   close(): Promise<void> {
     if (!this.#closePromise) {
-      this.#importAbort.abort();
       this.#closePromise = Promise.all([
-        ...this.#importRequests,
+        this.#importScope.close(),
         ...[...this.#inspections].map((transport) => transport.close()),
         ...[...this.#sessions].map((session) => session.close()),
       ]).then(() => undefined);

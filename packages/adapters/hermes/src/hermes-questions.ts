@@ -9,7 +9,7 @@ import {
   type InteractionRespondCommand,
   type InteractionRespondAccepted,
 } from "@codexhost/harness-adapter";
-import type { HermesQuestionRequest } from "./acp-transport.js";
+import type { HermesQuestionRequest } from "./hermes-transport.js";
 
 /** Owns native Question validation and exactly-once settlement independently of transport. */
 export class HermesQuestions {

@@ -5,12 +5,14 @@ import {
   DelegationControlError,
   type DelegationControlApi,
   type DelegationStartInput,
+  type DelegationWatchApi,
   type HarnessInspectInput,
   type ThreadCancelInput,
   type ThreadListInput,
   type ThreadSendInput,
   type ThreadReadInput,
   type ThreadWaitInput,
+  type ThreadWatchInput,
 } from "./delegation-types.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
@@ -71,9 +73,40 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
+function watchApi(api: DelegationWatchApi | undefined): DelegationWatchApi {
+  if (!api)
+    throw new DelegationControlError("INVALID_ARGUMENT", "This Runtime does not support watches");
+  return api;
+}
+
+/** The Turn already started, so a watch failure is reported beside it, not thrown. */
+function watchStartedTurn(watches: DelegationWatchApi, input: ThreadWatchInput) {
+  return watches.watch(input).catch((error: unknown) => ({
+    state: "notRegistered" as const,
+    reason: error instanceof Error ? error.message : String(error),
+  }));
+}
+
+/** `delegate start --watch`: the Host-resolved parent is the notified Thread. */
+async function startWithWatch(
+  api: DelegationControlApi,
+  watches: DelegationWatchApi,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  const { watchTimeoutMs, ...start } = body;
+  const result = await api.start(start as unknown as DelegationStartInput);
+  const watch = await watchStartedTurn(watches, {
+    threadId: result.threadId,
+    notifyThreadId: result.parentThreadId ?? "",
+    timeoutMs: watchTimeoutMs as number,
+  });
+  return { ...result, watch };
+}
+
 export async function startDelegationControlServer(input: {
   token: string;
   api: DelegationControlApi;
+  watchApi?: DelegationWatchApi;
 }): Promise<DelegationControlServer> {
   const server = createServer((request, response) => {
     void (async () => {
@@ -98,7 +131,13 @@ export async function startDelegationControlServer(input: {
           writeJson(response, 200, await input.api.inspect(body as unknown as HarnessInspectInput));
           return;
         case "/v1/delegate/start":
-          writeJson(response, 200, await input.api.start(body as unknown as DelegationStartInput));
+          writeJson(
+            response,
+            200,
+            body.watchTimeoutMs === undefined
+              ? await input.api.start(body as unknown as DelegationStartInput)
+              : await startWithWatch(input.api, watchApi(input.watchApi), body),
+          );
           return;
         case "/v1/thread/send":
           writeJson(response, 200, await input.api.send(body as unknown as ThreadSendInput));
@@ -111,6 +150,16 @@ export async function startDelegationControlServer(input: {
           return;
         case "/v1/thread/wait":
           writeJson(response, 200, await input.api.wait(body as unknown as ThreadWaitInput));
+          return;
+        case "/v1/thread/watch":
+          writeJson(
+            response,
+            200,
+            await watchApi(input.watchApi).watch(body as unknown as ThreadWatchInput),
+          );
+          return;
+        case "/v1/thread/watches":
+          writeJson(response, 200, await watchApi(input.watchApi).watches());
           return;
         case "/v1/thread/list":
           writeJson(response, 200, await input.api.list(body as unknown as ThreadListInput));

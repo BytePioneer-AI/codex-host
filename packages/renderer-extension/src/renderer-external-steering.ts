@@ -1,4 +1,8 @@
 import { threadOwnershipListResultSchema } from "@codexhost/shared-contracts";
+import { verifyNativeCodexThread } from "./renderer-native-thread.js";
+import { isUnsupportedMethod } from "./renderer-request-sender.js";
+
+const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -134,7 +138,10 @@ async function preserveQueuedFollowUps(
  * Only this operation's outgoing start RPC becomes steer; Host owns stop/wait/start.
  * Official Threads retain the original steer implementation and response semantics.
  */
-export function installRendererExternalSteering(target: unknown): (() => void) | null {
+export function installRendererExternalSteering(
+  target: unknown,
+  sendTurnStart?: (params: unknown, send: (params: unknown) => unknown) => unknown,
+): (() => void) | null {
   if (!isManager(target)) return null;
   const manager = target;
   const originalSteer = manager.steerTurn;
@@ -158,6 +165,14 @@ export function installRendererExternalSteering(target: unknown): (() => void) |
       !route ||
       route.threadId !== params.threadId
     ) {
+      // The same outgoing boundary also covers Desktop's locally queued starts.
+      // Attachment preparation is connection-scoped and leaves native/local input alone.
+      if (method === "turn/start" && sendTurnStart) {
+        return sendTurnStart(params, (input) => {
+          if (disposed) throw new Error("External submission binding was disposed");
+          return originalSend.call(manager, method, input, options);
+        });
+      }
       return originalSend.call(manager, method, params, options);
     }
     if (disposed) return Promise.reject(new Error("External steering binding was disposed"));
@@ -218,11 +233,23 @@ export function installRendererExternalSteering(target: unknown): (() => void) |
     } catch {
       // Official steering must not depend on our additional presentation binding.
     }
-    const ownership = threadOwnershipListResultSchema.parse(
-      await originalSend.call(manager, "codexhost/thread/ownership/list", {
+    let ownershipResponse: unknown;
+    try {
+      ownershipResponse = await originalSend.call(manager, THREAD_OWNERSHIP_LIST_METHOD, {
         threadIds: [threadId],
-      }),
-    );
+      });
+    } catch (error) {
+      if (!isUnsupportedMethod(error, THREAD_OWNERSHIP_LIST_METHOD)) throw error;
+      // A stock remote app-server has no Host ownership RPC. Confirm the native
+      // Thread through that same connection before using Desktop's native steer.
+      await verifyNativeCodexThread(
+        (method, params) => originalSend.call(manager, method, params),
+        threadId,
+      );
+      if (disposed) throw new Error("External steering binding was disposed");
+      return originalSteer.apply(manager, args);
+    }
+    const ownership = threadOwnershipListResultSchema.parse(ownershipResponse);
     const owner = ownership.threads.find((thread) => thread.threadId === threadId)?.owner;
     if (!owner) throw new Error("Thread ownership could not be resolved for steering");
     if (disposed) throw new Error("External steering binding was disposed");

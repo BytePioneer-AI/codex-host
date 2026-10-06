@@ -15,6 +15,56 @@ function controller(): DraftAgentController<object> {
 }
 
 describe("Renderer draft Agent controller", () => {
+  it("preserves pending submission when detaching a successfully transferred draft", () => {
+    const agents = controller();
+    const original = {};
+    const replacement = {};
+    agents.mount(original, ["default"], "pi");
+    agents.markSubmissionPending(original);
+    const identity = agents.get(original).composerId;
+    expect(agents.transfer(original, replacement, ["default"])).toBe(true);
+    agents.detach(original, true);
+    expect(agents.isSubmissionPending(replacement)).toBe(true);
+    expect(agents.transfer(replacement, replacement, ["conversation", "pi-thread"])).toBe(true);
+    expect(agents.get(replacement)).toMatchObject({
+      composerId: identity,
+      agent: "pi",
+      phase: "locked",
+    });
+    expect(agents.isSubmissionPending(replacement)).toBe(false);
+    expect(agents.mount(original, ["default"], "codex").composerId).not.toBe(identity);
+  });
+  it.each([false, true])(
+    "detaches reused roots without leaking external state (locked=%s)",
+    (locked) => {
+      const agents = controller();
+      const root = {};
+      const target = locked ? ["conversation", "pi-thread"] : ["default", "client-new-thread:old"];
+      agents.mount(root, target, "pi");
+      const model = harnessModelRefSchema.parse({ id: "old-pi-model" });
+      if (locked) agents.restore(root, "pi", model);
+      else agents.setExternalModel(root, "pi", model);
+      agents.markSubmissionPending(root);
+      const old = agents.get(root);
+      const request = agents.beginModelRequest(root);
+      const ownership = agents.beginOwnershipRequest(root);
+      agents.detach(root);
+      const fresh = agents.mount(root, ["default", "client-new-thread:new"], "codex");
+      expect(fresh).toMatchObject({ agent: "codex", phase: "draft" });
+      expect(fresh.composerId).not.toBe(old.composerId);
+      expect(agents.modelForAgent(root, "pi")).toBeUndefined();
+      expect(agents.isSubmissionPending(root)).toBe(false);
+      expect(agents.isCurrentModelRequest(root, request)).toBe(false);
+      expect(agents.isCurrentOwnershipRequest(root, ownership)).toBe(false);
+      const revisit = {};
+      expect(agents.mount(revisit, target)).toMatchObject({
+        agent: "pi",
+        phase: locked ? "locked" : "draft",
+      });
+      expect(agents.modelForAgent(revisit, "pi")).toEqual(model);
+      expect(agents.isSubmissionPending(revisit)).toBe(false);
+    },
+  );
   it("keeps Codex locked across Composer replacement", () => {
     const agents = controller();
     const draft = {};
@@ -419,6 +469,34 @@ describe("Renderer draft Agent controller", () => {
       phase: "locked",
     });
     expect(agents.permissionModeForAgent(replacement, "claude-code")).toBeUndefined();
+  });
+
+  it("restores an identified draft across unpaired remounts without inheriting it in new drafts", () => {
+    const agents = controller();
+    const original = {};
+    const replacement = {};
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.fast" });
+    const target = ["default", "client-new-thread:first"];
+    agents.mount(original, target, "pi");
+    agents.setPiModel(original, model);
+    agents.markSubmissionPending(original);
+    agents.mount(replacement, [...target], "codex");
+    expect(agents.get(replacement)).toEqual(agents.get(original));
+    expect(agents.isSubmissionPending(replacement)).toBe(true);
+    expect(agents.transfer(replacement, replacement, ["conversation", "sent-thread"])).toBe(true);
+    expect(agents.get(replacement)).toMatchObject({ phase: "locked", piModel: model });
+    const newDraft = {};
+    agents.mount(newDraft, ["default", "client-new-thread:second"], "pi");
+    expect(agents.get(newDraft)).toMatchObject({ phase: "draft", agent: "pi" });
+    expect(agents.get(newDraft)).not.toHaveProperty("piModel");
+  });
+
+  it("does not share selection between drafts without a stable identity", () => {
+    const agents = controller();
+    const original = {};
+    agents.mount(original, ["default"], "pi");
+    agents.setPiModel(original, harnessModelRefSchema.parse({ id: "pi-model-v1.fast" }));
+    expect(agents.mount({}, ["default"], "pi")).not.toHaveProperty("piModel");
   });
 
   it("transfers Pi Model state and request generations with logical Composer identity", () => {

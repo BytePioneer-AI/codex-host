@@ -1,4 +1,5 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
+export { createLocalPageOpener } from "./local-page-control.js";
 
 export {
   CdpClient,
@@ -89,3 +90,4 @@ export const packageMetadata = {
   name: "@codexhost/desktop-control",
   contractVersion: WORKSPACE_CONTRACT_VERSION,
 } as const;
+export { requestDesktopRemoteConnections } from "./remote-connections-control.js";

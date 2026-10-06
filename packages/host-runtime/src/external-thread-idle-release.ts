@@ -18,7 +18,7 @@ interface Activity {
   closeFailed: boolean;
 }
 
-/** Host-only coordination. This deliberately makes no claim about native background work. */
+/** Host-only coordination. Native background work is judged by `canRelease` (via `HarnessSession.hasBackgroundWork`). */
 export class ExternalThreadIdleRelease {
   readonly #activity = new WeakMap<ExternalThread, Activity>();
   readonly #operations = new Map<string, number>();

@@ -18,7 +18,7 @@ export interface CdpFetchResponse {
   json(): Promise<unknown>;
 }
 
-export type CdpFetch = (url: string) => Promise<CdpFetchResponse>;
+export type CdpFetch = (url: string, init?: { signal?: AbortSignal }) => Promise<CdpFetchResponse>;
 
 interface CdpSocketEvent {
   data?: unknown;
@@ -60,6 +60,18 @@ interface CdpResponse {
     code?: number;
     message?: string;
   };
+}
+
+/**
+ * The thrown value's description (message and stack) when CDP provides it;
+ * `exceptionDetails.text` alone is only a summary such as "Uncaught".
+ */
+export function cdpExceptionMessage(details: Record<string, unknown>, fallback: string): string {
+  const exception = details.exception;
+  if (isRecord(exception) && typeof exception.description === "string" && exception.description) {
+    return exception.description;
+  }
+  return typeof details.text === "string" && details.text ? details.text : fallback;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -113,8 +125,8 @@ function parseTarget(value: unknown): CdpTarget | null {
   };
 }
 
-function defaultFetch(url: string): Promise<CdpFetchResponse> {
-  return fetch(url);
+function defaultFetch(url: string, init?: { signal?: AbortSignal }): Promise<CdpFetchResponse> {
+  return fetch(url, init);
 }
 
 function defaultSocketFactory(url: string): CdpSocket {
@@ -166,10 +178,11 @@ export async function getCdpBrowserVersion(
 export async function listCdpTargets(
   endpoint: string,
   fetchImpl: CdpFetch = defaultFetch,
+  signal?: AbortSignal,
 ): Promise<CdpTarget[]> {
   const baseUrl = loopbackUrl(endpoint, ["http:", "https:"]);
   const targetsUrl = new URL("/json/list", baseUrl).toString();
-  const response = await fetchImpl(targetsUrl);
+  const response = await fetchImpl(targetsUrl, signal ? { signal } : undefined);
   if (!response.ok) throw new Error(`CDP target discovery failed with HTTP ${response.status}`);
   const value = await response.json();
   if (!Array.isArray(value)) throw new Error("CDP target discovery did not return an array");
@@ -304,11 +317,7 @@ export class CdpClient {
     });
     if (!isRecord(response)) throw new Error("Runtime.evaluate returned an invalid result");
     if (isRecord(response.exceptionDetails)) {
-      const text =
-        typeof response.exceptionDetails.text === "string"
-          ? response.exceptionDetails.text
-          : "Renderer evaluation failed";
-      throw new Error(text);
+      throw new Error(cdpExceptionMessage(response.exceptionDetails, "Renderer evaluation failed"));
     }
     if (!isRecord(response.result) || !("value" in response.result)) {
       throw new Error("Runtime.evaluate did not return a value");

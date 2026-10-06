@@ -1,5 +1,6 @@
 import type {
   HarnessAccountSnapshot,
+  HarnessInstallationState,
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
@@ -40,6 +41,7 @@ export type HarnessErrorCode =
   | "notInstalled"
   | "unavailable"
   | "authenticationRequired"
+  | "configurationRequired"
   | "sessionNotFound"
   | "sessionBusy"
   | "checkpointNotFound"
@@ -283,7 +285,11 @@ export interface HostAgentMessageItem {
   type: "agentMessage";
   itemId: HostItemId;
   text: string;
-  /** Omit when the Harness cannot distinguish progress from its final answer. */
+  /**
+   * Omit when the Harness cannot distinguish progress from its final answer; the
+   * Host then treats the message that ends a succeeded Turn as its final answer.
+   * Set `commentary` to keep such a message out of that inference.
+   */
   phase?: "commentary" | "final_answer";
 }
 
@@ -474,6 +480,16 @@ export interface ItemCompletedEvent {
   snapshot: HostItemSnapshot;
 }
 
+/**
+ * The Item keeps running after its Turn completes (a native background command).
+ * It settles later with `item.updated` / `item.completed` on the same Turn.
+ */
+export interface ItemDetachedEvent {
+  type: "item.detached";
+  turnId: HostTurnId;
+  itemId: HostItemId;
+}
+
 export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
@@ -503,6 +519,7 @@ export type HostEvent =
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
+  | ItemDetachedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent
   | SessionFaultedEvent;
@@ -514,11 +531,22 @@ export interface HarnessSession {
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
+  /**
+   * Immutable identity reserved for this Session's native writes, when known before native
+   * creation. Not evidence of durable history: only state.nativeRef confirms resumability.
+   * An Adapter supplying this must not write to the identity during open; the caller reserves
+   * it before executing commands. Subsequent state.nativeRef must match it exactly.
+   */
+  readonly nativeWriterRef?: NativeSessionRef;
   readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly commands?: HarnessCommandCapability;
 
   refreshUsage?(): Promise<void>;
+  /** Native background work (e.g. a background command) is still running; the Session must not be released. */
+  hasBackgroundWork?(): boolean;
+  /** Stops every running detached Item; each still settles through its own events. */
+  stopBackgroundWork?(): Promise<HarnessResult<void>>;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
@@ -557,6 +585,12 @@ export interface HarnessSessionImportCapability {
 }
 
 export interface HarnessAdapter {
+  /** Native CLI version checks and explicit updates. Never updates the Host plugin,
+   * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
+   */
+  installation?(action: "check" | "update"): Promise<HarnessInstallationState>;
+  /** Explicit first-time CLI installation using an Adapter-owned official source. */
+  install?(): Promise<void>;
   readonly credentialExport?: HarnessCredentialExport;
   readonly credentialImports?: HarnessCredentialImports;
   readonly harnessId: HarnessId;
@@ -576,6 +610,11 @@ export interface HarnessAdapter {
    * Implementations must bound requests and release inspection resources on close.
    */
   inspectAccount?(): Promise<HarnessAccountSnapshot | null>;
+  /**
+   * The same read when one Harness exposes several Billing Sources. Host prefers
+   * this method and retains the first snapshot as the compatibility `account`.
+   */
+  inspectAccounts?(): Promise<readonly HarnessAccountSnapshot[]>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;

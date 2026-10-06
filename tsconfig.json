@@ -5,10 +5,12 @@
     { "path": "./packages/harness-adapter/tsconfig.json" },
     { "path": "./packages/harness-broker/tsconfig.json" },
     { "path": "./packages/harness-discovery/tsconfig.json" },
+    { "path": "./packages/harness-plugin-files/tsconfig.json" },
     { "path": "./packages/mapping-store/tsconfig.json" },
     { "path": "./packages/protocol-core/tsconfig.json" },
     { "path": "./packages/desktop-control/tsconfig.json" },
     { "path": "./packages/update-manager/tsconfig.json" },
+    { "path": "./packages/console-server/tsconfig.json" },
     { "path": "./packages/adapters/pi/tsconfig.json" },
     { "path": "./packages/adapters/claude-code/tsconfig.json" },
     { "path": "./packages/adapters/deepseek-harness/tsconfig.json" },
@@ -24,6 +26,7 @@
     { "path": "./packages/adapters/qoder/tsconfig.json" },
     { "path": "./packages/adapters/qoder-cn/tsconfig.json" },
     { "path": "./packages/adapters/kimi-code/tsconfig.json" },
+    { "path": "./packages/adapters/zcode/tsconfig.json" },
     { "path": "./packages/host-runtime/tsconfig.json" },
     { "path": "./packages/renderer-extension/tsconfig.json" }
   ]

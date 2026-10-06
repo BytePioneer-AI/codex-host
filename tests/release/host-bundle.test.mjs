@@ -69,7 +69,6 @@ async function runPackagedHost(host, directory, requests) {
     CODEXHOST_DATA_DIR: path.join(directory, "data"),
     CODEXHOST_PLUGIN_DIRECTORY: path.join(directory, "user-plugins"),
     CODEXHOST_STOCK_CODEX_PATH: process.execPath,
-    CODEXHOST_DEFAULT_AGENT: "codex",
     CODEXHOST_CLAUDE_COMMAND: path.join(directory, "missing-claude"),
     CODEXHOST_ANTIGRAVITY_COMMAND: path.join(directory, "missing-antigravity"),
   });
@@ -185,12 +184,14 @@ describe("release Host and independent plugin Bundles", () => {
       expect(pluginAudits.find(({ id }) => id === "grok").runtimePackages).toContain(
         "@agentclientprotocol/sdk",
       );
-      expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toContain(
-        "@opencode-ai/sdk",
+      expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toEqual(
+        expect.arrayContaining(["@opencode-ai/sdk", "@opencode/client"]),
       );
-      expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toContain(
-        "@deepseek-ai/schemastery",
-      );
+      expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toEqual([
+        "diff",
+        "ws",
+        "zod",
+      ]);
       const source = await readFile(path.join(app, "host-runtime.mjs"), "utf8");
       expect(source).not.toContain("class ClaudeCodeAdapter");
       expect(source).not.toContain("Claude Code is not installed");

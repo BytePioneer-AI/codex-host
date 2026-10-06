@@ -36,7 +36,7 @@ Controlled mode reuses the existing production `RendererControlSession`. It can 
 
 The `codex-usage-gate` surface covers `renderer-codex-usage-gate.ts`, which lets an external Harness submit while the ChatGPT-signed-in Codex subscription is out of usage. For each Composer with an editor it records bounded counts:
 
-- `ownerCount` — Composer owners exposing `onLocalSubmitStart` and boolean `submitDisabled`;
+- `ownerCount` — Composer owners exposing `onLocalSubmitStart` and boolean `submitDisabled` that hold the reserve gate (pass-through wrappers with the same props are excluded);
 - `reserveGateCount` — boolean subscriptions whose selector reads reserve `hardBlocked`;
 - `accountGateCount` — boolean subscriptions whose selector reads `authMethod` and `rate_limit.allowed`.
 

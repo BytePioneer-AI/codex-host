@@ -52,7 +52,6 @@ describe("production Controller / Renderer Agent contract", () => {
       {
         rendererCdpEndpoint: "http://127.0.0.1:43123",
         rendererPath: "/synthetic/renderer.js",
-        defaultAgent: "codex",
         attachmentPort: 43124,
         attachmentNonce: "0123456789abcdef0123456789abcdef",
       },

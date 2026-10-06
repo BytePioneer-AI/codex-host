@@ -253,6 +253,31 @@ function selectConfig(command: (typeof configCommands)[number]) {
   return session.execute(command);
 }
 
+describe("Kiro startup authentication diagnostics", () => {
+  it.each([
+    ["error: You are not logged in, please log in with kiro-cli login", "authenticationRequired"],
+    ["error: connection refused", "unavailable"],
+  ])("classifies native stderr %j as %s", async (stderr, code) => {
+    peer = new NativePeer();
+    vi.spyOn(peer, "receive").mockImplementation(() => {
+      peer.child.stderr.write(stderr);
+      peer.exit(1);
+    });
+    const probe = new KiroAdapter({ commandTimeoutMs: 200 }, { locateSession: async () => null });
+    try {
+      const inspection = await probe.inspect({ cwd: process.cwd(), refresh: true });
+      expect(inspection).toMatchObject({ error: { code } });
+      if (code === "authenticationRequired") {
+        expect(inspection).toMatchObject({
+          error: { message: "Kiro CLI authentication is required (run `kiro-cli login`)" },
+        });
+      }
+    } finally {
+      await probe.close();
+    }
+  });
+});
+
 describe("Kiro ACP configuration timeouts", () => {
   it.each(configCommands)(
     "faults and blocks sends after an unconfirmed $type write",

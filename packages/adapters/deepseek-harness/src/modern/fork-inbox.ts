@@ -5,7 +5,7 @@ import { ModernJournalError, type ModernJournal, type ModernJournalRemote } from
 import { ModernRemoteConnectionError } from "./remote-connection.js";
 import type { ModernRemoteResult } from "./wire.js";
 
-/** Read native V3 pending input, refusing any item not owned by the verified fork seed. */
+/** Read native pending input, refusing any item not owned by the verified fork seed. */
 export function pendingForkInboxIds(journal: ModernJournal): readonly string[] {
   const inheritedCount = journal.inheritedEventCount;
   if (

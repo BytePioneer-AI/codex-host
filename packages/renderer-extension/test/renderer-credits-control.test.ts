@@ -1,14 +1,34 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   creditsPeriodLabel,
   formatRendererCreditsReset,
   productLabel,
   rendererCreditsTone,
+  renderRendererCreditsControl,
+  type RendererCreditsControl,
 } from "../src/renderer-credits-control.js";
 import { formatRendererCreditsPercent } from "../src/renderer-usage-control.js";
 
 describe("Renderer credits control", () => {
+  it.each([null, { parentElement: null }])(
+    "hides credits and closes the popover without an attached placement anchor (%j)",
+    (anchor) => {
+      const root = { style: { display: "inline-flex" } };
+      const trigger = { setAttribute: vi.fn() };
+      const popover = { hidden: false, matches: () => true, hidePopover: vi.fn() };
+      const control = { root, trigger, popover, anchor } as unknown as RendererCreditsControl;
+
+      expect(renderRendererCreditsControl(control, { usedPercent: 19, periodType: "weekly" })).toBe(
+        false,
+      );
+      expect(root.style.display).toBe("none");
+      expect(popover.hidePopover).toHaveBeenCalledOnce();
+      expect(popover.hidden).toBe(true);
+      expect(trigger.setAttribute).toHaveBeenCalledWith("aria-expanded", "false");
+    },
+  );
+
   it("maps used percent into a status tone", () => {
     expect(rendererCreditsTone(0)).toBe("ok");
     expect(rendererCreditsTone(52)).toBe("ok");

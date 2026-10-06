@@ -10,7 +10,10 @@ import type {
 
 const ABORTED_TERMINALS = new Set(["aborted_streaming", "aborted_tools"]);
 const AUTHENTICATION_ERRORS = new Set(["authentication_failed", "oauth_org_not_allowed"]);
-const SUBAGENT_TOOLS = new Set(["Agent", "Task", "SendMessage"]);
+/** Tools whose native lifecycle is a Subagent, not a Host Tool Item. */
+export const CLAUDE_SUBAGENT_TOOLS = new Set(["Agent", "Task", "SendMessage"]);
+/** Native Bash running in the background names the file its output streams to. */
+const BACKGROUND_OUTPUT_FILE_PATTERN = /Output is being written to: (.+?\.output)\./u;
 const SUBAGENT_DESCRIPTION_LIMIT = 500;
 const SUBAGENT_SUMMARY_LIMIT = 2_000;
 
@@ -117,18 +120,8 @@ function targetedSubagentId(argumentsValue: unknown): string | undefined {
   );
 }
 
-function includesAuthenticationFailure(
-  message: Record<string, unknown>,
-  errors: string[],
-): boolean {
-  if (errors.some((error) => AUTHENTICATION_ERRORS.has(error))) return true;
-  const text = [message.result, ...(Array.isArray(message.errors) ? message.errors : [])]
-    .filter((value): value is string => typeof value === "string")
-    .join(" ")
-    .toLowerCase();
-  return (
-    text.includes("not logged in") || text.includes("invalid api key") || text.includes("oauth")
-  );
+function includesAuthenticationFailure(errors: string[]): boolean {
+  return errors.some((error) => AUTHENTICATION_ERRORS.has(error));
 }
 
 function failure(kind: ClaudeTransportFailureKind): ClaudeTransportTurnResult {
@@ -360,12 +353,14 @@ export function parseClaudeTaskNotification(
   if (status !== "completed" && status !== "failed" && status !== "interrupted") return null;
   const summary = content.match(/<summary>([\s\S]*?)<\/summary>/u)?.[1]?.trim();
   const callId = content.match(/<tool-use-id>([^<]+)<\/tool-use-id>/u)?.[1]?.trim();
+  const outputFile = content.match(/<output-file>([^<]+)<\/output-file>/u)?.[1]?.trim();
   return {
     type: "subagent.settled",
     nativeSubagentId: taskId,
     status,
     ...(callId ? { callId } : {}),
     ...(summary ? { resultSummary: summary.slice(0, SUBAGENT_SUMMARY_LIMIT) } : {}),
+    ...(outputFile ? { outputFile } : {}),
   };
 }
 
@@ -472,7 +467,7 @@ export class ClaudeNativeTurnAccumulator {
       terminal = failure("protocol");
     } else if (this.#textConflict) {
       terminal = failure("textConflict");
-    } else if (includesAuthenticationFailure(message, this.#assistantErrors)) {
+    } else if (includesAuthenticationFailure(this.#assistantErrors)) {
       terminal = failure("authentication");
     } else if (this.#cancelRequested && ABORTED_TERMINALS.has(terminalReason)) {
       terminal = { status: "cancelled", reason: terminalReason };
@@ -556,12 +551,17 @@ export class ClaudeNativeTurnAccumulator {
       }
       const resultSummary = boundedString(message.summary, SUBAGENT_SUMMARY_LIMIT);
       const callId = boundedString(message.tool_use_id, SUBAGENT_DESCRIPTION_LIMIT);
+      const outputFile =
+        typeof message.output_file === "string" && message.output_file.length > 0
+          ? message.output_file
+          : undefined;
       events.push({
         type: "subagent.settled",
         nativeSubagentId: agentId,
         status,
         ...(callId ? { callId } : {}),
         ...(resultSummary ? { resultSummary } : {}),
+        ...(outputFile ? { outputFile } : {}),
       });
       return;
     }
@@ -726,7 +726,7 @@ export class ClaudeNativeTurnAccumulator {
         if (!ignoreKnownIds) this.#protocolConflict = true;
         continue;
       }
-      const subagent = SUBAGENT_TOOLS.has(block.name);
+      const subagent = CLAUDE_SUBAGENT_TOOLS.has(block.name);
       this.#tools.set(block.id, { name: block.name, subagent });
       if (subagent) {
         const prompt = subagentPrompt(argumentsResult.data);
@@ -827,6 +827,20 @@ export class ClaudeNativeTurnAccumulator {
         continue;
       }
       const fileChange = isError ? null : parseClaudeNativeFileChange(tool.name, nativeResult);
+      const backgroundTaskId =
+        tool.name === "Bash" &&
+        !isError &&
+        isRecord(nativeResult) &&
+        typeof nativeResult.backgroundTaskId === "string" &&
+        nativeResult.backgroundTaskId.length > 0
+          ? nativeResult.backgroundTaskId
+          : undefined;
+      const outputFile =
+        backgroundTaskId !== undefined
+          ? BACKGROUND_OUTPUT_FILE_PATTERN.exec(outputText ?? "")?.[1]
+          : undefined;
+      const backgroundOutputFile =
+        typeof outputFile === "string" && outputFile.length > 0 ? outputFile : undefined;
       events.push({
         type: "tool.completed",
         callId,
@@ -835,6 +849,8 @@ export class ClaudeNativeTurnAccumulator {
         ...(structuredResult?.success ? { structuredResult: structuredResult.data } : {}),
         isError,
         ...(fileChange ? { fileChange } : {}),
+        ...(backgroundTaskId ? { backgroundTaskId } : {}),
+        ...(backgroundOutputFile ? { backgroundOutputFile } : {}),
       });
     }
   }

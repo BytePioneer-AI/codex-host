@@ -4,7 +4,7 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -208,8 +208,7 @@ pub(super) fn stop_stale_launcher(descriptor: &RuntimeDescriptor) -> Result<(), 
         return Ok(());
     }
     let expected = env::current_exe()?.canonicalize()?;
-    let actual = process_executable_path(descriptor.launcher_pid)?.canonicalize()?;
-    if actual != expected {
+    if !recorded_launcher_is_current(process_executable_path(descriptor.launcher_pid), &expected) {
         return Ok(());
     }
     terminate_process_by_id(descriptor.launcher_pid)?;
@@ -232,13 +231,58 @@ pub(super) fn stop_stale_launcher(_descriptor: &RuntimeDescriptor) -> Result<(),
     Ok(())
 }
 
+/// A recorded launcher PID may since have been reused by an unrelated process.
+/// Only an inspected executable matching this launcher proves ownership; a PID
+/// the current user cannot inspect (for example a reused SYSTEM service PID)
+/// is not ours to stop and must not block startup.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn recorded_launcher_is_current<E>(inspected: Result<PathBuf, E>, expected: &Path) -> bool {
+    inspected
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
+        .is_some_and(|path| path == expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     fn descriptor(port: u16) -> RuntimeDescriptor {
         RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())
             .expect("runtime descriptor")
+    }
+
+    #[test]
+    fn recorded_launcher_requires_an_inspectable_matching_executable() {
+        let expected = env::current_exe()
+            .expect("current executable")
+            .canonicalize()
+            .expect("canonical current executable");
+
+        let access_denied: Result<PathBuf, io::Error> =
+            Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(!recorded_launcher_is_current(access_denied, &expected));
+
+        let missing = expected.with_file_name("codexhost-missing-launcher-executable");
+        assert!(!recorded_launcher_is_current(
+            Ok::<_, io::Error>(missing),
+            &expected
+        ));
+
+        let other = expected
+            .parent()
+            .expect("executable directory")
+            .to_path_buf();
+        assert!(!recorded_launcher_is_current(
+            Ok::<_, io::Error>(other),
+            &expected
+        ));
+
+        assert!(recorded_launcher_is_current(
+            Ok::<_, io::Error>(expected.clone()),
+            &expected
+        ));
     }
 
     #[test]

@@ -41,17 +41,22 @@ export type {
   ExternalThreadRpcError,
 } from "./thread-fork.js";
 export {
+  carriesHostThreadListCursor,
   decodeHostThreadListCursor,
   decodeOfficialThreadListPage,
   decodeThreadArchiveRequest,
   decodeThreadListRequest,
   decodeThreadMetadataUpdateRequest,
+  observeDeletedProject,
+  decodeThreadSectionMoveRequest,
   encodeHostThreadListCursor,
+  encodeSectionThreadListCursor,
 } from "./thread-management.js";
 export type {
   DecodedThreadListRequest,
   DecodedThreadManagementRequest,
   DecodedThreadMetadataUpdateRequest,
+  DecodedThreadSectionMoveRequest,
   HostThreadListCursor,
   OfficialThreadListSortKey,
   OfficialThreadListPage,

@@ -7,15 +7,10 @@ import {
 } from "../../packages/host-runtime/dist/index.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
-const DEFAULT_AGENT_ENV = "CODEXHOST_DEFAULT_AGENT";
 const OBSERVATION_PATH_ENV = "CODEXHOST_ROUTE_OBSERVATION_PATH";
 
 const stockCodexPath = process.env[STOCK_CODEX_PATH_ENV];
 if (!stockCodexPath) throw new Error(`${STOCK_CODEX_PATH_ENV} is required`);
-const defaultAgent = process.env[DEFAULT_AGENT_ENV];
-if (defaultAgent !== "codex" && defaultAgent !== "pi") {
-  throw new Error(`${DEFAULT_AGENT_ENV} must be 'codex' or 'pi'`);
-}
 const observationPath = process.env[OBSERVATION_PATH_ENV];
 if (!observationPath || !path.isAbsolute(observationPath)) {
   throw new Error(`${OBSERVATION_PATH_ENV} must be an absolute path`);
@@ -27,7 +22,6 @@ delete environment[OBSERVATION_PATH_ENV];
 const host = new AppServerHost({
   stockCodexPath,
   arguments: process.argv.slice(2),
-  defaultAgent,
   environment,
   ...installedHarnessPluginOptions(environment),
   onRequestRoute(observation) {

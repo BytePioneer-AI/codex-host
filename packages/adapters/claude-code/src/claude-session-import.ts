@@ -6,48 +6,26 @@ import { createInterface } from "node:readline";
 
 import type { HarnessSessionImportSource } from "@codexhost/harness-adapter";
 import {
-  harnessSessionImportCandidateSchema,
-  nativeSessionRefSchema,
-} from "@codexhost/shared-contracts";
+  SessionImportChangedError,
+  isMissingFileError,
+  sameFileFingerprint,
+  sessionImportCandidate,
+  sessionImportTitle,
+} from "@codexhost/harness-adapter/session-import";
+import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import { z } from "zod";
 
 const CLAUDE_SESSION_IMPORT_TITLE_MAX_LENGTH = 120;
 const CLAUDE_INTERNAL_USER_TEXT = /^<(?:local-command-|command-)/u;
 
-class ClaudeSessionChangedError extends Error {
-  constructor() {
-    super("Claude Code Session changed during discovery; refresh and retry");
-  }
-}
+const CLAUDE_SESSION_CHANGED = "Claude Code Session changed during discovery; refresh and retry";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function missing(error: unknown): boolean {
-  return isRecord(error) && error.code === "ENOENT";
-}
-
-function sameFile(left: Stats, right: Stats): boolean {
-  return (
-    left.size === right.size &&
-    left.mtimeMs === right.mtimeMs &&
-    left.ctimeMs === right.ctimeMs &&
-    left.ino === right.ino &&
-    left.dev === right.dev
-  );
-}
-
 function cleanText(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.replaceAll("\0", "").replaceAll(/\s+/gu, " ").trim();
-  if (!normalized) return null;
-  const characters = [...normalized];
-  if (characters.length <= CLAUDE_SESSION_IMPORT_TITLE_MAX_LENGTH) return normalized;
-  return `${characters
-    .slice(0, CLAUDE_SESSION_IMPORT_TITLE_MAX_LENGTH - 1)
-    .join("")
-    .trimEnd()}…`;
+  return sessionImportTitle(value, CLAUDE_SESSION_IMPORT_TITLE_MAX_LENGTH);
 }
 
 function userText(message: unknown): string | null {
@@ -82,7 +60,7 @@ export function claudeProjectsDirectory(environment: NodeJS.ProcessEnv): string 
 async function sessionFiles(directory: string, signal: AbortSignal): Promise<string[]> {
   signal.throwIfAborted();
   const projects = await opendir(directory).catch((error: unknown) => {
-    if (missing(error)) return null;
+    if (isMissingFileError(error)) return null;
     throw error;
   });
   if (!projects) return [];
@@ -93,7 +71,7 @@ async function sessionFiles(directory: string, signal: AbortSignal): Promise<str
     // or descend into per-Session subagent storage.
     if (!project.isDirectory()) continue;
     const entries = await opendir(path.join(directory, project.name)).catch((error: unknown) => {
-      if (missing(error)) return null;
+      if (isMissingFileError(error)) return null;
       throw error;
     });
     if (!entries) continue;
@@ -155,24 +133,22 @@ async function readCandidate(
   }
   if (!hasConversation || !cwd) return null;
   const after = await stat(file);
-  if (!sameFile(before, after)) throw new ClaudeSessionChangedError();
+  if (!sameFileFingerprint(before, after))
+    throw new SessionImportChangedError(CLAUDE_SESSION_CHANGED);
   const resolvedCwd = await realpath(cwd);
   if (!(await stat(resolvedCwd)).isDirectory()) return null;
-  const candidate = harnessSessionImportCandidateSchema.safeParse({
+  const candidate = sessionImportCandidate({
     nativeSessionId,
     title: customTitle ?? generatedTitle ?? firstPrompt,
-    updatedAt: Math.floor(before.mtimeMs),
+    updatedAt: before.mtimeMs,
     cwd: resolvedCwd,
-    running: null,
   });
   const nativeRef = nativeSessionRefSchema.safeParse({
     harnessId: "claude-code",
     nativeSessionId,
     formatVersion: 1,
   });
-  return candidate.success && nativeRef.success
-    ? { candidate: candidate.data, nativeRef: nativeRef.data }
-    : null;
+  return candidate && nativeRef.success ? { candidate, nativeRef: nativeRef.data } : null;
 }
 
 /** Cached read-only index over Claude Code's native main-session transcripts. */
@@ -202,7 +178,7 @@ export class ClaudeSessionImportIndex {
         const fingerprint = await stat(file);
         const cached = this.#cache.get(file);
         const source =
-          cached && sameFile(cached.fingerprint, fingerprint)
+          cached && sameFileFingerprint(cached.fingerprint, fingerprint)
             ? cached.source
             : await readCandidate(file, signal);
         if (!source) continue;
@@ -215,7 +191,8 @@ export class ClaudeSessionImportIndex {
         sources.push(source);
       } catch (error) {
         // A native client may append or remove one Session while the rest remain importable.
-        if (!missing(error) && !(error instanceof ClaudeSessionChangedError)) throw error;
+        if (!isMissingFileError(error) && !(error instanceof SessionImportChangedError))
+          throw error;
       }
     }
     this.#cache = next;
@@ -243,7 +220,7 @@ export class ClaudeSessionImportIndex {
       const source = await readCandidate(selected, signal);
       return source?.candidate.nativeSessionId === nativeSessionId ? source : null;
     } catch (error) {
-      if (missing(error)) return null;
+      if (isMissingFileError(error)) return null;
       throw error;
     }
   }

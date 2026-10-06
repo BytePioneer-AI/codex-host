@@ -31,8 +31,8 @@ describe("production Renderer release chain", () => {
     expect([...controllerAgents.matchAll(/"([^"]+)"/g)].map((match) => match[1])).toEqual(
       [...rendererAgents.matchAll(/"([^"]+)"/g)].map((match) => match[1]),
     );
-    expect(productionEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS");
-    expect(productionEntry).toContain("__codexhostProductionConfigV1");
+    expect(productionEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS)");
+    expect(productionEntry).not.toContain("__codexhostProductionConfigV1");
     expect(productionEntry).toContain('window.addEventListener("DOMContentLoaded"');
     expect(productionEntry).toContain("document.documentElement && document.body");
     expect(productionEntry).not.toContain("RendererConfiguration");

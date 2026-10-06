@@ -7,7 +7,7 @@
 - **OMP**：现有原生提问与工具审批已接入。选择题使用原生逐项说明，超时与主动取消分别回传 `timedOut` / `cancelled`，详见 [OMP 交互](omp/omp-interactions.md)。子代理投影依赖 OMP RPC 的 `set_subagent_subscription` 订阅（服务端默认 `off`）：Host 启动连接时请求 `events` 级别；不支持该命令的旧版 OMP 优雅降级为无子代理投影，不阻塞会话。子代理转写读取优先直接读父会话文件旁的 `<子代理ID>.jsonl`（OMP RPC 的子代理注册表仅存于内存，冷启动进程无法按 ID 解析已完成的子代理）；文件不存在时回退 RPC 读取。
 - **CodeBuddy**：从 ACP 动态目录读取斜杠命令，按原生压缩事件及持久化结果确认上下文压缩；通过原生附加系统提示让会话发现 Host 委派 CLI。Fork 和修订通过无模型的原生复制、原生 `/fork` 与仅作用于新副本的 rollback 完成，校验完整历史前缀与源会话不变；派生配置随原生引用恢复。成功派生后通过同一临时 ACP 进程的原生 HTTP 接口删除中间副本；早期失败或强杀仍可能残留，详见专属文档。详见 [CodeBuddy 接入](codebuddy/codebuddy-harness-integration.md)。
 - **Cursor**：参数化模型目录提供 Thinking 组合；ACP 原生命令目录提供命令；每会话的原生 HTTP MCP 连接提供向外委派。详见 [Cursor 接入](cursor/cursor-cli-experimental.md)。
-- **Hermes**：新会话优先使用可用的官方 gateway，不以版本数值差异阻断，接入提问、Thinking、命令、压缩、原生 Diff，以及未压缩历史的独立 Fork/修订；通过进程内注册的私有临时 Skill 发现 Host CLI 并保留父任务环境，不向共享技能目录写入临时 Skill。旧 ACP 引用仍由 ACP 恢复。详见 [Hermes 能力与边界](hermes/hermes-capabilities.md)。
+- **Hermes**：会话统一使用官方 Gateway，不以版本数值差异阻断，接入提问、Thinking、命令、压缩、原生 Diff，以及未压缩历史的独立 Fork/修订；通过进程内注册的私有临时 Skill 发现 Host CLI 并保留父任务环境，不向共享技能目录写入临时 Skill。不再保留 ACP 实现或 SDK 依赖；历史发现和导入使用原生 SessionDB 只读查询，导入的原生身份通过 Gateway 恢复。详见 [Hermes 能力与边界](hermes/hermes-capabilities.md)。
 
 以上实现归各 Harness 插件所有，不在公共 Adapter、Host 或 Renderer 中添加 Harness 专用分支。跨插件参考实现不等于共用原生协议；各自保留配置确认、取消、持久化和权限语义。
 
@@ -28,6 +28,10 @@ Agent 间任务协作目前是单向的：正常 Cursor Session 可以通过原�
 ## Pi subagent 插件
 
 Pi Adapter 接入 `pi-subagents`（nicobailon）的异步 Host 状态与检查协议，以及同步 workflow 的 `workflowChildren` 摘要，复用公共子 Thread 和渲染链路。异步转写是原生有界窗口；同步 workflow 从父结果定位只读子 Session，文件不可用时可展示明确标注的原生结果摘要。没有已支持身份协议的同步单 Agent 调用及其他同名插件不自动兼容。详见 [Pi subagent 映射](pi/pi-subagents.md)。
+
+## Pi Codex Fast
+
+Pi 当前 Model 同时具备 Codex OAuth、Codex API 和本地 `priority` 元数据时，Composer 显示默认关闭的闪电开关。Host 自动加载随插件交付的小型 Pi 扩展，通过原生 Provider 参数设置 priority，不依赖 Provider 名称，也不改变 Thinking 或 Pi 全局配置。缺少能力事实时不显示；真实服务端速度和额度效果未作承诺。详见 [Pi Codex Fast](pi/pi-fast.md)。
 
 ## Pi 权限模式
 

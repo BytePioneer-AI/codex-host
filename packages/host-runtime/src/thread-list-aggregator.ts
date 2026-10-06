@@ -1,4 +1,4 @@
-import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   decodeOfficialThreadListPage,
   encodeHostThreadListCursor,
@@ -84,7 +84,9 @@ function cursorValue(input: {
 export async function aggregateThreadList(input: {
   query: DecodedThreadListRequest;
   records: readonly StoredThreadRecordV1[];
+  sharedThreads?: readonly JsonObject[];
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
+  placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
   requestOfficialPage(params: JsonObject): Promise<OfficialThreadListPage>;
 }): Promise<AggregatedThreadListPage> {
   const { query } = input;
@@ -104,8 +106,10 @@ export async function aggregateThreadList(input: {
     ? { data: [], hasMore: false }
     : listExternalThreadMetadata({
         records: input.records,
+        ...(input.sharedThreads ? { sharedThreads: input.sharedThreads } : {}),
         query,
         runtimeFor: input.runtimeFor,
+        ...(input.placementOf ? { placementOf: input.placementOf } : {}),
         anchor: start.externalAnchor,
         limit: query.limit,
       });
@@ -120,6 +124,7 @@ export async function aggregateThreadList(input: {
   let firstOfficialBackwardsCursor: string | null | undefined;
   let officialRequestCount = 0;
   const externalIds = new Set<string>(input.records.map((record) => record.hostThreadId));
+  for (const thread of input.sharedThreads ?? []) externalIds.add(String(thread.id));
 
   const requestOfficial = async (cursor: string | null, limit: number) => {
     officialRequestCount += 1;

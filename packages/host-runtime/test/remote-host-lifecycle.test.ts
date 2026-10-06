@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
+import net, { type AddressInfo } from "node:net";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocketServer } from "ws";
 
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(() => ({ unref: vi.fn() })),
@@ -13,6 +15,7 @@ import type {
 } from "../src/remote-host-install.js";
 import {
   classifyRemoteHostProbeResponse,
+  probeWebSocket,
   inspectRemoteHost,
   setRemoteHostLifecycleDependenciesForTest,
   startRemoteHost,
@@ -79,6 +82,36 @@ describe("remote Host lifecycle", () => {
         socketPath,
       ),
     ).toBeNull();
+  });
+
+  it("identifies a Host that announces Threads before answering the probe", async () => {
+    const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise((resolve) => server.once("listening", resolve));
+    server.on("connection", (connection) => {
+      connection.send(JSON.stringify({ method: "thread/started", params: {} }));
+      connection.on("message", () => {
+        connection.send(JSON.stringify({ method: "thread/started", params: {} }));
+        connection.send(
+          JSON.stringify({
+            id: 1,
+            error: { code: -32090, message: "Application updates are unavailable" },
+          }),
+        );
+      });
+    });
+    const { port } = server.address() as AddressInfo;
+    try {
+      await expect(
+        probeWebSocket({
+          socketPath,
+          createConnection: () => net.createConnection(port, "127.0.0.1"),
+          timeoutMs: 2_000,
+          timeoutMessage: "timed out",
+        }),
+      ).resolves.toEqual({ state: "running", socketPath, protocol: "codexhost" });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it("reports installation and runtime state together", async () => {
@@ -218,17 +251,71 @@ describe("remote Host lifecycle", () => {
     );
   });
 
-  it("refuses to stop a stock listener", async () => {
+  it("allows stopping an outdated installation but still refuses to start it", async () => {
     const terminate = vi.fn();
+    const probe = vi.fn().mockResolvedValue(runtime("running", "codexhost"));
+    const launch = vi.fn();
     restore = setRemoteHostLifecycleDependenciesForTest({
-      inspectInstallation: vi.fn().mockResolvedValue(readyInstallation),
-      probeProtocol: vi.fn().mockResolvedValue(runtime("conflict", "stock-codex")),
+      inspectInstallation: vi.fn().mockResolvedValue({
+        ...readyInstallation,
+        state: "degraded",
+        issues: ["shell profile does not configure the managed native entrypoint"],
+      }),
+      probeProtocol: probe,
+      runTerminator: terminate,
+      socketExists: vi.fn().mockResolvedValue(false),
+      launch,
+    });
+    const options = { platform: "linux" as const, environment: { HOME: home } };
+
+    await expect(startRemoteHost(options)).rejects.toThrow("installation is degraded");
+    expect(probe).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+    await expect(stopRemoteHost(options)).resolves.toEqual({
+      state: "stopped",
+      changed: true,
+      socketPath,
+    });
+    expect(terminate).toHaveBeenCalledWith(
+      expect.objectContaining(manifest),
+      socketPath,
+      "managed",
+      options.environment,
+    );
+  });
+
+  it("preserves native ownership verification when stopping a degraded installation", async () => {
+    const terminate = vi.fn().mockRejectedValue(new Error("socket owner does not match"));
+    restore = setRemoteHostLifecycleDependenciesForTest({
+      inspectInstallation: vi.fn().mockResolvedValue({
+        ...readyInstallation,
+        state: "degraded",
+        issues: ["shell profile does not configure the managed native entrypoint"],
+      }),
+      probeProtocol: vi.fn().mockResolvedValue(runtime("running", "codexhost")),
       runTerminator: terminate,
     });
 
     await expect(
       stopRemoteHost({ platform: "linux", environment: { HOME: home } }),
-    ).rejects.toThrow("not owned by codexhost");
-    expect(terminate).not.toHaveBeenCalled();
+    ).rejects.toThrow("socket owner does not match");
+    expect(terminate).toHaveBeenCalledOnce();
   });
+
+  it.each(["ready", "degraded"])(
+    "refuses to stop a stock listener (%s installation)",
+    async (state) => {
+      const terminate = vi.fn();
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: vi.fn().mockResolvedValue({ ...readyInstallation, state }),
+        probeProtocol: vi.fn().mockResolvedValue(runtime("conflict", "stock-codex")),
+        runTerminator: terminate,
+      });
+
+      await expect(
+        stopRemoteHost({ platform: "linux", environment: { HOME: home } }),
+      ).rejects.toThrow("not owned by codexhost");
+      expect(terminate).not.toHaveBeenCalled();
+    },
+  );
 });

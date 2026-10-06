@@ -629,6 +629,17 @@ fn macos_browser_sandbox_fallback_rejects_unrelated_commands() {
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_native_helpers_do_not_become_host_runtime_owners() {
+    assert_macos_native_helper_routing(false);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_nested_cli_native_helpers_do_not_become_host_runtime_owners() {
+    assert_macos_native_helper_routing(true);
+}
+
+#[cfg(target_os = "macos")]
+fn assert_macos_native_helper_routing(nested_cli: bool) {
     for (depth, detached) in [
         (0, false),
         (1, false),
@@ -639,6 +650,14 @@ fn macos_native_helpers_do_not_become_host_runtime_owners() {
     ] {
         let directory = temporary_directory();
         let bundle = macos_fixture_bundle(&directory);
+        let mut cli = bundle.join("Contents/Resources/codex");
+        if nested_cli {
+            let nested =
+                bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+            fs::create_dir_all(nested.parent().unwrap()).unwrap();
+            fs::rename(&cli, &nested).unwrap();
+            cli = nested;
+        }
         let desktop = bundle.join("Contents/MacOS/ChatGPT");
         let mut command = Command::new(if detached {
             fake_codex_path()
@@ -664,10 +683,7 @@ fn macos_native_helpers_do_not_become_host_runtime_owners() {
             .env_remove("CODEXHOST_NPM_NODE_PATH")
             .env_remove("CODEXHOST_NPM_PACKAGE_ROOT")
             .env_remove(REMOTE_SSH_MANAGED_ENV)
-            .env(
-                STOCK_CODEX_PATH_ENV,
-                bundle.join("Contents/Resources/codex"),
-            )
+            .env(STOCK_CODEX_PATH_ENV, &cli)
             .env(CODEX_CLI_PATH_ENV, shim_path())
             .env(HOST_NODE_PATH_ENV, fake_codex_path())
             .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
@@ -1054,6 +1070,115 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
             "detached listener process {process_id} survived shutdown"
         );
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn managed_remote_listener_replaces_a_stale_socket_before_the_startup_timeout() {
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    static NEXT_STALE_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    let directory = PathBuf::from("/tmp").join(format!(
+        "codexhost-stale-test-{}-{}",
+        process::id(),
+        NEXT_STALE_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir(&directory).expect("create short stale socket fixture directory");
+    let codex_home = directory.join("home");
+    let socket = codex_home
+        .join("app-server-control")
+        .join("app-server-control.sock");
+    let ready = directory.join("ready");
+    fs::create_dir_all(socket.parent().expect("control socket directory"))
+        .expect("create control socket directory");
+    // A listener that exits without cleanup leaves a socket that no process owns.
+    drop(UnixListener::bind(&socket).expect("bind stale control socket"));
+    let stale_socket = fs::metadata(&socket).expect("read stale control socket identity");
+    assert!(
+        UnixStream::connect(&socket).is_err(),
+        "stale control socket unexpectedly accepts connections"
+    );
+
+    let started = Instant::now();
+    let output = Command::new(shim_path())
+        .args([
+            "-c",
+            "features.code_mode_host=true",
+            "app-server",
+            "--listen",
+            "unix://",
+        ])
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEX_HOME", &codex_home)
+        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
+        .env("FAKE_CODEX_READY_PATH", &ready)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run managed remote listener bootstrap over a stale socket");
+    let elapsed = started.elapsed();
+
+    let identities = fs::read_to_string(&ready).unwrap_or_default();
+    let identity = |label: &str| {
+        identities
+            .lines()
+            .find_map(|line| line.strip_prefix(label))
+            .and_then(|value| value.parse::<u32>().ok())
+    };
+    let process_ids = [identity("root="), identity("shim=")]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let listener_survived =
+        process_ids.len() == 2 && process_ids.iter().copied().all(process_exists);
+    let replacement_accepts = UnixStream::connect(&socket).is_ok();
+    let replacement_socket = fs::metadata(&socket).ok();
+
+    for process_id in &process_ids {
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", &process_id.to_string()])
+            .status();
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_ids.iter().copied().any(process_exists) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    for process_id in process_ids
+        .iter()
+        .copied()
+        .filter(|process_id| process_exists(*process_id))
+    {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", &process_id.to_string()])
+            .status();
+    }
+    fs::remove_dir_all(&directory).expect("remove stale socket fixture");
+
+    assert!(
+        output.status.success(),
+        "bootstrap over a stale socket failed after {elapsed:?}: {}; stderr={}; stale_inode={}; replacement_inode={:?}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+        stale_socket.ino(),
+        replacement_socket.as_ref().map(MetadataExt::ino),
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "bootstrap over a stale socket waited for the startup timeout: {elapsed:?}"
+    );
+    assert!(
+        listener_survived,
+        "bootstrap terminated the replacement listener"
+    );
+    assert!(
+        replacement_accepts,
+        "replacement listener socket does not accept connections"
+    );
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

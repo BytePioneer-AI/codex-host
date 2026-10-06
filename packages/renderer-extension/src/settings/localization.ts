@@ -4,6 +4,11 @@ import {
   type CredentialImportMessages,
 } from "./credential-import-messages.js";
 import type { DefaultRendererSettingsPageId } from "./pages.js";
+import {
+  harnessVersionEnglish,
+  harnessVersionChinese,
+  type HarnessVersionMessages,
+} from "./harness-version-messages.js";
 
 export const RENDERER_SETTINGS_LOCALES = ["en", "zh-CN"] as const;
 export type RendererSettingsLocale = (typeof RENDERER_SETTINGS_LOCALES)[number];
@@ -110,6 +115,7 @@ export interface RendererSettingsMessages {
   readonly sessionImportAction: string;
   readonly sessionImportImporting: string;
   readonly sessionImportImported: string;
+  readonly sessionImportImportedInCodex: string;
   readonly sessionImportOpenFailed: string;
   readonly sessionImportCopyProjectPath: string;
   readonly sessionImportPathCopied: string;
@@ -126,11 +132,16 @@ export interface RendererSettingsMessages {
   readonly accountNativeManagementHint: string;
   readonly accountDefaultHint: string;
   readonly accountCreditsRemaining: string;
+  readonly accountCreditsRemainingQuota: string;
+  readonly accountCreditsUsedQuota: string;
+  readonly accountBalanceRemaining: string;
   readonly accountCreditsLoading: string;
   readonly accountCreditsEmpty: string;
   readonly accountCreditsFailed: string;
   readonly accountCreditsRetry: string;
   readonly accountCreditsRefresh: string;
+  readonly accountEmailsHide: string;
+  readonly accountEmailsShow: string;
   readonly accountLoadFailed: string;
   readonly accountCreditsUsed: string;
   readonly accountCreditsResetAt: string;
@@ -158,19 +169,20 @@ export interface RendererSettingsMessages {
   readonly connectionCopyDetails: string;
   readonly connectionCopied: string;
   readonly connectionCopyFailed: string;
-  readonly connectionErrorCode: string;
   readonly connectionErrorMessage: string;
-  readonly connectionRetryable: string;
-  readonly connectionFailureStage: string;
-  readonly connectionDuration: string;
-  readonly connectionDiagnostic: string;
   readonly connectionNoRuntime: string;
   readonly connectionStatusReady: string;
+  readonly connectionStatusConnected: string;
+  readonly connectionLoginRequired: string;
+  readonly connectionConfigurationRequired: string;
+  readonly connectionConfigurationDescription: string;
+  readonly connectionLoginDescription: string;
   readonly connectionStatusChecking: string;
   readonly connectionStatusNotInstalled: string;
   readonly connectionStatusUnavailable: string;
   readonly connectionStatusError: string;
   readonly connectionStatusInstalling: string;
+  readonly connectionStatusUpdating: string;
   readonly connectionStatusUnsupported: string;
   readonly connectionComponent: string;
   readonly connectionStatus: string;
@@ -179,6 +191,8 @@ export interface RendererSettingsMessages {
   readonly launchPathLabel: string;
   readonly launchPathPlaceholder: string;
   readonly launchPathWorkbuddyHelp: string;
+  readonly launchPathZcodePlaceholder: string;
+  readonly launchPathZcodeHelp: string;
   readonly launchPathSave: string;
   readonly launchPathReset: string;
   readonly launchPathRestart: string;
@@ -188,11 +202,25 @@ export interface RendererSettingsMessages {
   readonly launchPathLoading: string;
   readonly launchPathLoadError: string;
   readonly launchPathSaveError: string;
-  readonly connectionOpenInstallation: string;
+  readonly connectionOfficialWebsite: string;
   readonly connectionOpenHarnessWeb: string;
   readonly connectionDeepSeekTestedVersions: string;
   readonly connectionInstall: string;
   readonly connectionInstallDescription: string;
+  readonly connectionInstallRunning: string;
+  readonly harnessVersion: HarnessVersionMessages;
+  readonly harnessVersionTitle: string;
+  readonly harnessVersionCurrent: string;
+  readonly harnessVersionLatest: string;
+  readonly harnessVersionChecking: string;
+  readonly harnessVersionUpdate: string;
+  readonly harnessVersionUpdating: string;
+  readonly harnessVersionUpToDate: string;
+  readonly harnessVersionUpdated: string;
+  readonly harnessVersionFailed: string;
+  readonly harnessVersionUnsupported: string;
+  readonly harnessVersionManual: string;
+  readonly harnessVersionNote: string;
   readonly connectionErrorTitle: string;
   readonly connectionErrorLog: string;
   readonly connectionOpenIssue: string;
@@ -206,6 +234,9 @@ export interface RendererSettingsMessages {
   readonly connectionGroupMoveToMain: string;
   readonly connectionGroupDragHandle: string;
   readonly connectionGroupReset: string;
+  readonly connectionGroupLoading: string;
+  readonly connectionGroupSaving: string;
+  readonly connectionGroupSyncFailed: string;
   readonly pickerMoreAgentsLabel: string;
   readonly pickerManageLink: string;
   readonly pickerHideUnusedAgentsCta: string;
@@ -254,6 +285,10 @@ export interface RendererSettingsMessages {
   readonly aboutOpenSource: string;
   readonly aboutStarCallout: string;
   readonly aboutRepository: string;
+  readonly aboutConsole: string;
+  readonly aboutConsoleOpen: string;
+  readonly aboutConsoleOpening: string;
+  readonly aboutConsoleFailed: string;
   readonly pageLabels: Readonly<Record<DefaultRendererSettingsPageId, string>>;
 }
 
@@ -362,6 +397,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportAction: "Import and open",
   sessionImportImporting: "Importing...",
   sessionImportImported: "Session imported",
+  sessionImportImportedInCodex: "Session imported. View it in Codex.",
   sessionImportOpenFailed:
     "The Codex sidebar has not shown it yet. Make sure the folder below is added as a project, then try opening it again.",
   sessionImportCopyProjectPath: "Copy project path",
@@ -382,11 +418,16 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "This account comes from {harness}'s native authentication. This page only displays identity and limits; manage sign-in, sign-out and switching in the native client.",
   accountDefaultHint: "This is the current identity for all Codex Threads.",
   accountCreditsRemaining: "Remaining",
+  accountCreditsRemainingQuota: "Remaining quota",
+  accountCreditsUsedQuota: "Used quota",
+  accountBalanceRemaining: "remaining balance",
   accountCreditsLoading: "Loading limits…",
   accountCreditsEmpty: "No limit data available",
   accountCreditsFailed: "Could not load limits",
   accountCreditsRetry: "Retry",
   accountCreditsRefresh: "Refresh limits",
+  accountEmailsHide: "Hide emails",
+  accountEmailsShow: "Show emails",
   accountLoadFailed: "Could not load Codex Accounts.",
   accountCreditsUsed: "Used",
   accountCreditsResetAt: "Quota resets: {time}",
@@ -414,19 +455,22 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionCopyDetails: "Copy diagnostics",
   connectionCopied: "Copied",
   connectionCopyFailed: "Copy failed",
-  connectionErrorCode: "Error code",
   connectionErrorMessage: "Error message",
-  connectionRetryable: "Retryable",
-  connectionFailureStage: "Failure stage",
-  connectionDuration: "Duration",
-  connectionDiagnostic: "Diagnostic",
   connectionNoRuntime: "The renderer request bridge is not available yet.",
   connectionStatusReady: "Ready",
+  connectionStatusConnected: "Connected",
+  connectionLoginRequired: "Login required",
+  connectionConfigurationRequired: "Setup required",
+  connectionConfigurationDescription:
+    "Configure a Provider and its required credentials in this Harness on the selected Host, then check the connection again.",
+  connectionLoginDescription:
+    "Complete login or authentication setup in this Harness on the selected Host, then check the connection again.",
   connectionStatusChecking: "Checking",
   connectionStatusNotInstalled: "Not installed",
   connectionStatusUnavailable: "Unavailable",
   connectionStatusError: "Error",
   connectionStatusInstalling: "Installing",
+  connectionStatusUpdating: "Updating",
   connectionStatusUnsupported: "Unsupported",
   connectionComponent: "Component",
   connectionStatus: "Status",
@@ -436,6 +480,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathPlaceholder: "Installation folder, e.g. D:\\program\\WorkBuddy",
   launchPathWorkbuddyHelp:
     "This integration requires the WorkBuddy app. If it is not detected automatically, enter its installation folder. codexhost locates the required files inside it. Restart codexhost after saving to apply.",
+  launchPathZcodePlaceholder:
+    "Application path, e.g. /Applications/ZCode.app or D:\\program\\ZCode",
+  launchPathZcodeHelp:
+    "This integration requires the ZCode Desktop app. If it is not detected automatically, enter its application path (the .app bundle on macOS, the installation folder on Windows and Linux). codexhost locates the required files inside it. Restart codexhost after saving to apply.",
   launchPathSave: "Save path",
   launchPathReset: "Clear override",
   launchPathRestart: "Saved. Restart codexhost to apply; running sessions are unchanged.",
@@ -447,12 +495,29 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathLoadError: "Could not load launch settings. Reopen this detail panel to retry.",
   launchPathSaveError:
     "Could not save. Enter an existing absolute installation folder on this Host and check configuration permissions.",
-  connectionOpenInstallation: "Show installation instructions",
+  connectionOfficialWebsite: "Visit official website",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "Supported DSH versions: 0.1.2-rc.1, 0.1.5-rc.1, 0.1.5-rc.2, 0.1.5-rc.3, 0.1.7-rc.1 and 0.1.7-rc.2. Other versions may connect after native protocol checks, but are not listed as supported.",
+    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1 and 0.2.0-rc.2. Versions newer than 0.2.0-rc.2 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
   connectionInstall: "Install",
   connectionInstallDescription: "This Harness was not detected.",
+  connectionInstallRunning:
+    "Installing on the selected Host. You can leave this page; login or setup may still be required afterward.",
+  harnessVersion: harnessVersionEnglish,
+  harnessVersionTitle: "Harness CLI version",
+  harnessVersionCurrent: "Current version",
+  harnessVersionLatest: "Latest version",
+  harnessVersionChecking: "Checking versions…",
+  harnessVersionUpdate: "Update",
+  harnessVersionUpdating: "Updating…",
+  harnessVersionUpToDate: "Up to date",
+  harnessVersionUpdated: "Update verified. New sessions will use the new version.",
+  harnessVersionFailed:
+    "Could not complete the operation. Check the network connection or native installation.",
+  harnessVersionUnsupported: "This Host or plugin does not support CLI version management.",
+  harnessVersionManual: "Use the original installer to update this installation.",
+  harnessVersionNote:
+    "Updates the Harness CLI on the selected Host, not the codexhost plugin. Existing sessions are not restarted; an update already started continues if you leave this page.",
   connectionErrorTitle: "Connection check failed",
   connectionErrorLog: "Error log",
   connectionOpenIssue: "Open GitHub Issue",
@@ -468,6 +533,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupMoveToMain: "Move back to Main",
   connectionGroupDragHandle: "Drag to reorder",
   connectionGroupReset: "Reset order",
+  connectionGroupLoading: "Loading shared Harness order…",
+  connectionGroupSaving: "Saving shared Harness order…",
+  connectionGroupSyncFailed:
+    "Could not sync Harness order. The last confirmed order is shown; check codexhost and retry your change.",
   pickerMoreAgentsLabel: "More agents",
   pickerManageLink: "Manage",
   pickerHideUnusedAgentsCta: "Hide unused agents",
@@ -527,8 +596,14 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutOpenSource: "codexhost is an open-source project. The source code is available at:",
   aboutStarCallout: "⭐ If this project helps you, please give us a Star! ⭐",
   aboutRepository: "Open-source repository",
+  aboutConsole:
+    "The codexhost console runs outside Codex Desktop. It shows startup diagnostics and logs, and can update codexhost even when Codex cannot start.",
+  aboutConsoleOpen: "Open console",
+  aboutConsoleOpening: "Opening…",
+  aboutConsoleFailed: "The console could not be opened",
   pageLabels: Object.freeze({
     connections: "Connections",
+    "remote-connections": "Remote connections",
     appearance: "General",
     accounts: "Accounts",
     "session-import": "Session Import",
@@ -639,6 +714,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportAction: "导入并打开",
   sessionImportImporting: "正在导入……",
   sessionImportImported: "会话已导入",
+  sessionImportImportedInCodex: "导入成功，请在 Codex 中查看。",
   sessionImportOpenFailed: "Codex 侧栏尚未显示该会话。请确认以下文件夹已添加为项目，然后重试打开。",
   sessionImportCopyProjectPath: "复制项目路径",
   sessionImportPathCopied: "已复制",
@@ -656,11 +732,16 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "此账号来自 {harness} 的原生登录。这里只读展示身份与额度；登录、退出和切换请在其原生客户端中完成。",
   accountDefaultHint: "所有 Codex 会话当前使用此身份。",
   accountCreditsRemaining: "剩余",
+  accountCreditsRemainingQuota: "剩余额度",
+  accountCreditsUsedQuota: "已用额度",
+  accountBalanceRemaining: "剩余余额",
   accountCreditsLoading: "正在读取额度…",
   accountCreditsEmpty: "暂无额度数据",
   accountCreditsFailed: "额度读取失败",
   accountCreditsRetry: "重试",
   accountCreditsRefresh: "刷新额度",
+  accountEmailsHide: "隐藏邮箱",
+  accountEmailsShow: "显示邮箱",
   accountLoadFailed: "无法加载 Codex 账号。",
   accountCreditsUsed: "已用",
   accountCreditsResetAt: "额度重置时间：{time}",
@@ -688,19 +769,21 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionCopyDetails: "复制诊断信息",
   connectionCopied: "已复制",
   connectionCopyFailed: "复制失败",
-  connectionErrorCode: "错误码",
   connectionErrorMessage: "错误信息",
-  connectionRetryable: "可重试",
-  connectionFailureStage: "失败阶段",
-  connectionDuration: "检查耗时",
-  connectionDiagnostic: "诊断信息",
   connectionNoRuntime: "Renderer 请求桥尚未可用。",
   connectionStatusReady: "正常",
+  connectionStatusConnected: "已连接",
+  connectionLoginRequired: "需要登录",
+  connectionConfigurationRequired: "需要配置",
+  connectionConfigurationDescription:
+    "请在所选 Host 上配置该 Harness 的 Provider 及所需认证信息，然后重新检测连接。",
+  connectionLoginDescription: "请在所选 Host 上完成该 Harness 的登录或认证配置，然后重新检测连接。",
   connectionStatusChecking: "检查中",
   connectionStatusNotInstalled: "未安装",
   connectionStatusUnavailable: "不可用",
   connectionStatusError: "错误",
   connectionStatusInstalling: "安装中",
+  connectionStatusUpdating: "更新中",
   connectionStatusUnsupported: "不支持",
   connectionComponent: "组件",
   connectionStatus: "状态",
@@ -710,6 +793,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathPlaceholder: "填写安装目录，例如 D:\\program\\WorkBuddy",
   launchPathWorkbuddyHelp:
     "此接入依赖 WorkBuddy 应用。若未自动识别，请填写应用安装目录，codexhost 会自动定位所需文件。保存后重启 codexhost 生效。",
+  launchPathZcodePlaceholder: "填写应用路径，例如 /Applications/ZCode.app 或 D:\\program\\ZCode",
+  launchPathZcodeHelp:
+    "此接入依赖 ZCode Desktop 应用。若未自动识别，请填写应用路径（macOS 为 .app，Windows 和 Linux 为安装目录），codexhost 会自动定位所需文件。保存后重启 codexhost 生效。",
   launchPathSave: "保存路径",
   launchPathReset: "清除自定义路径",
   launchPathRestart: "已保存，重启 codexhost 后生效；当前运行中的会话不受影响。",
@@ -719,12 +805,27 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathLoading: "正在读取启动设置…",
   launchPathLoadError: "无法读取启动设置，请重新打开此详情面板重试。",
   launchPathSaveError: "保存失败。请填写此 Host 上实际存在的安装目录绝对路径，并确认配置目录可写。",
-  connectionOpenInstallation: "查看安装指引",
+  connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。其他版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
+    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
+  connectionInstallRunning: "正在所选 Host 上安装，离开页面不会中断。安装后可能仍需登录或配置。",
+  harnessVersion: harnessVersionChinese,
+  harnessVersionTitle: "Harness CLI 版本",
+  harnessVersionCurrent: "当前版本",
+  harnessVersionLatest: "最新版本",
+  harnessVersionChecking: "正在检查版本…",
+  harnessVersionUpdate: "更新",
+  harnessVersionUpdating: "正在更新…",
+  harnessVersionUpToDate: "已是最新",
+  harnessVersionUpdated: "已确认更新成功，新会话将使用新版本。",
+  harnessVersionFailed: "操作未完成，请检查网络连接或原生安装。",
+  harnessVersionUnsupported: "当前 Host 或插件不支持 CLI 版本管理。",
+  harnessVersionManual: "请使用原安装方式更新此 Harness。",
+  harnessVersionNote:
+    "更新的是所选 Host 上的 Harness CLI，不是 codexhost 插件。已有会话不会重启；离开页面后已开始的更新仍会继续。",
   connectionErrorTitle: "连接检查失败",
   connectionErrorLog: "错误日志",
   connectionOpenIssue: "提交 GitHub Issue",
@@ -738,6 +839,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupMoveToMain: "移回常用",
   connectionGroupDragHandle: "拖动排序",
   connectionGroupReset: "恢复默认排列",
+  connectionGroupLoading: "正在读取共享 Harness 排序…",
+  connectionGroupSaving: "正在保存共享 Harness 排序…",
+  connectionGroupSyncFailed:
+    "Harness 排序同步失败，当前显示上次确认的顺序。请确认 codexhost 正常运行后重试修改。",
   pickerMoreAgentsLabel: "更多 Agent",
   pickerManageLink: "管理",
   pickerHideUnusedAgentsCta: "收起不常用的 Agent",
@@ -794,8 +899,14 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutOpenSource: "codexhost 是一个开源项目，开源地址：",
   aboutStarCallout: "⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐",
   aboutRepository: "开源仓库",
+  aboutConsole:
+    "codexhost 控制台独立于 Codex Desktop 运行，可以查看启动诊断和日志；即使 Codex 无法启动，也能在控制台更新 codexhost。",
+  aboutConsoleOpen: "打开控制台",
+  aboutConsoleOpening: "正在打开…",
+  aboutConsoleFailed: "控制台打开失败",
   pageLabels: Object.freeze({
     connections: "连接",
+    "remote-connections": "远程连接",
     appearance: "通用",
     accounts: "账号",
     "session-import": "会话导入",

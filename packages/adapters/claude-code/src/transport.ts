@@ -98,6 +98,10 @@ export type ClaudeTurnEvent =
       structuredResult?: JsonValue;
       isError: boolean;
       fileChange?: ClaudeNativeFileChange;
+      /** Native Bash moved the command to the background; it keeps running after this result. */
+      backgroundTaskId?: string;
+      /** Output file the backgrounded command streams to, named in the native result. */
+      backgroundOutputFile?: string;
     }
   | {
       type: "subagent.started";
@@ -126,12 +130,18 @@ export type ClaudeTurnEvent =
       nativeSubagentId?: string;
       resultSummary?: string;
     }
+  /**
+   * A native `task_notification`. Background Agents and background commands share
+   * it and it carries no task type: the Session routes it by `callId`.
+   */
   | {
       type: "subagent.settled";
       nativeSubagentId: string;
       callId?: string;
       status: "completed" | "failed" | "interrupted";
       resultSummary?: string;
+      /** The task's native output file. */
+      outputFile?: string;
     }
   | { type: "subagent.transcript.changed"; callId: string }
   | { type: "interaction.requested"; request: ClaudeInteractionRequest }
@@ -191,6 +201,10 @@ export interface ClaudeTurnTransport {
    */
   setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void;
   setIdleLive(live: boolean): void;
+  /** Native background tasks of any type are still active on this process. */
+  hasBackgroundTasks(): boolean;
+  /** Requests a native stop; the task still settles through its `task_notification`. */
+  stopBackgroundTask(taskId: string): Promise<void>;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   /** Live slash commands of the started native Session, when known. */
@@ -230,6 +244,8 @@ export interface ClaudeTransportFactoryInput {
   model?: string;
   thinkingOptionId: HarnessThinkingOptionId;
   permissionMode: ClaudePermissionMode;
+  /** Native prerequisite for a later live `bypassPermissions` selection. */
+  allowDangerouslySkipPermissions: boolean;
   onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
   onFault(error: unknown): void;
   onPlanLimit(planLimit: ClaudePlanLimitEvent): void;
@@ -247,6 +263,8 @@ export interface ClaudeModelInspectorFactoryInput {
 }
 
 export interface ClaudeAdapterDependencies {
+  /** Whether Claude Code accepts `bypassPermissions` in the Session environment. */
+  bypassPermissionsAvailable(environment?: NodeJS.ProcessEnv): boolean;
   createInspector(input: ClaudeModelInspectorFactoryInput): ClaudeModelInspector;
   createTransport(input: ClaudeTransportFactoryInput): ClaudeTurnTransport;
   deleteSession(input: { cwd: string; sessionId: string }): Promise<void>;

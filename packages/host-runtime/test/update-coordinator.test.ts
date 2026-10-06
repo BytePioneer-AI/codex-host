@@ -22,6 +22,25 @@ vi.mock("@codexhost/update-manager", async (importOriginal) => ({
 }));
 
 const roots: string[] = [];
+it("reports the shared source launch version when packaged update resources are absent", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-source-update-"));
+  roots.push(root);
+  const hostRuntimePath = path.join(root, "packages/host-runtime/dist/main.js");
+  await file(hostRuntimePath);
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "codexhost", version: "0.12.0" }),
+  );
+  const coordinator = createHostUpdateCoordinator({
+    hostRuntimePath,
+    environment: { CODEXHOST_DEV_VERSION: "0.11.0" },
+  });
+  await expect(coordinator.check()).resolves.toMatchObject({
+    currentVersion: "0.11.0",
+    installation: null,
+    installationAvailable: false,
+  });
+});
 afterEach(() => {
   vi.clearAllMocks();
   vi.useRealTimers();

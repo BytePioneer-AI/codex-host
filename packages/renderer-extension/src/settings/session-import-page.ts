@@ -10,6 +10,8 @@ import {
   type RendererSessionImportClient,
 } from "../renderer-session-import-client.js";
 export type { RendererSessionImportClient } from "../renderer-session-import-client.js";
+import type { RendererConnectionDiagnostics } from "./connections-page.js";
+import { createHorizontalScrollHint } from "./horizontal-scroll-hint.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -47,7 +49,10 @@ function createAccessibleText(document: Document, message: string): HTMLElement 
 export function createSessionImportSettingsPage(
   messages: RendererSettingsMessages,
   getClient: () => RendererSessionImportClient | null,
-  openImportedThread: RendererImportedThreadOpener,
+  // Web imports end at a success message; Desktop supplies its native navigator.
+  openImportedThread: RendererImportedThreadOpener | null,
+  // The connection status the Renderer already keeps; nothing is inspected for this page.
+  getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
     id: "session-import",
@@ -82,10 +87,20 @@ export function createSessionImportSettingsPage(
       harnessOptions.dataset.sessionImportHarness = "selector";
       harnessOptions.setAttribute("role", "group");
       harnessOptions.setAttribute("aria-label", messages.sessionImportHarness);
+      const harnessScroller = document.createElement("div");
+      harnessScroller.className = "settings-session-import-harness__scroller";
+      const harnessHint = createHorizontalScrollHint(
+        document,
+        harnessOptions,
+        "settings-session-import-harness__indicator",
+      );
+      harnessScroller.append(harnessOptions, harnessHint.element);
       let selectedHarness: HarnessId | null = null;
       let sources: HarnessSessionImportSourcesResult["harnesses"] = [];
       const sourceButtons: HTMLButtonElement[] = [];
       const renderHarnessOptions = (): void => {
+        // Rebuilding the options must not throw a scrolled selector back to its start.
+        const scrolled = harnessOptions.scrollLeft;
         harnessOptions.replaceChildren();
         sourceButtons.length = 0;
         for (const source of sources) {
@@ -106,8 +121,14 @@ export function createSessionImportSettingsPage(
           sourceButtons.push(option);
           harnessOptions.append(option);
         }
+        harnessOptions.scrollLeft = scrolled;
+        // A selection restored from an earlier visit may sit beyond the visible options.
+        harnessOptions
+          .querySelector<HTMLElement>('[aria-pressed="true"]')
+          ?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+        harnessHint.update();
       };
-      harness.append(harnessLabel, harnessOptions);
+      harness.append(harnessLabel, harnessScroller);
 
       const description = document.createElement("p");
       description.className = "settings-page-description";
@@ -116,6 +137,8 @@ export function createSessionImportSettingsPage(
       availabilityNote.className =
         "settings-page-description settings-session-import-availability-note";
       availabilityNote.textContent = messages.sessionImportAvailabilityNote;
+      const importStatus = document.createElement("div");
+      importStatus.setAttribute("role", "status");
       const content = document.createElement("section");
       content.className = "settings-session-import-content";
       const listControls = createSessionImportListControls(document, messages, () => load());
@@ -125,6 +148,7 @@ export function createSessionImportSettingsPage(
         description,
         availabilityNote,
         listControls.searchForm,
+        importStatus,
         content,
         listControls.pagination,
       );
@@ -189,6 +213,7 @@ export function createSessionImportSettingsPage(
         candidate: HarnessSessionImportCandidate,
         threadId: HostThreadId,
       ): void => {
+        if (!openImportedThread) return;
         actions = [];
         refresh.disabled = false;
         const recovery = document.createElement("section");
@@ -356,15 +381,22 @@ export function createSessionImportSettingsPage(
             let committedThreadId: HostThreadId | null = null;
             void context.runLatest(
               async (signal) => {
+                importStatus.replaceChildren();
                 const result = await client.importHarnessSession({
                   harnessId,
                   nativeSessionId: candidate.nativeSessionId,
                 });
                 committedThreadId = result.threadId;
-                if (!signal.aborted) await openImportedThread(result.threadId, signal);
+                if (!signal.aborted && openImportedThread)
+                  await openImportedThread(result.threadId, signal);
               },
               {
                 success() {
+                  if (!openImportedThread) {
+                    importStatus.replaceChildren(
+                      createStatus(document, messages.sessionImportImportedInCodex),
+                    );
+                  }
                   importingId = null;
                   refresh.disabled = false;
                   updateImportActions();
@@ -408,14 +440,26 @@ export function createSessionImportSettingsPage(
         const pageParams = listControls.params();
         void context.runLatest(
           async (signal) => {
-            const result = await client.listSessionImportSources();
+            // A Session of a Harness whose CLI is missing could be imported but never opened.
+            // Import always uses the local Host, so only its status counts; a Harness still
+            // being checked, failing or unknown to the Renderer stays listed.
+            const missing = new Set(
+              getDiagnostics()
+                ?.snapshot()
+                .hosts.find(({ hostId }) => hostId === "local")
+                ?.agents.filter(({ availability }) => availability === "notInstalled")
+                .map(({ agent }): string => agent),
+            );
+            const harnesses = (await client.listSessionImportSources()).harnesses.filter(
+              ({ harnessId }) => !missing.has(harnessId),
+            );
             const selected =
-              result.harnesses.find(({ harnessId }) => harnessId === requestedHarness)?.harnessId ??
-              result.harnesses[0]?.harnessId ??
+              harnesses.find(({ harnessId }) => harnessId === requestedHarness)?.harnessId ??
+              harnesses[0]?.harnessId ??
               null;
             if (signal.aborted) throw new Error("Session import selection changed");
             // Keep the selector available even if one Harness's current native protocol is unsupported.
-            sources = result.harnesses;
+            sources = harnesses;
             selectedHarness = selected;
             if (selected !== requestedHarness) {
               listControls.reset();

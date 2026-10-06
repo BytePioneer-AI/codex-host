@@ -1,3 +1,4 @@
+import type { RuntimeMaintenance } from "../src/runtime-maintenance.js";
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,11 +16,13 @@ import { MappingStore } from "@codexhost/mapping-store";
 import { type ExternalHarnessId, type JsonObject } from "@codexhost/protocol-core";
 import { harnessIdSchema, type DeepSeekModernSessionCandidate } from "@codexhost/shared-contracts";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
-import { AppServerHost } from "../src/app-server-host.js";
+import { AppServerHost, type AppServerHostOptions } from "../src/app-server-host.js";
+import type { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import type { CodexAccountControl } from "../src/account/codex-account-control.js";
 import type { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
 import type { OfficialAppServerConnection } from "../src/official-app-server-connection.js";
 import type { HostUpdateCoordinator } from "../src/update-coordinator.js";
+import type { HostConsoleOpener } from "../src/console-opener.js";
 
 export class FakeOfficialProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -98,6 +101,9 @@ export class JsonLineCollector {
   waitFor(predicate: (message: JsonObject) => boolean): Promise<JsonObject> {
     const existing = this.messages.find(predicate);
     if (existing) return Promise.resolve(existing);
+    // Host responses can require Mapping Store fsync/rename operations.
+    // Allow for Windows disk latency, as in tests/vitest.config.js.
+    const timeoutMs = process.platform === "win32" ? 10_000 : 2_000;
     return new Promise<JsonObject>((resolve, reject) => {
       const waiter = {
         predicate,
@@ -106,7 +112,7 @@ export class JsonLineCollector {
           const index = this.#waiters.indexOf(waiter);
           if (index >= 0) this.#waiters.splice(index, 1);
           reject(new Error("Timed out waiting for Host output"));
-        }, 2_000),
+        }, timeoutMs),
       };
       this.#waiters.push(waiter);
     });
@@ -259,6 +265,7 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 
 export function createFixture(
   options: {
+    sharedThreads?: SharedThreadBridge;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
@@ -270,9 +277,12 @@ export function createFixture(
     createOfficialConnection?: () =>
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
+    runtimeMaintenance?: RuntimeMaintenance;
+    consoleOpener?: HostConsoleOpener;
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+    onCreateRequestRoute?: AppServerHostOptions["onCreateRequestRoute"];
   } = {},
 ) {
   const adapter =
@@ -295,9 +305,9 @@ export function createFixture(
   const createOfficialConnection = options.createOfficialConnection;
   if (options.officialRuntimeScope) startup.resolve(undefined);
   const host = new AppServerHost({
+    ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
-    defaultAgent: "codex",
     desktopInput,
     desktopOutput,
     diagnosticOutput,
@@ -324,9 +334,12 @@ export function createFixture(
         }
       : {}),
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
+    ...(options.runtimeMaintenance ? { runtimeMaintenance: options.runtimeMaintenance } : {}),
+    ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),
+    ...(options.onCreateRequestRoute ? { onCreateRequestRoute: options.onCreateRequestRoute } : {}),
   });
   const running = host.run();
   void running.then(

@@ -1,14 +1,39 @@
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
 import {
   createRemoteOfficialAppServerPlan,
+  delegationCliEnvironment,
   hasLauncherManagedUpdateRuntime,
   MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE,
+  resolveHostRuntimePaths,
 } from "../src/run-host-runtime.js";
 
 describe("Host Runtime composition", () => {
+  it("keeps the native Launcher as the CLI and supplies npm's Node only when present", () => {
+    const launcher = path.resolve("/opt/codexhost/bin/codexhost");
+    const node = path.resolve("/usr/local/bin/node");
+
+    expect(delegationCliEnvironment({ CODEXHOST_LAUNCHER_EXECUTABLE: launcher })).toEqual({
+      CODEXHOST_CLI_PATH: launcher,
+    });
+    expect(
+      delegationCliEnvironment({
+        CODEXHOST_LAUNCHER_EXECUTABLE: launcher,
+        CODEXHOST_NPM_NODE_PATH: node,
+      }),
+    ).toEqual({ CODEXHOST_CLI_PATH: launcher, CODEXHOST_CLI_NODE_PATH: node });
+    expect(
+      delegationCliEnvironment({
+        CODEXHOST_LAUNCHER_EXECUTABLE: launcher,
+        CODEXHOST_NPM_NODE_PATH: "node",
+      }),
+    ).toEqual({ CODEXHOST_CLI_PATH: launcher });
+    expect(delegationCliEnvironment({})).toEqual({});
+  });
+
   it("keeps the managed listener outside the official Desktop bootstrap kill selector", () => {
     const officialDesktopBootstrapKillSelector = /codex.*desktop-ssh-websocket-v0\.sock/;
 
@@ -42,6 +67,31 @@ describe("Host Runtime composition", () => {
         CODEXHOST_LAUNCHER_PID: "4321",
       }),
     ).toBe(true);
+  });
+
+  it("keeps application updates off for a source launch while runtime maintenance stays on", () => {
+    const sourceRuntime = path.resolve("repo", "packages", "host-runtime", "dist", "main.js");
+    const environment = {
+      CODEXHOST_LAUNCHER_PID: "4321",
+      CODEXHOST_HOST_RUNTIME_PATH: sourceRuntime,
+    };
+
+    expect(resolveHostRuntimePaths({ environment })).toEqual({
+      packaged: undefined,
+      maintenance: sourceRuntime,
+    });
+
+    const packagedRuntime = path.resolve("opt", "codexhost", "app", "host-runtime.mjs");
+    expect(
+      resolveHostRuntimePaths({
+        environment,
+        hostRuntimeUrl: pathToFileURL(packagedRuntime).href,
+      }),
+    ).toEqual({ packaged: packagedRuntime, maintenance: packagedRuntime });
+    expect(resolveHostRuntimePaths({ environment: {} })).toEqual({
+      packaged: undefined,
+      maintenance: undefined,
+    });
   });
 
   it("disables npm updates when a copied remote Host Runtime is outside the npm package root", () => {

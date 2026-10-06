@@ -74,6 +74,12 @@ const runtimeLicenses = [
     output: "MCP-SDK-LICENSE.txt",
   },
   {
+    packageName: "@opencode/client",
+    license: "MIT",
+    source: "scripts/release/licenses/opencode-client-2.0.16-MIT.txt",
+    output: "OpenCode-v2-Client-LICENSE.txt",
+  },
+  {
     packageName: "@opencode-ai/sdk",
     license: "MIT",
     source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
@@ -224,6 +230,8 @@ export function expectedNpmPackagePaths(target) {
     ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
     `libexec/codexhost-updater${target.executableSuffix}`,
     "app/codexhost-distribution.json",
+    "app/console-server.mjs",
+    "app/console-web.js",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
@@ -233,6 +241,7 @@ export function expectedNpmPackagePaths(target) {
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/MCP-SDK-LICENSE.txt",
     "licenses/OpenCode-SDK-LICENSE.txt",
+    "licenses/OpenCode-v2-Client-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
@@ -378,21 +387,16 @@ const shim = path.join(packageRoot, "libexec", \`codexhost-shim\${executableSuff
 const hostRuntime = path.join(packageRoot, "app", "host-runtime.mjs");
 const desktopController = path.join(packageRoot, "app", "desktop-controller.mjs");
 const rendererExtension = path.join(packageRoot, "app", "renderer-extension.js");
+const consoleServer = path.join(packageRoot, "app", "console-server.mjs");
 
 function fail(message) {
   console.error(\`codexhost: \${message}\`);
   process.exit(1);
 }
 
-for (const [label, filePath] of [
-  ["launcher", launcher],
-  ["shim", shim],
-  ["host runtime", hostRuntime],
-  ["desktop controller", desktopController],
-  ["renderer extension", rendererExtension],
-]) {
-  if (!existsSync(filePath)) fail(\`missing \${label}: \${filePath}\`);
-}
+// Desktop resources are validated by the Launcher after it starts the recovery
+// console. Do not prevent recovery when one of those resources is missing.
+if (!existsSync(launcher)) fail(\`missing launcher: \${launcher}\`);
 
 function existingFile(filePath) {
   return typeof filePath === "string" && filePath.length > 0 && existsSync(filePath)
@@ -485,6 +489,7 @@ const updateEnvironment = {
 const remoteSshBootstrapEnvironment = [
   "CODEX_INSTALL_DIR",
   "CODEXHOST_DATA_DIR",
+  // Retired; older remote profile blocks still export it.
   "CODEXHOST_DEFAULT_AGENT",
   "CODEXHOST_HOST_NODE_PATH",
   "CODEXHOST_HOST_RUNTIME_PATH",
@@ -500,12 +505,16 @@ let launchArguments;
 let remoteArguments = null;
 let brokerArguments = null;
 let delegationArguments = null;
+let consoleArguments = null;
 if (userArguments.length === 0) {
   launchArguments = ["launch"];
 } else if (userArguments[0] === "launch") {
   launchArguments = userArguments;
 } else if (userArguments[0] === "inspect") {
   launchArguments = userArguments;
+} else if (userArguments[0] === "console" || userArguments[0] === "update") {
+  launchArguments = null;
+  consoleArguments = userArguments.slice(1);
 } else if (userArguments[0] === "remote") {
   launchArguments = null;
   remoteArguments = userArguments.slice(1);
@@ -526,6 +535,8 @@ if (userArguments.length === 0) {
       "  codexhost",
       "  codexhost --version",
       "  codexhost inspect",
+      "  codexhost console",
+      "  codexhost update",
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost broker install|status|stop|uninstall",
@@ -571,7 +582,17 @@ if (launchArguments?.[0] === "launch") {
   launchArguments = ["launch", ...extras, ...launchArguments.slice(1)];
 }
 
-if (delegationArguments !== null) {
+if (consoleArguments !== null) {
+  if (consoleArguments.length > 0) fail(userArguments[0] + " accepts no arguments");
+  if (!existsSync(consoleServer)) fail(\`missing console: \${consoleServer}\`);
+  const child = spawn(process.execPath, [consoleServer, userArguments[0] === "update" ? "update" : "open"], {
+    env: { ...updateEnvironment, CODEXHOST_LAUNCHER_EXECUTABLE: launcher },
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  child.on("error", (error) => fail(error.message));
+  child.on("exit", (code) => process.exit(code ?? 1));
+} else if (delegationArguments !== null) {
   const child = spawn(
     process.execPath,
     [hostRuntime, "--codexhost-delegation-cli", ...delegationArguments],
@@ -615,26 +636,50 @@ if (delegationArguments !== null) {
     process.exit(code ?? 1);
   });
 } else if (remoteArguments !== null) {
+  // Every Harness whose plugin selects a BrokeredHarnessAdapter for a managed
+  // macOS remote Host needs its own Aqua LaunchAgent. Keep this list in sync with
+  // those plugin factories; Claude Code keeps the legacy unlabelled invocation.
+  // Install only registers them: the remote Host starts a broker on demand for an
+  // installed Harness and the broker exits when idle.
+  const nativeBrokerHarnessIds = ["claude-code", "codebuddy", "workbuddy", "cursor-cli"];
   const runNativeBroker = (command) => {
-    const broker = spawn(
-      launcher,
-      ["broker", command, "--node", process.execPath, "--host-runtime", hostRuntime],
-      {
-        env: updateEnvironment,
-        // remote status is a stable JSON stdout surface. Keep the broker's
-        // human-readable status beside it on stderr instead of corrupting JSON.
-        stdio: command === "status" ? ["inherit", process.stderr, "inherit"] : "inherit",
-        windowsHide: true,
-      },
-    );
-    broker.on("error", (error) => fail(error.message));
-    broker.on("exit", (code, signal) => {
-      if (signal) {
-        process.kill(process.pid, signal);
+    let index = 0;
+    let firstFailure = 0;
+    // Run every broker even after a failure so one broken service cannot leave
+    // the others stale or installed, then report the first failure.
+    const next = () => {
+      if (index >= nativeBrokerHarnessIds.length) {
+        process.exit(firstFailure);
         return;
       }
-      process.exit(code ?? 1);
-    });
+      const harnessId = nativeBrokerHarnessIds[index++];
+      const broker = spawn(
+        launcher,
+        [
+          "broker",
+          command,
+          ...(harnessId === "claude-code" ? [] : ["--harness", harnessId]),
+          "--node", process.execPath, "--host-runtime", hostRuntime,
+        ],
+        {
+          env: updateEnvironment,
+          // remote status is a stable JSON stdout surface. Keep the broker's
+          // human-readable status beside it on stderr instead of corrupting JSON.
+          stdio: command === "status" ? ["inherit", process.stderr, "inherit"] : "inherit",
+          windowsHide: true,
+        },
+      );
+      broker.on("error", (error) => fail(error.message));
+      broker.on("exit", (code, signal) => {
+        if (signal) {
+          process.kill(process.pid, signal);
+          return;
+        }
+        if (code !== 0 && firstFailure === 0) firstFailure = code ?? 1;
+        next();
+      });
+    };
+    next();
   };
   const child = spawn(
     process.execPath,
@@ -672,6 +717,11 @@ if (delegationArguments !== null) {
       }
       if (remoteArguments[0] === "uninstall") {
         runNativeBroker("uninstall");
+        return;
+      }
+      if (remoteArguments[0] === "stop") {
+        // Brokers stay registered for on-demand starts by the next remote Host.
+        runNativeBroker("stop");
         return;
       }
     }
@@ -818,7 +868,7 @@ export async function writeThirdPartyNotices(root, packageRoot) {
       );
     }
     await copyReleaseFile(
-      dependency.packageName === "@opencode-ai/sdk"
+      dependency.source.startsWith("scripts/release/licenses/")
         ? resolveRuntimeLicenseSource(root, dependency)
         : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
@@ -872,7 +922,14 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
   for (const file of files.filter((entry) => /\.(?:js|md|mjs|txt)$/u.test(entry.relative))) {
     const text = await readFile(file.absolute, "utf8");
     const forbiddenReferences = [root];
-    if (["app/desktop-controller.mjs", "app/renderer-extension.js"].includes(file.relative)) {
+    if (
+      [
+        "app/console-server.mjs",
+        "app/console-web.js",
+        "app/desktop-controller.mjs",
+        "app/renderer-extension.js",
+      ].includes(file.relative)
+    ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
     }
     if (file.relative !== "package.json" && text.includes("runtime/node")) {
@@ -1049,10 +1106,27 @@ export async function prepareNpmPackage({
     },
     root,
   );
+  await runCommand(
+    {
+      label: "Console Server Bundle build",
+      command: process.execPath,
+      args: [
+        "packages/console-server/scripts/build-release.mjs",
+        "--output",
+        path.join(packageRoot, "app", "console-server.mjs"),
+      ],
+    },
+    root,
+  );
   await copyReleaseFile(
     path.join(root, "packages", "renderer-extension", "dist", "production.js"),
     path.join(packageRoot, "app", "renderer-extension.js"),
     "production Renderer Bundle",
+  );
+  await copyReleaseFile(
+    path.join(root, "packages", "renderer-extension", "dist", "console.js"),
+    path.join(packageRoot, "app", "console-web.js"),
+    "console page Bundle",
   );
   await writeDistributionMetadata(path.join(packageRoot, "app", "codexhost-distribution.json"), {
     version: packageVersion,

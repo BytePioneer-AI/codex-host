@@ -1,0 +1,169 @@
+import { spawn } from "node:child_process";
+import { stat } from "node:fs/promises";
+import path from "node:path";
+import { readRuntimeMetadata } from "@codexhost/update-manager";
+
+import { consoleBundleCandidates } from "./page.js";
+import { CONSOLE_REQUEST_HEADER } from "./request-guard.js";
+import { CONSOLE_PORT_ENV, consolePort } from "./paths.js";
+import { CONSOLE_SERVICE } from "./server.js";
+
+export type ConsoleProbe =
+  | { kind: "console"; appDirectory: string; pid: number; buildId: string | null }
+  | { kind: "free" }
+  | { kind: "foreign" };
+
+function refused(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current; depth += 1) {
+    if ((current as NodeJS.ErrnoException).code === "ECONNREFUSED") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+export async function probeConsole(port: number): Promise<ConsoleProbe> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: AbortSignal.timeout(1_500),
+    });
+    const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+    if (
+      response.ok &&
+      body?.service === CONSOLE_SERVICE &&
+      typeof body.appDirectory === "string" &&
+      typeof body.pid === "number"
+    ) {
+      return {
+        kind: "console",
+        appDirectory: body.appDirectory,
+        pid: body.pid,
+        buildId: typeof body.buildId === "string" ? body.buildId : null,
+      };
+    }
+    return { kind: "foreign" };
+  } catch (error) {
+    return refused(error) ? { kind: "free" } : { kind: "foreign" };
+  }
+}
+
+async function waitFor(
+  port: number,
+  accept: (probe: ConsoleProbe) => boolean,
+  timeoutMs: number,
+): Promise<ConsoleProbe> {
+  const deadline = Date.now() + timeoutMs;
+  let probe = await probeConsole(port);
+  while (!accept(probe) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    probe = await probeConsole(port);
+  }
+  return probe;
+}
+
+async function requestShutdown(port: number): Promise<void> {
+  const response = await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
+    method: "POST",
+    headers: { [CONSOLE_REQUEST_HEADER]: "1" },
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) throw new Error(`console shutdown failed: HTTP ${response.status}`);
+}
+
+export interface OpenConsoleOptions {
+  appDirectory: string;
+  entryPath: string;
+  environment?: NodeJS.ProcessEnv;
+  launcherExecutable: string | null;
+  /** False returns the address without opening a browser. */
+  browser?: boolean;
+}
+
+/** Changes when the server/page bundle is replaced or the source launch version changes. */
+export async function consoleBuildId(
+  entryPath: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  const files = [entryPath, ...consoleBundleCandidates(path.dirname(entryPath))];
+  const parts: string[] = [];
+  for (const file of files) {
+    const metadata = await stat(file).catch(() => null);
+    if (metadata) parts.push(`${Math.trunc(metadata.mtimeMs)}-${metadata.size}`);
+  }
+  const runtime = await readRuntimeMetadata(entryPath, environment).catch(() => null);
+  if (runtime?.distribution === "development") parts.push(runtime.version);
+  return parts.join(".");
+}
+
+function startDetachedServer(entryPath: string, environment: NodeJS.ProcessEnv): void {
+  const child = spawn(process.execPath, [entryPath, "serve"], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+    env: environment,
+  });
+  child.unref();
+}
+
+/** Opens a loopback URL through the Launcher, which validates it first. */
+function openWithLauncher(launcherExecutable: string, url: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(launcherExecutable, ["open-loopback-url"], {
+      stdio: ["pipe", "ignore", "ignore"],
+      windowsHide: true,
+    });
+    child.once("error", () => resolve(false));
+    child.once("exit", (code) => resolve(code === 0));
+    child.stdin.end(url);
+  });
+}
+
+/**
+ * Ensures exactly one console answers on the configured port, restarting it
+ * when it belongs to a different installation. Returns the port.
+ */
+export async function ensureConsole(
+  options: Pick<OpenConsoleOptions, "appDirectory" | "entryPath" | "environment">,
+): Promise<{ port: number }> {
+  const environment = options.environment ?? process.env;
+  const port = consolePort(environment);
+
+  let probe = await probeConsole(port);
+  // Another installation, or this installation after an update, replaces the console.
+  const ownBuildId = await consoleBuildId(options.entryPath, environment);
+  if (
+    probe.kind === "console" &&
+    (probe.appDirectory !== options.appDirectory || probe.buildId !== ownBuildId)
+  ) {
+    await requestShutdown(port).catch(() => undefined);
+    probe = await waitFor(port, (next) => next.kind !== "console", 5_000);
+  }
+  if (probe.kind === "foreign") {
+    throw new Error(
+      `port ${port} is used by another program; set ${CONSOLE_PORT_ENV} to a free port and retry`,
+    );
+  }
+  if (probe.kind === "free") {
+    startDetachedServer(options.entryPath, environment);
+    probe = await waitFor(port, (next) => next.kind === "console", 10_000);
+    if (probe.kind !== "console") {
+      throw new Error(`codexhost console did not start on port ${port}`);
+    }
+  }
+  return { port };
+}
+
+/** The overview includes startup and integration failure diagnostics. */
+export function consoleUrl(port: number): string {
+  return `http://127.0.0.1:${port}/`;
+}
+
+/** Ensures the console, opens it unless `browser` is false, and returns its address. */
+export async function openConsole(options: OpenConsoleOptions): Promise<string> {
+  const { port } = await ensureConsole(options);
+  const url = consoleUrl(port);
+  if (options.browser !== false && options.launcherExecutable) {
+    await openWithLauncher(options.launcherExecutable, url);
+  }
+  return url;
+}

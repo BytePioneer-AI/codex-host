@@ -53,7 +53,8 @@ pub struct NativeHarnessBrokerLaunchctlPlan {
     pub print: NativeHarnessBrokerCommand,
     pub bootstrap: NativeHarnessBrokerCommand,
     pub bootout: NativeHarnessBrokerCommand,
-    pub kickstart: NativeHarnessBrokerCommand,
+    /// Terminates the running process but keeps the agent registered for on-demand starts.
+    pub stop: NativeHarnessBrokerCommand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,14 +69,15 @@ pub enum NativeHarnessBrokerInstallStep {
     Bootout,
     WritePlist,
     Bootstrap,
-    Kickstart,
+    /// Terminate a running broker so its next on-demand start loads updated code.
+    Stop,
 }
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeHarnessBrokerInstallOutcome {
-    AlreadyRunning,
-    Started,
+    AlreadyRegistered,
+    Stopped,
     Installed,
     Reinstalled,
 }
@@ -250,7 +252,7 @@ pub fn plan_native_harness_broker_launch_agent_with_environment(
   <key>LimitLoadToSessionType</key>\n\
   <string>Aqua</string>\n\
   <key>RunAtLoad</key>\n\
-  <true/>\n\
+  <false/>\n\
   <key>ThrottleInterval</key>\n\
   <integer>{NATIVE_HARNESS_BROKER_THROTTLE_SECONDS}</integer>\n\
   <key>ProcessType</key>\n\
@@ -308,7 +310,7 @@ fn plan_native_harness_broker_launchctl_for(
         print: command(vec!["print".to_owned(), target.clone()]),
         bootstrap: command(vec!["bootstrap".to_owned(), domain, plist_path]),
         bootout: command(vec!["bootout".to_owned(), target.clone()]),
-        kickstart: command(vec!["kickstart".to_owned(), "-k".to_owned(), target]),
+        stop: command(vec!["kill".to_owned(), "SIGTERM".to_owned(), target]),
     })
 }
 
@@ -317,13 +319,13 @@ pub fn plan_native_harness_broker_install(
     plist_matches: bool,
     observed: NativeHarnessBrokerObservedState,
 ) -> Vec<NativeHarnessBrokerInstallStep> {
+    // Brokers start on demand (the managed remote Host kickstarts them) and exit when
+    // idle, so installation only registers the exact agent and never leaves it running.
     match (plist_matches, observed) {
         (true, NativeHarnessBrokerObservedState::Running) => {
-            vec![NativeHarnessBrokerInstallStep::Kickstart]
+            vec![NativeHarnessBrokerInstallStep::Stop]
         }
-        (true, NativeHarnessBrokerObservedState::LoadedStopped) => {
-            vec![NativeHarnessBrokerInstallStep::Kickstart]
-        }
+        (true, NativeHarnessBrokerObservedState::LoadedStopped) => Vec::new(),
         (true, NativeHarnessBrokerObservedState::NotLoaded) => {
             vec![NativeHarnessBrokerInstallStep::Bootstrap]
         }
@@ -633,30 +635,6 @@ fn descriptor_fingerprint(
 }
 
 #[cfg(target_os = "macos")]
-fn wait_for_ready(
-    commands: &NativeHarnessBrokerLaunchctlPlan,
-    plan: &NativeHarnessBrokerLaunchAgentPlan,
-    uid: u32,
-    previous_descriptor: Option<[u8; 32]>,
-    timeout: Duration,
-) -> Result<bool, PlatformError> {
-    let started = Instant::now();
-    loop {
-        let descriptor = descriptor_fingerprint(plan, uid)?;
-        if observed_launchctl_state(commands)? == NativeHarnessBrokerObservedState::Running
-            && descriptor.is_some()
-            && descriptor != previous_descriptor
-        {
-            return Ok(true);
-        }
-        if started.elapsed() >= timeout {
-            return Ok(false);
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
-#[cfg(target_os = "macos")]
 fn execute_required(command: &NativeHarnessBrokerCommand) -> Result<(), PlatformError> {
     let output = run_launchctl(command)?;
     if output.status.success() {
@@ -714,7 +692,6 @@ pub fn install_native_harness_broker(
     let uid = require_current_aqua_uid(paths.home)?;
     let matches = plist_matches(&plan, uid)?;
     let observed = observed_launchctl_state(&commands)?;
-    let previous_descriptor = descriptor_fingerprint(&plan, require_current_aqua_uid(paths.home)?)?;
     let steps = plan_native_harness_broker_install(matches, observed);
     for step in &steps {
         match step {
@@ -724,27 +701,18 @@ pub fn install_native_harness_broker(
                 validate_secure_plist(&plan, uid)?;
                 execute_required(&commands.bootstrap)?;
             }
-            NativeHarnessBrokerInstallStep::Kickstart => {
-                validate_secure_plist(&plan, uid)?;
-                execute_required(&commands.kickstart)?;
-            }
+            NativeHarnessBrokerInstallStep::Stop => terminate_running(&commands)?,
         }
     }
-    if !wait_for_ready(
-        &commands,
-        &plan,
-        require_current_aqua_uid(paths.home)?,
-        previous_descriptor,
-        Duration::from_secs(3),
-    )? {
+    if observed_launchctl_state(&commands)? == NativeHarnessBrokerObservedState::NotLoaded {
         return Err(PlatformError::Invalid(format!(
-            "native Harness broker did not enter the running state in {}",
+            "native Harness broker was not registered in {}",
             plan.launchctl_target
         )));
     }
     Ok(match steps.as_slice() {
-        [] => NativeHarnessBrokerInstallOutcome::AlreadyRunning,
-        [NativeHarnessBrokerInstallStep::Kickstart] => NativeHarnessBrokerInstallOutcome::Started,
+        [] => NativeHarnessBrokerInstallOutcome::AlreadyRegistered,
+        [NativeHarnessBrokerInstallStep::Stop] => NativeHarnessBrokerInstallOutcome::Stopped,
         [
             NativeHarnessBrokerInstallStep::WritePlist,
             NativeHarnessBrokerInstallStep::Bootstrap,
@@ -758,11 +726,28 @@ pub fn stop_native_harness_broker(
     paths: NativeHarnessBrokerPaths<'_>,
 ) -> Result<bool, PlatformError> {
     let (_plan, commands) = broker_context(paths, &[])?;
-    if observed_launchctl_state(&commands)? == NativeHarnessBrokerObservedState::NotLoaded {
+    if observed_launchctl_state(&commands)? != NativeHarnessBrokerObservedState::Running {
         return Ok(false);
     }
-    execute_required(&commands.bootout)?;
+    terminate_running(&commands)?;
     Ok(true)
+}
+
+/// Sends SIGTERM and waits for the broker to exit; the agent stays registered.
+#[cfg(target_os = "macos")]
+fn terminate_running(commands: &NativeHarnessBrokerLaunchctlPlan) -> Result<(), PlatformError> {
+    execute_required(&commands.stop)?;
+    let started = Instant::now();
+    while observed_launchctl_state(commands)? == NativeHarnessBrokerObservedState::Running {
+        if started.elapsed() >= Duration::from_secs(10) {
+            return Err(PlatformError::Invalid(format!(
+                "native Harness broker did not stop: {}",
+                commands.stop.arguments.join(" ")
+            )));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -867,7 +852,7 @@ mod tests {
             ]
         );
         assert!(plan.plist_xml.contains("<string>Aqua</string>"));
-        assert!(plan.plist_xml.contains("<key>RunAtLoad</key>\n<true/>"));
+        assert!(plan.plist_xml.contains("<key>RunAtLoad</key>\n<false/>"));
         assert!(plan.plist_xml.contains("<key>ThrottleInterval</key>"));
         assert!(!plan.plist_xml.contains("KeepAlive"));
         assert!(!plan.plist_xml.contains("EnvironmentVariables"));
@@ -902,10 +887,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            commands.kickstart.arguments,
+            commands.stop.arguments,
             [
-                "kickstart",
-                "-k",
+                "kill",
+                "SIGTERM",
                 "gui/501/ai.bytepioneer.codexhost.native-harness-broker"
             ]
         );
@@ -943,10 +928,10 @@ mod tests {
     }
 
     #[test]
-    fn install_restarts_the_exact_agent_to_load_updated_runtime_code() {
+    fn install_stops_the_exact_agent_so_its_next_start_loads_updated_code() {
         assert_eq!(
             plan_native_harness_broker_install(true, NativeHarnessBrokerObservedState::Running),
-            [NativeHarnessBrokerInstallStep::Kickstart]
+            [NativeHarnessBrokerInstallStep::Stop]
         );
     }
 
@@ -963,13 +948,17 @@ mod tests {
     }
 
     #[test]
-    fn install_starts_an_exact_but_stopped_agent_without_rewriting_it() {
-        assert_eq!(
+    fn install_leaves_an_exact_registered_agent_stopped_for_on_demand_starts() {
+        assert!(
             plan_native_harness_broker_install(
                 true,
                 NativeHarnessBrokerObservedState::LoadedStopped,
-            ),
-            [NativeHarnessBrokerInstallStep::Kickstart]
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            plan_native_harness_broker_install(true, NativeHarnessBrokerObservedState::NotLoaded),
+            [NativeHarnessBrokerInstallStep::Bootstrap]
         );
     }
 

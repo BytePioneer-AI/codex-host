@@ -196,20 +196,19 @@ describe("DeepSeek executable generation probe", () => {
   });
 
   it.each([
-    ["0.1.2-rc.1", "modern", "0.1.2-rc.1"],
-    ["0.1.5-rc.1", "modern", "0.1.5-rc.1"],
-    ["0.1.5-rc.2", "modern", "0.1.5-rc.2"],
-    ["0.1.5-rc.3", "modern", "0.1.5-rc.3"],
-    ["0.2.0", "modern", "0.2.0"],
-    ["0.1.5-rc.1\n", "modern", "0.1.5-rc.1"],
-    ["0.1.5-rc.1\r\n", "modern", "0.1.5-rc.1"],
-    ["0.1.2-rc.1\n", "modern", "0.1.2-rc.1"],
-    ["0.1.2-rc.1\r\n", "modern", "0.1.2-rc.1"],
+    ["0.1.7-rc.1", "modern", "0.1.7-rc.1"],
+    ["0.1.7-rc.2", "modern", "0.1.7-rc.2"],
+    ["0.2.0-rc.1", "modern", "0.2.0-rc.1"],
+    ["0.2.0-rc.2", "modern", "0.2.0-rc.2"],
+    ["0.2.0-rc.2\n", "modern", "0.2.0-rc.2"],
+    ["0.2.0-rc.2\r\n", "modern", "0.2.0-rc.2"],
+    ["0.1.7-rc.1\n", "modern", "0.1.7-rc.1"],
+    ["0.1.7-rc.1\r\n", "modern", "0.1.7-rc.1"],
   ] as const)("classifies the exact supported output %j", (output, generation, version) => {
     expect(classifyDeepSeekVersionOutput(output)).toEqual({ generation, version });
   });
 
-  it.each(["", " 0.1.2-rc.1", "v0.1.2-rc.1", "0.1.2-rc.1\n\n", "version\n"])(
+  it.each(["", " 0.2.0-rc.2", "v0.2.0-rc.2", "0.2.0-rc.2\n\n", "version\n", "0.1.2-rc.1\n\n"])(
     "rejects non-canonical or multi-line output %j",
     (output) => {
       expect(() => classifyDeepSeekVersionOutput(output)).toThrowError(
@@ -219,32 +218,54 @@ describe("DeepSeek executable generation probe", () => {
   );
 
   it.each([
-    "0.1.0-rc.7",
-    "0.1.1-rc.1",
-    "0.1.1-rc.2",
-    "0.1.5-alpha.1",
-    "0.1.5",
-    "0.1.6-rc.1",
-    "0.1.5-rc.1+build.1",
-    "0.1.2-alpha.1",
-    "0.1.2-alpha.2",
-    "0.1.2-alpha.3",
-    "0.1.2-alpha.4",
-    "0.1.2-alpha.5",
-    "0.1.2-alpha.6",
-    "0.1.2-alpha.99",
-    "0.1.2-rc.2",
-    "0.1.2-rc.99",
-    "0.1.2",
-    "0.1.3",
-    "0.1.2-alpha.4+build.1",
-    "0.1.2-alpha.5+build.1",
-    "0.1.2-rc.1+build.1",
+    "0.1.7",
+    "0.1.7-rc.1+build.1",
+    "0.1.7-rc.3",
+    "0.1.7-rc.10",
+    "0.1.8-alpha.1",
+    "0.2.0-alpha.1",
+    "0.2.0-rc.3",
+    "0.2.0",
+    "0.2.1",
+    "0.3.0",
+    "1.0.0",
   ])("accepts untested semantic version %s for a native protocol check", (output) => {
     expect(classifyDeepSeekVersionOutput(output)).toEqual({
       generation: "modern",
       version: output,
     });
+  });
+
+  it.each([
+    "0.0.9",
+    "0.1.0-rc.7",
+    "0.1.2-rc.1",
+    "0.1.2-rc.1+build.1",
+    "0.1.2",
+    "0.1.5-rc.2",
+    "0.1.5-rc.3",
+    "0.1.6",
+    "0.1.7-alpha.2",
+    "0.1.7-rc",
+    "0.1.7-rc.0",
+  ])("refuses %s, which predates Session Format V4, before Web starts", (output) => {
+    let failure: unknown;
+    try {
+      classifyDeepSeekVersionOutput(`${output}\n`);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: "unsupported", retryable: false, cleanupFailed: false });
+    expect((failure as Error).message).toBe(
+      `当前 DeepSeek Harness 版本 ${output} 低于最低版本 0.1.7-rc.1，不受支持。` +
+        "codexhost 支持的 DSH 版本为 0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2；" +
+        "高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限。" +
+        "请运行 `npm install -g @deepseek-ai/dsh@0.2.0-rc.2` 升级，然后重新运行连接诊断。\n" +
+        `DeepSeek Harness ${output} is older than the minimum version 0.1.7-rc.1 and is not supported. ` +
+        "Supported DSH versions are 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1 and 0.2.0-rc.2; " +
+        "versions newer than 0.2.0-rc.2 can be tried, but compatibility may be limited. " +
+        "Run `npm install -g @deepseek-ai/dsh@0.2.0-rc.2` to upgrade, then run connection diagnostics again.",
+    );
   });
 
   it("runs the resolved executable with an argument array and returns its generation", async () => {
@@ -253,12 +274,12 @@ describe("DeepSeek executable generation probe", () => {
     const probeDependencies = dependencies(child);
     const environment = { PATH: "fixture-path", TEST_MARKER: "yes" };
     const pending = probeDeepSeekExecutableGeneration({ command, environment }, probeDependencies);
-    child.stdout.emit("data", Buffer.from("0.1.2-rc.1\n"));
+    child.stdout.emit("data", Buffer.from("0.2.0-rc.2\n"));
     close(child, 0);
 
     await expect(pending).resolves.toEqual({
       generation: "modern",
-      version: "0.1.2-rc.1",
+      version: "0.2.0-rc.2",
       command: { command, arguments: [], kind: "configured" },
     });
     expect(probeDependencies.spawn).toHaveBeenCalledWith(command, ["--version"], {
@@ -268,6 +289,18 @@ describe("DeepSeek executable generation probe", () => {
       windowsHide: true,
       windowsVerbatimArguments: false,
     });
+  });
+
+  it("refuses a CLI older than the V4 line once its version process exits", async () => {
+    const child = childProcess();
+    const pending = probeDeepSeekExecutableGeneration(
+      { command: executable() },
+      dependencies(child),
+    );
+    child.stdout.emit("data", "0.1.5-rc.2\n");
+    close(child, 0);
+
+    await expect(pending).rejects.toMatchObject({ code: "unsupported", retryable: false });
   });
 
   it("classifies missing commands and spawn ENOENT as not installed", async () => {
@@ -301,7 +334,7 @@ describe("DeepSeek executable generation probe", () => {
       { command: executable() },
       dependencies(child),
     );
-    child.stdout.emit("data", "0.1.1-rc.2\n");
+    child.stdout.emit("data", "0.2.0-rc.2\n");
     child.stderr.emit("data", "API_KEY=secret-canary unexpected warning\n");
     close(child, 0);
     await expect(pending).rejects.toMatchObject({
@@ -316,7 +349,7 @@ describe("DeepSeek executable generation probe", () => {
       { command: executable() },
       dependencies(child),
     );
-    child.stdout.emit("data", "0.1.2-rc.1\n");
+    child.stdout.emit("data", "0.2.0-rc.2\n");
     // Two separate data chunks, exactly how Node's undici emits them.
     child.stderr.emit(
       "data",
@@ -329,7 +362,7 @@ describe("DeepSeek executable generation probe", () => {
     close(child, 0);
     await expect(pending).resolves.toMatchObject({
       generation: "modern",
-      version: "0.1.2-rc.1",
+      version: "0.2.0-rc.2",
     });
   });
 
@@ -339,7 +372,7 @@ describe("DeepSeek executable generation probe", () => {
       { command: executable() },
       dependencies(child),
     );
-    child.stdout.emit("data", "0.1.1-rc.2\n");
+    child.stdout.emit("data", "0.2.0-rc.2\n");
     child.stderr.emit(
       "data",
       "(node:34177) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n",
@@ -422,9 +455,9 @@ describe("DeepSeek executable generation probe", () => {
       },
       probeDependencies,
     );
-    child.stdout.emit("data", "0.1.5-rc.1\n");
+    child.stdout.emit("data", "0.2.0-rc.2\n");
     close(child, 0);
-    await expect(pending).resolves.toMatchObject({ generation: "modern", version: "0.1.5-rc.1" });
+    await expect(pending).resolves.toMatchObject({ generation: "modern", version: "0.2.0-rc.2" });
 
     for (const option of ["timeoutMs", "cleanupTimeoutMs"] as const) {
       const rejectedDependencies = dependencies(childProcess());

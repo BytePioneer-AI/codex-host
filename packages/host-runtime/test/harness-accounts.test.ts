@@ -108,6 +108,50 @@ describe("read-only Harness accounts", () => {
     expect(await inspectHarnessAccounts([native], [])).toEqual({ accounts: [] });
   });
 
+  it("keeps every Billing Source reported by one Harness", async () => {
+    const wallet = {
+      label: "qingge",
+      balance: { amount: 3, currency: "USD", label: "钱包余额" },
+    };
+    const other = {
+      label: "qingge-2",
+      balance: { amount: 1, currency: "USD", label: "钱包余额" },
+    };
+    const ready = Object.assign(adapter("pi"), {
+      inspectAccounts: async () => [wallet, other, { ...wallet, token: "must not escape" }],
+    });
+    const inspected = await inspectHarnessAccount(ready, []);
+    expect(inspected).toEqual({
+      harnessId: "pi",
+      harnessName: "pi",
+      account: wallet,
+      accounts: [wallet, other],
+    });
+    await expect(inspectHarnessAccounts([ready], [])).resolves.toEqual({
+      accounts: [
+        { ...wallet, harnessId: "pi", harnessName: "pi" },
+        { ...other, harnessId: "pi", harnessName: "pi" },
+      ],
+    });
+  });
+
+  it("prefers multi-source inspection and caps the valid snapshots at eight", async () => {
+    const inspectAccount = vi.fn(async () => snapshot);
+    const wallets = Array.from({ length: 10 }, (_, index) => ({
+      label: `wallet-${index}`,
+      balance: { amount: index, currency: "USD" },
+    }));
+    const ready = Object.assign(adapter("pi"), {
+      inspectAccount,
+      inspectAccounts: async () => [{ ...wallets[0], token: "private" }, ...wallets],
+    });
+    const inspected = await inspectHarnessAccount(ready, []);
+    expect(inspected.account).toEqual(wallets[0]);
+    expect(inspected.accounts).toEqual(wallets.slice(0, 8));
+    expect(inspectAccount).not.toHaveBeenCalled();
+    expect(listHarnessAccountSources([ready], []).sources).toHaveLength(1);
+  });
+
   it("bounds unresponsive plugins and rejects malformed or secret-bearing snapshots", async () => {
     const hung = Object.assign(adapter("hung-agent"), {
       inspectAccount: () => new Promise<null>(() => undefined),

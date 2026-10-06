@@ -48,7 +48,11 @@ import {
 } from "../src/versioned-renderer-adapter.js";
 
 function composerWithFiber(fiber: object): Element {
-  const composer = { matches: () => true, parentElement: null } as unknown as Element;
+  const composer = {
+    matches: () => true,
+    querySelector: () => null,
+    parentElement: null,
+  } as unknown as Element;
   Object.defineProperty(composer, "__reactFiber$test", {
     configurable: true,
     value: fiber,
@@ -506,7 +510,11 @@ describe("current Codex Renderer Agent adapter", () => {
             fakeWindow.__codexhostDraftPrewarmPolicyV1 = policy;
             expect(adapter.modelControl?.clientForHost?.("local")).toBe(localClient);
           }
-          expect(requestTarget.sendRequest).toHaveBeenCalledTimes(1);
+          expect(requestTarget.sendRequest).toHaveBeenCalledTimes(2);
+          expect(requestTarget.sendRequest).toHaveBeenCalledWith(
+            "codexhost/harness/display-settings/get",
+            {},
+          );
           expect(remoteTarget.sendRequest).not.toHaveBeenCalled();
           // Auxiliary lookups must not disable real connection or explicit policy invalidation.
           Object.defineProperty(requestTarget, "requestClient", { value: { ...requestTarget } });

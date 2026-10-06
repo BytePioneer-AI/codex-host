@@ -100,6 +100,32 @@ describe("external Harness transport model routing", () => {
     expect(decodeCreateRoute({ id: 4, method: "model/list", params: {} })).toBeNull();
   });
 
+  it.each([
+    {},
+    { model: null },
+    { model: false },
+    { model: 42 },
+    { model: [] },
+    { model: { id: "future-official-model" } },
+  ])("leaves a native Model selection unclaimed: %j", (params) => {
+    expect(decodeCreateRoute({ id: 5, method: "thread/start", params })).toBeNull();
+  });
+
+  it.each([null, [], "text", 1])("leaves native start parameters unclaimed: %j", (params) => {
+    expect(decodeCreateRoute({ id: 5, method: "thread/start", params })).toBeNull();
+    expect(decodeCreateRoute({ id: 5, method: "thread/start" })).toBeNull();
+  });
+
+  it("still rejects a malformed codexhost transport marker", () => {
+    expect(() =>
+      decodeCreateRoute({
+        id: 6,
+        method: "thread/start",
+        params: { model: `${PI_NATIVE_TRANSPORT_MODEL_ID}@` },
+      }),
+    ).toThrow();
+  });
+
   it("round-trips a bounded opaque selected Pi Model Ref", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
     const transportModelId = encodePiTransportModel(model);

@@ -1,4 +1,5 @@
 import {
+  HARNESS_BROKER_IDLE_TIMEOUT_MS,
   defaultHarnessBrokerDescriptorPath,
   defaultHarnessBrokerSocketPath,
   startHarnessBrokerServer,
@@ -8,6 +9,8 @@ import {
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { harnessPluginIdSchema } from "@codexhost/shared-contracts";
+
+const BROKER_RETIRE_GRACE_MS = 1_000;
 
 export async function runClaudeAquaHarnessBroker(
   environment: NodeJS.ProcessEnv = process.env,
@@ -33,12 +36,24 @@ export async function runClaudeAquaHarnessBroker(
     await plugins.close();
     throw new Error("The installed Harness plugin required by the Aqua broker is unavailable");
   }
+  let requestExit = (): void => undefined;
+  const exitRequested = new Promise<void>((resolve) => {
+    requestExit = resolve;
+  });
   let server: HarnessBrokerServer;
   try {
     server = await startHarnessBrokerServer({
       descriptorPath: defaultHarnessBrokerDescriptorPath(environment, harnessId),
       socketPath: defaultHarnessBrokerSocketPath(environment, harnessId),
       adapter,
+      // The managed remote Host starts this LaunchAgent on demand; exit when unused.
+      // A short grace answers requests already in flight with a retryable refusal.
+      idle: {
+        timeoutMs: HARNESS_BROKER_IDLE_TIMEOUT_MS,
+        onRetire: () => {
+          setTimeout(requestExit, BROKER_RETIRE_GRACE_MS).unref();
+        },
+      },
     });
   } catch (error) {
     await adapter.close().catch(() => undefined);
@@ -53,11 +68,14 @@ export async function runClaudeAquaHarnessBroker(
   );
   let stop: (() => void) | undefined;
   try {
-    await new Promise<void>((resolve) => {
-      stop = resolve;
-      process.once("SIGINT", resolve);
-      process.once("SIGTERM", resolve);
-    });
+    await Promise.race([
+      exitRequested,
+      new Promise<void>((resolve) => {
+        stop = resolve;
+        process.once("SIGINT", resolve);
+        process.once("SIGTERM", resolve);
+      }),
+    ]);
     return 0;
   } finally {
     if (stop) {

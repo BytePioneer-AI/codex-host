@@ -1,4 +1,5 @@
 import {
+  catalogModelForRef,
   harnessIdSchema,
   harnessModelCatalogSchema,
   hostInteractionIdSchema,
@@ -40,6 +41,7 @@ import type {
   HostApprovalInteraction,
   HostCommand,
   HostCommandExecutionItem,
+  HostContextCompactionItem,
   HostEvent,
   HostFileChange,
   HostItem,
@@ -108,23 +110,21 @@ const defaultFakeCatalog = harnessModelCatalogSchema.parse({
 });
 
 function catalogHasModel(catalog: HarnessModelCatalog, model: HarnessModelRef): boolean {
-  return catalog.models.some((candidate) => candidate.ref.id === model.id);
+  return catalogModelForRef(catalog, model) !== undefined;
 }
 
 function resolvedLabelForModel(
   catalog: HarnessModelCatalog,
   model: HarnessModelRef | undefined,
 ): string | undefined {
-  return catalog.models.find((candidate) => candidate.ref.id === model?.id)?.resolvedModelLabel;
+  return catalogModelForRef(catalog, model)?.resolvedModelLabel;
 }
 
 function thinkingOptionsForModel(
   catalog: HarnessModelCatalog,
   model: HarnessModelRef | undefined,
 ): HarnessThinkingOption[] {
-  const supported = catalog.models.find(
-    (candidate) => candidate.ref.id === model?.id,
-  )?.supportedThinkingOptionIds;
+  const supported = catalogModelForRef(catalog, model)?.supportedThinkingOptionIds;
   return supported ? catalog.thinkingOptions.filter((option) => supported.includes(option.id)) : [];
 }
 
@@ -481,6 +481,32 @@ export class FakeHarnessSession implements HarnessSession {
     };
     this.#startItem(item);
     return item.itemId;
+  }
+
+  startContextCompaction(): HostItemId {
+    const item: HostContextCompactionItem = {
+      type: "contextCompaction",
+      itemId: this.#nextItemId(),
+    };
+    this.#startItem(item);
+    return item.itemId;
+  }
+
+  /** The command keeps running after its Turn; native history records its start result. */
+  detachItem(itemId: HostItemId): void {
+    const active = this.#requireActive();
+    const item = active.items.get(itemId);
+    if (item?.type !== "commandExecution") {
+      throw new Error("Fake Harness Item is not a Command Execution");
+    }
+    active.items.delete(itemId);
+    active.completedItems.push({ item, outcome: { status: "succeeded" } });
+    this.#event({ type: "item.detached", turnId: active.command.turnId, itemId });
+  }
+
+  /** Emits an event outside the scripted Turn, e.g. a detached Item's later output. */
+  emitEvent(event: HostEvent): void {
+    this.#event(event);
   }
 
   appendCommandOutput(itemId: HostItemId, text: string): void {

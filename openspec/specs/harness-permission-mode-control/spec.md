@@ -18,8 +18,8 @@ A `HarnessAdapter` MAY expose a strict browser-safe Permission Mode catalog toge
 
 #### Scenario: DeepSeek exposes dynamic native presets
 
-- **WHEN** DeepSeek Harness inspection finds a valid native `permission` settings namespace
-- **THEN** it SHALL derive the Permission Mode IDs, order, labels, and default from that namespace's schema and value
+- **WHEN** DeepSeek Harness inspection finds a valid V4 `permissionPresets/catalog` value
+- **THEN** it SHALL derive the Permission Mode IDs, order, labels, and default from the catalog's options and default
 - **AND** codexhost SHALL NOT hardcode the deployment's preset catalog
 
 #### Scenario: Pi has no native Permission Mode

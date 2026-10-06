@@ -20,7 +20,7 @@ import type { ClaudePermissionMode } from "../src/permission-modes.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
-  ClaudeAutonomousTurn,
+  ClaudeAutonomousTurnHandler,
   ClaudeIdleTurnHandler,
   ClaudeInteractionResponse,
   ClaudePlanLimitEvent,
@@ -33,12 +33,24 @@ import type {
 
 class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
-  autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
+  autonomousTurnHandler: ClaudeAutonomousTurnHandler | null = null;
   idleHandler: ClaudeIdleTurnHandler | null = null;
   threadHandler: ((event: ClaudeTurnEvent) => void) | null = null;
   idleLive = false;
-  setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void {
+  setAutonomousTurnHandler(handler: ClaudeAutonomousTurnHandler): void {
     this.autonomousTurnHandler = handler;
+  }
+  /** Streams a whole native Segment that no requested Turn owns. */
+  autonomousTurn(turn: {
+    nativeTurnKey: string;
+    events: ClaudeTurnEvent[];
+    result: ClaudeTransportTurnResult;
+  }): void {
+    const handler = this.autonomousTurnHandler;
+    if (!handler) throw new Error("No fake Claude autonomous Turn handler");
+    handler.start(turn.nativeTurnKey);
+    for (const event of turn.events) handler.onEvent(event);
+    handler.onTerminal(turn.result);
   }
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void {
     this.idleHandler = handler;
@@ -2256,7 +2268,7 @@ describe("Claude Code HarnessAdapter", () => {
       ok: false,
       error: { code: "sessionBusy" },
     });
-    transport.autonomousTurnHandler?.({
+    transport.autonomousTurn({
       nativeTurnKey: "task-notification-1",
       events: [
         {
@@ -2400,7 +2412,7 @@ describe("Claude Code HarnessAdapter", () => {
       type: "item.completed",
       snapshot: { item: { type: "agentMessage" } },
     });
-    transport.autonomousTurnHandler?.({
+    transport.autonomousTurn({
       nativeTurnKey: "task-notification-send",
       events: [
         {
@@ -2456,7 +2468,7 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
 
-    transport.autonomousTurnHandler?.({
+    transport.autonomousTurn({
       nativeTurnKey: "task-notification-1",
       events: [
         {
@@ -2506,6 +2518,45 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("never merges a native Segment into a requested Turn that still runs", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const events: Array<Extract<HarnessOutput, { kind: "event" }>["event"]> = [];
+    const drain = (async () => {
+      for await (const output of session.outputs) {
+        if (output.kind === "event") events.push(output.event);
+      }
+    })();
+    try {
+      await session.execute(textTurn("requested"));
+      const transport = transports[0];
+      const handler = transport?.autonomousTurnHandler;
+      if (!transport || !handler) throw new Error("Fake Claude transport was not created");
+      handler.start("stray-segment");
+      handler.onEvent({ type: "text.delta", messageId: "stray-assistant", delta: "STRAY" });
+      handler.onTerminal({ status: "succeeded" });
+      transport.delta("OWN");
+      transport.finish({ status: "succeeded" });
+      await vi.waitFor(() =>
+        expect(events.some((event) => event.type === "turn.completed")).toBe(true),
+      );
+      expect(events.some((event) => event.type === "turn.autonomous.started")).toBe(false);
+      expect(
+        events.flatMap((event) =>
+          event.type === "item.updated" && event.update.type === "text.append"
+            ? [event.update.text]
+            : [],
+        ),
+      ).toEqual(["OWN"]);
+      expect(events.filter((event) => event.type === "turn.completed")).toEqual([
+        expect.objectContaining({ turnId: "requested", outcome: { status: "succeeded" } }),
+      ]);
+    } finally {
+      await session.close();
+      await drain;
+    }
+  });
+
   it.each(["completed", "failed", "interrupted"] as const)(
     "finishes an autonomous Turn after its newly created child is %s",
     async (status) => {
@@ -2526,7 +2577,7 @@ describe("Claude Code HarnessAdapter", () => {
           expect(events.some((event) => event.type === "turn.completed")).toBe(true),
         );
         events.length = 0;
-        transport.autonomousTurnHandler?.({
+        transport.autonomousTurn({
           nativeTurnKey: "continuation-with-child",
           events: [
             {
@@ -2663,7 +2714,7 @@ describe("Claude Code HarnessAdapter", () => {
       "native-agent-b",
       "native-agent-c",
     ].entries()) {
-      transport.autonomousTurnHandler?.({
+      transport.autonomousTurn({
         nativeTurnKey: `task-notification-${index + 1}`,
         events: [
           {

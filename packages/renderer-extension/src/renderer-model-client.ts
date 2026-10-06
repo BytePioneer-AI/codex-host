@@ -38,6 +38,11 @@ import {
   type LoadedSession,
   idleReleaseSettingsSchema,
   type IdleReleaseSettings,
+  CODEX_SERVICE_TIER_SETTINGS_METHOD,
+  codexServiceTierResultSchema,
+  codexServiceTierSettingsSchema,
+  type CodexServiceTierResult,
+  type CodexServiceTierSettings,
   harnessAccountInspectParamsSchema,
   harnessAccountInspectResultSchema,
   harnessAccountSourceListResultSchema,
@@ -206,6 +211,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
   setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
+  setCodexServiceTier?(settings: CodexServiceTierSettings): Promise<CodexServiceTierResult>;
   listLoadedSessions?(): Promise<LoadedSession[]>;
   currentHostId?(composer?: Element): string | null;
   knownHostIds?(): readonly string[];
@@ -421,6 +427,12 @@ export function createRendererModelClient(
       const params = idleReleaseSettingsSchema.parse(settings);
       return idleReleaseSettingsSchema.parse(
         await manager.sendRequest(IDLE_RELEASE_SETTINGS_METHOD, params),
+      );
+    },
+    async setCodexServiceTier(settings: CodexServiceTierSettings): Promise<CodexServiceTierResult> {
+      const params = codexServiceTierSettingsSchema.parse(settings);
+      return codexServiceTierResultSchema.parse(
+        await manager.sendRequest(CODEX_SERVICE_TIER_SETTINGS_METHOD, params),
       );
     },
     ...createRendererSessionImportClient(async (method, params) =>

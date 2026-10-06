@@ -95,6 +95,18 @@ export function nodeExtractionCommand(
 }
 
 function runExtractionCommand(command, arguments_) {
+  if (process.platform === "win32") {
+    // Windows tar.exe decodes argv with the ANSI code page, which garbles non-ASCII
+    // checkout paths; keep the arguments relative to the (OS-handled) working directory.
+    const cwd = process.cwd();
+    arguments_ = arguments_.map((argument) => {
+      if (!path.win32.isAbsolute(argument)) return argument;
+      const relative = path.win32.relative(cwd, argument);
+      return relative && !relative.startsWith("..") && !path.win32.isAbsolute(relative)
+        ? relative
+        : argument;
+    });
+  }
   const result = spawnSync(command, arguments_, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],

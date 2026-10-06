@@ -72,6 +72,36 @@ export interface RendererSettingsMessages {
   readonly idleReleasePending: string;
   readonly idleReleaseUnavailable: string;
   readonly idleReleaseFailed: string;
+  readonly codexServiceTierSection: string;
+  readonly codexServiceTierTitle: string;
+  readonly codexServiceTierDescription: string;
+  readonly codexServiceTierHelpLabel: string;
+  readonly codexServiceTierHelp: readonly string[];
+  readonly codexServiceTierToggleHint: string;
+  readonly codexServiceTierPending: string;
+  readonly codexServiceTierUnavailable: string;
+  readonly codexServiceTierFailed: string;
+  readonly codexServiceTierActive: string;
+  readonly codexServiceTierInactiveOfficialProvider: string;
+  /** Long form of the same fact, shown under the switch instead of in the badge. */
+  readonly codexServiceTierOfficialProviderHint: string;
+  readonly codexServiceTierNoticeNotAdvertised: string;
+  /**
+   * Composer speed control. Each string is the official en / zh-CN text of the
+   * matching `serviceTier.*` message, so codexhost's control reads exactly like
+   * the Desktop's own Fast / Ultrafast menu items.
+   */
+  readonly codexServiceTierStandardLabel: string;
+  readonly codexServiceTierStandardDescription: string;
+  readonly codexServiceTierFastLabel: string;
+  /** `composer.intelligencePicker.fastMode.advanced.subtitle.withMultiplier`. */
+  readonly codexServiceTierFastMenuDescription: string;
+  /** The official multiplier the submenu renders; the Desktop hardcodes 1.5. */
+  readonly codexServiceTierFastSpeedMultiplier: string;
+  readonly codexServiceTierUltrafastLabel: string;
+  readonly codexServiceTierUltrafastDescription: string;
+  /** `composer.intelligenceDropdown.speed.rowAriaLabel`, `{speed}` = tier name. */
+  readonly codexServiceTierRowAriaLabel: string;
   readonly reasoningSoftWrapTitle: string;
   readonly reasoningSoftWrapDescription: string;
   readonly pageUnavailable: string;
@@ -335,6 +365,38 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   idleReleasePending: "Syncing…",
   idleReleaseUnavailable: "Not supported by this Host",
   idleReleaseFailed: "Sync failed, try again",
+  codexServiceTierSection: "Codex request tier",
+  codexServiceTierTitle: "Codex request tier",
+  codexServiceTierDescription:
+    "Turn this on to send a locally forced Fast or Ultrafast tier with your requests.",
+  codexServiceTierHelpLabel: "About the Codex request tier",
+  codexServiceTierHelp: Object.freeze([
+    "The selected tier applies from your next message, including in an existing conversation. A turn already in progress is unchanged; switching never restarts the app.",
+    "Fast sends priority; Ultrafast sends ultrafast. The request is forced locally — whether the server honors, ignores or rejects it is entirely up to your provider.",
+    "Switch the tier through the bolt button in the model picker menu (Standard / Fast / Ultrafast). Choosing Standard keeps this switch on and only stops forcing a tier; use this switch to turn the feature off.",
+    "Only local custom Codex providers are affected. Official OpenAI threads, remote Hosts and external Agents keep their native behavior.",
+  ]),
+  codexServiceTierToggleHint:
+    "Applies to local custom providers: the tier is forced on every request and the server decides whether to honor it. Switch tiers through the bolt button in the model picker menu; Standard keeps this switch on without forcing a tier.",
+  codexServiceTierPending: "Syncing…",
+  codexServiceTierUnavailable: "Not supported by this Host",
+  codexServiceTierFailed: "Sync failed, try again",
+  codexServiceTierActive: "Applied · {tier}",
+  codexServiceTierInactiveOfficialProvider:
+    "Not applied: the official OpenAI provider manages its own tier",
+  codexServiceTierOfficialProviderHint:
+    "The official OpenAI provider's tier is managed by the official client, so this switch has no effect. Use a local custom provider for codexhost to send a forced tier.",
+  codexServiceTierNoticeNotAdvertised:
+    "The current model catalog does not declare this tier; the server may ignore or reject it",
+  codexServiceTierStandardLabel: "Standard",
+  codexServiceTierStandardDescription: "Default speed",
+  codexServiceTierFastLabel: "Fast",
+  codexServiceTierFastMenuDescription: "{speedMultiplier, number}x speed, more usage",
+  codexServiceTierFastSpeedMultiplier: "1.5",
+  codexServiceTierUltrafastLabel: "Ultrafast",
+  codexServiceTierUltrafastDescription:
+    "The fastest available responses for latency-sensitive work",
+  codexServiceTierRowAriaLabel: "Speed {speed}",
   reasoningSoftWrapTitle: "Wrap thinking text",
   reasoningSoftWrapDescription: "Wrap long lines in thinking blocks. Shell output is unaffected.",
   pageUnavailable: "Page unavailable",
@@ -640,6 +702,34 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   idleReleasePending: "同步中…",
   idleReleaseUnavailable: "当前 Host 不支持",
   idleReleaseFailed: "同步失败，请重试",
+  codexServiceTierSection: "Codex 请求档位",
+  codexServiceTierTitle: "Codex 请求档位",
+  codexServiceTierDescription: "开启后，本地强制为请求携带 Fast 或 Ultrafast 档位。",
+  codexServiceTierHelpLabel: "关于 Codex 请求档位",
+  codexServiceTierHelp: Object.freeze([
+    "所选档位从下一条消息开始生效，同一会话内也可切换。正在进行的回合保持原档位，切换不会重启客户端。",
+    "Fast 发送 priority，Ultrafast 发送 ultrafast。档位在本地强制发送，服务端是否支持、忽略或拒绝由服务端决定。",
+    "在模型选择器菜单的闪电按钮中切换档位（标准 / 快速 / 超快）。选择「标准」只停止强制档位并保持本开关开启；如需关闭功能，请使用本开关。",
+    "仅作用于本地自定义 Codex 供应商。官方 OpenAI 会话、远程 Host 和外部 Agent 保持原有行为。",
+  ]),
+  codexServiceTierToggleHint:
+    "对本地自定义供应商生效：本地强制发送所选档位，服务端是否支持由服务端决定。档位在模型选择器菜单的闪电按钮中选择；选择「标准」保持开关开启但不强制档位。",
+  codexServiceTierPending: "同步中…",
+  codexServiceTierUnavailable: "当前 Host 不支持",
+  codexServiceTierFailed: "同步失败，请重试",
+  codexServiceTierActive: "已生效 · {tier}",
+  codexServiceTierInactiveOfficialProvider: "未生效：官方 OpenAI 供应商的档位由官方客户端管理",
+  codexServiceTierOfficialProviderHint:
+    "官方 OpenAI 供应商的档位由官方客户端管理，本开关不生效。使用本地自定义供应商时，codexhost 才会强制发送所选档位。",
+  codexServiceTierNoticeNotAdvertised: "当前模型目录未声明该档位，服务端可能忽略或拒绝",
+  codexServiceTierStandardLabel: "标准",
+  codexServiceTierStandardDescription: "默认速度",
+  codexServiceTierFastLabel: "快速",
+  codexServiceTierFastMenuDescription: "{speedMultiplier, number} 倍速度，用量更多",
+  codexServiceTierFastSpeedMultiplier: "1.5",
+  codexServiceTierUltrafastLabel: "超快",
+  codexServiceTierUltrafastDescription: "为时延敏感型任务提供最快响应",
+  codexServiceTierRowAriaLabel: "速度 {speed}",
   reasoningSoftWrapTitle: "换行显示思考文本",
   reasoningSoftWrapDescription: "思考块中的长行自动换行，不影响 Shell 输出。",
   pageUnavailable: "页面不可用",

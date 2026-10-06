@@ -61,6 +61,12 @@ const runtimeLicenses = [
     source: "LICENSE",
     output: "QoderCN-Agent-SDK-LICENSE.txt",
   },
+  {
+    packageName: "smol-toml",
+    license: "BSD-3-Clause",
+    source: "LICENSE",
+    output: "smol-toml-LICENSE.txt",
+  },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
   { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
   {
@@ -263,6 +269,7 @@ export function expectedPayloadPaths(target) {
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
+    "licenses/smol-toml-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",
     "licenses/ws-LICENSE.txt",

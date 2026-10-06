@@ -25,6 +25,7 @@
     "@codexhost/protocol-core": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
     "@codexhost/update-manager": "0.0.0",
+    "smol-toml": "^1.8.0",
     "ws": "8.21.3"
   }
 }

@@ -85,7 +85,7 @@ async function setup(initialHostId: string) {
     querySelector: () => null,
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
-    documentElement: {},
+    documentElement: { getAttribute: () => null },
   });
   const renderer = {
     async evaluate<T>(expression: string): Promise<T> {
@@ -182,6 +182,8 @@ it.each(["local", remoteId])(
       expect(forComposer).toHaveBeenCalledTimes(1);
       expect(hostIdForComposer).not.toHaveBeenCalled();
       if (hostId === "local") expect(forHost).not.toHaveBeenCalled();
+      // Every settings synchronizer shares the one local Client resolved by
+      // `currentRequestRoute`, so the local Host is still resolved exactly once.
       else expect(forHost).toHaveBeenCalledExactlyOnceWith("local");
 
       managers.delete(hostId);

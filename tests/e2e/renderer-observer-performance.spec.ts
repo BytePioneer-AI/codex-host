@@ -182,6 +182,7 @@ test("restoring unchanged native attributes does not feed the observer", async (
       noop,
       noop,
       noop,
+      noop,
     );
     let notifications = 0;
     const observer = new MutationObserver(() => {

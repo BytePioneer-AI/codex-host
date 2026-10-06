@@ -27,6 +27,12 @@ const testState = vi.hoisted(() => ({
   prewarmClears: 0,
   notifyMutations: null as null | ((records: MutationRecord[]) => void),
   animationFrames: [] as FrameRequestCallback[],
+  serviceTierPlacements: [] as {
+    tier: string | null;
+    suppressed: boolean;
+    scope: unknown;
+  }[],
+  tierMarker: null as string | null,
 }));
 
 vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
@@ -62,6 +68,8 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
           placeBefore: vi.fn(),
           dispose: vi.fn(),
         },
+        serviceTier: { render: vi.fn(), dispose: vi.fn() },
+        onSelectServiceTier: () => {},
         sendButton: testState.sendButton,
         sendDisabledBeforeSwitch: null,
       };
@@ -77,6 +85,16 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
       testState.renderedModelViews.push({ ...modelView });
     },
     reconcileComposerNativeControls: vi.fn(),
+    renderComposerServiceTier: (
+      _control: unknown,
+      placement: { tier: string | null; suppressed: boolean; scope: unknown },
+    ) => {
+      testState.serviceTierPlacements.push({
+        tier: placement.tier,
+        suppressed: placement.suppressed,
+        scope: placement.scope,
+      });
+    },
     disposeComposerAgentControl: vi.fn(),
     sendButtonWithin: () => testState.sendButton,
   };
@@ -197,6 +215,8 @@ function installFakeBrowser(): void {
   testState.prewarmClears = 0;
   testState.notifyMutations = null;
   testState.animationFrames = [];
+  testState.serviceTierPlacements = [];
+  testState.tierMarker = null;
   const window_ = {
     addEventListener: listeners.addEventListener.bind(listeners),
     removeEventListener: listeners.removeEventListener.bind(listeners),
@@ -206,7 +226,11 @@ function installFakeBrowser(): void {
     open: vi.fn(),
   };
   const document_ = {
-    documentElement: {},
+    documentElement: {
+      // The Host-confirmed tier marker the probe reads from <html>.
+      getAttribute: (name: string) =>
+        name === "data-codexhost-service-tier" ? testState.tierMarker : null,
+    },
     body: {},
     activeElement: null,
     querySelectorAll: (selector: string) => (selector.includes("textarea") ? [editor] : []),
@@ -1237,5 +1261,144 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(testState.renderedModelViews).not.toContainEqual(
       expect.objectContaining({ status: "error" }),
     );
+  });
+
+  it("shows the local tier on a local mounted Composer even while the global route is remote", async () => {
+    installFakeBrowser();
+    testState.tierMarker = "fast";
+    const local = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      inspectThread: vi.fn(async () => ({ owner: "codex" as const, locked: true as const })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({ threadId: "thread-a", usage: null })),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const remote = { inspectHarness: vi.fn(async () => readyInspection()) };
+    const modelControl = {
+      ...local,
+      // The Composer owns hostId "local"; the Host-wide route (no Composer
+      // argument) points at a remote.
+      currentHostId: (composer?: Element) => (composer ? "local" : "remote-ssh:linux"),
+      clientForHost: (hostId: string) => (hostId === "local" ? local : remote),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+    await vi.waitFor(() => {
+      expect(testState.serviceTierPlacements.at(-1)).toMatchObject({ tier: "fast" });
+    });
+    const placement = testState.serviceTierPlacements.at(-1);
+    expect(placement?.suppressed).toBe(false);
+    expect(placement?.scope).toBe(testState.composer);
+    probe.dispose();
+  });
+
+  it("never shows the local tier when the mounted Composer's own Host is remote", async () => {
+    installFakeBrowser();
+    testState.tierMarker = "ultrafast";
+    const local = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      inspectThread: vi.fn(async () => ({ owner: "codex" as const, locked: true as const })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({ threadId: "thread-a", usage: null })),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const modelControl = {
+      ...local,
+      // The Host-wide route says "local" for its own settings work, but the
+      // mounted Composer belongs to a remote Host: only the per-Composer Host
+      // decides whether the local tier may paint.
+      currentHostId: (composer?: Element) => (composer ? "remote-ssh:linux" : "local"),
+      clientForHost: () => local,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+    await vi.waitFor(() => {
+      expect(testState.serviceTierPlacements.length).toBeGreaterThan(0);
+    });
+    const placement = testState.serviceTierPlacements.at(-1);
+    expect(placement).toMatchObject({ tier: null, suppressed: true, scope: null });
+    probe.dispose();
+  });
+
+  it("releases the tier scope when a native draft's own Host changes, with the Host-wide route fixed", async () => {
+    installFakeBrowser();
+    // A native draft on the local Host with a confirmed tier: the scope stamp
+    // applies to this Composer root.
+    testState.tierMarker = "fast";
+    testState.modelTarget = ["default", "draft-1"];
+    let routeHostId = "local";
+    const local = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      inspectThread: vi.fn(async () => ({ owner: "codex" as const, locked: true as const })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({ threadId: "draft-1", usage: null })),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const modelControl = {
+      ...local,
+      // Per-Composer Host only; the Host-wide route (no Composer argument)
+      // stays local the whole time and must never drive the decision.
+      currentHostId: (composer?: Element) => (composer ? routeHostId : "local"),
+      clientForHost: (hostId: string) => (hostId === "local" ? local : null),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+    await vi.waitFor(() => {
+      expect(testState.serviceTierPlacements.at(-1)).toMatchObject({
+        tier: "fast",
+        scope: testState.composer,
+      });
+    });
+
+    // The same draft Composer is re-routed to a remote Host: the confirmed
+    // tier stays machine-wide, but the scope must be released in the same
+    // Host-change lifecycle step, not on a later availability round trip.
+    routeHostId = "remote-ssh:linux";
+    window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
+    await vi.waitFor(() => {
+      expect(testState.serviceTierPlacements.at(-1)).toMatchObject({
+        tier: null,
+        suppressed: true,
+        scope: null,
+      });
+    });
+
+    // Returning to the local Host restores it.
+    routeHostId = "local";
+    window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
+    await vi.waitFor(() => {
+      expect(testState.serviceTierPlacements.at(-1)).toMatchObject({
+        tier: "fast",
+        scope: testState.composer,
+      });
+    });
+    probe.dispose();
   });
 });

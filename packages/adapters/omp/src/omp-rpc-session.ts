@@ -239,6 +239,7 @@ interface ActiveTurn {
   cancellationTimeout: NodeJS.Timeout | null;
   cancellationRecheck: NodeJS.Timeout | null;
   cancellationChecking: boolean;
+  cancellationReloaded: boolean;
   abortPromise: Promise<void> | null;
 }
 
@@ -909,6 +910,7 @@ export class OmpRpcSession {
         cancellationTimeout: null,
         cancellationRecheck: null,
         cancellationChecking: false,
+        cancellationReloaded: false,
         abortPromise: null,
       };
     });
@@ -1568,8 +1570,71 @@ export class OmpRpcSession {
         if (this.#activeTurn !== active) return;
         response = await this.#send("get_state", {});
       }
-      const state = parseSessionState(response);
+      let state = parseSessionState(response);
       if (this.#activeTurn !== active || active.cancellation !== "accepted") return;
+      const data = sessionStateData(response);
+      if (
+        !active.cancellationReloaded &&
+        state.sessionFile &&
+        state.sessionId === this.state.sessionId &&
+        state.sessionFile === this.state.sessionFile &&
+        data.isStreaming === false &&
+        data.isCompacting === false &&
+        data.queuedMessageCount === 0 &&
+        data.hasPendingAsyncWork === true &&
+        active.tools.size === 0
+      ) {
+        await this.verifySessionCwd(this.#options.cwd);
+        if (this.#activeTurn !== active) return;
+        active.cancellationReloaded = true;
+        // Native Abort leaves owned async jobs alive. A native lifecycle reset
+        // cancels them, after which the saved conversation is resumed in-place.
+        const reset = await this.#send("new_session", {});
+        if (this.#activeTurn !== active) return;
+        if (!isRecord(reset.data) || reset.data.cancelled !== false) {
+          throw new OmpRpcFaultError("unavailable", "Omp cancelled Session reset was refused");
+        }
+        const reloaded = await this.#send("switch_session", { sessionPath: state.sessionFile });
+        if (this.#activeTurn !== active) return;
+        if (!isRecord(reloaded.data) || reloaded.data.cancelled !== false) {
+          throw new OmpRpcFaultError("unavailable", "Omp cancelled Session reload was refused");
+        }
+        const previous = state;
+        response = await this.#send("get_state", {});
+        state = parseSessionState(response);
+        if (state.sessionId !== previous.sessionId || state.sessionFile !== previous.sessionFile) {
+          throw new OmpRpcFaultError(
+            "protocolError",
+            "Omp cancelled Session reload changed its identity",
+          );
+        }
+        if (state.provider !== previous.provider || state.modelId !== previous.modelId) {
+          if (!previous.provider || !previous.modelId) {
+            throw new OmpRpcFaultError(
+              "protocolError",
+              "Omp cancelled Session has no restorable Model",
+            );
+          }
+          await this.#send("set_model", { provider: previous.provider, modelId: previous.modelId });
+        }
+        if (previous.thinkingLevel && state.thinkingLevel !== previous.thinkingLevel) {
+          await this.#send("set_thinking_level", { level: previous.thinkingLevel });
+        }
+        response = await this.#send("get_state", {});
+        state = parseSessionState(response);
+        if (
+          state.sessionId !== previous.sessionId ||
+          state.sessionFile !== previous.sessionFile ||
+          state.provider !== previous.provider ||
+          state.modelId !== previous.modelId ||
+          (previous.thinkingLevel !== null && state.thinkingLevel !== previous.thinkingLevel)
+        ) {
+          throw new OmpRpcFaultError(
+            "protocolError",
+            "Omp cancelled Session reload changed its identity or configuration",
+          );
+        }
+      }
       // isStreaming:false alone also describes a session waiting for background
       // jobs. Modern OMP supplies isSettled; older versions still need agent_end.
       if (!cancellationSettled(response, active.terminalEnd)) {

@@ -480,6 +480,140 @@ describe("OMP RPC session", () => {
     }
   });
 
+  it.each([
+    "restored",
+    "configuration restored",
+    "configuration rejected",
+    "reset refused",
+    "resume refused",
+    "identity changed",
+    "background survives",
+    "queued messages",
+    "compaction",
+  ])(
+    "cancels persisted background work through native lifecycle recovery: %s",
+    async (scenario) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "omp-cancel-recovery-"));
+      const sessionFile = path.join(directory, "session.jsonl");
+      await writeFile(
+        sessionFile,
+        JSON.stringify({ type: "session", id: "omp-session", cwd: directory }) + "\n",
+      );
+      const process = new FakeOmpProcess("complete", sessionFile);
+      const onFault = vi.fn();
+      let cancelling = false;
+      let resumed = false;
+      let modelRestored = false;
+      let thinkingRestored = false;
+      let nextTurn = false;
+      process.handleCommand = (command) => {
+        const respond = (data: Record<string, unknown> = {}) =>
+          process.sendFrame({
+            type: "response",
+            id: command.id,
+            command: command.type,
+            success: true,
+            data,
+          });
+        if (command.type === "prompt" && !nextTurn) {
+          respond();
+          process.sendFrame({ type: "agent_end", isTerminal: false, yielded: true });
+          return true;
+        }
+        if (command.type === "abort") {
+          cancelling = true;
+          respond();
+          return true;
+        }
+        if (command.type === "new_session") {
+          respond({ cancelled: scenario === "reset refused" });
+          return true;
+        }
+        if (command.type === "switch_session") {
+          expect(command.sessionPath).toBe(sessionFile);
+          resumed = true;
+          respond({ cancelled: scenario === "resume refused" });
+          return true;
+        }
+        if (command.type === "set_model") {
+          expect(command.provider).toBe("synthetic");
+          expect(command.modelId).toBe("omp-model");
+          modelRestored = scenario !== "configuration rejected";
+          respond();
+          return true;
+        }
+        if (command.type === "set_thinking_level") {
+          expect(command.level).toBe("high");
+          thinkingRestored = true;
+          respond();
+          return true;
+        }
+        if (command.type === "get_state" && cancelling) {
+          const changedConfiguration = resumed && scenario.startsWith("configuration");
+          respond({
+            sessionId:
+              resumed && scenario === "identity changed" ? "another-session" : "omp-session",
+            sessionFile,
+            model: {
+              provider: "synthetic",
+              id: changedConfiguration && !modelRestored ? "other-model" : "omp-model",
+              reasoning: true,
+            },
+            thinkingLevel: changedConfiguration && !thinkingRestored ? "low" : "high",
+            isStreaming: false,
+            isSettled: resumed && scenario !== "background survives",
+            hasPendingAsyncWork: !resumed || scenario === "background survives",
+            queuedMessageCount: scenario === "queued messages" ? 1 : 0,
+            isCompacting: scenario === "compaction",
+          });
+          return true;
+        }
+        return false;
+      };
+      const session = new OmpRpcSession(
+        { cwd: directory, cancelTimeoutMs: 100, onFault },
+        { spawn: () => process as never },
+      );
+      try {
+        await session.start();
+        const outcome = session
+          .runTurn("wait for owned background work", () => undefined)
+          .catch((error) => error);
+        await session.abort();
+        if (scenario === "restored" || scenario === "configuration restored") {
+          await expect(outcome).resolves.toEqual({ text: "", cancelled: true });
+          expect(onFault).not.toHaveBeenCalled();
+          expect(session.state).toMatchObject({
+            sessionId: "omp-session",
+            sessionFile,
+            modelId: "omp-model",
+            thinkingLevel: "high",
+          });
+          nextTurn = true;
+          cancelling = false;
+          await expect(session.runTurn("continue", () => undefined)).resolves.toMatchObject({
+            text: "PONG",
+            cancelled: false,
+          });
+        } else {
+          await expect(outcome).resolves.toBeInstanceOf(Error);
+          expect(onFault).toHaveBeenCalledTimes(1);
+        }
+        expect(process.commands.filter((command) => command.type === "new_session")).toHaveLength(
+          scenario === "queued messages" || scenario === "compaction" ? 0 : 1,
+        );
+        expect(
+          process.commands.filter((command) => command.type === "switch_session"),
+        ).toHaveLength(
+          ["reset refused", "queued messages", "compaction"].includes(scenario) ? 0 : 1,
+        );
+      } finally {
+        await session.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([false, true])(
     "confirms idle cancellation without a new agent_end: background=%s",
     async (background) => {

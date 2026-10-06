@@ -24,6 +24,9 @@ import {
 } from "@codexhost/shared-contracts";
 import {
   DELEGATION_MENTION_PATH_PREFIX,
+  DIAGNOSTIC_LOG_EXPORT_METHOD,
+  DIAGNOSTIC_LOG_LIST_METHOD,
+  diagnosticLogExportParamsSchema,
   IDLE_RELEASE_SETTINGS_METHOD,
   restoreHarnessCommandMentions,
   LOADED_SESSIONS_METHOD,
@@ -217,6 +220,17 @@ import {
   OfficialRuntimeScope,
 } from "./codex-runtime/official-runtime-scope.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
+import {
+  createDiagnosticLog,
+  diagnosticLogDirectory,
+  type DiagnosticLog,
+  type DiagnosticLogFields,
+  type DiagnosticLogLevel,
+} from "./logging/diagnostic-log.js";
+import { DesktopRequestLog } from "./logging/desktop-request-log.js";
+import { harnessErrorFields } from "./logging/thread-event-log.js";
+import { scheduleDiagnosticLogRetention } from "./logging/log-retention.js";
+import { exportDiagnosticLogs, listDiagnosticLogs } from "./logging/log-export.js";
 import type { HostConsoleOpener } from "./console-opener.js";
 
 const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
@@ -326,6 +340,8 @@ export interface AppServerHostOptions {
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+  /** Defaults to the environment-configured file log. */
+  diagnosticLog?: DiagnosticLog;
 }
 
 interface TurnProjectionGate {
@@ -424,6 +440,7 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
     // Retired setting still exported by older remote SSH profile blocks.
     "CODEXHOST_DEFAULT_AGENT",
     "CODEXHOST_HOST_RUNTIME_PATH",
+    "CODEXHOST_LOG_LEVEL",
     "CODEXHOST_PI_COMMAND",
     "CODEXHOST_ENABLE_CLAUDE_CODE",
     "CODEXHOST_CLAUDE_COMMAND",
@@ -669,6 +686,9 @@ export class AppServerHost {
   readonly #desktopRequests = new DesktopRequestQueue();
   #drainActiveWorkOnInputEnd = false;
   #desktopInputEnded = false;
+  readonly #log: DiagnosticLog;
+  readonly #desktopRequestLog: DesktopRequestLog;
+  #stopLogRetention: (() => void) | undefined;
 
   constructor(options: AppServerHostOptions) {
     this.#options = {
@@ -677,11 +697,14 @@ export class AppServerHost {
       diagnosticOutput: process.stderr,
       ...options,
     };
+    const environment = this.#options.environment ?? process.env;
+    this.#log = options.diagnosticLog ?? createDiagnosticLog(environment);
+    this.#desktopRequestLog = new DesktopRequestLog(this.#log);
     this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) => {
       this.#noteDesktopReply(value);
+      this.#desktopRequestLog.observe(value);
       return this.#takeConsoleReply(value);
     });
-    const environment = this.#options.environment ?? process.env;
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
     );
@@ -770,7 +793,8 @@ export class AppServerHost {
       environment: this.#options.environment ?? process.env,
       repository: this.#repository,
       consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
-      diagnose: (error) => this.#diagnose(error),
+      diagnose: (error, thread) => this.#diagnose(error, thread),
+      log: this.#log,
       subagentRunning: (threadId) => this.#subagentThreadStatuses.get(threadId) === "active",
       idleRelease: {
         queue: this.#desktopRequests,
@@ -897,7 +921,13 @@ export class AppServerHost {
       },
       reservedIds: new Set(this.#externalAdapters.keys()),
       signal: this.#pluginLoadAbort.signal,
-      diagnose: (diagnostic) => this.#diagnose(`Harness plugin: ${JSON.stringify(diagnostic)}`),
+      diagnose: (diagnostic) => {
+        this.#options.diagnosticOutput.write(
+          `codexhost Host Runtime: Harness plugin: ${JSON.stringify(diagnostic)}
+`,
+        );
+        this.#log.runtime("warn", "plugin.diagnostic", { ...diagnostic });
+      },
     });
     if (this.#pluginLoadAbort.signal.aborted) {
       await plugins.close().catch((error: unknown) => this.#diagnose(error));
@@ -905,9 +935,19 @@ export class AppServerHost {
     }
     this.#pluginDescriptors = plugins.list();
     for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
+    this.#log.runtime("info", "plugins.loaded", {
+      plugins: this.#pluginDescriptors.map(({ id, version }) => ({ id, version })),
+    });
   }
 
   async run(): Promise<number> {
+    this.#log.runtime("info", "host.started", {
+      platform: process.platform,
+      architecture: process.arch,
+      nodeVersion: process.versions.node,
+      logDirectory: this.#log.directory,
+    });
+    this.#stopLogRetention = scheduleDiagnosticLogRetention(this.#log);
     try {
       await this.#repository.initialize();
     } catch (error) {
@@ -927,6 +967,9 @@ export class AppServerHost {
         await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
       }
       await this.#closeOfficialRuntime();
+      this.#stopLogRetention?.();
+      this.#stopLogRetention = undefined;
+      await this.#log.flush();
       return this.#closeRequested ? 0 : 1;
     }
     try {
@@ -995,6 +1038,10 @@ export class AppServerHost {
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((error) => this.#diagnose(error));
       }
+      this.#log.runtime("info", "host.stopped", { requested: this.#closeRequested });
+      this.#stopLogRetention?.();
+      this.#stopLogRetention = undefined;
+      await this.#log.flush();
     }
   }
 
@@ -1151,6 +1198,11 @@ export class AppServerHost {
         isRecord(request.params) && typeof request.params.threadId === "string"
           ? request.params.threadId
           : undefined;
+      // Only Thread-scoped requests are tracked. Requests forwarded to the official app-server
+      // keep their own IDs and are dropped from the pending set instead of being recorded.
+      if (threadId !== undefined) {
+        this.#desktopRequestLog.begin(request.id, request.method, threadId);
+      }
       this.#dispatchDesktopRequest(() =>
         this.#desktopRequests.run(threadId, () =>
           this.#externalRuntime.idleRelease.runOperation(threadId, () =>
@@ -1340,6 +1392,36 @@ export class AppServerHost {
           rpcError(request, -32000, "Could not save or read Harness display settings"),
         );
       }
+      return;
+    }
+    if (
+      request.method === DIAGNOSTIC_LOG_EXPORT_METHOD ||
+      request.method === DIAGNOSTIC_LOG_LIST_METHOD
+    ) {
+      this.#dispatchDesktopReply(request, async () => {
+        const listing = request.method === DIAGNOSTIC_LOG_LIST_METHOD;
+        const params = listing
+          ? updateEmptyParamsSchema.safeParse(request.params ?? {})
+          : diagnosticLogExportParamsSchema.safeParse(request.params);
+        if (!params.success) {
+          await this.#writer.json(rpcError(request, -32602, "Invalid diagnostic log request"));
+          return;
+        }
+        try {
+          await this.#log.flush();
+          const directory =
+            this.#log.directory ?? diagnosticLogDirectory(this.#options.environment ?? process.env);
+          const result = listing
+            ? await listDiagnosticLogs(directory)
+            : await exportDiagnosticLogs(
+                directory,
+                diagnosticLogExportParamsSchema.parse(params.data),
+              );
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32603, errorMessage(error).slice(0, 500)));
+        }
+      });
       return;
     }
     if (request.method === LOADED_SESSIONS_METHOD) {
@@ -2059,6 +2141,9 @@ export class AppServerHost {
     try {
       await this.#officialRuntime.sendFrame(frame);
       this.#markDesktopRequestAnswered(request.id);
+      // A forwarded request is answered by an opaque official frame, not by a Host-authored
+      // response, so stop tracking it here. Send failures keep their Host-authored error.
+      this.#desktopRequestLog.forget(request.id);
     } catch {
       if (request.method === "turn/start") {
         this.#pendingOfficialTurnStarts.delete(request.id);
@@ -3862,6 +3947,11 @@ export class AppServerHost {
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
       await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+      this.#log.runtime("error", "thread.create.failed", {
+        harnessId,
+        hostThreadId: record.hostThreadId,
+        error: harnessErrorFields(sessionResult.error),
+      });
       const mapped = mapExternalThreadHarnessError(sessionResult.error, "create");
       await this.#writer.json(rpcError(request, mapped.code, mapped.message));
       return;
@@ -3895,6 +3985,10 @@ export class AppServerHost {
           this.#externalPrewarms.register(externalThread);
         }
         this.#routeObservationTracker.bindCreatedThread(request.id, externalThread.id);
+        this.#log.thread(externalThread.id, harnessId).write("info", "thread.created", {
+          transportModelId,
+          ephemeral: params.ephemeral === true,
+        });
         await this.#writer.json(
           rpcEnvelope(request, {
             result: {
@@ -4155,6 +4249,10 @@ export class AppServerHost {
     }
     this.#externalRuntime.remove(location.record.hostThreadId);
     this.#routeObservationTracker.forgetThread(location.record.hostThreadId);
+    this.#log
+      .thread(location.record.hostThreadId, location.record.harnessId)
+      .write("info", "thread.deleted", { wasLoaded: thread !== null });
+    this.#log.forgetThread(location.record.hostThreadId);
     if (!thread) {
       await this.#writer.json(rpcEnvelope(request, { result: {} }));
       return;
@@ -4534,7 +4632,7 @@ export class AppServerHost {
       return await this.#beginExternalCommand(thread, command.descriptor, command.arguments);
     } catch (error) {
       if (error instanceof ExternalCommandError || error instanceof ExternalSteerError) throw error;
-      this.#diagnose(error);
+      this.#diagnose(error, thread);
       throw new ExternalCommandError(
         -32073,
         `External Harness command failed: ${errorMessage(error)}`,
@@ -4585,6 +4683,10 @@ export class AppServerHost {
     thread.projectedTerminalTurnId = null;
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
+    // The Harness reports turn.started itself. This records the Host-side request and its
+    // prompt size, which is what separates a slow Harness from a slow Host.
+    const log = this.#log.thread(thread.id, thread.harnessId);
+    log.write("info", "turn.requested", { turnId, inputChars: text.length });
 
     try {
       if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
@@ -4595,7 +4697,13 @@ export class AppServerHost {
         turnId,
         input: [{ type: "text", text: rewriteDelegationMentionText(text) }],
       });
-      if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
+      if (!result.ok) {
+        log.write("error", "turn.request.failed", {
+          turnId,
+          error: harnessErrorFields(result.error),
+        });
+        throw new ExternalSteerError(-32073, result.error.message);
+      }
       return { turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {
       thread.running = false;
@@ -4684,21 +4792,25 @@ export class AppServerHost {
   }
 
   async #consumeHarnessOutputs(thread: ExternalThread): Promise<void> {
+    const log = this.#log.thread(thread.id, thread.harnessId);
     try {
       for await (const output of thread.session.outputs) {
+        // Record the native observation before projection so a projection failure is still
+        // explained by the event that caused it.
+        log.output(output);
         await this.#externalRuntime.idleRelease.consumeOutput(thread, () =>
           this.#projectHarnessOutput(thread, output),
         );
       }
     } catch (error) {
       this.#externalRuntime.idleRelease.outputFailed(thread);
-      this.#diagnose(error);
+      this.#diagnose(error, thread);
       this.#externalSteering.fault(thread.id, new Error(errorMessage(error)));
       await settleExternalOutputFailure(
         thread,
         error,
         (output) => this.#projectHarnessOutput(thread, output),
-        (failure) => this.#diagnose(failure),
+        (failure) => this.#diagnose(failure, thread),
       );
     } finally {
       this.#externalSteering.fault(
@@ -4780,7 +4892,9 @@ export class AppServerHost {
       } catch (error) {
         thread.persistenceError = error instanceof Error ? error : new Error(errorMessage(error));
         thread.stateObserver.fault(thread.persistenceError);
-        this.#diagnose("External Session state could not be persisted");
+        this.#diagnose("External Session state could not be persisted", thread, {
+          cause: thread.persistenceError.message,
+        });
       }
       return;
     }
@@ -4844,7 +4958,10 @@ export class AppServerHost {
     if (event.type === "session.faulted") {
       this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));
-      this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
+      this.#options.diagnosticOutput.write(
+        `codexhost Host Runtime: ${thread.harnessId} Harness Session faulted: ${event.error.message}
+`,
+      );
       return;
     }
 
@@ -5152,7 +5269,7 @@ export class AppServerHost {
           approvalServerName(thread.harnessId),
       );
     } catch (error) {
-      this.#diagnose(error);
+      this.#diagnose(error, thread, { interactionId: interaction.interactionId });
       thread.ignoredInteractionIds.add(interaction.interactionId);
       const denied = await this.#denyApproval(thread, interaction);
       if (!denied) thread.ignoredInteractionIds.delete(interaction.interactionId);
@@ -5198,7 +5315,9 @@ export class AppServerHost {
             ? pending.projection.denyResponse
             : pending.projection.parseResponse(value.result);
       } catch (error) {
-        this.#diagnose(error);
+        this.#diagnose(error, pending.thread, {
+          interactionId: pending.interaction.interactionId,
+        });
         response = pending.projection.denyResponse;
       }
       const result = await pending.thread.session.execute({
@@ -5207,7 +5326,10 @@ export class AppServerHost {
         response,
       });
       if (!result.ok && result.error.code !== "invalidState") {
-        this.#diagnose(`Approval response failed: ${result.error.message}`);
+        this.#diagnose(`Approval response failed: ${result.error.message}`, pending.thread, {
+          interactionId: pending.interaction.interactionId,
+          error: harnessErrorFields(result.error),
+        });
         const cancelled = await pending.thread.session.execute({
           type: "turn.cancel",
           turnId: pending.interaction.turnId,
@@ -5281,7 +5403,7 @@ export class AppServerHost {
         hostItemIdSchema.parse(randomUUID()),
       );
     } catch (error) {
-      this.#diagnose(error);
+      this.#diagnose(error, thread, { interactionId: interaction.interactionId });
       thread.ignoredInteractionIds.add(interaction.interactionId);
       const cancelled = await thread.session.execute({
         type: "interaction.respond",
@@ -5349,7 +5471,9 @@ export class AppServerHost {
             ? { type: "question" as const, answers: {}, cancelled: true as const }
             : pending.projection.parseResponse(value.result);
       } catch (error) {
-        this.#diagnose(error);
+        this.#diagnose(error, pending.thread, {
+          interactionId: pending.interaction.interactionId,
+        });
         response = { type: "question" as const, answers: {}, cancelled: true as const };
       }
       const result = await pending.thread.session.execute({
@@ -5358,7 +5482,10 @@ export class AppServerHost {
         response,
       });
       if (!result.ok && result.error.code !== "invalidState") {
-        this.#diagnose(`Question response failed: ${result.error.message}`);
+        this.#diagnose(`Question response failed: ${result.error.message}`, pending.thread, {
+          interactionId: pending.interaction.interactionId,
+          error: harnessErrorFields(result.error),
+        });
       }
       return true;
     });
@@ -5474,7 +5601,25 @@ export class AppServerHost {
     }
   }
 
-  #diagnose(error: unknown): void {
-    this.#options.diagnosticOutput.write(`codexhost Host Runtime: ${errorMessage(error)}\n`);
+  /**
+   * One diagnostic sink. Desktop-visible text stays on stderr; the structured record goes to the
+   * owning Thread log when a Thread is known, and to the process log otherwise.
+   */
+  #diagnose(error: unknown, thread?: ExternalThread, fields: DiagnosticLogFields = {}): void {
+    const message = errorMessage(error);
+    this.#options.diagnosticOutput.write(`codexhost Host Runtime: ${message}\n`);
+    this.#logDiagnostic("error", "host.diagnostic", message, thread, fields);
+  }
+
+  #logDiagnostic(
+    level: DiagnosticLogLevel,
+    event: string,
+    message: string,
+    thread: ExternalThread | undefined,
+    fields: DiagnosticLogFields = {},
+  ): void {
+    const record = { message, ...fields };
+    if (thread) this.#log.thread(thread.id, thread.harnessId).write(level, event, record);
+    else this.#log.runtime(level, event, record);
   }
 }

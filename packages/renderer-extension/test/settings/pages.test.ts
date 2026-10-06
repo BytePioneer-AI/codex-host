@@ -33,6 +33,7 @@ import { credentialImportChinese } from "../../src/settings/credential-import-me
 import { createHarnessAccounts } from "../../src/settings/harness-accounts.js";
 import { createHarnessVersionPanel } from "../../src/settings/harness-version-panel.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
+import { mountLogExportControls } from "../../src/settings/log-export-controls.js";
 import { createRendererModelClient } from "../../src/renderer-model-client.js";
 import { RendererSessionImportUnavailableError } from "../../src/renderer-session-import-client.js";
 const HARNESS_SESSION_LIST_METHOD = "codexhost/harness/session-import/list";
@@ -256,6 +257,99 @@ function visibleText(root: FakeElement): string {
     .filter(Boolean)
     .join(" ");
 }
+
+describe("Diagnostic log export controls", () => {
+  it("prepares the selected export, then saves it from a separate click", async () => {
+    const document = new FakeDocument();
+    const writable = { write: vi.fn(async () => undefined), close: vi.fn(async () => undefined) };
+    const saveFilePicker = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("cancelled"), { name: "AbortError" }))
+      .mockResolvedValueOnce({ name: "chosen/pi.jsonl.gz", createWritable: async () => writable });
+    (document.defaultView as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker =
+      saveFilePicker;
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const pending = deferred<{
+      fileName: string;
+      data: string;
+      fileCount: number;
+      bytes: number;
+    }>();
+    const exportLogs = vi
+      .fn()
+      .mockReturnValueOnce(pending.promise)
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockResolvedValueOnce({ fileName: "claude.jsonl.gz", data: "AQI=", fileCount: 1, bytes: 9 });
+    const client = {
+      listDiagnosticLogs: vi
+        .fn()
+        .mockResolvedValue([
+          { kind: "harness", harnessId: "claude-code" },
+          { kind: "harness", harnessId: "pi" },
+          { kind: "runtime" },
+        ]),
+      exportDiagnosticLogs: exportLogs,
+    };
+    mountLogExportControls(
+      {
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      },
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    );
+    const [button, save] = descendants(content).filter((node) => node.tagName === "button");
+    const select = descendants(content).find((node) => node.tagName === "select");
+    if (!button || !save || !select) throw new Error("Export controls were not mounted");
+    expect(button.disabled).toBe(true);
+    expect(save.hidden).toBe(true);
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    expect(visibleText(content)).toContain("进程日志（不区分 Harness）");
+    select.value = "1";
+    button.dispatch("click");
+    button.dispatch("click");
+    await vi.waitFor(() =>
+      expect(exportLogs).toHaveBeenCalledExactlyOnceWith({ kind: "harness", harnessId: "pi" }),
+    );
+    expect(button.disabled).toBe(true);
+    expect(select.disabled).toBe(true);
+    pending.resolve({ fileName: "pi.jsonl.gz", data: "AQI=", fileCount: 2, bytes: 128 });
+    await vi.waitFor(() => expect(save.hidden).toBe(false));
+    expect(visibleText(content)).toContain("已准备 2 个日志文件");
+    // Preparing the archive never opens the dialog; only the Save click does.
+    expect(saveFilePicker).not.toHaveBeenCalled();
+    save.dispatch("click");
+    expect(saveFilePicker).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ suggestedName: "pi.jsonl.gz" }),
+    );
+    await vi.waitFor(() => expect(save.disabled).toBe(false));
+    expect(save.hidden).toBe(false);
+    expect(visibleText(content)).toContain("已准备 2 个日志文件");
+    save.dispatch("click");
+    await vi.waitFor(() => expect(visibleText(content)).toContain("chosen/pi.jsonl.gz"));
+    expect(writable.write).toHaveBeenCalledExactlyOnceWith(Uint8Array.from([1, 2]));
+    expect(visibleText(content)).toContain("已导出 2 个日志文件");
+    expect(save.hidden).toBe(true);
+    expect(button.disabled).toBe(false);
+    select.value = "2";
+    button.dispatch("click");
+    await vi.waitFor(() => expect(visibleText(content)).toContain("日志导出失败。 disk full"));
+    expect(exportLogs).toHaveBeenLastCalledWith({ kind: "runtime" });
+    expect(saveFilePicker).toHaveBeenCalledTimes(2);
+    expect(save.hidden).toBe(true);
+    expect(button.disabled).toBe(false);
+    select.value = "0";
+    button.dispatch("click");
+    await vi.waitFor(() => expect(save.hidden).toBe(false));
+    select.dispatch("change");
+    expect(save.hidden).toBe(true);
+    save.dispatch("click");
+    expect(saveFilePicker).toHaveBeenCalledTimes(2);
+    scope.dispose();
+  });
+});
 
 describe("Credential import controls", () => {
   const source = {

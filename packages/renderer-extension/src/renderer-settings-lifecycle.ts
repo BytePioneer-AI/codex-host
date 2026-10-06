@@ -1,5 +1,6 @@
 import type { RemoteConnectionsControl } from "./remote-connections-control.js";
 import type { LoadedSessionsClient } from "./settings/loaded-sessions-table.js";
+import type { DiagnosticLogClient } from "./settings/log-export-controls.js";
 import { readCodexLocaleSettings, type CodexLocaleSettings } from "./codex-locale-adapter.js";
 import {
   rendererSettingsMessages,
@@ -32,6 +33,7 @@ export interface RendererSettingsLifecycleOptions {
   getSessionImportClient?(): RendererSessionImportClient | null;
   getLoadedSessionsClient?(): LoadedSessionsClient | null;
   getRemoteConnections?(): RemoteConnectionsControl | null;
+  getDiagnosticLogClient?(): DiagnosticLogClient | null;
   openImportedThread?: RendererImportedThreadOpener;
   onLocaleChange?(locale: RendererSettingsLocale): void;
 }
@@ -80,6 +82,7 @@ export function installRendererSettingsLifecycle(
       },
       options.getLoadedSessionsClient ?? (() => null),
       options.getRemoteConnections ?? (() => null),
+      options.getDiagnosticLogClient ?? (() => null),
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
       onOpenChange(open) {

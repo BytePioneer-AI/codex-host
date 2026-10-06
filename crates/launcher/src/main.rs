@@ -91,6 +91,8 @@ const NPM_UPDATE_RUNTIME_ENV: [&str; 4] = [
 const START_MENU_ARGUMENT: &str = "--start-menu";
 const READY_LINE: &str = "ready";
 const STARTUP_TRACE_ENV: &str = "CODEXHOST_STARTUP_TRACE";
+const LOG_LEVEL_ENV: &str = "CODEXHOST_LOG_LEVEL";
+const LOG_LEVELS: [&str; 5] = ["off", "error", "warn", "info", "debug"];
 const CONTROLLER_STOP_GRACE: Duration = Duration::from_secs(1);
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const DESKTOP_TREE_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
@@ -518,6 +520,7 @@ fn desktop_controller_command(
             name.to_str(),
             Some(
                 "CODEXHOST_STARTUP_TRACE"
+                    | "CODEXHOST_LOG_LEVEL"
                     | "CODEXHOST_DATA_DIR"
                     | "HTTP_PROXY"
                     | "http_proxy"
@@ -946,6 +949,9 @@ fn desktop_environment(
     if env::var_os(STARTUP_TRACE_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
         environment.push((OsString::from(STARTUP_TRACE_ENV), OsString::from("1")));
     }
+    if let Some(level) = diagnostic_log_level(env::var_os(LOG_LEVEL_ENV)) {
+        environment.push((OsString::from(LOG_LEVEL_ENV), level));
+    }
     // LaunchServices and AppX do not inherit the source launch version.
     // Runtime metadata readers validate it and use it only for source launches.
     if let Some(version) = env::var_os("CODEXHOST_DEV_VERSION") {
@@ -954,6 +960,17 @@ fn desktop_environment(
     environment.extend(npm_update_runtime_environment(env::vars_os()));
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
     environment
+}
+
+/// Forward an explicit Host log level. AppX and LaunchServices do not inherit the Launcher
+/// environment, so an unforwarded value would leave the Host on its default level. Only a
+/// known level is forwarded: this value reaches a child process environment.
+fn diagnostic_log_level(value: Option<OsString>) -> Option<OsString> {
+    let value = value?;
+    let level = value.to_str()?.trim().to_ascii_lowercase();
+    LOG_LEVELS
+        .contains(&level.as_str())
+        .then(|| OsString::from(level))
 }
 
 /// Forward absolute npm update paths. AppX and LaunchServices do not inherit
@@ -1408,7 +1425,7 @@ mod tests {
         LAUNCHER_PID_ENV, NPM_CLI_PATH_ENV, NPM_LAUNCHER_PATH_ENV, NPM_NODE_PATH_ENV,
         NPM_PACKAGE_ROOT_ENV, RUNTIME_DESCRIPTOR_PATH_ENV, ResolvedLaunchOptions, RuntimeControl,
         STARTUP_TRACE_ENV, absolute_directory, allocate_runtime_control, delegation_node,
-        desktop_controller_command, desktop_environment, emit_ready_line,
+        desktop_controller_command, desktop_environment, diagnostic_log_level, emit_ready_line,
         managed_desktop_data_directory, npm_update_runtime_environment, parse_inspect_options,
         parse_launch_options, read_bounded_controller_line, read_bounded_loopback_url,
         validate_loopback_root_url,
@@ -1797,6 +1814,21 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn forwards_only_a_known_diagnostic_log_level() {
+        assert_eq!(
+            diagnostic_log_level(Some(OsString::from(" DEBUG "))),
+            Some(OsString::from("debug"))
+        );
+        assert_eq!(
+            diagnostic_log_level(Some(OsString::from("off"))),
+            Some(OsString::from("off"))
+        );
+        assert_eq!(diagnostic_log_level(Some(OsString::from("verbose"))), None);
+        assert_eq!(diagnostic_log_level(Some(OsString::new())), None);
+        assert_eq!(diagnostic_log_level(None), None);
     }
 
     #[test]

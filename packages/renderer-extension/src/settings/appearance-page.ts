@@ -7,6 +7,7 @@ import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext }
 import type { RendererSettingsMessages } from "./localization.js";
 import { mountIdleReleaseControls } from "./idle-release-controls.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
+import { mountLogExportControls, type DiagnosticLogClient } from "./log-export-controls.js";
 import {
   createPreferenceGroup,
   createPreferenceItem,
@@ -17,6 +18,7 @@ import {
 export function createAppearanceSettingsPage(
   messages: RendererSettingsMessages,
   getLoadedSessionsClient: () => LoadedSessionsClient | null = () => null,
+  getDiagnosticLogClient: () => DiagnosticLogClient | null = () => null,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
     id: "appearance",
@@ -59,6 +61,7 @@ export function createAppearanceSettingsPage(
         messages,
         getLoadedSessionsClient,
       );
+      mountLogExportControls(context, messages, getDiagnosticLogClient);
       return () => {
         ownerWindow.removeEventListener(REASONING_SOFT_WRAP_CHANGE_EVENT, sync);
         disposeIdleRelease();

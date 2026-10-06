@@ -1,4 +1,11 @@
 import {
+  DIAGNOSTIC_LOG_EXPORT_METHOD,
+  DIAGNOSTIC_LOG_LIST_METHOD,
+  diagnosticLogListResultSchema,
+  diagnosticLogExportResultSchema,
+  diagnosticLogExportParamsSchema,
+  type DiagnosticLogExportResult,
+  type DiagnosticLogScope,
   REMOTE_SSH_SETUP_METHOD,
   remoteSshSetupResultSchema,
   remoteSshSetupParamsSchema,
@@ -233,6 +240,8 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   runtimeStatus?(): Promise<RuntimeStatus>;
   updateRemote?(version: string): Promise<RuntimeStatus>;
   checkUpdate(): Promise<UpdateCheckResult | null>;
+  listDiagnosticLogs?(): Promise<DiagnosticLogScope[]>;
+  exportDiagnosticLogs?(scope: DiagnosticLogScope): Promise<DiagnosticLogExportResult>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
   openConsole?(): Promise<ConsoleOpenResult>;
@@ -533,6 +542,19 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateCheckResultSchema.nullable().parse(result);
+    },
+    async listDiagnosticLogs(): Promise<DiagnosticLogScope[]> {
+      return diagnosticLogListResultSchema.parse(
+        await manager.sendRequest(DIAGNOSTIC_LOG_LIST_METHOD, {}),
+      );
+    },
+    async exportDiagnosticLogs(scope: DiagnosticLogScope): Promise<DiagnosticLogExportResult> {
+      return diagnosticLogExportResultSchema.parse(
+        await manager.sendRequest(
+          DIAGNOSTIC_LOG_EXPORT_METHOD,
+          diagnosticLogExportParamsSchema.parse(scope),
+        ),
+      );
     },
     async startUpdate(): Promise<UpdateStartResult> {
       const result = await manager.sendRequest(

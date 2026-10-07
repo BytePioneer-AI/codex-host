@@ -8,6 +8,7 @@ import type {
   PermissionRequest,
 } from "@opencode/client";
 import { HarnessOutputChannel, type HarnessOutput } from "@codexhost/harness-adapter";
+import { CodexTurnProjector } from "@codexhost/protocol-core";
 import { harnessModelCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { openCodeMajor } from "../src/version.js";
 import { assistantItems, projectHistory, readMessages } from "../src/v2/history.js";
@@ -185,6 +186,29 @@ describe("OpenCode v2 native history", () => {
       "succeeded",
     );
   });
+  it("keeps type-local text ordinals independent of interleaved tools and other content", () => {
+    const message = assistant("first");
+    message.content = [
+      { type: "reasoning", text: "plan" },
+      { type: "text", text: "first" },
+      {
+        type: "tool",
+        id: "call",
+        name: "shell",
+        time: { created: 1 },
+        state: { status: "completed", input: {}, content: [{ type: "text", text: "ok" }] },
+      },
+      { type: "text", text: "second" },
+      { type: "reasoning", text: "check" },
+    ];
+    expect(assistantItems(message, 100).map(({ item }) => item.itemId)).toEqual([
+      "assistant:reasoning:0",
+      "assistant:text:0",
+      "assistant:tool:call",
+      "assistant:text:1",
+      "assistant:reasoning:1",
+    ]);
+  });
   it("uses only the cursor for subsequent pages and rejects repeated cursors", async () => {
     const list = vi
       .fn()
@@ -199,6 +223,81 @@ describe("OpenCode v2 native history", () => {
 });
 
 describe("OpenCode v2 Session lifecycle", () => {
+  it.each([false, true])(
+    "completes reasoning and text with independent ordinals (before admission: %s)",
+    async (beforeAdmission) => {
+      const f = fixture();
+      await f.start();
+      const stream = () => {
+        f.emit("session.step.started", { assistantMessageID: "assistant" });
+        for (const [type, delta] of [
+          ["reasoning", "Thinking."],
+          ["text", "Done."],
+        ]) {
+          f.emit(`session.${type}.delta`, {
+            assistantMessageID: "assistant",
+            ordinal: 0,
+            delta,
+          });
+        }
+      };
+      if (beforeAdmission) {
+        f.prompt.mockImplementationOnce(async () => {
+          f.messages.push(user());
+          stream();
+          // Let the event pump consume the deltas before admitting the Host Turn.
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          return { id: "inbox" };
+        });
+      }
+      expect((await f.turn()).ok).toBe(true);
+      if (!beforeAdmission) stream();
+      await vi.waitFor(() => expect(JSON.stringify(f.events)).toContain("Done."));
+      const message = assistant("Done.");
+      message.content.unshift({ type: "reasoning", text: "Thinking." });
+      f.messages.push(message, idle());
+      f.emit("session.execution.succeeded");
+      await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+
+      const ui = new CodexTurnProjector({
+        threadId: "thread",
+        turnId: hostTurnIdSchema.parse("host-turn"),
+        cwd: "/workspace",
+        startedAtMs: 1,
+      });
+      for (const output of f.events) {
+        if (output.kind !== "event") continue;
+        const event = output.event;
+        if (
+          event.type === "turn.started" ||
+          event.type === "item.started" ||
+          event.type === "item.updated" ||
+          event.type === "item.completed" ||
+          event.type === "turn.completed"
+        )
+          ui.project(event);
+      }
+      expect(ui.completed).toBe(true);
+      expect(f.completed()[0]).toMatchObject({ event: { outcome: { status: "succeeded" } } });
+      const started = f.events.flatMap((output) =>
+        output.kind === "event" && output.event.type === "item.started" ? [output.event.item] : [],
+      );
+      expect(started).toEqual([
+        { type: "reasoning", itemId: "assistant:reasoning:0", text: "Thinking." },
+        { type: "agentMessage", itemId: "assistant:text:0", text: "Done." },
+      ]);
+      const snapshot = await f.session.readSnapshot();
+      expect(snapshot.ok && snapshot.value.turns[0]?.items.map(({ item }) => item)).toEqual(
+        started,
+      );
+      expect(
+        f.events.some(
+          (output) => output.kind === "event" && output.event.type === "session.faulted",
+        ),
+      ).toBe(false);
+    },
+  );
+
   it("keeps native cancellation when transient text was not committed", async () => {
     const f = fixture();
     await f.start();

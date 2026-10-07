@@ -4,7 +4,7 @@ import { harnessModelRefSchema, hostTurnIdSchema } from "@codexhost/shared-contr
 import { decodeModel, encodeModel } from "../src/models.js";
 import { fileChanges, TurnProjection } from "../src/projection.js";
 import { makeInteraction } from "../src/interactions.js";
-import { eventSchema } from "../src/protocol.js";
+import { eventSchema, modelSchema } from "../src/protocol.js";
 
 describe("ZCode native projections", () => {
   it("keeps Provider and Model identities unambiguous", () => {
@@ -20,6 +20,26 @@ describe("ZCode native projections", () => {
       "Invalid ZCode model reference",
     );
   });
+  it("shortens official Coding Plan labels without changing model identities or custom names", () => {
+    for (const [providerId, providerLabel, prefix] of [
+      ["account:bigmodel-individual-coding-plan", "BigModel Individual Coding Plan", "BigModel"],
+      ["account:zai-individual-coding-plan", "Z.AI Individual Coding Plan", "Z.AI"],
+      ["account:bigmodel-start-plan", "Start Plan", "Start Plan"],
+      ["custom-provider", "BigModel Individual Coding Plan", "BigModel Individual Coding Plan"],
+    ]) {
+      for (const modelId of ["GLM-5.3", "GLM-5.3-Flash"]) {
+        const ref = { providerId, modelId };
+        const model = modelSchema.parse({ ref, providerLabel, label: modelId });
+        expect(model.ref).toEqual(ref);
+        expect(model.label).toBe(`${prefix} / ${modelId}`);
+      }
+    }
+    expect(
+      modelSchema.parse({ ref: { providerId: "custom", modelId: "m" }, label: "Model Alias" })
+        .label,
+    ).toBe("Model Alias");
+  });
+
   it("keeps separate assistant messages and receives tool arguments from the native model stream", () => {
     const events: HostEvent[] = [],
       projection = new TurnProjection(hostTurnIdSchema.parse("turn"), "/workspace", (event) =>

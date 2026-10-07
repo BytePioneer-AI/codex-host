@@ -1,4 +1,5 @@
 import type {
+  HarnessError,
   HostApprovalInteraction,
   HostFileChange,
   HostItem,
@@ -812,6 +813,36 @@ export class CodexTurnProjector {
       durationMs: null,
       itemsView: "full",
     };
+  }
+
+  /**
+   * Close a failed output stream using only state already accepted by this projector.
+   * Project these events in order through the normal Host path so pending Desktop
+   * requests, Item lifecycles and Turn state settle together. No native success or
+   * checkpoint is inferred. This stays here because it must share the Item ledger.
+   */
+  failureEvents(error: HarnessError): ProjectableHostEvent[] {
+    const events: ProjectableHostEvent[] = [];
+    const turnId = this.#turnId;
+    const syntheticItems = new Set<HostItemId>();
+    if (!this.#started) events.push({ type: "turn.started", turnId });
+    for (const [interactionId, interaction] of this.#interactions) {
+      events.push({ type: "interaction.closed", turnId, interactionId, reason: "cancelled" });
+      // Closing a standalone Question also completes its synthetic Tool Item.
+      if (interaction.type === "question" && interaction.syntheticItem)
+        syntheticItems.add(interaction.itemId);
+    }
+    for (const { item, outcome } of this.#items.values()) {
+      if (outcome !== null || syntheticItems.has(item.itemId)) continue;
+      events.push({
+        type: "item.completed",
+        turnId,
+        snapshot: { item, outcome: { status: "failed", error } },
+      });
+    }
+    if (!this.#completed)
+      events.push({ type: "turn.completed", turnId, outcome: { status: "failed", error } });
+    return events;
   }
 
   project(event: ProjectableHostEvent, emittedAtMs = Date.now()): CodexTurnProjection {

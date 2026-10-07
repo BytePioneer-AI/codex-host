@@ -1882,6 +1882,19 @@ describe("AppServerHost HarnessAdapter projection", () => {
       throw new Error("Fake persisted Snapshot was not created");
     }
 
+    // The fake reuses the same Session on resume. Consume the seeding Turn as the
+    // previous Host would; a restored Session must not replay those live events.
+    const outputs = source.outputs[Symbol.asyncIterator]();
+    for (;;) {
+      const output = await outputs.next();
+      if (
+        output.done ||
+        (output.value.kind === "event" && output.value.event.type === "turn.completed")
+      )
+        break;
+    }
+    vi.spyOn(source.outputs, Symbol.asyncIterator).mockReturnValue(outputs);
+
     const threadId = hostThreadIdSchema.parse("persisted-thread");
     const store = new MappingStore({ directory });
     await store.initialize();

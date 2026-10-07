@@ -129,10 +129,10 @@ export type OmpTurnEvent =
     }
   | { type: "subagent.transcript.changed"; callId: string; nativeSubagentId: string };
 
-export interface OmpTurnResult {
+export type OmpTurnResult = {
   text: string;
   cancelled: boolean;
-}
+} & ({ agentInvoked: true } | { agentInvoked: false; error?: string });
 
 export interface OmpCompactResult {
   outcome: "succeeded" | "cancelled" | "failed";
@@ -219,6 +219,8 @@ interface ManualCompaction {
 }
 
 interface ActiveTurn {
+  promptId: string;
+  localResult: { cancelled: boolean; error?: string } | null;
   text: string;
   assistantMessageId: string | null;
   sawStreamedMessageText: boolean;
@@ -686,7 +688,24 @@ export class OmpRpcSession {
   async getEntries(): Promise<OmpSessionHistory> {
     try {
       if (this.state.sessionFile) {
-        return await readOmpSessionHistory(this.state.sessionFile);
+        try {
+          return await readOmpSessionHistory(this.state.sessionFile);
+        } catch (error) {
+          if (
+            !isRecord(error) ||
+            error.code !== "ENOENT" ||
+            this.#options.sessionFile ||
+            this.#options.forkSessionFile
+          )
+            throw error;
+          // New OMP Sessions allocate the path before the first Agent Turn writes it.
+          const response = await this.#send("get_messages", {});
+          const data = isRecord(response.data) ? response.data : null;
+          if (data && Array.isArray(data.messages) && data.messages.length === 0) {
+            return { entries: [], leafId: null };
+          }
+          throw error;
+        }
       }
       const response = await this.#send("get_messages", {});
       const data = isRecord(response.data) ? response.data : null;
@@ -887,9 +906,12 @@ export class OmpRpcSession {
     }
     if (this.#activeTurn) throw new Error("Omp RPC Session already has an active Turn");
     if (text.length === 0) throw new Error("Omp text Turn must not be empty");
+    const promptId = `codexhost-${randomUUID()}`;
 
     const settled = new Promise<OmpTurnResult>((resolve, reject) => {
       this.#activeTurn = {
+        promptId,
+        localResult: null,
         text: "",
         assistantMessageId: null,
         sawStreamedMessageText: false,
@@ -915,7 +937,7 @@ export class OmpRpcSession {
       };
     });
     try {
-      await this.#send("prompt", { message: text });
+      await this.#send("prompt", { message: text }, promptId);
     } catch (error) {
       this.#rejectActiveTurn(error instanceof Error ? error : new Error(message(error)));
     }
@@ -1044,8 +1066,21 @@ export class OmpRpcSession {
     while (newline >= 0) {
       const frame = this.#buffer.subarray(0, newline);
       this.#buffer = this.#buffer.subarray(newline + 1);
+      let parsed: unknown;
       try {
-        const decoded = this.#frameDecoder.push(JSON.parse(textDecoder.decode(frame)));
+        parsed = JSON.parse(textDecoder.decode(frame));
+      } catch (error) {
+        this.#fail(
+          new OmpRpcFaultError(
+            "protocolError",
+            `Omp RPC returned invalid JSONL: ${message(error)}`,
+          ),
+        );
+        newline = this.#buffer.indexOf(0x0a);
+        continue;
+      }
+      try {
+        const decoded = this.#frameDecoder.push(parsed);
         if (decoded === null) {
           newline = this.#buffer.indexOf(0x0a);
           continue;
@@ -1061,7 +1096,7 @@ export class OmpRpcSession {
             ? error
             : new OmpRpcFaultError(
                 "protocolError",
-                `Omp RPC returned invalid JSONL: ${message(error)}`,
+                `Omp RPC frame handling failed: ${message(error)}`,
               ),
         );
       }
@@ -1157,6 +1192,35 @@ export class OmpRpcSession {
             "protocolError",
             "Omp RPC requested blocking Extension UI outside an active Turn",
           ),
+        );
+      }
+      return;
+    }
+    if (value.type === "command_output") {
+      if (active.settlement !== "pending") return;
+      if (typeof value.text !== "string") {
+        throw new OmpRpcFaultError("protocolError", "Omp RPC returned invalid command output");
+      }
+      active.text += value.text;
+      // The side channel has no native message identity. The request ID groups
+      // its display text only; it is never used as a native history reference.
+      active.onEvent({ type: "text.delta", messageId: active.promptId, delta: value.text });
+      return;
+    }
+    if (value.type === "prompt_result") {
+      if (value.id !== active.promptId || value.agentInvoked !== false) return;
+      if (value.status === "completed" || value.status === "aborted") {
+        this.#settleLocalTurn(active, { cancelled: value.status === "aborted" });
+      } else if (
+        value.status === "error" &&
+        isRecord(value.error) &&
+        typeof value.error.message === "string"
+      ) {
+        this.#settleLocalTurn(active, { cancelled: false, error: value.error.message });
+      } else {
+        throw new OmpRpcFaultError(
+          "protocolError",
+          "Omp RPC returned an invalid local prompt result",
         );
       }
       return;
@@ -1273,9 +1337,9 @@ export class OmpRpcSession {
       throw new OmpRpcFaultError("protocolError", "Omp RPC Subagent frame has no stable ID");
     }
     const nativeSubagentId = nativeIdValue;
-    const callId = nonBlankString(payload.parentToolCallId)
-      ? payload.parentToolCallId
-      : nativeSubagentId;
+    // A task batch shares one parentToolCallId across all of its children.
+    // Delegate lifecycle identity must follow the stable native child ID.
+    const callId = nativeSubagentId;
     const emit = active?.onEvent ?? this.#options.onSubagentEvent;
     if (value.type === "subagent_event") {
       emit?.({ type: "subagent.transcript.changed", callId, nativeSubagentId });
@@ -1464,14 +1528,32 @@ export class OmpRpcSession {
       return;
     }
     const pending = this.#pending.get(id);
+    const active = this.#activeTurn;
     if (!pending) {
+      // OMP reports asynchronous pre-agent failures twice: a legacy prompt
+      // error response after its admission ACK, then the correlated result.
+      if (active?.promptId === id && value.command === "prompt" && value.success === false) {
+        active.failure = new Error(
+          typeof value.error === "string" ? value.error : "Omp RPC command failed",
+        );
+        return;
+      }
       this.#fail(new OmpRpcFaultError("protocolError", "Omp RPC response id is not pending"));
       return;
     }
     if (pending.timeout) clearTimeout(pending.timeout);
     this.#pending.delete(id);
-    if (value.success === true) pending.resolve(value);
-    else {
+    if (value.success === true) {
+      if (
+        pending.command === "prompt" &&
+        active?.promptId === id &&
+        isRecord(value.data) &&
+        value.data.agentInvoked === false
+      ) {
+        this.#settleLocalTurn(active, { cancelled: false });
+      }
+      pending.resolve(value);
+    } else {
       const error = typeof value.error === "string" ? value.error : "Omp RPC command failed";
       if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
         pending.reject(new OmpRpcUnsupportedCommandError(pending.command));
@@ -1666,6 +1748,13 @@ export class OmpRpcSession {
     }
   }
 
+  #settleLocalTurn(active: ActiveTurn, result: NonNullable<ActiveTurn["localResult"]>): void {
+    if (this.#activeTurn !== active || active.settlement !== "pending") return;
+    active.localResult = result;
+    active.settlement = "confirming";
+    void this.#confirmSettledTurn(active);
+  }
+
   async #confirmSettledTurn(active: ActiveTurn): Promise<void> {
     try {
       const response = await this.#send("get_state", {});
@@ -1677,7 +1766,10 @@ export class OmpRpcSession {
         return;
       }
       if (parseSessionStreaming(response)) {
-        throw new OmpRpcFaultError("protocolError", "Omp RPC agent_end state is still Streaming");
+        throw new OmpRpcFaultError(
+          "protocolError",
+          "Omp RPC completed Turn state is still Streaming",
+        );
       }
       this.#state = state;
       active.settlement = "confirmed";
@@ -1718,14 +1810,21 @@ export class OmpRpcSession {
       return;
     }
     this.#activeTurn = null;
-    if (active.cancellation === "accepted") {
-      active.resolve({ text: active.text, cancelled: true });
+    if (active.localResult) {
+      active.resolve({
+        text: active.text,
+        agentInvoked: false,
+        ...active.localResult,
+        cancelled: active.localResult.cancelled || active.cancellation === "accepted",
+      });
+    } else if (active.cancellation === "accepted") {
+      active.resolve({ text: active.text, cancelled: true, agentInvoked: true });
     } else if (active.failure) {
       active.reject(active.failure);
     } else if (active.text.trim().length === 0 && !active.sawTool) {
       active.reject(new Error("Omp RPC settled without displayable output"));
     } else {
-      active.resolve({ text: active.text, cancelled: false });
+      active.resolve({ text: active.text, cancelled: false, agentInvoked: true });
     }
   }
 
@@ -1797,12 +1896,15 @@ export class OmpRpcSession {
     });
   }
 
-  #send(type: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  #send(
+    type: string,
+    payload: Record<string, unknown>,
+    id = `codexhost-${randomUUID()}`,
+  ): Promise<Record<string, unknown>> {
     const child = this.#child;
     if (!child?.stdin.writable || this.#closed || this.#failed) {
       return Promise.reject(new Error("Omp RPC stdin is unavailable"));
     }
-    const id = `codexhost-${randomUUID()}`;
     return new Promise((resolve, reject) => {
       const pending: PendingCommand = {
         command: type,

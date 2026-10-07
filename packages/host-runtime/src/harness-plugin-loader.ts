@@ -230,6 +230,7 @@ export async function loadHarnessPlugins(
         ...(manifest.launchCommand && !options.context.managedRemoteHost
           ? { launchCommand: true }
           : {}),
+        ...(manifest.iconStyle ? { iconStyle: manifest.iconStyle } : {}),
         ...(manifest.links ? { links: manifest.links } : {}),
         ...(manifest.installation ? { installation: manifest.installation } : {}),
         ...(manifest.notice ? { notice: manifest.notice } : {}),

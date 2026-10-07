@@ -87,6 +87,29 @@ describe("Harness plugin public contracts", () => {
     ).toBe(false);
   });
 
+  it("accepts bounded icon presentation without allowing arbitrary CSS", () => {
+    const iconStyle = {
+      monochrome: true,
+      background: "#d8d8e8",
+      borderRadius: 22.37,
+      paddingRatio: 0.0625,
+    };
+    expect(harnessPluginManifestSchema.parse({ ...manifest, iconStyle }).iconStyle).toEqual(
+      iconStyle,
+    );
+    for (const invalid of [
+      { background: "url(https://example.com/image)" },
+      { borderRadius: 51 },
+      { paddingRatio: -1 },
+      { paddingRatio: 1 },
+      { css: "position:fixed" },
+    ]) {
+      expect(
+        harnessPluginManifestSchema.safeParse({ ...manifest, iconStyle: invalid }).success,
+      ).toBe(false);
+    }
+  });
+
   it("rejects duplicate enablement and backend data in the public manifest", () => {
     expect(
       harnessPluginConfigurationSchema.safeParse({

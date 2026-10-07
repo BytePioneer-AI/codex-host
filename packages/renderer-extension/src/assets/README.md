@@ -25,7 +25,8 @@ used in settings. The launcher PNG and Windows ICO are derived from it.
 - CodeBuddy and WorkBuddy: captured first-party `10001.svg` assets; original
   backgrounds, marks, viewBoxes and clipping are preserved.
 - Cursor: official `https://cursor.com/favicon.svg` Cube with its dark plate.
-- Hermes: cropped and resized official website favicon on its existing light plate;
+- Hermes: the original cropped/resized website favicon, unchanged; its existing light plate,
+  padding and rounded corners are declared by the plugin rather than baked into the artwork;
   the plate is encoded in the plugin image rather than a Harness-specific Renderer style.
 - ZCode: upstream codex-host integration snapshot `b66013bb`.
 

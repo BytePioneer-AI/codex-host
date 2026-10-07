@@ -1,5 +1,5 @@
 import { harnessPluginDescriptorSchema } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createRendererAgentIcon, rendererAgentLabel } from "../src/renderer-agent-icon.js";
 
 const plugin = harnessPluginDescriptorSchema.parse({
@@ -31,6 +31,43 @@ describe("Renderer plugin presentation", () => {
     expect(rendererAgentLabel(plugin.id, plugin)).toBe("Independent Harness");
     expect(rendererAgentLabel(plugin.id)).toBe(plugin.id);
     expect(rendererAgentLabel(plugin.id, { ...plugin, name: "Remote name" })).toBe("Remote name");
+  });
+
+  it("keeps monochrome artwork at its original size and inherits the text color", () => {
+    const element = { style: {}, setAttribute: vi.fn() } as unknown as HTMLElement;
+    const document = {
+      createElement(tag: string) {
+        expect(tag).toBe("span");
+        return element;
+      },
+    } as Document;
+    expect(
+      createRendererAgentIcon(plugin.id, 14, document, {
+        ...plugin,
+        iconStyle: { monochrome: true },
+      }),
+    ).toBe(element);
+    expect(element.style).toMatchObject({
+      width: "14px",
+      height: "14px",
+      backgroundColor: "currentColor",
+      mask: `url("${plugin.icon}") center / contain no-repeat`,
+    });
+  });
+
+  it("preserves plugin-owned plate, padding and rounded corners", () => {
+    const image = { style: {} } as unknown as HTMLImageElement;
+    const document = { createElement: () => image } as unknown as Document;
+    createRendererAgentIcon(plugin.id, 26, document, {
+      ...plugin,
+      iconStyle: { background: "#d8d8e8", borderRadius: 22.37, paddingRatio: 0.0625 },
+    });
+    expect(image.style).toMatchObject({
+      background: "#d8d8e8",
+      borderRadius: "22.37%",
+      boxSizing: "border-box",
+      padding: "2px",
+    });
   });
 
   it("keeps a missing plugin identity visible rather than disguising it as Codex", () => {

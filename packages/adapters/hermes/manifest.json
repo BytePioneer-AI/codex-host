@@ -6,6 +6,7 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.png",
+  "iconStyle": { "background": "#d8d8e8", "borderRadius": 22.37, "paddingRatio": 0.0625 },
   "installation": {
     "commands": [
       {

@@ -59,6 +59,16 @@ const pluginPresentationShape = {
   id: harnessPluginIdSchema,
   name: z.string().trim().min(1).max(128),
   version: z.string().min(1).max(128),
+  /** Bounded image presentation; never arbitrary CSS or inline SVG. */
+  iconStyle: z
+    .object({
+      monochrome: z.literal(true).optional(),
+      background: z.string().regex(/^#[a-f0-9]{6}$/iu).optional(),
+      borderRadius: z.number().min(0).max(50).optional(),
+      paddingRatio: z.number().min(0).max(0.25).optional(),
+    })
+    .strict()
+    .optional(),
   installation: harnessInstallationGuideSchema.optional(),
   notice: localizedTextSchema.optional(),
   /** The factory accepts a persisted local entrypoint through its construction context. */
@@ -85,7 +95,7 @@ export const harnessPluginManifestSchema = z
   .strict();
 export type HarnessPluginManifest = z.infer<typeof harnessPluginManifestSchema>;
 
-/** Images are presentation data; consumers must use an img, never inline markup. */
+/** Images are presentation data; use image URLs (img/CSS masks), never inline markup. */
 export const harnessPluginIconSchema = z
   .string()
   .max(Math.ceil(HARNESS_PLUGIN_ICON_MAX_BYTES / 3) * 4 + 64)

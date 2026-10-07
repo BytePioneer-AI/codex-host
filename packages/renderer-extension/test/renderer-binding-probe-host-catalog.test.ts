@@ -1,4 +1,4 @@
-import { harnessIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, harnessPluginDescriptorSchema } from "@codexhost/shared-contracts";
 import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
@@ -272,6 +272,50 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
+  it("loads remote sidebar artwork before any Composer opens on that Host", async () => {
+    installFakeBrowser();
+    const plugin = harnessPluginDescriptorSchema.parse({
+      id: "remote-only",
+      name: "Remote plugin",
+      version: "1",
+      icon: "data:image/svg+xml;base64,PHN2Zy8+",
+      iconStyle: { monochrome: true },
+    });
+    const local = {
+      listHarnessPlugins: vi.fn(async () => ({ plugins: [] })),
+      inspectThread: vi.fn(async () => ({ owner: "codex", locked: true })),
+      inspectThreadUsage: vi.fn(async () => ({ threadId: "thread-a", usage: null })),
+    };
+    const remote = {
+      listHarnessPlugins: vi.fn(async () => ({ plugins: [plugin] })),
+      inspectHarness: vi.fn(async () => readyInspection()),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({});
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      {
+        currentHostId: () => "local",
+        knownHostIds: () => ["local", "remote"],
+        clientForHost: (host: string) => (host === "local" ? local : remote),
+      } as never,
+    );
+    try {
+      await vi.waitFor(() => expect(local.listHarnessPlugins).toHaveBeenCalledOnce());
+      expect(remote.listHarnessPlugins).not.toHaveBeenCalled();
+      const getPlugin = testState.sidebarOptions?.getPlugin;
+      assert(getPlugin);
+      expect(getPlugin("remote", plugin.id)).toBeUndefined();
+      await vi.waitFor(() => expect(getPlugin("remote", plugin.id)).toEqual(plugin));
+      expect(remote.listHarnessPlugins).toHaveBeenCalledOnce();
+      expect(getPlugin("local", plugin.id)).toBeUndefined();
+    } finally {
+      probe.dispose();
+    }
+  });
+
   it("discovers unknown plugins per Host and supports an empty directory", async () => {
     installFakeBrowser();
     let localPlugins = [{ id: "unseen-local", name: "Local plugin", version: "1" }];

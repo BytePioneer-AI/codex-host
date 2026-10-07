@@ -14,6 +14,18 @@ export function createRendererAgentIcon(
 ): Element {
   const source = agent === "codex" ? codexAgentIconUrl : plugin?.icon;
   if (source) {
+    const presentation = plugin?.iconStyle;
+    if (presentation?.monochrome) {
+      const mark = ownerDocument.createElement("span");
+      mark.setAttribute("aria-hidden", "true");
+      mark.style.display = "inline-block";
+      mark.style.width = `${size}px`;
+      mark.style.height = `${size}px`;
+      mark.style.flex = "none";
+      mark.style.backgroundColor = "currentColor";
+      mark.style.mask = `url("${source}") center / contain no-repeat`;
+      return mark;
+    }
     const image = ownerDocument.createElement("img");
     image.src = source;
     image.alt = "";
@@ -22,6 +34,13 @@ export function createRendererAgentIcon(
     image.style.height = `${size}px`;
     image.style.objectFit = "contain";
     image.style.flex = "none";
+    if (presentation?.borderRadius !== undefined)
+      image.style.borderRadius = `${presentation.borderRadius}%`;
+    if (presentation?.background) image.style.background = presentation.background;
+    if (presentation?.paddingRatio) {
+      image.style.boxSizing = "border-box";
+      image.style.padding = `${Math.max(1, Math.round(size * presentation.paddingRatio))}px`;
+    }
     return image;
   }
   const fallback = ownerDocument.createElement("span");

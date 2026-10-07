@@ -790,8 +790,21 @@ export function installRendererBindingProbe(
   };
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: (hostId) => modelClientForHost(hostId),
-    getPlugin: (hostId, agent) =>
-      hostHarnessAvailabilityState(hostId).plugins?.find(({ id }) => id === agent),
+    getPlugin: (hostId, agent) => {
+      const state = hostHarnessAvailabilityState(hostId);
+      const client = modelClientForHost(hostId);
+      // Sidebar ownership is enough to discover this Host's artwork; opening a Composer
+      // must not be required. Keep directory requests deduplicated and client-scoped.
+      if (
+        client &&
+        (state.directoryClient !== client || (!state.plugins && !state.directoryError))
+      ) {
+        void refreshHarnessAvailabilityForHost(hostId);
+      }
+      return state.directoryClient === client
+        ? state.plugins?.find(({ id }) => id === agent)
+        : undefined;
+    },
     getLocalAgent: localAgentForSidebarThread,
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;

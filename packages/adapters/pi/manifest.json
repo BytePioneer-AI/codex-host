@@ -6,6 +6,7 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
+  "iconStyle": { "monochrome": true },
   "links": { "website": "https://pi.dev/", "installation": "https://pi.dev/" },
   "installation": {
     "commands": [

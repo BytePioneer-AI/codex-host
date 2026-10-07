@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 
 if (process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH) {
   test.use({ launchOptions: { executablePath: process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH } });
@@ -48,6 +49,51 @@ const { outputFiles } = await build({
 const bundle = outputFiles[0]?.text;
 if (!bundle) throw new Error("Missing Renderer fixture bundle");
 
+const iconPlugins = await Promise.all(
+  ["pi", "kiro-cli", "hermes", "grok", "omp"].map(async (id) => {
+    const root = path.resolve(import.meta.dirname, `../../packages/adapters/${id}`);
+    const manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
+    const image = await readFile(path.join(root, manifest.icon));
+    return {
+      id,
+      name: manifest.name,
+      version: manifest.version,
+      icon: `data:image/${manifest.icon.endsWith(".svg") ? "svg+xml" : "png"};base64,${image.toString("base64")}`,
+      iconStyle: manifest.iconStyle,
+    };
+  }),
+);
+const iconFixture = await build({
+  stdin: {
+    contents: `
+      import { createRendererAgentIcon } from "./packages/renderer-extension/src/renderer-agent-icon.ts";
+      import { harnessPluginDescriptorSchema } from "@codexhost/shared-contracts";
+      for (const data of ${JSON.stringify(iconPlugins)}) {
+        const plugin = harnessPluginDescriptorSchema.parse(data);
+        const row = document.createElement("div");
+        row.id = plugin.id;
+        row.style.cssText = "display:flex;align-items:center;gap:20px;margin:24px";
+        for (const size of [14, 20, 26]) row.append(createRendererAgentIcon(plugin.id, size, document, plugin));
+        row.append(plugin.name);
+        document.getElementById("gallery").append(row);
+      }
+      document.getElementById("light").addEventListener("click", () => {
+        document.body.style.background = "#ffffff";
+        document.body.style.color = "#222222";
+      });
+    `,
+    resolveDir: path.resolve(import.meta.dirname, "../.."),
+    loader: "ts",
+  },
+  bundle: true,
+  format: "iife",
+  platform: "browser",
+  loader: { ".png": "dataurl", ".svg": "dataurl" },
+  write: false,
+});
+const iconFixtureBundle = iconFixture.outputFiles[0]?.text;
+if (!iconFixtureBundle) throw new Error("Missing icon fixture bundle");
+
 test("unknown plugin presentation and configuration work without a Renderer registration", async ({
   page,
 }, info) => {
@@ -75,5 +121,30 @@ test("unknown plugin presentation and configuration work without a Renderer regi
     "never-compiled-harness / native-model / high / ask",
   );
   await page.screenshot({ path: info.outputPath("03-selected.png") });
+  expect(errors).toEqual([]);
+});
+
+test("preserves original plugin artwork and Pi text coloring in both themes", async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.setContent(`<!doctype html><body style="background:#202020;color:#eeeeee;font:16px system-ui">
+    <button id="light">Light theme</button><div id="gallery"></div>
+  </body>`);
+  await page.addScriptTag({ content: iconFixtureBundle });
+  const pi = page.locator("#pi > span").first();
+  await expect(pi).toHaveCSS("background-color", "rgb(238, 238, 238)");
+  await expect(pi).toHaveCSS("width", "14px");
+  await expect(pi).toHaveCSS("mask-image", /^url\("data:image\/svg\+xml;base64,/);
+  for (const id of ["kiro-cli", "hermes", "grok", "omp"]) {
+    await expect(page.locator(`#${id} img`).first()).toBeVisible();
+    await expect.poll(() => page.locator(`#${id} img`).first().evaluate(
+      (image: HTMLImageElement) => image.complete && image.naturalWidth > 0,
+    )).toBe(true);
+  }
+  await expect(page.locator("#hermes img").first()).toHaveCSS("padding", "1px");
+  await page.screenshot({ path: info.outputPath("icons-dark.png") });
+  await page.getByRole("button", { name: "Light theme", exact: true }).click();
+  await expect(pi).toHaveCSS("background-color", "rgb(34, 34, 34)");
+  await page.screenshot({ path: info.outputPath("icons-light.png") });
   expect(errors).toEqual([]);
 });

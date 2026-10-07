@@ -170,7 +170,7 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
   }
 
   render(agent: Exclude<RendererAgent, "codex">, plugin?: HarnessPluginDescriptor): void {
-    const presentation = JSON.stringify([agent, plugin?.name, plugin?.icon]);
+    const presentation = JSON.stringify([agent, plugin?.name, plugin?.icon, plugin?.iconStyle]);
     const titleTrigger = this.element.querySelector<HTMLElement>("[data-thread-title-trigger]");
     const title = titleTrigger?.querySelector<HTMLElement>("[data-thread-title]");
     if (!titleTrigger || !title) {

@@ -195,7 +195,7 @@ Host 在现有每 Thread 请求队列内裁决接管与释放：Turn、原生命
 
 清理是尽力发送的维护请求，传输已断开时不重放用户操作，也不因界面断开而取消已经接管的远程工作。清理成功不是其他独立会话得以创建的前提：Claude Code 的 Broker 按预留的原生写入身份隔离会话，见 [Aqua Broker](../platforms/macos/native-aqua-broker.md)。旧 Host/Broker 需要一并更新才能获得完整修复。
 
-图标只接受识别出的 PNG、JPEG、WebP 或受限 SVG，由 Host 转成数据 URL。SVG 拒绝脚本、事件属性及部分外部资源构造。消费者必须使用 `img`，不得把 SVG 或描述字段当作 HTML 注入。
+图标只接受识别出的 PNG、JPEG、WebP 或受限 SVG，由 Host 转成数据 URL。SVG 拒绝脚本、事件属性及部分外部资源构造。消费者必须通过图片 URL 渲染（`img` 或单色 CSS mask），不得把 SVG 或描述字段当作 HTML 注入。`iconStyle` 仅提供受限的单色、底色、圆角和内边距数据，保留原有图标外观及主题着色；不是任意 CSS 或插件 UI。
 
 Qoder 以两个独立预装插件展示：`qoder`（海外版，保留原 ID）和 `qoder-cn`（中国版）。两者共用 `packages/adapters/qoder` 的 Adapter/Session 实现，中国版包只提供独立 Manifest 和工厂入口。插件固定选择各自的 SDK `1.0.39`：海外版 `@qoder-ai/qoder-agent-sdk`，中国版 `@qodercn-ai/qodercn-agent-sdk`；查询、认证、历史读取与 Fork 均使用同一版本对应的 SDK，不自动切换版本。海外版发现 `qodercli` / `qoder`，中国版发现 `qoderclicn` / `qodercn`，显式命令覆盖分别为 `CODEXHOST_QODER_COMMAND` / `CODEXHOST_QODERCN_COMMAND`。SDK 默认用户目录分别是 `~/.qoder` / `~/.qoder-cn`，PAT 环境变量分别是 `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCN_PERSONAL_ACCESS_TOKEN`；凭据和历史由各自原生 SDK 管理。Native Ref 使用对应 Harness ID，拒绝跨版本 Resume/Fork/Rollback；Desktop 的模型、Thinking、权限和偏好按两个 Agent 分别保存。公共 Adapter 契约和路由格式不变。
 
@@ -217,11 +217,11 @@ WorkBuddy 以独立的 `workbuddy` 预装插件接入 WorkBuddy AI 随应用分�
 }
 ```
 
-结果中的 `plugins` 包含该连接加载的所有插件描述，包括当前启用的预装 Harness：`id`、`name`、`version`、可选数据 URL `icon`、`links`、`installation`、`notice` 和 `launchCommand`。查询结果没有后端入口、文件路径、环境变量或 SDK 对象；是否可用和能力仍通过 `codexhost/harness/inspect` 获取。
+结果中的 `plugins` 包含该连接加载的所有插件描述，包括当前启用的预装 Harness：`id`、`name`、`version`、可选数据 URL `icon`、`iconStyle`、`links`、`installation`、`notice` 和 `launchCommand`。查询结果没有后端入口、文件路径、环境变量或 SDK 对象；是否可用和能力仍通过 `codexhost/harness/inspect` 获取。
 
 Renderer 的 `listHarnessPlugins()` 使用绑定的 RequestManager 发送此固定请求并校验结果；路由代理使用当前目标 Host，显式 `clientForHost` 使用对应 Host 的客户端。旧 Host 不支持此方法时，错误会传回调用者，不伪装成空目录。目录、可用性、名称和图标按 Host 隔离；连接替换后丢弃旧响应。没有插件时仍保留官方 Codex。缺失插件的已保存 Thread/偏好保留其身份并阻止误发，不静默改为 Codex。
 
-Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段。新 Thread 偏好按 Host 保存，本地保留 v1 键与旧 Claude 权限偏好的读取兼容；远端不读取本地偏好，草稿切换 Host 时清除上一 Host 的内存配置。插件图片只通过 `img` 渲染，不注入 SVG/脚本。
+Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段。新 Thread 偏好按 Host 保存，本地保留 v1 键与旧 Claude 权限偏好的读取兼容；远端不读取本地偏好，草稿切换 Host 时清除上一 Host 的内存配置。插件图片只通过图片 URL 渲染，不注入 SVG/脚本。侧栏已识别的远程 Thread 会主动加载所属 Host 的插件目录，无须先打开该 Thread；不使用本地图片覆盖远端插件资源。旧远端未提供 `iconStyle` 时仍按其原始图片显示，主题着色等显示元数据需要随远端插件更新。
 
 新 ID 使用共享的 `encodeHarnessPluginRoute` / `decodeHarnessPluginRoute`，保留 Harness ID、Model Ref、Thinking 和 Permission Mode；结果是 `codexhost/plugin-v1@` 加规范 JSON 的小写十六进制编码，可放入 `thread/start.params.model`。这是运输编码，**不是加密，不能放入凭据**。
 

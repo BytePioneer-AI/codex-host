@@ -236,7 +236,9 @@ describe("Harness plugin discovery and loading", () => {
 
   it("loads an unknown identity and clones public descriptors", async () => {
     const directory = await root(["sample-agent"]);
-    const location = await plugin(directory, "sample-agent", { manifest: { icon: "icon.svg" } });
+    const location = await plugin(directory, "sample-agent", {
+      manifest: { icon: "icon.svg", iconStyle: { monochrome: true } },
+    });
     await writeFile(
       path.join(location, "icon.svg"),
       '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h4v4z"/></svg>',
@@ -248,12 +250,15 @@ describe("Harness plugin discovery and loading", () => {
         id: "sample-agent",
         name: "Plugin sample-agent",
         icon: expect.stringMatching(/^data:image\/svg\+xml;base64,/u),
+        iconStyle: { monochrome: true },
       }),
     ]);
     const first = registry.list()[0];
     if (!first) throw new Error("Expected loaded plugin descriptor");
     first.name = "mutated";
+    first.iconStyle = { background: "#000000" };
     expect(registry.list()[0]?.name).toBe("Plugin sample-agent");
+    expect(registry.list()[0]?.iconStyle).toEqual({ monochrome: true });
     const adapter = [...registry.adapters.values()][0];
     if (!adapter) throw new Error("Expected loaded Adapter");
     expect((await adapter.inspect()).status).toBe("ready");

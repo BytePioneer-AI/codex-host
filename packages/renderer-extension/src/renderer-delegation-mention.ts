@@ -190,6 +190,7 @@ function iconUrl(
   ownerDocument: Document,
   plugin?: HarnessPluginDescriptor,
 ): string | null {
+  if (plugin?.icon) return plugin.icon;
   const icon = createRendererAgentIcon(agent, 16, ownerDocument, plugin);
   if (icon.tagName.toLowerCase() === "img") return (icon as HTMLImageElement).src || null;
   return null;
@@ -237,7 +238,9 @@ function syncChipStyle(
       return [
         `${selector}{content:"";display:inline-block;width:16px;height:16px;` +
           `margin-inline-end:3px;vertical-align:-3px;` +
-          `background:url(${cssString(url)}) center/contain no-repeat;}`,
+          (plugin?.iconStyle?.monochrome
+            ? `background:#808080;mask:url(${cssString(url)}) center/contain no-repeat;}`
+            : `background:url(${cssString(url)}) center/contain no-repeat;}`),
       ];
     }),
   ];

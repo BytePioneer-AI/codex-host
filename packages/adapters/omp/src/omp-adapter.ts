@@ -84,7 +84,7 @@ import {
   type OmpAvailableCommand,
 } from "./omp-slash-commands.js";
 import { mapOmpSnapshot, resolveOmpForkBoundary, type OmpSessionHistory } from "./omp-history.js";
-import { readOmpSessionHistory } from "./omp-session-file.js";
+import { readOmpSessionHistory, verifyOmpSessionCwd } from "./omp-session-file.js";
 import { OmpSessionImport } from "./session-import.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
@@ -899,7 +899,7 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
-    if (this.#phase !== "open") {
+    if (this.#phase !== "open" && this.#phase !== "faulted") {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (this.#active || this.#acceptingTurn || this.#configuring) {
@@ -913,8 +913,25 @@ class OmpHarnessSession implements HarnessSession {
       };
     }
     try {
-      const transport = await this.#ensureTransport();
-      const history = await transport.getEntries();
+      const transport = this.#phase === "faulted" ? this.#transport : await this.#ensureTransport();
+      if (!transport)
+        return { ok: false, error: invalidState("Omp Session has no history transport") };
+      let history: OmpSessionHistory;
+      if (this.#phase === "faulted") {
+        // A failed writer must stop before its durable history can be forked.
+        // Read only: preserve the fault and never restart the source Session.
+        await transport.close();
+        const sessionFile = transport.state.sessionFile;
+        if (!sessionFile) throw new Error("Omp faulted Session has no persisted history");
+        await verifyOmpSessionCwd({
+          sessionFile,
+          sessionId: transport.state.sessionId,
+          expectedCwd: this.#cwd,
+        });
+        history = await readOmpSessionHistory(sessionFile);
+      } else {
+        history = await transport.getEntries();
+      }
       return {
         ok: true,
         value: {

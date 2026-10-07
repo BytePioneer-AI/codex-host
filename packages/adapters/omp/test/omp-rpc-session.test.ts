@@ -24,6 +24,7 @@ class FakeOmpProcess extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   readonly commands: Record<string, unknown>[] = [];
+  handleCommand: ((command: Record<string, unknown>) => boolean) | null = null;
   promptHandler: ((command: Record<string, unknown>) => void) | null = null;
   abortHandler: ((command: Record<string, unknown>) => void) | null = null;
   messages: unknown[] = [];
@@ -162,6 +163,7 @@ class FakeOmpProcess extends EventEmitter {
 
   #handle(command: Record<string, unknown>): void {
     this.commands.push(command);
+    if (this.handleCommand?.(command)) return;
     if (command.type === "abort" && this.abortHandler) return this.abortHandler(command);
     if (command.type === "extension_ui_response") {
       if (this.terminalMessageMode === "approval") {
@@ -337,6 +339,295 @@ class FakeOmpProcess extends EventEmitter {
 }
 
 describe("OMP RPC session", () => {
+  it.each(["background wake", "silent drain", "settled during state check"])(
+    "keeps cancellation active through %s and permits the next Turn",
+    async (scenario) => {
+      vi.useFakeTimers();
+      const process = new FakeOmpProcess();
+      const onFault = vi.fn();
+      let cancelling = false;
+      let streaming = false;
+      let background = true;
+      let aborts = 0;
+      let stateChecks = 0;
+      let pendingChecks = 0;
+      let maxPendingChecks = 0;
+      process.handleCommand = (command) => {
+        if (command.type === "prompt" && !cancelling) {
+          process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+          return true;
+        }
+        if (command.type === "abort") {
+          cancelling = true;
+          aborts++;
+          streaming = false;
+          process.sendFrame({ type: "agent_end", isTerminal: true });
+          process.sendFrame({ type: "response", id: command.id, command: "abort", success: true });
+          return true;
+        }
+        if (command.type !== "get_state" || !cancelling) return false;
+        stateChecks++;
+        pendingChecks++;
+        maxPendingChecks = Math.max(maxPendingChecks, pendingChecks);
+        const data = {
+          sessionId: "omp-session",
+          isStreaming: streaming,
+          isSettled: !streaming && !background,
+          hasPendingAsyncWork: background,
+          queuedMessageCount: 0,
+        };
+        const respond = () => {
+          pendingChecks--;
+          process.sendFrame({
+            type: "response",
+            id: command.id,
+            command: "get_state",
+            success: true,
+            data,
+          });
+        };
+        if (scenario === "settled during state check" && stateChecks === 1) {
+          setTimeout(() => {
+            background = false;
+            process.sendFrame({ type: "session_settled" });
+          }, 100);
+          setTimeout(respond, 300);
+        } else respond();
+        return true;
+      };
+      const session = new OmpRpcSession(
+        { cwd: "/synthetic", cancelTimeoutMs: 1_000, onFault },
+        { spawn: () => process as never },
+      );
+      try {
+        await session.start();
+        const outcome = session
+          .runTurn("cancel with pending job", () => undefined)
+          .then(
+            (value) => ({ value }),
+            (error: Error) => ({ error: error.message }),
+          );
+        const aborting = session.abort();
+        if (scenario !== "settled during state check") {
+          setTimeout(() => {
+            background = false;
+            if (scenario === "background wake") {
+              streaming = true;
+              process.sendFrame({ type: "agent_start" });
+            }
+          }, 300);
+        }
+        await vi.advanceTimersByTimeAsync(1_001);
+        await aborting;
+        await expect(outcome).resolves.toEqual({
+          value: { text: "", cancelled: true, agentInvoked: true },
+        });
+        expect(aborts).toBe(scenario === "background wake" ? 2 : 1);
+        expect(maxPendingChecks).toBe(1);
+        expect(onFault).not.toHaveBeenCalled();
+        process.handleCommand = null;
+        await expect(session.runTurn("continue", () => undefined)).resolves.toMatchObject({
+          text: "PONG",
+          cancelled: false,
+        });
+        // A cancelled Turn's delayed check must not query or abort its successor.
+        const commands = process.commands.length;
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(process.commands).toHaveLength(commands);
+      } finally {
+        await session.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("waits through slow native cancellation and accepts another Turn afterwards", async () => {
+    vi.useFakeTimers();
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    let cancelling = false;
+    process.handleCommand = (command) => {
+      if (command.type === "prompt" && !cancelling) {
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+        return true;
+      }
+      if (command.type !== "abort") return false;
+      cancelling = true;
+      setTimeout(() => {
+        process.sendFrame({ type: "agent_end", isTerminal: true });
+        process.sendFrame({ type: "response", id: command.id, command: "abort", success: true });
+      }, 3_000);
+      return true;
+    };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onFault },
+      {
+        spawn: () => process as never,
+      },
+    );
+    try {
+      await session.start();
+      const turn = session.runTurn("cancel slowly", () => undefined);
+      const outcome = turn.then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      const aborting = session.abort();
+      const abortOutcome = aborting.catch((error) => error);
+      expect(session.abort()).toBe(aborting);
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(onFault).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(abortOutcome).resolves.toBeUndefined();
+      await expect(outcome).resolves.toEqual({
+        value: { text: "", cancelled: true, agentInvoked: true },
+      });
+      expect(process.commands.filter((command) => command.type === "abort")).toHaveLength(1);
+      await expect(session.runTurn("continue", () => undefined)).resolves.toEqual({
+        text: "PONG",
+        cancelled: false,
+        agentInvoked: true,
+      });
+    } finally {
+      await session.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    "restored",
+    "configuration restored",
+    "configuration rejected",
+    "reset refused",
+    "resume refused",
+    "identity changed",
+    "background survives",
+    "queued messages",
+    "compaction",
+  ])(
+    "cancels persisted background work through native lifecycle recovery: %s",
+    async (scenario) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "omp-cancel-recovery-"));
+      const sessionFile = path.join(directory, "session.jsonl");
+      await writeFile(
+        sessionFile,
+        JSON.stringify({ type: "session", id: "omp-session", cwd: directory }) + "\n",
+      );
+      const process = new FakeOmpProcess("complete", sessionFile);
+      const onFault = vi.fn();
+      let cancelling = false;
+      let resumed = false;
+      let modelRestored = false;
+      let thinkingRestored = false;
+      let nextTurn = false;
+      process.handleCommand = (command) => {
+        const respond = (data: Record<string, unknown> = {}) =>
+          process.sendFrame({
+            type: "response",
+            id: command.id,
+            command: command.type,
+            success: true,
+            data,
+          });
+        if (command.type === "prompt" && !nextTurn) {
+          respond();
+          process.sendFrame({ type: "agent_end", isTerminal: false, yielded: true });
+          return true;
+        }
+        if (command.type === "abort") {
+          cancelling = true;
+          respond();
+          return true;
+        }
+        if (command.type === "new_session") {
+          respond({ cancelled: scenario === "reset refused" });
+          return true;
+        }
+        if (command.type === "switch_session") {
+          expect(command.sessionPath).toBe(sessionFile);
+          resumed = true;
+          respond({ cancelled: scenario === "resume refused" });
+          return true;
+        }
+        if (command.type === "set_model") {
+          expect(command.provider).toBe("synthetic");
+          expect(command.modelId).toBe("omp-model");
+          modelRestored = scenario !== "configuration rejected";
+          respond();
+          return true;
+        }
+        if (command.type === "set_thinking_level") {
+          expect(command.level).toBe("high");
+          thinkingRestored = true;
+          respond();
+          return true;
+        }
+        if (command.type === "get_state" && cancelling) {
+          const changedConfiguration = resumed && scenario.startsWith("configuration");
+          respond({
+            sessionId:
+              resumed && scenario === "identity changed" ? "another-session" : "omp-session",
+            sessionFile,
+            model: {
+              provider: "synthetic",
+              id: changedConfiguration && !modelRestored ? "other-model" : "omp-model",
+              reasoning: true,
+            },
+            thinkingLevel: changedConfiguration && !thinkingRestored ? "low" : "high",
+            isStreaming: false,
+            isSettled: resumed && scenario !== "background survives",
+            hasPendingAsyncWork: !resumed || scenario === "background survives",
+            queuedMessageCount: scenario === "queued messages" ? 1 : 0,
+            isCompacting: scenario === "compaction",
+          });
+          return true;
+        }
+        return false;
+      };
+      const session = new OmpRpcSession(
+        { cwd: directory, cancelTimeoutMs: 100, onFault },
+        { spawn: () => process as never },
+      );
+      try {
+        await session.start();
+        const outcome = session
+          .runTurn("wait for owned background work", () => undefined)
+          .catch((error) => error);
+        await session.abort();
+        if (scenario === "restored" || scenario === "configuration restored") {
+          await expect(outcome).resolves.toEqual({ text: "", cancelled: true, agentInvoked: true });
+          expect(onFault).not.toHaveBeenCalled();
+          expect(session.state).toMatchObject({
+            sessionId: "omp-session",
+            sessionFile,
+            modelId: "omp-model",
+            thinkingLevel: "high",
+          });
+          nextTurn = true;
+          cancelling = false;
+          await expect(session.runTurn("continue", () => undefined)).resolves.toMatchObject({
+            text: "PONG",
+            cancelled: false,
+          });
+        } else {
+          await expect(outcome).resolves.toBeInstanceOf(Error);
+          expect(onFault).toHaveBeenCalledTimes(1);
+        }
+        expect(process.commands.filter((command) => command.type === "new_session")).toHaveLength(
+          scenario === "queued messages" || scenario === "compaction" ? 0 : 1,
+        );
+        expect(
+          process.commands.filter((command) => command.type === "switch_session"),
+        ).toHaveLength(
+          ["reset refused", "queued messages", "compaction"].includes(scenario) ? 0 : 1,
+        );
+      } finally {
+        await session.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("completes a local prompt without agent_end and releases the next turn", async () => {
     const process = new FakeOmpProcess();
     process.promptHandler = (command) => {
@@ -431,6 +722,135 @@ describe("OMP RPC session", () => {
           agentInvoked: true,
           text: "PONG",
         });
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "confirms idle cancellation without a new agent_end: background=%s",
+    async (background) => {
+      const process = new FakeOmpProcess();
+      const onFault = vi.fn();
+      let cancelling = false;
+      process.handleCommand = (command) => {
+        if (command.type === "prompt" && !cancelling) {
+          process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+          if (background)
+            process.sendFrame({ type: "agent_end", isTerminal: false, yielded: true });
+          return true;
+        }
+        if (command.type === "abort") {
+          cancelling = true;
+          process.sendFrame({ type: "response", id: command.id, command: "abort", success: true });
+          return true;
+        }
+        if (command.type === "get_state" && cancelling) {
+          process.sendFrame({
+            type: "response",
+            id: command.id,
+            command: "get_state",
+            success: true,
+            data: {
+              sessionId: "omp-session",
+              isStreaming: false,
+              isSettled: true,
+              isCompacting: false,
+              queuedMessageCount: 0,
+              hasPendingAsyncWork: false,
+            },
+          });
+          return true;
+        }
+        return false;
+      };
+      const session = new OmpRpcSession(
+        { cwd: "/synthetic", cancelTimeoutMs: 50, onFault },
+        {
+          spawn: () => process as never,
+        },
+      );
+      try {
+        await session.start();
+        const outcome = session
+          .runTurn("idle cancellation", () => undefined)
+          .then(
+            (value) => ({ value }),
+            (error) => ({ error }),
+          );
+        await session.abort();
+        await expect(outcome).resolves.toEqual({
+          value: { text: "", cancelled: true, agentInvoked: true },
+        });
+        expect(onFault).not.toHaveBeenCalled();
+        await expect(session.runTurn("retry", () => undefined)).resolves.toMatchObject({
+          cancelled: false,
+        });
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it.each(["none", "before", "after"])(
+    "waits for background work to drain: terminal agent_end=%s",
+    async (terminal) => {
+      const process = new FakeOmpProcess();
+      const onFault = vi.fn();
+      let cancelling = false;
+      let settled = false;
+      process.handleCommand = (command) => {
+        if (command.type === "prompt") {
+          process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+          process.sendFrame({ type: "agent_end", isTerminal: false, yielded: true });
+          return true;
+        }
+        if (command.type === "abort") {
+          cancelling = true;
+          if (terminal === "before") process.sendFrame({ type: "agent_end", isTerminal: true });
+          process.sendFrame({ type: "response", id: command.id, command: "abort", success: true });
+          return true;
+        }
+        if (command.type === "get_state" && cancelling) {
+          process.sendFrame({
+            type: "response",
+            id: command.id,
+            command: "get_state",
+            success: true,
+            data: {
+              sessionId: "omp-session",
+              isStreaming: false,
+              isSettled: settled,
+              hasPendingAsyncWork: !settled,
+              queuedMessageCount: 0,
+            },
+          });
+          return true;
+        }
+        return false;
+      };
+      const session = new OmpRpcSession(
+        { cwd: "/synthetic", onFault },
+        { spawn: () => process as never },
+      );
+      try {
+        await session.start();
+        const turn = session.runTurn("wait for jobs", () => undefined);
+        let completed = false;
+        void turn.then(() => {
+          completed = true;
+        });
+        await session.abort();
+        if (terminal === "after") process.sendFrame({ type: "agent_end", isTerminal: true });
+        expect(completed).toBe(false);
+        process.sendFrame({ type: "session_settled" });
+        await Promise.resolve();
+        expect(completed).toBe(false);
+        settled = true;
+        process.sendFrame({ type: "session_settled" });
+        await expect(turn).resolves.toEqual({ text: "", cancelled: true, agentInvoked: true });
+        expect(onFault).not.toHaveBeenCalled();
       } finally {
         await session.close();
       }
@@ -568,6 +988,64 @@ describe("OMP RPC session", () => {
     },
   );
 
+  it.each([
+    { label: "missing settlement status", data: {} },
+    { label: "a streaming agent", data: { isSettled: true, isStreaming: true } },
+    { label: "background work", data: { isSettled: true, hasPendingAsyncWork: true } },
+    { label: "queued messages", data: { isSettled: true, queuedMessageCount: 1 } },
+    { label: "compaction", data: { isSettled: true, isCompacting: true } },
+  ])("retains bounded failure for cancellation with $label", async ({ data }) => {
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    let cancelling = false;
+    process.handleCommand = (command) => {
+      if (command.type === "prompt" || command.type === "abort") {
+        cancelling ||= command.type === "abort";
+        process.sendFrame({
+          type: "response",
+          id: command.id,
+          command: command.type,
+          success: true,
+        });
+        return true;
+      }
+      if (command.type === "get_state" && cancelling) {
+        process.sendFrame({
+          type: "response",
+          id: command.id,
+          command: "get_state",
+          success: true,
+          data: { sessionId: "omp-session", isStreaming: false, ...data },
+        });
+        return true;
+      }
+      return false;
+    };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", cancelTimeoutMs: 20, onFault },
+      {
+        spawn: () => process as never,
+      },
+    );
+    try {
+      await session.start();
+      const outcome = session
+        .runTurn("stalled cancellation", () => undefined)
+        .catch((error) => error);
+      await session.abort();
+      expect(onFault).not.toHaveBeenCalled();
+      process.sendFrame({ type: "session_settled" });
+      await expect(outcome).resolves.toMatchObject({
+        message: "Omp Turn cancellation did not settle within its bound",
+      });
+      expect(onFault).toHaveBeenCalledTimes(1);
+      await session.close();
+      expect(process.exitCode).toBe(0);
+    } finally {
+      await session.close();
+    }
+  });
+
   it("keeps the bounded failure when an active model abort is acknowledged without a terminal event", async () => {
     const process = new FakeOmpProcess();
     process.promptHandler = (command) =>
@@ -589,6 +1067,47 @@ describe("OMP RPC session", () => {
     } finally {
       await session.close();
     }
+  });
+
+  it("keeps legacy agent_end cancellation when get_state omits isSettled", async () => {
+    const process = new FakeOmpProcess();
+    process.handleCommand = (command) => {
+      if (command.type !== "prompt") return false;
+      process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+      return true;
+    };
+    const session = new OmpRpcSession({ cwd: "/synthetic" }, { spawn: () => process as never });
+    try {
+      await session.start();
+      const turn = session.runTurn("legacy cancellation", () => undefined);
+      await session.abort();
+      process.sendFrame({ type: "agent_end", isTerminal: true });
+      await expect(turn).resolves.toEqual({ text: "", cancelled: true, agentInvoked: true });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("makes concurrent close callers wait for the same native process exit", async () => {
+    const process = new FakeOmpProcess();
+    process.stdin.removeAllListeners("finish");
+    const session = new OmpRpcSession({ cwd: "/synthetic" }, { spawn: () => process as never });
+    await session.start();
+    const first = session.close();
+    const second = session.close();
+    let closed = false;
+    void second.then(() => {
+      closed = true;
+    });
+    try {
+      await Promise.resolve();
+      expect(closed).toBe(false);
+    } finally {
+      process.exitCode = 0;
+      process.emit("exit", 0, null);
+    }
+    await Promise.all([first, second]);
+    expect(second).toBe(first);
   });
 
   it("uses OMP's --resume flag for persisted sessions", () => {

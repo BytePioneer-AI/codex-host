@@ -236,8 +236,12 @@ interface ActiveTurn {
   tools: Map<string, string>;
   interactions: Map<string, { request: OmpInteractionRequest; timeout: NodeJS.Timeout | null }>;
   settlement: "pending" | "confirming" | "confirmed";
+  terminalEnd: boolean;
   cancellation: "none" | "requesting" | "accepted";
   cancellationTimeout: NodeJS.Timeout | null;
+  cancellationRecheck: NodeJS.Timeout | null;
+  cancellationChecking: boolean;
+  cancellationReloaded: boolean;
   abortPromise: Promise<void> | null;
 }
 
@@ -308,6 +312,17 @@ function parseSessionStreaming(response: Record<string, unknown>): boolean {
     throw new OmpRpcFaultError("protocolError", "Omp RPC state has no Streaming status");
   }
   return isStreaming;
+}
+
+function cancellationSettled(response: Record<string, unknown>, terminalEnd: boolean): boolean {
+  const data = sessionStateData(response);
+  return (
+    !parseSessionStreaming(response) &&
+    (data.isSettled === true || (data.isSettled === undefined && terminalEnd)) &&
+    data.isCompacting !== true &&
+    data.hasPendingAsyncWork !== true &&
+    !(typeof data.queuedMessageCount === "number" && data.queuedMessageCount > 0)
+  );
 }
 
 function parseAvailableModels(response: Record<string, unknown>): OmpNativeModel[] {
@@ -525,6 +540,7 @@ export class OmpRpcSession {
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
+  #closePromise: Promise<void> | null = null;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
   #compactionTimeout: NodeJS.Timeout | null = null;
@@ -558,7 +574,9 @@ export class OmpRpcSession {
     this.#options = {
       commandTimeoutMs: 30_000,
       compactionTimeoutMs: 300_000,
-      cancelTimeoutMs: 2_000,
+      // Native Abort waits for tools, persistence and deferred work to unwind.
+      // Stable cancellation must outlast the Host's 20s steering wait.
+      cancelTimeoutMs: 30_000,
       closeTimeoutMs: 2_000,
       ...options,
     };
@@ -909,8 +927,12 @@ export class OmpRpcSession {
         tools: new Map(),
         interactions: new Map(),
         settlement: "pending",
+        terminalEnd: false,
         cancellation: "none",
         cancellationTimeout: null,
+        cancellationRecheck: null,
+        cancellationChecking: false,
+        cancellationReloaded: false,
         abortPromise: null,
       };
     });
@@ -986,10 +1008,12 @@ export class OmpRpcSession {
       );
     }, this.#options.cancelTimeoutMs);
     const aborting = this.#send("abort", {})
-      .then(() => {
+      .then(async () => {
         if (this.#activeTurn !== active) return;
         active.cancellation = "accepted";
-        this.#finishSettledTurn(active);
+        // Aborting an idle/yielded run need not publish another agent_end.
+        // The acknowledgement alone is not proof that background work drained.
+        await this.#confirmCancelledTurn(active);
       })
       .catch((error: unknown) => {
         if (this.#activeTurn !== active) throw error;
@@ -1012,11 +1036,15 @@ export class OmpRpcSession {
     void this.close().catch(() => undefined);
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#rejectAll(new Error("Omp RPC Session closed"));
-    await this.#stopProcess();
+  close(): Promise<void> {
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#rejectAll(new Error("Omp RPC Session closed"));
+    }
+    // Closing admission is not process exit; cancellation and recovery callers
+    // must await the same cleanup, including after a timed-out Prompt.
+    this.#closePromise ??= this.#stopProcess();
+    return this.#closePromise;
   }
 
   async #stopProcess(): Promise<void> {
@@ -1149,6 +1177,14 @@ export class OmpRpcSession {
     }
     const active = this.#activeTurn;
     if (this.#handleSubagentFrame(active, value)) return;
+    if (value.type === "agent_start" && active) active.terminalEnd = false;
+    if (
+      (value.type === "session_settled" || value.type === "agent_start") &&
+      active?.cancellation === "accepted"
+    ) {
+      void this.#confirmCancelledTurn(active);
+      return;
+    }
     if (!active) {
       if (value.type === "extension_ui_request" && this.#isBlockingInteraction(value)) {
         this.#fail(
@@ -1272,6 +1308,11 @@ export class OmpRpcSession {
       }
     }
     if (value.type === "agent_end" && value.isTerminal !== false) {
+      active.terminalEnd = true;
+      if (active.cancellation !== "none") {
+        if (active.cancellation === "accepted") void this.#confirmCancelledTurn(active);
+        return;
+      }
       if (active.settlement !== "pending") return;
       active.settlement = "confirming";
       void this.#confirmSettledTurn(active);
@@ -1590,6 +1631,123 @@ export class OmpRpcSession {
     });
   }
 
+  async #confirmCancelledTurn(active: ActiveTurn): Promise<void> {
+    if (
+      this.#activeTurn !== active ||
+      active.cancellation !== "accepted" ||
+      active.settlement === "confirming" ||
+      active.cancellationChecking
+    )
+      return;
+    active.cancellationChecking = true;
+    if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
+    active.cancellationRecheck = null;
+    try {
+      let response = await this.#send("get_state", {});
+      if (this.#activeTurn !== active) return;
+      if (parseSessionStreaming(response)) {
+        // Native Abort stops the current run, but a background delivery can
+        // start a follow-up afterwards. Keep the user's cancellation in force.
+        await this.#send("abort", {});
+        if (this.#activeTurn !== active) return;
+        response = await this.#send("get_state", {});
+      }
+      let state = parseSessionState(response);
+      if (this.#activeTurn !== active || active.cancellation !== "accepted") return;
+      const data = sessionStateData(response);
+      if (
+        !active.cancellationReloaded &&
+        state.sessionFile &&
+        state.sessionId === this.state.sessionId &&
+        state.sessionFile === this.state.sessionFile &&
+        data.isStreaming === false &&
+        data.isCompacting === false &&
+        data.queuedMessageCount === 0 &&
+        data.hasPendingAsyncWork === true &&
+        active.tools.size === 0
+      ) {
+        await this.verifySessionCwd(this.#options.cwd);
+        if (this.#activeTurn !== active) return;
+        active.cancellationReloaded = true;
+        // Native Abort leaves owned async jobs alive. A native lifecycle reset
+        // cancels them, after which the saved conversation is resumed in-place.
+        const reset = await this.#send("new_session", {});
+        if (this.#activeTurn !== active) return;
+        if (!isRecord(reset.data) || reset.data.cancelled !== false) {
+          throw new OmpRpcFaultError("unavailable", "Omp cancelled Session reset was refused");
+        }
+        const reloaded = await this.#send("switch_session", { sessionPath: state.sessionFile });
+        if (this.#activeTurn !== active) return;
+        if (!isRecord(reloaded.data) || reloaded.data.cancelled !== false) {
+          throw new OmpRpcFaultError("unavailable", "Omp cancelled Session reload was refused");
+        }
+        const previous = state;
+        response = await this.#send("get_state", {});
+        state = parseSessionState(response);
+        if (state.sessionId !== previous.sessionId || state.sessionFile !== previous.sessionFile) {
+          throw new OmpRpcFaultError(
+            "protocolError",
+            "Omp cancelled Session reload changed its identity",
+          );
+        }
+        if (state.provider !== previous.provider || state.modelId !== previous.modelId) {
+          if (!previous.provider || !previous.modelId) {
+            throw new OmpRpcFaultError(
+              "protocolError",
+              "Omp cancelled Session has no restorable Model",
+            );
+          }
+          await this.#send("set_model", { provider: previous.provider, modelId: previous.modelId });
+        }
+        if (previous.thinkingLevel && state.thinkingLevel !== previous.thinkingLevel) {
+          await this.#send("set_thinking_level", { level: previous.thinkingLevel });
+        }
+        response = await this.#send("get_state", {});
+        state = parseSessionState(response);
+        if (
+          state.sessionId !== previous.sessionId ||
+          state.sessionFile !== previous.sessionFile ||
+          state.provider !== previous.provider ||
+          state.modelId !== previous.modelId ||
+          (previous.thinkingLevel !== null && state.thinkingLevel !== previous.thinkingLevel)
+        ) {
+          throw new OmpRpcFaultError(
+            "protocolError",
+            "Omp cancelled Session reload changed its identity or configuration",
+          );
+        }
+      }
+      // isStreaming:false alone also describes a session waiting for background
+      // jobs. Modern OMP supplies isSettled; older versions still need agent_end.
+      if (!cancellationSettled(response, active.terminalEnd)) {
+        active.settlement = "pending";
+        // A settle notification can precede an in-flight busy state response,
+        // or no further terminal frame may arrive after cleanup. Reconfirm
+        // serially within the original deadline; never infer native quiescence.
+        active.cancellationRecheck = setTimeout(() => {
+          active.cancellationRecheck = null;
+          void this.#confirmCancelledTurn(active);
+        }, 250);
+        return;
+      }
+      this.#state = state;
+      active.settlement = "confirmed";
+      this.#finishSettledTurn(active);
+    } catch (error) {
+      if (this.#activeTurn !== active) return;
+      const fault =
+        error instanceof OmpRpcFaultError
+          ? error
+          : new OmpRpcFaultError(
+              "protocolError",
+              `Omp RPC cancelled Turn state could not be confirmed: ${message(error)}`,
+            );
+      this.#terminateFailedCancellation(active, fault);
+    } finally {
+      active.cancellationChecking = false;
+    }
+  }
+
   #settleLocalTurn(active: ActiveTurn, result: NonNullable<ActiveTurn["localResult"]>): void {
     if (this.#activeTurn !== active || active.settlement !== "pending") return;
     active.localResult = result;
@@ -1601,13 +1759,18 @@ export class OmpRpcSession {
     try {
       const response = await this.#send("get_state", {});
       const state = parseSessionState(response);
+      if (this.#activeTurn !== active) return;
+      if (active.cancellation !== "none") {
+        active.settlement = "pending";
+        if (active.cancellation === "accepted") void this.#confirmCancelledTurn(active);
+        return;
+      }
       if (parseSessionStreaming(response)) {
         throw new OmpRpcFaultError(
           "protocolError",
           "Omp RPC completed Turn state is still Streaming",
         );
       }
-      if (this.#activeTurn !== active) return;
       this.#state = state;
       active.settlement = "confirmed";
       this.#finishSettledTurn(active);
@@ -1634,6 +1797,8 @@ export class OmpRpcSession {
     }
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     active.cancellationTimeout = null;
+    if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
+    active.cancellationRecheck = null;
     this.#closeInteractions(
       active,
       active.cancellation === "accepted" ? "cancelled" : "superseded",
@@ -1792,7 +1957,7 @@ export class OmpRpcSession {
     }
     let finalFault = fault;
     try {
-      await this.#stopProcess();
+      await this.close();
     } catch (error) {
       finalFault = new OmpRpcFaultError(
         "processExited",
@@ -1815,6 +1980,7 @@ export class OmpRpcSession {
     const active = this.#activeTurn;
     if (!active) return;
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
+    if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
     this.#closeInteractions(active, "cancelled");
     this.#activeTurn = null;
     active.reject(error);

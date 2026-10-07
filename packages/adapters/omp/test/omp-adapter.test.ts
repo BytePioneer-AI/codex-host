@@ -29,6 +29,7 @@ import type {
   OmpTurnEvent,
   OmpTurnResult,
 } from "../src/omp-rpc-session.js";
+import { OmpRpcFaultError } from "../src/omp-rpc-session.js";
 import { encodeOmpModelRef, type OmpNativeModel } from "../src/omp-model-catalog.js";
 
 class FakeOmpTransport implements OmpTurnTransport {
@@ -670,6 +671,112 @@ function outputs(session: { outputs: AsyncIterable<HarnessOutput> }): HarnessOut
   })();
   return values;
 }
+
+describe("OMP faulted history", () => {
+  it.each(["valid", "wrong identity", "wrong cwd", "cleanup failed"])(
+    "reads durable history after a fault without reviving the source: %s",
+    async (scenario) => {
+      const directory = path.join(tmpdir(), `codexhost-omp-faulted-${randomUUID()}`);
+      await mkdir(directory, { recursive: true });
+      temporaryDirectories.push(directory);
+      const first = new FakeOmpTransport();
+      const sessionFile = path.join(directory, "session.jsonl");
+      first.state.sessionFile = sessionFile;
+      const createTransport = vi.fn((options: OmpRpcSessionOptions) => {
+        expect(options.cwd).toBe(directory);
+        return first;
+      });
+      const adapter = new OmpAdapter({}, { createTransport });
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd: directory,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "omp",
+          nativeSessionId: first.state.sessionId,
+          locator: { sessionFile },
+          formatVersion: 1,
+        }),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const value = {
+        directory,
+        first,
+        sessionFile,
+        createTransport,
+        adapter,
+        session: opened.value,
+      };
+      const history = historyTurn({
+        userId: "user-before-fault",
+        assistantId: "assistant-before-fault",
+        parentId: null,
+        text: "Before cancellation",
+      });
+      await writeFile(
+        value.sessionFile,
+        [
+          {
+            type: "session",
+            id: scenario === "wrong identity" ? "other-session" : value.first.state.sessionId,
+            cwd: scenario === "wrong cwd" ? tmpdir() : value.directory,
+          },
+          ...history,
+        ]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n") + "\n",
+      );
+      const close = vi.spyOn(value.first, "close");
+      const getEntries = vi.spyOn(value.first, "getEntries");
+      if (scenario === "cleanup failed")
+        close.mockRejectedValueOnce(new Error("Writer still running"));
+      const onFault = (value.createTransport.mock.calls[0]?.[0] as OmpRpcSessionOptions).onFault;
+      const observed = outputs(value.session);
+      try {
+        onFault?.(
+          new OmpRpcFaultError(
+            "protocolError",
+            "Omp Turn cancellation did not settle within its bound",
+          ),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const snapshot = await value.session.readSnapshot();
+        if (scenario === "valid") {
+          expect(snapshot).toMatchObject({
+            ok: true,
+            value: {
+              turns: [
+                {
+                  nativeTurnRef: { nativeTurnKey: "user-before-fault" },
+                  checkpoint: { checkpointId: "user-before-fault" },
+                },
+              ],
+            },
+          });
+        } else {
+          expect(snapshot.ok).toBe(false);
+        }
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(getEntries).not.toHaveBeenCalled();
+        expect(value.createTransport).toHaveBeenCalledTimes(1);
+        await expect(
+          value.session.execute({
+            type: "turn.start",
+            turnId: "still-faulted" as HostTurnId,
+            input: [{ type: "text", text: "continue" }],
+          }),
+        ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+        expect(observed).toContainEqual(
+          expect.objectContaining({
+            kind: "event",
+            event: expect.objectContaining({ type: "session.faulted" }),
+          }),
+        );
+      } finally {
+        await value.adapter.close();
+      }
+    },
+  );
+});
 
 async function nextOutput(iterator: AsyncIterator<HarnessOutput>): Promise<HarnessOutput> {
   const result = await iterator.next();

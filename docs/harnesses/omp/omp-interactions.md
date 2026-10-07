@@ -18,6 +18,22 @@ OMP 的 `ask` 工具通过这些基础交互组合多问题、多选和 “Other
 
 这些基础链路此前已经存在。README 中 OMP 的提问、工具审批空缺属于过期标记；此次补齐选项说明、超时语义及回归覆盖。
 
+## 取消回合
+
+原生 `abort` 会等待工具、持久化及延后工作退出，Adapter 默认允许 30 秒确认取消，长于 Host 插话替换的 20 秒等待界限。Host 等待超时本身不能证明原生 Session 已故障；真正未在 Adapter 界限内结束的取消仍会报告故障并清理进程。
+
+普通取消保留 `agent_end` 与 `get_state` 的完成确认。对于已经暂停等待后台任务，或尚未开始执行的回合，原生取消可能不再产生新的 `agent_end`。收到取消成功回包后，Adapter 查询原生 `get_state`，仅在 `isStreaming: false`、`isSettled: true` 且没有已报告的后台任务、排队消息或压缩时结束取消。`session_settled`、`agent_start` 和等待期间每 250 毫秒一次的串行查询会重新核对；通知到达时若查询尚未返回，下一次查询会覆盖这个窗口。原生后台任务投递结果后可能自动启动新的生成，即使之前的 `abort` 已成功；Adapter 在原有 30 秒界限内再次取消这些生成，仍需原生状态确认。单独的取消回包或停止流式输出不能视为完成。旧 OMP 未提供 `isSettled` 时保留已收到的结束事件作为确认条件。回合结束、故障或关闭时清理重查定时器，不影响后续回合。
+
+并发的关闭调用共同等待同一个进程清理 Promise，避免取消失败后恢复会话时把“已停止接收命令”误当作“旧进程已退出”。
+
+OMP 18.4.3 的 `abort` 不取消会话拥有的后台作业。长时间 Bash 作业被 `wait` 观察时，停止 `wait` 会重新允许后台结果投递；单纯重复 `abort` 或重新载入同一文件不能停止该作业。取消已获原生确认、没有流式生成、工具执行、压缩或排队消息，且原生状态明确仍有后台工作时，Adapter 校验持久化文件的会话标识和 cwd，再执行一次原生 `new_session` 清理拥有的后台工作，随后用 `switch_session` 恢复原文件。这个原生运行状态重置不作为新的 Host 聊天发布；恢复后必须保持原会话标识和文件，并通过原生选择命令恢复已知模型与思考设置，再确认完全空闲才报告取消完成。扩展拒绝重置/恢复、配置恢复失败、后台工作仍未停止都保留真实故障及原有 30 秒界限。没有持久化文件或存在排队消息、压缩时不执行此恢复。
+
+## 故障后的聊天分支
+
+Host 创建聊天分支前会刷新源会话历史。OMP 会话故障后仍允许读取已经保存的历史：先等待原生写入进程关闭，再核对文件头的会话标识及 cwd，直接读取文件中的真实 Entry 和 checkpoint。此操作不重新启动源会话、不接受新的回合，也不清除原有故障。文件缺失、身份不匹配或进程清理失败仍返回错误。这样取消故障不会阻止从已有历史创建独立分支；同工作区和新工作树复用既有 OMP 原生 fork/cwd 绑定逻辑。
+
+取消与分支的原生依据：OMP [v18.4.3 AgentSession](https://github.com/can1357/oh-my-pi/blob/v18.4.3/packages/coding-agent/src/session/agent-session.ts) 中的 `abort`、`newSession`、`switchSession` 和会话拥有的异步作业清理；[原生 RPC 命令](https://github.com/can1357/oh-my-pi/blob/v18.4.3/packages/coding-agent/src/modes/rpc/rpc-mode.ts)。隔离 localhost 模型探针覆盖真实后台 Bash → `wait` → 取消 → 下一回合，以及同目录和跨目录 fork 的历史前缀与独立身份。故障后历史读取另有文件夹具回归，覆盖身份/cwd 不匹配及关闭失败；这些测试不等同于完整 Desktop UI 验收。
+
 ## 不调用 Agent 的本地命令
 
 `/context` 是本地文本报告，加入 OMP 的实时命令目录；其他内置终端命令仍不开放，`/compact` 保留专用处理。动态扩展命令也可能只在本地执行，不能从命令名推断是否启动 Agent。
@@ -25,10 +41,9 @@ OMP 的 `ask` 工具通过这些基础交互组合多问题、多选和 “Other
 - 同步 `response.prompt.data.agentInvoked: false`，或与当前请求 ID 匹配的异步 `prompt_result.agentInvoked: false`，确认本地操作结束；本地成功、失败和取消分别映射为对应终态，不再等待不会出现的 `agent_end`。
 - `command_output.text` 沿既有文本增量路径展示。该原生帧没有请求 ID，只归属当前串行、尚未完成的 Prompt；空输出也可合法完成。协议分块 ID 不作为 Prompt 或历史身份。
 - 未创建原生 User Entry 的本地操作使用公共 `turn.completed.ephemeral: true`，结束活动状态但不写入历史或伪造 Checkpoint。首次 `/context` 后，OMP 可能已公布历史文件路径但尚未创建文件；仅新建会话且原生消息确认为空时接受空历史，恢复会话或已有消息时仍保留文件缺失错误。
-- 普通模型轮次仍等待终结性的 `agent_end` 和空闲状态确认；`abort` ACK 只表示接受取消，没有终结信号仍按原有时限失败。缺失或为真的 `agentInvoked` 不走本地完成路径。
+- 普通模型轮次仍等待终结性的 `agent_end` 和空闲状态确认；`abort` ACK 只表示接受取消，取消完成还必须满足上文的原生状态确认规则，不能仅凭 ACK 结束。缺失或为真的 `agentInvoked` 不走本地完成路径。
 
 本地命令核查版本为 OMP `18.4.10`，依据其 [RPC 协议](https://github.com/can1357/oh-my-pi/blob/v18.4.10/docs/rpc.md)。实际运行已编译的 Adapter、真实 OMP 和隔离 localhost 模型服务，验证同一会话依次完成 `/context`、异步本地扩展命令、普通模型轮次、运行中模型取消及取消后的 `/context`。两个本地命令均未请求模型；普通与取消轮次保留真实原生身份。另有 Host 协议回归覆盖非持久化历史和后续轮次。该验证未操作 Codex Desktop GUI，不等同于实际 Desktop 界面验收。
-
 
 ## 原生依据与验证边界
 

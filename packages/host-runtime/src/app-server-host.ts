@@ -1,4 +1,6 @@
 import {
+  DELEGATION_READ_METHOD,
+  delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
   THREAD_PREWARM_DISCARD_METHOD,
   threadPrewarmDiscardParamsSchema,
@@ -1246,6 +1248,27 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(request, -32090, "Remote service is updating; reconnect shortly"),
       );
+      return;
+    }
+    if (request.method === DELEGATION_READ_METHOD) {
+      const parsed = delegationReadParamsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid Thread read request"));
+        return;
+      }
+      const shared = await this.#options.sharedThreads?.route(request);
+      if (shared) {
+        await this.#writer.json(shared);
+        return;
+      }
+      await this.#waitForPlugins();
+      const result = await this.#delegationCoordinator.read({
+        threadId: parsed.data.threadId,
+        view: parsed.data.view,
+        ...(parsed.data.cursor !== undefined ? { cursor: parsed.data.cursor } : {}),
+        ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {

@@ -142,6 +142,11 @@ export function createModelPricesDialog(
     ) as Record<ModelPriceField, HTMLInputElement>;
     const error = h(document, "p", { className: "console-model-price__error", role: "alert" });
     const defaultInfo = h(document, "span", { className: "console-muted" });
+    const suggestions = h(document, "section", {
+      className: "console-model-price-suggestions",
+      hidden: true,
+      "aria-label": messages.similarPrices,
+    });
     let defaultPrice: ModelPriceOverride | null = null;
     const useDefault = button(document, messages.useDefault, () => {
       if (!defaultPrice) return;
@@ -152,7 +157,59 @@ export function createModelPricesDialog(
     void request(MODEL_PRICE_DEFAULT_METHOD, { model: modelId })
       .then((value) => {
         if (!isCurrent()) return;
-        defaultPrice = modelPriceDefaultResultSchema.parse(value).price;
+        const result = modelPriceDefaultResultSchema.parse(value);
+        defaultPrice = result.price;
+        if (result.suggestions?.length) {
+          suggestions.hidden = false;
+          suggestions.replaceChildren(
+            h(document, "h3", {}, messages.similarPrices),
+            ...result.suggestions.map((candidate) => {
+              const usePrice = button(document, messages.useSimilarPrice, () => {
+                if (busy || !isCurrent()) return;
+                for (const name of MODEL_PRICE_FIELDS)
+                  prices[name].value = candidate.price[name]?.toString() ?? "";
+                error.textContent = "";
+              });
+              usePrice.disabled = busy;
+              controls.push(usePrice);
+              return h(
+                document,
+                "div",
+                { className: "console-model-price-suggestion" },
+                h(
+                  document,
+                  "div",
+                  {},
+                  h(document, "strong", {}, candidate.model),
+                  h(document, "span", { className: "console-muted" }, ` · ${candidate.provider}`),
+                  candidate.official
+                    ? h(
+                        document,
+                        "span",
+                        { className: "console-model-price-official" },
+                        messages.officialPriceProvider,
+                      )
+                    : null,
+                  candidate.canonicalModelId
+                    ? h(
+                        document,
+                        "p",
+                        { className: "console-muted" },
+                        fill(messages.catalogModelLink, { model: candidate.canonicalModelId }),
+                      )
+                    : null,
+                  h(
+                    document,
+                    "p",
+                    { className: "console-muted" },
+                    formatPrice(messages, candidate.price),
+                  ),
+                ),
+                usePrice,
+              );
+            }),
+          );
+        }
         defaultInfo.textContent = defaultPrice
           ? fill(messages.defaultPrice, { price: formatPrice(messages, defaultPrice) })
           : messages.defaultMissing;
@@ -245,7 +302,7 @@ export function createModelPricesDialog(
         ...MODEL_PRICE_FIELDS.map((name) => labelled(messages.fields[name], prices[name])),
       ),
       h(document, "div", { className: "console-actions" }, defaultInfo, useDefault),
-      h(document, "p", { className: "console-muted" }, messages.wholeEntry),
+      suggestions,
       error,
       confirmation,
       h(document, "div", { className: "console-actions" }, save, cancel, remove),

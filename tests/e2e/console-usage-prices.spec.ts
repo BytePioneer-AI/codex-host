@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { tailwindEsbuildPlugin } from "../../packages/renderer-extension/scripts/tailwind-esbuild-plugin.mjs";
 import type { HarnessUsageEntry } from "@codexhost/harness-adapter";
-import type { ModelPriceOverride } from "@codexhost/shared-contracts";
+import type { ModelPriceOverride, ModelPriceSuggestion } from "@codexhost/shared-contracts";
 import { UsageStatistics } from "../../packages/host-runtime/src/usage-statistics.ts";
 
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
@@ -67,6 +67,7 @@ async function setup(page: Page) {
     prices: new Map<string, ModelPriceOverride>(),
     /** Entries per Harness; the default is one priced-on-demand request. */
     entries: new Map<string, HarnessUsageEntry[]>([["test-harness", [request("r1")]]]),
+    modelLabels: new Map<string, Record<string, string>>(),
     statisticsReads: 0,
     lastParams: {} as Record<string, unknown>,
     priceReads: 0,
@@ -77,6 +78,8 @@ async function setup(page: Page) {
     failWrite: false,
     invalidFile: false,
     defaultAvailable: true,
+    suggestions: [] as ModelPriceSuggestion[],
+    beforeDefault: () => Promise.resolve(),
     beforeRead: () => Promise.resolve(),
     beforeWrite: () => Promise.resolve(),
   };
@@ -86,6 +89,10 @@ async function setup(page: Page) {
     prices: {
       missing: () => undefined,
       lookup: async () => ({
+        userPrice: (model: string) => {
+          const price = state.prices.get(model);
+          return price ? { cacheRead: 0, cacheWrite: 0, ...price } : null;
+        },
         find: (model: string) => {
           const price = state.prices.get(model);
           return price ? { cacheRead: 0, cacheWrite: 0, ...price } : null;
@@ -99,6 +106,7 @@ async function setup(page: Page) {
       capability: {
         listSources: async () => [{ id: harness, fingerprint: JSON.stringify(entries) }],
         readSource: async () => entries,
+        readModelLabels: async () => state.modelLabels.get(harness) ?? {},
       },
     })),
   );
@@ -151,7 +159,9 @@ async function setup(page: Page) {
         await new Promise((resolve) => setTimeout(resolve, 100));
         result = priceView();
       } else if (method === "codexhost/usage/model-prices/default") {
+        await state.beforeDefault();
         result = {
+          suggestions: state.suggestions,
           price: state.defaultAvailable
             ? { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }
             : null,
@@ -265,6 +275,283 @@ test("row dialog saves prices without a header entry and preserves filters and a
   expect(state.lastParams).toEqual({ range: "7d", harness: "test-harness", model: "custom-model" });
   expect(page.url()).toBe(url);
   expect(state.prices.get("custom-model")).toEqual({ input: 2, output: 3 });
+});
+
+test("native model labels display and filter without changing the price identity", async ({
+  page,
+}, info) => {
+  const state = await setup(page);
+  state.entries = new Map([["qoder", [request("r1", { model: "internal-flash" })]]]);
+  state.modelLabels.set("qoder", { "internal-flash": "Qwen3.8-Flash" });
+  await openStatistics(page);
+  await expect(
+    table(page, "按模型").getByRole("button", { name: "Qwen3.8-Flash", exact: true }),
+  ).toBeVisible();
+  await table(page, "按模型").screenshot({ path: info.outputPath("model-label.png") });
+  await choose(page, modelFilter(page), "Qwen3.8-Flash");
+  await expect(modelFilter(page)).toHaveText("Qwen3.8-Flash");
+  await expect.poll(() => state.lastParams.model).toBe("internal-flash");
+  await page.screenshot({ path: info.outputPath("model-filter.png"), fullPage: true });
+  await table(page, "按模型").getByRole("button", { name: "设置价格", exact: true }).click();
+  await expect(modelInput(page)).toHaveValue("internal-flash");
+  await page.screenshot({ path: info.outputPath("model-price-identity.png"), fullPage: true });
+});
+
+test("native credits appear as source-labelled details beneath USD without a separate panel", async ({
+  page,
+}, info) => {
+  const state = await setup(page);
+  state.entries = new Map([
+    [
+      "workbuddy",
+      [
+        request("a", { model: "default-model", credits: 14.81 }),
+        request("b", { model: "default-model", credits: 0 }),
+        request("c", { model: "default-model" }),
+        request("d", { model: "priced-model", credits: 2 }),
+      ],
+    ],
+    ["codebuddy", [request("a", { model: "hy4-preview-f", credits: 0 })]],
+  ]);
+  state.prices.set("priced-model", { input: 1, output: 2 });
+  await openStatistics(page);
+  await expect(page.getByRole("heading", { name: "原生 Credits", exact: true })).toHaveCount(0);
+  const panel = table(page, "按模型");
+  const modelCost = (name: string) =>
+    panel
+      .getByRole("row")
+      .filter({ has: page.getByRole("button", { name, exact: true }) })
+      .locator(".console-usage-cost");
+  const autoCost = modelCost("default-model");
+  await expect(autoCost.locator(".console-usage-cost__source")).toHaveText("workbuddy");
+  await expect(autoCost.locator(".console-usage-cost__amount")).toHaveText("14.81 credits");
+  await expect(autoCost).toHaveAttribute("title", /2 \/ 3/);
+  await expect(autoCost.locator(".is-secondary")).toHaveCount(0);
+  const zeroCost = modelCost("hy4-preview-f");
+  await expect(zeroCost.locator(".console-usage-cost__source")).toHaveText("codebuddy");
+  await expect(zeroCost.locator(".console-usage-cost__amount")).toHaveText("0 credits");
+  const priced = modelCost("priced-model");
+  await expect(priced.locator(".console-usage-cost__primary")).toHaveText("$5.00");
+  await expect(priced.locator(".is-secondary .console-usage-cost__source")).toHaveText("workbuddy");
+  await expect(priced.locator(".is-secondary .console-usage-cost__amount")).toHaveText("2 credits");
+  const layout = await priced.evaluate((element) => {
+    const primary = element.querySelector(".console-usage-cost__primary");
+    const credit = element.querySelector(".console-usage-cost__credit");
+    if (!primary || !credit) throw new Error("Missing cost hierarchy");
+    return {
+      primaryBottom: primary.getBoundingClientRect().bottom,
+      creditTop: credit.getBoundingClientRect().top,
+      primaryFont: parseFloat(getComputedStyle(primary).fontSize),
+      creditFont: parseFloat(getComputedStyle(credit).fontSize),
+    };
+  });
+  expect(layout.creditTop).toBeGreaterThan(layout.primaryBottom);
+  expect(layout.creditFont).toBeLessThan(layout.primaryFont);
+  await expect(table(page, "按 Harness").getByText("16.81 credits", { exact: true })).toBeVisible();
+  await expect(table(page, "按 Harness").locator(".console-usage-cost__source")).toHaveCount(0);
+  await expect(tileValue(page, "cost")).toHaveText("$5.00");
+  await panel.screenshot({ path: info.outputPath("credits-inline.png") });
+  await group(page, "Harness").getByRole("button", { name: "codebuddy", exact: true }).click();
+  await expect(panel.getByText("14.81 credits", { exact: true })).toHaveCount(0);
+  await expect(panel.getByRole("cell", { name: "0 credits", exact: true })).toBeVisible();
+  await expect(panel.locator(".console-usage-cost__source")).toHaveCount(0);
+  await panel.screenshot({ path: info.outputPath("credits-filtered.png") });
+});
+
+test("long inline credits do not push the cost column outside the table", async ({
+  page,
+}, info) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const state = await setup(page);
+  state.entries = new Map([
+    [
+      "workbuddy-long-display-name",
+      [request("a", { model: "gpt-5.6-luna", credits: 12345.123456 })],
+    ],
+    [
+      "codebuddy-long-display-name",
+      [request("b", { model: "gpt-5.6-luna", credits: 98765.654321 })],
+    ],
+    [
+      "qoder-cn-long-display-name",
+      [request("c", { model: "gpt-5.6-luna", credits: 22222.222222 })],
+    ],
+    ["plain", [request("d", { model: "grok-4.7-build-fast" })]],
+  ]);
+  state.prices.set("gpt-5.6-luna", { input: 1000, output: 250 });
+  state.prices.set("grok-4.7-build-fast", { input: 1, output: 2 });
+  await openStatistics(page);
+  const panel = table(page, "按模型");
+  await panel.screenshot({ path: info.outputPath("long-cost.png") });
+  const overflow = await panel
+    .locator(".console-usage-table-scroll")
+    .evaluate((element) => element.scrollWidth - element.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+  const costCell = panel
+    .getByRole("row")
+    .filter({ has: page.getByRole("button", { name: "gpt-5.6-luna", exact: true }) })
+    .getByRole("cell")
+    .last();
+  await expect(costCell).toContainText("12,345.123456");
+  await expect(costCell).toContainText("98,765.654321");
+  const bounds = await costCell.evaluate((element) => ({
+    right: element.getBoundingClientRect().right,
+    visibleRight:
+      element.closest(".console-usage-table-scroll")?.getBoundingClientRect().right ?? 0,
+    width: element.getBoundingClientRect().width,
+  }));
+  expect(bounds.right).toBeLessThanOrEqual(bounds.visibleRight + 1);
+  expect(bounds.width).toBeLessThanOrEqual(280);
+  const lines = costCell.locator(".console-usage-cost__credit");
+  await expect(lines).toHaveCount(3);
+  const lineBounds = await lines.evaluateAll((elements) =>
+    elements.map((element) => {
+      const amount = element.querySelector(".console-usage-cost__amount");
+      if (!amount) throw new Error("Missing amount");
+      return {
+        top: element.getBoundingClientRect().top,
+        bottom: element.getBoundingClientRect().bottom,
+        amountWidth: amount.clientWidth,
+        amountScrollWidth: amount.scrollWidth,
+        nowrap: getComputedStyle(amount).whiteSpace,
+      };
+    }),
+  );
+  for (const [index, line] of lineBounds.entries()) {
+    expect(line.amountScrollWidth).toBeLessThanOrEqual(line.amountWidth + 1);
+    expect(line.nowrap).toBe("nowrap");
+    if (index > 0) expect(line.top).toBeGreaterThan(lineBounds[index - 1]?.bottom ?? 0);
+  }
+});
+
+test("similar catalog prices fill only the draft, remain editable and save to the original ID", async ({
+  page,
+}, info) => {
+  const state = await setup(page);
+  state.defaultAvailable = false;
+  state.entries = new Map([["test-harness", [request("r1", { model: "deepseek-v4-flash-free" })]]]);
+  state.suggestions = [
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      official: true,
+      canonicalModelId: "deepseek/deepseek-v4.1-flash",
+      price: { input: 1, output: 2, cacheRead: 0 },
+    },
+    {
+      provider: "reseller",
+      model: "deepseek-v4-flash",
+      price: { input: 3, output: 4, cacheWrite: 5 },
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-flash",
+      official: true,
+      canonicalModelId: "deepseek/deepseek-v4.1-flash",
+      price: { input: 1, output: 2, cacheRead: 0 },
+    },
+  ];
+  await openStatistics(page);
+  await page.getByRole("button", { name: "设置价格", exact: true }).click();
+  const suggestions = page.getByRole("region", { name: "相似模型价格" });
+  await expect(suggestions).toBeVisible();
+  await expect(suggestions.getByText("官方", { exact: true })).toHaveCount(2);
+  await expect(
+    suggestions.getByText("目录关联模型：deepseek/deepseek-v4.1-flash", { exact: true }),
+  ).toHaveCount(2);
+  await expect(suggestions.locator("strong")).toHaveText([
+    "deepseek-v4-flash",
+    "deepseek-v4-flash",
+    "deepseek-flash",
+  ]);
+  await expect(inputPrice(page)).toHaveValue("");
+  expect(state.writes).toBe(0);
+  await page.getByRole("dialog").screenshot({ path: info.outputPath("price-suggestions.png") });
+  await suggestions.getByRole("button", { name: "填入此价格" }).nth(1).click();
+  await expect(inputPrice(page)).toHaveValue("3");
+  await expect(page.getByRole("textbox", { name: "缓存写入", exact: true })).toHaveValue("5");
+  await suggestions.getByRole("button", { name: "填入此价格" }).first().click();
+  await expect(inputPrice(page)).toHaveValue("1");
+  await expect(page.getByRole("textbox", { name: "缓存写入", exact: true })).toHaveValue("");
+  await expect(page.getByRole("textbox", { name: "缓存读取", exact: true })).toHaveValue("0");
+  await expect(modelInput(page)).toHaveValue("deepseek-v4-flash-free");
+  await expect(modelInput(page)).not.toBeEditable();
+  expect(state.writes).toBe(0);
+  await inputPrice(page).fill("1.5");
+  await page
+    .getByRole("dialog")
+    .screenshot({ path: info.outputPath("price-suggestion-draft.png") });
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  expect(state.prices.get("deepseek-v4-flash-free")).toEqual({
+    input: 1.5,
+    output: 2,
+    cacheRead: 0,
+  });
+  expect(state.prices.has("deepseek-v4-flash")).toBe(false);
+});
+
+test("late suggestions do not overwrite a typed draft, and cancelling never saves", async ({
+  page,
+}) => {
+  const state = await setup(page);
+  let release = () => {};
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  state.beforeDefault = () => pending;
+  state.suggestions = [
+    { provider: "vendor", model: "custom-model-nearby", price: { input: 1, output: 2 } },
+  ];
+  await openStatistics(page);
+  await page.getByRole("button", { name: "设置价格", exact: true }).click();
+  await inputPrice(page).fill("8");
+  release();
+  await expect(page.getByRole("region", { name: "相似模型价格" })).toBeVisible();
+  await expect(inputPrice(page)).toHaveValue("8");
+  await page.getByRole("button", { name: "填入此价格", exact: true }).click();
+  await page.keyboard.press("Escape");
+  expect(state.writes).toBe(0);
+  expect(state.prices.size).toBe(0);
+});
+
+// Headless Chromium otherwise suppresses scrollbar painting, including custom scrollbars.
+test.use({ launchOptions: { ignoreDefaultArgs: ["--hide-scrollbars"] } });
+
+test.describe("suggestion scrollbars", () => {
+  for (const colorScheme of ["light", "dark"] as const) {
+    test(`price suggestions have a slim persistent scrollbar in ${colorScheme} mode`, async ({
+      page,
+    }, info) => {
+      const state = await setup(page);
+      await page.emulateMedia({ colorScheme });
+      state.suggestions = Array.from({ length: 6 }, (_, index) => ({
+        provider: `provider-${index}`,
+        model: `custom-model-${index}`,
+        price: { input: index + 1, output: index + 2 },
+      }));
+      await openStatistics(page);
+      await page.getByRole("button", { name: "设置价格", exact: true }).click();
+      const region = page.getByRole("region", { name: "相似模型价格" });
+      await expect(region).toBeVisible();
+      await expect(region).toHaveCSS("overflow-y", "scroll");
+      expect(
+        await region.evaluate((element) => ({
+          width: getComputedStyle(element, "::-webkit-scrollbar").width,
+          overflowing: element.scrollHeight > element.clientHeight,
+          gutter: (element as HTMLElement).offsetWidth - element.clientWidth,
+        })),
+      ).toEqual({ width: "6px", overflowing: true, gutter: 6 });
+      await page.mouse.move(0, 0);
+      await page.getByRole("dialog").screenshot({ path: info.outputPath("scrollbar-before.png") });
+      await region.hover();
+      await page.mouse.wheel(0, 300);
+      await expect.poll(() => region.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+      await page.mouse.move(0, 0);
+      await page.getByRole("dialog").screenshot({ path: info.outputPath("scrollbar-after.png") });
+      expect(state.writes).toBe(0);
+    });
+  }
 });
 
 test("cancel and Escape discard the draft and restore focus to the row", async ({ page }) => {
@@ -457,7 +744,7 @@ async function setupDashboard(page: Page) {
   return state;
 }
 
-test("tokens leave cache reads and writes out, and the cache has its own tile", async ({
+test("three tiles show cost, tokens without cache and the cache hit rate, nothing else", async ({
   page,
 }) => {
   const state = await setup(page);
@@ -469,21 +756,67 @@ test("tokens leave cache reads and writes out, and the cache has its own tile", 
       cacheWriteInputTokens: 50_000,
       outputTokens: 10_000,
     }),
-    // Its cache split is unknown: its input counts whole, and the tile says so.
-    request("unknown-cache", {
-      inputTokens: 5_000,
-      cachedInputTokens: undefined,
-      cacheWriteInputTokens: undefined,
-      outputTokens: 0,
-    }),
+    // Unpriced: the cost counts only what has a price, shown without a lower-bound mark.
+    request("unpriced", { model: "mystery-model", inputTokens: 5_000, outputTokens: 0 }),
   ]);
   await openStatistics(page);
-  await expect(tile(page, "tokens")).toContainText("不含缓存读取与写入");
-  await expect(tileValue(page, "tokens")).toHaveText("165K");
-  await expect(tile(page, "tokens")).toContainText("输入 155K · 输出 10K");
-  await expect(tile(page, "tokens")).toContainText("5K 输入的缓存情况未知");
-  await expect(tileValue(page, "cache")).toHaveText("800K");
-  await expect(tile(page, "cache")).toContainText("命中率 80% · 写入 50K");
+  await expect(page.locator(".console-usage-tile")).toHaveCount(3);
+  for (const [key, label, value] of [
+    ["cost", "费用", "$0.160"],
+    ["tokens", "Token 用量", "165K"],
+    ["cache", "缓存命中率", "79.6%"],
+  ] as const) {
+    // A label and one number; no notes, averages or comparisons.
+    await expect(tile(page, key).locator(":scope > *")).toHaveCount(2);
+    await expect(tile(page, key).locator(".console-usage-tile__label")).toHaveText(label);
+    await expect(tileValue(page, key)).toHaveText(value);
+  }
+  await expect(page.getByText("≥")).toHaveCount(0);
+  await expect(page.getByText("不含缓存读取与写入")).toHaveCount(0);
+});
+
+test("models priced by the Harness's own record offer no price to set or edit", async ({
+  page,
+}) => {
+  const state = await setup(page);
+  state.entries.set("test-harness", [
+    request("recorded", { model: "grok-4.6-build", costUsd: 0.25 }),
+    request("listed", { model: "custom-model" }),
+  ]);
+  await openStatistics(page);
+  const models = table(page, "按模型");
+  const recorded = models.locator("tbody tr").filter({ hasText: "grok-4.6-build" });
+  await expect(recorded).toContainText("$0.250");
+  await expect(recorded.getByRole("button", { name: /设置价格|编辑价格/ })).toHaveCount(0);
+  await expect(recorded).not.toContainText("未计价");
+  // A model priced by a price list keeps its action.
+  const listed = models.locator("tbody tr").filter({ hasText: "custom-model" });
+  await expect(listed.getByRole("button", { name: "设置价格", exact: true })).toBeVisible();
+});
+
+test("requests without token counts show dashes, not zeros, and no price to set", async ({
+  page,
+}) => {
+  const state = await setup(page);
+  state.entries.set("test-harness", [
+    request("credits-only", {
+      model: "qfmodel",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      tokensUnknown: true,
+    }),
+    request("listed", { model: "custom-model" }),
+  ]);
+  await openStatistics(page);
+  const row = table(page, "按模型").locator("tbody tr").filter({ hasText: "qfmodel" });
+  // Input, cache read, output, hit rate and cost: all unknown.
+  await expect(row.locator("td").filter({ hasText: /^—$/ })).toHaveCount(6);
+  await expect(row.getByRole("button", { name: /设置价格|编辑价格/ })).toHaveCount(0);
+  await expect(row).not.toContainText("未计价");
+  // The request still counts.
+  await expect(row.locator("td").nth(1)).toHaveText("1");
 });
 
 test("the model filter tells all models from the unknown model and searches", async ({ page }) => {
@@ -499,7 +832,8 @@ test("the model filter tells all models from the unknown model and searches", as
   await page.keyboard.press("Enter");
   await expect(modelFilter(page)).toHaveText("未知模型");
   expect(state.lastParams).toMatchObject({ model: null });
-  await expect(tileValue(page, "requests")).toHaveText("1");
+  // Only the request without a model: 1M input and 2M output.
+  await expect(tileValue(page, "tokens")).toHaveText("3M");
   await page.getByRole("button", { name: "清除筛选", exact: true }).click();
   await expect(modelFilter(page)).toHaveText("全部模型");
   expect(state.lastParams).not.toHaveProperty("model");
@@ -510,7 +844,7 @@ test("rows filter, sort, fold and show shares; unpriced rows are marked; the vie
 }) => {
   const state = await setupDashboard(page);
   await openStatistics(page);
-  await expect(page.locator(".console-usage-tile")).toHaveCount(6);
+  await expect(page.locator(".console-usage-tile")).toHaveCount(3);
   const harnesses = table(page, "按 Harness");
   // Seven Harnesses fold to six rows and a "1 more" button.
   await expect(harnesses.locator("tbody tr")).toHaveCount(6);
@@ -562,15 +896,13 @@ test("rows filter, sort, fold and show shares; unpriced rows are marked; the vie
   ).toHaveAttribute("aria-pressed", "true");
 });
 
-test("the unpriced link narrows the model table to what needs a price", async ({ page }) => {
+test("the model table narrows to what needs a price", async ({ page }) => {
   await setupDashboard(page);
   await openStatistics(page);
-  await tile(page, "cost")
-    .getByRole("button", { name: /次未计价/ })
-    .click();
   const toggle = page.getByRole("button", { name: "只看未计价", exact: true });
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  await expect(toggle).toBeFocused();
   await expect(table(page, "按模型").locator("tbody tr")).toHaveCount(1);
   await toggle.click();
   await expect(table(page, "按模型").locator("tbody tr")).toHaveCount(3);
@@ -594,7 +926,10 @@ test("the trend stacks Harnesses, labels its axes, and selects a day by click or
   const tooltip = chart.locator(".console-usage-tooltip");
   await expect(tooltip).toBeVisible();
   await expect(tooltip).toContainText("2026年9月18日");
-  await expect(tooltip).toContainText("请求");
+  await expect(tooltip).toContainText("Token");
+  await expect(tooltip).not.toContainText("请求");
+  // The trend measures cost or tokens, nothing else.
+  await expect(group(page, "趋势").first().getByRole("button")).toHaveText(["费用", "Token"]);
   await page.screenshot({ path: test.info().outputPath("dashboard.png"), fullPage: true });
 
   await page.mouse.click(box.x + box.width - 4, box.y + box.height / 2);
@@ -623,19 +958,11 @@ test("the trend stacks Harnesses, labels its axes, and selects a day by click or
   await expect(chart.locator(".console-usage-chart__column")).toHaveCount(5);
 });
 
-test("tiles compare with the previous period; projects, sessions and CSV follow the filters", async ({
-  page,
-}) => {
+test("projects, sessions and CSV follow the filters", async ({ page }) => {
   const state = await setupDashboard(page);
   await openStatistics(page);
   await page.getByRole("button", { name: "7 天", exact: true }).click();
-  await expect(tile(page, "cost").locator(".console-usage-delta")).toHaveText(/较上一周期 [↑↓→]/);
-  await expect(tile(page, "cost").locator(".console-usage-delta")).toHaveAttribute(
-    "title",
-    /上一周期 9月5日 – 9月11日/,
-  );
-  await expect(tileValue(page, "projects")).toHaveText("3");
-  await expect(tile(page, "sessions")).toContainText("中位");
+  await expect.poll(() => state.lastParams.range).toBe("7d");
 
   // Two projects share a folder name: they are told apart by their parent.
   const projects = table(page, "按项目");

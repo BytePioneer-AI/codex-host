@@ -94,3 +94,27 @@ it("reads turn usage by model and leaves out a fork's copies of its source's tur
     expect.objectContaining({ id: "p3:grok-4.7", occurredAtMs: 4_000_000, sessionId: "fork" }),
   ]);
 });
+
+it("keeps the cost Grok recorded, from xAI's ticks of 1e-10 USD", async () => {
+  await session("priced", [turn("p9", 1_000_000, { ...usage, costUsdTicks: 63_549_400 })]);
+  const capability = createGrokUsageStatistics({ GROK_HOME: home });
+  const [source] = await capability.listSources(signal);
+  const [entry] = await capability.readSource(source?.id ?? "", signal);
+  expect(entry?.costUsd).toBeCloseTo(0.00635494, 10);
+});
+
+it("counts a turn Grok marks incomplete, which has no cost of its own, as free", async () => {
+  const incomplete = JSON.parse(turn("p10", 1_000_000, usage)) as {
+    params: { update: { usage: Record<string, unknown> } };
+  };
+  incomplete.params.update.usage.usageIsIncomplete = true;
+  await session("cut-short", [JSON.stringify(incomplete), turn("p11", 2_000_000, usage)]);
+  const capability = createGrokUsageStatistics({ GROK_HOME: home });
+  const [source] = await capability.listSources(signal);
+  const entries = await capability.readSource(source?.id ?? "", signal);
+  expect(entries.map((entry) => [entry.id, entry.costUsd])).toEqual([
+    ["p10:grok-4.7", 0],
+    // Without the mark and without a recorded cost, the price list decides.
+    ["p11:grok-4.7", undefined],
+  ]);
+});

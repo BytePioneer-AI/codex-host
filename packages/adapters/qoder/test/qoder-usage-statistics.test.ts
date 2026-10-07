@@ -47,6 +47,41 @@ afterEach(async () => {
 });
 
 describe("Qoder usage statistics", () => {
+  it("keeps model directories isolated and prefers English with a native locale fallback", async () => {
+    for (const [folder, label] of [
+      ["global", "Global Model"],
+      ["cn", "CN Model"],
+    ] as const) {
+      await mkdir(path.join(root, folder, ".auth"), { recursive: true });
+      await writeFile(
+        path.join(root, folder, ".auth/dynamic-texts.json"),
+        JSON.stringify({
+          locales: {
+            "zh-CN": {
+              "modelSelector.item.same-id": "本地名称",
+              "modelSelector.item.fallback": "备用名称",
+            },
+            en: { "modelSelector.item.same-id": label },
+          },
+        }),
+      );
+    }
+    const environment = {
+      QODER_CONFIG_DIR: path.join(root, "global"),
+      QODERCN_CONFIG_DIR: path.join(root, "cn"),
+    };
+    expect(
+      await createQoderUsageStatistics(environment, "global").readModelLabels?.(signal),
+    ).toEqual({
+      "same-id": "Global Model",
+      fallback: "备用名称",
+    });
+    expect(await createQoderUsageStatistics(environment, "cn").readModelLabels?.(signal)).toEqual({
+      "same-id": "CN Model",
+      fallback: "备用名称",
+    });
+  });
+
   it("counts a message once across blocks, using final usage and its first native time", async () => {
     const file = await transcript("session.jsonl", [
       assistant("one", { message: { id: "one", model: "test-model" } }),
@@ -67,6 +102,26 @@ describe("Qoder usage statistics", () => {
         cacheWriteInputTokens: 50,
       },
     ]);
+  });
+
+  it("marks a message whose token buckets are all zero as unreported, not as zero tokens", async () => {
+    const zero = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      credits: 0.38,
+    };
+    const file = await transcript("projects/work/s2.jsonl", [
+      assistant("credits-only", { message: { id: "credits-only", model: "qfmodel", usage: zero } }),
+      assistant("metered"),
+    ]);
+    const entries = await readQoderUsage(file, signal);
+    expect(entries.find((entry) => entry.id === "credits-only")).toMatchObject({
+      tokensUnknown: true,
+      inputTokens: 0,
+    });
+    expect(entries.find((entry) => entry.id === "metered")).not.toHaveProperty("tokensUnknown");
   });
 
   it("attributes messages to the transcript's session and working directory", async () => {
@@ -113,6 +168,31 @@ describe("Qoder usage statistics", () => {
       reasoningOutputTokens: 10,
     });
     expect(entries[1]).not.toHaveProperty("model");
+  });
+
+  it("uses native request credits, not original credits or cumulative session totals", async () => {
+    const file = await transcript("credits.jsonl", [
+      ...[0.25, 0, undefined, -1, "2"].map((credits, i) =>
+        assistant(String(i), {
+          message: {
+            id: String(i),
+            model: "test-model",
+            usage: { ...usage, credits, original_credits: 99 },
+          },
+        }),
+      ),
+      assistant("0", {
+        message: { id: "0", model: "test-model", usage: { ...usage, credits: 0.5 } },
+      }),
+      { type: "result", total_credits: 100 },
+    ]);
+    expect((await readQoderUsage(file, signal)).map((entry) => entry.credits)).toEqual([
+      0.5,
+      0,
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 
   it("rejects missing, negative, overflowing and inconsistent token buckets", async () => {
@@ -197,6 +277,58 @@ for (const [variant, configKey, cliHomeKey, directory, sdk] of [
       expect(queryFactory).not.toHaveBeenCalled();
       expect(resolveExecutable).not.toHaveBeenCalled();
       await adapter.close();
+    });
+
+    it("reads current local model labels without changing request IDs or source fingerprints", async () => {
+      const capability = createQoderUsageStatistics({ [configKey]: root }, variant);
+      const file = await transcript("projects/project/main.jsonl", [
+        assistant("flash", { message: { id: "flash", model: "internal-flash", usage } }),
+      ]);
+      const sources = await capability.listSources(signal);
+      expect(await capability.readModelLabels?.(signal)).toEqual({});
+      await mkdir(path.join(root, ".auth"));
+      const labelsFile = path.join(root, ".auth/dynamic-texts.json");
+      await writeFile(
+        labelsFile,
+        JSON.stringify({
+          locales: {
+            en: {
+              "modelSelector.item.internal-flash": "Qwen3.8-Flash",
+              "modelSelector.item.another-model": "Another Model",
+              "modelSelector.item.internal-flash.description": "Not a model name",
+              "modelSelector.item.lite.description.quest": "Not a model name",
+              "modelSelector.item.auto": "Auto",
+              "modelSelector.item.invalid": 123,
+              "modelSelector.item.empty": " ",
+            },
+          },
+        }),
+      );
+      expect(await capability.readModelLabels?.(signal)).toEqual({
+        "internal-flash": "Qwen3.8-Flash",
+        "another-model": "Another Model",
+        auto: "Auto",
+      });
+      expect(await capability.listSources(signal)).toEqual(sources);
+      expect(await capability.readSource(file, signal)).toEqual([
+        expect.objectContaining({ model: "internal-flash" }),
+      ]);
+      await writeFile(
+        labelsFile,
+        JSON.stringify({
+          locales: {
+            en: {
+              "modelSelector.item.internal-flash": "Updated Name",
+            },
+          },
+        }),
+      );
+      expect(await capability.readModelLabels?.(signal)).toEqual({
+        "internal-flash": "Updated Name",
+      });
+      await writeFile(labelsFile, "broken");
+      expect(await capability.readModelLabels?.(signal)).toEqual({});
+      await expect(capability.readModelLabels?.(AbortSignal.abort())).rejects.toThrow();
     });
 
     it("returns no sources for missing storage and fingerprints changed files", async () => {

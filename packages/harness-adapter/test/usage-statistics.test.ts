@@ -63,6 +63,17 @@ it("parses only marked, well-formed object lines", async () => {
   expect(records).toEqual([{ k: "hit", n: 1 }]);
 });
 
+it("validates optional native credits without treating missing values as zero", () => {
+  const entry = { id: "r", occurredAtMs: 1, inputTokens: 10, outputTokens: 2 };
+  expect(parseHarnessUsageEntry(entry)).not.toHaveProperty("credits");
+  for (const credits of [0, 0.25, 14.81]) {
+    expect(parseHarnessUsageEntry({ ...entry, credits })).toMatchObject({ credits });
+  }
+  for (const credits of [-1, NaN, Infinity, "1", null]) {
+    expect(parseHarnessUsageEntry({ ...entry, credits })).toBeNull();
+  }
+});
+
 it("validates entries and native times", () => {
   const valid = {
     id: "r",
@@ -96,6 +107,21 @@ describe("usage session attribution", () => {
     }
     expect(withUsageSession(entry, { sessionId: "", cwd: null })).toBe(entry);
     expect(withUsageSession(entry, { sessionId: "x".repeat(513) })).toBe(entry);
+  });
+
+  it("accepts a native cost and rejects one that is not a non-negative number", () => {
+    expect(parseHarnessUsageEntry({ ...entry, costUsd: 0.25 })).toMatchObject({ costUsd: 0.25 });
+    expect(parseHarnessUsageEntry({ ...entry, costUsd: 0 })).not.toBeNull();
+    for (const costUsd of [-1, Number.NaN, Number.POSITIVE_INFINITY, "1"]) {
+      expect(parseHarnessUsageEntry({ ...entry, costUsd })).toBeNull();
+    }
+  });
+
+  it("accepts only true as the mark that token counts are unknown", () => {
+    expect(parseHarnessUsageEntry({ ...entry, tokensUnknown: true })).toMatchObject({
+      tokensUnknown: true,
+    });
+    expect(parseHarnessUsageEntry({ ...entry, tokensUnknown: false })).toBeNull();
   });
 
   it("rejects entries from an Adapter with malformed attribution", () => {

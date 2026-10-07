@@ -14,6 +14,7 @@ import {
 } from "@codexhost/harness-adapter/usage-statistics";
 
 import type { QoderVariant } from "./qoder-runtime.js";
+import { readQoderModelLabels } from "./qoder-model-labels.js";
 
 /** Match the selected distribution's native SDK history root, without calling the SDK. */
 export function qoderProjectsDirectory(
@@ -74,6 +75,9 @@ export async function readQoderUsage(
     const oneHour = split?.ephemeral_1h_input_tokens;
     const details = isRecord(usage.output_tokens_details) ? usage.output_tokens_details : null;
     const thinking = details?.thinking_tokens;
+    // Qoder records some requests with every token bucket at zero and only its credits: a real
+    // model request always has input, so these counts were not reported, not zero.
+    const unreported = input === 0 && output === 0 && cached === 0 && written === 0;
     const entry = parseHarnessUsageEntry({
       id,
       occurredAtMs: message.at,
@@ -83,7 +87,11 @@ export async function readQoderUsage(
       cacheWriteInputTokens: written,
       ...(count(oneHour) ? { cacheWrite1hInputTokens: oneHour } : {}),
       outputTokens: output,
+      ...(typeof usage.credits === "number" && Number.isFinite(usage.credits) && usage.credits >= 0
+        ? { credits: usage.credits }
+        : {}),
       ...(count(thinking) ? { reasoningOutputTokens: thinking } : {}),
+      ...(unreported ? { tokensUnknown: true } : {}),
     });
     if (entry) message.entry = entry;
   }
@@ -101,6 +109,8 @@ export function createQoderUsageStatistics(
   variant: QoderVariant,
 ): HarnessUsageStatisticsCapability {
   return Object.freeze({
+    readModelLabels: (signal: AbortSignal) =>
+      readQoderModelLabels(path.dirname(qoderProjectsDirectory(environment, variant)), signal),
     listSources: (signal: AbortSignal) =>
       jsonlUsageSources(qoderProjectsDirectory(environment, variant), 4, signal),
     readSource: readQoderUsage,

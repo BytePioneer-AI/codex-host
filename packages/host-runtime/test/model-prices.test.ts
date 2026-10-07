@@ -9,6 +9,7 @@ import {
   ModelPriceLookup,
   compactModelsDev,
   parseModelPriceOverrides,
+  priceNames,
   type ModelPriceTableData,
 } from "../src/model-prices.js";
 import { bundledModelPrices } from "../src/model-prices.generated.js";
@@ -412,5 +413,73 @@ describe("ModelPriceCatalog freshness", () => {
     await catalog.settled();
     expect((await catalog.lookup()).find("claude-sonnet-4-5")).not.toBeNull();
     catalog.close();
+  });
+});
+
+describe("ModelPriceLookup vendors and spellings", () => {
+  const catalog: ModelPriceTableData = {
+    fetchedAtMs: 0,
+    providers: {
+      // Vendors: marked official for a model of their own, or named by a canonical ID.
+      openai: {
+        "gpt-flagship": [4, 20, 0.4, 5, true],
+        "gpt-spark": [1.75, 14, 0.175],
+        "both-makers": [1, 1],
+        "split-makers": [1, 1],
+      },
+      relay: { "grok-x": [2, 6, 0.5, null, "xai/grok-x"] },
+      xai: { "both-makers": [1, 1], "split-makers": [2, 2] },
+      anthropic: { "claude-opus-4-6": [5, 25, 0.5, 6.25, true] },
+      // Resellers and plans: never vendors.
+      poe: { "gpt-spark": [0, 0], "both-makers": [0, 0] },
+      opencode: { "gpt-spark": [1.75, 14, 0.175] },
+      resellerX: { unmarked: [1, 1] },
+      resellerY: { unmarked: [2, 2] },
+    },
+  };
+  const lookup = new ModelPriceLookup(catalog);
+
+  it("takes the vendor's own listing when no listing is marked official", () => {
+    expect(lookup.find("gpt-spark")).toEqual({ input: 1.75, output: 14, cacheRead: 0.175 });
+    // Two vendors that agree; the reseller's plan price is ignored.
+    expect(lookup.find("both-makers")).toEqual({ input: 1, output: 1 });
+  });
+
+  it("still does not guess between resellers or between vendors that disagree", () => {
+    expect(lookup.find("unmarked")).toBeNull();
+    expect(lookup.find("split-makers")).toBeNull();
+  });
+
+  it("finds a model under its dated, effort and version spellings", () => {
+    const opus = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
+    expect(lookup.find("claude-opus-4.6")).toEqual(opus);
+    expect(lookup.find("claude-opus-4-6-20260101")).toEqual(opus);
+    expect(lookup.find("claude-opus-4.6-2026-01-01")).toEqual(opus);
+    expect(lookup.find("gpt-flagship-high")).toEqual({
+      input: 4,
+      output: 20,
+      cacheRead: 0.4,
+      cacheWrite: 5,
+    });
+    // A suffix that is not a date or an effort is not dropped.
+    expect(lookup.find("grok-x-build")).toBeNull();
+  });
+
+  it("lets a price set for the name as given win over another spelling", () => {
+    const custom = { input: 9, output: 9 };
+    const withOverride = new ModelPriceLookup(catalog, new Map([["claude-opus-4.6", custom]]));
+    expect(withOverride.find("claude-opus-4.6")).toEqual(custom);
+  });
+
+  it("lists spellings in order, the name as given first", () => {
+    expect(priceNames("claude-opus-4.6-20260101-high")).toEqual([
+      "claude-opus-4.6-20260101-high",
+      "claude-opus-4.6-20260101",
+      "claude-opus-4.6",
+      "claude-opus-4-6-20260101-high",
+      "claude-opus-4-6-20260101",
+      "claude-opus-4-6",
+    ]);
+    expect(priceNames("plain")).toEqual(["plain"]);
   });
 });

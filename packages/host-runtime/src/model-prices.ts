@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { bundledModelPrices } from "./model-prices.generated.js";
+import { suggestModelPrices } from "./model-price-suggestions.js";
 
 /**
  * USD per million Tokens: [input, output, cacheRead, cacheWrite, canonical]. Cache prices are
@@ -180,17 +181,51 @@ function samePrice(left: ModelPrice, right: ModelPrice): boolean {
 }
 
 /** Exact-match lookup; never guesses between differently priced listings. */
+const DATE_SUFFIX = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/u;
+const EFFORT_SUFFIX = /-(?:minimal|low|medium|high|xhigh)$/u;
+
+/** The model name as given, then the other spellings a catalog may list it under, in order. */
+export function priceNames(model: string): string[] {
+  const names = new Set([model]);
+  // Either suffix may come last (`-20250929-high`, `-high-20250929`): drop them in both orders.
+  for (const first of [EFFORT_SUFFIX, DATE_SUFFIX]) {
+    const second = first === EFFORT_SUFFIX ? DATE_SUFFIX : EFFORT_SUFFIX;
+    const once = model.replace(first, "");
+    names.add(once);
+    names.add(once.replace(second, ""));
+  }
+  for (const name of [...names]) {
+    names.add(name.replace(/(\d)\.(\d)/gu, "$1-$2"));
+    // Only short version numbers (`4-6`), never a date's digits.
+    if (!DATE_SUFFIX.test(name)) {
+      names.add(name.replace(/(?<!\d)(\d{1,2})-(\d{1,2})(?!\d)/gu, "$1.$2"));
+    }
+  }
+  return [...names].filter((name) => name.length > 0);
+}
+
 export class ModelPriceLookup {
   readonly #providers: ModelPriceTableData["providers"];
   readonly #overrides: ReadonlyMap<string, ModelPrice>;
   readonly #listings = new Map<string, Array<{ provider: string; entry: ModelPriceEntry }>>();
   readonly #foldedIds = new Map<string, Set<string>>();
+  /**
+   * Providers that make models, as the catalog itself says: those it marks as the official
+   * listing of a model, and the vendors its canonical model IDs name (`openai/...`). Resellers
+   * and plans are never among them.
+   */
+  readonly #vendors = new Set<string>();
 
   constructor(table: ModelPriceTableData, overrides: ReadonlyMap<string, ModelPrice> = new Map()) {
     this.#providers = table.providers;
     this.#overrides = overrides;
     for (const [provider, models] of Object.entries(table.providers)) {
       for (const [model, entry] of Object.entries(models)) {
+        const canonical = entry[4];
+        if (canonical === true) this.#vendors.add(provider);
+        else if (typeof canonical === "string" && canonical.includes("/")) {
+          this.#vendors.add(canonical.slice(0, canonical.indexOf("/")));
+        }
         let listings = this.#listings.get(model);
         if (!listings) {
           listings = [];
@@ -208,7 +243,29 @@ export class ModelPriceLookup {
     }
   }
 
+  /**
+   * The price of a model as a Harness names it. The name is tried as given, then as the spellings
+   * the catalog may list it under: without a date suffix (`-20250929`), without a reasoning
+   * effort (`-high`), and with its version written with dots or dashes (`4.6` / `4-6`).
+   */
   find(model: string, provider?: string): ModelPrice | null {
+    for (const name of priceNames(model)) {
+      const price = this.#findSpelled(name, provider);
+      if (price) return price;
+    }
+    return null;
+  }
+
+  /** The price the user set for this model ID (or `provider/model`), without any catalog price. */
+  userPrice(model: string, provider?: string): ModelPrice | null {
+    return (
+      (provider ? this.#overrides.get(`${provider}/${model}`) : undefined) ??
+      this.#overrides.get(model) ??
+      null
+    );
+  }
+
+  #findSpelled(model: string, provider?: string): ModelPrice | null {
     const exact = this.#find(model, provider);
     if (exact) return exact;
     // A configured ID may differ from the catalog only in case, such as `Deepseek-v4-flash`;
@@ -256,6 +313,9 @@ export class ModelPriceLookup {
         ? listings.find(({ provider: listedBy }) => listedBy === vendor)
         : undefined;
     if (vendorListing) return entryPrice(vendorListing.entry);
+    // Nothing marks an official listing: the vendors' own listings are the official price, when
+    // they agree. Resellers alone, or vendors that disagree, are not guessed between.
+    if (officials.size === 0) return this.#vendorPrice(listings);
     const [resolved] = officials;
     if (resolved === undefined || officials.size !== 1) return null;
     const [official, officialEntry] = resolved;
@@ -266,6 +326,17 @@ export class ModelPriceLookup {
       officialEntry ??
       listings.find(({ provider: listedBy }) => listedBy === officialProvider)?.entry;
     return entry ? entryPrice(entry) : this.#vendorAliasPrice(official);
+  }
+
+  #vendorPrice(listings: ReadonlyArray<{ provider: string; entry: ModelPriceEntry }>) {
+    let found: ModelPrice | null = null;
+    for (const { provider, entry } of listings) {
+      if (!this.#vendors.has(provider)) continue;
+      const price = entryPrice(entry);
+      if (found && !samePrice(found, price)) return null;
+      found = price;
+    }
+    return found;
   }
 
   /**
@@ -358,6 +429,11 @@ export class ModelPriceCatalog {
   defaultPrice(model: string): ModelPrice | null {
     this.#defaultLookup ??= new ModelPriceLookup(this.#table);
     return this.#defaultLookup.find(model);
+  }
+
+  /** Search only the already loaded local table; never infer an automatic price alias. */
+  similarPrices(model: string): ReturnType<typeof suggestModelPrices> {
+    return suggestModelPrices(model, this.#table);
   }
 
   /** Loads the cached table and schedules a background refresh when it is stale. */

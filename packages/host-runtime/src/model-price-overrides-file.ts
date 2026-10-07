@@ -137,7 +137,7 @@ export async function handleModelPriceOverridesRequest(
 ): Promise<ModelPriceOverrides | ModelPriceDefaultResult> {
   if (method === MODEL_PRICE_DEFAULT_METHOD) {
     const { model } = parsed(modelPriceDefaultParamsSchema.safeParse(params ?? {}));
-    return { price: catalog.defaultPrice(model) };
+    return { price: catalog.defaultPrice(model), suggestions: catalog.similarPrices(model) };
   }
   const file = catalog.overridesPath;
   if (!file) throw new ModelPriceOverridesError("Custom prices are unavailable on this Host");

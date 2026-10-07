@@ -24,7 +24,7 @@ import {
 } from "./model-prices.js";
 
 /** Bump when a reader's output changes meaning, so cached parses are read again. */
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 5;
 const STALE_AFTER_MS = 10_000;
 const WARM_DELAY_MS = 3_000;
 /** At most one rewrite of a Harness's cache file per interval while its sessions keep growing. */
@@ -67,6 +67,9 @@ type CompactEntry = [
   number | null,
   string | null,
   string | null,
+  number | null,
+  number | null,
+  boolean,
 ];
 
 function compact(entry: HarnessUsageEntry): CompactEntry {
@@ -82,6 +85,9 @@ function compact(entry: HarnessUsageEntry): CompactEntry {
     entry.reasoningOutputTokens ?? null,
     entry.sessionId ?? null,
     entry.cwd ?? null,
+    entry.costUsd ?? null,
+    entry.credits ?? null,
+    entry.tokensUnknown === true,
   ];
 }
 
@@ -98,9 +104,9 @@ function interner(): (value: unknown) => unknown {
 }
 
 function expand(value: unknown, intern: (value: unknown) => unknown): HarnessUsageEntry | null {
-  if (!Array.isArray(value) || value.length !== 11) return null;
+  if (!Array.isArray(value) || value.length !== 14) return null;
   const [id, occurredAtMs, model, input, cached, written, written1h, output, reasoning] = value;
-  const [sessionId, cwd] = value.slice(9);
+  const [sessionId, cwd, costUsd, credits, tokensUnknown] = value.slice(9);
   return parseHarnessUsageEntry({
     id,
     occurredAtMs,
@@ -113,6 +119,9 @@ function expand(value: unknown, intern: (value: unknown) => unknown): HarnessUsa
     ...(reasoning !== null ? { reasoningOutputTokens: reasoning } : {}),
     ...(sessionId !== null ? { sessionId } : {}),
     ...(cwd !== null ? { cwd: intern(cwd) } : {}),
+    ...(costUsd !== null ? { costUsd } : {}),
+    ...(credits !== null ? { credits } : {}),
+    ...(tokensUnknown === true ? { tokensUnknown } : {}),
   });
 }
 
@@ -132,19 +141,6 @@ function shiftDate(date: string, days: number): string {
   const value = new Date(`${date}T12:00:00`);
   value.setDate(value.getDate() + days);
   return localDate(value.getTime());
-}
-
-/** The same local wall-clock time `days` calendar days away. */
-function shiftTime(ms: number, days: number): number {
-  const value = new Date(ms);
-  value.setDate(value.getDate() + days);
-  return value.getTime();
-}
-
-function daysBetween(from: string, to: string): number {
-  return Math.round(
-    (new Date(`${to}T12:00:00`).getTime() - new Date(`${from}T12:00:00`).getTime()) / 86_400_000,
-  );
 }
 
 /** A request once deduplicated, with its local calendar position worked out once. */
@@ -170,11 +166,17 @@ function emptyTotals(): UsageStatisticsTotals {
     reasoningOutputTokens: 0,
     costUsd: 0,
     unpricedRequests: 0,
+    unmeteredRequests: 0,
   };
 }
 
 function addEntry(totals: UsageStatisticsTotals, entry: HarnessUsageEntry, cost: number | null) {
   totals.requests += 1;
+  // Without token counts there is nothing to sum or price.
+  if (entry.tokensUnknown) {
+    totals.unmeteredRequests += 1;
+    return;
+  }
   totals.inputTokens += entry.inputTokens;
   totals.outputTokens += entry.outputTokens;
   totals.reasoningOutputTokens += entry.reasoningOutputTokens ?? 0;
@@ -270,6 +272,7 @@ export class UsageStatistics {
   #loaded: Promise<void> | null = null;
   #refreshing: Promise<void> | null = null;
   #refreshedAtMs = 0;
+  #modelLabels = new Map<string, Readonly<Record<string, string>>>();
   #progress = { sources: 0, read: 0 };
   #warm = false;
   #warmTimer: NodeJS.Timeout | undefined;
@@ -346,7 +349,28 @@ export class UsageStatistics {
       ids: { id: string; fingerprint: string }[];
     }> = [];
     this.#progress = { sources: 0, read: 0 };
+    this.#modelLabels.clear();
     for (const { harness, capability } of this.#sources?.() ?? []) {
+      try {
+        const labels = await capability.readModelLabels?.(signal);
+        if (labels)
+          this.#modelLabels.set(
+            harness,
+            Object.fromEntries(
+              Object.entries(labels).filter(
+                ([id, label]) =>
+                  id.length > 0 &&
+                  id.length <= 512 &&
+                  typeof label === "string" &&
+                  label.length > 0 &&
+                  label.length <= 512,
+              ),
+            ),
+          );
+      } catch {
+        if (signal.aborted) return;
+        // Optional display metadata must never prevent usage collection or pricing.
+      }
       try {
         const ids = [...(await capability.listSources(signal))];
         listed.push({ harness, capability, ids });
@@ -515,41 +539,42 @@ export class UsageStatistics {
     const modelFilter = params.model;
     const projectFilter = params.project;
 
-    // The window the totals cover, and the one just before it of equal length. A window that
-    // ends today ends now, so the previous one ends at the same time of day.
-    const windowFrom = day ?? from;
-    const windowTo = day ?? to;
-    let previous: { from: string; to: string; cutoffMs: number | null } | null = null;
-    if (windowFrom !== null) {
-      const length = daysBetween(windowFrom, windowTo) + 1;
-      previous = {
-        from: shiftDate(windowFrom, -length),
-        to: shiftDate(windowTo, -length),
-        cutoffMs: windowTo === to ? shiftTime(now, -length) : null,
-      };
-    }
-
     const prices = new Map<string, ModelPrice | null>();
+    const userPrices = new Map<string, ModelPrice | null>();
     let unlistedModel = false;
     const priceOf = (model: string | undefined): ModelPrice | null => {
       if (model === undefined) return null;
-      if (!prices.has(model)) {
-        const price = lookup.find(model);
-        prices.set(model, price);
-        if (price === null) unlistedModel = true;
-      }
+      if (!prices.has(model)) prices.set(model, lookup.find(model));
       return prices.get(model) ?? null;
+    };
+    const userPriceOf = (model: string | undefined): ModelPrice | null => {
+      if (model === undefined) return null;
+      if (!userPrices.has(model)) userPrices.set(model, lookup.userPrice(model));
+      return userPrices.get(model) ?? null;
+    };
+    // A price the user set for the model wins; then what the Harness recorded the request cost;
+    // then the list price.
+    const costOf = (entry: HarnessUsageEntry): number | null => {
+      if (entry.tokensUnknown) return null;
+      const userPrice = userPriceOf(entry.model);
+      if (userPrice) return usageEntryCostUsd(userPrice, entry);
+      if (entry.costUsd !== undefined) return entry.costUsd;
+      const price = priceOf(entry.model);
+      if (price === null && entry.model !== undefined) unlistedModel = true;
+      return usageEntryCostUsd(price, entry);
     };
 
     const harnesses = new Set<string>();
     const models = new Set<string | null>();
+    const modelLabels = new Map<string, { harness: string; model: string; label: string }>();
     const projects = new Set<string | null>();
     const totals = emptyTotals();
-    const previousTotals = emptyTotals();
     const daily = new Map<string, UsageStatisticsTotals>();
     const hourly = new Map<number, UsageStatisticsTotals>();
     const byHarness = new Map<string, UsageStatisticsTotals>();
     const byModel = new Map<string | null, UsageStatisticsTotals>();
+    const credits = new Map<string, NonNullable<UsageStatisticsResult["credits"]>[number]>();
+    const harnessPriced = new Map<string | null, number>();
     const byProject = new Map<string | null, UsageStatisticsTotals>();
     const sessions = new Map<
       string,
@@ -566,33 +591,41 @@ export class UsageStatistics {
 
     for (const indexed of this.#indexed()) {
       const { harness, entry, date } = indexed;
-      const current = inRange(date);
-      const earlier =
-        previous !== null &&
-        date >= previous.from &&
-        date <= previous.to &&
-        (previous.cutoffMs === null || entry.occurredAtMs <= previous.cutoffMs);
-      if (!current && !earlier) continue;
+      if (!inRange(date)) continue;
       const model = entry.model ?? null;
       const project = entry.cwd ?? null;
-      if (current) {
-        harnesses.add(harness);
-        models.add(model);
-        projects.add(project);
+      harnesses.add(harness);
+      models.add(model);
+      if (model !== null && modelLabels.size < 4096) {
+        const labels = this.#modelLabels.get(harness);
+        const label = labels && Object.hasOwn(labels, model) ? labels[model] : undefined;
+        modelLabels.set(`${harness}\u0000${model}`, { harness, model, label: label ?? model });
       }
+      projects.add(project);
       if (harnessFilter !== null && harness !== harnessFilter) continue;
       if (modelFilter !== undefined && model !== modelFilter) continue;
       if (projectFilter !== undefined && project !== projectFilter) continue;
-      const cost = usageEntryCostUsd(priceOf(entry.model), entry);
-      // With one day selected, the day before can be both the comparison and inside the range.
-      if (earlier) addEntry(previousTotals, entry, cost);
-      if (!current) continue;
+      const cost = costOf(entry);
       addEntry(bucket(daily, `${date}\u0000${harness}`), entry, cost);
       if (day !== null && date !== day) continue;
       addEntry(totals, entry, cost);
+      const creditsKey = JSON.stringify([harness, model]);
+      let creditGroup = credits.get(creditsKey);
+      if (!creditGroup) {
+        creditGroup = { harness, model, credits: 0, reportedRequests: 0, requests: 0 };
+        credits.set(creditsKey, creditGroup);
+      }
+      creditGroup.requests += 1;
+      if (entry.credits !== undefined) {
+        creditGroup.credits += entry.credits;
+        creditGroup.reportedRequests += 1;
+      }
       addEntry(bucket(hourly, indexed.weekday * 24 + indexed.hour), entry, cost);
       addEntry(bucket(byHarness, harness), entry, cost);
       addEntry(bucket(byModel, model), entry, cost);
+      if (entry.costUsd !== undefined && userPriceOf(entry.model) === null) {
+        harnessPriced.set(model, (harnessPriced.get(model) ?? 0) + 1);
+      }
       addEntry(bucket(byProject, project), entry, cost);
       if (entry.sessionId !== undefined) {
         const key = `${harness}\u0000${entry.sessionId}`;
@@ -646,16 +679,6 @@ export class UsageStatistics {
           right.costUsd - left.costUsd || tokensWithoutCache(right) - tokensWithoutCache(left),
       );
 
-    const sessionTokens = allSessions
-      .map((session) => tokensWithoutCache(session.totals))
-      .sort((left, right) => left - right);
-    const percentile = (share: number): number =>
-      sessionTokens.length === 0
-        ? 0
-        : (sessionTokens[
-            Math.min(sessionTokens.length - 1, Math.floor(sessionTokens.length * share))
-          ] ?? 0);
-
     // A model without a price may have been listed since the table was fetched.
     if (unlistedModel) this.#options.prices.missing();
 
@@ -688,9 +711,15 @@ export class UsageStatistics {
         models: [...models].sort(byName).slice(0, 4096),
         projects: [...projects].sort(byName).slice(0, 4096),
       },
+      modelLabels: [...modelLabels.values()],
+      credits: [...credits.values()]
+        .filter((row) => row.reportedRequests > 0)
+        .sort(
+          (left, right) =>
+            left.harness.localeCompare(right.harness) || byName(left.model, right.model),
+        )
+        .slice(0, 4096),
       totals,
-      previous:
-        previous === null ? null : { from: previous.from, to: previous.to, totals: previousTotals },
       daily: [...daily]
         .map(([key, value]) => {
           const [date = "", harness = ""] = key.split("\u0000");
@@ -704,14 +733,11 @@ export class UsageStatistics {
         .map(([slot, value]) => ({ weekday: Math.floor(slot / 24), hour: slot % 24, ...value }))
         .sort((left, right) => left.weekday - right.weekday || left.hour - right.hour),
       byHarness: grouped(byHarness, (name) => ({ harness: name })),
-      byModel: grouped(byModel, (name) => ({ model: name })).slice(0, 4096),
+      byModel: grouped(byModel, (name) => ({ model: name }))
+        .slice(0, 4096)
+        .map((row) => ({ ...row, harnessPricedRequests: harnessPriced.get(row.model) ?? 0 })),
       byProject: grouped(byProject, (name) => ({ project: name })).slice(0, 4096),
       sessions: sessionList,
-      sessionSummary: {
-        count: sessionTokens.length,
-        medianTokens: percentile(0.5),
-        p90Tokens: percentile(0.9),
-      },
     };
   }
 }

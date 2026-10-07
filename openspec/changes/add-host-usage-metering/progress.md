@@ -41,7 +41,7 @@ Adapter 约定：打开会话时先发布全部历史请求（`historical: true`
 ### 2.3 价格表
 
 - `packages/host-runtime/src/model-prices.ts`；快照 `model-prices.generated.ts` 由 `scripts/update-model-prices.mjs` 从 models.dev 生成（`npm run build:typescript && node packages/host-runtime/scripts/update-model-prices.mjs`）。启动时及运行中每小时检查，本地表超过 24 小时后台刷新到 `<数据目录>/pricing/models-dev.json`；遇到无价格模型时，价格表与上次尝试均超过 6 小时则提前刷新；失败静默。用户覆盖：`<数据目录>/pricing.json`（`input`/`output`/`cacheRead`/`cacheWrite`/`cacheWrite1h`，美元/百万 token），数据目录默认 `~/.codexhost`。
-- 查找顺序（不做模糊或前缀匹配）：用户覆盖 → `provider/model` 精确 → 模型 ID 唯一列出 → 多服务商时：所有 `canonical_model_id`（沿链解析到最终官方 ID）属于同一厂商且厂商自己列出该 ID 时用厂商价 → 官方条目价 → 官方条目缺失时用厂商以别名列出且价格一致的条目（如 DeepSeek 以 `deepseek-flash`、`deepseek-v4-flash` 列出 `deepseek-v4.1-flash`）→ 仅大小写不同时，所有能计价的写法价格一致才采用（如 `Deepseek-v4-flash`）。
+- 查找顺序（不做模糊或前缀匹配）：用户覆盖 → `provider/model` 精确 → 模型 ID 唯一列出 → 多服务商时：所有 `canonical_model_id`（沿链解析到最终官方 ID）属于同一厂商且厂商自己列出该 ID 时用厂商价 → 官方条目价 → 官方条目缺失时用厂商以别名列出且价格一致的条目（如 DeepSeek 以 `deepseek-flash`、`deepseek-v4-flash` 列出 `deepseek-v4.1-flash`）→ 所有报价均无官方标记时只用厂商报价（多个厂商须价格一致）→ 仅大小写不同时，所有能计价的写法价格一致才采用（如 `Deepseek-v4-flash`）→ 原名未命中时依次尝试去日期后缀、去推理强度后缀、版本号点号/短横线互换的写法。
 - 1 小时档缓存写入单价 = 输入价 × 2（`cacheWrite1hPrice`），取自 Claude Code 内置价格表 `promptCacheWrite1hTokens`；models.dev 只有 5 分钟档价格。
 
 ### 2.4 界面（`packages/renderer-extension/src/renderer-usage-control.ts`）

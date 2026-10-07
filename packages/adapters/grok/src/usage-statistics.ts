@@ -17,6 +17,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const USD_TICKS = 10_000_000_000;
+
 function count(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -86,6 +88,8 @@ export async function readGrokUsage(
       const cached = count(value.cachedReadTokens);
       const written = count(value.cacheCreationTokens ?? 0);
       const reasoning = count(value.reasoningTokens);
+      // What Grok recorded the turn cost, in xAI's ticks of 1e-10 USD.
+      const ticks = count(value.costUsdTicks);
       if (input === null || output === null || value.totalTokens !== input + output) continue;
       const cacheKnown = cached !== null && cached <= input && written === 0;
       entries.push(
@@ -100,6 +104,13 @@ export async function readGrokUsage(
             ...(reasoning !== null && reasoning <= output
               ? { reasoningOutputTokens: reasoning }
               : {}),
+            // A turn Grok marks incomplete has no cost of its own; it counts as free rather
+            // than as a model without a price.
+            ...(ticks !== null
+              ? { costUsd: ticks / USD_TICKS }
+              : usage.usageIsIncomplete === true
+                ? { costUsd: 0 }
+                : {}),
           },
           session,
         ),

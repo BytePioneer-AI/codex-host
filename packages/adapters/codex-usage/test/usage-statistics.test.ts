@@ -201,6 +201,24 @@ describe("Codex native counters", () => {
     expect(bare[0]).not.toHaveProperty("cwd");
   });
 
+  it("leaves out parent history a spawned subagent replays before its first turn", async () => {
+    const entries = await read([
+      meta(THREAD, { forked_from_id: "parent", timestamp: new Date(BASE).toISOString() }),
+      // Replayed at creation, just after the metadata, with the parent's cumulative totals.
+      count(tokens(1_000, 10), tokens(1_000, 10), 1),
+      count(tokens(3_000, 30), tokens(2_000, 20), 1),
+      context("own-turn", "priced-model"),
+      count(tokens(3_500, 35), tokens(500, 5), 5),
+    ]);
+    // Only the subagent's own request, as a delta from the replayed total.
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      model: "priced-model",
+      inputTokens: 500,
+      outputTokens: 5,
+    });
+  });
+
   it("excludes inherited fork history while keeping the child's own requests", async () => {
     const a = tokens(100, 10);
     const source = await file("child.jsonl", [

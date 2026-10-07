@@ -90,6 +90,21 @@ it("reads every message once per transcript, subagents included, dated by the fi
   ]);
 });
 
+it("reads fractional and zero native credits once per request, without inventing missing credits", async () => {
+  const file = path.join(home, "credits.jsonl");
+  const values = [1.25, 0, undefined, -1, "2"];
+  const rows = values.map((credit, index) => {
+    const value = JSON.parse(row(String(index), 1_000));
+    value.providerData.rawUsage.credit = credit;
+    return JSON.stringify(value);
+  });
+  await writeFile(file, [...rows, rows[0]].join("\n"));
+  const capability = createCodeBuddyUsageStatistics({ HOME: home }, CODEBUDDY_RUNTIME_PROFILE);
+  const entries = await capability.readSource(file, signal);
+  expect(entries.map((entry) => entry.credits)).toEqual([1.25, 0, undefined, undefined, undefined]);
+  expect(entries).toHaveLength(5);
+});
+
 it("attributes messages to the rows' session and working directory", async () => {
   const project = path.join(home, "projects", "work");
   await mkdir(project, { recursive: true });

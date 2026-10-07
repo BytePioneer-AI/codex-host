@@ -42,6 +42,9 @@ export async function readCodexRollouts(
   const counters = new CodexCounters();
   let model = "",
     cwd = "",
+    // Codex writes a turn_context before every turn's model calls. Usage seen before the first one
+    // is history a spawned subagent replays from its parent at creation, stamped with that time.
+    ownFrom: number | null = null,
     firstMeta = false,
     forkAt = 0,
     seen = 0;
@@ -95,6 +98,7 @@ export async function readCodexRollouts(
           break;
         }
         case "turn_context":
+          ownFrom ??= counters.entries.length;
           model = text(p.model) || model;
           counters.context("", text(p.turn_id), model);
           break;
@@ -135,7 +139,10 @@ export async function readCodexRollouts(
     }
   }
   if (!firstMeta) throw new Error("Codex rollout has no valid session metadata");
-  return counters.entries.flatMap((v) => {
+  return counters.entries.flatMap((v, index) => {
+    // Replayed history still feeds the counters above, so later deltas stay right; it is not
+    // a request of this thread. A rollout without any turn_context (older formats) keeps all.
+    if (ownFrom !== null && index < ownFrom) return [];
     // Explicit ownership survives copied histories. Legacy copies keep times before fork creation.
     if ((v.thread && v.thread !== thread) || (!v.thread && forkAt && v.at < forkAt)) return [];
     const [input, output, cached, written, reasoning] = v.usage.values;

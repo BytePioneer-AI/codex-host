@@ -8,8 +8,8 @@ import {
 
 export type Totals = UsageStatisticsTotals;
 /** What the trend, shares and session ranking measure. */
-export type Measure = "cost" | "tokens" | "cacheRead" | "requests";
-export const MEASURES: readonly Measure[] = ["cost", "tokens", "cacheRead", "requests"];
+export type Measure = "cost" | "tokens";
+export const MEASURES: readonly Measure[] = ["cost", "tokens"];
 
 export function fill(template: string, values: Record<string, string | number>): string {
   return template.replace(/\{(\w+)\}/gu, (match, name: string) =>
@@ -28,6 +28,7 @@ export function emptyTotals(): Totals {
     reasoningOutputTokens: 0,
     costUsd: 0,
     unpricedRequests: 0,
+    unmeteredRequests: 0,
   };
 }
 
@@ -41,6 +42,7 @@ export function addTotals(target: Totals, source: Totals): Totals {
   target.reasoningOutputTokens += source.reasoningOutputTokens;
   target.costUsd += source.costUsd;
   target.unpricedRequests += source.unpricedRequests;
+  target.unmeteredRequests += source.unmeteredRequests;
   return target;
 }
 
@@ -57,22 +59,8 @@ export function tokensWithoutCache(totals: Totals): number {
   return inputWithoutCache(totals) + totals.outputTokens;
 }
 
-/** Input whose cache split no Harness reported. */
-export function cacheUnknownInput(totals: Totals): number {
-  return totals.inputTokens - totals.cacheKnownInputTokens;
-}
-
 export function measured(totals: Totals, measure: Measure): number {
-  switch (measure) {
-    case "cost":
-      return totals.costUsd;
-    case "tokens":
-      return tokensWithoutCache(totals);
-    case "cacheRead":
-      return totals.cachedInputTokens;
-    case "requests":
-      return totals.requests;
-  }
+  return measure === "cost" ? totals.costUsd : tokensWithoutCache(totals);
 }
 
 /** USD with thousands separators once it reaches four digits. */
@@ -82,15 +70,25 @@ export function money(value: number): string {
     : formatRendererCost(value);
 }
 
-/** Every request unpriced: the cost is unknown, not zero. */
-export function allUnpriced(totals: Totals): boolean {
-  return totals.requests > 0 && totals.unpricedRequests === totals.requests;
+/** Every request lacks token counts in its storage: tokens and cost are unknown, not zero. */
+export function unmetered(totals: Totals): boolean {
+  return totals.requests > 0 && totals.unmeteredRequests === totals.requests;
 }
 
+/** Every request with token counts is unpriced: the cost is unknown, not zero. */
+export function allUnpriced(totals: Totals): boolean {
+  const metered = totals.requests - totals.unmeteredRequests;
+  return metered > 0 && totals.unpricedRequests === metered;
+}
+
+/** The priced cost; nothing priced or nothing metered at all is unknown, not zero. */
 export function cost(totals: Totals): string {
-  if (allUnpriced(totals)) return "—";
-  const value = money(totals.costUsd);
-  return totals.unpricedRequests > 0 ? `≥${value}` : value;
+  return unmetered(totals) || allUnpriced(totals) ? "—" : money(totals.costUsd);
+}
+
+/** A token count, or "—" when no request of the row reported any. */
+export function tokenCount(totals: Totals, value: number): string {
+  return unmetered(totals) ? "—" : formatRendererTokenCount(value);
 }
 
 export const count = formatRendererTokenCount;
@@ -180,10 +178,4 @@ export function datesBetween(from: string, to: string): string[] {
     day.setDate(day.getDate() + 1);
   }
   return dates;
-}
-
-/** Change against the previous period, or null when there is nothing to compare with. */
-export function change(current: number, previous: number): number | null {
-  if (!(previous > 0)) return null;
-  return (current - previous) / previous;
 }

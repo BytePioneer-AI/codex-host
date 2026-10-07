@@ -54,7 +54,7 @@ export interface TrendOptions {
   buckets: Bucket[];
   series: Series[];
   measure: Measure;
-  labels: Record<"cost" | "tokens" | "requests" | "hint", string>;
+  labels: Record<"cost" | "tokens" | "hint", string>;
   /** Bucket key that is selected, if any; other buckets dim. */
   selected: string | null;
   /** Called with a bucket key to select, or null to clear; absent when buckets cannot be picked. */
@@ -241,14 +241,6 @@ export function trendChart(document: Document, options: TrendOptions): HTMLEleme
             strong: measure === "tokens",
           },
         ),
-        tooltipLine(
-          document,
-          options.labels.requests,
-          formatMeasure("requests", bucket.totals.requests),
-          {
-            strong: measure === "requests",
-          },
-        ),
         ...(parts.length > 1
           ? [
               h(document, "div", { className: "console-usage-tooltip__divider" }),
@@ -343,7 +335,7 @@ export function hourlyChart(
     singleDay: boolean;
     locale: string;
     weekStartsOnMonday: boolean;
-    labels: Record<"cost" | "tokens" | "requests", string>;
+    labels: Record<"cost" | "tokens", string>;
   },
 ): HTMLElement {
   const { measure } = options;
@@ -371,9 +363,6 @@ export function hourlyChart(
         strong: measure === "tokens",
       },
     ),
-    tooltipLine(document, options.labels.requests, formatMeasure("requests", totals.requests), {
-      strong: measure === "requests",
-    }),
   ];
   const hourLabel = (hour: number): string => `${String(hour).padStart(2, "0")}:00`;
   const hover = (element: HTMLElement, title: string, totals: Totals): void => {
@@ -418,7 +407,7 @@ export function hourlyChart(
     weekdayName.format(new Date(2026, 9, 4 + weekday, 12));
   const order = options.weekStartsOnMonday ? [1, 2, 3, 4, 5, 6, 0] : [0, 1, 2, 3, 4, 5, 6];
   const grid = h(document, "div", { className: "console-usage-heatmap", role: "img" });
-  grid.setAttribute("aria-label", options.labels.requests);
+  grid.setAttribute("aria-label", options.labels.tokens);
   grid.append(h(document, "span", {}));
   for (let hour = 0; hour < 24; hour++) {
     grid.append(

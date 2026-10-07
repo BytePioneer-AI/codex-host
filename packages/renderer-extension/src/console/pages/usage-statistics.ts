@@ -10,6 +10,8 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { h } from "../dom.js";
+import { usageModelLabel } from "../usage/model-labels.js";
+import { costWithCredits } from "../usage/credits.js";
 import type { ConsoleMessages } from "../messages.js";
 import { createModelPricesDialog } from "../model-prices.js";
 import { createRendererSettingsIcon } from "../../settings/icons.js";
@@ -43,21 +45,19 @@ import {
   asDate,
   baseName,
   cacheHitRate,
-  cacheUnknownInput,
-  change,
   cost,
   count,
   datesBetween,
   emptyTotals,
   fill,
-  formatMeasure,
   inputWithoutCache,
   isoDate,
   measured,
-  money,
   percent,
   projectNames,
+  tokenCount,
   tokensWithoutCache,
+  unmetered,
   type Measure,
   type Totals,
 } from "../usage/format.js";
@@ -205,18 +205,15 @@ export function createUsageStatisticsPage(
 
       const save = (): void => writeView(view);
       const harnessName = (id: string): string => names.get(id) ?? id;
-      const modelName = (key: string): string => (key === UNKNOWN ? messages.unknownModel : key);
+      const modelName = (key: string, harness = view.harness): string =>
+        key === UNKNOWN
+          ? messages.unknownModel
+          : usageModelLabel(key, result?.modelLabels, harness);
       let projectLabel = new Map<string, string>();
       const projectName = (key: string): string =>
         key === UNKNOWN ? messages.unknownProject : (projectLabel.get(key) ?? baseName(key));
       const measureLabel = (measure: Measure): string =>
-        measure === "cost"
-          ? messages.cost
-          : measure === "tokens"
-            ? messages.tokens
-            : measure === "cacheRead"
-              ? messages.cacheRead
-              : messages.requests;
+        measure === "cost" ? messages.cost : messages.tokens;
       const dateFormat = (options: Intl.DateTimeFormatOptions) =>
         new Intl.DateTimeFormat(locale, options);
       const shortDate = dateFormat({ month: "short", day: "numeric" });
@@ -559,177 +556,24 @@ export function createUsageStatisticsPage(
         );
       }
 
-      /** Days the figures cover, for per-day averages. */
-      function windowDays(data: UsageStatisticsResult): number {
-        if (data.filters.date) return 1;
-        const first = data.from ?? data.daily[0]?.date ?? data.to;
-        return Math.max(1, datesBetween(first, data.to).length);
-      }
-
-      function delta(
-        data: UsageStatisticsResult,
-        value: (totals: Totals) => number,
-        format: (value: number) => string,
-      ): HTMLElement | null {
-        if (!data.previous) return null;
-        const before = value(data.previous.totals);
-        const ratio = change(value(data.totals), before);
-        const title = fill(messages.deltaTitle, {
-          from: shortDate.format(asDate(data.previous.from)),
-          to: shortDate.format(asDate(data.previous.to)),
-          value: format(before),
-        });
-        if (ratio === null) {
-          return h(
-            document,
-            "span",
-            { className: "console-usage-delta", title },
-            messages.deltaNone,
-          );
-        }
-        const arrow = ratio > 0.0005 ? "↑" : ratio < -0.0005 ? "↓" : "→";
-        return h(
-          document,
-          "span",
-          { className: "console-usage-delta", title },
-          fill(messages.delta, { value: `${arrow}${percent(Math.abs(ratio))}` }),
-        );
-      }
-
-      function tile(
-        key: string,
-        label: string,
-        value: string,
-        details: Array<Node | string | null>,
-        options: { note?: string; title?: string } = {},
-      ): HTMLElement {
-        return h(
-          document,
-          "div",
-          { className: "console-usage-tile", "data-tile": key },
-          h(
-            document,
-            "span",
-            { className: "console-usage-tile__label" },
-            label,
-            options.note ? h(document, "small", {}, options.note) : null,
-          ),
-          h(document, "strong", { title: options.title }, value),
-          ...details
-            .filter((detail): detail is Node | string => !!detail)
-            .map((detail) =>
-              typeof detail === "string"
-                ? h(document, "span", { className: "console-usage-tile__detail" }, detail)
-                : detail,
-            ),
-        );
-      }
-
+      /** Three figures, each a label and one number: cost, tokens without cache, cache hits. */
       function tiles(data: UsageStatisticsResult): HTMLElement {
         const totals = data.totals;
-        const days = windowDays(data);
-        const perDay = (text: string): string | null =>
-          days > 1 ? fill(messages.perDay, { value: text }) : null;
-        const unpricedLink =
-          totals.unpricedRequests > 0
-            ? focusKey(
-                h(
-                  document,
-                  "button",
-                  { type: "button", className: "console-usage-link console-usage-tile__detail" },
-                  `${fill(messages.unpriced, { count: count(totals.unpricedRequests) })} →`,
-                ),
-                "tile:unpriced",
-              )
-            : null;
-        unpricedLink?.addEventListener("click", () => {
-          unpricedOnly = true;
-          tables.model.expanded = true;
-          render();
-          const toggle = body.querySelector<HTMLElement>('[data-focus-key="model:unpriced"]');
-          toggle?.closest("section")?.scrollIntoView({ behavior: "smooth", block: "start" });
-          toggle?.focus({ preventScroll: true });
-        });
-        const projects = data.byProject.filter((row) => row.project !== null);
-        const topProject = [...projects].sort(
-          (left, right) => tokensWithoutCache(right) - tokensWithoutCache(left),
-        )[0];
-        const allTokens = tokensWithoutCache(totals);
-        const unknownCache = cacheUnknownInput(totals);
-        const lowerBound = totals.unpricedRequests > 0 && !allUnpriced(totals);
+        const tile = (key: string, label: string, value: string): HTMLElement =>
+          h(
+            document,
+            "div",
+            { className: "console-usage-tile", "data-tile": key },
+            h(document, "span", { className: "console-usage-tile__label" }, label),
+            h(document, "strong", {}, value),
+          );
         return h(
           document,
           "div",
           { className: "console-usage-tiles" },
-          tile(
-            "cost",
-            messages.cost,
-            cost(totals),
-            [
-              unpricedLink,
-              allUnpriced(totals)
-                ? null
-                : perDay(`${lowerBound ? "≥" : ""}${money(totals.costUsd / days)}`),
-              delta(data, (value) => value.costUsd, money),
-            ],
-            lowerBound
-              ? { title: fill(messages.lowerBound, { count: totals.unpricedRequests }) }
-              : {},
-          ),
-          tile(
-            "tokens",
-            messages.tokens,
-            count(allTokens),
-            [
-              fill(messages.tokensDetail, {
-                input: count(inputWithoutCache(totals)),
-                output: count(totals.outputTokens),
-              }),
-              unknownCache > 0
-                ? h(
-                    document,
-                    "span",
-                    { className: "console-usage-tile__detail console-usage-tile__warn" },
-                    fill(messages.cacheUnknown, { tokens: count(unknownCache) }),
-                  )
-                : perDay(count(allTokens / days)),
-              delta(data, tokensWithoutCache, count),
-            ],
-            { note: messages.tokensNote, title: messages.tokensNote },
-          ),
-          tile("cache", messages.cacheRead, count(totals.cachedInputTokens), [
-            fill(messages.cacheDetail, {
-              rate: cacheHitRate(totals),
-              write: count(totals.cacheWriteInputTokens),
-            }),
-            delta(data, (value) => value.cachedInputTokens, count),
-          ]),
-          tile("requests", messages.requests, count(totals.requests), [
-            perDay(count(totals.requests / days)),
-            delta(data, (value) => value.requests, count),
-          ]),
-          tile("projects", messages.projects, String(projects.length), [
-            topProject && allTokens > 0
-              ? fill(messages.projectsDetail, {
-                  name: projectName(keyOf(topProject.project)),
-                  share: percent(tokensWithoutCache(topProject) / allTokens),
-                })
-              : null,
-          ]),
-          tile(
-            "sessions",
-            messages.sessions,
-            count(data.sessionSummary.count),
-            [
-              data.sessionSummary.count > 0
-                ? fill(messages.sessionsDetail, {
-                    median: count(data.sessionSummary.medianTokens),
-                    p90: count(data.sessionSummary.p90Tokens),
-                  })
-                : null,
-            ],
-            { title: messages.sessionsNote },
-          ),
+          tile("cost", messages.cost, cost(totals)),
+          tile("tokens", messages.tokenUsage, count(tokensWithoutCache(totals))),
+          tile("cache", messages.cacheHitRate, cacheHitRate(totals)),
         );
       }
 
@@ -845,15 +689,7 @@ export function createUsageStatisticsPage(
             document,
             "div",
             { className: "console-panel__header" },
-            h(
-              document,
-              "h2",
-              { className: "console-panel__title" },
-              messages.trend,
-              view.measure === "tokens"
-                ? h(document, "small", { className: "console-muted" }, ` · ${messages.tokensNote}`)
-                : null,
-            ),
+            h(document, "h2", { className: "console-panel__title" }, messages.trend),
             controls,
           ),
           trendChart(document, {
@@ -864,7 +700,6 @@ export function createUsageStatisticsPage(
             labels: {
               cost: messages.cost,
               tokens: messages.tokens,
-              requests: messages.requests,
               hint: messages.chartHint,
             },
             selected: granularity === "day" ? date : null,
@@ -882,6 +717,7 @@ export function createUsageStatisticsPage(
       }
 
       function share(totals: Totals, whole: number): Node | string {
+        if (unmetered(totals)) return "—";
         if (view.measure === "cost" && allUnpriced(totals)) {
           return h(
             document,
@@ -909,7 +745,55 @@ export function createUsageStatisticsPage(
       }
 
       /** Columns shared by the Harness, model and project tables. */
-      function figureColumns<Row extends Totals>(whole: number): Column<Row>[] {
+      function creditCost(
+        row: Totals,
+        credits: UsageStatisticsResult["credits"],
+        harness = result?.filters.harness ?? null,
+      ): HTMLElement {
+        const value = costWithCredits(row, credits, {
+          locale,
+          harnessName,
+          unpriced: messages.unpricedBadge,
+          harness,
+        });
+        return h(
+          document,
+          "span",
+          {
+            className: "console-usage-cost",
+            title:
+              value.reportedRequests > 0
+                ? `${messages.nativeCreditsNote}\n${messages.creditsCoverage}: ${value.reportedRequests} / ${row.requests}`
+                : undefined,
+          },
+          value.primary === null
+            ? null
+            : h(document, "span", { className: "console-usage-cost__primary" }, value.primary),
+          ...value.credits.map(({ label, amount }) =>
+            h(
+              document,
+              "span",
+              {
+                className: `console-usage-cost__credit${value.primary !== null ? " is-secondary" : ""}`,
+              },
+              label === null
+                ? null
+                : h(
+                    document,
+                    "span",
+                    { className: "console-usage-cost__source", title: label },
+                    label,
+                  ),
+              h(document, "span", { className: "console-usage-cost__amount" }, amount),
+            ),
+          ),
+        );
+      }
+
+      function figureColumns<Row extends Totals>(
+        whole: number,
+        costCell: (row: Row) => string | HTMLElement = cost,
+      ): Column<Row>[] {
         return [
           {
             key: "share",
@@ -930,19 +814,19 @@ export function createUsageStatisticsPage(
             label: messages.input,
             title: messages.tokensNote,
             sort: inputWithoutCache,
-            cell: (row) => count(inputWithoutCache(row)),
+            cell: (row) => tokenCount(row, inputWithoutCache(row)),
           },
           {
             key: "cacheRead",
             label: messages.cacheRead,
             sort: (row) => row.cachedInputTokens,
-            cell: (row) => count(row.cachedInputTokens),
+            cell: (row) => tokenCount(row, row.cachedInputTokens),
           },
           {
             key: "output",
             label: messages.output,
             sort: (row) => row.outputTokens,
-            cell: (row) => count(row.outputTokens),
+            cell: (row) => tokenCount(row, row.outputTokens),
           },
           {
             key: "hit",
@@ -957,7 +841,7 @@ export function createUsageStatisticsPage(
             key: "cost",
             label: messages.cost,
             sort: (row) => (allUnpriced(row) ? -1 : row.costUsd),
-            cell: (row) => cost(row),
+            cell: costCell,
           },
         ];
       }
@@ -1019,11 +903,12 @@ export function createUsageStatisticsPage(
         rows: Row[],
         name: Column<Row>,
         selected: (row: Row) => boolean,
+        costCell?: (row: Row) => string | HTMLElement,
       ): HTMLElement {
         const whole = rows.reduce((total, row) => total + measured(row, view.measure), 0);
         return dataTable(document, {
           key,
-          columns: [name, ...figureColumns<Row>(whole)],
+          columns: [name, ...figureColumns<Row>(whole, costCell)],
           rows,
           state: tables[key],
           limit: TABLE_LIMIT,
@@ -1051,6 +936,12 @@ export function createUsageStatisticsPage(
               cell: (row) => rowFilter("harness", row.harness, harnessName(row.harness)),
             },
             (row) => view.harness === row.harness,
+            (row) =>
+              creditCost(
+                row,
+                data.credits?.filter((entry) => entry.harness === row.harness),
+                row.harness,
+              ),
           ),
         );
       }
@@ -1094,10 +985,15 @@ export function createUsageStatisticsPage(
                 const cell = h(
                   document,
                   "span",
-                  { className: "console-usage-name" },
+                  { className: "console-usage-name", title: row.model ?? messages.unknownModel },
                   rowFilter("model", key, modelName(key)),
                 );
                 if (row.model === null && row.unpricedRequests === 0) return cell;
+                // Priced by what the Harness recorded (Grok): there is no price here to set or
+                // edit, and a set price would replace every recorded cost.
+                if (row.harnessPricedRequests > 0) return cell;
+                // No token counts at all (Qoder): a price would have nothing to multiply.
+                if (unmetered(row)) return cell;
                 const actions = h(document, "span", { className: "console-usage-unpriced" });
                 if (row.unpricedRequests > 0) {
                   actions.append(
@@ -1128,6 +1024,11 @@ export function createUsageStatisticsPage(
               },
             },
             (row) => view.model === keyOf(row.model),
+            (row) =>
+              creditCost(
+                row,
+                data.credits?.filter((entry) => entry.model === row.model),
+              ),
           ),
           toggle,
         );
@@ -1168,7 +1069,7 @@ export function createUsageStatisticsPage(
             singleDay,
             locale,
             weekStartsOnMonday: !locale.startsWith("en"),
-            labels: { cost: messages.cost, tokens: messages.tokens, requests: messages.requests },
+            labels: { cost: messages.cost, tokens: messages.tokens },
           }),
           h(document, "span", { className: "console-muted console-usage-zone" }, zone),
         );
@@ -1226,8 +1127,8 @@ export function createUsageStatisticsPage(
               row.models.length === 0
                 ? messages.unknownModel
                 : row.models.length === 1
-                  ? (row.models[0] ?? "")
-                  : `${row.models[0] ?? ""} +${row.models.length - 1}`,
+                  ? modelName(row.models[0] ?? "", row.harness)
+                  : `${modelName(row.models[0] ?? "", row.harness)} +${row.models.length - 1}`,
           },
           {
             key: "last",
@@ -1241,9 +1142,7 @@ export function createUsageStatisticsPage(
             sort: (row) =>
               view.measure === "cost" && allUnpriced(row) ? -1 : measured(row, view.measure),
             cell: (row) =>
-              view.measure === "cost"
-                ? cost(row)
-                : formatMeasure(view.measure, measured(row, view.measure)),
+              view.measure === "cost" ? cost(row) : tokenCount(row, measured(row, view.measure)),
           },
           ...(view.measure === "tokens"
             ? []
@@ -1253,7 +1152,7 @@ export function createUsageStatisticsPage(
                   label: messages.tokens,
                   title: messages.tokensNote,
                   sort: tokensWithoutCache,
-                  cell: (row: UsageStatisticsSession) => count(tokensWithoutCache(row)),
+                  cell: (row: UsageStatisticsSession) => tokenCount(row, tokensWithoutCache(row)),
                 },
               ]),
           ...(view.measure === "cost"

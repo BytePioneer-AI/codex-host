@@ -47,6 +47,11 @@ export const usageStatisticsTotalsSchema = z.strictObject({
   costUsd: z.number().finite().min(0),
   /** Requests without a price (or the cache data the price needs); not in `costUsd`. */
   unpricedRequests: count,
+  /**
+   * Requests whose storage gave no token counts: counted as requests, with neither tokens nor
+   * cost, and not as unpriced.
+   */
+  unmeteredRequests: count,
 });
 
 const totals = usageStatisticsTotalsSchema.shape;
@@ -86,15 +91,30 @@ export const usageStatisticsResultSchema = z.strictObject({
     models: z.array(model.nullable()).max(4096),
     projects: z.array(project.nullable()).max(4096),
   }),
+  /** Current display metadata, scoped by Harness. Never a pricing or filter identity.
+   * Optional for older Hosts; missing/conflicting labels fall back to the native model ID.
+   */
+  modelLabels: z
+    .array(z.strictObject({ harness, model, label: model }))
+    .max(4096)
+    .optional(),
+  /** Native credits, all filters applied, never combined across Harnesses or treated as USD.
+   * Only groups with at least one reported value appear; reportedRequests exposes partial data.
+   */
+  credits: z
+    .array(
+      z.strictObject({
+        harness,
+        model: model.nullable(),
+        credits: z.number().finite().min(0),
+        reportedRequests: count,
+        requests: count,
+      }),
+    )
+    .max(4096)
+    .optional(),
   /** All filters applied. */
   totals: usageStatisticsTotalsSchema,
-  /**
-   * The same filters over the window of equal length just before; a window that ends now is
-   * compared with the same elapsed time. Null for all time.
-   */
-  previous: z
-    .strictObject({ from: localDate, to: localDate, totals: usageStatisticsTotalsSchema })
-    .nullable(),
   /** Each date and Harness of the range: every filter except the day. */
   daily: z.array(z.strictObject({ date: localDate, harness, ...totals })).max(200_000),
   /** Local weekday (0 = Sunday) and hour, all filters applied. */
@@ -108,19 +128,22 @@ export const usageStatisticsResultSchema = z.strictObject({
     )
     .max(168),
   byHarness: z.array(z.strictObject({ harness, ...totals })).max(256),
-  byModel: z.array(z.strictObject({ model: model.nullable(), ...totals })).max(4096),
+  byModel: z
+    .array(
+      z.strictObject({
+        model: model.nullable(),
+        ...totals,
+        /** Requests priced by what the Harness recorded they cost, not by a price list. */
+        harnessPricedRequests: count,
+      }),
+    )
+    .max(4096),
   byProject: z.array(z.strictObject({ project: project.nullable(), ...totals })).max(4096),
   /**
    * The sessions that spent the most, by cost and by tokens without cache, all filters applied;
    * requests without a native session are not listed here but count everywhere else.
    */
   sessions: z.array(usageStatisticsSessionSchema).max(100),
-  /** Every attributed session, all filters applied; tokens are without cache. */
-  sessionSummary: z.strictObject({
-    count,
-    medianTokens: count,
-    p90Tokens: count,
-  }),
 });
 
 export type UsageStatisticsParams = z.infer<typeof usageStatisticsParamsSchema>;

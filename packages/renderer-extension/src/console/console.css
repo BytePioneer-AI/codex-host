@@ -622,6 +622,73 @@
   min-width: 0;
 }
 
+.console-model-price-suggestions {
+  display: grid;
+  gap: 10px;
+  max-height: 260px;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  overscroll-behavior-y: contain;
+  border-top: 1px solid var(--settings-border);
+  padding: 12px 10px 0 0;
+}
+
+/* Explicit Chromium scrollbar styling keeps the affordance visible on macOS,
+   rather than inheriting the system's transient overlay scrollbar. */
+.console-model-price-suggestions::-webkit-scrollbar {
+  width: 6px;
+}
+
+.console-model-price-suggestions::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--settings-text) 5%, transparent);
+  border-radius: 999px;
+}
+
+.console-model-price-suggestions::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--settings-text) 28%, transparent);
+  border-radius: 999px;
+  min-height: 32px;
+}
+
+.console-model-price-suggestions::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--settings-text) 42%, transparent);
+}
+
+.console-model-price-suggestions h3,
+.console-model-price-suggestions p {
+  margin: 0;
+}
+
+.console-model-price-suggestion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--settings-border);
+  overflow-wrap: anywhere;
+}
+
+.console-model-price-official {
+  display: inline-block;
+  margin-inline-start: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--settings-border);
+  border-radius: 4px;
+  color: var(--settings-text);
+  background: color-mix(in srgb, var(--settings-text) 6%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.console-model-price-suggestion > div {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
 .console-model-price__error:empty {
   display: none;
 }
@@ -1287,11 +1354,54 @@ button.console-usage-legend__item:hover {
 }
 
 .console-usage-table tbody th {
+  min-width: 160px;
   max-width: 260px;
   text-align: left;
   font-weight: 500;
   white-space: normal;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+/* Native credits can contain several Harness names. Bound only this text, not
+   every numeric column, so a long value cannot widen and clip the entire table. */
+.console-usage-cost {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  max-width: 240px;
+  vertical-align: middle;
+}
+
+.console-usage-cost__primary {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.console-usage-cost__credit {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.console-usage-cost__credit.is-secondary {
+  color: var(--settings-muted);
+  font-size: 11px;
+}
+
+.console-usage-cost__source {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-usage-cost__amount {
+  flex: none;
+  white-space: nowrap;
 }
 
 .console-usage-table thead th:first-child {
@@ -1378,7 +1488,8 @@ th[aria-sort] .console-usage-sort__mark {
   color: inherit;
   font: inherit;
   text-align: left;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+  word-break: normal;
   background: none;
   border: 0;
   cursor: pointer;

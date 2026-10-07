@@ -84,6 +84,117 @@ async function settledGet(stats: UsageStatistics, range: "today" | "7d" | "all" 
 }
 
 describe("UsageStatistics", () => {
+  it("keeps native credits separate per Harness/model, filtered, deduplicated and cached", async () => {
+    const a = entry("a", { model: "auto", credits: 1.25, cwd: "/project" });
+    const storage = new FakeStorage(
+      new Map([
+        [
+          "one",
+          {
+            fingerprint: "1",
+            entries: [
+              a,
+              entry("zero", { model: "auto", credits: 0 }),
+              entry("unknown", { model: "auto" }),
+            ],
+          },
+        ],
+        ["fork", { fingerprint: "1", entries: [a] }],
+      ]),
+    );
+    const sources = () => [
+      { harness: "workbuddy", capability: storage },
+      {
+        harness: "codebuddy",
+        capability: new FakeStorage(
+          new Map([
+            ["two", { fingerprint: "1", entries: [entry("a", { model: "auto", credits: 8 })] }],
+          ]),
+        ),
+      },
+    ];
+    const stats = statistics();
+    stats.attach(sources);
+    const result = await settledGet(stats);
+    expect(result.credits).toEqual([
+      { harness: "codebuddy", model: "auto", credits: 8, reportedRequests: 1, requests: 1 },
+      { harness: "workbuddy", model: "auto", credits: 1.25, reportedRequests: 2, requests: 3 },
+    ]);
+    expect(result.totals).toMatchObject({ requests: 4, costUsd: 0, unpricedRequests: 4 });
+    expect(
+      (await stats.get({ range: "all", harness: "workbuddy", project: "/project" })).credits,
+    ).toEqual([
+      { harness: "workbuddy", model: "auto", credits: 1.25, reportedRequests: 1, requests: 1 },
+    ]);
+    const restarted = statistics(NOW + 60_000);
+    restarted.attach(sources);
+    expect((await settledGet(restarted)).credits).toEqual(result.credits);
+    expect(storage.reads).toEqual(["one", "fork"]);
+    stats.close();
+    restarted.close();
+  });
+
+  it("refreshes display labels independently of requests and prices, scoped by Harness", async () => {
+    let now = NOW;
+    let label = "priced-model";
+    let fail = false;
+    const storage = new FakeStorage(
+      new Map([
+        [
+          "one",
+          {
+            fingerprint: "1",
+            entries: [entry("a", { model: "internal-model" })],
+          },
+        ],
+      ]),
+    );
+    const capability: HarnessUsageStatisticsCapability = {
+      listSources: () => storage.listSources(),
+      readSource: (id) => storage.readSource(id),
+      readModelLabels: async () => {
+        if (fail) throw new Error("metadata unavailable");
+        return { "internal-model": label };
+      },
+    };
+    const stats = new UsageStatistics({
+      directory: path.join(directory, "usage-statistics"),
+      prices: new ModelPriceCatalog({ directory }),
+      now: () => now,
+    });
+    stats.attach(() => [
+      { harness: "qoder", capability },
+      {
+        harness: "qoder-cn",
+        capability: {
+          ...capability,
+          readModelLabels: async () => ({ "internal-model": "Different Name" }),
+        },
+      },
+    ]);
+    const first = await settledGet(stats);
+    expect(first.modelLabels).toEqual([
+      { harness: "qoder", model: "internal-model", label: "priced-model" },
+      { harness: "qoder-cn", model: "internal-model", label: "Different Name" },
+    ]);
+    expect(first.byModel).toMatchObject([
+      { model: "internal-model", requests: 2, unpricedRequests: 2, costUsd: 0 },
+    ]);
+    label = "Renamed";
+    now += 60_000;
+    const next = await settledGet(stats);
+    expect(next.modelLabels?.[0]?.label).toBe("Renamed");
+    expect(storage.reads).toEqual(["one", "one"]);
+    expect(next.totals).toEqual(first.totals);
+    fail = true;
+    now += 60_000;
+    const fallback = await settledGet(stats);
+    expect(fallback.modelLabels?.[0]?.label).toBe("internal-model");
+    expect(fallback.failures).toEqual([]);
+    expect(fallback.totals).toEqual(first.totals);
+    stats.close();
+  });
+
   it("keeps session attribution through the on-disk cache", async () => {
     const storage = new FakeStorage(
       new Map([
@@ -161,6 +272,81 @@ describe("UsageStatistics", () => {
     expect(missing).not.toHaveBeenCalled();
   });
 
+  it("uses the cost a Harness recorded unless the user set a price for the model", async () => {
+    const prices = new ModelPriceCatalog({ directory });
+    const missing = vi.spyOn(prices, "missing");
+    const stats = new UsageStatistics({
+      directory: path.join(directory, "usage-statistics"),
+      prices,
+      now: () => NOW,
+    });
+    const entries = [
+      // Not in any price table: its recorded cost is its cost.
+      entry("native", { model: "grok-4.6-build", costUsd: 0.25 }),
+      // The user's price for priced-model wins over a recorded cost.
+      entry("overridden", { costUsd: 99 }),
+    ];
+    stats.attach(() => [
+      {
+        harness: "grok",
+        capability: new FakeStorage(new Map([["one", { fingerprint: "1", entries }]])),
+      },
+    ]);
+    const result = await settledGet(stats);
+    expect(
+      result.byModel.map((row) => [
+        row.model,
+        row.costUsd,
+        row.unpricedRequests,
+        row.harnessPricedRequests,
+      ]),
+    ).toEqual([
+      // The user's price applies: not priced by the Harness's record.
+      ["priced-model", 3, 0, 0],
+      ["grok-4.6-build", 0.25, 0, 1],
+    ]);
+    // Priced by its own record: no early fetch of the price table.
+    expect(missing).not.toHaveBeenCalled();
+  });
+
+  it("counts requests without token counts as unmetered: no tokens, no cost, not unpriced", async () => {
+    const prices = new ModelPriceCatalog({ directory });
+    const missing = vi.spyOn(prices, "missing");
+    const stats = new UsageStatistics({
+      directory: path.join(directory, "usage-statistics"),
+      prices,
+      now: () => NOW,
+    });
+    const entries = [
+      entry("credits-only", {
+        model: "qfmodel",
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        tokensUnknown: true,
+      }),
+      entry("metered"),
+    ];
+    stats.attach(() => [
+      {
+        harness: "qoder",
+        capability: new FakeStorage(new Map([["one", { fingerprint: "1", entries }]])),
+      },
+    ]);
+    const result = await settledGet(stats);
+    expect(result.totals).toMatchObject({ requests: 2, unmeteredRequests: 1, unpricedRequests: 0 });
+    expect(result.byModel.find((row) => row.model === "qfmodel")).toMatchObject({
+      requests: 1,
+      unmeteredRequests: 1,
+      unpricedRequests: 0,
+      costUsd: 0,
+      inputTokens: 0,
+    });
+    // An unknown model with no tokens is not a reason to fetch prices early.
+    expect(missing).not.toHaveBeenCalled();
+  });
+
   it("does not treat unknown cache counts or cache prices as zero", () => {
     const price = { input: 1, output: 2 };
     expect(usageEntryCostUsd(price, entry("x", { cachedInputTokens: undefined }))).toBeNull();
@@ -189,7 +375,7 @@ describe("UsageStatistics", () => {
     stats.attach(() => [{ harness: "claude-code", capability: storage }]);
     const first = await settledGet(stats);
     expect(storage.reads).toEqual(["one", "two"]);
-    expect(await readdir(path.join(directory, "usage-statistics", "v2"))).toEqual([
+    expect(await readdir(path.join(directory, "usage-statistics", "v5"))).toEqual([
       "claude-code.json",
     ]);
 
@@ -212,7 +398,7 @@ describe("UsageStatistics", () => {
     const stats = statistics();
     stats.attach(() => [{ harness: "pi", capability: storage }]);
     const before = await settledGet(stats);
-    await writeFile(path.join(directory, "usage-statistics", "v2", "pi.json"), "{broken");
+    await writeFile(path.join(directory, "usage-statistics", "v5", "pi.json"), "{broken");
     const again = statistics();
     again.attach(() => [{ harness: "pi", capability: storage }]);
     expect((await settledGet(again)).totals).toEqual(before.totals);
@@ -342,26 +528,6 @@ describe("UsageStatistics queries", () => {
     expect(noProject.byHarness.map((row) => row.harness)).toEqual(["codex"]);
   });
 
-  it("compares with the window just before, up to the same time of day when it ends now", async () => {
-    const stats = await seeded([
-      entry("today", { occurredAtMs: NOW }),
-      // Yesterday before and after this time of day: only the earlier one is comparable.
-      entry("yesterday-early", { occurredAtMs: NOW - 24 * HOUR - HOUR }),
-      entry("yesterday-late", { occurredAtMs: NOW - 24 * HOUR + HOUR }),
-      entry("week-ago", { occurredAtMs: NOW - 8 * DAY }),
-    ]);
-    const today = await stats.get({ range: "today" });
-    expect(today.previous).toMatchObject({
-      from: "2026-10-04",
-      to: "2026-10-04",
-      totals: { requests: 1 },
-    });
-    const week = await stats.get({ range: "7d" });
-    expect(week.previous).toMatchObject({ from: "2026-09-22", to: "2026-09-28" });
-    expect(week.previous?.totals.requests).toBe(1);
-    expect((await stats.get({ range: "all" })).previous).toBeNull();
-  });
-
   it("narrows to one day while the daily series keeps the whole range", async () => {
     const stats = await seeded([
       entry("today", { occurredAtMs: NOW }),
@@ -372,8 +538,6 @@ describe("UsageStatistics queries", () => {
     expect(result.filters.date).toBe("2026-10-04");
     expect(result.totals.requests).toBe(1);
     expect(result.daily.map((row) => row.date)).toEqual(["2026-10-03", "2026-10-04", "2026-10-05"]);
-    // A selected past day is compared with the whole day before, itself inside the range.
-    expect(result.previous).toMatchObject({ from: "2026-10-03", totals: { requests: 1 } });
     // A date outside the range is ignored rather than returning nothing.
     expect((await stats.get({ range: "today", date: "2026-10-01" })).filters.date).toBeNull();
   });
@@ -422,11 +586,5 @@ describe("UsageStatistics queries", () => {
     });
     // Requests without a session still count everywhere else.
     expect(result.totals.requests).toBe(4);
-    // pricey: 4M tokens without cache; big: 18M.
-    expect(result.sessionSummary).toEqual({
-      count: 2,
-      medianTokens: 18_000_000,
-      p90Tokens: 18_000_000,
-    });
   });
 });

@@ -47,6 +47,10 @@ export async function readCodeBuddyUsage(
     const request = providerUsageRequest(id, data, false);
     const entry = request && at !== null && usageEntryFromRequest(request, at);
     if (entry) {
+      const credits = record(data.rawUsage).credit;
+      if (typeof credits === "number" && Number.isFinite(credits) && credits >= 0) {
+        entry.credits = credits;
+      }
       entries.push(
         withUsageSession(entry, {
           sessionId: typeof sessionId === "string" ? sessionId : undefined,

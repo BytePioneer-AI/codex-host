@@ -51,8 +51,20 @@ export const modelPriceDefaultParamsSchema = z.strictObject({
   model: modelPriceKeySchema,
 });
 
+export const modelPriceSuggestionSchema = z.strictObject({
+  /** Verified from catalog canonical links, not inferred from names or equal prices. */
+  official: z.boolean().optional(),
+  canonicalModelId: z.string().min(1).optional(),
+  provider: z.string().min(1).max(512),
+  model: z.string().min(1).max(512),
+  price: modelPriceOverrideSchema,
+});
+export type ModelPriceSuggestion = z.infer<typeof modelPriceSuggestionSchema>;
+
 export const modelPriceDefaultResultSchema = z.strictObject({
   price: modelPriceOverrideSchema.nullable(),
+  /** Local catalog suggestions only; never used automatically for pricing. */
+  suggestions: z.array(modelPriceSuggestionSchema).max(6).optional(),
 });
 
 export type ModelPriceOverride = z.infer<typeof modelPriceOverrideSchema>;

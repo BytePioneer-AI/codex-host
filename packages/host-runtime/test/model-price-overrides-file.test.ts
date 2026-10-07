@@ -188,7 +188,7 @@ it("serves custom prices and default prices through the Host console channel", a
     ).toMatchObject({ result: { path: file, entries: [{ key }], error: null } });
     // The default stays the catalog price while the override is in effect.
     expect(await fixture.host.handleConsoleRequest(MODEL_PRICE_DEFAULT_METHOD, { model })).toEqual({
-      result: { price: defaultPrice },
+      result: { price: defaultPrice, suggestions: modelPrices.similarPrices(model) },
     });
     expect((await modelPrices.lookup()).find(model)).toEqual({ input: 9, output: 9 });
     expect(

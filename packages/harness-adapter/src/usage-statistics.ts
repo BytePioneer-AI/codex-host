@@ -11,6 +11,10 @@ import type { HostUsageRequest } from "./usage.js";
  * writes native storage; the Host only aggregates what it returns.
  */
 export interface HarnessUsageStatisticsCapability {
+  /** Current native ID → display label metadata, read locally without starting a process.
+   * Labels are not historical model identity or pricing aliases. Failure must not lose usage.
+   */
+  readModelLabels?(signal: AbortSignal): Promise<Readonly<Record<string, string>>>;
   /** Every unit of native storage that may hold usage, with a fingerprint read without content. */
   listSources(signal: AbortSignal): Promise<readonly HarnessUsageSource[]>;
   /** The usage entries in one unit. A copied history (a fork) may repeat entry IDs. */
@@ -45,6 +49,20 @@ export interface HarnessUsageEntry {
   sessionId?: string;
   /** Absolute working directory of that session, when the storage names it. */
   cwd?: string;
+  /**
+   * What the Harness itself recorded the request cost, in USD, when its storage has it. The Host
+   * uses it instead of a list price, unless the user set a price for the model.
+   */
+  costUsd?: number;
+  /**
+   * The storage records the request but no token counts for it (every bucket zero). It counts as
+   * a request; its tokens and cost are unknown rather than zero.
+   */
+  tokensUnknown?: true;
+  /** Native credits consumed by this request; zero is known, absent is unknown.
+   * Harness-specific units, never converted to USD or summed across Harnesses.
+   */
+  credits?: number;
 }
 
 /** Where a session's requests ran, as an Adapter read it from native storage. */
@@ -144,6 +162,19 @@ export function parseHarnessUsageEntry(value: unknown): HarnessUsageEntry | null
   if (((entry.reasoningOutputTokens as number | undefined) ?? 0) > entry.outputTokens) return null;
   if (entry.sessionId !== undefined && !sessionIdOk(entry.sessionId)) return null;
   if (entry.cwd !== undefined && !cwdOk(entry.cwd)) return null;
+  if (entry.tokensUnknown !== undefined && entry.tokensUnknown !== true) return null;
+  if (
+    entry.costUsd !== undefined &&
+    (typeof entry.costUsd !== "number" || !Number.isFinite(entry.costUsd) || entry.costUsd < 0)
+  ) {
+    return null;
+  }
+  if (
+    entry.credits !== undefined &&
+    (typeof entry.credits !== "number" || !Number.isFinite(entry.credits) || entry.credits < 0)
+  ) {
+    return null;
+  }
   return entry as unknown as HarnessUsageEntry;
 }
 

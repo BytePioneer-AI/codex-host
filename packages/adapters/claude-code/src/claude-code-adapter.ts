@@ -846,6 +846,17 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session closed during startup") };
     }
+    // Native Root output can start an autonomous Turn while transport admission yields.
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session already has an active Turn",
+          retryable: true,
+        },
+      };
+    }
     if (startingTransport) this.#publishState();
     this.#usageGeneration += 1;
     this.#contextUsageFreshUntilMs = 0;
@@ -974,6 +985,17 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#acceptingTurn = false;
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session closed during startup") };
+    }
+    // Commands must not replace a continuation that began during transport admission.
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session already has an active operation",
+          retryable: true,
+        },
+      };
     }
     if (startingTransport) this.#publishState();
     this.#usageGeneration += 1;

@@ -2586,6 +2586,76 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it.each(["prompt", "command"] as const)(
+    "preserves an autonomous Turn starting during %s admission",
+    async (kind) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const events: Array<Extract<HarnessOutput, { kind: "event" }>["event"]> = [];
+      const drain = (async () => {
+        for await (const output of session.outputs) {
+          if (output.kind === "event") events.push(output.event);
+        }
+      })();
+      try {
+        await session.execute(textTurn("warmup"));
+        const transport = transports[0];
+        const handler = transport?.autonomousTurnHandler;
+        if (!transport || !handler || !session.commands) throw new Error("Missing test transport");
+        transport.finish({ status: "succeeded" });
+        await vi.waitFor(() =>
+          expect(events.some((event) => event.type === "turn.completed")).toBe(true),
+        );
+        events.length = 0;
+        // Even a warm transport yields at await: native Root output can arrive
+        // after the admission check but before the request installs its Turn.
+        const admission =
+          kind === "prompt"
+            ? session.execute(textTurn("racing-request"))
+            : session.commands.execute({
+                turnId: hostTurnIdSchema.parse("racing-request"),
+                commandId: "claude.compact",
+              });
+        handler.start("racing-continuation");
+        await expect(admission).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy", retryable: true },
+        });
+        handler.onEvent({ type: "text.delta", messageId: "continuation", delta: "PRESERVED" });
+        handler.onTerminal({ status: "succeeded" });
+        await vi.waitFor(() =>
+          expect(events.some((event) => event.type === "turn.completed")).toBe(true),
+        );
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: "item.updated",
+            update: { type: "text.append", text: "PRESERVED" },
+          }),
+        );
+        expect(events.filter((event) => event.type === "turn.completed")).toEqual([
+          expect.objectContaining({
+            nativeTurnRef: {
+              harnessId: "claude-code",
+              nativeSessionId: transport.sessionId,
+              nativeTurnKey: "racing-continuation",
+              formatVersion: 1,
+            },
+            outcome: { status: "succeeded" },
+          }),
+        ]);
+        expect(transport.turns).toHaveLength(1);
+        expect(transport.compactCalls).toHaveLength(0);
+        await expect(session.execute(textTurn("after-continuation"))).resolves.toMatchObject({
+          ok: true,
+        });
+        transport.finish({ status: "succeeded" });
+      } finally {
+        await session.close();
+        await drain;
+      }
+    },
+  );
+
   it("never merges a native Segment into a requested Turn that still runs", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

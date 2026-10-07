@@ -101,14 +101,12 @@ function awaitWithSignal<T>(
   });
 }
 
-function sameAgents(actual: readonly string[], expected: readonly string[]): boolean {
-  // The Renderer owns presentation order; the Controller only verifies membership.
+function sameAgents(actual: readonly string[], expected: readonly string[] | undefined): boolean {
+  // Production discovers plugins after mounting. Explicit tooling expectations stay exact.
+  if (!actual.includes("codex") || new Set(actual).size !== actual.length) return false;
+  if (!expected) return true;
   const expectedSet = new Set(expected);
-  return (
-    actual.length === expected.length &&
-    new Set(actual).size === actual.length &&
-    actual.every((agent) => expectedSet.has(agent))
-  );
+  return actual.length === expected.length && actual.every((agent) => expectedSet.has(agent));
 }
 
 function isPrimaryRendererUrl(value: string): boolean {
@@ -148,7 +146,7 @@ class RendererAdapterReadinessError extends Error {
 
 function validateBindingStatus(
   value: unknown,
-  expectedAgents: readonly string[],
+  expectedAgents: readonly string[] | undefined,
 ): ProductionRendererStatus {
   if (
     !isRecord(value) ||
@@ -229,7 +227,7 @@ async function readBinding(renderer: RendererCdpClient): Promise<unknown> {
 
 async function waitForBinding(
   renderer: RendererCdpClient,
-  enabledAgents: readonly string[],
+  enabledAgents: readonly string[] | undefined,
   timeoutMs: number,
   pollIntervalMs: number,
 ): Promise<ProductionRendererStatus> {
@@ -254,7 +252,7 @@ async function waitForBinding(
 async function installTarget(
   target: CdpTarget,
   rendererSource: string,
-  enabledAgents: readonly string[],
+  enabledAgents: readonly string[] | undefined,
   timeoutMs: number,
   pollIntervalMs: number,
   operations: RendererCdpControlOperations,
@@ -281,7 +279,7 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
     private renderer: RendererCdpClient,
     private readonly rendererCdpEndpoint: string,
     private readonly rendererSource: string,
-    private readonly enabledAgents: readonly string[],
+    private readonly enabledAgents: readonly string[] | undefined,
     private readonly timeoutMs: number,
     private readonly pollIntervalMs: number,
     private readonly operations: RendererCdpControlOperations,
@@ -373,7 +371,7 @@ const defaultOperations: RendererCdpControlOperations = {
 export async function createRendererCdpControlSession(
   options: CreateRendererCdpControlOptions,
 ): Promise<RendererCdpControlSession> {
-  const enabledAgents = options.enabledAgents ?? ["codex", "pi"];
+  const enabledAgents = options.enabledAgents;
   const timeoutMs = options.timeoutMs ?? 30_000;
   const pollIntervalMs = options.pollIntervalMs ?? 250;
   const operations = options.operations ?? defaultOperations;

@@ -6,5 +6,24 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
-  "links": { "installation": "https://docs.qoder.cn/" }
+  "links": {
+    "website": "https://qoder.cn/",
+    "installation": "https://docs.qoder.cn/cli/installation"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl -fsSL https://static.qoder.com.cn/qoder-cli-cn/install.sh | bash"
+      },
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "irm https://static.qoder.com.cn/qoder-cli-cn/install.ps1 | iex"
+      }
+    ],
+    "after": {
+      "en": "After installation, run qoderclicn to complete login or setup.",
+      "zh-CN": "安装后运行 qoderclicn，完成登录或配置。"
+    }
+  }
 }

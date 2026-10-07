@@ -1,5 +1,6 @@
 import path from "node:path";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import type * as FsPromises from "node:fs/promises";
+import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 import { describe, expect, it, vi } from "vitest";
@@ -20,7 +21,7 @@ import type { ClaudePermissionMode } from "../src/permission-modes.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
-  ClaudeAutonomousTurn,
+  ClaudeAutonomousTurnHandler,
   ClaudeIdleTurnHandler,
   ClaudeInteractionResponse,
   ClaudePlanLimitEvent,
@@ -31,14 +32,31 @@ import type {
   ClaudeTurnTransport,
 } from "../src/transport.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
+
 class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
-  autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
+  autonomousTurnHandler: ClaudeAutonomousTurnHandler | null = null;
   idleHandler: ClaudeIdleTurnHandler | null = null;
   threadHandler: ((event: ClaudeTurnEvent) => void) | null = null;
   idleLive = false;
-  setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void {
+  setAutonomousTurnHandler(handler: ClaudeAutonomousTurnHandler): void {
     this.autonomousTurnHandler = handler;
+  }
+  /** Streams a whole native Segment that no requested Turn owns. */
+  autonomousTurn(turn: {
+    nativeTurnKey: string;
+    events: ClaudeTurnEvent[];
+    result: ClaudeTransportTurnResult;
+  }): void {
+    const handler = this.autonomousTurnHandler;
+    if (!handler) throw new Error("No fake Claude autonomous Turn handler");
+    handler.start(turn.nativeTurnKey);
+    for (const event of turn.events) handler.onEvent(event);
+    handler.onTerminal(turn.result);
   }
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void {
     this.idleHandler = handler;
@@ -1848,6 +1866,68 @@ describe("Claude Code HarnessAdapter", () => {
     }
   });
 
+  it.each(["close", "fault"] as const)(
+    "completes notified background commands before the output channel ends on Session %s",
+    async (ending) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const outputs: HarnessOutput[] = [];
+      const consuming = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      const pendingOpen = Promise.withResolvers<FsPromises.FileHandle>();
+      void pendingOpen.promise.catch(() => undefined);
+      let opening = false;
+      try {
+        await session.execute(textTurn("closing-background-command"));
+        const transport = transports[0];
+        if (!transport) throw new Error("Fake Claude transport was not created");
+        transport.event({
+          type: "tool.started",
+          callId: "bash-call",
+          toolName: "Bash",
+          arguments: { command: "sleep 3" },
+        });
+        transport.event({
+          type: "tool.completed",
+          callId: "bash-call",
+          toolName: "Bash",
+          outputText: "Command running in background with ID: bash-task.",
+          isError: false,
+          backgroundTaskId: "bash-task",
+        });
+        vi.mocked(open).mockImplementationOnce(() => {
+          opening = true;
+          return pendingOpen.promise;
+        });
+        transport.threadEvent({
+          type: "subagent.settled",
+          nativeSubagentId: "bash-task",
+          callId: "bash-call",
+          status: "completed",
+          outputFile: path.join(tmpdir(), "claude-pending-output"),
+        });
+        await vi.waitFor(() => expect(opening).toBe(true));
+        if (ending === "close") await session.close();
+        else transport.fault(new Error("synthetic Query fault"));
+        await consuming;
+        const commands = outputs.flatMap((output) =>
+          output.kind === "event" &&
+          output.event.type === "item.completed" &&
+          output.event.snapshot.item.type === "commandExecution"
+            ? [output.event]
+            : [],
+        );
+        expect(commands).toMatchObject([{ snapshot: { outcome: { status: "succeeded" } } }]);
+      } finally {
+        pendingOpen.reject(Object.assign(new Error("Output unavailable"), { code: "ENOENT" }));
+        await adapter.close();
+        await consuming;
+        vi.mocked(open).mockReset();
+      }
+    },
+  );
+
   it.each([false, true])("waits for transcript persistence (timeout: %s)", async (timeout) => {
     const { adapter, transports, history, dependencies } = fixture();
     const session = await openSession(adapter);
@@ -2410,7 +2490,7 @@ describe("Claude Code HarnessAdapter", () => {
       ok: false,
       error: { code: "sessionBusy" },
     });
-    transport.autonomousTurnHandler?.({
+    transport.autonomousTurn({
       nativeTurnKey: "task-notification-1",
       events: [
         {
@@ -2554,7 +2634,7 @@ describe("Claude Code HarnessAdapter", () => {
       type: "item.completed",
       snapshot: { item: { type: "agentMessage" } },
     });
-    transport.autonomousTurnHandler?.({
+    transport.autonomousTurn({
       nativeTurnKey: "task-notification-send",
       events: [
         {
@@ -2610,7 +2690,7 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
 
-    transport.autonomousTurnHandler?.({
+    transport.autonomousTurn({
       nativeTurnKey: "task-notification-1",
       events: [
         {
@@ -2660,6 +2740,115 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it.each(["prompt", "command"] as const)(
+    "preserves an autonomous Turn starting during %s admission",
+    async (kind) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const events: Array<Extract<HarnessOutput, { kind: "event" }>["event"]> = [];
+      const drain = (async () => {
+        for await (const output of session.outputs) {
+          if (output.kind === "event") events.push(output.event);
+        }
+      })();
+      try {
+        await session.execute(textTurn("warmup"));
+        const transport = transports[0];
+        const handler = transport?.autonomousTurnHandler;
+        if (!transport || !handler || !session.commands) throw new Error("Missing test transport");
+        transport.finish({ status: "succeeded" });
+        await vi.waitFor(() =>
+          expect(events.some((event) => event.type === "turn.completed")).toBe(true),
+        );
+        events.length = 0;
+        // Even a warm transport yields at await: native Root output can arrive
+        // after the admission check but before the request installs its Turn.
+        const admission =
+          kind === "prompt"
+            ? session.execute(textTurn("racing-request"))
+            : session.commands.execute({
+                turnId: hostTurnIdSchema.parse("racing-request"),
+                commandId: "claude.compact",
+              });
+        handler.start("racing-continuation");
+        await expect(admission).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy", retryable: true },
+        });
+        handler.onEvent({ type: "text.delta", messageId: "continuation", delta: "PRESERVED" });
+        handler.onTerminal({ status: "succeeded" });
+        await vi.waitFor(() =>
+          expect(events.some((event) => event.type === "turn.completed")).toBe(true),
+        );
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: "item.updated",
+            update: { type: "text.append", text: "PRESERVED" },
+          }),
+        );
+        expect(events.filter((event) => event.type === "turn.completed")).toEqual([
+          expect.objectContaining({
+            nativeTurnRef: {
+              harnessId: "claude-code",
+              nativeSessionId: transport.sessionId,
+              nativeTurnKey: "racing-continuation",
+              formatVersion: 1,
+            },
+            outcome: { status: "succeeded" },
+          }),
+        ]);
+        expect(transport.turns).toHaveLength(1);
+        expect(transport.compactCalls).toHaveLength(0);
+        await expect(session.execute(textTurn("after-continuation"))).resolves.toMatchObject({
+          ok: true,
+        });
+        transport.finish({ status: "succeeded" });
+      } finally {
+        await session.close();
+        await drain;
+      }
+    },
+  );
+
+  it("never merges a native Segment into a requested Turn that still runs", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const events: Array<Extract<HarnessOutput, { kind: "event" }>["event"]> = [];
+    const drain = (async () => {
+      for await (const output of session.outputs) {
+        if (output.kind === "event") events.push(output.event);
+      }
+    })();
+    try {
+      await session.execute(textTurn("requested"));
+      const transport = transports[0];
+      const handler = transport?.autonomousTurnHandler;
+      if (!transport || !handler) throw new Error("Fake Claude transport was not created");
+      handler.start("stray-segment");
+      handler.onEvent({ type: "text.delta", messageId: "stray-assistant", delta: "STRAY" });
+      handler.onTerminal({ status: "succeeded" });
+      transport.delta("OWN");
+      transport.finish({ status: "succeeded" });
+      await vi.waitFor(() =>
+        expect(events.some((event) => event.type === "turn.completed")).toBe(true),
+      );
+      expect(events.some((event) => event.type === "turn.autonomous.started")).toBe(false);
+      expect(
+        events.flatMap((event) =>
+          event.type === "item.updated" && event.update.type === "text.append"
+            ? [event.update.text]
+            : [],
+        ),
+      ).toEqual(["OWN"]);
+      expect(events.filter((event) => event.type === "turn.completed")).toEqual([
+        expect.objectContaining({ turnId: "requested", outcome: { status: "succeeded" } }),
+      ]);
+    } finally {
+      await session.close();
+      await drain;
+    }
+  });
+
   it.each(["completed", "failed", "interrupted"] as const)(
     "finishes an autonomous Turn after its newly created child is %s",
     async (status) => {
@@ -2680,7 +2869,7 @@ describe("Claude Code HarnessAdapter", () => {
           expect(events.some((event) => event.type === "turn.completed")).toBe(true),
         );
         events.length = 0;
-        transport.autonomousTurnHandler?.({
+        transport.autonomousTurn({
           nativeTurnKey: "continuation-with-child",
           events: [
             {
@@ -2817,7 +3006,7 @@ describe("Claude Code HarnessAdapter", () => {
       "native-agent-b",
       "native-agent-c",
     ].entries()) {
-      transport.autonomousTurnHandler?.({
+      transport.autonomousTurn({
         nativeTurnKey: `task-notification-${index + 1}`,
         events: [
           {
@@ -4030,11 +4219,23 @@ describe("Claude Code HarnessAdapter", () => {
       ok: false,
       error: {
         code: "nativeFailure",
-        message: "Claude Code rejected the Permission Mode selection",
+        message: "Claude Code rejected the Permission Mode selection: connection closed",
         retryable: true,
       },
     });
     expect(transports[0]?.permissionMode).toBe("default");
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(
+      new Error("new policy refusal api_key=secret-value"),
+    );
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        message:
+          "Claude Code rejected the Permission Mode selection: new policy refusal api_key=[redacted]",
+      },
+    });
     transports[0]?.finish({ status: "succeeded" });
     await session.close();
   });

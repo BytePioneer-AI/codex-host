@@ -30,7 +30,14 @@ export function costWithCredits(
   }));
   const usd = cost(totals);
   return {
-    primary: usd !== "—" ? usd : credits.length ? null : options.unpriced,
+    primary:
+      usd !== "—"
+        ? usd
+        : credits.length
+          ? null
+          : totals.unpricedRequests > 0
+            ? options.unpriced
+            : "—",
     credits,
     reportedRequests,
   };

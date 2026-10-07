@@ -35,16 +35,80 @@ const documentationUrlSchema = z
     "Plugin documentation links must be credential-free HTTPS URLs",
   );
 
+const localizedTextSchema = z
+  .object({ en: z.string().max(4096), "zh-CN": z.string().max(4096).optional() })
+  .strict();
+
+/** Display-only instructions. Commands are copied by users, never executed from metadata. */
+export const harnessInstallationGuideSchema = z
+  .object({
+    commands: z
+      .array(z.object({ terminal: z.string().max(256), command: z.string().max(4096) }).strict())
+      .max(8),
+    before: localizedTextSchema.optional(),
+    after: localizedTextSchema.optional(),
+    downloads: z
+      .array(z.object({ label: z.string().max(128), url: documentationUrlSchema }).strict())
+      .max(8)
+      .optional(),
+  })
+  .strict();
+export type HarnessInstallationGuide = z.infer<typeof harnessInstallationGuideSchema>;
+
 const pluginPresentationShape = {
   id: harnessPluginIdSchema,
   name: z.string().trim().min(1).max(128),
   version: z.string().min(1).max(128),
   /** Capability-only plugin; omitted for existing session-capable plugins. */
   kind: z.literal("usage").optional(),
+  /** Original image styling or bounded vector paths; never arbitrary CSS/SVG markup. */
+  iconStyle: z
+    .object({
+      vector: z
+        .object({
+          viewBox: z
+            .string()
+            .max(128)
+            .regex(/^-?\d+(?:\.\d+)?(?: +-?\d+(?:\.\d+)?){3}$/u),
+          color: z.string().regex(/^(?:currentColor|#[a-f0-9]{6})$/iu),
+          paths: z
+            .array(
+              z
+                .object({
+                  d: z
+                    .string()
+                    .min(1)
+                    .max(32768)
+                    .regex(/^[MmLlHhVvCcSsQqTtAaZz\d.,+eE\s-]+$/u),
+                  fillRule: z.enum(["evenodd", "nonzero"]).optional(),
+                  fill: z
+                    .string()
+                    .regex(/^(?:currentColor|#[a-f0-9]{6})$/iu)
+                    .optional(),
+                })
+                .strict(),
+            )
+            .min(1)
+            .max(32),
+        })
+        .strict()
+        .optional(),
+      background: z
+        .string()
+        .regex(/^#[a-f0-9]{6}$/iu)
+        .optional(),
+      borderRadius: z.number().min(0).max(50).optional(),
+      paddingRatio: z.number().min(0).max(0.25).optional(),
+    })
+    .strict()
+    .optional(),
+  installation: harnessInstallationGuideSchema.optional(),
+  notice: localizedTextSchema.optional(),
   /** The factory accepts a persisted local entrypoint through its construction context. */
   launchCommand: z.literal(true).optional(),
   links: z
     .object({
+      website: documentationUrlSchema.optional(),
       documentation: documentationUrlSchema.optional(),
       installation: documentationUrlSchema.optional(),
     })
@@ -64,7 +128,7 @@ export const harnessPluginManifestSchema = z
   .strict();
 export type HarnessPluginManifest = z.infer<typeof harnessPluginManifestSchema>;
 
-/** Images are presentation data; consumers must use an img, never inline markup. */
+/** Image resources are presentation data, never HTML/SVG markup to inject. */
 export const harnessPluginIconSchema = z
   .string()
   .max(Math.ceil(HARNESS_PLUGIN_ICON_MAX_BYTES / 3) * 4 + 64)

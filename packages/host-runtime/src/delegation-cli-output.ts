@@ -56,7 +56,9 @@ function snapshotOutput(
   view: "result" | "messages",
 ): unknown {
   const common = {
-    thread: threadLink(snapshot.threadId),
+    thread: snapshot.hostId
+      ? `thread://${snapshot.threadId}?hostId=${encodeURIComponent(snapshot.hostId)}`
+      : threadLink(snapshot.threadId),
     harnessId: snapshot.harnessId,
     status: snapshot.status,
     ...(snapshot.timedOut !== undefined ? { timedOut: snapshot.timedOut } : {}),

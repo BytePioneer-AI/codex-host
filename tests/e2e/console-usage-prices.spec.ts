@@ -7,7 +7,7 @@ import path from "node:path";
 import { tailwindEsbuildPlugin } from "../../packages/renderer-extension/scripts/tailwind-esbuild-plugin.mjs";
 import type { HarnessUsageEntry } from "@codexhost/harness-adapter";
 import type { ModelPriceOverride, ModelPriceSuggestion } from "@codexhost/shared-contracts";
-import { UsageStatistics } from "../../packages/host-runtime/src/usage-statistics.ts";
+import { UsageStatistics } from "../../packages/host-runtime/src/usage-statistics.js";
 
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
@@ -48,6 +48,12 @@ function request(id: string, overrides: Partial<HarnessUsageEntry> = {}): Harnes
     outputTokens: 2_000_000,
     ...overrides,
   };
+}
+
+function unmodeledRequest(id: string): HarnessUsageEntry {
+  const entry = request(id);
+  delete entry.model;
+  return entry;
 }
 
 let cacheRoot: string;
@@ -602,7 +608,7 @@ test("a late read from a cancelled dialog cannot replace a reopened draft", asyn
 
 test("unknown model buckets have no price action", async ({ page }) => {
   const state = await setup(page);
-  state.entries.set("test-harness", [request("r1", { model: undefined })]);
+  state.entries.set("test-harness", [unmodeledRequest("r1")]);
   await openStatistics(page);
   await expect(page.getByRole("button", { name: /设置价格|编辑价格|模型价格/ })).toHaveCount(0);
   expect(state.priceReads).toBe(0);
@@ -821,7 +827,7 @@ test("requests without token counts show dashes, not zeros, and no price to set"
 
 test("the model filter tells all models from the unknown model and searches", async ({ page }) => {
   const state = await setupDashboard(page);
-  state.entries.get("pi")?.push(request("no-model", { model: undefined }));
+  state.entries.get("pi")?.push(unmodeledRequest("no-model"));
   await openStatistics(page);
   await expect(modelFilter(page)).toHaveText("全部模型");
   await modelFilter(page).click();

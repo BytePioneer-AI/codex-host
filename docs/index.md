@@ -15,7 +15,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`architecture/harness-plugin-runtime.md`](architecture/harness-plugin-runtime.md) | 当前插件加载、预装发行、运行时契约与安全边界；修改插件系统时首先阅读。 |
+| [`architecture/harness-plugin-runtime.md`](architecture/harness-plugin-runtime.md) | 当前 Cordis 生命周期、Host 目录驱动的 Renderer、预装发行、契约与安全边界；修改插件系统时首先阅读。 |
 | [`architecture/harness-plugin-architecture.md`](architecture/harness-plugin-architecture.md) | 插件化目标架构与未完成迁移方案；规划后续解耦时阅读，接口示例不代表当前 API。 |
 | [`architecture/harness-command-integration.md`](architecture/harness-command-integration.md) | Harness 原生命令的 Adapter、Host、Renderer 边界；新增命令能力时阅读。 |
 | [`architecture/harness-executable-discovery.md`](architecture/harness-executable-discovery.md) | Harness CLI 的跨平台发现、连接页安装指引和 DSH 特殊连接范围；修改安装指引、发现或启动逻辑时阅读。 |
@@ -94,7 +94,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/zcode/zcode-harness-integration.md`](harnesses/zcode/zcode-harness-integration.md) | 直连已装 ZCode Desktop 的 Agent CLI、Start Plan 账号层与常驻验证页、独立会话和验证边界；安装或维护 ZCode Adapter 时阅读。 |
+| [`harnesses/zcode/zcode-harness-integration.md`](harnesses/zcode/zcode-harness-integration.md) | 直连已装 ZCode Desktop 的 Agent CLI、Start Plan／个人 Coding Plan 账号接入、自定义 Provider、常驻验证页与验证边界；安装或维护 ZCode Adapter 时阅读。 |
 
 ## 账号与 Desktop 产品接入
 
@@ -126,6 +126,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`operations/remote-thread-read.md`](operations/remote-thread-read.md) | 通过现有 Desktop 远程连接跨 Harness 读取会话；包含部署要求、分页、响应大小与超时限制。 |
 | [`operations/host-runtime-log.md`](operations/host-runtime-log.md) | Host Runtime 日志文件的位置、内容与边界；排查 Runtime 崩溃或异常退出时阅读。 |
 | [`operations/codexhost-console.md`](operations/codexhost-console.md) | 本地控制台的打开方式、页面、项目公告、与运行中 Host 的连接、端口、诊断文件、安全与更新边界；排查启动失败或维护 Web 公告时阅读。 |
 | [`NOTICE.md`](NOTICE.md) | Web 控制台打开或刷新时读取的项目公告，含显示开关、标题、类型与正文；默认关闭，发布规则见控制台文档。 |

@@ -4,6 +4,8 @@ import type {
   CodexAccountSummary,
   CodexAccountUsageParams,
   CodexAccountUsageResult,
+  HarnessPluginDescriptor,
+  HarnessPluginListResult,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -28,6 +30,7 @@ import { shouldApplyCodexAccountSnapshot } from "../renderer-codex-account-state
 
 export interface RendererCodexAccountClient
   extends RendererHarnessAccountClient, RendererCredentialImportClient {
+  listHarnessPlugins?(): Promise<HarnessPluginListResult>;
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts?(): Promise<CodexAccountListResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
@@ -132,12 +135,15 @@ export function createAccountsSettingsPage(
       list.className = "settings-account-list";
       const { table, body, updateDisplay } = createAccountsTable(document, messages);
       list.append(table);
+      let plugins: readonly HarnessPluginDescriptor[] = [];
+      const pluginFor = (id: string) => plugins.find((plugin) => plugin.id === id);
       const credentialImports = mountCredentialImports(
         context.content,
         context.signal,
         getClient,
         messages.credentialImports,
         () => render(),
+        pluginFor,
       );
       context.content.append(header, status, toolbar, list, credentialImports.section);
       const stopCountdowns = mountAccountResetCountdowns(list, messages, context.signal);
@@ -223,6 +229,7 @@ export function createAccountsSettingsPage(
                 account.email ?? account.label ?? account.harnessName,
               ),
               hideEmails,
+              pluginFor(account.harnessId),
             ),
           );
         }
@@ -339,6 +346,16 @@ export function createAccountsSettingsPage(
         // The page remains usable through list and refresh.
       }
       const harnessAccounts = createHarnessAccounts(context.signal, getClient, render);
+      const directoryClient = getClient();
+      void directoryClient
+        ?.listHarnessPlugins?.()
+        .then(({ plugins: next }) => {
+          if (context.signal.aborted || getClient() !== directoryClient) return;
+          plugins = next;
+          render();
+          void credentialImports.refresh();
+        })
+        .catch(() => undefined);
       void harnessAccounts.refresh();
       void credentialImports.refresh();
       load();

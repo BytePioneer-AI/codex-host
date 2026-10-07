@@ -12,6 +12,7 @@ import {
 import {
   HarnessOutputChannel,
   parseHostUsage,
+  sanitizeDiagnosticTail,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
@@ -114,7 +115,6 @@ import { estimateClaudeRequestCostUsd } from "./usage-estimate.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
-  ClaudeAutonomousTurn,
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeLastRequestUsage,
@@ -447,9 +447,10 @@ function claudePermissionModeSelectionFailure(
       };
     }
   }
+  const detail = sanitizeDiagnosticTail(error instanceof Error ? error.message : String(error));
   return {
     code: "nativeFailure",
-    message: "Claude Code rejected the Permission Mode selection",
+    message: `Claude Code rejected the Permission Mode selection${detail ? `: ${detail}` : ""}`,
     retryable: true,
   };
 }
@@ -597,6 +598,8 @@ class ClaudeHarnessSession implements HarnessSession {
   #contextUsageCooldownUntilMs = 0;
   #requestUsageBoundary = 0;
   #autonomousOrdinal = 0;
+  /** The Host Turn that receives the native Segment Claude started on its own. */
+  #autonomousTarget: ActiveTurn | null = null;
   #occupancy = new ClaudeBackgroundOccupancy();
   #cancelEscalation: ReturnType<typeof setTimeout> | null = null;
   #continuationQuiescence: ReturnType<typeof setTimeout> | null = null;
@@ -853,6 +856,17 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session closed during startup") };
     }
+    // Native Root output can start an autonomous Turn while transport admission yields.
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session already has an active Turn",
+          retryable: true,
+        },
+      };
+    }
     if (startingTransport) this.#publishState();
     this.#usageGeneration += 1;
     this.#contextUsageFreshUntilMs = 0;
@@ -981,6 +995,17 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#acceptingTurn = false;
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session closed during startup") };
+    }
+    // Commands must not replace a continuation that began during transport admission.
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session already has an active operation",
+          retryable: true,
+        },
+      };
     }
     if (startingTransport) this.#publishState();
     this.#usageGeneration += 1;
@@ -1533,26 +1558,24 @@ class ClaudeHarnessSession implements HarnessSession {
         onPlanLimit: (planLimit) => this.#handlePlanLimit(planLimit),
       });
       this.#transport = transport;
-      transport.setAutonomousTurnHandler((turn) => this.#handleAutonomousTurn(turn));
+      transport.setAutonomousTurnHandler({
+        start: (nativeTurnKey) => {
+          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey);
+        },
+        onEvent: (event) => this.#deliverLiveEvent(this.#autonomousTarget, event),
+        onTerminal: (result) => {
+          const target = this.#autonomousTarget;
+          this.#autonomousTarget = null;
+          if (target) this.#finishResult(target, result);
+        },
+      });
       transport.setThreadEventHandler((event) => {
         // Thread-level events (e.g. a background Subagent settling) are not
         // Turn-scoped and must not be gated on an active Turn.
         if (event.type === "subagent.settled") this.#settleNativeTask(event);
       });
       transport.setIdleTurnHandler({
-        onEvent: (event) => {
-          // A model request made while idle is still part of this Session's usage.
-          if (event.type === "usage.request") {
-            this.#meterUsage(event.record);
-            return;
-          }
-          const active = this.#active;
-          if (active) {
-            this.#handleTurnEvent(active, event);
-            return;
-          }
-          if (event.type === "subagent.settled") this.#settleNativeTask(event);
-        },
+        onEvent: (event) => this.#deliverLiveEvent(this.#active, event),
         onTerminal: (result) => {
           const active = this.#active;
           if (active) this.#finishResult(active, result);
@@ -2005,21 +2028,24 @@ class ClaudeHarnessSession implements HarnessSession {
     });
   }
 
-  #handleAutonomousTurn(turn: ClaudeAutonomousTurn): void {
-    if (this.#phase !== "open") return;
-    const held = this.#active;
-    if (held?.held) {
-      this.#continueHeldTurn(held, turn);
-      return;
-    }
-    if (this.#active) return;
+  /**
+   * Claude started Root output in a Segment no requested Turn owns. A held Turn continues with
+   * it; otherwise it becomes a live autonomous Turn, so the Thread shows it running and a new
+   * request waits instead of absorbing it.
+   */
+  #startAutonomousTurn(segmentKey: string): ActiveTurn | null {
+    if (this.#phase !== "open") return null;
+    const current = this.#active;
+    if (current?.held) return current;
+    // A requested Turn still owns the Session; never merge this Segment into it.
+    if (current) return null;
     this.#autonomousOrdinal += 1;
     const turnId = hostTurnIdSchema.parse(this.#randomUUID());
     let resolveCompletion = (): void => undefined;
     const completion = new Promise<void>((resolve) => {
       resolveCompletion = resolve;
     });
-    const nativeTurnKey = turn.nativeTurnKey || `autonomous-${this.#autonomousOrdinal}`;
+    const nativeTurnKey = segmentKey || `autonomous-${this.#autonomousOrdinal}`;
     const item: HostAgentMessageItem = {
       type: "agentMessage",
       itemId: claudeTranscriptItemId(nativeTurnKey, "agentMessage", 1),
@@ -2074,13 +2100,21 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#event({ type: "turn.autonomous.started", turnId, input: [] });
     this.#event({ type: "turn.started", turnId });
     this.#event({ type: "item.started", turnId, item });
-    for (const event of turn.events) this.#handleTurnEvent(active, event);
-    this.#finishResult(active, turn.result);
+    return active;
   }
 
-  #continueHeldTurn(active: ActiveTurn, turn: ClaudeAutonomousTurn): void {
-    for (const event of turn.events) this.#handleTurnEvent(active, event);
-    this.#finishResult(active, turn.result);
+  /** Live native events outside a requested Root Segment; settlements stay Thread-level. */
+  #deliverLiveEvent(target: ActiveTurn | null, event: ClaudeTurnEvent): void {
+    // Requests belong to Session usage even when no foreground Turn owns the event.
+    if (event.type === "usage.request") {
+      this.#meterUsage(event.record);
+      return;
+    }
+    if (target && this.#active === target) {
+      this.#handleTurnEvent(target, event);
+      return;
+    }
+    if (event.type === "subagent.settled") this.#settleNativeTask(event);
   }
 
   /**

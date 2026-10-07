@@ -270,7 +270,10 @@ export async function loadHarnessPlugins(
         ...(manifest.launchCommand && !options.context.managedRemoteHost
           ? { launchCommand: true }
           : {}),
+        ...(manifest.iconStyle ? { iconStyle: manifest.iconStyle } : {}),
         ...(manifest.links ? { links: manifest.links } : {}),
+        ...(manifest.installation ? { installation: manifest.installation } : {}),
+        ...(manifest.notice ? { notice: manifest.notice } : {}),
       });
       let adapter: PluginAdapter;
       let failure: HarnessPluginDiagnosticCode | undefined;
@@ -308,7 +311,7 @@ export async function loadHarnessPlugins(
   await Promise.all(Array.from({ length: Math.min(4, pending.length) }, () => worker()));
   for (const candidate of pending) {
     const entry = loaded.get(candidate);
-    if (entry) registry.register(entry.descriptor, entry.adapter);
+    if (entry) await registry.register(entry.descriptor, entry.adapter);
   }
   return registry;
 }

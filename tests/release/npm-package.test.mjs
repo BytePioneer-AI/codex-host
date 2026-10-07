@@ -382,6 +382,21 @@ describe("npm package release", () => {
     expect(commands.at(-1).args).not.toContain("codexhost-platform");
   });
 
+  it("links Linux native binaries at the glibc baseline instead of the build host's glibc", () => {
+    for (const [targetName, rustTarget] of [
+      ["linux-x64", "x86_64-unknown-linux-gnu.2.28"],
+      ["linux-arm64", "aarch64-unknown-linux-gnu.2.28"],
+    ]) {
+      const rust = npmReleaseBuildCommands(releaseTarget(targetName)).at(-1);
+      expect(rust.command).toBe("cargo");
+      expect(rust.args[0]).toBe("zigbuild");
+      expect(rust.args).toContain(rustTarget);
+      expect(rust.args).toContain("codexhost-updater");
+    }
+    const macos = npmReleaseBuildCommands(releaseTarget("macos-arm64")).at(-1);
+    expect(macos.args.slice(0, 3)).toEqual(["build", "--target", "aarch64-apple-darwin"]);
+  });
+
   it("runs npm pack through npm_execpath on Windows", () => {
     expect(
       npmPackCommand("win32", { npm_execpath: "C:\\npm\\npm-cli.js" }, "C:\\node.exe"),

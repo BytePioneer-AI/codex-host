@@ -1,4 +1,7 @@
 import {
+  DELEGATION_READ_METHOD,
+  delegationReadParamsSchema,
+  type DelegationReadParams,
   REMOTE_SSH_SETUP_METHOD,
   remoteSshSetupResultSchema,
   remoteSshSetupParamsSchema,
@@ -230,6 +233,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
     input: ThreadPermissionModeSelectParams,
   ): Promise<HarnessConfigurationState>;
   setupSsh?(input: RemoteSshSetupParams): Promise<RemoteSshSetupResult>;
+  readDelegationThread?(input: DelegationReadParams): Promise<unknown>;
   runtimeStatus?(): Promise<RuntimeStatus>;
   updateRemote?(version: string): Promise<RuntimeStatus>;
   checkUpdate(): Promise<UpdateCheckResult | null>;
@@ -511,6 +515,9 @@ export function createRendererModelClient(
       return remoteSshSetupResultSchema.parse(
         await manager.sendRequest(REMOTE_SSH_SETUP_METHOD, remoteSshSetupParamsSchema.parse(input)),
       );
+    },
+    async readDelegationThread(input: DelegationReadParams) {
+      return source.sendRequest(DELEGATION_READ_METHOD, delegationReadParamsSchema.parse(input));
     },
     async runtimeStatus() {
       // Asked directly rather than through the remembering sender: an outdated remote

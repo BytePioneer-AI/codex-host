@@ -28,10 +28,16 @@ export const modelSchema = z
       .optional(),
   })
   // The CLI labels a model by its ID alone; Provider labels keep account and personal models apart.
-  .transform(({ providerLabel, ...model }) => ({
-    ...model,
-    label: providerLabel ? `${providerLabel} / ${model.label}` : model.label,
-  }));
+  .transform(({ providerLabel, ...model }) => {
+    // Shorten only official personal account names, so the picker can show the model suffix.
+    const provider =
+      model.ref.providerId === "account:bigmodel-individual-coding-plan"
+        ? "BigModel"
+        : model.ref.providerId === "account:zai-individual-coding-plan"
+          ? "Z.AI"
+          : providerLabel;
+    return { ...model, label: provider ? `${provider} / ${model.label}` : model.label };
+  });
 export const settingsSchema = z.object({
   model: z.object({
     current: nativeModelSchema.optional(),

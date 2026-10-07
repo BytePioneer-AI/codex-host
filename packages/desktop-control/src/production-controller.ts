@@ -38,7 +38,7 @@ export interface DesktopControllerDependencies {
   install(options: {
     rendererCdpEndpoint: string;
     rendererSource: string;
-    enabledAgents: readonly string[];
+    enabledAgents?: readonly string[];
     timeoutMs: number;
     signal?: AbortSignal;
   }): Promise<RendererCdpControlSession>;
@@ -248,25 +248,7 @@ export async function runDesktopController(
       {
         rendererCdpEndpoint: options.rendererCdpEndpoint,
         rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${rendererSource}`,
-        enabledAgents: [
-          "codex",
-          "pi",
-          "claude-code",
-          "deepseek-harness",
-          "opencode",
-          "grok",
-          "omp",
-          "antigravity",
-          "kiro-cli",
-          "codebuddy",
-          "workbuddy",
-          "cursor-cli",
-          "hermes",
-          "qoder",
-          "qoder-cn",
-          "kimi-code",
-          "zcode",
-        ],
+        // External Agents are discovered from each target Host after installation.
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
         signal,
       },

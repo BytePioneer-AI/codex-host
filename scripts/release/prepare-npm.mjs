@@ -18,6 +18,7 @@ import {
   buildPreinstalledHarnessPlugins,
   preinstalledHarnessPluginPaths,
 } from "./harness-plugins.mjs";
+import { linuxGlibcCargoArguments, stripLinuxDebugInfo } from "./linux-glibc.mjs";
 import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -49,6 +50,18 @@ export function npmPlatformPackageName(target) {
 }
 
 const runtimeLicenses = [
+  {
+    packageName: "@deepseek-ai/cordis",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cordis-LICENSE.txt",
+  },
+  {
+    packageName: "@deepseek-ai/cosmokit",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cosmokit-LICENSE.txt",
+  },
   {
     packageName: "@agentclientprotocol/sdk",
     license: "Apache-2.0",
@@ -142,11 +155,11 @@ export function npmReleaseBuildCommands(
       label: "Rust release build",
       command: "cargo",
       args: [
-        "build",
+        ...(target.hostPlatform === "linux"
+          ? linuxGlibcCargoArguments(target.rustTarget)
+          : ["build", "--target", target.rustTarget]),
         "--release",
         "--locked",
-        "--target",
-        target.rustTarget,
         "--package",
         "codexhost-launcher",
         "--package",
@@ -244,6 +257,8 @@ export function expectedNpmPackagePaths(target) {
     "licenses/OpenCode-v2-Client-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
+    "licenses/Cordis-LICENSE.txt",
+    "licenses/Cosmokit-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",
@@ -1077,6 +1092,7 @@ export async function prepareNpmPackage({
     "npm Updater",
     true,
   );
+  if (target.hostPlatform === "linux") stripLinuxDebugInfo({ packageRoot });
 
   await runCommand(
     {

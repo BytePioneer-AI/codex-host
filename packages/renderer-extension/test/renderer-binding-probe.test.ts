@@ -1,6 +1,8 @@
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -1303,7 +1305,7 @@ describe("Renderer Composer DOM behavior", () => {
       restoredThreadOwnership({
         owner: "external",
         harnessId: "hermes",
-        transportModelId: "codexhost/plugin-v1@synthetic",
+        transportModelId: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("hermes") }),
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
         effectiveModel: harnessModelRefSchema.parse({
           id: "hermes-model-v1.emFpOmdsbS01LXR1cmJv",

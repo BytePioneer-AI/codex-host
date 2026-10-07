@@ -1,4 +1,6 @@
 import {
+  DELEGATION_READ_METHOD,
+  delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
   THREAD_PREWARM_DISCARD_METHOD,
   threadPrewarmDiscardParamsSchema,
@@ -182,6 +184,7 @@ import {
 } from "./delegation-types.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
+import type { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 import {
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
@@ -475,29 +478,6 @@ function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function approvalServerName(harnessId: ExternalHarnessId): string {
-  switch (harnessId) {
-    case "pi":
-      return "Pi";
-    case "claude-code":
-      return "Claude Code";
-    case "deepseek-harness":
-      return "DeepSeek Harness";
-    case "grok":
-      return "Grok";
-    case "opencode":
-      return "OpenCode";
-    case "omp":
-      return "Oh My Pi";
-    case "antigravity":
-      return "Antigravity CLI";
-    case "kiro-cli":
-      return "Kiro CLI";
-    default:
-      return harnessId;
-  }
-}
-
 const HOST_APPROVAL_REQUEST_ID_MIN = -2_000_000;
 const HOST_APPROVAL_REQUEST_ID_MAX = -1_000_001;
 const HOST_QUESTION_REQUEST_ID_MIN = -1_000_000;
@@ -642,6 +622,7 @@ export class AppServerHost {
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #pluginDescriptors: HarnessPluginDescriptor[] = [];
   #usageOnlyAdapters: HarnessUsageStatisticsAdapter[] = [];
+  #plugins: HarnessPluginRegistry | undefined;
   readonly #launchSettings: HarnessLaunchSettingsStore;
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
@@ -932,9 +913,22 @@ export class AppServerHost {
       await plugins.close().catch((error: unknown) => this.#diagnose(error));
       return;
     }
+    this.#plugins = plugins;
     this.#pluginDescriptors = plugins.list();
     this.#usageOnlyAdapters = [...plugins.usageAdapters.values()];
     for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
+  }
+
+  async #closeAdapters(): Promise<void> {
+    const results = await Promise.allSettled([
+      this.#plugins?.close(),
+      ...[...new Set(this.#options.externalAdapters?.values())].map((adapter) =>
+        Promise.resolve().then(() => adapter.close()),
+      ),
+    ]);
+    for (const result of results) {
+      if (result.status === "rejected") this.#diagnose("Harness plugin cleanup failed");
+    }
   }
 
   async run(): Promise<number> {
@@ -944,11 +938,7 @@ export class AppServerHost {
       this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
       this.#pluginLoadAbort.abort();
       await this.#pluginLoading;
-      await Promise.allSettled(
-        [...new Set([...this.#externalAdapters.values(), ...this.#usageOnlyAdapters])].map(
-          (adapter) => Promise.resolve().then(() => adapter.close()),
-        ),
-      );
+      await this.#closeAdapters();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
       this.#unsubscribeAccountState?.();
@@ -998,11 +988,7 @@ export class AppServerHost {
       const threads = this.#externalRuntime.values();
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
-      await Promise.allSettled(
-        [...new Set([...this.#externalAdapters.values(), ...this.#usageOnlyAdapters])].map(
-          (adapter) => Promise.resolve().then(() => adapter.close()),
-        ),
-      );
+      await this.#closeAdapters();
       for (const pending of [...this.#pendingDesktopApprovals.values()]) {
         await this.#resolveDesktopApproval(pending.interaction.interactionId).catch(
           () => undefined,
@@ -1276,6 +1262,27 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(request, -32090, "Remote service is updating; reconnect shortly"),
       );
+      return;
+    }
+    if (request.method === DELEGATION_READ_METHOD) {
+      const parsed = delegationReadParamsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid Thread read request"));
+        return;
+      }
+      const shared = await this.#options.sharedThreads?.route(request);
+      if (shared) {
+        await this.#writer.json(shared);
+        return;
+      }
+      await this.#waitForPlugins();
+      const result = await this.#delegationCoordinator.read({
+        threadId: parsed.data.threadId,
+        view: parsed.data.view,
+        ...(parsed.data.cursor !== undefined ? { cursor: parsed.data.cursor } : {}),
+        ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
@@ -3582,6 +3589,9 @@ export class AppServerHost {
     else this.#manualCompactionTurns.delete(thread);
 
     try {
+      if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+        await this.#notifyExternalThreadStarted(thread.thread);
+      }
       const result = await commands.execute({
         turnId,
         commandId: descriptor.id,
@@ -3934,7 +3944,7 @@ export class AppServerHost {
     const session = sessionResult.value;
     await this.#externalRuntime.idleRelease.runOperation(record.hostThreadId, async () => {
       try {
-        if (session.initialState.nativeRef) {
+        if (session.initialState.nativeRef && params[EXTERNAL_THREAD_PREWARM_PARAM] !== true) {
           record = await this.#repository.commitNative(
             record.hostThreadId,
             session.initialState.nativeRef,
@@ -3948,6 +3958,7 @@ export class AppServerHost {
         const externalThread = this.#registerExternalThread({
           record,
           session,
+          unsubmittedPrewarm: params[EXTERNAL_THREAD_PREWARM_PARAM] === true,
           sessionId: record.hostThreadId,
           thread,
           turns: [],
@@ -3981,8 +3992,8 @@ export class AppServerHost {
             },
           }),
         );
-        // A prewarmed draft without a native identity cannot be restored after
-        // release. Publish it only once the Harness commits that identity.
+        // Draft prewarms remain provisional even when the Harness already has
+        // an identity. Only user submission may publish them to Desktop history.
         if (record.state === "ready") await this.#notifyExternalThreadStarted(thread);
       } catch {
         this.#externalRuntime.remove(record.hostThreadId);
@@ -4005,6 +4016,7 @@ export class AppServerHost {
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
     requestedPermissionModeId?: HarnessPermissionModeId;
+    unsubmittedPrewarm?: boolean;
   }): ExternalThread {
     return this.#externalRuntime.register(input);
   }
@@ -4650,6 +4662,9 @@ export class AppServerHost {
     thread.responseGates.set(turnId, gate);
 
     try {
+      if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+        await this.#notifyExternalThreadStarted(thread.thread);
+      }
       const result = await thread.session.execute({
         type: "turn.start",
         turnId,
@@ -4824,14 +4839,17 @@ export class AppServerHost {
     if (event.type === "session.state.changed") {
       try {
         if (event.state.nativeRef) {
-          if (!thread.record.nativeSessionRef) {
-            thread.record = await this.#repository.commitNative(thread.id, event.state.nativeRef);
-            await this.#notifyExternalThreadStarted(thread.thread);
-          } else if (
-            thread.record.nativeSessionRef.harnessId !== event.state.nativeRef.harnessId ||
-            thread.record.nativeSessionRef.nativeSessionId !== event.state.nativeRef.nativeSessionId
+          const nativeRef = thread.record.nativeSessionRef ?? thread.stateObserver.state.nativeRef;
+          if (
+            nativeRef &&
+            (nativeRef.harnessId !== event.state.nativeRef.harnessId ||
+              nativeRef.nativeSessionId !== event.state.nativeRef.nativeSessionId)
           ) {
             throw new Error("External Session changed Native identity");
+          }
+          if (!thread.record.nativeSessionRef && !thread.unsubmittedPrewarm) {
+            thread.record = await this.#repository.commitNative(thread.id, event.state.nativeRef);
+            await this.#notifyExternalThreadStarted(thread.thread);
           }
         }
         thread.stateObserver.update(event.state);
@@ -4939,6 +4957,11 @@ export class AppServerHost {
         promise: Promise.resolve(),
         resolve: () => undefined,
       });
+      // Real native work is no longer a disposable draft, even when it was
+      // initiated by the Harness rather than a Desktop submission.
+      if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+        await this.#notifyExternalThreadStarted(thread.thread);
+      }
       return;
     }
 
@@ -4955,7 +4978,8 @@ export class AppServerHost {
       await this.#resolveDesktopQuestion(event.interactionId);
     }
     const ephemeralTurn =
-      event.type === "turn.completed" && thread.ephemeralTurnIds.has(event.turnId);
+      event.type === "turn.completed" &&
+      (event.ephemeral === true || thread.ephemeralTurnIds.has(event.turnId));
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#persistTerminalIdentity(thread, event);
       if (persistenceError) {
@@ -5214,7 +5238,8 @@ export class AppServerHost {
       result = projection.projector.projectApproval(
         interaction,
         this.#pluginDescriptors.find(({ id }) => id === thread.harnessId)?.name ??
-          approvalServerName(thread.harnessId),
+          this.#pluginDescriptors.find(({ id }) => id === thread.harnessId)?.name ??
+          thread.harnessId,
       );
     } catch (error) {
       this.#diagnose(error);

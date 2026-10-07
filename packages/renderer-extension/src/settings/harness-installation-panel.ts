@@ -1,4 +1,4 @@
-import type { ExternalRendererAgent } from "../agent-selection-state.js";
+import type { HarnessPluginDescriptor } from "@codexhost/shared-contracts";
 import { harnessInstallationGuide } from "./harness-installation-guides.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -6,14 +6,14 @@ import type { RendererSettingsMessages } from "./localization.js";
 /** Installation actions and manual commands; the website link lives in the header. */
 export function createHarnessInstallationPanel(
   document: Document,
-  agent: ExternalRendererAgent,
+  plugin: HarnessPluginDescriptor | undefined,
   hostId: string,
   messages: RendererSettingsMessages,
   copy: (button: HTMLButtonElement, command: string, label: string) => void,
   installation?: { run: () => void; status: "idle" | "installing" | "checking" },
 ): HTMLElement {
   const zh = messages.locale === "zh-CN";
-  const guide = harnessInstallationGuide(agent, messages.locale);
+  const guide = harnessInstallationGuide(plugin, messages.locale);
   const panel = document.createElement("div");
   panel.className = "settings-harness-installation";
   const paragraph = (text: string): void => {
@@ -82,6 +82,14 @@ export function createHarnessInstallationPanel(
     link.setAttribute("aria-label", `${link.textContent} ${download.label}`);
     panel.append(link);
   }
-  paragraph(guide.after);
+  if (guide.after) paragraph(guide.after);
+  if (!plugin?.installation && guide.url) {
+    const link = document.createElement("a");
+    link.href = guide.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = zh ? "安装说明" : "Installation instructions";
+    panel.append(link);
+  }
   return panel;
 }

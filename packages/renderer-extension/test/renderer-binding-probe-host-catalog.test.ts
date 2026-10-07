@@ -1,4 +1,4 @@
-import { harnessIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, harnessPluginDescriptorSchema } from "@codexhost/shared-contracts";
 import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
@@ -45,6 +45,7 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
       return {
         composer: testState.composer,
         composerId: "composer-1",
+        setPlugins: vi.fn(),
         root: { isConnected: true, remove: vi.fn() },
         picker: { root: { isConnected: true } },
         modelPicker: { root: { isConnected: true }, trigger: {} },
@@ -121,6 +122,16 @@ vi.mock("../src/renderer-settings-lifecycle.js", () => ({
     };
   },
 }));
+
+async function listHarnessPlugins() {
+  return {
+    plugins: ["pi", "claude-code", "deepseek-harness"].map((id) => ({
+      id,
+      name: id,
+      version: "1",
+    })),
+  };
+}
 
 function readyInspection(modelId = "claude-model-v1.b3B1cw") {
   const model = harnessModelRefSchema.parse({ id: modelId });
@@ -261,6 +272,173 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
+  it("loads remote sidebar artwork before any Composer opens on that Host", async () => {
+    installFakeBrowser();
+    const plugin = harnessPluginDescriptorSchema.parse({
+      id: "remote-only",
+      name: "Remote plugin",
+      version: "1",
+      icon: "data:image/svg+xml;base64,PHN2Zy8+",
+      iconStyle: {
+        vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0h4v4z" }] },
+      },
+    });
+    const local = {
+      listHarnessPlugins: vi.fn(async () => ({ plugins: [] })),
+      inspectThread: vi.fn(async () => ({ owner: "codex", locked: true })),
+      inspectThreadUsage: vi.fn(async () => ({ threadId: "thread-a", usage: null })),
+    };
+    const remote = {
+      listHarnessPlugins: vi.fn(async () => ({ plugins: [plugin] })),
+      inspectHarness: vi.fn(async () => readyInspection()),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({});
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      {
+        currentHostId: () => "local",
+        knownHostIds: () => ["local", "remote"],
+        clientForHost: (host: string) => (host === "local" ? local : remote),
+      } as never,
+    );
+    try {
+      await vi.waitFor(() => expect(local.listHarnessPlugins).toHaveBeenCalledOnce());
+      expect(remote.listHarnessPlugins).not.toHaveBeenCalled();
+      const getPlugin = testState.sidebarOptions?.getPlugin;
+      assert(getPlugin);
+      expect(getPlugin("remote", plugin.id)).toBeUndefined();
+      await vi.waitFor(() => expect(getPlugin("remote", plugin.id)).toEqual(plugin));
+      expect(remote.listHarnessPlugins).toHaveBeenCalledOnce();
+      expect(getPlugin("local", plugin.id)).toBeUndefined();
+    } finally {
+      probe.dispose();
+    }
+  });
+
+  it("keeps main-branch styling for an identical old remote image without replacing metadata", async () => {
+    installFakeBrowser();
+    const localPlugin = harnessPluginDescriptorSchema.parse({
+      id: "pi",
+      name: "Local Pi",
+      version: "new",
+      icon: "data:image/svg+xml;base64,PHN2Zy8+",
+      iconStyle: {
+        vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0h4v4z" }] },
+      },
+    });
+    const remotePlugin = {
+      ...localPlugin,
+      name: "Remote Pi",
+      version: "old",
+      iconStyle: undefined,
+    };
+    const local = {
+      listHarnessPlugins: async () => ({ plugins: [localPlugin] }),
+      inspectHarness: async () => readyInspection(),
+      inspectThread: async () => ({ owner: "codex", locked: true }),
+      inspectThreadUsage: async () => ({ threadId: "thread-a", usage: null }),
+    };
+    const remote = {
+      listHarnessPlugins: async () => ({ plugins: [remotePlugin] }),
+      inspectHarness: async () => readyInspection(),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({});
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      {
+        currentHostId: () => "local",
+        knownHostIds: () => ["local", "remote"],
+        clientForHost: (host: string) => (host === "local" ? local : remote),
+      } as never,
+    );
+    try {
+      const getPlugin = testState.sidebarOptions?.getPlugin;
+      assert(getPlugin);
+      await vi.waitFor(() =>
+        expect(getPlugin("remote", "pi")).toEqual({
+          ...remotePlugin,
+          iconStyle: localPlugin.iconStyle,
+        }),
+      );
+      expect(
+        testState
+          .getConnectionDiagnostics?.()
+          ?.snapshot()
+          .hosts.find(({ hostId }) => hostId === "remote")?.agents[0]?.plugin,
+      ).toEqual({
+        ...remotePlugin,
+        iconStyle: localPlugin.iconStyle,
+      });
+    } finally {
+      probe.dispose();
+    }
+  });
+
+  it("discovers session plugins per Host, excludes usage-only plugins and supports an empty directory", async () => {
+    installFakeBrowser();
+    let localPlugins = [
+      { id: "unseen-local", name: "Local plugin", version: "1" },
+      { id: "codex-usage", name: "Codex usage", version: "1", kind: "usage" as const },
+    ];
+    const local = {
+      listHarnessPlugins: async () => ({ plugins: localPlugins }),
+      inspectHarness: vi.fn(async () => readyInspection()),
+      inspectThread: vi.fn(async () => ({ owner: "codex", locked: true })),
+      inspectThreadUsage: vi.fn(async () => ({ threadId: "thread-a", usage: null })),
+    };
+    const remote = {
+      listHarnessPlugins: async () => ({
+        plugins: [{ id: "unseen-remote", name: "Remote plugin", version: "2" }],
+      }),
+      inspectHarness: vi.fn(async () => readyInspection()),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({});
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      {
+        currentHostId: () => "local",
+        knownHostIds: () => ["local", "remote"],
+        clientForHost: (host: string) => (host === "local" ? local : remote),
+        subscribeThreadUsage: () => () => undefined,
+      } as never,
+    );
+    try {
+      const diagnostics = testState.getConnectionDiagnostics?.();
+      assert(diagnostics);
+      await diagnostics.refresh();
+      const hosts = diagnostics.snapshot().hosts;
+      expect(hosts.find(({ hostId }) => hostId === "local")?.agents).toMatchObject([
+        { agent: "unseen-local", plugin: { name: "Local plugin" }, availability: "ready" },
+      ]);
+      expect(hosts.find(({ hostId }) => hostId === "remote")?.agents).toMatchObject([
+        { agent: "unseen-remote", plugin: { name: "Remote plugin" }, availability: "ready" },
+      ]);
+      expect(local.inspectHarness.mock.calls.flat()).not.toContainEqual(
+        expect.objectContaining({ harnessId: "codex-usage" }),
+      );
+      expect(remote.inspectHarness).toHaveBeenCalledWith(
+        { harnessId: "unseen-remote", refresh: true },
+        { priority: "background" },
+      );
+      localPlugins = [];
+      await diagnostics.refresh("local");
+      expect(diagnostics.snapshot().hosts.find(({ hostId }) => hostId === "local")?.agents).toEqual(
+        [],
+      );
+      expect(probe.lockedSelection()?.agent).toBe("codex");
+    } finally {
+      probe.dispose();
+    }
+  });
   it.each([
     { pendingHarness: "pi", modelFirst: true },
     { pendingHarness: "claude-code", modelFirst: true },
@@ -273,9 +451,11 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       const catalog = Promise.withResolvers<ReturnType<typeof readyInspection>>();
       if (modelFirst) catalog.resolve(readyInspection());
       const local = {
+        listHarnessPlugins,
         inspectHarness: vi.fn(async () => readyInspection()),
       };
       const remote = {
+        listHarnessPlugins,
         inspectHarness: vi.fn(
           async (input: { harnessId: string }, options?: RendererRequestOptions) => {
             if (!options) return catalog.promise;
@@ -383,18 +563,15 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     );
     await Promise.resolve();
     const diagnostics = testState.getConnectionDiagnostics?.();
-    expect(
-      diagnostics
-        ?.snapshot()
-        .hosts.find(({ hostId }) => hostId === "local")
-        ?.agents.find(({ agent }) => agent === "pi"),
-    ).toMatchObject({ availability: "checking", error: null });
+    expect(diagnostics?.snapshot().hosts.find(({ hostId }) => hostId === "local")?.agents).toEqual(
+      [],
+    ); // An unresolved Host has no invented plugin directory.
     expect(inspectHarness).not.toHaveBeenCalled();
   });
   it("includes discovered remote Hosts when the active Composer route is ambiguous", async () => {
     installFakeBrowser();
-    const local = { inspectHarness: vi.fn(async () => readyInspection()) };
-    const remote = { inspectHarness: vi.fn(async () => readyInspection()) };
+    const local = { listHarnessPlugins, inspectHarness: vi.fn(async () => readyInspection()) };
+    const remote = { listHarnessPlugins, inspectHarness: vi.fn(async () => readyInspection()) };
     const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
     const probe = installRendererBindingProbe({
       enabledAgents: ["codex", "pi"],
@@ -429,6 +606,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     installFakeBrowser();
     const pending = Promise.withResolvers<ReturnType<typeof readyInspection>>();
     const local = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(async () => readyInspection()),
       inspectThread: vi.fn(async () => ({ owner: "codex", locked: true })),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
@@ -529,6 +707,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
   it("does not rediscover the request route for unrelated sidebar rows", async () => {
     installFakeBrowser();
     const host = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(async () => readyInspection()),
       inspectThread: vi.fn(async () => ({ owner: "codex", locked: true })),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
@@ -581,6 +760,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     const newModel = inspection.catalog.defaultModel;
     let resolveSelection!: (state: { effectiveModel: typeof newModel }) => void;
     const host = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(async () => inspection),
       inspectThread: vi.fn(async () => ({
         owner: "external" as const,
@@ -692,6 +872,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
   it("routes Session import to local while the current Composer Host is remote", async () => {
     installFakeBrowser();
     const local = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(async () => readyInspection()),
       listSessionImportSources: vi.fn(async () => ({
         harnesses: [
@@ -702,6 +883,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       importHarnessSession: vi.fn(async () => ({ threadId: "local-thread" })),
     };
     const remote = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(async () => readyInspection()),
       listSessionImportSources: vi.fn(async () => ({
         harnesses: [
@@ -757,6 +939,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     let dshAvailable = true;
     let dshInspections = 0;
     const local = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(async ({ harnessId }: { harnessId: string }) => {
         if (harnessId !== "deepseek-harness") return readyInspection();
         dshInspections += 1;
@@ -823,6 +1006,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       installFakeBrowser();
       let globalHostId: string | null = null;
       const local = {
+        listHarnessPlugins,
         inspectHarness: vi.fn(async () => readyInspection()),
         inspectThread: vi.fn(async () => ({
           owner: "external" as const,
@@ -840,6 +1024,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         })),
       };
       const remote = {
+        listHarnessPlugins,
         inspectHarness: vi.fn(async () => {
           throw new Error("Harness unsupported on stock Codex");
         }),
@@ -907,6 +1092,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     });
     let claudeInspections = 0;
     const hostA = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(({ harnessId }: { harnessId: string }) => {
         if (harnessId !== "claude-code") return Promise.resolve(readyInspection());
         claudeInspections += 1;
@@ -929,6 +1115,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       })),
     };
     const genericHostB = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(async () => readyInspection("opencodex-model-v1.generic")),
     };
     const modelControl = {
@@ -977,11 +1164,14 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     });
     let claudeInspections = 0;
     const originalHost = {
-      inspectHarness: vi.fn(({ harnessId }: { harnessId: string }) => {
-        if (harnessId !== "claude-code") return Promise.resolve(readyInspection());
-        claudeInspections += 1;
-        return claudeInspections === 1 ? Promise.resolve(readyInspection()) : pendingCatalog;
-      }),
+      listHarnessPlugins,
+      inspectHarness: vi.fn(
+        ({ harnessId }: { harnessId: string }, options?: RendererRequestOptions) => {
+          if (harnessId !== "claude-code" || options) return Promise.resolve(readyInspection());
+          claudeInspections += 1;
+          return pendingCatalog;
+        },
+      ),
       inspectThread: vi.fn(async () => ({
         owner: "external" as const,
         harnessId: "claude-code",
@@ -999,6 +1189,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       })),
     };
     const replacementHost = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(async () => readyInspection()),
     };
     let selectedHost: typeof originalHost | typeof replacementHost = originalHost;
@@ -1023,7 +1214,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       modelControl as never,
     );
 
-    await vi.waitFor(() => expect(claudeInspections).toBe(2));
+    await vi.waitFor(() => expect(claudeInspections).toBe(1));
     selectedHost = replacementHost;
     resolveCatalog(readyInspection("claude-model-v1.c3RhbGU"));
     await Promise.resolve();
@@ -1041,6 +1232,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     installFakeBrowser();
     testState.modelTarget = ["default"];
     const hostA = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(async () => readyInspection()),
     };
     const modelControl = {
@@ -1082,9 +1274,12 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     installFakeBrowser();
     testState.modelTarget = ["default"];
     let hostId = "local";
-    const local = { inspectHarness: vi.fn(async () => readyInspection()) };
+    const local = { listHarnessPlugins, inspectHarness: vi.fn(async () => readyInspection()) };
     const remoteModelId = "claude-model-v1.c29ubmV0";
-    const remote = { inspectHarness: vi.fn(async () => readyInspection(remoteModelId)) };
+    const remote = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(async () => readyInspection(remoteModelId)),
+    };
     const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
     const probe = installRendererBindingProbe({
       enabledAgents: ["codex", "claude-code"],
@@ -1130,8 +1325,8 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     installFakeBrowser();
     testState.modelTarget = ["default"];
     let hostId = "local";
-    const local = { inspectHarness: vi.fn(async () => readyInspection()) };
-    const remote = { inspectHarness: vi.fn(async () => readyInspection()) };
+    const local = { listHarnessPlugins, inspectHarness: vi.fn(async () => readyInspection()) };
+    const remote = { listHarnessPlugins, inspectHarness: vi.fn(async () => readyInspection()) };
     const applyAgent = vi.fn<(agent: string) => boolean>(() => true);
     const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
     const probe = installRendererBindingProbe({
@@ -1167,6 +1362,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     installFakeBrowser();
     let claudeInspections = 0;
     const hostA = {
+      listHarnessPlugins,
       inspectHarness: vi.fn(({ harnessId }: { harnessId: string }) => {
         if (harnessId !== "claude-code") return Promise.resolve(readyInspection());
         claudeInspections += 1;
@@ -1188,7 +1384,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         accountCredits: null,
       })),
     };
-    const local = { inspectHarness: vi.fn(async () => readyInspection()) };
+    const local = { listHarnessPlugins, inspectHarness: vi.fn(async () => readyInspection()) };
     const modelControl = {
       currentHostId: () => "host-a",
       clientForHost: vi.fn((hostId: string) => (hostId === "host-a" ? hostA : local)),

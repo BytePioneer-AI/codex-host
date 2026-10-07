@@ -4,7 +4,7 @@ import type { RendererSettingsMessages } from "./localization.js";
 export function createHarnessLaunchControls(
   document: Document,
   messages: RendererSettingsMessages,
-  agent: "zcode" | "workbuddy",
+  agent: string,
   settings: {
     get(): Promise<HarnessLaunchSettings>;
     set(path: string | null): Promise<HarnessLaunchSettings>;
@@ -20,12 +20,14 @@ export function createHarnessLaunchControls(
   input.autocomplete = "off";
   input.spellcheck = false;
   input.placeholder =
-    agent === "zcode" ? messages.launchPathZcodePlaceholder : messages.launchPathPlaceholder;
+    messages.locale === "zh-CN" ? "应用安装目录的绝对路径" : "Absolute installation directory";
   input.setAttribute("aria-label", messages.launchPathLabel);
   label.append(input);
   const help = document.createElement("p");
   help.textContent =
-    agent === "zcode" ? messages.launchPathZcodeHelp : messages.launchPathWorkbuddyHelp;
+    messages.locale === "zh-CN"
+      ? "填写插件对应应用的安装目录；清除后恢复自动发现。修改后需重启 codexhost。"
+      : "Choose the application's installation directory; clear it to restore automatic discovery. Restart codexhost after changing it.";
   const actions = document.createElement("div");
   actions.className = "settings-harness-launch__actions";
   const save = document.createElement("button");

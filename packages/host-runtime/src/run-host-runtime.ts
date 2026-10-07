@@ -16,6 +16,7 @@ import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
+import { readRemoteDelegationThread } from "./remote-delegation-read.js";
 import {
   DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_CLI_PATH_ENV,
@@ -126,6 +127,7 @@ async function prepareDelegationRuntime(input: {
   ): Promise<number>;
 }): Promise<number> {
   const registry = new DelegationControlRegistry({
+    remoteRead: (request) => readRemoteDelegationThread(input.environment, request),
     diagnose: (error) =>
       process.stderr.write(
         `codexhost delegation watch: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,

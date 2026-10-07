@@ -53,6 +53,12 @@ it("combines only models of the same Harness and keeps separate credit lines", (
     { label: "codebuddy", amount: "2 credits" },
   ]);
 });
+it("does not label unmetered requests as missing prices when neither unit is recorded", () => {
+  expect(
+    costWithCredits({ ...totals, unpricedRequests: 0, unmeteredRequests: 2 }, [], options).primary,
+  ).toBe("—");
+});
+
 it("falls back to unpriced only when neither unit has a known value", () => {
   expect(costWithCredits(totals, undefined, options)).toEqual({
     primary: "Unpriced",

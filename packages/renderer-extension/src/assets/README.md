@@ -15,7 +15,9 @@ used in settings. The launcher PNG and Windows ICO are derived from it.
 
 ## External artwork provenance
 
-- Pi: official `https://pi.dev/logo-auto.svg` mark on a light plate for image contrast.
+- Pi: official `https://pi.dev/logo-auto.svg`. The original Renderer paths, viewBox
+  and `currentColor` SVG rendering are preserved in the plugin Manifest; the original
+  standalone image resource is unchanged. No light plate is added.
 - Claude Code: Anthropic's official `anthropic.claude-code` VS Code extension.
 - DeepSeek Harness: official web favicon / `FishLogo.tsx`, blue `#4D6BFE`.
 - OMP: Oh My Pi `packages/collab-web/public/favicon.svg`.
@@ -26,8 +28,7 @@ used in settings. The launcher PNG and Windows ICO are derived from it.
   backgrounds, marks, viewBoxes and clipping are preserved.
 - Cursor: official `https://cursor.com/favicon.svg` Cube with its dark plate.
 - Hermes: the original cropped/resized website favicon, unchanged; its existing light plate,
-  padding and rounded corners are declared by the plugin rather than baked into the artwork;
-  the plate is encoded in the plugin image rather than a Harness-specific Renderer style.
+  padding and rounded corners are declared by the plugin rather than baked into the artwork.
 - ZCode: upstream codex-host integration snapshot `b66013bb`.
 
 Product names and marks remain trademarks of their respective owners.

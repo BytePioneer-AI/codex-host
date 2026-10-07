@@ -190,10 +190,14 @@ function iconUrl(
   ownerDocument: Document,
   plugin?: HarnessPluginDescriptor,
 ): string | null {
-  if (plugin?.icon) return plugin.icon;
   const icon = createRendererAgentIcon(agent, 16, ownerDocument, plugin);
   if (icon.tagName.toLowerCase() === "img") return (icon as HTMLImageElement).src || null;
-  return null;
+  const view = ownerDocument.defaultView;
+  if (!view?.XMLSerializer || icon.tagName.toLowerCase() !== "svg") return null;
+  const markup = new view.XMLSerializer()
+    .serializeToString(icon)
+    .replaceAll("currentColor", "#808080");
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(markup)}`;
 }
 
 function cssString(value: string): string {
@@ -230,7 +234,7 @@ function syncChipStyle(
     withPseudo(" > span:last-child") + "{display:none;}",
     withPseudo("::after") + "{content:attr(agent-mention-display-name);}",
     ...targets.flatMap(({ agent, plugin }) => {
-      const key = plugin?.icon ?? agent;
+      const key = JSON.stringify([plugin?.icon ?? agent, plugin?.iconStyle]);
       if (!cache.has(key)) cache.set(key, iconUrl(agent, ownerDocument, plugin));
       const url = cache.get(key);
       if (!url) return [];
@@ -238,9 +242,7 @@ function syncChipStyle(
       return [
         `${selector}{content:"";display:inline-block;width:16px;height:16px;` +
           `margin-inline-end:3px;vertical-align:-3px;` +
-          (plugin?.iconStyle?.monochrome
-            ? `background:#808080;mask:url(${cssString(url)}) center/contain no-repeat;}`
-            : `background:url(${cssString(url)}) center/contain no-repeat;}`),
+          `background:url(${cssString(url)}) center/contain no-repeat;}`,
       ];
     }),
   ];

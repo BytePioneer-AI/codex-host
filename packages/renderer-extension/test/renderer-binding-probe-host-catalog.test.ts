@@ -279,7 +279,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       name: "Remote plugin",
       version: "1",
       icon: "data:image/svg+xml;base64,PHN2Zy8+",
-      iconStyle: { monochrome: true },
+      iconStyle: { vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0h4v4z" }] } },
     });
     const local = {
       listHarnessPlugins: vi.fn(async () => ({ plugins: [] })),
@@ -311,6 +311,50 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       await vi.waitFor(() => expect(getPlugin("remote", plugin.id)).toEqual(plugin));
       expect(remote.listHarnessPlugins).toHaveBeenCalledOnce();
       expect(getPlugin("local", plugin.id)).toBeUndefined();
+    } finally {
+      probe.dispose();
+    }
+  });
+
+  it("keeps main-branch styling for an identical old remote image without replacing metadata", async () => {
+    installFakeBrowser();
+    const localPlugin = harnessPluginDescriptorSchema.parse({
+      id: "pi", name: "Local Pi", version: "new",
+      icon: "data:image/svg+xml;base64,PHN2Zy8+",
+      iconStyle: { vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0h4v4z" }] } },
+    });
+    const remotePlugin = { ...localPlugin, name: "Remote Pi", version: "old", iconStyle: undefined };
+    const local = {
+      listHarnessPlugins: async () => ({ plugins: [localPlugin] }),
+      inspectHarness: async () => readyInspection(),
+      inspectThread: async () => ({ owner: "codex", locked: true }),
+      inspectThreadUsage: async () => ({ threadId: "thread-a", usage: null }),
+    };
+    const remote = {
+      listHarnessPlugins: async () => ({ plugins: [remotePlugin] }),
+      inspectHarness: async () => readyInspection(),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({});
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined, undefined,
+      {
+        currentHostId: () => "local",
+        knownHostIds: () => ["local", "remote"],
+        clientForHost: (host: string) => (host === "local" ? local : remote),
+      } as never,
+    );
+    try {
+      const getPlugin = testState.sidebarOptions?.getPlugin;
+      assert(getPlugin);
+      await vi.waitFor(() => expect(getPlugin("remote", "pi")).toEqual({
+        ...remotePlugin, iconStyle: localPlugin.iconStyle,
+      }));
+      expect(testState.getConnectionDiagnostics?.()?.snapshot().hosts
+        .find(({ hostId }) => hostId === "remote")?.agents[0]?.plugin).toEqual({
+          ...remotePlugin, iconStyle: localPlugin.iconStyle,
+        });
     } finally {
       probe.dispose();
     }

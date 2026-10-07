@@ -5,7 +5,42 @@ export function rendererAgentLabel(agent: string, plugin?: HarnessPluginDescript
   return agent === "codex" ? "Codex" : (plugin?.name ?? agent);
 }
 
-/** Plugin images are validated Host data. Never inline their SVG or execute plugin UI code. */
+function createSvgIcon(
+  paths: readonly { d: string; fillRule?: string | undefined; fill?: string | undefined }[],
+  color: string,
+  size: number,
+  ownerDocument: Document,
+  viewBox = "0 0 24 24",
+): SVGSVGElement {
+  const svg = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", viewBox);
+  svg.setAttribute("aria-hidden", "true");
+  svg.style.width = `${size}px`;
+  svg.style.height = `${size}px`;
+  svg.style.flex = "none";
+  svg.style.fill = color;
+  for (const definition of paths) {
+    const path = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", definition.d);
+    if (definition.fillRule) path.setAttribute("fill-rule", definition.fillRule);
+    if (definition.fill) path.setAttribute("fill", definition.fill);
+    svg.append(path);
+  }
+  return svg;
+}
+
+/** Older Hosts can omit styling. Reuse it only for the identical plugin and image bytes. */
+export function compatibleRendererPluginPresentation(
+  plugin: HarnessPluginDescriptor | undefined,
+  reference: HarnessPluginDescriptor | undefined,
+): HarnessPluginDescriptor | undefined {
+  return plugin && !plugin.iconStyle && plugin.icon && reference?.id === plugin.id &&
+    reference.icon === plugin.icon && reference.iconStyle
+    ? { ...plugin, iconStyle: reference.iconStyle }
+    : plugin;
+}
+
+/** Construct only validated path primitives; never inject plugin SVG markup or UI code. */
 export function createRendererAgentIcon(
   agent: string,
   size = 20,
@@ -13,19 +48,12 @@ export function createRendererAgentIcon(
   plugin?: HarnessPluginDescriptor,
 ): Element {
   const source = agent === "codex" ? codexAgentIconUrl : plugin?.icon;
+  const presentation = agent === "codex" ? undefined : plugin?.iconStyle;
+  if (presentation?.vector) {
+    const { paths, color, viewBox } = presentation.vector;
+    return createSvgIcon(paths, color, size, ownerDocument, viewBox);
+  }
   if (source) {
-    const presentation = plugin?.iconStyle;
-    if (presentation?.monochrome) {
-      const mark = ownerDocument.createElement("span");
-      mark.setAttribute("aria-hidden", "true");
-      mark.style.display = "inline-block";
-      mark.style.width = `${size}px`;
-      mark.style.height = `${size}px`;
-      mark.style.flex = "none";
-      mark.style.backgroundColor = "currentColor";
-      mark.style.mask = `url("${source}") center / contain no-repeat`;
-      return mark;
-    }
     const image = ownerDocument.createElement("img");
     image.src = source;
     image.alt = "";

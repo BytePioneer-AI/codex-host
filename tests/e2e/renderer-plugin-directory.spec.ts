@@ -131,10 +131,10 @@ test("preserves original plugin artwork and Pi text coloring in both themes", as
     <button id="light">Light theme</button><div id="gallery"></div>
   </body>`);
   await page.addScriptTag({ content: iconFixtureBundle });
-  const pi = page.locator("#pi > span").first();
-  await expect(pi).toHaveCSS("background-color", "rgb(238, 238, 238)");
+  const pi = page.locator("#pi > svg").first();
+  await expect(pi).toHaveCSS("fill", "rgb(238, 238, 238)");
   await expect(pi).toHaveCSS("width", "14px");
-  await expect(pi).toHaveCSS("mask-image", /^url\("data:image\/svg\+xml;base64,/);
+  await expect(pi).toHaveAttribute("viewBox", "0 0 24 24");
   for (const id of ["kiro-cli", "hermes", "grok", "omp"]) {
     await expect(page.locator(`#${id} img`).first()).toBeVisible();
     await expect.poll(() => page.locator(`#${id} img`).first().evaluate(
@@ -144,7 +144,7 @@ test("preserves original plugin artwork and Pi text coloring in both themes", as
   await expect(page.locator("#hermes img").first()).toHaveCSS("padding", "1px");
   await page.screenshot({ path: info.outputPath("icons-dark.png") });
   await page.getByRole("button", { name: "Light theme", exact: true }).click();
-  await expect(pi).toHaveCSS("background-color", "rgb(34, 34, 34)");
+  await expect(pi).toHaveCSS("fill", "rgb(34, 34, 34)");
   await page.screenshot({ path: info.outputPath("icons-light.png") });
   expect(errors).toEqual([]);
 });

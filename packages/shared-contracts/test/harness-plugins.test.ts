@@ -89,7 +89,7 @@ describe("Harness plugin public contracts", () => {
 
   it("accepts bounded icon presentation without allowing arbitrary CSS", () => {
     const iconStyle = {
-      monochrome: true,
+      vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0h4v4z" }] },
       background: "#d8d8e8",
       borderRadius: 22.37,
       paddingRatio: 0.0625,
@@ -103,6 +103,9 @@ describe("Harness plugin public contracts", () => {
       { paddingRatio: -1 },
       { paddingRatio: 1 },
       { css: "position:fixed" },
+      { vector: { viewBox: "0 0 24 24", color: "url(https://example.com)", paths: [{ d: "M0 0" }] } },
+      { vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "<script/>" }] } },
+      { vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0", onclick: "run()" }] } },
     ]) {
       expect(
         harnessPluginManifestSchema.safeParse({ ...manifest, iconStyle: invalid }).success,

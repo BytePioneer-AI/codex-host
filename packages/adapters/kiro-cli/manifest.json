@@ -5,7 +5,7 @@
   "version": "0.0.0",
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
-  "icon": "./assets/icon.svg",
+  "icon": "./assets/kiro-agent.svg",
   "links": { "website": "https://kiro.dev/", "installation": "https://kiro.dev/docs/cli/" },
   "installation": {
     "commands": [

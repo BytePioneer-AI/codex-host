@@ -1,5 +1,6 @@
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import type * as FsPromises from "node:fs/promises";
+import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 import { describe, expect, it, vi } from "vitest";
@@ -30,6 +31,11 @@ import type {
   ClaudeTurnEvent,
   ClaudeTurnTransport,
 } from "../src/transport.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
@@ -1705,6 +1711,68 @@ describe("Claude Code HarnessAdapter", () => {
       await adapter.close();
     }
   });
+
+  it.each(["close", "fault"] as const)(
+    "completes notified background commands before the output channel ends on Session %s",
+    async (ending) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const outputs: HarnessOutput[] = [];
+      const consuming = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      const pendingOpen = Promise.withResolvers<FsPromises.FileHandle>();
+      void pendingOpen.promise.catch(() => undefined);
+      let opening = false;
+      try {
+        await session.execute(textTurn("closing-background-command"));
+        const transport = transports[0];
+        if (!transport) throw new Error("Fake Claude transport was not created");
+        transport.event({
+          type: "tool.started",
+          callId: "bash-call",
+          toolName: "Bash",
+          arguments: { command: "sleep 3" },
+        });
+        transport.event({
+          type: "tool.completed",
+          callId: "bash-call",
+          toolName: "Bash",
+          outputText: "Command running in background with ID: bash-task.",
+          isError: false,
+          backgroundTaskId: "bash-task",
+        });
+        vi.mocked(open).mockImplementationOnce(() => {
+          opening = true;
+          return pendingOpen.promise;
+        });
+        transport.threadEvent({
+          type: "subagent.settled",
+          nativeSubagentId: "bash-task",
+          callId: "bash-call",
+          status: "completed",
+          outputFile: path.join(tmpdir(), "claude-pending-output"),
+        });
+        await vi.waitFor(() => expect(opening).toBe(true));
+        if (ending === "close") await session.close();
+        else transport.fault(new Error("synthetic Query fault"));
+        await consuming;
+        const commands = outputs.flatMap((output) =>
+          output.kind === "event" &&
+          output.event.type === "item.completed" &&
+          output.event.snapshot.item.type === "commandExecution"
+            ? [output.event]
+            : [],
+        );
+        expect(commands).toMatchObject([{ snapshot: { outcome: { status: "succeeded" } } }]);
+      } finally {
+        pendingOpen.reject(Object.assign(new Error("Output unavailable"), { code: "ENOENT" }));
+        await adapter.close();
+        await consuming;
+        vi.mocked(open).mockReset();
+      }
+    },
+  );
 
   it.each([false, true])("waits for transcript persistence (timeout: %s)", async (timeout) => {
     const { adapter, transports, history, dependencies } = fixture();
@@ -3927,11 +3995,23 @@ describe("Claude Code HarnessAdapter", () => {
       ok: false,
       error: {
         code: "nativeFailure",
-        message: "Claude Code rejected the Permission Mode selection",
+        message: "Claude Code rejected the Permission Mode selection: connection closed",
         retryable: true,
       },
     });
     expect(transports[0]?.permissionMode).toBe("default");
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(
+      new Error("new policy refusal api_key=secret-value"),
+    );
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        message:
+          "Claude Code rejected the Permission Mode selection: new policy refusal api_key=[redacted]",
+      },
+    });
     transports[0]?.finish({ status: "succeeded" });
     await session.close();
   });

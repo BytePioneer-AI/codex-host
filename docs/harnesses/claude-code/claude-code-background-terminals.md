@@ -13,6 +13,7 @@ Claude 在 `run_in_background` 下启动 Bash 时，原生结果立即返回并�
 
 - 原生 `task_notification` 是后台任务唯一的终止信号（`stopTask` 之后也以 status 为 stopped 的通知收尾）。它由后台 Agent 与后台命令共用，且不带任务类型。现有的 `native-message.ts` 统一把它解析为带 `callId`（`tool_use_id`）的 `subagent.settled`，本功能只补上结构化的输出文件路径。
 - Session 在接收这一事件的唯一入口按 `callId` 分流：属于已登记的后台命令就完成该卡片，否则交给原有的 Subagent 处理。Subagent 逻辑不变。
+- 收到通知后保留跟踪直到卡片完成，但不再向该任务发送停止请求。若最终输出读取期间 Session 关闭或故障，先按已收到的原生结果完成卡片，再结束输出通道；未收到通知的卡片以取消完成。迟到的读取和重复通知不会重复完成卡片。
 - 顺序：没有请求 Turn 的原生 Segment 只在第一条 Root 输出之前暂存事件，之后按原生顺序实时交出。暂存期间，若还欠着同一 `callId` 的工具事件，结算就和它一起暂存（`canDeliverSettlementImmediately` 对 Subagent 创建事件已采用同一规则）。因此卡片登记总是先于它的结算。Segment 开始、后台任务集合与任务进度帧不算 Root 输出，不会单独开出 Turn。
 - 空闲释放与后台命令卡片无关：`hasBackgroundWork()` 直接反映 CLI 的原生活跃任务集合，任何原生后台任务都会阻止回收，因为关闭会话会停止它们。
 - Desktop 的"停止全部后台终端"（`thread/backgroundTerminals/clean`）并行停止各卡片对应的原生任务；每个停止请求与中断共用同一超时，超时作为停止失败返回（-32083）。
@@ -21,7 +22,7 @@ Claude 在 `run_in_background` 下启动 Bash 时，原生结果立即返回并�
 
 - `native-message.ts`：原生边界。从 Bash 结果解析 `backgroundTaskId` 与实时输出路径，从 `task_notification` 解析结构化输出路径。
 - `tool-lifecycle.ts`：Bash 结果带 `backgroundTaskId` 时不结束卡片，改发 `item.detached` 并交给后台命令卡片。
-- `background-command-items.ts`：以 `callId` 跟踪卡片，推送输出增量，按通知完成卡片；会话关闭或故障时以取消完成未结束的卡片。
+- `background-command-items.ts`：以 `callId` 跟踪卡片，推送输出增量，按通知完成卡片；会话关闭或故障时完成所有仍被跟踪的卡片，优先保留已收到的原生结果。
 - `sdk-transport.ts`：原生活跃任务集合（空闲释放）、有超时的 `stopTask`、续段的实时交出与上述顺序规则。
 - `item-identity.ts` + `claude-history.ts`：工具 Item 的实时 ID 与历史 ID 同为 `claudeTranscriptItemId(nativeTurnKey, "tool", ordinal)`。
 - `protocol-core` 投影层：detached Item 可越过 `turn/completed`，之后仍在原 Turn 上更新与完成。

@@ -91,6 +91,42 @@ describe("remote SSH Host installation", () => {
     }
   });
 
+  it("identifies and migrates a profile containing the retired default Agent export", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-legacy-profile-"));
+    try {
+      const options = {
+        home,
+        stockCodexPath: await executable(path.join(home, "stock-codex")),
+        nodePath: await executable(path.join(home, "node")),
+        shimPath: await executable(path.join(home, "codexhost-shim")),
+        hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+        platform: "darwin" as const,
+        environment: { HOME: home, SHELL: "/bin/zsh" },
+      };
+      const installed = await installRemoteHost(options);
+      const profile = await readFile(installed.profilePath, "utf8");
+      await writeFile(
+        installed.profilePath,
+        profile.replace(
+          "  export CODEXHOST_REMOTE_SSH_MANAGED='1'",
+          "  export CODEXHOST_DEFAULT_AGENT='codex'\n  export CODEXHOST_REMOTE_SSH_MANAGED='1'",
+        ),
+      );
+      await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+        state: "degraded",
+        issues: ["shell profile does not configure the managed native entrypoint"],
+      });
+      await installRemoteHost(options);
+      await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+        state: "ready",
+        issues: [],
+      });
+      expect(await readFile(installed.profilePath, "utf8")).toBe(profile);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "loads the managed block before the standard non-interactive bash guard",
     async () => {

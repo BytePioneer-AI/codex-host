@@ -8,6 +8,9 @@ export async function handleRemoteConnectionsRequest(
 ): Promise<unknown> {
   const request = remoteConnectionsRequestSchema.parse(input);
   switch (request.action) {
+    case "read-thread":
+      if (!control.readThread) throw new Error("Remote Thread reading is unavailable");
+      return control.readThread(request.hostId, request.input);
     case "list":
       return control.ssh.list();
     case "save":

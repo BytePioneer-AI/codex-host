@@ -10,6 +10,7 @@ import {
 import {
   HarnessOutputChannel,
   parseHostUsage,
+  sanitizeDiagnosticTail,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
@@ -443,9 +444,10 @@ function claudePermissionModeSelectionFailure(
       };
     }
   }
+  const detail = sanitizeDiagnosticTail(error instanceof Error ? error.message : String(error));
   return {
     code: "nativeFailure",
-    message: "Claude Code rejected the Permission Mode selection",
+    message: `Claude Code rejected the Permission Mode selection${detail ? `: ${detail}` : ""}`,
     retryable: true,
   };
 }

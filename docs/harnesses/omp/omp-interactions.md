@@ -1,6 +1,6 @@
-# OMP 原生提问与工具审批
+# OMP 原生交互与本地命令
 
-OMP 以原生 `--mode rpc-ui` 启动，使用 `extension_ui_request` / `extension_ui_response`，所有转换位于 `packages/adapters/omp`，不修改公共 Adapter 或 Host。
+OMP 以原生 `--mode rpc-ui` 启动。提问与工具审批使用 `extension_ui_request` / `extension_ui_response`；原生协议转换位于 `packages/adapters/omp`，Host 只消费公共 Adapter 事件。
 
 ## 提问
 
@@ -18,9 +18,21 @@ OMP 的 `ask` 工具通过这些基础交互组合多问题、多选和 “Other
 
 这些基础链路此前已经存在。README 中 OMP 的提问、工具审批空缺属于过期标记；此次补齐选项说明、超时语义及回归覆盖。
 
+## 不调用 Agent 的本地命令
+
+`/context` 是本地文本报告，加入 OMP 的实时命令目录；其他内置终端命令仍不开放，`/compact` 保留专用处理。动态扩展命令也可能只在本地执行，不能从命令名推断是否启动 Agent。
+
+- 同步 `response.prompt.data.agentInvoked: false`，或与当前请求 ID 匹配的异步 `prompt_result.agentInvoked: false`，确认本地操作结束；本地成功、失败和取消分别映射为对应终态，不再等待不会出现的 `agent_end`。
+- `command_output.text` 沿既有文本增量路径展示。该原生帧没有请求 ID，只归属当前串行、尚未完成的 Prompt；空输出也可合法完成。协议分块 ID 不作为 Prompt 或历史身份。
+- 未创建原生 User Entry 的本地操作使用公共 `turn.completed.ephemeral: true`，结束活动状态但不写入历史或伪造 Checkpoint。首次 `/context` 后，OMP 可能已公布历史文件路径但尚未创建文件；仅新建会话且原生消息确认为空时接受空历史，恢复会话或已有消息时仍保留文件缺失错误。
+- 普通模型轮次仍等待终结性的 `agent_end` 和空闲状态确认；`abort` ACK 只表示接受取消，没有终结信号仍按原有时限失败。缺失或为真的 `agentInvoked` 不走本地完成路径。
+
+本地命令核查版本为 OMP `18.4.10`，依据其 [RPC 协议](https://github.com/can1357/oh-my-pi/blob/v18.4.10/docs/rpc.md)。实际运行已编译的 Adapter、真实 OMP 和隔离 localhost 模型服务，验证同一会话依次完成 `/context`、异步本地扩展命令、普通模型轮次、运行中模型取消及取消后的 `/context`。两个本地命令均未请求模型；普通与取消轮次保留真实原生身份。另有 Host 协议回归覆盖非持久化历史和后续轮次。该验证未操作 Codex Desktop GUI，不等同于实际 Desktop 界面验收。
+
+
 ## 原生依据与验证边界
 
-核查版本为本机 OMP `18.0.6`，源码参考提交 `b4e8e856ad40294167679a3f88417c07429fe59b`：
+提问与审批的核查版本为本机 OMP `18.0.6`，源码参考提交 `b4e8e856ad40294167679a3f88417c07429fe59b`：
 
 - [RPC 模式](https://github.com/can1357/oh-my-pi/blob/b4e8e856ad40294167679a3f88417c07429fe59b/packages/coding-agent/src/modes/rpc/rpc-mode.ts)：`requestRpcSelect` 发出对齐的 `optionDetails`，对话响应保留超时与取消区别。
 - [Ask 工具](https://github.com/can1357/oh-my-pi/blob/b4e8e856ad40294167679a3f88417c07429fe59b/packages/coding-agent/src/tools/ask.ts)：RPC 使用 select/editor 组合提问流程。

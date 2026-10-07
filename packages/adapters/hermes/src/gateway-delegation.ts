@@ -36,7 +36,18 @@ export async function prepareGatewayDelegation(environment: NodeJS.ProcessEnv): 
       },
       // Reserve RPC stdout before native plugin imports. The registration is
       // process-local; no plugin is installed and no user config is changed.
-      bootstrap: `from tui_gateway import server
+      //
+      // ``hermes_bootstrap`` must run before ``tui_gateway.server`` is imported:
+      // the gateway spawn uses ``python -I``, so PYTHONPATH and the launcher's
+      // activation are stripped. Hermes's own entry point (``tui_gateway/entry.py``)
+      // imports this module first to put the selected dependency environment on
+      // ``sys.path``; skipping it makes bare third-party imports (e.g.
+      // ``hermes_yaml`` -> ``ruamel``) fail on interpreters whose site-packages
+      // do not already carry Hermes's dependencies. ``hermes_bootstrap`` is
+      // import-safe here for the same reason entry.py relies on it: stdlib-only
+      // at import time, so nothing can shadow it from the launch directory.
+      bootstrap: `import hermes_bootstrap
+from tui_gateway import server
 from pathlib import Path
 from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
 PluginContext(PluginManifest(name="codexhost-runtime"), get_plugin_manager()).register_skill(

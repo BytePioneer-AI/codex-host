@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import net, { type Socket } from "node:net";
@@ -39,15 +40,22 @@ import {
   type HarnessId,
   harnessAccountSnapshotSchema,
   type HarnessAccountSnapshot,
+  accountCreditsSnapshotSchema,
+  type AccountCreditsSnapshot,
   harnessInspectionSchema,
   harnessSessionCapabilitiesSchema,
   type HarnessCommandCatalog,
 } from "@codexhost/shared-contracts";
 
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
-import { defaultHarnessBrokerDescriptorPath } from "./paths.js";
+import {
+  defaultHarnessBrokerDescriptorPath,
+  harnessBrokerLaunchAgentLabel,
+  harnessBrokerLaunchAgentPlistPath,
+} from "./paths.js";
 import {
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
+  HARNESS_BROKER_RETIRING_ERROR_CODE,
   HARNESS_BROKER_PROTOCOL_VERSION,
   HARNESS_BROKER_REQUEST_TIMEOUT_MS,
   harnessBrokerDescriptorSchema,
@@ -178,9 +186,74 @@ async function readDescriptor(descriptorPath: string): Promise<HarnessBrokerDesc
   try {
     process.kill(descriptor.ownerPid, 0);
   } catch {
-    throw new Error("Aqua Harness broker owner process is unavailable");
+    throw new BrokerNotRunningError("its owner process has exited");
   }
   return descriptor;
+}
+
+/** No broker process is serving: not started yet, exited when idle, or never registered. */
+class BrokerNotRunningError extends Error {}
+
+/** The broker refused a request unprocessed because it is exiting; it is safe to retry. */
+class BrokerRetiringError extends Error {}
+
+/** The request frame could not be written, so the broker never received it. */
+class BrokerRequestNotDeliveredError extends Error {}
+
+/** The native CLI is absent on this Mac, so no broker is started for it. */
+class HarnessNotInstalledError extends Error {}
+
+const BROKER_NOT_RUNNING_CODES = new Set(["ENOENT", "ECONNREFUSED"]);
+const BROKER_START_TIMEOUT_MS = 15_000;
+const BROKER_START_POLL_MS = 250;
+
+function classifyConnectFailure(error: unknown): Error {
+  if (error instanceof BrokerNotRunningError) return error;
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code && BROKER_NOT_RUNNING_CODES.has(code)) {
+    return new BrokerNotRunningError(
+      code === "ENOENT"
+        ? "its descriptor or socket is missing"
+        : "its socket refused the connection",
+    );
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function describeBrokerFailure(error: unknown, harnessId: HarnessId): string {
+  if (error instanceof BrokerNotRunningError) {
+    return (
+      `The ${harnessId} Aqua Harness broker on this Mac could not be started (${error.message}). ` +
+      "Keep the desktop user logged in, then repair the remote service or run on this Mac: " +
+      `codexhost broker install --harness ${harnessId}`
+    );
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+function runLaunchctl(arguments_: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile("/bin/launchctl", arguments_, { timeout: 10_000 }, (error) => resolve(!error));
+  });
+}
+
+/** Starts the registered LaunchAgent in the console user's Aqua session; idempotent. */
+async function startBrokerLaunchAgent(
+  harnessId: HarnessId,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const uid = process.getuid?.();
+  if (uid === undefined) return;
+  const target = `gui/${uid}/${harnessBrokerLaunchAgentLabel(harnessId)}`;
+  if (await runLaunchctl(["kickstart", target])) return;
+  // Not loaded (e.g. booted out by an older release): register the installed plist
+  // again. A missing plist leaves the broker unavailable with an actionable error.
+  await runLaunchctl([
+    "bootstrap",
+    `gui/${uid}`,
+    harnessBrokerLaunchAgentPlistPath(environment, harnessId),
+  ]);
+  await runLaunchctl(["kickstart", target]);
 }
 
 class BrokerConnection {
@@ -212,24 +285,34 @@ class BrokerConnection {
   }
 
   static async connect(descriptorPath: string, harnessId: HarnessId): Promise<BrokerConnection> {
-    const descriptor = await readDescriptor(descriptorPath);
-    if (descriptor.harnessId !== harnessId)
-      throw new Error("Aqua broker belongs to another Harness");
-    const socket = net.createConnection(descriptor.socketPath);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error("Timed out connecting to Aqua Harness broker")),
-        HARNESS_BROKER_REQUEST_TIMEOUT_MS,
-      );
-      socket.once("connect", () => {
-        clearTimeout(timeout);
-        resolve();
+    let descriptor: HarnessBrokerDescriptorV1;
+    let socket: Socket;
+    let connecting: Socket | undefined;
+    try {
+      descriptor = await readDescriptor(descriptorPath);
+      if (descriptor.harnessId !== harnessId)
+        throw new Error("Aqua broker belongs to another Harness");
+      connecting = net.createConnection(descriptor.socketPath);
+      const pending = connecting;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("Timed out connecting to Aqua Harness broker")),
+          HARNESS_BROKER_REQUEST_TIMEOUT_MS,
+        );
+        pending.once("connect", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        pending.once("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
       });
-      socket.once("error", (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-    });
+      socket = pending;
+    } catch (error) {
+      connecting?.destroy();
+      throw classifyConnectFailure(error);
+    }
     const connection = new BrokerConnection(descriptor, socket);
     const hello = connection.#waitForHello();
     await writeBrokerFrame(socket, {
@@ -287,15 +370,25 @@ class BrokerConnection {
       }, HARNESS_BROKER_REQUEST_TIMEOUT_MS);
       this.#pending.set(id, { resolve, reject, timeout });
     });
-    await writeBrokerFrame(this.#socket, {
-      version: HARNESS_BROKER_PROTOCOL_VERSION,
-      generation: this.#descriptor.generation,
-      sequence: this.#inputSequence,
-      kind: "request",
-      id,
-      method,
-      params,
-    });
+    try {
+      await writeBrokerFrame(this.#socket, {
+        version: HARNESS_BROKER_PROTOCOL_VERSION,
+        generation: this.#descriptor.generation,
+        sequence: this.#inputSequence,
+        kind: "request",
+        id,
+        method,
+        params,
+      });
+    } catch (error) {
+      const pending = this.#pending.get(id);
+      if (pending) clearTimeout(pending.timeout);
+      this.#pending.delete(id);
+      response.catch(() => undefined);
+      throw new BrokerRequestNotDeliveredError(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     return response;
   }
 
@@ -339,6 +432,8 @@ class BrokerConnection {
     clearTimeout(pending.timeout);
     this.#pending.delete(frame.id);
     if (frame.ok) pending.resolve(frame.value);
+    else if (frame.error?.code === HARNESS_BROKER_RETIRING_ERROR_CODE)
+      pending.reject(new BrokerRetiringError(frame.error.message));
     else pending.reject(new Error(frame.error?.message ?? "Broker request failed"));
   }
 
@@ -610,8 +705,13 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId;
   readonly #descriptorPath: string;
   readonly #forwardEnvironment: boolean;
+  readonly #isInstalled: (() => boolean) | undefined;
+  readonly #startBroker: (() => Promise<void>) | undefined;
+  readonly #startTimeoutMs: number;
   #connection: Promise<BrokerConnection> | null = null;
   #closed = false;
+  #credits: AccountCreditsSnapshot | null = null;
+  #creditsRefresh: Promise<AccountCreditsSnapshot | null> | null = null;
 
   readonly subagents = {
     readSnapshot: async (
@@ -619,13 +719,10 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     ) => {
       try {
         return parseHarnessResult<HostThreadSnapshot>(
-          await (await this.#connect()).request("adapter.subagent.readSnapshot", input),
+          await this.#request("adapter.subagent.readSnapshot", input),
         );
       } catch (error) {
-        return {
-          ok: false as const,
-          error: unavailable(error instanceof Error ? error.message : String(error)),
-        };
+        return { ok: false as const, error: this.#error(error) };
       }
     },
   };
@@ -638,6 +735,14 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
       environment?: NodeJS.ProcessEnv;
       commandCatalog?: HarnessCommandCatalog;
       liveCommandCatalog?: boolean;
+      /** Cheap local check; a broker is never started for a CLI that is not installed. */
+      isInstalled?: () => boolean;
+      /**
+       * Starts the broker when none is serving. Defaults to kickstarting the registered
+       * macOS LaunchAgent unless an explicit descriptor path selects a custom broker.
+       */
+      startBroker?: (() => Promise<void>) | false;
+      startTimeoutMs?: number;
     } = {},
   ) {
     this.harnessId = harnessPluginIdSchema.parse(input.harnessId ?? "claude-code");
@@ -646,12 +751,46 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     if (input.liveCommandCatalog) this.liveCommandCatalog = true;
     this.#descriptorPath =
       input.descriptorPath ?? defaultHarnessBrokerDescriptorPath(input.environment, this.harnessId);
+    this.#isInstalled = input.isInstalled;
+    const environment = input.environment ?? process.env;
+    this.#startBroker =
+      input.startBroker === false
+        ? undefined
+        : (input.startBroker ??
+          (process.platform === "darwin" && !input.descriptorPath
+            ? () => startBrokerLaunchAgent(this.harnessId, environment)
+            : undefined));
+    this.#startTimeoutMs = input.startTimeoutMs ?? BROKER_START_TIMEOUT_MS;
+  }
+
+  credits(): AccountCreditsSnapshot | null {
+    return this.#credits;
+  }
+
+  refreshCredits(): Promise<AccountCreditsSnapshot | null> {
+    if (this.#closed) return Promise.resolve(null);
+    if (this.#creditsRefresh) return this.#creditsRefresh;
+    this.#creditsRefresh = this.#readCredits().finally(() => {
+      this.#creditsRefresh = null;
+    });
+    return this.#creditsRefresh;
+  }
+
+  async #readCredits(): Promise<AccountCreditsSnapshot | null> {
+    try {
+      const value = await this.#request("adapter.credits", {}, true);
+      const credits = accountCreditsSnapshotSchema.nullable().parse(value);
+      if (!this.#closed) this.#credits = credits;
+    } catch {
+      // Optional telemetry: retain the last valid snapshot if the broker cannot read it.
+    }
+    return this.#credits;
   }
 
   async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
     if (this.#closed) return null;
     try {
-      const value = await (await this.#connect()).request("adapter.inspectAccount", {});
+      const value = await this.#request("adapter.inspectAccount", {}, true);
       return harnessAccountSnapshotSchema.nullable().parse(value);
     } catch {
       return null;
@@ -661,43 +800,60 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     if (this.#closed) return failedInspection("Aqua Harness broker adapter is closed");
     try {
-      return harnessInspectionSchema.parse(
-        await (await this.#connect()).request("adapter.inspect", input),
-      );
+      return harnessInspectionSchema.parse(await this.#request("adapter.inspect", input, true));
     } catch (error) {
       this.#connection = null;
-      return failedInspection(error instanceof Error ? error.message : String(error));
+      if (error instanceof HarnessNotInstalledError)
+        return { status: "notInstalled", error: this.#error(error) };
+      return failedInspection(describeBrokerFailure(error, this.harnessId));
     }
   }
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closed)
       return { ok: false, error: unavailable("Aqua Harness broker adapter is closed", false) };
+    const safeInput = { ...input } as OpenSessionInput & {
+      environment?: Record<string, string | undefined>;
+    };
+    delete safeInput.environment;
+    if (this.#forwardEnvironment && input.environment) {
+      const allowed = [
+        "CODEXHOST_CLI_PATH",
+        "CODEXHOST_CLI_NODE_PATH",
+        "CODEXHOST_RUNTIME_ENDPOINT",
+        "CODEXHOST_RUNTIME_TOKEN",
+        "CODEXHOST_THREAD_ID",
+      ];
+      const environment = Object.fromEntries(
+        Object.entries(input.environment).filter(
+          ([key, value]) => allowed.includes(key) && value !== undefined,
+        ),
+      );
+      if (Object.keys(environment).length) safeInput.environment = environment;
+    }
     let connection: BrokerConnection | undefined;
     try {
-      const safeInput = { ...input } as OpenSessionInput & {
-        environment?: Record<string, string | undefined>;
-      };
-      delete safeInput.environment;
-      if (this.#forwardEnvironment && input.environment) {
-        const allowed = [
-          "CODEXHOST_CLI_PATH",
-          "CODEXHOST_CLI_NODE_PATH",
-          "CODEXHOST_RUNTIME_ENDPOINT",
-          "CODEXHOST_RUNTIME_TOKEN",
-          "CODEXHOST_THREAD_ID",
-        ];
-        const environment = Object.fromEntries(
-          Object.entries(input.environment).filter(
-            ([key, value]) => allowed.includes(key) && value !== undefined,
-          ),
-        );
-        if (Object.keys(environment).length) safeInput.environment = environment;
+      let value: unknown;
+      for (let attempt = 0; ; attempt += 1) {
+        connection = await this.#connect();
+        try {
+          value = await connection.request("adapter.open", safeInput);
+          break;
+        } catch (error) {
+          // Only a refusal or an undelivered frame proves the open never ran; a plain
+          // disconnect may have created a native Session, so it is reported, not repeated.
+          if (
+            attempt > 0 ||
+            !(
+              error instanceof BrokerRetiringError ||
+              error instanceof BrokerRequestNotDeliveredError
+            )
+          )
+            throw error;
+          this.#connection = null;
+        }
       }
-      connection = await this.#connect();
-      const result = parseHarnessResult<unknown>(
-        await connection.request("adapter.open", safeInput),
-      );
+      const result = parseHarnessResult<unknown>(value);
       if (!result.ok) return result;
       const session = new BrokeredHarnessSession(
         connection,
@@ -714,15 +870,13 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     } catch (error) {
       connection?.close();
       this.#connection = null;
-      return {
-        ok: false,
-        error: unavailable(error instanceof Error ? error.message : String(error)),
-      };
+      return { ok: false, error: this.#error(error) };
     }
   }
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#credits = null;
     await Promise.allSettled([...this.#sessions].map((session) => session.close()));
     this.#sessions.clear();
     const connection = await this.#connection?.catch(() => null);
@@ -730,12 +884,48 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     this.#connection = null;
   }
 
+  #error(error: unknown): HarnessError {
+    if (error instanceof HarnessNotInstalledError)
+      return {
+        code: "notInstalled",
+        message: error.message,
+        retryable: false,
+        stage: "harnessBroker",
+      };
+    return unavailable(describeBrokerFailure(error, this.harnessId));
+  }
+
+  /**
+   * Sends one adapter-level request. A broker that retired between requests refuses it
+   * unprocessed, so it is retried once on a fresh broker. Idempotent reads also retry
+   * once after a plain disconnect.
+   */
+  async #request(
+    method: HarnessBrokerMethod,
+    params: unknown,
+    idempotent = false,
+  ): Promise<unknown> {
+    for (let attempt = 0; ; attempt += 1) {
+      const connection = await this.#connect();
+      try {
+        return await connection.request(method, params);
+      } catch (error) {
+        const retryable =
+          error instanceof BrokerRetiringError ||
+          error instanceof BrokerRequestNotDeliveredError ||
+          (idempotent && connection.closed);
+        if (attempt > 0 || !retryable) throw error;
+        this.#connection = null;
+      }
+    }
+  }
+
   #connect(): Promise<BrokerConnection> {
     if (this.#closed) return Promise.reject(new Error("Aqua Harness broker adapter is closed"));
     if (!this.#connection) {
-      // Re-read the descriptor on the next caller request after service restart or
-      // initial unavailability. Never start a background discovery/retry loop.
-      const pending = BrokerConnection.connect(this.#descriptorPath, this.harnessId)
+      // Re-read the descriptor on the next caller request after service restart, idle
+      // exit or initial unavailability. Never start a background discovery/retry loop.
+      const pending = this.#establish()
         .then((connection) => {
           connection.onClose(() => {
             if (this.#connection === pending) this.#connection = null;
@@ -749,5 +939,28 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
       this.#connection = pending;
     }
     return this.#connection;
+  }
+
+  async #establish(): Promise<BrokerConnection> {
+    try {
+      return await BrokerConnection.connect(this.#descriptorPath, this.harnessId);
+    } catch (error) {
+      if (!(error instanceof BrokerNotRunningError) || !this.#startBroker) throw error;
+    }
+    if (this.#isInstalled && !this.#isInstalled()) {
+      throw new HarnessNotInstalledError(`${this.harnessId} is not installed on this Mac`);
+    }
+    // Start on demand, re-issuing the idempotent start while polling: a retiring broker
+    // may still own the agent and exit only after the first start request.
+    const deadline = Date.now() + this.#startTimeoutMs;
+    for (;;) {
+      await this.#startBroker();
+      try {
+        return await BrokerConnection.connect(this.#descriptorPath, this.harnessId);
+      } catch (error) {
+        if (!(error instanceof BrokerNotRunningError) || Date.now() >= deadline) throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, BROKER_START_POLL_MS));
+    }
   }
 }

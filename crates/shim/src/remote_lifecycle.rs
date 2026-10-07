@@ -62,18 +62,30 @@ fn parse_options(arguments: &[String]) -> LifecycleResult<TerminateOptions> {
     })
 }
 
+/// Stock Codex binds its control socket under a short temporary path and leaves a symlink at
+/// the well-known location, so the kernel reports the owner under the resolved path.
+fn socket_path_spellings(socket_path: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![socket_path.to_path_buf()];
+    if let Ok(resolved) = socket_path.canonicalize()
+        && resolved != socket_path
+    {
+        paths.push(resolved);
+    }
+    paths
+}
+
 #[cfg(target_os = "linux")]
 fn socket_owner_process_ids(socket_path: &Path) -> LifecycleResult<Vec<u32>> {
     use std::os::unix::fs::MetadataExt;
 
-    let socket_text = socket_path.to_string_lossy();
+    let socket_paths = socket_path_spellings(socket_path);
     let socket_inodes = std::fs::read_to_string("/proc/net/unix")?
         .lines()
         .filter_map(|line| {
             let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
             if fields
                 .get(7)
-                .is_some_and(|path| *path == socket_text.as_ref())
+                .is_some_and(|path| socket_paths.iter().any(|known| known.as_os_str() == *path))
             {
                 fields.get(6).map(|inode| (*inode).to_owned())
             } else {
@@ -130,7 +142,7 @@ fn socket_owner_process_ids(socket_path: &Path) -> LifecycleResult<Vec<u32>> {
     let user_id = String::from_utf8(user_id.stdout)?.trim().to_owned();
     let output = Command::new("lsof")
         .args(["-n", "-t", "-a", "-u", &user_id, "--"])
-        .arg(socket_path)
+        .args(socket_path_spellings(socket_path))
         .output()?;
     if !output.status.success() && output.stdout.is_empty() {
         return Ok(Vec::new());
@@ -385,8 +397,29 @@ pub fn run_terminate(arguments: &[String]) -> LifecycleResult<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_mentions_path, has_default_listener, is_managed_remote_listener_service};
+    use super::{
+        command_mentions_path, has_default_listener, is_managed_remote_listener_service,
+        socket_path_spellings,
+    };
     use std::path::Path;
+
+    #[cfg(unix)]
+    #[test]
+    fn looks_for_socket_owners_under_the_resolved_path_too() {
+        let root = std::env::temp_dir().join(format!("codexhost-socket-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let target = root.join("bound");
+        let link = root.join("app-server-control.sock");
+        std::fs::write(&target, "").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(
+            socket_path_spellings(&link),
+            vec![link.clone(), target.clone()]
+        );
+        assert_eq!(socket_path_spellings(&target), vec![target.clone()]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn arguments(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()

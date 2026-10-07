@@ -33,6 +33,9 @@ export type ConsoleOpenResult = z.infer<typeof consoleOpenResultSchema>;
  * channel: the settings Codex exposes, never Thread or Turn operations.
  */
 export const CONSOLE_HOST_METHODS = Object.freeze([
+  "codexhost/console/remote-connections",
+  "codexhost/runtime/status",
+  "codexhost/remote/ssh-setup",
   "codexhost/harness/plugins/list",
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",

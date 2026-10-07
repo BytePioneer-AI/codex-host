@@ -13,74 +13,8 @@ import {
   ClaudeSdkTransport,
   type ClaudeSdkTransportOptions,
 } from "../src/sdk-transport.js";
-import type {
-  ClaudeAutonomousTurn,
-  ClaudeTransportTurnResult,
-  ClaudeTurnEvent,
-} from "../src/transport.js";
-
-class FakeQuery {
-  readonly accountInfo = vi.fn(async () => ({ apiProvider: "firstParty" as const }));
-  readonly initializationResult = vi.fn(async () => ({
-    models: [
-      {
-        value: "default",
-        displayName: "Default",
-        description: "Default",
-        supportsAutoMode: true,
-      },
-    ],
-  }));
-  readonly interrupt = vi.fn(async () => undefined);
-  readonly stopTask = vi.fn(async (taskId: string) => {
-    this.push({
-      type: "system",
-      subtype: "task_notification",
-      task_id: taskId,
-      status: "stopped",
-    } as unknown as SDKMessage);
-  });
-  readonly getContextUsage = vi.fn(
-    async (): Promise<{
-      totalTokens: number;
-      maxTokens: number;
-      model: string;
-    }> => ({
-      totalTokens: 40,
-      maxTokens: 200,
-      model: "runtime-model",
-    }),
-  );
-  readonly setModel = vi.fn(async () => undefined);
-  readonly applyFlagSettings = vi.fn(async () => undefined);
-  readonly setPermissionMode = vi.fn(async () => undefined);
-  #closed = false;
-  #messages: SDKMessage[] = [];
-  #waiters: Array<(result: IteratorResult<SDKMessage>) => void> = [];
-
-  close(): void {
-    if (this.#closed) return;
-    this.#closed = true;
-    for (const waiter of this.#waiters.splice(0)) waiter({ done: true, value: undefined });
-  }
-
-  push(message: SDKMessage): void {
-    const waiter = this.#waiters.shift();
-    if (waiter) waiter({ done: false, value: message });
-    else this.#messages.push(message);
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {
-    return {
-      next: () => {
-        const message = this.#messages.shift();
-        if (message) return Promise.resolve({ done: false, value: message });
-        if (this.#closed) return Promise.resolve({ done: true, value: undefined });
-        return new Promise((resolve) => this.#waiters.push(resolve));
-      },
-    };
-  }
-}
+import type { ClaudeTransportTurnResult, ClaudeTurnEvent } from "../src/transport.js";
+import { FakeQuery } from "./fake-sdk-query.js";
 
 type QueryInput = Parameters<NonNullable<ClaudeSdkTransportOptions["queryFactory"]>>[0];
 
@@ -127,6 +61,41 @@ function fixture(
     },
     transport,
   };
+}
+
+interface RecordedAutonomousTurn {
+  nativeTurnKey: string;
+  events: ClaudeTurnEvent[];
+  result?: ClaudeTransportTurnResult;
+}
+
+/** Records each autonomous Turn as the Transport streams it: start, live events, Terminal. */
+function recordAutonomousTurns(transport: ClaudeSdkTransport): RecordedAutonomousTurn[] {
+  const turns: RecordedAutonomousTurn[] = [];
+  const current = (): RecordedAutonomousTurn => {
+    const turn = turns.at(-1);
+    if (!turn || turn.result) throw new Error("Autonomous output arrived outside a started Turn");
+    return turn;
+  };
+  transport.setAutonomousTurnHandler({
+    start: (nativeTurnKey) => {
+      if (turns.at(-1) && !turns.at(-1)?.result) throw new Error("Autonomous Turns overlapped");
+      turns.push({ nativeTurnKey, events: [] });
+    },
+    onEvent: (event) => current().events.push(event),
+    onTerminal: (result) => {
+      current().result = result;
+    },
+  });
+  return turns;
+}
+
+function ended(turns: readonly RecordedAutonomousTurn[]): RecordedAutonomousTurn[] {
+  return turns.filter((turn) => turn.result !== undefined);
+}
+
+function texts(events: readonly ClaudeTurnEvent[]): string[] {
+  return events.flatMap((event) => (event.type === "text.delta" ? [event.delta] : []));
 }
 
 function completeTurn(fakeQuery: FakeQuery): void {
@@ -724,9 +693,8 @@ describe("ClaudeSdkTransport Tool interpretation", () => {
 describe("ClaudeSdkTransport autonomous task continuation", () => {
   it("publishes Root output produced after a background task notification", async () => {
     const value = fixture();
-    const autonomous: ClaudeAutonomousTurn[] = [];
+    const autonomous = recordAutonomousTurns(value.transport);
     const threadEvents: ClaudeTurnEvent[] = [];
-    value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
     value.transport.setThreadEventHandler((event) => threadEvents.push(event));
     await value.transport.start();
 
@@ -754,7 +722,7 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     );
     completeTurn(value.fakeQuery);
 
-    await vi.waitFor(() => expect(autonomous).toHaveLength(1));
+    await vi.waitFor(() => expect(ended(autonomous)).toHaveLength(1));
     expect(threadEvents).toEqual([
       {
         type: "subagent.settled",
@@ -777,9 +745,8 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
 
   it("preserves a failed task-notification whose user content is text blocks", async () => {
     const value = fixture();
-    const autonomous: ClaudeAutonomousTurn[] = [];
+    const autonomous = recordAutonomousTurns(value.transport);
     const threadEvents: ClaudeTurnEvent[] = [];
-    value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
     value.transport.setThreadEventHandler((event) => threadEvents.push(event));
     await value.transport.start();
 
@@ -802,7 +769,7 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     pushAssistantText(value.fakeQuery, "Continuation", "00000000-0000-4000-8000-000000000051");
     completeTurn(value.fakeQuery);
 
-    await vi.waitFor(() => expect(autonomous).toHaveLength(1));
+    await vi.waitFor(() => expect(ended(autonomous)).toHaveLength(1));
     expect(threadEvents).toEqual([
       {
         type: "subagent.settled",
@@ -817,9 +784,8 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
 
   it("delivers a background task settlement whose Segment never produces a Terminal", async () => {
     const value = fixture();
-    const autonomous: ClaudeAutonomousTurn[] = [];
+    const autonomous = recordAutonomousTurns(value.transport);
     const threadEvents: ClaudeTurnEvent[] = [];
-    value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
     value.transport.setThreadEventHandler((event) => threadEvents.push(event));
     await value.transport.start();
 
@@ -893,6 +859,201 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
       },
     ]);
     await value.transport.close();
+  });
+});
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function pushTaskNotification(fakeQuery: FakeQuery, uuid: string, taskId: string): void {
+  fakeQuery.push({
+    type: "user",
+    uuid,
+    session_id: "00000000-0000-4000-8000-000000000001",
+    parent_tool_use_id: null,
+    origin: { kind: "task-notification" },
+    message: {
+      role: "user",
+      content: `<task-notification><task-id>${taskId}</task-id><tool-use-id>toolu-${taskId}</tool-use-id><status>completed</status><summary>Command finished</summary></task-notification>`,
+    },
+  } as unknown as SDKMessage);
+}
+
+describe("ClaudeSdkTransport live autonomous continuation", () => {
+  it("streams continuation Root output before its native Result", async () => {
+    const value = fixture();
+    const turns = recordAutonomousTurns(value.transport);
+    const threadEvents: ClaudeTurnEvent[] = [];
+    value.transport.setThreadEventHandler((event) => threadEvents.push(event));
+    await value.transport.start();
+    try {
+      pushTaskNotification(value.fakeQuery, "00000000-0000-4000-8000-0000000000a1", "bash-1");
+      pushAssistantText(value.fakeQuery, "PART-A", "00000000-0000-4000-8000-0000000000a2");
+      await vi.waitFor(() => expect(texts(turns[0]?.events ?? [])).toEqual(["PART-A"]));
+      expect(turns[0]).toMatchObject({ nativeTurnKey: "00000000-0000-4000-8000-0000000000a1" });
+      expect(turns[0]?.result).toBeUndefined();
+      // The settlement precedes the Turn and stays Thread-level.
+      expect(threadEvents).toEqual([
+        expect.objectContaining({ type: "subagent.settled", nativeSubagentId: "bash-1" }),
+      ]);
+      completeTurn(value.fakeQuery);
+      await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
+      expect(turns[0]?.result).toEqual({ status: "succeeded" });
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("rejects a requested Turn while a continuation streams and keeps each Segment in its own Turn", async () => {
+    const value = fixture();
+    const turns = recordAutonomousTurns(value.transport);
+    value.transport.setThreadEventHandler(() => undefined);
+    await value.transport.start();
+    try {
+      pushTaskNotification(value.fakeQuery, "00000000-0000-4000-8000-0000000000a1", "bash-1");
+      pushAssistantText(value.fakeQuery, "PART-A", "00000000-0000-4000-8000-0000000000a2");
+      await vi.waitFor(() => expect(texts(turns[0]?.events ?? [])).toEqual(["PART-A"]));
+
+      await expect(
+        value.transport.runTurn("user message", "00000000-0000-4000-8000-0000000000b1", () => {
+          throw new Error("The continuation must not reach a requested Turn");
+        }),
+      ).rejects.toThrow("Claude SDK transport is busy");
+
+      pushAssistantText(value.fakeQuery, "PART-B", "00000000-0000-4000-8000-0000000000a3");
+      completeTurn(value.fakeQuery);
+      await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
+      expect(texts(turns[0]?.events ?? [])).toEqual(["PART-A", "PART-B"]);
+
+      pushTaskNotification(value.fakeQuery, "00000000-0000-4000-8000-0000000000c1", "bash-2");
+      pushAssistantText(value.fakeQuery, "PART-C", "00000000-0000-4000-8000-0000000000c2");
+      completeTurn(value.fakeQuery);
+      await vi.waitFor(() => expect(ended(turns)).toHaveLength(2));
+      expect(turns[1]).toMatchObject({ nativeTurnKey: "00000000-0000-4000-8000-0000000000c1" });
+      expect(texts(turns[1]?.events ?? [])).toEqual(["PART-C"]);
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("lets a requested Turn take over a Segment that has no Root output yet", async () => {
+    const value = fixture();
+    const turns = recordAutonomousTurns(value.transport);
+    value.transport.setThreadEventHandler(() => undefined);
+    await value.transport.start();
+    try {
+      pushTaskNotification(value.fakeQuery, "00000000-0000-4000-8000-0000000000a1", "bash-1");
+      await delay(10);
+      const events: ClaudeTurnEvent[] = [];
+      const requested = value.transport.runTurn(
+        "user message",
+        "00000000-0000-4000-8000-0000000000b1",
+        (event) => events.push(event),
+      );
+      pushAssistantText(value.fakeQuery, "ANSWER", "00000000-0000-4000-8000-0000000000b2");
+      completeTurn(value.fakeQuery);
+      await expect(requested).resolves.toEqual({ status: "succeeded" });
+      expect(texts(events)).toEqual(["ANSWER"]);
+      expect(turns).toEqual([]);
+
+      // The next continuation starts fresh instead of inheriting the abandoned Segment.
+      pushTaskNotification(value.fakeQuery, "00000000-0000-4000-8000-0000000000c1", "bash-2");
+      pushAssistantText(value.fakeQuery, "PART-C", "00000000-0000-4000-8000-0000000000c2");
+      completeTurn(value.fakeQuery);
+      await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
+      expect(turns[0]).toMatchObject({ nativeTurnKey: "00000000-0000-4000-8000-0000000000c1" });
+      expect(texts(turns[0]?.events ?? [])).toEqual(["PART-C"]);
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("hands events a Segment still holds to the requested Turn that takes it over", async () => {
+    const value = fixture();
+    const turns = recordAutonomousTurns(value.transport);
+    await value.transport.start();
+    try {
+      // Without a Thread handler the settlement waits with its Segment.
+      pushTaskNotification(value.fakeQuery, "00000000-0000-4000-8000-0000000000a1", "bash-1");
+      await delay(10);
+      const events: ClaudeTurnEvent[] = [];
+      const requested = value.transport.runTurn(
+        "user message",
+        "00000000-0000-4000-8000-0000000000b1",
+        (event) => events.push(event),
+      );
+      expect(events).toEqual([
+        expect.objectContaining({ type: "subagent.settled", nativeSubagentId: "bash-1" }),
+      ]);
+      completeTurn(value.fakeQuery);
+      await expect(requested).resolves.toEqual({ status: "succeeded" });
+      expect(turns).toEqual([]);
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("does not start a Turn from Segment starts, live-task levels or untracked task frames", async () => {
+    const value = fixture();
+    const turns = recordAutonomousTurns(value.transport);
+    value.transport.setThreadEventHandler(() => undefined);
+    await value.transport.start();
+    try {
+      value.fakeQuery.push({ type: "system", subtype: "init" } as unknown as SDKMessage);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "agent-1" }],
+      } as unknown as SDKMessage);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "agent-1",
+        tool_use_id: "agent-call-from-earlier-segment",
+        description: "Analyze",
+        usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 },
+      } as unknown as SDKMessage);
+      await delay(20);
+      expect(turns).toEqual([]);
+      // Such a Segment never blocks a request.
+      const requested = value.transport.runTurn(
+        "user message",
+        "00000000-0000-4000-8000-0000000000b1",
+        () => undefined,
+      );
+      completeTurn(value.fakeQuery);
+      await expect(requested).resolves.toEqual({ status: "succeeded" });
+      expect(turns).toEqual([]);
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("interrupts a streaming continuation as a cancelled Turn", async () => {
+    const value = fixture();
+    const turns = recordAutonomousTurns(value.transport);
+    value.transport.setThreadEventHandler(() => undefined);
+    await value.transport.start();
+    try {
+      await expect(value.transport.abort()).rejects.toThrow("has no active Turn");
+      pushTaskNotification(value.fakeQuery, "00000000-0000-4000-8000-0000000000a1", "bash-1");
+      pushAssistantText(value.fakeQuery, "PART-A", "00000000-0000-4000-8000-0000000000a2");
+      await vi.waitFor(() => expect(turns).toHaveLength(1));
+      await value.transport.abort();
+      expect(value.fakeQuery.interrupt).toHaveBeenCalledOnce();
+      value.fakeQuery.push({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: "aborted_streaming",
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
+      expect(turns[0]?.result).toEqual({ status: "cancelled", reason: "aborted_streaming" });
+      expect(value.onFault).not.toHaveBeenCalled();
+    } finally {
+      await value.transport.close();
+    }
   });
 });
 
@@ -2179,9 +2340,8 @@ function pushSettlement(
 describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
   it("keeps a background command settlement after the Tool result that detached it", async () => {
     const value = fixture();
-    const turns: ClaudeAutonomousTurn[] = [];
+    const turns = recordAutonomousTurns(value.transport);
     const immediate: ClaudeTurnEvent[] = [];
-    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
     value.transport.setThreadEventHandler((event) => immediate.push(event));
     await value.transport.start();
     try {
@@ -2228,7 +2388,7 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
         summary: "Background command completed",
       } as unknown as SDKMessage);
       completeTurn(value.fakeQuery);
-      await vi.waitFor(() => expect(turns).toHaveLength(1));
+      await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
       expect(immediate).toEqual([]);
       const events = turns[0]?.events ?? [];
       const detached = events.findIndex(
@@ -2254,9 +2414,8 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
     "keeps settlements in the autonomous batch when the Thread handler is %s",
     async (handlerState) => {
       const value = fixture();
-      const turns: ClaudeAutonomousTurn[] = [];
+      const turns = recordAutonomousTurns(value.transport);
       const immediate = vi.fn();
-      value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
       if (handlerState === "cleared") {
         value.transport.setThreadEventHandler(immediate);
         value.transport.setThreadEventHandler(null);
@@ -2265,7 +2424,7 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
       try {
         pushSettlement(value.fakeQuery, "existing-child", "completed", "existing-call");
         completeTurn(value.fakeQuery);
-        await vi.waitFor(() => expect(turns).toHaveLength(1));
+        await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
         expect(turns[0]?.events).toEqual([
           {
             type: "subagent.settled",
@@ -2286,9 +2445,8 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
     "keeps a fast %s child settlement after its buffered creation",
     async (status) => {
       const value = fixture();
-      const turns: ClaudeAutonomousTurn[] = [];
+      const turns = recordAutonomousTurns(value.transport);
       const immediate: ClaudeTurnEvent[] = [];
-      value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
       value.transport.setThreadEventHandler((event) => immediate.push(event));
       await value.transport.start();
       try {
@@ -2296,7 +2454,7 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
         // No callId: the native ID learned from the launch result must suffice.
         pushSettlement(value.fakeQuery, "child-1", status);
         completeTurn(value.fakeQuery);
-        await vi.waitFor(() => expect(turns).toHaveLength(1));
+        await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
         expect(immediate).toEqual([]);
         const turn = turns[0];
         if (!turn) throw new Error("Autonomous Turn was not delivered");
@@ -2322,16 +2480,15 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
 
   it("uses the call ID when the launch result has not supplied a native child ID", async () => {
     const value = fixture();
-    const turns: ClaudeAutonomousTurn[] = [];
+    const turns = recordAutonomousTurns(value.transport);
     const immediate: ClaudeTurnEvent[] = [];
-    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
     value.transport.setThreadEventHandler((event) => immediate.push(event));
     await value.transport.start();
     try {
       pushBackgroundDelegation(value.fakeQuery, "spawn-call-only", undefined);
       pushSettlement(value.fakeQuery, "child-from-notification", "completed", "spawn-call-only");
       completeTurn(value.fakeQuery);
-      await vi.waitFor(() => expect(turns).toHaveLength(1));
+      await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
       expect(immediate).toEqual([]);
       const turn = turns[0];
       if (!turn) throw new Error("Autonomous Turn was not delivered");
@@ -2347,9 +2504,8 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
 
   it("orders repeated sends to one native child independently across batches", async () => {
     const value = fixture();
-    const turns: ClaudeAutonomousTurn[] = [];
+    const turns = recordAutonomousTurns(value.transport);
     const immediate: ClaudeTurnEvent[] = [];
-    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
     value.transport.setThreadEventHandler((event) => immediate.push(event));
     await value.transport.start();
     try {
@@ -2357,7 +2513,7 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
         pushBackgroundDelegation(value.fakeQuery, `send-${index}`, "existing-child", "send");
         pushSettlement(value.fakeQuery, "existing-child");
         completeTurn(value.fakeQuery);
-        await vi.waitFor(() => expect(turns).toHaveLength(index + 1));
+        await vi.waitFor(() => expect(ended(turns)).toHaveLength(index + 1));
         const turn = turns[index];
         if (!turn) throw new Error("Autonomous Turn was not delivered");
         const events = turn.events;
@@ -2374,59 +2530,55 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
     }
   });
 
-  it("does not make unrelated settlements wait for a buffered creation or Terminal", async () => {
+  it("streams later settlements in native order once Root output started the Turn", async () => {
     const value = fixture();
-    const turns: ClaudeAutonomousTurn[] = [];
+    const turns = recordAutonomousTurns(value.transport);
     const immediate: ClaudeTurnEvent[] = [];
-    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
     value.transport.setThreadEventHandler((event) => immediate.push(event));
     await value.transport.start();
     try {
       pushBackgroundDelegation(value.fakeQuery, "spawn-new", "new-child");
       pushSettlement(value.fakeQuery, "new-child");
       pushSettlement(value.fakeQuery, "existing-child");
+      // Neither settlement waits for the Terminal: the Turn already runs live.
       await vi.waitFor(() =>
-        expect(immediate).toEqual([
+        expect(turns[0]?.events.filter((event) => event.type === "subagent.settled")).toEqual([
+          expect.objectContaining({ nativeSubagentId: "new-child" }),
           expect.objectContaining({ nativeSubagentId: "existing-child" }),
         ]),
       );
-      expect(turns).toEqual([]);
+      expect(ended(turns)).toEqual([]);
+      const events = turns[0]?.events ?? [];
+      expect(events.findIndex((event) => event.type === "subagent.settled")).toBeGreaterThan(
+        events.findIndex((event) => event.type === "subagent.completed"),
+      );
       completeTurn(value.fakeQuery);
-      await vi.waitFor(() => expect(turns).toHaveLength(1));
-      const turn = turns[0];
-      if (!turn) throw new Error("Autonomous Turn was not delivered");
-      expect(turn.events.filter((event) => event.type === "subagent.settled")).toEqual([
-        expect.objectContaining({ nativeSubagentId: "new-child" }),
-      ]);
+      await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
+      expect(immediate).toEqual([]);
     } finally {
       await value.transport.close();
     }
   });
 
-  it("discards unpublished lifecycle events on close without flushing orphan terminal states", async () => {
+  it("leaves a started autonomous Turn for the Session to end when the transport closes", async () => {
     const value = fixture();
-    const turns: ClaudeAutonomousTurn[] = [];
+    const turns = recordAutonomousTurns(value.transport);
     const immediate: ClaudeTurnEvent[] = [];
-    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
     value.transport.setThreadEventHandler((event) => immediate.push(event));
     await value.transport.start();
     pushBackgroundDelegation(value.fakeQuery, "spawn-close", "unpublished-child");
     pushSettlement(value.fakeQuery, "unpublished-child");
-    pushSettlement(value.fakeQuery, "existing-child");
     try {
       await vi.waitFor(() =>
-        expect(
-          immediate.some(
-            (event) =>
-              event.type === "subagent.settled" && event.nativeSubagentId === "existing-child",
-          ),
-        ).toBe(true),
+        expect(turns[0]?.events.some((event) => event.type === "subagent.settled")).toBe(true),
       );
     } finally {
       await value.transport.close();
     }
-    expect(turns).toEqual([]);
-    expect(immediate).toEqual([expect.objectContaining({ nativeSubagentId: "existing-child" })]);
+    // Close neither invents a Terminal nor reroutes the Turn's events.
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.result).toBeUndefined();
+    expect(immediate).toEqual([]);
   });
 });
 

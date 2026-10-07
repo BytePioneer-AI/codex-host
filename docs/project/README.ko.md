@@ -30,7 +30,7 @@
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>다운로드</strong></a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#원격-harness">원격 연결</a> · <a href="#교류-그룹-참여">교류 그룹</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="../../README.md">English</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>다운로드</strong></a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#원격-harness">원격 연결</a> · <a href="#교류-그룹-참여">微信交流群</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="../../README.md">English</a></p>
 
 <br />
 
@@ -103,7 +103,7 @@ codexhost
 
 **codexhost가 시작되지 않거나, Codex는 열렸지만 codexhost 기능이 보이지 않는 경우**
 
-`codexhost console`(Windows: 시작 메뉴 → "codexhost console")을 실행하면 로컬 콘솔 `http://127.0.0.1:26339/`이 열립니다. 마지막 시작 실패 원인, Codex Desktop 버전, Host Runtime 로그를 확인할 수 있고, Codex가 실행 중이 아닐 때 codexhost를 업데이트할 수 있습니다. 콘솔은 codexhost와 함께 시작됩니다. 설치 패키지로 실행하면 브라우저에서 열리고, 터미널에서 실행하면 주소가 출력됩니다.
+`codexhost console`(Windows: 시작 메뉴 → "codexhost console")을 실행하면 로컬 콘솔 `http://127.0.0.1:4399/`이 열립니다. 마지막 시작 실패 원인, Codex Desktop 버전, Host Runtime 로그를 확인할 수 있고, Codex가 실행 중이 아닐 때 codexhost를 업데이트할 수 있습니다. 콘솔은 codexhost와 함께 시작됩니다. 설치 패키지로 실행하면 브라우저에서 열리고, 터미널에서 실행하면 주소가 출력됩니다.
 
 **macOS: 처음 열 때 "앱을 확인할 수 없음" 메시지가 표시됨**
 
@@ -279,12 +279,14 @@ CodexHost는 다른 방식을 택합니다.
 
 </details>
 
-## 교류 그룹 참여
+<a id="교류-그룹-참여"></a>
+
+## 微信交流群
 
 <table align="center">
   <tr>
     <td>
-      <strong>교류 그룹 참여</strong><br />
+      <strong>微信交流群</strong><br />
       <sub>CodexHost 사용법과 기능에 관심 있는 개발자는 QR 코드를 스캔해 위챗 그룹에 참여할 수 있습니다.</sub>
       <ul>
         <li><sub>설치 문제는 그룹에서 질문할 수 있습니다</sub></li>
@@ -295,7 +297,7 @@ CodexHost는 다른 방식을 택합니다.
       <sub><strong>함께 기여해 주세요.</strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="위챗 그룹 QR 코드" src="../imgs/wechat-qrcode.jpg" />
+      <img width="230" alt="위챗 그룹 QR 코드" src="../imgs/wechat-group-4-qrcode.jpg" />
     </td>
   </tr>
 </table>
@@ -330,6 +332,14 @@ Harness를 추가할 때는 코딩 Agent가 저장소의 [codexhost-add-harness 
 
 - 지속적인 지원을 보내 주신 [LINUX DO](https://linux.do/) 커뮤니티에 감사드립니다.
 - 멀티 Harness 통합 방식과 아키텍처에 영감을 주고 참고가 된 [Paseo](https://github.com/getpaseo/paseo) 프로젝트에 감사드립니다.
+
+## 기여자
+
+CodexHost에 기여해 주신 모든 분께 감사드립니다.
+
+<a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
+  <img alt="CodexHost 기여자" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+</a>
 
 ## Star History
 

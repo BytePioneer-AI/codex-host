@@ -42,6 +42,8 @@ export async function prepareLocalCodex(input: {
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
+    // Local Desktop connections outlive a failed official backend generation.
+    recovery: {},
     createBackend: () =>
       createOwnedLoopbackBackend({
         stockCodexPath: input.stockCodexPath,

@@ -21,6 +21,7 @@ import {
 import {
   createFixture,
   JsonLineCollector,
+  startExternalThread,
   startPiThread,
   startPiTurn,
   writeRequest,
@@ -47,7 +48,6 @@ function setup() {
   const host = new AppServerHost({
     stockCodexPath: "/unused",
     arguments: [],
-    defaultAgent: "codex",
     externalOnly: true,
     desktopInput: owner.input,
     desktopOutput: owner.output,
@@ -98,6 +98,47 @@ async function rpc(
 }
 
 describe("shared external Threads", () => {
+  it.each(["submit", "discard"])(
+    "keeps SSH prewarms out of every viewer's history until used (%s)",
+    async (action) => {
+      const { front, adapter } = setup();
+      const ssh = front(true);
+      const desktop = front(false);
+      const threadId = await startExternalThread(ssh, "codexhost/pi-native", 1, {
+        codexhostPrewarm: true,
+      });
+      const late = front(false);
+      for (const viewer of [ssh, desktop, late]) {
+        await viewer.ready;
+        expect(await rpc(viewer, 10, "thread/list", {})).toMatchObject({ result: { data: [] } });
+        expect(viewer.collector.messages.filter((m) => m.method === "thread/started")).toEqual([]);
+      }
+      if (action === "submit") {
+        await startPiTurn(ssh, threadId);
+        for (const viewer of [ssh, desktop, late]) {
+          await viewer.collector.waitFor((m) => m.method === "thread/started");
+          expect(await rpc(viewer, 11, "thread/list", {})).toMatchObject({
+            result: { data: [{ id: threadId }] },
+          });
+          expect(
+            viewer.collector.messages.filter((m) => m.method === "thread/started"),
+          ).toHaveLength(1);
+        }
+        session(adapter).succeedTurn();
+      } else {
+        expect(await rpc(ssh, 12, "codexhost/thread/prewarm/discard", { threadId })).toMatchObject({
+          result: { discarded: true },
+        });
+        for (const viewer of [ssh, desktop, late]) {
+          expect(await rpc(viewer, 13, "thread/list", {})).toMatchObject({ result: { data: [] } });
+          expect(viewer.collector.messages.filter((m) => m.method === "thread/started")).toEqual(
+            [],
+          );
+        }
+      }
+    },
+  );
+
   it("steers from the other GUI through the same cancellation and replacement sequence", async () => {
     const { front, adapter, open } = setup();
     const ssh = front(true);

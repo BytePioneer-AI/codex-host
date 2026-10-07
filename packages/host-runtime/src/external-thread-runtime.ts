@@ -21,7 +21,6 @@ import {
 } from "@codexhost/protocol-core";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
-  permissionModeFixedAtCreate,
   type HarnessId,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
@@ -54,6 +53,8 @@ export interface ExternalThread {
   requestedThinkingOptionId?: HarnessThinkingOptionId;
   requestedPermissionModeId?: HarnessPermissionModeId;
   record: StoredThreadRecordV1;
+  /** Keep a draft's Native identity in memory until the user submits work. */
+  unsubmittedPrewarm: boolean;
   sessionId: string;
   stateObserver: SessionStateObserver;
   thread: JsonObject;
@@ -260,6 +261,7 @@ export class ExternalThreadRuntime {
     requestedPermissionModeId?: HarnessPermissionModeId;
     transportModelId?: string;
     restoredState?: HarnessSessionState;
+    unsubmittedPrewarm?: boolean;
   }): ExternalThread {
     const harnessId = input.record.harnessId as ExternalHarnessId;
     if (!this.#adapters.has(harnessId)) {
@@ -295,6 +297,7 @@ export class ExternalThreadRuntime {
         ? { requestedPermissionModeId: effectivePermissionModeId }
         : {}),
       record: input.record,
+      unsubmittedPrewarm: input.unsubmittedPrewarm === true,
       sessionId: input.sessionId,
       stateObserver: new SessionStateObserver(observerState),
       thread: running
@@ -318,6 +321,19 @@ export class ExternalThreadRuntime {
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
     return externalThread;
+  }
+
+  /** Commit before executing user work; return whether a Thread can now be published. */
+  async submitPrewarm(thread: ExternalThread): Promise<boolean> {
+    if (!thread.unsubmittedPrewarm) return false;
+    const nativeRef = thread.stateObserver.state.nativeRef;
+    if (nativeRef) {
+      thread.record = await this.#repository.commitNative(thread.id, nativeRef);
+    }
+    // If identity is deferred, its later Session event will commit and publish it.
+    // Keep the draft hidden on persistence failure, without executing user work.
+    thread.unsubmittedPrewarm = false;
+    return thread.record.state === "ready";
   }
 
   async replace(
@@ -560,7 +576,7 @@ export class ExternalThreadRuntime {
       ...(restoredSelection?.thinkingOptionId
         ? { thinkingOptionId: restoredSelection.thinkingOptionId }
         : {}),
-      ...(harnessId === "grok" && restoredSelection?.permissionModeId
+      ...(restoredSelection?.permissionModeId
         ? { permissionModeId: restoredSelection.permissionModeId }
         : {}),
     });
@@ -569,27 +585,6 @@ export class ExternalThreadRuntime {
     }
     const session = opened.value;
     try {
-      if (
-        restoredSelection?.permissionModeId &&
-        harnessId !== "opencode" &&
-        !permissionModeFixedAtCreate(session.capabilities.configuration)
-      ) {
-        if (!session.capabilities.configuration.selectPermissionMode) {
-          throw new ExternalThreadOpenError({
-            code: -32076,
-            message: "External Harness does not support restored Permission Mode selection",
-          });
-        }
-        const selected = await session.execute({
-          type: "permissionMode.select",
-          permissionModeId: restoredSelection.permissionModeId,
-        });
-        if (!selected.ok) {
-          throw new ExternalThreadOpenError(
-            mapExternalThreadHarnessError(selected.error, "resume"),
-          );
-        }
-      }
       const snapshot = await session.readSnapshot();
       if (!snapshot.ok) {
         throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
@@ -606,16 +601,12 @@ export class ExternalThreadRuntime {
         ? restoredState.effectivePermissionModeId
         : restoredSelection?.permissionModeId;
       let transportModelId = aligned.record.transportModelId;
-      // OMP can silently replace an unavailable Model during resume, while OpenCode's
-      // additive Permission API cannot reliably restore a stale mode. Persist live state so the
-      // next restore does not reapply an obsolete transport token.
-      if ((harnessId === "omp" || harnessId === "opencode") && effectiveModel) {
+      // Native confirmed state wins over persisted configuration hints for every plugin.
+      if (restoredState && effectiveModel) {
         const liveSelection: ExternalConfigurationSelection = {
           model: effectiveModel,
           ...(effectiveThinkingOptionId ? { thinkingOptionId: effectiveThinkingOptionId } : {}),
-          ...((harnessId === "omp" || harnessId === "opencode") && effectivePermissionModeId
-            ? { permissionModeId: effectivePermissionModeId }
-            : {}),
+          ...(effectivePermissionModeId ? { permissionModeId: effectivePermissionModeId } : {}),
         };
         transportModelId = encodeExternalTransportSelection(harnessId, liveSelection);
         if (transportModelId !== aligned.record.transportModelId) {

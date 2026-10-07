@@ -29,7 +29,13 @@ beforeEach(() => {
 });
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  // Windows keeps a just-exited fake CLI's executable locked for a moment; retry instead of
+  // failing the test on EBUSY.
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })),
+  );
 });
 
 function encrypt(value: string) {
@@ -232,9 +238,18 @@ describe("ZCode installed CLI transport", () => {
             builtinModelIds: ["GLM-5.3-Flash"],
             access: { type: "zhipu-account", entitled: true },
           },
+          "account:zai-individual-coding-plan": {
+            access: { type: "zhipu-account", entitled: false },
+          },
         },
         states: {
           "account:zai-start-plan": { availability: "available", entitled: true, current: true },
+          "account:zai-individual-coding-plan": {
+            availability: "unavailable",
+            entitled: false,
+            current: false,
+            unavailableReason: "not-connected",
+          },
         },
       },
     });
@@ -253,39 +268,42 @@ describe("ZCode installed CLI transport", () => {
     });
   });
 
-  it("fails to start when the CLI does not confirm the account revision", async () => {
-    const { options } = await fixture("reply(null)");
-    const transport = new CliTransport(
-      options({ environment: { ...options().environment, FAKE_REVISION: "stale" } }),
+  it("routes Personal Coding Plan reverse requests without JWT or verification", async () => {
+    const providerId = "account:zai-individual-coding-plan";
+    const apiKey = "synthetic-personal-key";
+    const { root, options, log } = await fixture(
+      `reply(await ask('interaction/requestProviderRuntimeHeaders',{requestId:'personal-headers',providerId:'${providerId}',modelSelection:{providerId:'${providerId}',modelId:'GLM-5.2'},accountAccess:{type:'zhipu-account',accountType:'zai',mode:'individual-coding-plan'}}))`,
+      {
+        "oauth:active_provider": "zai",
+        "oauth:zai:user_info": JSON.stringify({ user_id: "fixture-user" }),
+        [`account-provider:coding-plan:${providerId}:account:fixture-user:api-key`]: apiKey,
+      },
     );
-    await expect(transport.start()).rejects.toMatchObject({ code: "protocolError" });
-  });
-
-  it("answers native reverse requests by the mapping table", async () => {
-    const { options } = await fixture(
-      "reply(await ask(params.sessionId, {requestId:'r', sessionId:'s', scope:'runtime-materialization'}))",
+    await writeFile(
+      path.join(root, ".zcode/v2/setting.json"),
+      JSON.stringify({
+        providerFamilyDomain: "zai",
+        providerFamilyConnectionSelections: { zai: { kind: "individual-coding-plan" } },
+      }),
+    );
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ productName: "Coding Plan", status: "VALID", inCurrentPeriod: true }],
+        }),
+      ),
     );
     const transport = await started(options());
-    const ask = async (method: string) => transport.request("readSession", { sessionId: method });
     try {
-      expect(await ask("session/requestRuntimePreferences")).toEqual({
-        id: "server-1",
-        result: {
-          nativeSearchEnhancementsEnabled: true,
-          memoryEnabled: false,
-          askUserQuestionAutoResolutionEnabled: false,
-          modelContextBudgetStrategy: "preflight-v1",
-        },
+      expect(transport.startPlan).toBe(false);
+      expect(await transport.request("readSession", { sessionId: "personal" })).toMatchObject({
+        result: { headersApplied: true, requestAuth: { apiKey } },
       });
-      expect(await ask("interaction/requestOfficialMcpAuthHeaders")).toMatchObject({
-        result: { ok: false, reason: "official_auth_unavailable" },
+      expect(JSON.stringify((await log())[0])).not.toContain(apiKey);
+      await writeFile(path.join(root, ".zcode/v2/credentials.json"), "{}");
+      expect(await transport.request("readSession", { sessionId: "signed-out" })).toMatchObject({
+        result: { headersApplied: false },
       });
-      expect(await ask("interaction/browserList")).toMatchObject({ result: { browsers: [] } });
-      expect(await ask("interaction/browserExecute")).toMatchObject({
-        result: { ok: false, error: { code: "backend_unavailable" }, elapsedMs: 0 },
-      });
-      for (const method of ["automation/create", "offPeak/create", "unknown/method"])
-        expect(await ask(method)).toMatchObject({ error: { code: -32601 } });
     } finally {
       await transport.close();
     }

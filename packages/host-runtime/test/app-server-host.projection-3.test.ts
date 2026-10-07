@@ -14,6 +14,7 @@ import {
   type JsonObject,
 } from "@codexhost/protocol-core";
 import {
+  encodeHarnessPluginRoute,
   harnessCommandDescriptorSchema,
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
@@ -119,7 +120,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(
       fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
     ).resolves.toMatchObject({
-      transportModelId: encodeClaudeTransportModel(model, auto),
+      transportModelId: encodeHarnessPluginRoute({
+        harnessId: claude.harnessId,
+        model,
+        permissionModeId: auto,
+      }),
     });
     expect(pi.sessions).toHaveLength(0);
 
@@ -225,7 +230,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(
       fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
     ).resolves.toMatchObject({
-      transportModelId: encodePiTransportModel(fixture.adapter.catalog.defaultModel, off),
+      transportModelId: encodeHarnessPluginRoute({
+        harnessId: fixture.adapter.harnessId,
+        model: fixture.adapter.catalog.defaultModel ?? undefined,
+        thinkingOptionId: off,
+      }),
     });
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
@@ -1882,6 +1891,19 @@ describe("AppServerHost HarnessAdapter projection", () => {
       throw new Error("Fake persisted Snapshot was not created");
     }
 
+    // The fake reuses the same Session on resume. Consume the seeding Turn as the
+    // previous Host would; a restored Session must not replay those live events.
+    const outputs = source.outputs[Symbol.asyncIterator]();
+    for (;;) {
+      const output = await outputs.next();
+      if (
+        output.done ||
+        (output.value.kind === "event" && output.value.event.type === "turn.completed")
+      )
+        break;
+    }
+    vi.spyOn(source.outputs, Symbol.asyncIterator).mockReturnValue(outputs);
+
     const threadId = hostThreadIdSchema.parse("persisted-thread");
     const store = new MappingStore({ directory });
     await store.initialize();
@@ -1996,7 +2018,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({
       result: {
         thread: { id: threadId, turns: [{ id: persistedTurnId }] },
-        model: "codexhost/pi-native",
+        model: encodeHarnessPluginRoute({
+          harnessId: adapter.harnessId,
+          model: restoredModel,
+          thinkingOptionId: fakeSource.state.effectiveThinkingOptionId ?? undefined,
+        }),
         initialTurnsPage: null,
       },
     });

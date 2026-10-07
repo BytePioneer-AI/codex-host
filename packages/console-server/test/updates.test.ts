@@ -74,12 +74,13 @@ describe("console updates", () => {
     });
   });
 
-  it("makes the Updater wait for the console process, then hands off", async () => {
+  it("hands off to the Updater before returning", async () => {
     const { target, environment } = await npmLayout("linux");
     const spawnUpdater = vi.fn(() => Object.assign(new EventEmitter(), { pid: 4321 }) as never);
     const onHandedOff = vi.fn();
     const updates = createConsoleUpdates({
       onHandedOff,
+      waitForHandoff: true,
       environment,
       platform: "linux",
       processId: 777,
@@ -93,7 +94,7 @@ describe("console updates", () => {
     const result = await updates.start(target);
 
     expect(result.status).toMatchObject({ version: "1.1.0", installation: "npm" });
-    await vi.waitFor(() => expect(onHandedOff).toHaveBeenCalledOnce());
+    expect(onHandedOff).toHaveBeenCalledOnce();
     const requestPath = (spawnUpdater.mock.calls[0] as unknown as [string, string])[1];
     const request = JSON.parse(await readFile(requestPath, "utf8")) as Record<string, unknown>;
     expect(request).toMatchObject({
@@ -101,6 +102,23 @@ describe("console updates", () => {
       wait_executable: process.execPath,
       runtime_descriptor_path: target.runtimeDescriptorPath,
     });
+  });
+
+  it("rejects a foreground update when preparation fails after status creation", async () => {
+    const { target, environment } = await npmLayout("linux");
+    await rm(environment.CODEXHOST_NPM_CLI_PATH);
+    const onHandedOff = vi.fn();
+    const updates = createConsoleUpdates({
+      onHandedOff,
+      waitForHandoff: true,
+      environment,
+      platform: "linux",
+      stateDirectory: path.join(root, "state"),
+      fetchLatest: async () => release,
+    });
+    await expect(updates.start(target)).rejects.toThrow();
+    expect(onHandedOff).not.toHaveBeenCalled();
+    await expect(updates.status()).resolves.toMatchObject({ status: { phase: "failed" } });
   });
 
   it("refuses to update while codexhost is running", async () => {
@@ -128,6 +146,28 @@ describe("console updates", () => {
     });
     await expect(updates.check({ ...target, distribution: null })).resolves.toMatchObject({
       updateAvailable: false,
+    });
+  });
+  it("reports the source launch version without enabling packaged updates", async () => {
+    await writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "codexhost", version: "0.12.0" }),
+    );
+    const updates = createConsoleUpdates({
+      environment: { CODEXHOST_DEV_VERSION: "0.11.0" },
+      onHandedOff: vi.fn(),
+    });
+    await expect(
+      updates.check({
+        distribution: null,
+        appDirectory: path.join(root, "packages/console-server/dist"),
+        runtimeDescriptorPath: null,
+        codexhostRunning: false,
+      }),
+    ).resolves.toMatchObject({
+      currentVersion: "0.11.0",
+      installation: null,
+      installationAvailable: false,
     });
   });
 });

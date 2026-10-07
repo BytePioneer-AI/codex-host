@@ -2,13 +2,14 @@
 
 ## 当前范围
 
-设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP** 和 **DSH** 的原生 Session（已验证 `0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-version-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
+设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP、Kiro CLI、Grok、CodeBuddy、WorkBuddy、OMP、Kimi Code、OpenCode（v2）、Qoder、Qoder CN** 和 **DSH** 的原生 Session（已验证 `0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-version-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
 
 - 设置页始终使用本地 Host，即使 Composer 当前连接远程工作区。
 - 可选 Harness 来自该 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
-- 目录表示“实现了导入接口”，不保证当前原生运行时可用。不兼容的 DSH 原生协议、旧 Host、缺失插件或不可用存储会明确失败，不伪装成无候选。
+- Host 的目录表示“实现了导入接口”，不保证当前原生运行时可用。导入页另外按 Renderer 已有的连接状态隐藏本地 Host 上确认“未安装”的 Harness（该状态在启动时已批量检查，导入页不再触发任何检查）；仍在检查、检查失败、版本不兼容或 Renderer 不认识的 Harness 照常展示。
 - DSH 仅允许本机、codexhost 托管的 Web；`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1` 和 `0.2.0-rc.2` 已验证，低于 `0.1.7-rc.1` 的版本在启动 Web 前拒绝。其他 SemVer 版本可尝试连接及导入，须通过原生 Web 与历史协议校验；Legacy 协议与 V0/V3 已移除。不把版本号当作兼容保证。
 - 本次没有增加远程扫描、Claude Code Broker 导入，也没有完成整个 Agent Picker 的动态插件化。
+- **Antigravity 未接入**：其 CLI 不向 headless 客户端提供已持久化的 Assistant 历史，codexhost 展示的历史来自按 Host Thread 保存的插件侧记录。导入的原生 Conversation 打开后没有可展示的历史，不满足“打开后恢复历史”的前提。
 
 ## Adapter 契约与职责
 
@@ -36,6 +37,17 @@ interface HarnessSessionImportSource {
 
 对于已经接入 Desktop 的 Harness，以后增加这两个方法、验证原生 resume 并补齐 Adapter 测试即可复用本地 Host/RPC/导入页面；无需再创建专属导入器或 Renderer 开关。新的插件整体产品接入仍受 [Renderer 边界](harness-plugin-runtime.md) 约束。
 
+### Adapter 侧公共机制
+
+`@codexhost/harness-adapter/session-import`（`packages/harness-adapter/src/session-import.ts`）提供与具体 Harness 无关的导入机制，Claude Code、Pi、Cursor 以及下文“其他 Harness”一节的各插件已使用；Hermes 走自己的 SessionDB 读取器，逐行用公共 Schema 校验。新接入的 Harness 应直接复用，不再各写一份：
+
+- `SessionImportScope`：一个 Adapter 的发现读取生命周期。关闭后不再启动读取，进行中的读取被取消并等待结束；读取失败返回固定文案的 `unavailable`，不外泄原生错误；`resolve` 把“选中的会话已不存在”统一为 `sessionNotFound`。
+- `sessionImportCandidate`：构造单条候选并用公共 Schema 校验，不合格返回 `null`。Host 对整页列表做整体校验，未经此步的坏行会让该 Harness 的全部会话不可见。时间接受毫秒数或日期字符串，小数取整；`running` 只有明确的布尔值才保留，其余为 `null`。
+- `sessionImportTitle`：去除 NUL、折叠空白为单行，按字符截断并以 `…` 结尾。默认上限为公共契约上限，Claude Code 传入 120。
+- `sameFileFingerprint`、`isMissingFileError`、`SessionImportChangedError`：读取前后的文件指纹比对，以及“读取中变化”的统一错误类型。
+
+原生目录规则、可恢复性判断、原生引用与 locator 仍由各插件拥有；带缓存的索引目前只有 Pi 和 Claude Code 各自实现，未抽取。
+
 ## Host 与浏览器边界
 
 公共严格 Schema 位于 `packages/shared-contracts/src/harness-session-import.ts`：
@@ -52,7 +64,7 @@ interface HarnessSessionImportSource {
 
 `HarnessSessionImporter` 负责：
 
-1. 列表过滤同 Harness 已 ready 的普通 Thread 映射；Subagent 映射不冒充普通会话所有者。
+1. 列表过滤同 Harness 已 ready 的普通 Thread 映射；Subagent 映射不冒充普通会话所有者。同时过滤“被替换的旧会话”：编辑或回滚消息会让 Harness 派生新的原生 Session，Thread 改指向新会话，旧会话留在原生存储里且不再有映射。Mapping Store 在替换成功后把旧会话 ID 记入 `superseded-sessions/sessions.json`（独立于 Thread 记录，旧版本会忽略它；写入失败不影响替换），导入列表和导入请求都据此拒绝，避免同一段对话出现两条 Thread。Thread 被删除后这些旧版本仍保持隐藏。该记录只覆盖此功能上线之后发生的替换，此前留下的旧会话无法识别，仍会作为候选出现。
 2. 按 `(harnessId, nativeSessionId)` 合并重复请求，并优先复用已存在映射。
 3. 调用 Adapter resolver，检查新鲜元数据和身份，再检查并发提交者是否已胜出。
 4. 创建 provisional，提交完整 `nativeRef`，保留 `notLoaded` 状态；持久化失败清理 provisional，唯一性冲突复用胜出映射。
@@ -110,6 +122,33 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 - 发现和解析不启动 Cursor、不发送 Model Turn、不改写会话内容。Adapter 关闭会取消并等待扫描结束；存储访问错误与空目录分别报告。当前不新增远程扫描或 Broker 导入。
 - 此能力仍依赖 Cursor 未公开的 ACP 存储格式；目录及指纹校验不是针对恶意本机文件替换的安全沙箱。
 
+## 其他 Harness 的原生规则
+
+以下实现都放在各插件的 `session-import.ts`（Qoder 为 `qoder-session-import.ts`，OpenCode 为 `v2/session-import.ts`），使用上文的公共机制。共同约定：
+
+- 只读发现，不启动原生 Agent、不发送 Turn、不改写原生文件；不跟随枚举到的符号链接。
+- 文件型存储在读取前后比对指纹，列表跳过正在变化的会话，提交导入时变化则拒绝。
+- 同一 Session ID 出现在多个位置时该会话不可导入，也不出现在列表中；不让整页失败，也不静默选其一。
+- 尽量复用 resume 自己使用的读取函数作为准入检查，使“能列出”与“能恢复”一致。
+- 项目目录必须仍然存在。除 OMP 外保留原生记录的路径而不解析为真实路径，因为这些 Harness 在 resume 时按该路径定位会话。
+
+| Harness | 发现来源 | 候选条件 | 标题与时间 | `running` | 原生引用 |
+|---|---|---|---|---|---|
+| Kiro CLI | `~/.kiro/sessions/<workspace>/<id>/`（`KIRO_HOME` 可替换，跳过 `cli` 目录） | `session.json` 的 ID 与目录名一致；`messages.jsonl` 可被恢复读取器读取且含用户消息；Fork 的父会话仍在 | `title`，否则首条用户文本；`lastModifiedAt`，否则文件时间 | 始终 `null` | 仅 ID |
+| Grok | `~/.grok/sessions/<编码后的cwd>/<id>/`（`GROK_HOME` 可替换） | `summary.json` 身份一致；不是 Subagent；`updates.jsonl` 含用户消息；cwd 编码后等于所在目录名 | `generated_title` / `session_summary`，否则首条用户文本；`last_active_at` / `updated_at` | `active_sessions.json` 中进程存活为 `true`，否则 `null` | 仅 ID |
+| CodeBuddy / WorkBuddy | `<配置根>/projects/<项目>/<id>.jsonl` | 含用户消息；通过恢复使用的 `codeBuddyNativeHistory` 校验（唯一文件、单一身份、单一目录；WorkBuddy 还要求位于项目主目录） | `custom-title` > `ai-title` > 首条用户文本；最后一条记录时间 | `<配置根>/sessions/<pid>.json` 中进程存活为 `true`，否则 `null` | 仅 ID，Harness 为各自产品 |
+| OMP | `~/.omp/agent/sessions/<项目>/*.jsonl`；沿用 `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` | 有 `session` 头；最后 Entry 所在分支含用户消息；只展开一层，不进入 Subagent 子目录 | `title` 记录，否则首条用户文本；最后一条消息时间 | 始终 `null` | ID + `locator.sessionFile` |
+| Kimi Code | `<KIMI_CODE_HOME>/session_index.jsonl`（同一 ID 以最后一条为准，`deleted` 排除） | 通过恢复使用的 `locateKimiSession` 与 `readKimiSessionSnapshot`；活动分支含用户输入 | 状态文件的 `title`（若有），否则首条用户文本；Turn 时间，否则文件时间 | 始终 `null` | ID + `locator.cwd` |
+| OpenCode v2 | 私有启动的 v2 服务的 `session.list`（分页读完） | 顶层会话（无 `parentID`）、未归档 | 原生 `title`；`time.updated` | 本服务报告运行中为 `true`，否则 `null` | ID + `locator { protocol: 2, directory, executionPolicy: default }` |
+| Qoder / Qoder CN | 各自发行版 SDK 的 `listSessions()` / `getSessionInfo()` | 记录了绝对路径的工作目录 | `customTitle` > `summary` > `firstPrompt`；`lastModified` | 始终 `null` | 仅 ID，Harness 为各自发行版 |
+
+补充说明：
+
+- **OpenCode v1 不支持导入**：v1 服务只按项目返回会话，没有跨项目的原生列表。选中 v1 CLI 时返回 `unsupported`，不改走未验证的存储读取。v2 每次发现都会启动并关闭一个私有服务，不连接用户的共享服务。
+- **OpenCode v2 与 Qoder 不检查是否含用户消息**：原生列表不提供该信息，逐个读取历史代价过高。
+- **Kimi Code 不排除 `archived` 会话**；其状态文件的时间单位未见文档，因此不使用。
+- 权限：OpenCode 导入固定为 `executionPolicy: default`，与 Cursor 相同，原生历史不能证明此前使用过无人值守权限。
+
 ## DSH 原生规则
 
 - 通过托管 Web 的公开 Session API 发现候选并重新检查所选 Session，不直接扫描或改写 DSH 的原生日志文件。
@@ -124,5 +163,7 @@ Cursor 定向测试使用隔离 SQLite 原生格式夹具，覆盖目录覆盖�
 定向测试覆盖 Claude Code 的 CLI/SDK entrypoint、目录与标题规则、坏文件、Subagent 排除、消失/歧义、只读发现、缓存和提交前复查；Pi 目录规则、活动分支、坏文件、消失/歧义、取消、只读发现，以及超过旧 64 MiB/256 MiB 和 100,000 Entry 限制的有效数据、缓存失效和按选中项复查；Host locator 持久化与重启、跨 Harness 相同 ID、旧 DSH RPC、幂等/竞争/忙碌/失败清理、过滤后分页与跨页搜索；Renderer 动态来源、分页大小/边界、搜索旧响应失效、导入期间控件锁定、未知状态、导入去重和导航失败恢复。
 
 还使用 Pi **0.85.0** 的真实 `SessionManager` 创建隔离临时会话，经公共 Host importer 登记，再用真实 `pi --mode rpc --session ...` 恢复历史并继续一轮，验证同一 Session ID 与同一 JSONL 文件。该检查使用回环地址上的模拟 Provider，不调用付费 Model 服务，也不读取/修改用户原有会话。
+
+新增 Harness 的定向测试各自覆盖：元数据与标题/时间回退、不可恢复会话的跳过、重复身份、运行状态、提交前复查、关闭后拒绝，以及候选通过公共 Schema。另在一台 macOS 开发机上对已打包插件做过只读发现检查（Kiro CLI、Grok、CodeBuddy、WorkBuddy、OMP 使用真实原生存储，OpenCode 使用真实 v2.0.16 服务）；Kimi Code 与 Qoder 当时没有本机会话，只有夹具与模拟 SDK 覆盖。**这些 Harness 都没有做过“导入后真实 resume 并续写一轮”的验证。**
 
 这不是 Codex Desktop 端到端验收，也不代表 Windows、远程或 DSH 真机已在本次验证。

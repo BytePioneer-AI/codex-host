@@ -35,3 +35,24 @@ export function defaultHarnessBrokerSocketPath(
     return path.join(defaultHarnessBrokerDirectory(environment), `${harnessId}-broker-v1.sock`);
   return path.join(defaultHarnessBrokerDirectory(environment), HARNESS_BROKER_SOCKET_FILE);
 }
+
+/** LaunchAgent label registered by `codexhost broker install` (Rust keeps the same mapping). */
+export function harnessBrokerLaunchAgentLabel(harnessId = "claude-code"): string {
+  harnessPluginIdSchema.parse(harnessId);
+  return harnessId === "claude-code"
+    ? "ai.bytepioneer.codexhost.native-harness-broker"
+    : `ai.bytepioneer.codexhost.${harnessId}-broker`;
+}
+
+export function harnessBrokerLaunchAgentPlistPath(
+  environment: NodeJS.ProcessEnv = process.env,
+  harnessId = "claude-code",
+): string {
+  const home = environment.HOME || os.homedir();
+  return path.join(
+    home,
+    "Library",
+    "LaunchAgents",
+    `${harnessBrokerLaunchAgentLabel(harnessId)}.plist`,
+  );
+}

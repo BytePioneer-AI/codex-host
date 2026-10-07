@@ -3,7 +3,7 @@
 控制台是一个本地网页，不依赖 Codex Desktop 启动成功。左侧导航分为：
 
 - **总览**：当前状态与下一步操作、codexhost 版本 / Codex Desktop 版本 / 安装方式三个信息框、最近一次启动的结果；失败时说明卡在哪一步和错误原文，内部阶段时间线折叠在“详细信息”中；注入持续失败时显示原因。成功时不展示时间线，不显示启动历史表格。原启动诊断页已合并，旧的 `#diagnostics` 和 `?view=diagnostics` 链接显示总览。日志不在页面中展示，通过“导出诊断包（含日志）”获取。
-- **设置**：连接、账号、会话导入、更新，与 Codex 设置页使用同一套页面和 Host 接口。连接页支持通过运行中的本地 Host 安装 Harness CLI、检查版本和更新，复用安装进度、错误提示及安装后检测；不支持远程 Host 安装。WorkBuddy 仍通过官网手动下载安装桌面应用。Host 不可用时不提供一键安装。
+- **设置**：连接、远程连接、账号、会话导入、更新，与 Codex 设置页使用同一套页面和 Host 接口。连接页支持通过运行中的本地 Host 安装 Harness CLI、检查版本和更新，复用安装进度、错误提示及安装后检测；不支持远程 Host 安装。WorkBuddy 仍通过官网手动下载安装桌面应用。Host 不可用时不提供一键安装。
 - **其他**：关于。
 
 外观（思考文本显示、空闲释放）由 Codex 界面保存，只能在 Codex 设置页修改。设计背景见 [`proposals/独立 Web 控制台方案.md`](../proposals/独立%20Web%20控制台方案.md)。
@@ -41,7 +41,7 @@ type: warning
 | 启动方式 | 行为 |
 |---|---|
 | 安装包（macOS 打开应用、Windows 开始菜单） | 先启动控制台并在默认浏览器打开总览，再启动 Codex Desktop；启动失败或注入持续失败时另外打开总览查看原因 |
-| 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 控制台在后台与 Codex Desktop 一同启动，启动结束时在终端输出 `codexhost console: http://127.0.0.1:26339/` |
+| 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 控制台在后台与 Codex Desktop 一同启动，启动结束时在终端输出 `codexhost console: http://127.0.0.1:4399/` |
 
 控制台在校验 Shim、Host Runtime、Desktop Controller 和 Renderer 等 Codex 启动资源之前启动；这些文件缺失时，仍能提供故障恢复入口。npm 包装脚本将这部分校验交给 Launcher，不提前拦截。Launcher、Node 和控制台自身文件仍须可用，端口占用等控制台自身故障不保证能打开网页；命令参数解析失败也不进入启动流程。
 
@@ -57,11 +57,11 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 | Windows 开始菜单 | “codexhost console” 快捷方式 |
 | Codex 设置页 | “关于”页的“打开控制台”，通过本地 Host 的 `codexhost/console/open` 打开；远程 Host 不支持 |
 
-地址为 `http://127.0.0.1:26339/`。命令会复用已运行的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），先让旧实例退出再以当前安装启动。控制台不需要登录，直接访问即可。
+地址为 `http://127.0.0.1:4399/`。命令会复用已运行的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），先让旧实例退出再以当前安装启动。控制台不需要登录，直接访问即可。
 
 ## 端口
 
-- 默认 `26339`，只监听 `127.0.0.1`。可用 `CODEXHOST_CONSOLE_PORT` 修改（1024–65535）。
+- 默认 `4399`，只监听 `127.0.0.1`。可用 `CODEXHOST_CONSOLE_PORT` 修改（1024–65535）。
 - 端口被其他程序占用时直接报错，不自动换端口。
 - codexhost 运行期间控制台保持运行；codexhost 未运行时，30 分钟无请求后自动退出，下次打开或启动 codexhost 时重新启动。
 
@@ -94,9 +94,17 @@ Desktop Controller 在注入失败时仍会让 Codex 正常运行并在后台重
 
 Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控制通道，把端口与随机令牌写入 `<数据目录>/console/hosts/host-<进程号>.json`（`0600`），退出时删除。控制台读取该文件，把设置请求转发给 Host，由 Host 按 Codex 设置页相同的逻辑处理；只接受 `CONSOLE_HOST_METHODS` 列出的设置方法，不接受 Thread 或 Turn 操作。
 
-- codexhost 未运行：连接页显示离线的插件列表并可修改安装路径；账号、会话导入提示先启动 codexhost。
+- codexhost 未运行：连接页显示离线的插件列表并可修改安装路径；远程连接、账号、会话导入提示先启动 codexhost。
 - codexhost 运行但控制通道不可用（例如旧版本）：提示重新启动 codexhost。
 - Web 会话导入成功后显示“导入成功，请在 Codex 中查看”，不尝试导航，也不提供“重试打开”；导入失败仍显示实际错误。Codex 内置设置页保留导入后打开会话的行为。
+
+## 远程连接
+
+`#remote-connections` 与内置设置共用远程连接页面，支持添加、编辑、移除 SSH 连接、连接与断开、查看本机及远程版本、检测、安装、更新、修复和卸载远程服务。卸载可选择同时移除 codexhost 软件包，确认提示和缺失 Node.js、npm、Codex CLI 的错误提示与内置页一致。“连接”页仍用于 Harness 管理。
+
+远程连接配置由 Codex Desktop 保存；Web 不另存一份配置。此页需要通过 codexhost 启动的桌面端：Web → 本机 Host → 带随机令牌的 Controller 通道 → Renderer 中的固定连接操作。只接受约定的操作和参数，不开放任意原生请求或脚本执行。远程状态和更新沿用桌面端的远程 Host 客户端；SSH 安装、修复和卸载沿用本机 Host 的 Rust 执行器。
+
+桌面端未运行时提示先启动 codexhost；旧版 Controller 或 Renderer 不支持此通道时提示通过 codexhost 重新启动。请求失败不自动重试写操作，避免重复安装或修改连接；超时后需刷新确认状态。
 
 ## Harness 排序与分组
 
@@ -108,6 +116,8 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 - Web 离线插件页不提供排序操作，排序需要运行中的 Host。此设置只影响展示，不改变 Harness 是否启用或可用。
 
 ## 更新
+
+`codexhost update` 提供不打开浏览器的终端入口，适用于 npm、macOS DMG 和 Windows 安装包。命令检查最新 Release，已是最新版本时成功退出；有更新时需先退出正在运行的 codexhost。命令复用控制台更新管理器和全局更新锁，等待下载、准备和 Updater 启动完成后退出，随后后台安装并重启 codexhost。终端显示的是交接状态，不代表安装已经完成；安装结果可在控制台查看。检查或准备失败时返回非零退出码。源码构建和 Linux 非 npm 安装不支持自更新。
 
 - codexhost 运行中：通过 Host 的更新流程检查与安装，与 Codex 设置页一致。
 - codexhost 未运行：控制台下载并准备更新，拉起 Updater 后退出；Updater 等待控制台进程退出，再按原流程安装并重新启动 codexhost。

@@ -10,6 +10,7 @@ import {
 import {
   HarnessOutputChannel,
   parseHostUsage,
+  sanitizeDiagnosticTail,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
@@ -25,7 +26,6 @@ import {
   type HarnessSession,
   type HarnessSessionCapabilities,
   type HarnessSessionImportCapability,
-  type HarnessSessionImportSource,
   type HarnessSessionState,
   type HostAgentMessageItem,
   type HostApprovalInteraction,
@@ -75,6 +75,7 @@ import {
 
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
 import { ClaudeSessionImportIndex } from "./claude-session-import.js";
+import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { ClaudePendingSessions, isPendingClaudeSession } from "./pending-session.js";
 import { forkClaudeSession } from "./claude-fork.js";
@@ -111,7 +112,6 @@ import { estimateClaudeRequestCostUsd } from "./usage-estimate.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
-  ClaudeAutonomousTurn,
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeLastRequestUsage,
@@ -444,9 +444,10 @@ function claudePermissionModeSelectionFailure(
       };
     }
   }
+  const detail = sanitizeDiagnosticTail(error instanceof Error ? error.message : String(error));
   return {
     code: "nativeFailure",
-    message: "Claude Code rejected the Permission Mode selection",
+    message: `Claude Code rejected the Permission Mode selection${detail ? `: ${detail}` : ""}`,
     retryable: true,
   };
 }
@@ -594,6 +595,8 @@ class ClaudeHarnessSession implements HarnessSession {
   #contextUsageCooldownUntilMs = 0;
   #requestUsageBoundary = 0;
   #autonomousOrdinal = 0;
+  /** The Host Turn that receives the native Segment Claude started on its own. */
+  #autonomousTarget: ActiveTurn | null = null;
   #occupancy = new ClaudeBackgroundOccupancy();
   #cancelEscalation: ReturnType<typeof setTimeout> | null = null;
   #continuationQuiescence: ReturnType<typeof setTimeout> | null = null;
@@ -671,6 +674,10 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#state = this.initialState;
     this.#statePublished = durable;
     this.outputs = this.#channel.outputs;
+  }
+
+  get nativeWriterRef(): NativeSessionRef {
+    return this.#nativeRef;
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
@@ -839,6 +846,17 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session closed during startup") };
     }
+    // Native Root output can start an autonomous Turn while transport admission yields.
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session already has an active Turn",
+          retryable: true,
+        },
+      };
+    }
     if (startingTransport) this.#publishState();
     this.#usageGeneration += 1;
     this.#contextUsageFreshUntilMs = 0;
@@ -967,6 +985,17 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#acceptingTurn = false;
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session closed during startup") };
+    }
+    // Commands must not replace a continuation that began during transport admission.
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session already has an active operation",
+          retryable: true,
+        },
+      };
     }
     if (startingTransport) this.#publishState();
     this.#usageGeneration += 1;
@@ -1519,21 +1548,24 @@ class ClaudeHarnessSession implements HarnessSession {
         onPlanLimit: (planLimit) => this.#handlePlanLimit(planLimit),
       });
       this.#transport = transport;
-      transport.setAutonomousTurnHandler((turn) => this.#handleAutonomousTurn(turn));
+      transport.setAutonomousTurnHandler({
+        start: (nativeTurnKey) => {
+          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey);
+        },
+        onEvent: (event) => this.#deliverLiveEvent(this.#autonomousTarget, event),
+        onTerminal: (result) => {
+          const target = this.#autonomousTarget;
+          this.#autonomousTarget = null;
+          if (target) this.#finishResult(target, result);
+        },
+      });
       transport.setThreadEventHandler((event) => {
         // Thread-level events (e.g. a background Subagent settling) are not
         // Turn-scoped and must not be gated on an active Turn.
         if (event.type === "subagent.settled") this.#settleNativeTask(event);
       });
       transport.setIdleTurnHandler({
-        onEvent: (event) => {
-          const active = this.#active;
-          if (active) {
-            this.#handleTurnEvent(active, event);
-            return;
-          }
-          if (event.type === "subagent.settled") this.#settleNativeTask(event);
-        },
+        onEvent: (event) => this.#deliverLiveEvent(this.#active, event),
         onTerminal: (result) => {
           const active = this.#active;
           if (active) this.#finishResult(active, result);
@@ -1975,21 +2007,24 @@ class ClaudeHarnessSession implements HarnessSession {
     });
   }
 
-  #handleAutonomousTurn(turn: ClaudeAutonomousTurn): void {
-    if (this.#phase !== "open") return;
-    const held = this.#active;
-    if (held?.held) {
-      this.#continueHeldTurn(held, turn);
-      return;
-    }
-    if (this.#active) return;
+  /**
+   * Claude started Root output in a Segment no requested Turn owns. A held Turn continues with
+   * it; otherwise it becomes a live autonomous Turn, so the Thread shows it running and a new
+   * request waits instead of absorbing it.
+   */
+  #startAutonomousTurn(segmentKey: string): ActiveTurn | null {
+    if (this.#phase !== "open") return null;
+    const current = this.#active;
+    if (current?.held) return current;
+    // A requested Turn still owns the Session; never merge this Segment into it.
+    if (current) return null;
     this.#autonomousOrdinal += 1;
     const turnId = hostTurnIdSchema.parse(this.#randomUUID());
     let resolveCompletion = (): void => undefined;
     const completion = new Promise<void>((resolve) => {
       resolveCompletion = resolve;
     });
-    const nativeTurnKey = turn.nativeTurnKey || `autonomous-${this.#autonomousOrdinal}`;
+    const nativeTurnKey = segmentKey || `autonomous-${this.#autonomousOrdinal}`;
     const item: HostAgentMessageItem = {
       type: "agentMessage",
       itemId: claudeTranscriptItemId(nativeTurnKey, "agentMessage", 1),
@@ -2044,13 +2079,16 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#event({ type: "turn.autonomous.started", turnId, input: [] });
     this.#event({ type: "turn.started", turnId });
     this.#event({ type: "item.started", turnId, item });
-    for (const event of turn.events) this.#handleTurnEvent(active, event);
-    this.#finishResult(active, turn.result);
+    return active;
   }
 
-  #continueHeldTurn(active: ActiveTurn, turn: ClaudeAutonomousTurn): void {
-    for (const event of turn.events) this.#handleTurnEvent(active, event);
-    this.#finishResult(active, turn.result);
+  /** Live native events outside a requested Root Segment; settlements stay Thread-level. */
+  #deliverLiveEvent(target: ActiveTurn | null, event: ClaudeTurnEvent): void {
+    if (target && this.#active === target) {
+      this.#handleTurnEvent(target, event);
+      return;
+    }
+    if (event.type === "subagent.settled") this.#settleNativeTask(event);
   }
 
   /**
@@ -2554,29 +2592,13 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly sessionImport = Object.freeze({
     listCandidates: async (): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> => {
-      const result = await this.#readImport((signal) => this.#importIndex.list(signal));
+      const result = await this.#importScope.read((signal) => this.#importIndex.list(signal));
       return result.ok
         ? { ok: true, value: result.value.map(({ candidate }) => candidate) }
         : result;
     },
-    resolveCandidate: async (
-      nativeSessionId: string,
-    ): Promise<HarnessResult<HarnessSessionImportSource>> => {
-      const result = await this.#readImport((signal) =>
-        this.#importIndex.resolve(nativeSessionId, signal),
-      );
-      if (!result.ok) return result;
-      return result.value
-        ? { ok: true, value: result.value }
-        : {
-            ok: false,
-            error: {
-              code: "sessionNotFound",
-              message: "Claude Code Session is no longer importable",
-              retryable: false,
-            },
-          };
-    },
+    resolveCandidate: (nativeSessionId: string) =>
+      this.#importScope.resolve((signal) => this.#importIndex.resolve(nativeSessionId, signal)),
   } satisfies HarnessSessionImportCapability);
   readonly subagents = {
     readSnapshot: async (input: {
@@ -2630,9 +2652,13 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
-  readonly #importAbort = new AbortController();
   readonly #importIndex: ClaudeSessionImportIndex;
-  readonly #importRequests = new Set<Promise<unknown>>();
+  readonly #importScope = new SessionImportScope({
+    closedMessage: "Claude Code Adapter is closed",
+    unavailableMessage:
+      "Claude Code Session discovery failed; check storage access and duplicate Session identities, then retry after closing native clients",
+    notFoundMessage: "Claude Code Session is no longer importable",
+  });
   readonly #pendingSessions: ClaudePendingSessions;
   readonly #toolOutputLimit: number;
   readonly #continuationQuiescenceMs: number;
@@ -2709,29 +2735,6 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
         getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
     };
-  }
-
-  #readImport<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<HarnessResult<T>> {
-    if (this.#importAbort.signal.aborted) {
-      return Promise.resolve({
-        ok: false,
-        error: invalidState("Claude Code Adapter is closed"),
-      });
-    }
-    const request = operation(this.#importAbort.signal)
-      .then((value): HarnessResult<T> => ({ ok: true, value }))
-      .catch((): HarnessResult<T> => ({
-        ok: false,
-        error: {
-          code: "unavailable",
-          message:
-            "Claude Code Session discovery failed; check storage access and duplicate Session identities, then retry after closing native clients",
-          retryable: true,
-        },
-      }))
-      .finally(() => this.#importRequests.delete(request));
-    this.#importRequests.add(request);
-    return request;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -3109,10 +3112,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   close(): Promise<void> {
     if (!this.#closePromise) {
-      this.#importAbort.abort();
       this.#inspectionCache.clear();
       this.#closePromise = Promise.all([
-        ...this.#importRequests,
+        this.#importScope.close(),
         ...[...this.#inspectors].map((inspector) => inspector.close()),
         ...[...this.#sessions].map((session) => session.close()),
         ...this.#inspectionInFlight.values(),

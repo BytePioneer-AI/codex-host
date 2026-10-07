@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { HermesQuestions } from "./hermes-questions.js";
+import { HermesUsage } from "./hermes-usage.js";
+import { HermesCompactionActivity } from "./hermes-compaction-activity.js";
 
 import {
   HarnessOutputChannel,
@@ -75,7 +77,11 @@ import {
   hermesFileChanges,
   hermesToolOutput as toolOutputFromUpdate,
 } from "./hermes-file-changes.js";
-import { hermesCommandCatalog, hermesCommandText } from "./hermes-commands.js";
+import {
+  hermesCommandCatalog,
+  hermesCommandText,
+  isExcludedHermesCommand,
+} from "./hermes-commands.js";
 
 const HOST_ERROR_CODES: Record<string, HarnessError["code"]> = {
   notInstalled: "notInstalled",
@@ -109,14 +115,6 @@ function ok<T>(value: T): HarnessResult<T> {
   return { ok: true, value };
 }
 
-function usageFromContext(used: number | undefined, size: number | undefined): HostUsage | null {
-  if (used === undefined && size === undefined) return null;
-  return {
-    ...(size !== undefined ? { contextWindowTokens: size } : {}),
-    ...(used !== undefined ? { contextUsedTokens: used } : {}),
-  };
-}
-
 interface ApprovalWaiter {
   interaction: HostApprovalInteraction;
   turnId: ReturnType<typeof hostTurnIdSchema.parse>;
@@ -129,6 +127,11 @@ class ActiveTurn {
   readonly input: TurnStartCommand["input"];
   readonly persistsHistory: boolean;
   readonly compactionItem: HostContextCompactionItem | null;
+  readonly compactionActivity = new HermesCompactionActivity();
+  rememberActivity(snapshot: HostItemSnapshot): void {
+    this.#finishedItems.push(snapshot);
+    this.#emittedTerminalItemIds.add(snapshot.item.itemId);
+  }
   nativeCompactionOutcome: HostItemOutcome | undefined;
   nativeTurnSnapshot: HostTurnSnapshot | undefined;
   #currentText: {
@@ -375,28 +378,40 @@ export class HermesSession implements HarnessSession {
   #activeTurn: ActiveTurn | null = null;
   #activeTurnId: ReturnType<typeof hostTurnIdSchema.parse> | null = null;
   #completedTurns: HostTurnSnapshot[] = [];
-  #latestUsage: HostUsage | null;
+  #usage: HermesUsage;
+  #startingTurn = false;
   #questions = new HermesQuestions((output) => this.#channel.emit(output));
   #approvalWaiters = new Map<ReturnType<typeof hostInteractionIdSchema.parse>, ApprovalWaiter>();
 
   constructor(options: HermesSessionOptions) {
     this.#transport = options.transport;
     this.commands = {
-      list: async () =>
-        this.#closed || this.#faulted
-          ? err("invalidState", "Hermes Session is unavailable")
-          : ok(hermesCommandCatalog(this.#transport.availableCommands ?? [])),
+      list: async () => {
+        if (this.#closed || this.#faulted)
+          return err("invalidState", "Hermes Session is unavailable");
+        try {
+          const commands =
+            (await this.#transport.getCommands?.()) ?? this.#transport.availableCommands;
+          if (this.#closed || this.#faulted)
+            return err("invalidState", "Hermes Session is unavailable");
+          return ok(hermesCommandCatalog(commands));
+        } catch (error) {
+          return err("nativeFailure", error instanceof Error ? error.message : String(error));
+        }
+      },
       execute: async (command) => {
-        const text = hermesCommandText(
-          command,
-          hermesCommandCatalog(this.#transport.availableCommands ?? []),
-        );
+        const catalog = await this.commands.list();
+        if (!catalog.ok) return catalog;
+        const text = hermesCommandText(command, catalog.value);
         if (!text.ok) return text;
-        return this.execute({
-          type: "turn.start",
-          turnId: command.turnId,
-          input: [{ type: "text", text: text.value }],
-        });
+        return this.#startTurn(
+          {
+            type: "turn.start",
+            turnId: command.turnId,
+            input: [{ type: "text", text: text.value }],
+          },
+          true,
+        );
       },
     };
     this.#nativeRef = options.nativeRef;
@@ -426,13 +441,28 @@ export class HermesSession implements HarnessSession {
     };
     this.initialState = { ...this.#state };
     this.initialUsage = null;
-    this.#latestUsage = this.initialUsage;
     this.outputs = this.#channel.outputs;
+    this.#usage = new HermesUsage(
+      this.#transport.readUsage?.bind(this.#transport),
+      () => !this.#closed && !this.#faulted,
+      (usage) =>
+        this.#emit({
+          type: "session.usage.changed",
+          usage,
+          ...(this.#activeTurn ? { observedForTurnId: this.#activeTurn.turnId } : {}),
+        }),
+    );
     this.#transport.onFault = (error) => this.#fault(transportErrorToHarness(error));
+    this.#transport.onUsage = (usage) => this.#usage.observe(usage);
+    void this.refreshUsage();
   }
 
   get busy(): boolean {
-    return this.#activeTurn !== null;
+    return this.#activeTurn !== null || this.#startingTurn;
+  }
+
+  refreshUsage(): Promise<void> {
+    return this.#usage.refresh();
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
@@ -545,16 +575,46 @@ export class HermesSession implements HarnessSession {
     this.#channel.emit({ kind: "interaction", interaction });
   }
 
-  #startTurn(command: TurnStartCommand): HarnessResult<TurnStartAccepted> {
-    if (this.#activeTurn) {
+  async #startTurn(
+    command: TurnStartCommand,
+    requireNativeCommand = false,
+  ): Promise<HarnessResult<TurnStartAccepted>> {
+    if (this.busy) {
       return err("sessionBusy", "Hermes Session already has an active Turn", true);
     }
     const text = command.input.map((chunk) => chunk.text).join("\n");
     if (text.trim().length === 0) {
       return err("invalidRequest", "turn.start requires non-empty text input");
     }
+    this.#startingTurn = true;
+    try {
+      if (text.trim().startsWith("/")) {
+        const catalog = await this.commands.list();
+        if (!catalog.ok) return catalog;
+        const name = /^\/([\w-]+)(?:\s|$)/u.exec(text.trim())?.[1]?.toLowerCase();
+        if ((name && isExcludedHermesCommand(name)) || this.#transport.rejectsCommand?.(text))
+          return err(
+            "unsupported",
+            "This Hermes command or its arguments are not supported in a Host Thread",
+          );
+      }
+      if (this.#closed || this.#faulted)
+        return err("invalidState", "Hermes Session is unavailable");
+      return this.#acceptTurn(command, text, requireNativeCommand);
+    } finally {
+      this.#startingTurn = false;
+    }
+  }
+
+  #acceptTurn(
+    command: TurnStartCommand,
+    text: string,
+    requireNativeCommand: boolean,
+  ): HarnessResult<TurnStartAccepted> {
     const turnKey = randomUUID();
     const nativeCommand = this.#transport.nativeCommandName?.(text) ?? null;
+    if (requireNativeCommand && !nativeCommand)
+      return err("unsupported", "Hermes no longer advertises this command");
     const isNativeCommand = nativeCommand != null;
     const active = new ActiveTurn(
       command.turnId,
@@ -630,7 +690,7 @@ export class HermesSession implements HarnessSession {
       }
     }
     const terminalUsage = promptResponse?.usage ?? null;
-    const usage = terminalUsage ? this.#mergeUsage(terminalUsage) : null;
+    const usage = terminalUsage ? this.#usage.merge(terminalUsage) : null;
     this.#completeActiveTurn(active, outcome, usage, promptResponse?.finalAnswerText);
   }
 
@@ -644,6 +704,10 @@ export class HermesSession implements HarnessSession {
     this.#cancelApprovalWaiters();
     this.#activeTurn = null;
     this.#activeTurnId = null;
+    this.#finishCompactionActivity(
+      active,
+      "当前 Turn 已结束；原生未确认自动压缩终态，提交结果未知。",
+    );
     active.finish(outcome.status === "succeeded" ? finalAnswerText : undefined);
     const compactionOutcome = active.finishCompaction(outcome);
     if (outcome.status === "succeeded" && compactionOutcome?.status === "failed") {
@@ -676,20 +740,43 @@ export class HermesSession implements HarnessSession {
       outcome,
     });
     if (active.persistsHistory) this.#completedTurns.push(turnSnapshot);
+    void this.#usage.refresh(true);
   }
 
   #handleTransportEvent(active: ActiveTurn, event: HermesTransportEvent): void {
     if (this.#activeTurn !== active) return;
     switch (event.type) {
-      case "usage": {
-        const usage = usageFromContext(event.used, event.size);
-        if (!usage) return;
-        const mergedUsage = this.#mergeUsage(usage);
-        this.#emit({
-          type: "session.usage.changed",
-          usage: mergedUsage,
-          observedForTurnId: active.turnId,
-        });
+      case "usage":
+        this.#usage.observe(event.usage);
+        return;
+      case "status.warning": {
+        const notice = active.compactionActivity.appendNotice(event.text);
+        if (notice)
+          this.#emit({
+            type: "item.updated",
+            turnId: active.turnId,
+            itemId: notice.itemId,
+            update: { type: "text.append", text: notice.text },
+          });
+        return;
+      }
+      case "compaction.started": {
+        if (active.compactionItem) return; // manual compression already owns its Item
+        const item = active.compactionActivity.start(event.text);
+        if (item) {
+          this.#emit({ type: "item.started", turnId: active.turnId, item: { ...item, text: "" } });
+          this.#emit({
+            type: "item.updated",
+            turnId: active.turnId,
+            itemId: item.itemId,
+            update: { type: "text.append", text: item.text },
+          });
+        }
+        return;
+      }
+      case "compaction.finished": {
+        if (this.#finishCompactionActivity(active, "原生自动压缩阶段已结束；未提供压缩提交结果。"))
+          void this.#usage.refresh(true);
         return;
       }
       case "agent.thought":
@@ -716,6 +803,20 @@ export class HermesSession implements HarnessSession {
       default:
         return;
     }
+  }
+
+  #finishCompactionActivity(active: ActiveTurn, reason: string): boolean {
+    const snapshot = active.compactionActivity.finish(reason);
+    if (!snapshot) return false;
+    active.rememberActivity(snapshot);
+    this.#emit({
+      type: "item.updated",
+      turnId: active.turnId,
+      itemId: snapshot.item.itemId,
+      update: { type: "text.append", text: `\n${reason}` },
+    });
+    this.#emit({ type: "item.completed", turnId: active.turnId, snapshot });
+    return true;
   }
 
   #appendTextItem(active: ActiveTurn, kind: "reasoning" | "agentMessage", text: string): void {
@@ -753,12 +854,6 @@ export class HermesSession implements HarnessSession {
     };
     active.addToolItem(toolCallId, { item, startedAt: Date.now() });
     this.#emit({ type: "item.started", turnId: active.turnId, item });
-  }
-
-  #mergeUsage(usage: HostUsage): HostUsage {
-    const merged = { ...(this.#latestUsage ?? {}), ...usage };
-    this.#latestUsage = merged;
-    return merged;
   }
 
   #updateToolItem(active: ActiveTurn, update: HermesToolUpdate): void {
@@ -939,6 +1034,7 @@ export class HermesSession implements HarnessSession {
         error instanceof Error ? error.message : "Hermes rejected Model selection",
       );
     }
+    void this.#usage.refresh(true);
     // After native confirmation, keep the catalog-aligned label when available.
     const projectedAfterSelect = projectHermesModelState({
       availableModels: this.#availableModels,

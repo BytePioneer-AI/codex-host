@@ -3,7 +3,7 @@ import path from "node:path";
 import type * as HarnessDiscovery from "@codexhost/harness-discovery";
 import { resolveHarnessExecutable } from "@codexhost/harness-discovery";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cursorInvocation } from "../src/command.js";
+import { CursorNotInstalledError, cursorInvocation } from "../src/command.js";
 
 const files = vi.hoisted(() => new Set<string>());
 vi.mock("@codexhost/harness-discovery", async (importOriginal) => {
@@ -116,6 +116,9 @@ describe("Cursor executable discovery", () => {
     expect(() =>
       cursorInvocation(environment, path.join(environment.HOME, "missing"), ["acp"]),
     ).toThrow("not installed");
+    expect(() =>
+      cursorInvocation(environment, path.join(environment.HOME, "missing"), ["acp"]),
+    ).toThrow(CursorNotInstalledError);
   });
 
   it.each([["--force", "acp"], ["about", "--format", "json"], ["update"]])(

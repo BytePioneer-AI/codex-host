@@ -186,6 +186,7 @@ export class HermesGatewayTransport {
     method: string,
     params: GatewayRecord,
     timeoutMs = this.timeoutMs,
+    fatalOnTimeout = true,
   ): Promise<GatewayRecord> {
     if (this.#closed || !this.#child) throw new Error("Hermes gateway is closed");
     const id = `codexhost-${++this.#nextId}`;
@@ -196,7 +197,7 @@ export class HermesGatewayTransport {
     try {
       return await withTimeout(response, timeoutMs, `Hermes ${method}`);
     } catch (error) {
-      if (error instanceof HermesTransportError) this.#fault(error);
+      if (fatalOnTimeout && error instanceof HermesTransportError) this.#fault(error);
       throw error;
     } finally {
       this.#pending.delete(id);

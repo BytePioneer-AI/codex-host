@@ -84,6 +84,7 @@ import {
   type GrokPermissionRequest,
   type GrokTransportEvent,
 } from "./acp-transport.js";
+import { GrokSessionImport } from "./session-import.js";
 import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
 import { GrokSubagentLifecycle } from "./grok-subagent-lifecycle.js";
 import {
@@ -1465,6 +1466,7 @@ export class GrokAdapter implements HarnessAdapter {
   readonly commandCatalog = grokCommandCatalog;
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = grokHarnessId;
+  readonly sessionImport: GrokSessionImport;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async (input) => {
       if (input.parent.harnessId !== this.harnessId || input.nativeSubagentId.trim().length === 0) {
@@ -1521,6 +1523,7 @@ export class GrokAdapter implements HarnessAdapter {
   constructor(options: GrokAdapterOptions = {}, dependencies?: GrokAdapterDependencies) {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#environment = options.environment;
+    this.sessionImport = new GrokSessionImport(options.environment);
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_GROK_TOOL_OUTPUT_LIMIT;
     this.#dependencies = dependencies ?? {
       randomUUID,
@@ -1893,9 +1896,10 @@ export class GrokAdapter implements HarnessAdapter {
     if (!this.#closePromise) {
       this.#accountAbort.abort();
       this.#inspectionCache.clear();
-      this.#closePromise = Promise.all([...this.#sessions].map((session) => session.close())).then(
-        () => undefined,
-      );
+      this.#closePromise = Promise.all([
+        this.sessionImport.close(),
+        ...[...this.#sessions].map((session) => session.close()),
+      ]).then(() => undefined);
     }
     return this.#closePromise;
   }

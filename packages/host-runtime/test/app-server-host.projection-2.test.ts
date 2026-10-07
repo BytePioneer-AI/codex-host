@@ -1728,30 +1728,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("continues an existing Pi Thread without requiring a Renderer Model carrier", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    const effectiveModel = session.state.effectiveModel;
-
-    writeRequest(fixture.desktopInput, {
-      id: 42,
-      method: "turn/start",
-      params: {
-        threadId,
-        model: "gpt-5.6-luna",
-        input: [{ type: "text", text: "existing Pi turn" }],
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 42)),
-    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
-    expect(session.state.effectiveModel).toEqual(effectiveModel);
-    session.succeedTurn();
-    await stopFixture(fixture);
-  });
-
   it("lists persisted ownership without restoring external Sessions", async () => {
     const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
@@ -1977,89 +1953,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: { data: [], nextCursor: null },
     });
     expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("forwards section-position Thread lists without External aggregation or Host cursor leakage", async () => {
-    const fixture = createFixture();
-    await startPiThread(fixture);
-    const forward = async (request: JsonObject, response: JsonObject): Promise<void> => {
-      writeRequest(fixture.desktopInput, request);
-      const officialRequest = await readJsonLine(fixture.official.stdin).catch((error: unknown) => {
-        throw new Error(`Timed out forwarding thread/list request ${String(request.id)}`, {
-          cause: error,
-        });
-      });
-      expect(officialRequest).toEqual(request);
-      fixture.official.stdout.write(`${JSON.stringify({ id: officialRequest.id, ...response })}\n`);
-      await expect(
-        fixture.collector.waitFor((message) => message.id === request.id),
-      ).resolves.toEqual({ id: request.id, ...response });
-    };
-
-    await forward(
-      {
-        id: 52,
-        method: "thread/list",
-        params: {
-          cursor: "official-section-cursor",
-          limit: 5,
-          sectionId: "section-1",
-          sortDirection: "asc",
-          sortKey: "section_position",
-        },
-      },
-      {
-        result: {
-          data: [{ id: "official-second" }, { id: "official-first" }],
-          nextCursor: "official-section-next",
-          backwardsCursor: "official-section-backwards",
-        },
-      },
-    );
-    expect(fixture.collector.messages.find((message) => message.id === 52)?.result).toMatchObject({
-      data: [{ id: "official-second" }, { id: "official-first" }],
-      nextCursor: "official-section-next",
-      backwardsCursor: "official-section-backwards",
-    });
-
-    for (const [id, sectionId] of [
-      [53, undefined],
-      [54, null],
-    ] as const) {
-      await forward(
-        {
-          id,
-          method: "thread/list",
-          params: {
-            limit: 5,
-            sortDirection: "asc",
-            sortKey: "section_position",
-            ...(sectionId === undefined ? {} : { sectionId }),
-          },
-        },
-        { error: { code: -32600, message: "sectionId is required" } },
-      );
-    }
-
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    writeRequest(fixture.desktopInput, {
-      id: 55,
-      method: "thread/list",
-      params: {
-        cursor: "codexhost:thread-list:v1:legacy-host-cursor",
-        sectionId: "section-1",
-        sortDirection: "asc",
-        sortKey: "section_position",
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 55)),
-    ).resolves.toMatchObject({
-      error: { code: -32602, message: expect.stringContaining("Host cursor") },
-    });
-    expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
 

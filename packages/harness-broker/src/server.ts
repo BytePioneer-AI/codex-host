@@ -12,14 +12,17 @@ import type {
 } from "@codexhost/harness-adapter";
 
 import {
+  accountCreditsSnapshotSchema,
   harnessAccountListParamsSchema,
   harnessAccountSnapshotSchema,
   harnessPluginIdSchema,
+  nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
 import {
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
   HARNESS_BROKER_PROTOCOL_VERSION,
+  HARNESS_BROKER_RETIRING_ERROR_CODE,
   harnessBrokerHelloSchema,
   harnessBrokerDescriptorSchema,
   harnessBrokerRequestSchema,
@@ -46,6 +49,7 @@ interface ServerSession {
   environment?: OpenSessionInput["environment"];
   nativeId?: string;
   nativeRef?: HarnessSession["initialState"]["nativeRef"];
+  nativeWriterRef?: HarnessSession["nativeWriterRef"];
   writerKey?: string;
   awaitingNativeIdentity: boolean;
   provisionalWriterLease: boolean;
@@ -226,6 +230,12 @@ export async function startHarnessBrokerServer(input: {
   adapter: HarnessAdapter;
   generation?: string;
   token?: string;
+  /**
+   * Retire after this long with no open Session and no request, or right after an
+   * inspection reports the Harness unusable. The broker then refuses new requests as
+   * retryable, unpublishes itself and calls `onRetire` so its owner can exit.
+   */
+  idle?: { timeoutMs: number; onRetire(): void };
 }): Promise<HarnessBrokerServer> {
   harnessPluginIdSchema.parse(input.adapter.harnessId);
   if (
@@ -255,8 +265,39 @@ export async function startHarnessBrokerServer(input: {
   const sessions = new Map<string, ServerSession>();
   const nativeWriters = new Map<string, string>();
   let provisionalNativeWriter: string | undefined;
+  // Wait for an in-flight create to report its write identity rather than returning a
+  // spurious busy error. Only legacy Sessions without an identity retain the global guard.
+  let openingCreate: Promise<undefined> | undefined;
   const connections = new Set<ConnectionState>();
   let closed = false;
+  let retiring = false;
+  let retireWhenIdle = false;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const busy = (): boolean =>
+    sessions.size > 0 ||
+    openingCreate !== undefined ||
+    [...connections].some((connection) => connection.queuedFrames > 0);
+  const retire = (): void => {
+    if (retiring || closed || !input.idle) return;
+    retiring = true;
+    clearTimeout(idleTimer);
+    // Unpublish first so new clients start a replacement instead of reconnecting here.
+    server.close();
+    void rm(input.descriptorPath, { force: true }).finally(() => input.idle?.onRetire());
+  };
+  // Re-arm after every frame and Session change. Never retires while any Session is
+  // open or any request is queued, so a refused request was never processed.
+  const scheduleIdle = (): void => {
+    clearTimeout(idleTimer);
+    if (!input.idle || retiring || closed || busy()) return;
+    idleTimer = setTimeout(
+      () => {
+        if (!busy()) retire();
+      },
+      retireWhenIdle ? 0 : input.idle.timeoutMs,
+    );
+    idleTimer.unref?.();
+  };
 
   const server: Server = net.createServer((socket) => {
     const state: ConnectionState = {
@@ -287,7 +328,9 @@ export async function startHarnessBrokerServer(input: {
     };
     const respond = async (
       request: HarnessBrokerRequest,
-      result: { ok: true; value: unknown } | { ok: false; error: ReturnType<typeof protocolError> },
+      result:
+        | { ok: true; value: unknown }
+        | { ok: false; error: { code: string; message: string; retryable: boolean } },
     ): Promise<void> => {
       await send({ kind: "response", id: request.id, ...result });
     };
@@ -317,13 +360,14 @@ export async function startHarnessBrokerServer(input: {
           if (output.kind === "event" && output.event.type === "session.state.changed") {
             const state = output.event.state;
             const observedNativeId = state.nativeRef?.nativeSessionId;
+            const expectedRef = record.nativeWriterRef ?? record.nativeRef;
             if (
               state.nativeRef &&
               (state.nativeRef.harnessId !== input.adapter.harnessId ||
-                (record.nativeRef &&
-                  (record.nativeRef.harnessId !== state.nativeRef.harnessId ||
-                    record.nativeRef.nativeSessionId !== state.nativeRef.nativeSessionId ||
-                    record.nativeRef.formatVersion !== state.nativeRef.formatVersion)))
+                (expectedRef &&
+                  (expectedRef.harnessId !== state.nativeRef.harnessId ||
+                    expectedRef.nativeSessionId !== state.nativeRef.nativeSessionId ||
+                    expectedRef.formatVersion !== state.nativeRef.formatVersion)))
             ) {
               record.faulted = true;
               releaseProvisionalWriter(record);
@@ -379,6 +423,11 @@ export async function startHarnessBrokerServer(input: {
               record.writerKey = writerKey;
               releaseProvisionalWriter(record);
             }
+            if (state.nativeRef) {
+              record.nativeId = state.nativeRef.nativeSessionId;
+              record.nativeRef = state.nativeRef;
+              releaseProvisionalWriter(record);
+            }
             if (state.effectiveModel) record.selection.model = state.effectiveModel;
             if (state.effectiveThinkingOptionId) {
               record.selection.thinkingOptionId = state.effectiveThinkingOptionId;
@@ -418,6 +467,7 @@ export async function startHarnessBrokerServer(input: {
     const closeRecord = async (record: ServerSession): Promise<void> => {
       if (sessions.get(record.id) !== record) return;
       sessions.delete(record.id);
+      scheduleIdle();
       state.sessions.delete(record.id);
       record.forwarderEpoch += 1;
       const nativeSession = record.session;
@@ -447,6 +497,12 @@ export async function startHarnessBrokerServer(input: {
 
     const handleRequest = async (request: HarnessBrokerRequest): Promise<unknown> => {
       if (closed || state.closed) throw new Error("Harness broker connection is closed");
+      if (request.method === "adapter.open") retireWhenIdle = false;
+      if (request.method === "adapter.credits") {
+        harnessAccountListParamsSchema.parse(request.params);
+        const adapter = input.adapter as HarnessAdapter & { credits?: () => unknown };
+        return accountCreditsSnapshotSchema.nullable().parse(adapter.credits?.() ?? null);
+      }
       if (request.method === "adapter.inspectAccount") {
         harnessAccountListParamsSchema.parse(request.params);
         return harnessAccountSnapshotSchema
@@ -455,10 +511,13 @@ export async function startHarnessBrokerServer(input: {
       }
       if (request.method === "adapter.inspect") {
         const parsed = brokerInspectInputSchema.parse(request.params);
-        return input.adapter.inspect({
+        const inspection = await input.adapter.inspect({
           ...(parsed.cwd ? { cwd: parsed.cwd } : {}),
           ...(parsed.refresh !== undefined ? { refresh: parsed.refresh } : {}),
         });
+        // An unusable Harness gains nothing from a resident broker; exit once idle.
+        retireWhenIdle = inspection.status !== "ready";
+        return inspection;
       }
       if (request.method === "adapter.subagent.readSnapshot") {
         const subagents = input.adapter.subagents;
@@ -470,6 +529,8 @@ export async function startHarnessBrokerServer(input: {
         return subagents.readSnapshot(params);
       }
       if (request.method === "adapter.open") {
+        while (openingCreate) await openingCreate;
+        if (closed || state.closed) throw new Error("Harness broker connection is closed");
         const openInput = brokerOpenInputSchema.parse(request.params) as OpenSessionInput;
         const sourceRef =
           openInput.kind === "create"
@@ -480,7 +541,10 @@ export async function startHarnessBrokerServer(input: {
         const sourceNativeId = sourceRef?.nativeSessionId;
         if (sourceRef && sourceRef.harnessId !== input.adapter.harnessId)
           return { ok: false, error: protocolError("Native Session belongs to another Harness") };
-        const sourceKey = sourceNativeId ? nativeWriterKey(sourceNativeId) : undefined;
+        // Fork reads the source; only its derived Session claims a new writer below.
+        // Do not reserve or release the source's existing write identity for a Fork.
+        const sourceKey =
+          sourceNativeId && openInput.kind !== "fork" ? nativeWriterKey(sourceNativeId) : undefined;
         if (sourceKey && nativeWriters.has(sourceKey)) {
           return {
             ok: false,
@@ -515,110 +579,142 @@ export async function startHarnessBrokerServer(input: {
             provisionalNativeWriter = undefined;
           }
         };
-        const opened = await input.adapter.open(openInput).catch((error: unknown) => {
-          releaseOpenReservations();
-          throw error;
-        });
-        if (!opened.ok) {
-          releaseOpenReservations();
-          return opened;
-        }
-        if (closed || state.closed) {
-          releaseOpenReservations();
-          await opened.value.close().catch(() => undefined);
-          return { ok: false, error: harnessError("Harness broker connection closed") };
-        }
-        const openedRef = opened.value.initialState.nativeRef;
-        if (openedRef && openedRef.harnessId !== input.adapter.harnessId) {
-          releaseOpenReservations();
-          await opened.value.close().catch(() => undefined);
-          return {
-            ok: false,
-            error: protocolError("Adapter opened a Session for another Harness"),
-          };
-        }
-        if (
-          sourceRef &&
-          (!openedRef ||
-            openedRef.harnessId !== sourceRef.harnessId ||
-            openedRef.formatVersion !== sourceRef.formatVersion ||
-            (openInput.kind === "resume" &&
-              openedRef.nativeSessionId !== sourceRef.nativeSessionId))
-        ) {
-          releaseOpenReservations();
-          await opened.value.close().catch(() => undefined);
-          return {
-            ok: false,
-            error: {
-              code: "protocolError",
-              message: "Native Harness Session identity did not match the requested open",
-              retryable: false,
-              stage: "harnessBroker.open",
+        const createSettled =
+          openInput.kind === "create" ? Promise.withResolvers<undefined>() : undefined;
+        if (createSettled) openingCreate = createSettled.promise;
+        try {
+          const opened = await input.adapter.open(openInput).catch((error: unknown) => {
+            releaseOpenReservations();
+            throw error;
+          });
+          if (!opened.ok) {
+            releaseOpenReservations();
+            return opened;
+          }
+          if (closed || state.closed) {
+            releaseOpenReservations();
+            await opened.value.close().catch(() => undefined);
+            return { ok: false, error: harnessError("Harness broker connection closed") };
+          }
+          const openedRef = opened.value.initialState.nativeRef;
+          if (openedRef && openedRef.harnessId !== input.adapter.harnessId) {
+            releaseOpenReservations();
+            await opened.value.close().catch(() => undefined);
+            return {
+              ok: false,
+              error: protocolError("Adapter opened a Session for another Harness"),
+            };
+          }
+          if (
+            sourceRef &&
+            (!openedRef ||
+              openedRef.harnessId !== sourceRef.harnessId ||
+              openedRef.formatVersion !== sourceRef.formatVersion ||
+              (openInput.kind === "resume" &&
+                openedRef.nativeSessionId !== sourceRef.nativeSessionId))
+          ) {
+            releaseOpenReservations();
+            await opened.value.close().catch(() => undefined);
+            return {
+              ok: false,
+              error: {
+                code: "protocolError",
+                message: "Native Harness Session identity did not match the requested open",
+                retryable: false,
+                stage: "harnessBroker.open",
+              },
+            };
+          }
+          const parsedWriterRef = nativeSessionRefSchema.safeParse(
+            opened.value.nativeWriterRef ?? openedRef,
+          );
+          const writerRef = parsedWriterRef.success ? parsedWriterRef.data : undefined;
+          if (
+            (opened.value.nativeWriterRef && !writerRef) ||
+            (writerRef &&
+              (writerRef.harnessId !== input.adapter.harnessId ||
+                (openedRef &&
+                  (writerRef.nativeSessionId !== openedRef.nativeSessionId ||
+                    writerRef.formatVersion !== openedRef.formatVersion))))
+          ) {
+            releaseOpenReservations();
+            await opened.value.close().catch(() => undefined);
+            return {
+              ok: false,
+              error: protocolError("Adapter write identity did not match the opened Session"),
+            };
+          }
+          const nativeId = openedRef?.nativeSessionId;
+          const nativeKey = writerRef ? nativeWriterKey(writerRef.nativeSessionId) : undefined;
+          const nativeOwner = nativeKey ? nativeWriters.get(nativeKey) : undefined;
+          if (nativeOwner && nativeOwner !== openReservation) {
+            releaseOpenReservations();
+            await opened.value.close().catch(() => undefined);
+            return {
+              ok: false,
+              error: {
+                code: "sessionBusy",
+                message: "Native Harness Session already has an active writer",
+                retryable: true,
+                stage: "harnessBroker.open",
+              },
+            };
+          }
+          const delayedCreateIdentity = openInput.kind === "create" && !nativeKey;
+          const record: ServerSession = {
+            id: openReservation,
+            generation: 1,
+            owner: state.id,
+            cwd: openInput.cwd,
+            ...(openInput.environment ? { environment: openInput.environment } : {}),
+            ...(nativeId ? { nativeId } : {}),
+            ...(opened.value.initialState.nativeRef
+              ? { nativeRef: opened.value.initialState.nativeRef }
+              : {}),
+            ...(nativeKey ? { writerKey: nativeKey, nativeWriterRef: writerRef } : {}),
+            awaitingNativeIdentity: delayedCreateIdentity,
+            provisionalWriterLease: delayedCreateIdentity,
+            session: opened.value,
+            outputTask: Promise.resolve(),
+            forwarderEpoch: 1,
+            faulted: false,
+            selection: {
+              ...(opened.value.initialState.effectiveModel
+                ? { model: opened.value.initialState.effectiveModel }
+                : {}),
+              ...(opened.value.initialState.effectiveThinkingOptionId
+                ? { thinkingOptionId: opened.value.initialState.effectiveThinkingOptionId }
+                : {}),
+              ...(opened.value.initialState.effectivePermissionModeId
+                ? { permissionModeId: opened.value.initialState.effectivePermissionModeId }
+                : {}),
             },
           };
+          sessions.set(record.id, record);
+          state.sessions.add(record.id);
+          if (nativeKey) nativeWriters.set(nativeKey, record.id);
+          if (sourceKey && sourceKey !== nativeKey && nativeWriters.get(sourceKey) === record.id) {
+            nativeWriters.delete(sourceKey);
+          }
+          if (
+            !record.provisionalWriterLease &&
+            provisionalNativeWriter === provisionalReservation
+          ) {
+            provisionalNativeWriter = undefined;
+          }
+          record.outputTask = forwardOutputs(
+            record,
+            opened.value,
+            record.generation,
+            record.forwarderEpoch,
+          );
+          return { ok: true, value: sessionMetadata(record) };
+        } finally {
+          if (createSettled) {
+            openingCreate = undefined;
+            createSettled.resolve(undefined);
+          }
         }
-        const nativeId = openedRef?.nativeSessionId;
-        const nativeKey = nativeId ? nativeWriterKey(nativeId) : undefined;
-        const nativeOwner = nativeKey ? nativeWriters.get(nativeKey) : undefined;
-        if (nativeOwner && nativeOwner !== openReservation) {
-          releaseOpenReservations();
-          await opened.value.close().catch(() => undefined);
-          return {
-            ok: false,
-            error: {
-              code: "sessionBusy",
-              message: "Native Harness Session already has an active writer",
-              retryable: true,
-              stage: "harnessBroker.open",
-            },
-          };
-        }
-        const delayedCreateIdentity = openInput.kind === "create" && !nativeKey;
-        const record: ServerSession = {
-          id: openReservation,
-          generation: 1,
-          owner: state.id,
-          cwd: openInput.cwd,
-          ...(openInput.environment ? { environment: openInput.environment } : {}),
-          ...(nativeId ? { nativeId } : {}),
-          ...(opened.value.initialState.nativeRef
-            ? { nativeRef: opened.value.initialState.nativeRef }
-            : {}),
-          ...(nativeKey ? { writerKey: nativeKey } : {}),
-          awaitingNativeIdentity: delayedCreateIdentity,
-          provisionalWriterLease: delayedCreateIdentity,
-          session: opened.value,
-          outputTask: Promise.resolve(),
-          forwarderEpoch: 1,
-          faulted: false,
-          selection: {
-            ...(opened.value.initialState.effectiveModel
-              ? { model: opened.value.initialState.effectiveModel }
-              : {}),
-            ...(opened.value.initialState.effectiveThinkingOptionId
-              ? { thinkingOptionId: opened.value.initialState.effectiveThinkingOptionId }
-              : {}),
-            ...(opened.value.initialState.effectivePermissionModeId
-              ? { permissionModeId: opened.value.initialState.effectivePermissionModeId }
-              : {}),
-          },
-        };
-        sessions.set(record.id, record);
-        state.sessions.add(record.id);
-        if (nativeKey) nativeWriters.set(nativeKey, record.id);
-        if (sourceKey && sourceKey !== nativeKey && nativeWriters.get(sourceKey) === record.id) {
-          nativeWriters.delete(sourceKey);
-        }
-        if (!record.provisionalWriterLease && provisionalNativeWriter === provisionalReservation) {
-          provisionalNativeWriter = undefined;
-        }
-        record.outputTask = forwardOutputs(
-          record,
-          opened.value,
-          record.generation,
-          record.forwarderEpoch,
-        );
-        return { ok: true, value: sessionMetadata(record) };
       }
       if (request.method === "session.execute") {
         const parsed = sessionExecuteParamsSchema.parse(request.params);
@@ -816,6 +912,7 @@ export async function startHarnessBrokerServer(input: {
       socket,
       (raw) => {
         state.queuedFrames += 1;
+        clearTimeout(idleTimer);
         if (state.queuedFrames > HARNESS_BROKER_MAX_PENDING_REQUESTS) {
           state.closed = true;
           socket.destroy();
@@ -849,6 +946,17 @@ export async function startHarnessBrokerServer(input: {
               return;
             }
             state.inputSequence = parsed.data.sequence;
+            if (retiring) {
+              await respond(parsed.data, {
+                ok: false,
+                error: {
+                  code: HARNESS_BROKER_RETIRING_ERROR_CODE,
+                  message: "Harness broker is exiting; retry on a new broker",
+                  retryable: true,
+                },
+              });
+              return;
+            }
             try {
               await respond(parsed.data, { ok: true, value: await handleRequest(parsed.data) });
             } catch (error) {
@@ -863,6 +971,7 @@ export async function startHarnessBrokerServer(input: {
           })
           .finally(() => {
             state.queuedFrames -= 1;
+            scheduleIdle();
           })
           .catch(() => {
             socket.destroy();
@@ -878,6 +987,7 @@ export async function startHarnessBrokerServer(input: {
         const record = sessions.get(sessionId);
         if (record) void closeRecord(record);
       }
+      scheduleIdle();
     });
   });
 
@@ -896,12 +1006,14 @@ export async function startHarnessBrokerServer(input: {
     if (process.platform !== "win32") await rm(input.socketPath, { force: true });
     throw error;
   }
+  scheduleIdle();
 
   return {
     descriptor,
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
+      clearTimeout(idleTimer);
       for (const connection of connections) connection.socket.destroy();
       for (const record of sessions.values()) record.forwarderEpoch += 1;
       await Promise.all(

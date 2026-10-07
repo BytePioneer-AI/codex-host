@@ -16,7 +16,9 @@ import {
 const CODEXHOST_STATUS_METHOD = "codexhost/update/status";
 const DIRECT_PROBE_TIMEOUT_MS = 5_000;
 const PROBE_TIMEOUT_MS = 5_000;
-const START_TIMEOUT_MS = 12_000;
+// A small server needs about ten seconds to bring the Host up when idle, and longer right
+// after an install; a tight deadline reports a failed start for a service that then comes up.
+const START_TIMEOUT_MS = 45_000;
 
 export interface RemoteHostRuntimeStatus {
   state: "stopped" | "running" | "conflict" | "unknown";
@@ -107,7 +109,8 @@ async function stopChild(child: ReturnType<typeof spawn>): Promise<void> {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 }
 
-async function probeWebSocket(input: {
+/** Exported for tests. Resolves on the reply to the status request, or on timeout. */
+export async function probeWebSocket(input: {
   socketPath: string;
   createConnection: () => Duplex;
   timeoutMs: number;
@@ -142,7 +145,9 @@ async function probeWebSocket(input: {
           }),
         );
       });
-      socket.once("message", (data, isBinary) => {
+      // A Host announces its Threads to every new connection before it answers, so keep
+      // reading until the reply to the status request arrives.
+      socket.on("message", (data, isBinary) => {
         if (isBinary) {
           finish({
             state: "unknown",
@@ -220,9 +225,6 @@ function installedManifest(status: RemoteHostInstallationStatus): RemoteHostMani
   if (status.state === "not-installed") {
     throw new Error("Remote Host is not installed. Run: codexhost remote install");
   }
-  if (status.state === "degraded") {
-    throw new Error(`Remote Host installation is degraded: ${status.issues.join("; ")}`);
-  }
   return status;
 }
 
@@ -237,7 +239,6 @@ function managedEnvironment(
     CODEXHOST_HOST_NODE_PATH: manifest.nodePath,
     CODEXHOST_HOST_RUNTIME_PATH: manifest.hostRuntimePath,
     CODEXHOST_DATA_DIR: manifest.dataDirectory,
-    CODEXHOST_DEFAULT_AGENT: "codex",
     CODEXHOST_REMOTE_SSH_MANAGED: "1",
     PATH: `${path.dirname(manifest.wrapperPath)}${path.delimiter}${path.dirname(manifest.stockCodexPath)}${path.delimiter}${environment.PATH ?? "/usr/bin:/bin"}`,
   };
@@ -352,7 +353,11 @@ export async function startRemoteHost(
     throw new Error("Remote Host lifecycle must run on the macOS or Linux SSH host");
   }
   const lifecycle = dependencies();
-  const manifest = installedManifest(await lifecycle.inspectInstallation(options));
+  const installation = await lifecycle.inspectInstallation(options);
+  if (installation.state === "degraded") {
+    throw new Error(`Remote Host installation is degraded: ${installation.issues.join("; ")}`);
+  }
+  const manifest = installedManifest(installation);
   const socketPath = socketPathFor(environment);
   const current = await lifecycle.probeProtocol(manifest, socketPath, environment);
   if (current.state === "running") {
@@ -376,6 +381,9 @@ export async function stopRemoteHost(
     throw new Error("Remote Host lifecycle must run on the macOS or Linux SSH host");
   }
   const lifecycle = dependencies();
+  // An update can make the previous shell profile/entrypoint obsolete before reinstalling it.
+  // Stopping the existing listener does not launch either: protocol probing and the native
+  // terminator's socket-owner/process-identity checks still gate termination.
   const manifest = installedManifest(await lifecycle.inspectInstallation(options));
   const socketPath = socketPathFor(environment);
   const current = await lifecycle.probeProtocol(manifest, socketPath, environment);

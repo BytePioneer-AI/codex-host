@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { openRendererLocalPage } from "./renderer-local-page.js";
 import { listCdpTargets } from "./cdp-client.js";
+import { remoteConnectionsExpression } from "./remote-connections-control.js";
+import { remoteConnectionsReplySchema } from "@codexhost/shared-contracts";
 
 import {
   startControllerAttachmentServer,
@@ -21,7 +23,6 @@ import {
 export interface DesktopControllerOptions {
   rendererCdpEndpoint: string;
   rendererPath: string;
-  defaultAgent: "codex" | "pi";
   attachmentPort: number;
   attachmentNonce: string;
 }
@@ -37,7 +38,7 @@ export interface DesktopControllerDependencies {
   install(options: {
     rendererCdpEndpoint: string;
     rendererSource: string;
-    enabledAgents: readonly string[];
+    enabledAgents?: readonly string[];
     timeoutMs: number;
     signal?: AbortSignal;
   }): Promise<RendererCdpControlSession>;
@@ -122,7 +123,6 @@ export function parseDesktopControllerArguments(
 ): DesktopControllerOptions {
   let endpoint: string | undefined;
   let rendererPath: string | undefined;
-  let defaultAgent: "codex" | "pi" | undefined;
   let attachmentPort: number | undefined;
   let attachmentNonce: string | undefined;
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -142,15 +142,6 @@ export function parseDesktopControllerArguments(
       if (!value) throw new Error("--renderer requires a value");
       if (!path.isAbsolute(value)) throw new Error("--renderer must be an absolute path");
       rendererPath = path.normalize(value);
-      index += 1;
-      continue;
-    }
-    if (argument === "--default-agent") {
-      if (defaultAgent !== undefined) throw new Error("--default-agent may only be provided once");
-      if (value !== "codex" && value !== "pi") {
-        throw new Error("--default-agent must be 'codex' or 'pi'");
-      }
-      defaultAgent = value;
       index += 1;
       continue;
     }
@@ -181,13 +172,11 @@ export function parseDesktopControllerArguments(
   }
   if (endpoint === undefined) throw new Error("--renderer-cdp-endpoint is required");
   if (rendererPath === undefined) throw new Error("--renderer is required");
-  if (defaultAgent === undefined) throw new Error("--default-agent is required");
   if (attachmentPort === undefined) throw new Error("--attachment-port is required");
   if (attachmentNonce === undefined) throw new Error("--attachment-nonce is required");
   return {
     rendererCdpEndpoint: endpoint,
     rendererPath,
-    defaultAgent,
     attachmentPort,
     attachmentNonce,
   };
@@ -231,7 +220,6 @@ export async function runDesktopController(
   signal: AbortSignal,
   dependencies: DesktopControllerDependencies = defaultDependencies,
 ): Promise<void> {
-  const configuration = `Object.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: ${JSON.stringify(options.defaultAgent)} } });`;
   const now = dependencies.now ?? Date.now;
   let session: RendererCdpControlSession | undefined;
   let nextRecoveryAt = 0;
@@ -259,27 +247,8 @@ export async function runDesktopController(
     const installed = await installProductionSession(
       {
         rendererCdpEndpoint: options.rendererCdpEndpoint,
-        rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${configuration}\n${rendererSource}`,
-        enabledAgents: [
-          "codex",
-          "pi",
-          "claude-code",
-          "deepseek-harness",
-          "opencode",
-          "grok",
-          "omp",
-          "antigravity",
-          "kiro-cli",
-          "codebuddy",
-          "workbuddy",
-          "cursor-cli",
-          "devin",
-          "hermes",
-          "qoder",
-          "qoder-cn",
-          "kimi-code",
-          "zcode",
-        ],
+        rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${rendererSource}`,
+        // External Agents are discovered from each target Host after installation.
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
         signal,
       },
@@ -326,6 +295,14 @@ export async function runDesktopController(
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
+      remoteConnections: async (request) => {
+        // Serialize session recovery, not the native request: the renderer can await Host
+        // responses while other settings reads run. Never retry a submitted mutation.
+        const current = await useSession(() => recoverSession());
+        return remoteConnectionsReplySchema.parse(
+          await current.executeRenderer(remoteConnectionsExpression(request)),
+        );
+      },
       openLocalPage: (url) =>
         openRendererLocalPage(
           (expression) =>

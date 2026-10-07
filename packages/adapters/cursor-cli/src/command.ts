@@ -30,14 +30,17 @@ function cursorDiscoverySpec(skipPinnedVersions: boolean): HarnessDiscoverySpec 
 }
 
 /** Prefer the rolling launcher; an explicit executable remains authoritative. */
-function resolveCursorExecutable(
+/** The Cursor CLI was not found; other discovery failures are reported as is. */
+export class CursorNotInstalledError extends Error {}
+
+export function resolveCursorExecutable(
   environment: NodeJS.ProcessEnv,
   command?: string,
 ): HarnessResolution {
   const input = { environment, ...(command ? { command } : {}) };
   const pinned = resolveHarnessExecutable(cursorDiscoverySpec(false), input);
   if (!pinned)
-    throw new Error(
+    throw new CursorNotInstalledError(
       "Cursor CLI is not installed; install cursor-agent or set CODEXHOST_CURSOR_COMMAND",
     );
   const explicit = command?.trim() || environment.CODEXHOST_CURSOR_COMMAND?.trim();

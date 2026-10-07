@@ -23,6 +23,7 @@ import type { JsonObject } from "@codexhost/protocol-core";
 import {
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type HarnessId,
   type HostThreadId,
   type NativeCheckpointRef,
   type NativeSessionRef,
@@ -53,6 +54,8 @@ export interface ExternalThreadStore {
   commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1>;
   rebindSubagentSession(input: RebindSubagentSessionInput): Promise<StoredThreadRecordV1>;
   replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1>;
+  /** Optional so a Store without this knowledge simply filters nothing. */
+  supersededNativeSessionIds?(harnessId: HarnessId): string[];
   replaceReadySessionAfterLastTurn(
     input: ReplaceReadySessionAfterLastTurnInput,
   ): Promise<StoredThreadRecordV1>;
@@ -120,6 +123,11 @@ export class ExternalThreadRepository {
 
   close(): Promise<void> {
     return this.store.close();
+  }
+
+  /** Native Sessions a Thread of this Harness left behind when a message was edited or rolled back. */
+  supersededNativeSessionIds(harnessId: HarnessId): ReadonlySet<string> {
+    return new Set(this.store.supersededNativeSessionIds?.(harnessId) ?? []);
   }
 
   async find(threadId: string): Promise<StoredThreadRecordV1 | null> {
@@ -429,6 +437,11 @@ export class ExternalThreadRepository {
     snapshot: HostThreadSnapshot,
   ): Promise<AlignedExternalSnapshot> {
     const nativeSessionRef = record.nativeSessionRef;
+    // Some Harnesses establish their native identity only on the first Turn.
+    // An unsent draft has no history to reconcile or persist yet.
+    if (record.state === "creating" && !nativeSessionRef && snapshot.turns.length === 0) {
+      return { record, turns: [] };
+    }
     if (!nativeSessionRef || record.state !== "ready") {
       throw new Error("External Thread has no committed Native Session identity");
     }

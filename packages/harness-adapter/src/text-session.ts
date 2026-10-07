@@ -83,7 +83,10 @@ export interface CreateSessionInput {
 }
 
 export interface ResumeSessionInput {
-  /** Saved selection hints for Harnesses that initialize configuration lazily. */
+  /** Persisted configuration hints, not new user commands. The Adapter owns restoration:
+   * initialize lazy configuration, restore a saved mode, or retain authoritative native state.
+   * Host never replays configuration commands after open; publish the confirmed state.
+   */
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   kind: "resume";
@@ -494,6 +497,8 @@ export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
   nativeTurnRef?: NativeTurnRef;
+  /** Native operation completed without a history Turn; project without persisting an identity. */
+  ephemeral?: true;
   outcome: TurnOutcome;
 }
 
@@ -531,6 +536,13 @@ export interface HarnessSession {
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
+  /**
+   * Immutable identity reserved for this Session's native writes, when known before native
+   * creation. Not evidence of durable history: only state.nativeRef confirms resumability.
+   * An Adapter supplying this must not write to the identity during open; the caller reserves
+   * it before executing commands. Subsequent state.nativeRef must match it exactly.
+   */
+  readonly nativeWriterRef?: NativeSessionRef;
   readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly commands?: HarnessCommandCapability;

@@ -41,6 +41,8 @@ For commands with visible progress, decide explicitly whether they need:
 - existing UI projection;
 - ordinary history persistence.
 
+If a native prompt completes without invoking the Agent or creating a history Turn, the Adapter marks `turn.completed` with `ephemeral: true`. The Host then uses the same non-persistent terminal path as an admitted catalog command: project output and completion, release the active Turn, and omit it from native identity mappings and history. This also covers a cold live-catalog command admitted as an ordinary prompt. Missing `nativeTurnRef` alone never implies an ephemeral Turn; ordinary successful Turns still require native identity.
+
 ## 4. Reuse Host and Renderer routing
 
 Catalog reads never open or resume a Session:
@@ -87,7 +89,7 @@ Live commands are filtered by a blocklist, never an allowlist. `COMMON_EXCLUDED_
 | Pi | RPC `get_commands` on each listing | `source: "skill"` | pi-subagents run management and profile rewriting, Host-internal `subagents-inspect-rpc` |
 | Grok | ACP `available_commands_update` | `_meta.path` is a `SKILL.md`, or `_meta.qualifiedName` | — |
 | Kiro CLI | ACP `available_commands_update` | `_meta.kiro.type: "skill"` | — |
-| OMP | RPC `available_commands_update` event | `source: "skill"` | every `source: "builtin"` entry (terminal UI commands) |
+| OMP | RPC `available_commands_update` event | `source: "skill"` | `source: "builtin"` entries except the local `/context` text report; `/compact` uses dedicated handling |
 | CodeBuddy | ACP `available_commands_update` | `_meta.type: "skill"` | its own reviewed list |
 | Cursor CLI | ACP push | none (common list applies to every entry) | `update-cli-config` |
 | Qoder | SDK or ACP push | none (common list applies to every entry) | — |

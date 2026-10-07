@@ -1049,6 +1049,20 @@ class OmpHarnessSession implements HarnessSession {
       void transport
         .runTurn(text, (event) => this.#handleTurnEvent(active, event))
         .then(async (result) => {
+          if (!result.agentInvoked) {
+            this.#completeTurn(
+              active,
+              result.error !== undefined
+                ? { status: "failed", error: normalizedError(result.error, "nativeFailure") }
+                : result.cancelled
+                  ? { status: "cancelled", reason: "Cancelled by user" }
+                  : { status: "succeeded" },
+              result.text,
+              undefined,
+              true,
+            );
+            return;
+          }
           try {
             const identity = await this.#completedTurnIdentity(active, transport);
             this.#completeTurn(
@@ -2134,6 +2148,7 @@ class OmpHarnessSession implements HarnessSession {
     outcome: TurnOutcome,
     finalText?: string,
     nativeTurnRef?: NativeTurnRef,
+    ephemeral?: true,
   ): void {
     if (this.#active !== active) return;
     this.#active = null;
@@ -2170,6 +2185,7 @@ class OmpHarnessSession implements HarnessSession {
       turnId: active.command.turnId,
       outcome,
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
+      ...(ephemeral ? { ephemeral } : {}),
     });
     active.resolveCompletion();
     queueMicrotask(() => {

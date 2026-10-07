@@ -24,6 +24,9 @@ class FakeOmpProcess extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   readonly commands: Record<string, unknown>[] = [];
+  promptHandler: ((command: Record<string, unknown>) => void) | null = null;
+  abortHandler: ((command: Record<string, unknown>) => void) | null = null;
+  messages: unknown[] = [];
   #buffer = "";
   #sessionId = "omp-session";
 
@@ -159,6 +162,7 @@ class FakeOmpProcess extends EventEmitter {
 
   #handle(command: Record<string, unknown>): void {
     this.commands.push(command);
+    if (command.type === "abort" && this.abortHandler) return this.abortHandler(command);
     if (command.type === "extension_ui_response") {
       if (this.terminalMessageMode === "approval") {
         const message = {
@@ -197,7 +201,8 @@ class FakeOmpProcess extends EventEmitter {
     if (command.type === "negotiate_protocol")
       return this.#response(command, { protocolVersion: 2 });
     if (command.type === "get_state") return this.#response(command, this.#state());
-    if (command.type === "get_messages") return this.#response(command, { messages: [] });
+    if (command.type === "get_messages")
+      return this.#response(command, { messages: this.messages });
     if (command.type === "get_subagent_messages") {
       return this.#response(command, {
         sessionFile: "/tmp/subagent.jsonl",
@@ -237,6 +242,7 @@ class FakeOmpProcess extends EventEmitter {
       return;
     }
     if (command.type === "prompt") {
+      if (this.promptHandler) return this.promptHandler(command);
       this.#response(command);
       queueMicrotask(() => {
         if (this.toolFrameMode !== "none") this.#toolFrames(this.toolFrameMode);
@@ -331,6 +337,260 @@ class FakeOmpProcess extends EventEmitter {
 }
 
 describe("OMP RPC session", () => {
+  it("completes a local prompt without agent_end and releases the next turn", async () => {
+    const process = new FakeOmpProcess();
+    process.promptHandler = (command) => {
+      process.sendFrame({ type: "command_output", text: "Context window: 100 tokens" });
+      process.sendFrame({
+        type: "response",
+        id: command.id,
+        command: "prompt",
+        success: true,
+        data: { agentInvoked: false },
+      });
+    };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000 },
+      { spawn: () => process as never },
+    );
+    const events: OmpTurnEvent[] = [];
+    try {
+      await session.start();
+      let result: unknown;
+      const turn = session.runTurn("/context", (event) => events.push(event));
+      void turn.then(
+        (value) => {
+          result = value;
+        },
+        () => undefined,
+      );
+      await vi.waitFor(
+        () =>
+          expect(result).toEqual({
+            text: "Context window: 100 tokens",
+            cancelled: false,
+            agentInvoked: false,
+          }),
+        { timeout: 200 },
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "text.delta",
+          delta: "Context window: 100 tokens",
+        }),
+      );
+      process.promptHandler = null;
+      await expect(session.runTurn("ping", () => undefined)).resolves.toEqual({
+        text: "PONG",
+        cancelled: false,
+        agentInvoked: true,
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.each(["completed", "aborted", "error"])(
+    "settles asynchronous local %s results after admission",
+    async (status) => {
+      const process = new FakeOmpProcess();
+      process.promptHandler = (command) => {
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+        queueMicrotask(() => {
+          if (status === "error") {
+            process.sendFrame({
+              type: "response",
+              id: command.id,
+              command: "prompt",
+              success: false,
+              error: "Command failed",
+            });
+          }
+          process.sendFrame({
+            type: "prompt_result",
+            id: command.id,
+            agentInvoked: false,
+            status,
+            ...(status === "error"
+              ? { error: { message: "Command failed", retryable: false } }
+              : {}),
+          });
+        });
+      };
+      const session = new OmpRpcSession({ cwd: "/synthetic" }, { spawn: () => process as never });
+      try {
+        await session.start();
+        await expect(session.runTurn("/extension-command", () => undefined)).resolves.toEqual({
+          text: "",
+          cancelled: status === "aborted",
+          agentInvoked: false,
+          ...(status === "error" ? { error: "Command failed" } : {}),
+        });
+        process.promptHandler = null;
+        await expect(session.runTurn("continue", () => undefined)).resolves.toMatchObject({
+          agentInvoked: true,
+          text: "PONG",
+        });
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it("accepts synchronous empty local output without relaxing ordinary empty-output checks", async () => {
+    const process = new FakeOmpProcess();
+    process.promptHandler = (command) =>
+      process.sendFrame({
+        type: "response",
+        id: command.id,
+        command: "prompt",
+        success: true,
+        data: { agentInvoked: false },
+      });
+    const session = new OmpRpcSession({ cwd: "/synthetic" }, { spawn: () => process as never });
+    try {
+      await session.start();
+      await expect(session.runTurn("/local", () => undefined)).resolves.toEqual({
+        text: "",
+        cancelled: false,
+        agentInvoked: false,
+      });
+      process.promptHandler = (command) => {
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+        process.sendFrame({ type: "agent_end", isTerminal: true });
+      };
+      await expect(session.runTurn("continue", () => undefined)).rejects.toThrow(
+        "settled without displayable output",
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("ignores mismatched, stale, and agent-invoked prompt results", async () => {
+    const process = new FakeOmpProcess();
+    const promptIds: unknown[] = [];
+    process.promptHandler = (command) => {
+      promptIds.push(command.id);
+      process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+    };
+    const session = new OmpRpcSession({ cwd: "/synthetic" }, { spawn: () => process as never });
+    try {
+      await session.start();
+      const first = session.runTurn("/local", () => undefined);
+      process.sendFrame({
+        type: "prompt_result",
+        id: promptIds[0],
+        agentInvoked: false,
+        status: "completed",
+      });
+      await first;
+      let settled = false;
+      const second = session.runTurn("normal prompt", () => undefined);
+      void second.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      for (const frame of [
+        { id: promptIds[0], agentInvoked: false },
+        { id: "unrelated", agentInvoked: false },
+        { agentInvoked: false },
+        { id: promptIds[1], agentInvoked: true },
+        { id: promptIds[1] },
+      ])
+        process.sendFrame({ type: "prompt_result", status: "completed", ...frame });
+      await session.getEntries();
+      expect(settled).toBe(false);
+      process.sendFrame({ type: "agent_end", isTerminal: false });
+      await session.getEntries();
+      expect(settled).toBe(false);
+      process.sendFrame({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          responseId: "normal",
+          content: [{ type: "text", text: "normal result" }],
+          stopReason: "stop",
+        },
+      });
+      process.sendFrame({ type: "agent_end", isTerminal: true });
+      await expect(second).resolves.toEqual({
+        text: "normal result",
+        cancelled: false,
+        agentInvoked: true,
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.each(["before-ack", "after-ack"])(
+    "cancels active model turns only after terminal completion %s",
+    async (ordering) => {
+      const process = new FakeOmpProcess();
+      process.promptHandler = (command) =>
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+      let abortId: unknown;
+      process.abortHandler = (command) => {
+        abortId = command.id;
+      };
+      const session = new OmpRpcSession({ cwd: "/synthetic" }, { spawn: () => process as never });
+      try {
+        await session.start();
+        let settled = false;
+        const turn = session.runTurn("active model prompt", () => undefined);
+        void turn.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        const abort = session.abort();
+        if (ordering === "before-ack") process.sendFrame({ type: "agent_end", isTerminal: true });
+        await session.getEntries();
+        expect(settled).toBe(false);
+        process.sendFrame({ type: "response", id: abortId, command: "abort", success: true });
+        await abort;
+        if (ordering === "after-ack") {
+          expect(settled).toBe(false);
+          process.sendFrame({ type: "agent_end", isTerminal: true });
+        }
+        await expect(turn).resolves.toEqual({ text: "", cancelled: true, agentInvoked: true });
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it("keeps the bounded failure when an active model abort is acknowledged without a terminal event", async () => {
+    const process = new FakeOmpProcess();
+    process.promptHandler = (command) =>
+      process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+    const onFault = vi.fn();
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", cancelTimeoutMs: 30, onFault },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      const turn = session.runTurn("active model prompt", () => undefined);
+      const rejected = expect(turn).rejects.toThrow(
+        "Omp Turn cancellation did not settle within its bound",
+      );
+      await session.abort();
+      await rejected;
+      expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+    } finally {
+      await session.close();
+    }
+  });
+
   it("uses OMP's --resume flag for persisted sessions", () => {
     expect(
       ompRpcProcessCommand(
@@ -427,6 +687,7 @@ describe("OMP RPC session", () => {
     await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
       text: "PONG",
       cancelled: false,
+      agentInvoked: true,
     });
     expect(events).toContainEqual({ type: "text.delta", messageId: "assistant-1", delta: "PONG" });
     await session.close();
@@ -484,6 +745,7 @@ describe("OMP RPC session", () => {
     await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
       text: "PONG",
       cancelled: false,
+      agentInvoked: true,
     });
     expect(events).toContainEqual({ type: "text.delta", messageId: "assistant-1", delta: "PONG" });
     expect(events.some((event) => event.type.startsWith("subagent"))).toBe(false);
@@ -504,6 +766,7 @@ describe("OMP RPC session", () => {
     await expect(session.runTurn("spawn scouts", (event) => events.push(event))).resolves.toEqual({
       text: "PONG",
       cancelled: false,
+      agentInvoked: true,
     });
     expect(onFault).not.toHaveBeenCalled();
     expect(events.filter((event) => event.type.startsWith("tool."))).toEqual([
@@ -538,6 +801,7 @@ describe("OMP RPC session", () => {
     await expect(session.runTurn("run bash", (event) => events.push(event))).resolves.toEqual({
       text: "PONG",
       cancelled: false,
+      agentInvoked: true,
     });
     expect(onFault).not.toHaveBeenCalled();
     expect(events).toContainEqual({ type: "tool.updated", callId: "gap-tool", output: null });
@@ -561,6 +825,7 @@ describe("OMP RPC session", () => {
     await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
       text: "PONG",
       cancelled: false,
+      agentInvoked: true,
     });
     expect(onFault).not.toHaveBeenCalled();
     expect(events.filter((event) => event.type.startsWith("tool."))).toEqual([]);
@@ -634,13 +899,13 @@ describe("OMP RPC session", () => {
       try {
         await session.start();
         await expect(session.runTurn("first", (event) => firstEvents.push(event))).resolves.toEqual(
-          { text: "PONG", cancelled: false },
+          { text: "PONG", cancelled: false, agentInvoked: true },
         );
         const settledEvents = [...firstEvents];
         if (timing === "idle") lateFrames(process);
         await expect(
           session.runTurn("second", (event) => secondEvents.push(event)),
-        ).resolves.toEqual({ text: "PONG", cancelled: false });
+        ).resolves.toEqual({ text: "PONG", cancelled: false, agentInvoked: true });
         expect(onFault).not.toHaveBeenCalled();
         expect(firstEvents).toEqual(settledEvents);
         for (const [events, callId] of [
@@ -677,6 +942,7 @@ describe("OMP RPC session", () => {
       await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
         text: "PONG",
         cancelled: false,
+        agentInvoked: true,
       });
       expect(onFault).not.toHaveBeenCalled();
       expect(events.filter((event) => event.type.startsWith("tool."))).toEqual([]);
@@ -790,6 +1056,7 @@ describe("OMP RPC session", () => {
       await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
         text: "PONG",
         cancelled: false,
+        agentInvoked: true,
       });
       expect(onFault).not.toHaveBeenCalled();
       expect(events.filter((event) => event.type.startsWith("tool."))).toEqual([
@@ -818,6 +1085,7 @@ describe("OMP RPC session", () => {
     await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
       text: "PONG",
       cancelled: false,
+      agentInvoked: true,
     });
     expect(events.filter((event) => event.type === "text.delta")).toEqual([
       { type: "text.delta", messageId: "assistant-1", delta: "PONG" },
@@ -838,6 +1106,7 @@ describe("OMP RPC session", () => {
     await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
       text: "PONG",
       cancelled: false,
+      agentInvoked: true,
     });
     expect(events.filter((event) => event.type === "text.delta")).toEqual([
       { type: "text.delta", messageId: "assistant-1", delta: "PONG" },
@@ -1229,6 +1498,54 @@ describe("OMP RPC session", () => {
     expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
     await session.close();
   });
+
+  it.each(["new-empty", "new-with-messages", "resumed", "forked"])(
+    "handles an uncreated Session file only for confirmed empty new Sessions: %s",
+    async (mode) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-omp-lazy-history-"));
+      const sessionFile = path.join(directory, "session.jsonl");
+      const process = new FakeOmpProcess("complete", sessionFile);
+      if (mode === "new-with-messages")
+        process.messages = [{ role: "user", content: "persist me" }];
+      const session = new OmpRpcSession(
+        {
+          cwd: directory,
+          ...(mode === "resumed" ? { sessionFile } : {}),
+          ...(mode === "forked" ? { forkSessionFile: sessionFile } : {}),
+        },
+        { spawn: () => process as never },
+      );
+      try {
+        await session.start();
+        if (mode === "new-empty") {
+          await expect(session.getEntries()).resolves.toEqual({ entries: [], leafId: null });
+          await writeFile(
+            sessionFile,
+            [
+              { type: "session", version: 3, id: "omp-session", cwd: directory },
+              {
+                type: "message",
+                id: "native-user",
+                parentId: null,
+                message: { role: "user", content: "next prompt" },
+              },
+            ]
+              .map((entry) => JSON.stringify(entry))
+              .join("\n") + "\n",
+          );
+          await expect(session.getEntries()).resolves.toMatchObject({
+            entries: [{ id: "native-user", parentId: null }],
+            leafId: "native-user",
+          });
+        } else {
+          await expect(session.getEntries()).rejects.toMatchObject({ code: "ENOENT" });
+        }
+      } finally {
+        await session.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("reads the persisted full transcript when OMP's compacted RPC context omits User messages", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-omp-rpc-history-"));

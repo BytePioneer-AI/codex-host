@@ -2,6 +2,7 @@ import type {
   CodexhostError,
   HarnessInstallationState,
   HarnessLaunchSettings,
+  HarnessPluginDescriptor,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -10,7 +11,7 @@ import {
   type AgentGroupSection,
 } from "../agent-group-preference.js";
 import type { ExternalRendererAgent, RendererAgentAvailability } from "../agent-selection-state.js";
-import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "../renderer-agent-icon.js";
+import { createRendererAgentIcon, rendererAgentLabel } from "../renderer-agent-icon.js";
 import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
@@ -18,7 +19,6 @@ import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
 import { harnessHasInstallCommands } from "./harness-installation-guides.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
-import { HARNESS_OFFICIAL_WEBSITES } from "./harness-official-websites.js";
 import { harnessInstallStore } from "./harness-install-store.js";
 import { createHarnessVersionPanel } from "./harness-version-panel.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -28,6 +28,7 @@ export const CODEXHOST_GITHUB_ISSUES_NEW_URL =
 
 export interface RendererConnectionAgentSnapshot {
   readonly agent: ExternalRendererAgent;
+  readonly plugin?: HarnessPluginDescriptor;
   readonly availability: RendererAgentAvailability;
   readonly error: CodexhostError | null;
   readonly webUiAvailable?: true;
@@ -37,6 +38,7 @@ export interface RendererConnectionHostSnapshot {
   readonly hostId: string;
   readonly active: boolean;
   readonly agents: readonly RendererConnectionAgentSnapshot[];
+  readonly directoryError?: string;
 }
 
 export interface RendererConnectionSnapshot {
@@ -259,7 +261,9 @@ function createConnectionIdentityIcon(
     : "settings-connection-row__mark";
   container.setAttribute("aria-hidden", "true");
   if (item.agentSnapshot) {
-    container.append(createRendererAgentIcon(item.agentSnapshot.agent, size, document));
+    container.append(
+      createRendererAgentIcon(item.agentSnapshot.agent, size, document, item.agentSnapshot.plugin),
+    );
   } else {
     container.textContent = "CH";
   }
@@ -402,10 +406,12 @@ function createInspectorHeader(
   const title = document.createElement("strong");
   title.textContent = item.name;
   identity.append(createConnectionIdentityIcon(document, item, 20), title);
-  if (item.agentSnapshot) {
+  const websiteUrl =
+    item.agentSnapshot?.plugin?.links?.website ?? item.agentSnapshot?.plugin?.links?.documentation;
+  if (websiteUrl) {
     const website = document.createElement("a");
     website.className = "settings-connection-website";
-    website.href = HARNESS_OFFICIAL_WEBSITES[item.agentSnapshot.agent];
+    website.href = websiteUrl;
     website.target = "_blank";
     website.rel = "noopener noreferrer";
     website.title = messages.connectionOfficialWebsite;
@@ -449,10 +455,11 @@ function renderConnectionInspector(
     error.textContent = item.installError;
     body.append(error);
   }
-  if (item.agentSnapshot?.agent === "deepseek-harness") {
+  const notice = item.agentSnapshot?.plugin?.notice;
+  if (notice) {
     const compatibility = document.createElement("p");
     compatibility.className = "settings-connection-compatibility";
-    compatibility.textContent = messages.connectionDeepSeekTestedVersions;
+    compatibility.textContent = notice[messages.locale] ?? notice.en;
     body.append(compatibility);
   }
 
@@ -468,7 +475,7 @@ function renderConnectionInspector(
     body.append(
       createHarnessInstallationPanel(
         document,
-        item.agentSnapshot.agent,
+        item.agentSnapshot.plugin,
         hostId,
         messages,
         (button, command, label) =>
@@ -585,7 +592,8 @@ function renderConnectionInspector(
   const setLaunchSettings = diagnostics?.setLaunchSettings?.bind(diagnostics);
   if (
     hostId === "local" &&
-    (agent === "zcode" || agent === "workbuddy") &&
+    agent &&
+    item.agentSnapshot?.plugin?.launchCommand &&
     getLaunchSettings &&
     setLaunchSettings
   ) {
@@ -614,9 +622,19 @@ function connectionItems(
       availability: snapshot.adapter.state,
       error: null,
     },
+    ...(host.directoryError
+      ? [
+          {
+            key: "plugin-directory",
+            name: "Harness plugins",
+            availability: "error" as const,
+            error: { code: "unavailable" as const, message: host.directoryError, retryable: true },
+          },
+        ]
+      : []),
     ...host.agents.map((agent): ConnectionListItem => ({
       key: agent.agent,
-      name: RENDERER_AGENT_LABELS[agent.agent],
+      name: rendererAgentLabel(agent.agent, agent.plugin),
       availability: agent.availability,
       error: agent.availability === "notInstalled" ? null : agent.error,
       agentSnapshot: agent,
@@ -917,7 +935,7 @@ export function createConnectionsSettingsPage(
                 ? { availability: "updating" as const }
                 : {}),
               ...(state?.error ? { installError: state.error } : {}),
-              ...(diagnostics?.installation && harnessHasInstallCommands(agent)
+              ...(diagnostics?.installation && harnessHasInstallCommands(item.agentSnapshot?.plugin)
                 ? {
                     install: () => {
                       void installs?.install(selectedHost.hostId, agent);

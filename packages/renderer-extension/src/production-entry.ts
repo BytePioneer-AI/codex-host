@@ -1,8 +1,7 @@
-import { DEFAULT_RENDERER_AGENTS } from "./agent-selection-state.js";
 import { installRendererBinding } from "./install-renderer-binding.js";
 
 const install = (): void => {
-  installRendererBinding(DEFAULT_RENDERER_AGENTS);
+  installRendererBinding();
 };
 
 if (document.documentElement && document.body) {

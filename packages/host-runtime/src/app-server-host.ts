@@ -176,6 +176,7 @@ import {
 } from "./delegation-types.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
+import type { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 import {
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
@@ -462,29 +463,6 @@ function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function approvalServerName(harnessId: ExternalHarnessId): string {
-  switch (harnessId) {
-    case "pi":
-      return "Pi";
-    case "claude-code":
-      return "Claude Code";
-    case "deepseek-harness":
-      return "DeepSeek Harness";
-    case "grok":
-      return "Grok";
-    case "opencode":
-      return "OpenCode";
-    case "omp":
-      return "Oh My Pi";
-    case "antigravity":
-      return "Antigravity CLI";
-    case "kiro-cli":
-      return "Kiro CLI";
-    default:
-      return harnessId;
-  }
-}
-
 const HOST_APPROVAL_REQUEST_ID_MIN = -2_000_000;
 const HOST_APPROVAL_REQUEST_ID_MAX = -1_000_001;
 const HOST_QUESTION_REQUEST_ID_MIN = -1_000_000;
@@ -628,6 +606,7 @@ export class AppServerHost {
   #nativeAccountObserver: NativeAccountObserver | undefined;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #pluginDescriptors: HarnessPluginDescriptor[] = [];
+  #plugins: HarnessPluginRegistry | undefined;
   readonly #launchSettings: HarnessLaunchSettingsStore;
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
@@ -905,8 +884,21 @@ export class AppServerHost {
       await plugins.close().catch((error: unknown) => this.#diagnose(error));
       return;
     }
+    this.#plugins = plugins;
     this.#pluginDescriptors = plugins.list();
     for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
+  }
+
+  async #closeAdapters(): Promise<void> {
+    const results = await Promise.allSettled([
+      this.#plugins?.close(),
+      ...[...new Set(this.#options.externalAdapters?.values())].map((adapter) =>
+        Promise.resolve().then(() => adapter.close()),
+      ),
+    ]);
+    for (const result of results) {
+      if (result.status === "rejected") this.#diagnose("Harness plugin cleanup failed");
+    }
   }
 
   async run(): Promise<number> {
@@ -916,11 +908,7 @@ export class AppServerHost {
       this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
       this.#pluginLoadAbort.abort();
       await this.#pluginLoading;
-      await Promise.allSettled(
-        [...new Set(this.#externalAdapters.values())].map((adapter) =>
-          Promise.resolve().then(() => adapter.close()),
-        ),
-      );
+      await this.#closeAdapters();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
       this.#unsubscribeAccountState?.();
@@ -970,11 +958,7 @@ export class AppServerHost {
       const threads = this.#externalRuntime.values();
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
-      await Promise.allSettled(
-        [...new Set(this.#externalAdapters.values())].map((adapter) =>
-          Promise.resolve().then(() => adapter.close()),
-        ),
-      );
+      await this.#closeAdapters();
       for (const pending of [...this.#pendingDesktopApprovals.values()]) {
         await this.#resolveDesktopApproval(pending.interaction.interactionId).catch(
           () => undefined,
@@ -5173,7 +5157,8 @@ export class AppServerHost {
       result = projection.projector.projectApproval(
         interaction,
         this.#pluginDescriptors.find(({ id }) => id === thread.harnessId)?.name ??
-          approvalServerName(thread.harnessId),
+          this.#pluginDescriptors.find(({ id }) => id === thread.harnessId)?.name ??
+          thread.harnessId,
       );
     } catch (error) {
       this.#diagnose(error);

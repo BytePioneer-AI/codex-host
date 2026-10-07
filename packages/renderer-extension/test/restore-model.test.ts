@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { harnessModelRefSchema } from "@codexhost/shared-contracts";
-import { DraftAgentController, KNOWN_RENDERER_AGENTS } from "../src/agent-selection-state.js";
+import { DraftAgentController } from "../src/agent-selection-state.js";
+import { testPluginIds } from "../../../tests/fixtures/harness-plugin-descriptors.js";
 
 describe("restored native model ownership", () => {
-  it.each(KNOWN_RENDERER_AGENTS.filter((agent) => agent !== "codex"))(
+  it.each([...testPluginIds, "previously-unknown"])(
     "clears a stale %s model when the restored Thread has no model",
     (agent) => {
       const controller = new DraftAgentController<object>(),

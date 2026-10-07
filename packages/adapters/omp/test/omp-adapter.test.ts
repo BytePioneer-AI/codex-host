@@ -452,6 +452,41 @@ describe("OMP Adapter Session environment", () => {
     await adapter.close();
   });
 
+  it("restores a saved Permission Mode inside Adapter resume", async () => {
+    const initial = new RestartableOmpTransport();
+    const replacement = new RestartableOmpTransport();
+    replacement.state = { ...initial.state };
+    const createTransport = vi
+      .fn()
+      .mockImplementationOnce(() => initial)
+      .mockImplementationOnce(() => replacement);
+    const adapter = new OmpAdapter({}, { createTransport });
+    try {
+      const resumed = await adapter.open({
+        kind: "resume",
+        cwd: "/synthetic",
+        nativeRef: nativeSessionRefSchema.parse({
+          formatVersion: 1,
+          harnessId: "omp",
+          nativeSessionId: initial.state.sessionId,
+          locator: { sessionFile: initial.state.sessionFile },
+        }),
+        permissionModeId: harnessPermissionModeIdSchema.parse("write"),
+      });
+      if (!resumed.ok) throw new Error(resumed.error.message);
+      expect(initial.closed).toBe(true);
+      await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { state: { effectivePermissionModeId: "write" } },
+      });
+      expect(createTransport).toHaveBeenLastCalledWith(
+        expect.objectContaining({ permissionMode: "write" }),
+      );
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("recovers the previous OMP Permission Mode when restart fails", async () => {
     const initial = new RestartableOmpTransport();
     initial.state = {

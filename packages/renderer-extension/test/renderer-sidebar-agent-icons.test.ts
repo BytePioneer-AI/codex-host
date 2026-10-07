@@ -251,7 +251,7 @@ describe("Renderer sidebar Agent ownership", () => {
     }
   });
 
-  it("batches mounted rows and decorates only known external Agents", async () => {
+  it("batches mounted rows and decorates arbitrary external plugin identities", async () => {
     const rows = [
       new FakeRow("codex-thread"),
       new FakeRow("pi-thread"),
@@ -285,7 +285,7 @@ describe("Renderer sidebar Agent ownership", () => {
     expect(client.listThreadOwnership).toHaveBeenCalledWith({
       threadIds: ["codex-thread", "pi-thread", "claude-thread", "unknown-thread"],
     });
-    expect(rows.map((row) => row.agent)).toEqual([null, "pi", "claude-code", null]);
+    expect(rows.map((row) => row.agent)).toEqual([null, "pi", "claude-code", "future-agent"]);
     control.dispose();
   });
 
@@ -541,7 +541,7 @@ describe("Renderer sidebar Agent ownership", () => {
     }
   });
 
-  it("maps only known external Harness ownership to Renderer Agents", () => {
+  it("maps external Harness ownership without a static identity list", () => {
     expect(
       rendererAgentForThreadOwnership({
         threadId: "kiro-thread" as HostThreadId,
@@ -590,6 +590,6 @@ describe("Renderer sidebar Agent ownership", () => {
         owner: "external",
         harnessId: FUTURE_HARNESS_ID,
       }),
-    ).toBeNull();
+    ).toBe("future-agent");
   });
 });

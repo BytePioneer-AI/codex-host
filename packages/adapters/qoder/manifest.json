@@ -7,6 +7,20 @@
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
   "links": {
-    "installation": "https://docs.qoder.com/"
+    "website": "https://qoder.com/",
+    "installation": "https://docs.qoder.com/cli/installation"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl -fsSL https://qoder.com/install | bash"
+      },
+      { "terminal": "Windows · PowerShell", "command": "irm https://qoder.com/install.ps1 | iex" }
+    ],
+    "after": {
+      "en": "After installation, run qodercli to complete login or setup.",
+      "zh-CN": "安装后运行 qodercli，完成登录或配置。"
+    }
   }
 }

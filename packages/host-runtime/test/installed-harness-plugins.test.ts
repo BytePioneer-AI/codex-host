@@ -82,7 +82,8 @@ describe("installed Harness composition", () => {
           .list()
           .map(({ id }) => id)
           .sort(),
-      ).toEqual(Object.keys(classes).sort());
+      ).toEqual([...Object.keys(classes), "codex-usage"].sort());
+      expect([...registry.usageAdapters.keys()]).toEqual(["codex-usage"]);
       for (const [id, adapter] of registry.adapters) {
         expect(adapter.harnessId).toBe(id);
         // esbuild may suffix class names when a plugin contains two protocol generations.
@@ -214,7 +215,10 @@ describe("installed Harness composition", () => {
     try {
       for (const [id, adapter] of first.adapters) expect(adapter).not.toBe(second.adapters.get(id));
       await first.close();
-      expect(second.list()).toHaveLength(Object.keys(classes).length);
+      expect(second.list()).toHaveLength(Object.keys(classes).length + 1);
+      for (const [id, adapter] of first.usageAdapters) {
+        expect(adapter).not.toBe(second.usageAdapters.get(id));
+      }
     } finally {
       await Promise.all([first.close(), second.close()]);
     }

@@ -432,7 +432,7 @@ function parseJsonl(contents: string, tolerateIncompleteTail: boolean) {
   };
 }
 
-const NATIVE_MESSAGE_TYPES = new Set([
+export const NATIVE_MESSAGE_TYPES = new Set([
   "message",
   "reasoning",
   "function_call",
@@ -721,45 +721,53 @@ export function historyUsageRequests(
   const requests: HostUsageRequest[] = [];
   let complete = true;
   for (const [requestId, data] of usages) {
-    const usage = record(data.rawUsage);
-    const model = text(data.model) || text(data.requestModelId);
-    const input = usageCount(usage.prompt_tokens);
-    const output = usageCount(usage.completion_tokens);
-    const cached = usageCount(record(usage.prompt_tokens_details).cached_tokens ?? 0);
-    const written = usageCount(usage.prompt_cache_write_tokens ?? 0);
-    const thinking = usageCount(usage.completion_thinking_tokens);
-    const unverifiedCache = [usage.cache_read_input_tokens, usage.cache_creation_input_tokens].some(
-      (value) => value !== undefined && value !== 0,
-    );
-    if (
-      !model ||
-      input === null ||
-      output === null ||
-      cached === null ||
-      written === null ||
-      unverifiedCache
-    ) {
-      complete = false;
-      continue;
-    }
-    try {
-      requests.push(
-        parseHostUsageRequest({
-          requestId,
-          ...(historical ? { historical: true } : {}),
-          model,
-          inputTokens: input,
-          cachedInputTokens: cached,
-          cacheWriteInputTokens: written,
-          outputTokens: output,
-          ...(thinking !== null && thinking <= output ? { reasoningOutputTokens: thinking } : {}),
-        }),
-      );
-    } catch {
-      complete = false;
-    }
+    const request = providerUsageRequest(requestId, data, historical);
+    if (request) requests.push(request);
+    else complete = false;
   }
   return { requests, complete };
+}
+
+/** The request one native message's `providerData` describes, or null when not verifiable. */
+export function providerUsageRequest(
+  requestId: string,
+  data: Record<string, unknown>,
+  historical: boolean,
+): HostUsageRequest | null {
+  const usage = record(data.rawUsage);
+  const model = text(data.model) || text(data.requestModelId);
+  const input = usageCount(usage.prompt_tokens);
+  const output = usageCount(usage.completion_tokens);
+  const cached = usageCount(record(usage.prompt_tokens_details).cached_tokens ?? 0);
+  const written = usageCount(usage.prompt_cache_write_tokens ?? 0);
+  const thinking = usageCount(usage.completion_thinking_tokens);
+  const unverifiedCache = [usage.cache_read_input_tokens, usage.cache_creation_input_tokens].some(
+    (value) => value !== undefined && value !== 0,
+  );
+  if (
+    !model ||
+    input === null ||
+    output === null ||
+    cached === null ||
+    written === null ||
+    unverifiedCache
+  ) {
+    return null;
+  }
+  try {
+    return parseHostUsageRequest({
+      requestId,
+      ...(historical ? { historical: true } : {}),
+      model,
+      inputTokens: input,
+      cachedInputTokens: cached,
+      cacheWriteInputTokens: written,
+      outputTokens: output,
+      ...(thinking !== null && thinking <= output ? { reasoningOutputTokens: thinking } : {}),
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function historyUsage(contents: string): HostUsage | null {

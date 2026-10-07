@@ -283,6 +283,8 @@ export function createFixture(
     officialRuntimeScope?: OfficialRuntimeScope;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
     onCreateRequestRoute?: AppServerHostOptions["onCreateRequestRoute"];
+    modelPrices?: AppServerHostOptions["modelPrices"];
+    usageStatistics?: AppServerHostOptions["usageStatistics"];
   } = {},
 ) {
   const adapter =
@@ -336,6 +338,8 @@ export function createFixture(
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
     ...(options.runtimeMaintenance ? { runtimeMaintenance: options.runtimeMaintenance } : {}),
     ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
+    ...(options.modelPrices ? { modelPrices: options.modelPrices } : {}),
+    ...(options.usageStatistics ? { usageStatistics: options.usageStatistics } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),

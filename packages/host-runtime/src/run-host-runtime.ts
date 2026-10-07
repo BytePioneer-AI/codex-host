@@ -47,6 +47,7 @@ import { startConsoleControlServer } from "./console-control-server.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
+import { UsageStatistics } from "./usage-statistics.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
@@ -205,6 +206,11 @@ export async function runHostRuntime(input: {
     diagnose: (message) => process.stderr.write(`codexhost Host Runtime: ${message}\n`),
   });
   void modelPrices.start();
+  const usageStatistics = new UsageStatistics({
+    directory: path.join(defaultModelPriceDirectory(input.environment), "usage-statistics"),
+    prices: modelPrices,
+    diagnose: (message) => process.stderr.write(`codexhost Host Runtime: ${message}\n`),
+  });
   const updateCoordinator =
     input.updateCoordinator ??
     (hostRuntimePath && hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
@@ -226,6 +232,8 @@ export async function runHostRuntime(input: {
   const consoleOpener = consoleEntry
     ? createHostConsoleOpener({ entrypoint: consoleEntry, environment: input.environment })
     : undefined;
+  // The local console reads the statistics; read the native storage ahead of its first visit.
+  if (consoleOpener) usageStatistics.warm();
 
   if (!isRemoteUnixListenerInvocation(input.arguments)) {
     const remoteControlPlan = createRemoteControlAppServerPlan({
@@ -252,6 +260,7 @@ export async function runHostRuntime(input: {
             const host = new AppServerHost({
               ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
               modelPrices,
+              usageStatistics,
               ...(process.platform !== "win32"
                 ? {
                     sharedThreads: new SharedThreadBridge({
@@ -297,6 +306,7 @@ export async function runHostRuntime(input: {
           const host = new AppServerHost({
             ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
             modelPrices,
+            usageStatistics,
             ...common,
             arguments: input.arguments,
             onDelegationApi,
@@ -308,6 +318,7 @@ export async function runHostRuntime(input: {
               new AppServerHost({
                 ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
                 modelPrices,
+                usageStatistics,
                 ...common,
                 arguments: [],
                 desktopInput,
@@ -380,6 +391,7 @@ export async function runHostRuntime(input: {
       const externalHost = new AppServerHost({
         ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
         modelPrices,
+        usageStatistics,
         stockCodexPath,
         arguments: [],
         environment: delegationEnvironment,
@@ -410,6 +422,7 @@ export async function runHostRuntime(input: {
           return new AppServerHost({
             ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
             modelPrices,
+            usageStatistics,
             ...(sharedDelegation ? { sharedDelegation } : {}),
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),

@@ -39,7 +39,16 @@ export function cacheWrite1hPrice(price: ModelPrice): number {
 }
 
 export const MODELS_DEV_URL = "https://models.dev/api.json";
-const REFRESH_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+/** How old the table may get before it is fetched again. */
+const REFRESH_AFTER_MS = 24 * HOUR_MS;
+/** How often a running Host looks at that age. */
+const CHECK_EVERY_MS = HOUR_MS;
+/**
+ * A model without a price may be newly listed: once the table, and the last attempt, are this
+ * old, it is fetched again early.
+ */
+const MISSING_AFTER_MS = 6 * HOUR_MS;
 const FETCH_TIMEOUT_MS = 30_000;
 /** A refreshed table smaller than this is treated as a broken response, not a price change. */
 const MINIMUM_PRICED_MODELS = 1_000;
@@ -314,8 +323,10 @@ export function defaultModelPriceDirectory(environment: NodeJS.ProcessEnv): stri
 }
 
 /**
- * Bundled models.dev snapshot, refreshed in the background at most weekly, with user overrides
- * from `pricing.json`. Failures fall back silently to the previous table.
+ * Bundled models.dev snapshot with user overrides from `pricing.json`. A running Host checks the
+ * table's age at start and every hour, fetching it again once it is a day old, and sooner (six
+ * hours) when a request's model has no price. One fetch runs at a time; failures
+ * keep the previous table. Overrides live in their own file and are never replaced by a fetch.
  */
 export class ModelPriceCatalog {
   readonly #options: ModelPriceCatalogOptions | null;
@@ -325,13 +336,28 @@ export class ModelPriceCatalog {
   #overrides: ReadonlyMap<string, ModelPrice> = new Map();
   #overridesVersion: string | null = null;
   #lookup: ModelPriceLookup | null = null;
+  #defaultLookup: ModelPriceLookup | null = null;
   #started: Promise<void> | null = null;
+  #fetching: Promise<void> | null = null;
+  #lastAttemptMs = 0;
+  #timer: NodeJS.Timeout | undefined;
 
   /** Without options the catalog uses only the bundled snapshot: no disk or network access. */
   constructor(options?: ModelPriceCatalogOptions) {
     this.#options = options ?? null;
     this.#cachePath = options ? path.join(options.directory, "pricing", "models-dev.json") : null;
     this.#overridesPath = options ? path.join(options.directory, "pricing.json") : null;
+  }
+
+  /** The user's `pricing.json`; null when the catalog has no data directory. */
+  get overridesPath(): string | null {
+    return this.#overridesPath;
+  }
+
+  /** The price without user overrides, so an override can start from it. */
+  defaultPrice(model: string): ModelPrice | null {
+    this.#defaultLookup ??= new ModelPriceLookup(this.#table);
+    return this.#defaultLookup.find(model);
   }
 
   /** Loads the cached table and schedules a background refresh when it is stale. */
@@ -350,9 +376,56 @@ export class ModelPriceCatalog {
     } catch {
       // Missing or corrupt cache: the bundled snapshot stays in use.
     }
-    const now = options.now?.() ?? Date.now();
-    if (now - this.#table.fetchedAtMs >= REFRESH_AFTER_MS)
-      void this.#refresh(options, cachePath, now);
+    this.#checkAge();
+    this.#timer = setInterval(() => this.#checkAge(), CHECK_EVERY_MS);
+    this.#timer.unref();
+  }
+
+  /** Stops the hourly check. */
+  close(): void {
+    clearInterval(this.#timer);
+    this.#timer = undefined;
+  }
+
+  /**
+   * A request's model had no price. The table may predate the model's listing, so once the table
+   * and the last attempt are both six hours old it is fetched again in the background.
+   */
+  missing(): void {
+    if (!this.#started || !this.#options || !this.#cachePath) return;
+    const now = this.#now();
+    if (now - this.#table.fetchedAtMs < MISSING_AFTER_MS) return;
+    if (now - this.#lastAttemptMs < MISSING_AFTER_MS) return;
+    void this.#fetchOnce();
+  }
+
+  /** Settles a fetch in progress, for tests. */
+  async settled(): Promise<void> {
+    await this.#fetching;
+  }
+
+  #now(): number {
+    return this.#options?.now?.() ?? Date.now();
+  }
+
+  #checkAge(): void {
+    if (this.#now() - this.#table.fetchedAtMs >= REFRESH_AFTER_MS) void this.#fetchOnce();
+  }
+
+  #fetchOnce(): Promise<void> {
+    const options = this.#options;
+    const cachePath = this.#cachePath;
+    if (!options || !cachePath) return Promise.resolve();
+    this.#fetching ??= (async () => {
+      const now = this.#now();
+      this.#lastAttemptMs = now;
+      try {
+        await this.#refresh(options, cachePath, now);
+      } finally {
+        this.#fetching = null;
+      }
+    })();
+    return this.#fetching;
   }
 
   async #refresh(options: ModelPriceCatalogOptions, cachePath: string, now: number): Promise<void> {
@@ -380,6 +453,7 @@ export class ModelPriceCatalog {
   #setTable(table: ModelPriceTableData): void {
     this.#table = table;
     this.#lookup = null;
+    this.#defaultLookup = null;
   }
 
   /** Current lookup, reloading `pricing.json` when it changed. */

@@ -15,7 +15,7 @@
 - 新增 Adapter 输出事件 `usage.history`：打开会话时按原生历史回放全部请求后发布，声明历史是否完整；运行中发现用量缺口时再次声明不完整。分叉、撤销等不做特殊处理：原生历史里有什么就计什么。
 - Host 新增 Usage 计量（仅内存）：按请求 ID 去重累加，计算会话累计费用、会话平均缓存命中率、最近一轮首字延迟（Host 观测）、按请求计时的回合平均输出速度。费用和平均缓存命中率只在历史完整时发布。不覆盖 Adapter 上报的原生 Token 累计字段。
 - **BREAKING（行为）**：接入 `usage.request` 的 Thread，费用改由 Host 按 Token × 公开价格计算，不再使用 Harness 原生费用；`HostUsage` 新增 `costSource` 区分“按公开价格计算”与“Harness 上报”。
-- 新增价格表：随版本打包 models.dev 快照；Host 启动时本地价格表超过 7 天则后台刷新，失败静默沿用；用户可用数据目录中的 JSON 覆盖或补充。按模型 ID 精确匹配，不做模糊匹配；费用每次按当前价格表重算。
+- 新增价格表：随版本打包 models.dev 快照；Host 启动时及运行中每小时检查，本地价格表超过 24 小时则后台刷新，遇到无价格模型时最早 6 小时后提前刷新，失败静默沿用；用户可用数据目录中的 JSON 覆盖或补充。按模型 ID 精确匹配，不做模糊匹配；费用每次按当前价格表重算。
 - `HostUsage` 与 Thread Usage 契约新增 `sessionCacheHitRatePercent`、`timeToFirstOutputMs`、`costSource`。用量浮窗新增对应两行，并按费用来源说明计算方式。
 - 第一批只接入 Pi、OMP、OpenCode v2（OpenCode v1 协议不接入，保持原生费用），完整验证创建、恢复、分叉、换模型、重复事件。Claude Code、CodeBuddy/WorkBuddy、DeepSeek、Kimi、Qoder 及其已知缺陷在后续批次处理；Grok、ZCode、Hermes 等合计型或模型归属不明确的放最后。Cursor CLI、Kiro 没有 Token 数据，不支持。
 
@@ -49,4 +49,4 @@ None.
 - `packages/harness-broker`：事件白名单加入 `usage.request`、`usage.history`。
 - `packages/renderer-extension`：用量浮窗新增两行与费用来源说明。
 - 构建：新增价格表快照生成脚本与打包资源。
-- 网络：Host 每 7 天至多一次请求 `https://models.dev/api.json`。
+- 网络：Host 正常每 24 小时至多一次请求 `https://models.dev/api.json`；存在无价格模型时最多每 6 小时一次。

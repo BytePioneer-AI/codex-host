@@ -41,7 +41,6 @@ interface RendererUsageMessages {
   readonly sessionGroup: string;
   readonly turnGroup: string;
   readonly tokensGroup: string;
-  readonly reasoning: string;
   readonly totalTokens: string;
   readonly inputOutput: string;
   readonly sessionCostEstimate: string;
@@ -70,7 +69,6 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   sessionGroup: "Session",
   turnGroup: "Latest turn",
   tokensGroup: "Tokens",
-  reasoning: "Reasoning",
   totalTokens: "Total",
   inputOutput: "Input / output",
   sessionCostEstimate: "Cost estimate",
@@ -98,7 +96,6 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   sessionGroup: "会话",
   turnGroup: "本轮",
   tokensGroup: "Token",
-  reasoning: "推理",
   totalTokens: "总数",
   inputOutput: "输入 / 输出",
   sessionCostEstimate: "费用估算",
@@ -266,8 +263,7 @@ export function rendererUsageHasDisplayData(usage: ThreadUsageSnapshot | null): 
     usage?.inputTokens !== undefined ||
     usage?.cachedInputTokens !== undefined ||
     usage?.cacheWriteInputTokens !== undefined ||
-    usage?.outputTokens !== undefined ||
-    usage?.reasoningOutputTokens !== undefined
+    usage?.outputTokens !== undefined
   );
 }
 
@@ -477,9 +473,6 @@ function renderDetails(
     ]);
   } else if (usage?.cachedInputTokens !== undefined) {
     tokens.push([messages.cacheRead, count(usage.cachedInputTokens)]);
-  }
-  if (usage?.reasoningOutputTokens !== undefined) {
-    tokens.push([messages.reasoning, formatRendererTokenCount(usage.reasoningOutputTokens)]);
   }
   if (usage?.totalTokens !== undefined) {
     tokens.push([messages.totalTokens, formatRendererTokenCount(usage.totalTokens)]);
@@ -691,8 +684,7 @@ export function renderRendererUsageControl(
     usage?.inputTokens !== undefined ||
     usage?.cachedInputTokens !== undefined ||
     usage?.cacheWriteInputTokens !== undefined ||
-    usage?.outputTokens !== undefined ||
-    usage?.reasoningOutputTokens !== undefined;
+    usage?.outputTokens !== undefined;
   const visible = rendererUsageHasDisplayData(usage) || Boolean(accountName);
   control.root.style.display = visible ? "inline-flex" : "none";
   if (!visible) {

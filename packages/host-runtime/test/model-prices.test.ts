@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ModelPriceCatalog,
@@ -274,5 +274,143 @@ describe("ModelPriceCatalog", () => {
     const catalog = new ModelPriceCatalog();
     await catalog.start();
     expect((await catalog.lookup()).find("claude-sonnet-4-5")).not.toBeNull();
+  });
+});
+
+describe("ModelPriceCatalog freshness", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  /** A catalog whose clock and models.dev responses the test controls. */
+  async function running(ageHours: number, overrides?: object) {
+    const directory = await tempDirectory();
+    if (overrides) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, "pricing.json"), JSON.stringify(overrides));
+    }
+    const clock = { now: bundledModelPrices.fetchedAtMs + ageHours * HOUR };
+    const state = { requests: 0, models: 1_000 };
+    const catalog = new ModelPriceCatalog({
+      directory,
+      now: () => clock.now,
+      fetch: async () => {
+        state.requests += 1;
+        return new Response(JSON.stringify(catalogApi(state.models)));
+      },
+    });
+    await catalog.start();
+    await catalog.settled();
+    return { catalog, clock, state, directory };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fetches at start only once the table is a day old", async () => {
+    const young = await running(23);
+    expect(young.state.requests).toBe(0);
+    young.catalog.close();
+    const old = await running(25);
+    expect(old.state.requests).toBe(1);
+    expect((await old.catalog.lookup()).find("model-1")).not.toBeNull();
+    old.catalog.close();
+  });
+
+  it("checks every hour while running and fetches when the day is up", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const { catalog, clock, state } = await running(20);
+    expect(state.requests).toBe(0);
+    clock.now += HOUR;
+    vi.advanceTimersByTime(HOUR);
+    await catalog.settled();
+    expect(state.requests).toBe(0);
+    clock.now += 4 * HOUR;
+    vi.advanceTimersByTime(HOUR);
+    await catalog.settled();
+    expect(state.requests).toBe(1);
+    // The fetched table is fresh: the next hours do not fetch again.
+    vi.advanceTimersByTime(3 * HOUR);
+    await catalog.settled();
+    expect(state.requests).toBe(1);
+    catalog.close();
+    clock.now += 48 * HOUR;
+    vi.advanceTimersByTime(HOUR);
+    expect(state.requests).toBe(1);
+  });
+
+  it("fetches early for an unpriced model, at most every six hours", async () => {
+    const fresh = await running(5);
+    fresh.catalog.missing();
+    await fresh.catalog.settled();
+    expect(fresh.state.requests).toBe(0);
+    fresh.catalog.close();
+
+    const { catalog, clock, state } = await running(7);
+    catalog.missing();
+    catalog.missing();
+    await catalog.settled();
+    expect(state.requests).toBe(1);
+    // Fetched just now: another unpriced request waits six hours.
+    clock.now += 5 * HOUR;
+    catalog.missing();
+    await catalog.settled();
+    expect(state.requests).toBe(1);
+    clock.now += 2 * HOUR;
+    catalog.missing();
+    await catalog.settled();
+    expect(state.requests).toBe(2);
+    catalog.close();
+  });
+
+  it("waits six hours after a failed attempt too", async () => {
+    const directory = await tempDirectory();
+    const clock = { now: bundledModelPrices.fetchedAtMs + 7 * HOUR };
+    let requests = 0;
+    const catalog = new ModelPriceCatalog({
+      directory,
+      now: () => clock.now,
+      fetch: async () => {
+        requests += 1;
+        throw new Error("offline");
+      },
+      diagnose: () => undefined,
+    });
+    await catalog.start();
+    catalog.missing();
+    await catalog.settled();
+    clock.now += HOUR;
+    catalog.missing();
+    await catalog.settled();
+    expect(requests).toBe(1);
+    catalog.close();
+  });
+
+  it("never replaces or drops the user's prices when it fetches", async () => {
+    const overrides = {
+      models: {
+        "model-1": { input: 9, output: 9 },
+        "my-own-model": { input: 1, output: 2 },
+      },
+    };
+    const { catalog, state, directory } = await running(25, overrides);
+    expect(state.requests).toBe(1);
+    const lookup = await catalog.lookup();
+    // Listed by models.dev now, but the user's price still wins.
+    expect(lookup.find("model-1")).toEqual({ input: 9, output: 9 });
+    expect(lookup.find("my-own-model")).toEqual({ input: 1, output: 2 });
+    expect(catalog.defaultPrice("model-1")).toEqual({ input: 1, output: 2, cacheRead: 0.1 });
+    expect(JSON.parse(await readFile(path.join(directory, "pricing.json"), "utf8"))).toEqual(
+      overrides,
+    );
+    catalog.close();
+  });
+
+  it("does nothing without a data directory", async () => {
+    const catalog = new ModelPriceCatalog();
+    await catalog.start();
+    catalog.missing();
+    await catalog.settled();
+    expect((await catalog.lookup()).find("claude-sonnet-4-5")).not.toBeNull();
+    catalog.close();
   });
 });

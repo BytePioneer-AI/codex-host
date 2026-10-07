@@ -1,7 +1,13 @@
 import { pathToFileURL } from "node:url";
 
 import type { HarnessAdapter, HarnessError } from "@codexhost/harness-adapter";
-import type { HarnessPluginContext, HarnessPluginModule } from "@codexhost/harness-adapter/plugin";
+import type {
+  HarnessPluginContext,
+  HarnessPluginModule,
+  HarnessUsageStatisticsAdapter,
+  HarnessUsageStatisticsPluginModule,
+} from "@codexhost/harness-adapter/plugin";
+
 import {
   HARNESS_PLUGIN_API_VERSION,
   HARNESS_PLUGIN_LIMIT,
@@ -55,10 +61,26 @@ export interface LoadHarnessPluginsOptions {
 }
 
 type Candidate = InstalledHarnessPlugin;
+type PluginAdapter = HarnessAdapter | HarnessUsageStatisticsAdapter;
 
 function isAdapter(value: unknown): value is HarnessAdapter {
   if (!value || typeof value !== "object") return false;
   return ["inspect", "open", "close"].every((key) => typeof Reflect.get(value, key) === "function");
+}
+
+function isUsageAdapter(value: unknown): value is HarnessUsageStatisticsAdapter {
+  if (!value || typeof value !== "object" || typeof Reflect.get(value, "close") !== "function")
+    return false;
+  const capability: unknown = Reflect.get(value, "usageStatistics");
+  return (
+    !!capability &&
+    typeof capability === "object" &&
+    ["listSources", "readSource"].every(
+      (key) => typeof Reflect.get(capability, key) === "function",
+    ) &&
+    !("open" in value) &&
+    !("inspect" in value)
+  );
 }
 
 async function closeCandidate(value: unknown): Promise<void> {
@@ -71,13 +93,26 @@ async function closeCandidate(value: unknown): Promise<void> {
 function unavailableAdapter(
   descriptor: HarnessPluginDescriptor,
   code: HarnessPluginDiagnosticCode,
-): HarnessAdapter {
+): PluginAdapter {
   const error: HarnessError = {
     code: "unavailable",
     message: `Harness plugin is unavailable (${code})`,
     retryable: false,
     stage: "pluginLoad",
   };
+  if (descriptor.kind === "usage")
+    return {
+      harnessId: descriptor.id,
+      usageStatistics: {
+        listSources: async () => {
+          throw new Error(error.message);
+        },
+        readSource: async () => {
+          throw new Error(error.message);
+        },
+      },
+      close: async () => undefined,
+    };
   return {
     harnessId: descriptor.id,
     inspect: async () => ({ status: "unavailable", error }),
@@ -94,7 +129,7 @@ async function loadAdapter(
   diagnose: (diagnostic: HarnessPluginDiagnostic) => void,
   warmup: boolean,
   signal?: AbortSignal,
-): Promise<HarnessAdapter> {
+): Promise<PluginAdapter> {
   const { manifest } = candidate;
   let expired = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -105,22 +140,26 @@ async function loadAdapter(
       throw new Error("Plugin entry must be an ESM JavaScript module");
     const module: unknown = await import(pathToFileURL(entry).href);
     if (expired) return undefined;
+    const factory =
+      manifest.kind === "usage" ? "createUsageStatisticsAdapter" : "createHarnessAdapter";
     if (
       !module ||
       typeof module !== "object" ||
-      typeof Reflect.get(module, "createHarnessAdapter") !== "function"
+      typeof Reflect.get(module, factory) !== "function"
     ) {
       throw new Error("Plugin entry has no Adapter factory");
     }
-    const value: unknown = await (module as HarnessPluginModule).createHarnessAdapter({
-      ...context,
-      environment: Object.freeze({ ...context.environment }),
-    });
-    if (expired || !isAdapter(value) || value.harnessId !== manifest.id) {
+    const input = { ...context, environment: Object.freeze({ ...context.environment }) };
+    const value =
+      manifest.kind === "usage"
+        ? await (module as HarnessUsageStatisticsPluginModule).createUsageStatisticsAdapter(input)
+        : await (module as HarnessPluginModule).createHarnessAdapter(input);
+    const valid = manifest.kind === "usage" ? isUsageAdapter(value) : isAdapter(value);
+    if (expired || !valid || value.harnessId !== manifest.id) {
       await closeCandidate(value).catch(() => diagnose({ id: manifest.id, code: "cleanupFailed" }));
       throw new Error("Plugin Adapter is invalid or expired");
     }
-    if (warmup) {
+    if (warmup && isAdapter(value)) {
       void Promise.resolve()
         .then(async () => {
           await (module as HarnessPluginModule).warmup?.(value);
@@ -130,7 +169,7 @@ async function loadAdapter(
     return value;
   })();
   try {
-    const races: Array<Promise<HarnessAdapter | undefined>> = [
+    const races: Array<Promise<PluginAdapter | undefined>> = [
       operation,
       new Promise((_, reject) => {
         timer = setTimeout(() => {
@@ -214,7 +253,7 @@ export async function loadHarnessPlugins(
   let next = 0;
   const loaded = new Map<
     Candidate,
-    { descriptor: HarnessPluginDescriptor; adapter: HarnessAdapter }
+    { descriptor: HarnessPluginDescriptor; adapter: PluginAdapter }
   >();
   const worker = async (): Promise<void> => {
     for (;;) {
@@ -227,12 +266,13 @@ export async function loadHarnessPlugins(
         id: manifest.id,
         name: manifest.name,
         version: manifest.version,
+        ...(manifest.kind ? { kind: manifest.kind } : {}),
         ...(manifest.launchCommand && !options.context.managedRemoteHost
           ? { launchCommand: true }
           : {}),
         ...(manifest.links ? { links: manifest.links } : {}),
       });
-      let adapter: HarnessAdapter;
+      let adapter: PluginAdapter;
       let failure: HarnessPluginDiagnosticCode | undefined;
       if (manifest.adapterApiVersion !== HARNESS_PLUGIN_API_VERSION) {
         failure = "incompatibleVersion";

@@ -1,3 +1,4 @@
+import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
 import type {
   HarnessAccountSnapshot,
   HarnessInstallationState,
@@ -620,6 +621,8 @@ export interface HarnessAdapter {
    */
   readonly liveCommandCatalog?: boolean;
   readonly sessionImport?: HarnessSessionImportCapability;
+  /** Read-only local usage for the machine-wide statistics; never starts a native process. */
+  readonly usageStatistics?: HarnessUsageStatisticsCapability;
   readonly subagents?: HarnessSubagentCapability;
   readonly webUi?: HarnessWebUiAction;
   /** Fresh read-only quota for current native authentication. Return null when unavailable;

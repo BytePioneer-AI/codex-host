@@ -37,6 +37,11 @@ import {
 import { handleCredentialImports } from "./credential-imports.js";
 import { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
 import {
+  handleModelPriceOverridesRequest,
+  isModelPriceOverridesMethod,
+  ModelPriceOverridesError,
+} from "./model-price-overrides-file.js";
+import {
   HARNESS_DISPLAY_GET_METHOD,
   HARNESS_DISPLAY_SET_METHOD,
   harnessDisplayGetSchema,
@@ -71,7 +76,10 @@ import type {
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
 import { parseHostUsage, type HostEvent, type HostUsage } from "@codexhost/harness-adapter";
-import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
+import type {
+  HarnessPluginContext,
+  HarnessUsageStatisticsAdapter,
+} from "@codexhost/harness-adapter/plugin";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   accountCreditsSnapshotSchema,
@@ -245,6 +253,8 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
 import { ModelPriceCatalog } from "./model-prices.js";
+import type { UsageStatistics, UsageStatisticsSource } from "./usage-statistics.js";
+import { USAGE_STATISTICS_METHOD, usageStatisticsParamsSchema } from "@codexhost/shared-contracts";
 import {
   carriesHostThreadListCursor,
   CodexTurnProjector,
@@ -329,6 +339,8 @@ export interface AppServerHostOptions {
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
   /** Shared by all Hosts of one runtime; defaults to the bundled snapshot only. */
   modelPrices?: ModelPriceCatalog;
+  /** Machine-wide usage statistics; one per runtime, read from the loaded Harness plugins. */
+  usageStatistics?: UsageStatistics;
 }
 
 interface TurnProjectionGate {
@@ -629,6 +641,7 @@ export class AppServerHost {
   #nativeAccountObserver: NativeAccountObserver | undefined;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #pluginDescriptors: HarnessPluginDescriptor[] = [];
+  #usageOnlyAdapters: HarnessUsageStatisticsAdapter[] = [];
   readonly #launchSettings: HarnessLaunchSettingsStore;
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
@@ -884,6 +897,17 @@ export class AppServerHost {
     else desktopInput.destroy();
   }
 
+  #attachUsageStatistics(): void {
+    this.#options.usageStatistics?.attach((): UsageStatisticsSource[] =>
+      [...new Set([...this.#externalAdapters.values(), ...this.#usageOnlyAdapters])].flatMap(
+        (adapter) =>
+          adapter.usageStatistics
+            ? [{ harness: adapter.harnessId, capability: adapter.usageStatistics }]
+            : [],
+      ),
+    );
+  }
+
   #waitForPlugins(): Promise<void> {
     return (this.#pluginLoading ??= this.#loadInstalledPlugins().catch((error: unknown) => {
       this.#diagnose(`Harness plugin load failed: ${errorMessage(error)}`);
@@ -909,6 +933,7 @@ export class AppServerHost {
       return;
     }
     this.#pluginDescriptors = plugins.list();
+    this.#usageOnlyAdapters = [...plugins.usageAdapters.values()];
     for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
   }
 
@@ -920,8 +945,8 @@ export class AppServerHost {
       this.#pluginLoadAbort.abort();
       await this.#pluginLoading;
       await Promise.allSettled(
-        [...new Set(this.#externalAdapters.values())].map((adapter) =>
-          Promise.resolve().then(() => adapter.close()),
+        [...new Set([...this.#externalAdapters.values(), ...this.#usageOnlyAdapters])].map(
+          (adapter) => Promise.resolve().then(() => adapter.close()),
         ),
       );
       this.#unregisterDelegationApi?.();
@@ -946,7 +971,7 @@ export class AppServerHost {
       }
     }
     // Keep the existing whole-registry loading policy, but do not hold up Desktop initialization.
-    void this.#waitForPlugins();
+    void this.#waitForPlugins().then(() => this.#attachUsageStatistics());
     this.#options.sharedThreads?.start((message) => {
       void this.#writer.json(message).catch((error: unknown) => this.#diagnose(error));
     });
@@ -974,8 +999,8 @@ export class AppServerHost {
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
       await Promise.allSettled(
-        [...new Set(this.#externalAdapters.values())].map((adapter) =>
-          Promise.resolve().then(() => adapter.close()),
+        [...new Set([...this.#externalAdapters.values(), ...this.#usageOnlyAdapters])].map(
+          (adapter) => Promise.resolve().then(() => adapter.close()),
         ),
       );
       for (const pending of [...this.#pendingDesktopApprovals.values()]) {
@@ -1344,6 +1369,42 @@ export class AppServerHost {
         await this.#writer.json(
           rpcError(request, -32000, "Could not save or read Harness display settings"),
         );
+      }
+      return;
+    }
+    if (request.method === USAGE_STATISTICS_METHOD) {
+      const parsed = usageStatisticsParamsSchema.safeParse(request.params ?? {});
+      const statistics = this.#options.usageStatistics;
+      if (!parsed.success || !statistics) {
+        await this.#writer.json(
+          parsed.success
+            ? rpcError(request, -32000, "Usage statistics are unavailable on this Host")
+            : rpcError(request, -32602, "Invalid usage statistics request"),
+        );
+        return;
+      }
+      try {
+        await this.#waitForPlugins();
+        this.#attachUsageStatistics();
+        const result = await statistics.get(parsed.data);
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch (error) {
+        this.#diagnose(error);
+        await this.#writer.json(rpcError(request, -32000, errorMessage(error)));
+      }
+      return;
+    }
+    if (isModelPriceOverridesMethod(request.method)) {
+      try {
+        const result = await handleModelPriceOverridesRequest(
+          this.#modelPrices,
+          request.method,
+          request.params,
+        );
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch (error) {
+        if (!(error instanceof ModelPriceOverridesError)) this.#diagnose(error);
+        await this.#writer.json(rpcError(request, -32000, errorMessage(error)));
       }
       return;
     }
@@ -5449,7 +5510,10 @@ export class AppServerHost {
   /** Native snapshot plus Host-derived metering; metering faults never hide native fields. */
   async #threadUsage(thread: ExternalThread): Promise<HostUsage | null> {
     try {
-      return thread.usageMeter.derive(thread.latestUsage, await this.#modelPrices.lookup());
+      const usage = thread.usageMeter.derive(thread.latestUsage, await this.#modelPrices.lookup());
+      // An unpriced model may have been listed since the price table was fetched.
+      if (usage?.unpricedModels?.length) this.#modelPrices.missing();
+      return usage;
     } catch (error) {
       this.#diagnose(error);
       return thread.latestUsage;

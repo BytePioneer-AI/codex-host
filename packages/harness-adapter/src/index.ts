@@ -13,6 +13,12 @@ export { validateHostQuestionResponse } from "./question.js";
 export { hostDerivedUsageFields, parseHostUsage, parseHostUsageRequest } from "./usage.js";
 export type { HostUsage, HostUsageCostSource, HostUsageRequest } from "./usage.js";
 export type {
+  HarnessUsageEntry,
+  HarnessUsageSession,
+  HarnessUsageSource,
+  HarnessUsageStatisticsCapability,
+} from "./usage-statistics.js";
+export type {
   AutonomousTurnStartedEvent,
   CreateSessionInput,
   ForkSessionInput,

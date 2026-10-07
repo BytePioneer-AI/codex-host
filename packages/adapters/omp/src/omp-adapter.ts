@@ -1,3 +1,4 @@
+import { createOmpUsageStatistics } from "./omp-usage-statistics.js";
 import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
@@ -2237,6 +2238,7 @@ export class OmpAdapter implements HarnessAdapter {
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = ompHarnessId;
   readonly sessionImport: OmpSessionImport;
+  readonly usageStatistics: ReturnType<typeof createOmpUsageStatistics>;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async (input) => {
       if (
@@ -2316,6 +2318,7 @@ export class OmpAdapter implements HarnessAdapter {
   ) {
     this.#createTransport = dependencies.createTransport;
     this.sessionImport = new OmpSessionImport({ ...process.env, ...options.environment });
+    this.usageStatistics = createOmpUsageStatistics({ ...process.env, ...options.environment });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }

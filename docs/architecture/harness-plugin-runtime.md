@@ -105,6 +105,16 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
 
 Context 包含环境变量快照、平台、是否为受管远程 Host，以及可选 Broker 描述符路径和本地页面服务。目录加载时环境快照被冻结；它不是凭据过滤器。`openLocalUrl` 经过 Native Launcher 的 loopback URL 校验，在系统浏览器打开页面。`openLocalPage` 通过既有认证 Controller 连接打开 Codex 内置浏览器的后台页面，返回 `show/close` 句柄；插件按请求持有并关闭它，连接断开也会释放所属页。该页面接口仅接受带显式端口的 `http://127.0.0.1/` 根地址，不向聊天页注入第三方脚本；需要当前可见的本地任务及可用的内置浏览器。受管远程 Host 不提供这两项本机服务。
 
+## 仅提供统计能力的插件
+
+不控制原生会话的插件可以在 Manifest 声明 `"kind": "usage"`，导出 `createUsageStatisticsAdapter(context)`，返回公共 `HarnessUsageStatisticsAdapter`：`harnessId`、`usageStatistics`、`close()`。没有 `inspect/open`，也不运行会话插件的 `warmup`。未声明 `kind` 的既有插件继续使用 `createHarnessAdapter`，无需迁移。
+
+这类插件复用同一可信目录、显式启用、身份校验、加载超时、失败隔离和关闭流程；目录描述保留 `kind: "usage"`。Registry 将其与可创建 Session 的 Adapter 分开，Host 只把读取能力接入公共全局统计，不将它加入聊天、模型选择、会话导入或委派路由。加载失败通过统计失败信息报告，不伪造空结果或 Session 方法。
+
+预装的 `codex-usage`（显示名 Codex）是这种插件，实现在 `packages/adapters/codex-usage`。官方 `codex` 身份仍保留给原生路径；插件只读 rollout，不改变 Codex 的聊天、分叉和恢复操作，也不读取账户配额。统计插件可以脱离 Desktop 加载，私有解析与公共 Host 汇总分离，详见[全局用量统计](../product/usage-statistics.md)。
+
+插件 Bundle 保留 `/*! ... */` 等第三方许可注释。
+
 ## 自定义启动路径设置
 
 连接设置页的本地 Host 右侧详情卡片为 WorkBuddy 提供路径输入、保存和清除操作；不对远程/Broker 提供此入口。Manifest 可声明 `launchCommand: true`，该标记同时进入公开插件描述；Host 不维护具体 Harness 的命令变量名单。

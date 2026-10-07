@@ -101,6 +101,8 @@ describe("release Payload", () => {
       expect(paths).toContain("app/console-server.mjs");
       expect(paths).toContain("app/console-web.js");
       expect(paths).toContain("app/plugins/claude-code/plugin.mjs");
+      expect(paths).toContain("app/plugins/codex-usage/plugin.mjs");
+      expect(paths).toContain("app/plugins/codex-usage/manifest.json");
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "libexec/codexhost-node-repl.exe",
       );

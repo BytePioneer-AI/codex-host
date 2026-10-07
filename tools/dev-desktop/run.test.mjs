@@ -130,6 +130,42 @@ describe("development Desktop start", () => {
     },
   );
 
+  it("does not let inherited npm routing replace the source Host Runtime", async () => {
+    const root = temporaryDirectory();
+    const nodePath = path.join(root, "node");
+    const artifacts = materializeArtifacts(root, "linux", nodePath);
+    const spawnImplementation = vi.fn(() => readyChild());
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const environment = {
+      PATH: path.join(root, "missing"),
+      CODEXHOST_NPM_NODE_PATH: "/installed/node",
+      CODEXHOST_NPM_CLI_PATH: "/installed/npm-cli.js",
+      CODEXHOST_NPM_LAUNCHER_PATH: "/installed/codexhost.js",
+      CODEXHOST_NPM_PACKAGE_ROOT: "/installed/package",
+      CODEXHOST_DATA_DIR: path.join(root, "explicit-data"),
+      HTTPS_PROXY: "http://127.0.0.1:1234",
+    };
+    const original = { ...environment };
+    await runDevelopmentDesktop({
+      arguments_: ["--no-build"],
+      root,
+      platform: "linux",
+      nodePath,
+      environment,
+      spawnImplementation,
+    });
+    const [command, arguments_, options] = spawnImplementation.mock.calls[0];
+    expect(command).toBe(artifacts.launcher);
+    expect(arguments_).toEqual(expect.arrayContaining(["--host-runtime", artifacts.hostRuntime]));
+    for (const key of Object.keys(environment).filter((key) => key.startsWith("CODEXHOST_NPM_"))) {
+      expect(options.env).not.toHaveProperty(key);
+    }
+    expect(options.env.CODEXHOST_DATA_DIR).toBe(environment.CODEXHOST_DATA_DIR);
+    expect(options.env.HTTPS_PROXY).toBe(environment.HTTPS_PROXY);
+    expect(environment).toEqual(original);
+  });
+
   it("resolves platform development artifacts and validates regular files", () => {
     const root = temporaryDirectory();
     const nodePath = path.join(root, "runtime", "node.exe");

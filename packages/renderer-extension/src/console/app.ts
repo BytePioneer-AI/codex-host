@@ -8,6 +8,7 @@ import { h } from "./dom.js";
 import { consoleMessages, type ConsoleMessages } from "./messages.js";
 import { createOfflineHarnessesPage } from "./pages/harnesses-offline.js";
 import { hostPage } from "./pages/host-required.js";
+import { createUsageStatisticsPage } from "./pages/usage-statistics.js";
 import { createOverviewPage } from "./pages/overview.js";
 import { ConsoleState } from "./state.js";
 import { createConsoleRemoteConnections } from "./remote-connections.js";
@@ -164,6 +165,13 @@ export function startConsoleApp(document: Document): void {
         hostPage(required(settingsPages, "remote-connections"), messages, state),
         hostPage(required(settingsPages, "accounts"), messages, state),
         hostPage(required(settingsPages, "session-import"), messages, state),
+        hostPage(
+          createUsageStatisticsPage(messages, (method, params) =>
+            manager.sendRequest(method, params),
+          ),
+          messages,
+          state,
+        ),
         required(settingsPages, "updates"),
       ],
     },

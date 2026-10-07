@@ -1,3 +1,4 @@
+import { createPiUsageStatistics } from "./pi-usage-statistics.js";
 import { fetchPiAccounts } from "./account-balance.js";
 import { createPiCredentialImports } from "./pi-credential-imports.js";
 import { PI_FAST_COMMAND, piFastModelKeys, withPiFast } from "./pi-fast-mode.js";
@@ -2090,6 +2091,7 @@ export class PiAdapter implements HarnessAdapter {
       }
     },
   };
+  readonly usageStatistics: ReturnType<typeof createPiUsageStatistics>;
   readonly sessionImport = Object.freeze({
     listCandidates: async () => {
       const result = await this.#importScope.read((signal) => this.#importIndex.list(signal));
@@ -2140,6 +2142,7 @@ export class PiAdapter implements HarnessAdapter {
     this.#createTransport = dependencies.createTransport;
     this.#environment = options.environment ?? process.env;
     this.#importIndex = new PiSessionImportIndex({ ...process.env, ...options.environment });
+    this.usageStatistics = createPiUsageStatistics({ ...process.env, ...options.environment });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }

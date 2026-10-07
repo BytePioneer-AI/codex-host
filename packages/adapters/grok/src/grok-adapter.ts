@@ -1,3 +1,4 @@
+import { createGrokUsageStatistics } from "./usage-statistics.js";
 import { randomUUID } from "node:crypto";
 import { readGrokCredentials } from "./grok-credential-export.js";
 import path from "node:path";
@@ -1530,6 +1531,7 @@ export class GrokAdapter implements HarnessAdapter {
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = grokHarnessId;
   readonly sessionImport: GrokSessionImport;
+  readonly usageStatistics: ReturnType<typeof createGrokUsageStatistics>;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async (input) => {
       if (input.parent.harnessId !== this.harnessId || input.nativeSubagentId.trim().length === 0) {
@@ -1587,6 +1589,7 @@ export class GrokAdapter implements HarnessAdapter {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#environment = options.environment;
     this.sessionImport = new GrokSessionImport(options.environment);
+    this.usageStatistics = createGrokUsageStatistics(options.environment ?? process.env);
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_GROK_TOOL_OUTPUT_LIMIT;
     this.#dependencies = dependencies ?? {
       randomUUID,

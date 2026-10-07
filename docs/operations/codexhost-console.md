@@ -57,7 +57,9 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 | Windows 开始菜单 | “codexhost console” 快捷方式 |
 | Codex 设置页 | “关于”页的“打开控制台”，通过本地 Host 的 `codexhost/console/open` 打开；远程 Host 不支持 |
 
-地址为 `http://127.0.0.1:4399/`。命令会复用已运行的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），先让旧实例退出再以当前安装启动。控制台不需要登录，直接访问即可。
+地址为 `http://127.0.0.1:4399/`。命令只复用安装、构建版本和数据目录均一致的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），或使用不同的 `CODEXHOST_DATA_DIR`，先让旧实例退出再以当前配置启动。控制台不需要登录，直接访问即可。
+
+源码工作区的 `npm start` 会移除继承的 `CODEXHOST_NPM_*` 更新路由，避免从已安装的 Harness 会话启动时，Shim 又选回 npm 包里的旧 Host Runtime。显式数据目录与代理配置仍保留；从远程 Host 会话启动本机 Desktop 时，应确认 `CODEXHOST_DATA_DIR` 没有指向正在使用的远程数据目录，需要本机默认目录时可用 `env -u CODEXHOST_DATA_DIR npm start`（POSIX）。
 
 ## 端口
 

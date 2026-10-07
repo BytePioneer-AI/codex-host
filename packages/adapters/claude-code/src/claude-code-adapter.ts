@@ -1,4 +1,5 @@
 import { claudeUsageHistory, type ClaudeUsageRecord } from "./claude-usage.js";
+import { createClaudeUsageStatistics } from "./claude-usage-statistics.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -2591,6 +2592,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     resolveCandidate: (nativeSessionId: string) =>
       this.#importScope.resolve((signal) => this.#importIndex.resolve(nativeSessionId, signal)),
   } satisfies HarnessSessionImportCapability);
+  readonly usageStatistics: ReturnType<typeof createClaudeUsageStatistics>;
   readonly subagents = {
     readSnapshot: async (input: {
       parent: NativeSessionRef;
@@ -2664,6 +2666,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     const environment = options.environment ?? process.env;
     this.#importIndex = new ClaudeSessionImportIndex(environment);
+    this.usageStatistics = createClaudeUsageStatistics(environment);
     this.#pendingSessions = new ClaudePendingSessions(environment);
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;

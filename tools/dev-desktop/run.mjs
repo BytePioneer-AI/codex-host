@@ -459,6 +459,16 @@ export async function runDevelopmentDesktop({
   else console.warn("codexhost dev: Pi was not found on PATH and will be unavailable");
 
   const launchEnvironment = { ...environment };
+  // A Harness launched by an npm installation may inherit its update routing. The Shim
+  // prefers that routing over --host-runtime; a source launch must use this worktree instead.
+  for (const name of [
+    "CODEXHOST_NPM_NODE_PATH",
+    "CODEXHOST_NPM_CLI_PATH",
+    "CODEXHOST_NPM_LAUNCHER_PATH",
+    "CODEXHOST_NPM_PACKAGE_ROOT",
+  ]) {
+    delete launchEnvironment[name];
+  }
   delete launchEnvironment.CODEXHOST_DEV_VERSION;
   if (options.version) {
     launchEnvironment.CODEXHOST_DEV_VERSION = options.version;

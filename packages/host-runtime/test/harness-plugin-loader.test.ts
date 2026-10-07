@@ -71,6 +71,62 @@ afterEach(async () => {
 });
 
 describe("Harness plugin discovery and loading", () => {
+  it("loads usage-only plugins without manufacturing session methods and closes them", async () => {
+    const directory = await root(["local-usage"]);
+    const marker = path.join(directory, "closed");
+    await plugin(directory, "local-usage", {
+      manifest: { kind: "usage" },
+      code: `
+        import { writeFile } from "node:fs/promises";
+        export function createUsageStatisticsAdapter() {
+          return { harnessId: "local-usage", usageStatistics: {
+            listSources: async () => [], readSource: async () => []
+          }, close: async () => writeFile(${JSON.stringify(marker)}, "closed") };
+        }
+        export function warmup() { throw new Error("usage plugins must not warm native processes"); }
+      `,
+    });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    expect(registry.adapters.size).toBe(0);
+    expect(registry.usageAdapters.size).toBe(1);
+    expect(registry.list()).toMatchObject([{ id: "local-usage", kind: "usage" }]);
+    expect([...registry.usageAdapters.values()][0]).not.toHaveProperty("open");
+    expect(diagnose).not.toHaveBeenCalled();
+    await registry.close();
+    await registry.close();
+    expect(await readFile(marker, "utf8")).toBe("closed");
+  });
+
+  it.each(["throw", "invalid", "incompatible"])(
+    "isolates %s usage plugins without adding a chat route",
+    async (failure) => {
+      const directory = await root(["broken-usage", "healthy-agent"]);
+      await plugin(directory, "broken-usage", {
+        manifest: {
+          kind: "usage",
+          ...(failure === "incompatible" ? { adapterApiVersion: 999 } : {}),
+        },
+        code:
+          failure === "throw"
+            ? 'export function createUsageStatisticsAdapter() { throw new Error("private detail"); }'
+            : 'export function createUsageStatisticsAdapter() { return { harnessId: "broken-usage", close: async () => {} }; }',
+      });
+      await plugin(directory, "healthy-agent");
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect([...registry.adapters.keys()]).toEqual(["healthy-agent"]);
+        const broken = [...registry.usageAdapters.values()][0];
+        expect(broken).toBeDefined();
+        await expect(
+          broken?.usageStatistics.listSources(new AbortController().signal),
+        ).rejects.toThrow("unavailable");
+      } finally {
+        await registry.close();
+      }
+    },
+  );
+
   it("passes saved commands only to opted-in local factories and exposes the setting", async () => {
     const directory = await root(["custom-agent", "ordinary-agent"]);
     const saved = "/custom/entry";

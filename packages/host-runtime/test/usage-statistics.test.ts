@@ -84,6 +84,45 @@ async function settledGet(stats: UsageStatistics, range: "today" | "7d" | "all" 
 }
 
 describe("UsageStatistics", () => {
+  it("reports a subsequent scan as incomplete until it settles", async () => {
+    let now = NOW;
+    const storage = new FakeStorage(new Map());
+    const stats = new UsageStatistics({
+      directory,
+      prices: new ModelPriceCatalog({ directory }),
+      now: () => now,
+    });
+    stats.attach(() => [{ harness: "pi", capability: storage }]);
+    expect((await settledGet(stats)).reading.complete).toBe(true);
+    const pending = Promise.withResolvers<HarnessUsageSource[]>();
+    vi.spyOn(storage, "listSources").mockReturnValueOnce(pending.promise);
+    now += 11_000;
+    expect((await stats.get("all")).reading.complete).toBe(false);
+    pending.resolve([]);
+    await stats.settled();
+    expect((await stats.get("all")).reading.complete).toBe(true);
+    stats.close();
+  });
+
+  it("excludes disabled Harness caches after restart, retaining enabled caches on read failure", async () => {
+    const storage = new FakeStorage(
+      new Map([["one", { fingerprint: "1", entries: [entry("one")] }]]),
+    );
+    const original = statistics();
+    original.attach(() => [
+      { harness: "pi", capability: storage },
+      { harness: "omp", capability: storage },
+    ]);
+    expect((await settledGet(original)).totals.requests).toBe(2);
+    original.close();
+    vi.spyOn(storage, "listSources").mockRejectedValue(new Error("temporarily unavailable"));
+    const restarted = statistics(NOW + 60_000);
+    restarted.attach(() => [{ harness: "pi", capability: storage }]);
+    const result = await settledGet(restarted);
+    expect(result.byHarness.map(({ harness }) => harness)).toEqual(["pi"]);
+    expect(result.totals.requests).toBe(1);
+    restarted.close();
+  });
   it("keeps native credits separate per Harness/model, filtered, deduplicated and cached", async () => {
     const a = entry("a", { model: "auto", credits: 1.25, cwd: "/project" });
     const storage = new FakeStorage(
@@ -375,7 +414,7 @@ describe("UsageStatistics", () => {
     stats.attach(() => [{ harness: "claude-code", capability: storage }]);
     const first = await settledGet(stats);
     expect(storage.reads).toEqual(["one", "two"]);
-    expect(await readdir(path.join(directory, "usage-statistics", "v5"))).toEqual([
+    expect(await readdir(path.join(directory, "usage-statistics", "v6"))).toEqual([
       "claude-code.json",
     ]);
 
@@ -398,7 +437,7 @@ describe("UsageStatistics", () => {
     const stats = statistics();
     stats.attach(() => [{ harness: "pi", capability: storage }]);
     const before = await settledGet(stats);
-    await writeFile(path.join(directory, "usage-statistics", "v5", "pi.json"), "{broken");
+    await writeFile(path.join(directory, "usage-statistics", "v6", "pi.json"), "{broken");
     const again = statistics();
     again.attach(() => [{ harness: "pi", capability: storage }]);
     expect((await settledGet(again)).totals).toEqual(before.totals);

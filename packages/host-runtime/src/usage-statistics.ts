@@ -24,7 +24,7 @@ import {
 } from "./model-prices.js";
 
 /** Bump when a reader's output changes meaning, so cached parses are read again. */
-const CACHE_VERSION = 5;
+const CACHE_VERSION = 6;
 const STALE_AFTER_MS = 10_000;
 const WARM_DELAY_MS = 3_000;
 /** At most one rewrite of a Harness's cache file per interval while its sessions keep growing. */
@@ -305,6 +305,16 @@ export class UsageStatistics {
   /** What is known now; a stale result starts a background refresh for the next request. */
   async get(params: UsageStatisticsParams | UsageStatisticsRange): Promise<UsageStatisticsResult> {
     await this.#load();
+    if (this.#sources) {
+      const enabled = new Set(this.#sources().map(({ harness }) => harness));
+      for (const harness of this.#caches.keys()) {
+        if (enabled.has(harness)) continue;
+        this.#caches.delete(harness);
+        this.#failures.delete(harness);
+        this.#modelLabels.delete(harness);
+        this.#generation += 1;
+      }
+    }
     const now = this.#now();
     if (!this.#refreshing && now - this.#refreshedAtMs > STALE_AFTER_MS) this.#startRefresh();
     return this.#aggregate(
@@ -698,7 +708,7 @@ export class UsageStatistics {
       },
       reading: {
         // Complete once every source has been read at least once; later refreshes only add.
-        complete: this.#refreshedAtMs > 0,
+        complete: this.#refreshedAtMs > 0 && this.#refreshing === null,
         sources: this.#progress.sources,
         read: this.#progress.read,
       },

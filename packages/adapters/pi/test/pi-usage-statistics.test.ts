@@ -15,9 +15,10 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
-function message(responseId: string | null, timestamp: number, output: number) {
+function message(responseId: string | null, timestamp: number, output: number, id = "native-a") {
   return JSON.stringify({
     type: "message",
+    id,
     timestamp: new Date(timestamp).toISOString(),
     message: {
       role: "assistant",
@@ -49,7 +50,7 @@ it("reads session and subagent files; a fork repeats its parent's request IDs", 
   );
   await writeFile(
     path.join(project, "s1", "agent", "run-0", "session.jsonl"),
-    message("resp-4", 4_000, 8),
+    [message("resp-4", 4_000, 8), message(null, 2_000, 9, "native-b")].join("\n"),
   );
   const capability = createPiUsageStatistics({ PI_CODING_AGENT_DIR: home });
   const sources = await capability.listSources(signal);
@@ -58,12 +59,13 @@ it("reads session and subagent files; a fork repeats its parent's request IDs", 
     .flat()
     .map((entry) => `${entry.id}@${entry.occurredAtMs}:${entry.inputTokens}/${entry.outputTokens}`);
   expect(ids.sort()).toEqual([
+    "entry:native-a:t2000@2000:40/6",
+    "entry:native-a:t2000@2000:40/6",
+    "entry:native-b:t2000@2000:40/9",
     "resp-1@1000:40/5",
     "resp-1@1000:40/5",
     "resp-3@3000:40/7",
     "resp-4@4000:40/8",
-    "t2000@2000:40/6",
-    "t2000@2000:40/6",
   ]);
   // The header names each file's session; a header without cwd leaves it out.
   const [first] = await capability.readSource(path.join(project, "s1.jsonl"), signal);

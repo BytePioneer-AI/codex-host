@@ -15,7 +15,7 @@ import { piSessionImportDirectory } from "./pi-session-import.js";
 import { piUsageRecord } from "./pi-usage.js";
 
 /**
- * Every assistant message in one Pi session file, keyed as the live meter keys it. A fork starts
+ * Every assistant message in one Pi session file, keyed by response ID or native entry ID and time. A fork starts
  * with a copy of its parent's entries, request IDs and times included, so the Host's dedup
  * counts them once, even after the parent file is deleted.
  */
@@ -34,7 +34,13 @@ export async function readPiUsage(file: string, signal: AbortSignal): Promise<Ha
     const message = line.message as Record<string, unknown>;
     const at = nativeTimeMs(message.timestamp) ?? nativeTimeMs(line.timestamp);
     const entry = at !== null && usageEntryFromRequest(record.request, at);
-    if (entry) entries.push(withUsageSession(entry, session));
+    if (!entry) continue;
+    if (!(typeof message.responseId === "string" && message.responseId.length > 0)) {
+      // Native entry IDs survive copied fork history; timestamps alone collide across sessions.
+      if (typeof line.id !== "string" || line.id.length === 0) continue;
+      entry.id = `entry:${line.id}:${entry.id}`;
+    }
+    entries.push(withUsageSession(entry, session));
   }
   return entries;
 }

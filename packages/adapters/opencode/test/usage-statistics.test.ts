@@ -30,6 +30,7 @@ it("reads assistant messages, adding 1.x rows only until the v1-v2 migration com
     INSERT INTO session_v2 VALUES ('s', '/work/opencode');
   `);
   const v2 = db.prepare("INSERT INTO session_message VALUES (?, 's', ?, ?)");
+  v2.run("broken-v2", "assistant", "{broken");
   v2.run(
     "m1",
     "assistant",
@@ -46,6 +47,7 @@ it("reads assistant messages, adding 1.x rows only until the v1-v2 migration com
   );
   v2.run("u1", "user", JSON.stringify({ text: "assistant" }));
   const v1 = db.prepare("INSERT INTO message VALUES (?, 's', ?)");
+  v1.run("broken-v1", "{broken");
   v1.run(
     "m1",
     JSON.stringify({

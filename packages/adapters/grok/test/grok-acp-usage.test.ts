@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import { harnessPermissionModeIdSchema } from "@codexhost/shared-contracts";
 import { GrokAcpTransport, type GrokTransportEvent } from "../src/acp-transport.js";
 
-describe("Grok live ACP usage wire", () => {
+// The executable fixture uses a POSIX shebang, which Windows cannot launch directly.
+describe.skipIf(process.platform === "win32")("Grok live ACP usage wire", () => {
   it("receives underscore-prefixed native response and tool-input notifications", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "grok-acp-usage-"));
     const command = path.join(root, "fixture.mjs");

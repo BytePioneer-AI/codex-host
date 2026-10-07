@@ -15,6 +15,27 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
+it("distinguishes same-time requests but preserves copied native entry IDs", async () => {
+  const file = path.join(home, "requests.jsonl");
+  await writeFile(
+    file,
+    ["a", "b", "a"]
+      .map((id) =>
+        JSON.stringify({
+          type: "message",
+          id,
+          message: { role: "assistant", timestamp: 1000, usage: { input: 1, output: 2 } },
+        }),
+      )
+      .join("\n"),
+  );
+  const rows = await createOmpUsageStatistics({ PI_CODING_AGENT_DIR: home }).readSource(
+    file,
+    signal,
+  );
+  expect(rows.map(({ id }) => id)).toEqual(["entry:a:t1000", "entry:b:t1000", "entry:a:t1000"]);
+});
+
 it("reads OMP session files with a title line and subagents in the artifacts folder", async () => {
   const project = path.join(home, "sessions", "-work");
   await mkdir(path.join(project, "2026_s1"), { recursive: true });

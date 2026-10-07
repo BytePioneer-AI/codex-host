@@ -10,7 +10,13 @@ import type { ModelPriceOverride, ModelPriceSuggestion } from "@codexhost/shared
 import { UsageStatistics } from "../../packages/host-runtime/src/usage-statistics.js";
 
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
-if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
+// Worker-scoped options must stay at file scope; keep visible scrollbars and the custom binary.
+test.use({
+  launchOptions: {
+    ...(browserExecutable ? { executablePath: browserExecutable } : {}),
+    ignoreDefaultArgs: ["--hide-scrollbars"],
+  },
+});
 test.use({ locale: "zh-CN", timezoneId: "Asia/Shanghai" });
 
 const { outputFiles } = await build({
@@ -520,9 +526,6 @@ test("late suggestions do not overwrite a typed draft, and cancelling never save
   expect(state.writes).toBe(0);
   expect(state.prices.size).toBe(0);
 });
-
-// Headless Chromium otherwise suppresses scrollbar painting, including custom scrollbars.
-test.use({ launchOptions: { ignoreDefaultArgs: ["--hide-scrollbars"] } });
 
 test.describe("suggestion scrollbars", () => {
   for (const colorScheme of ["light", "dark"] as const) {

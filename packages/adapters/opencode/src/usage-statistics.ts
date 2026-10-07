@@ -16,6 +16,14 @@ import type { SessionMessageInfo } from "@opencode/client";
 
 import { v2UsageRequest } from "./v2/usage.js";
 
+function parseRowData(data: unknown): unknown {
+  try {
+    return JSON.parse(String(data));
+  } catch {
+    return null;
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -91,7 +99,7 @@ export async function readOpenCodeUsage(file: string): Promise<HarnessUsageEntry
       for (const row of database
         .prepare("SELECT id, session_id, data FROM session_message WHERE type = 'assistant'")
         .iterate()) {
-        const data: unknown = JSON.parse(String(row.data));
+        const data = parseRowData(row.data);
         if (!isRecord(data)) continue;
         add(
           { ...data, id: String(row.id), type: "assistant" } as unknown as SessionMessageInfo,
@@ -109,7 +117,7 @@ export async function readOpenCodeUsage(file: string): Promise<HarnessUsageEntry
       );
     if (tables.has("message") && !migrated) {
       for (const row of database.prepare("SELECT id, session_id, data FROM message").iterate()) {
-        const data: unknown = JSON.parse(String(row.data));
+        const data = parseRowData(row.data);
         if (!isRecord(data) || data.role !== "assistant" || typeof data.modelID !== "string") {
           continue;
         }

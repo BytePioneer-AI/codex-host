@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isOrbitComposer } from "../src/renderer-composer-kind.js";
+import { isOrbitComposer, orbitComposerKind } from "../src/renderer-composer-kind.js";
 import { findComposerModelTarget } from "../src/versioned-renderer-adapter.js";
 
 function composerWithEditor(fiber: object): Element {
@@ -41,5 +41,18 @@ describe("Dot composer ownership", () => {
     expect(
       isOrbitComposer(composerWithEditor({ memoizedProps: { isOrbit: "true" }, return: null })),
     ).toBe(false);
+  });
+
+  it("keeps a root unmounted when the published walk gives up on its pointer", () => {
+    const cyclic: { memoizedProps: Record<string, unknown>; return: unknown } = {
+      memoizedProps: { isOrbit: true, conversationId: "dot-room" },
+      return: null,
+    };
+    cyclic.return = cyclic;
+    const composer = composerWithEditor(cyclic);
+    expect(orbitComposerKind(composer)).toBe("unknown");
+    expect(isOrbitComposer(composer)).toBe(false);
+    // No model/Harness route may be derived from an unclassifiable root.
+    expect(findComposerModelTarget(composer)).toBeNull();
   });
 });

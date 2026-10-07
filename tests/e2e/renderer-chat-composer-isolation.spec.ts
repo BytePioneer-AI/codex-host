@@ -147,6 +147,30 @@ test("dot cloud composers retain native submission despite the Codex root marker
   expect(await nativeSubmitResults(page)).toEqual({ received: 3 });
 });
 
+test("an unclassifiable composer root is never mounted and never intercepts", async ({ page }) => {
+  await page.setContent(
+    '<form data-codex-composer-root><div contenteditable="true" role="textbox">draft</div><button type="submit" aria-label="Send">Send</button></form>',
+  );
+  // The DOM pointer exists, but its return chain is a cycle, so the bounded
+  // published-tree walk gives up and the root cannot be classified. It must
+  // stay unmounted (no interception, no disabled send button) instead of
+  // being treated as a native Codex composer.
+  await page.locator('[role="textbox"]').evaluate((editor) => {
+    const fiber: { memoizedProps: Record<string, unknown>; return: unknown } = {
+      memoizedProps: { isOrbit: true, conversationId: "dot-room" },
+      return: null,
+    };
+    fiber.return = fiber;
+    Object.defineProperty(editor, "__reactFiber$dot", { configurable: true, value: fiber });
+  });
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
+  await expect(page.locator('button[type="submit"]')).toBeEnabled();
+  expect(await nativeSubmitResults(page)).toEqual({ received: 3 });
+  expect(await dispatchInputIntents(page)).toEqual(unmodifiedInputResults);
+});
+
 test("a mounted root becoming dot stops intercepting before the next scan", async ({ page }) => {
   await page.setContent(
     '<form data-codex-composer-root><div contenteditable="true" role="textbox">draft</div><button type="submit" aria-label="Send">Send</button></form>',

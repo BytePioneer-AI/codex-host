@@ -1,5 +1,5 @@
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
-import { isOrbitComposer } from "./renderer-composer-kind.js";
+import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
   catalogModelForRef,
@@ -2567,7 +2567,7 @@ export function installRendererBindingProbe(
     if (
       mountedByComposer.has(composer) ||
       !composer.isConnected ||
-      isOrbitComposer(composer) ||
+      orbitComposerKind(composer) !== "codex" ||
       !composer.matches(CODEX_COMPOSER_SELECTOR)
     ) {
       return;
@@ -2676,7 +2676,7 @@ export function installRendererBindingProbe(
       const replacementTarget = findComposerModelTarget(target);
       const replacementHostId = activeModelHostId(target);
       if (
-        isOrbitComposer(target) ||
+        orbitComposerKind(target) !== "codex" ||
         !shouldTransferComposerState(
           replacement.sourceModelTarget,
           replacementTarget,
@@ -2697,7 +2697,7 @@ export function installRendererBindingProbe(
     for (const [composer, mounted] of mountedByComposer) {
       if (
         !composer.isConnected ||
-        isOrbitComposer(composer) ||
+        orbitComposerKind(composer) === "orbit" ||
         !composer.matches(CODEX_COMPOSER_SELECTOR) ||
         !mounted.control.root.isConnected
       ) {

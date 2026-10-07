@@ -3,9 +3,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
+import { CodexTurnProjector } from "@codexhost/protocol-core";
 import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  hostItemIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
@@ -2809,6 +2811,300 @@ describe("Pi HarnessAdapter Session", () => {
     await nextEvent(iterator);
     await session.close();
   });
+
+  it.each(["custom", "select-dismissed", "input-dismissed"] as const)(
+    "keeps a questionnaire Tool active across sequential native prompts with a %s response",
+    async (answer) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      const turnId = hostTurnIdSchema.parse("questionnaire");
+      const projector = new CodexTurnProjector({
+        threadId: "pi-thread",
+        turnId,
+        cwd: "/workspace",
+        startedAtMs: 0,
+      });
+      await session.execute(textTurn(turnId));
+      await nextEvent(iterator);
+      const turnStarted = await nextEvent(iterator);
+      if (turnStarted.type !== "turn.started") throw new Error("Turn did not start");
+      projector.project(turnStarted);
+      const userStarted = await nextEvent(iterator);
+      if (userStarted.type !== "item.started") throw new Error("User Item did not start");
+      projector.project(userStarted);
+      const transport = transports[0];
+      if (!transport) throw new Error("Pi Transport did not start");
+
+      // A user Extension Tool owns both prompts; selecting Custom opens native input.
+      transport.event({
+        type: "tool.started",
+        callId: "questionnaire-tool",
+        toolName: "questionnaire",
+        arguments: {},
+      });
+      const toolStarted = await nextEvent(iterator);
+      if (toolStarted.type !== "item.started") throw new Error("Questionnaire did not start");
+      expect(toolStarted.item.type).toBe("toolExecution");
+      expect(projector.project(toolStarted).messages).toMatchObject([
+        {
+          method: "item/started",
+          params: { item: { id: toolStarted.item.itemId, tool: "questionnaire" } },
+        },
+      ]);
+
+      transport.event({
+        type: "interaction.requested",
+        request: {
+          requestId: "native-select",
+          method: "select",
+          title: "Choose a destination",
+          options: ["Preview (recommended)", "Custom…"],
+        },
+      });
+      const select = await nextInteraction(iterator);
+      expect(select).toMatchObject({
+        itemId: toolStarted.item.itemId,
+        turnId,
+        questions: [{ type: "choice", allowOther: false, multiple: false }],
+      });
+      const openedSelect = projector.projectQuestion(
+        select,
+        hostItemIdSchema.parse("unused-select"),
+      );
+      expect(openedSelect.messages).toEqual([]);
+      expect(openedSelect.questionRequest.request).toMatchObject({
+        method: "item/tool/requestUserInput",
+        params: {
+          itemId: toolStarted.item.itemId,
+          turnId,
+          questions: [
+            {
+              id: "answer",
+              question: "Choose a destination",
+              options: [{ label: "Preview (recommended)" }, { label: "Custom…" }],
+            },
+          ],
+        },
+      });
+      await expect(
+        session.execute({
+          type: "interaction.respond",
+          interactionId: select.interactionId,
+          response: openedSelect.questionRequest.parseResponse({
+            answers: answer === "select-dismissed" ? {} : { answer: { answers: ["Custom…"] } },
+          }),
+        }),
+      ).resolves.toEqual({ ok: true, value: { accepted: true } });
+      expect(transport.respondToInteraction).toHaveBeenNthCalledWith(1, {
+        requestId: "native-select",
+        ...(answer === "select-dismissed" ? { cancelled: true } : { value: "Custom…" }),
+      });
+      const selectClosed = await nextEvent(iterator);
+      if (selectClosed.type !== "interaction.closed") throw new Error("Select did not close");
+      expect(selectClosed).toMatchObject({
+        interactionId: select.interactionId,
+        reason: answer === "select-dismissed" ? "cancelled" : "responded",
+      });
+      expect(projector.project(selectClosed).messages).toEqual([]);
+
+      if (answer !== "select-dismissed") {
+        transport.event({
+          type: "interaction.requested",
+          request: {
+            requestId: "native-input",
+            method: "input",
+            title: "Enter a custom destination",
+            placeholder: "Destination",
+          },
+        });
+        const input = await nextInteraction(iterator);
+        expect(input.interactionId).not.toBe(select.interactionId);
+        expect(input).toMatchObject({
+          itemId: toolStarted.item.itemId,
+          turnId,
+          questions: [{ type: "text", multiline: false, placeholder: "Destination" }],
+        });
+        const openedInput = projector.projectQuestion(
+          input,
+          hostItemIdSchema.parse("unused-input"),
+        );
+        expect(openedInput.messages).toEqual([]);
+        expect(openedInput.questionRequest.request).toMatchObject({
+          method: "item/tool/requestUserInput",
+          params: {
+            itemId: toolStarted.item.itemId,
+            turnId,
+            questions: [{ id: "answer", question: "Enter a custom destination", options: null }],
+          },
+        });
+        const customValue = "  Custom destination / 東京  ";
+        await expect(
+          session.execute({
+            type: "interaction.respond",
+            interactionId: input.interactionId,
+            response: openedInput.questionRequest.parseResponse({
+              answers: answer === "input-dismissed" ? {} : { answer: { answers: [customValue] } },
+            }),
+          }),
+        ).resolves.toEqual({ ok: true, value: { accepted: true } });
+        expect(transport.respondToInteraction).toHaveBeenNthCalledWith(2, {
+          requestId: "native-input",
+          ...(answer === "input-dismissed" ? { cancelled: true } : { value: customValue }),
+        });
+        const inputClosed = await nextEvent(iterator);
+        if (inputClosed.type !== "interaction.closed") throw new Error("Input did not close");
+        expect(inputClosed).toMatchObject({
+          interactionId: input.interactionId,
+          reason: answer === "input-dismissed" ? "cancelled" : "responded",
+        });
+        expect(projector.project(inputClosed).messages).toEqual([]);
+      }
+      expect(transport.respondToInteraction).toHaveBeenCalledTimes(
+        answer === "select-dismissed" ? 1 : 2,
+      );
+      expect(() =>
+        projector.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } }),
+      ).toThrow("active Items");
+
+      // Dismissing a prompt does not cancel or complete its owning Tool or Turn.
+      transport.event({
+        type: "tool.completed",
+        callId: "questionnaire-tool",
+        toolName: "questionnaire",
+        result: { content: [{ type: "text", text: "Questionnaire finished" }] },
+        isError: false,
+      });
+      const toolCompleted = await nextEvent(iterator);
+      if (toolCompleted.type !== "item.completed")
+        throw new Error("Questionnaire did not complete");
+      expect(toolCompleted.snapshot).toMatchObject({
+        item: { itemId: toolStarted.item.itemId, type: "toolExecution", toolName: "questionnaire" },
+        outcome: { status: "succeeded" },
+      });
+      expect(projector.project(toolCompleted).messages).toMatchObject([
+        { method: "item/completed", params: { item: { id: toolStarted.item.itemId } } },
+      ]);
+      transport.succeed("");
+      const userCompleted = await nextEvent(iterator);
+      if (userCompleted.type !== "item.completed") throw new Error("User Item did not complete");
+      projector.project(userCompleted);
+      const turnCompleted = await nextEvent(iterator);
+      if (turnCompleted.type !== "turn.completed") throw new Error("Turn did not complete");
+      expect(projector.project(turnCompleted).completedTurn).toMatchObject({ status: "completed" });
+      await session.close();
+    },
+  );
+
+  it.each(["yes", "no", "dismissed"] as const)(
+    "projects an active bash confirm Question with a %s response through a synthetic lifecycle",
+    async (answer) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      const turnId = hostTurnIdSchema.parse("bash-confirm");
+      const projector = new CodexTurnProjector({
+        threadId: "pi-thread",
+        turnId,
+        cwd: "/workspace",
+        startedAtMs: 0,
+      });
+      await session.execute(textTurn(turnId));
+      await nextEvent(iterator);
+      const turnStarted = await nextEvent(iterator);
+      if (turnStarted.type !== "turn.started") throw new Error("Turn did not start");
+      projector.project(turnStarted);
+      const userStarted = await nextEvent(iterator);
+      if (userStarted.type !== "item.started") throw new Error("User Item did not start");
+      projector.project(userStarted);
+      const transport = transports[0];
+
+      // Pi starts bash before the guard's tool_call hook requests confirmation.
+      transport?.event({
+        type: "tool.started",
+        callId: "bash-tool",
+        toolName: "bash",
+        arguments: { command: "printf complete" },
+      });
+      const commandStarted = await nextEvent(iterator);
+      if (commandStarted.type !== "item.started") throw new Error("Command did not start");
+      expect(commandStarted.item.type).toBe("commandExecution");
+      projector.project(commandStarted);
+      transport?.event({
+        type: "interaction.requested",
+        request: {
+          requestId: "native-confirm",
+          method: "confirm",
+          title: "Confirm",
+          message: "Proceed?",
+        },
+      });
+      const interaction = await nextInteraction(iterator);
+      expect(transport?.respondToInteraction).not.toHaveBeenCalled();
+      const syntheticItemId = hostItemIdSchema.parse("synthetic-confirm");
+      const opened = projector.projectQuestion(interaction, syntheticItemId);
+      expect(interaction).not.toHaveProperty("itemId");
+      expect(opened.questionRequest.request).toMatchObject({
+        method: "item/tool/requestUserInput",
+        params: { itemId: syntheticItemId, turnId },
+      });
+      expect(opened.messages).toMatchObject([
+        { method: "item/started", params: { item: { id: syntheticItemId, tool: "question" } } },
+      ]);
+
+      await expect(
+        session.execute({
+          type: "interaction.respond",
+          interactionId: interaction.interactionId,
+          response:
+            answer === "dismissed"
+              ? { type: "question", answers: {}, cancelled: true }
+              : { type: "question", answers: { answer: [answer] } },
+        }),
+      ).resolves.toEqual({ ok: true, value: { accepted: true } });
+      expect(transport?.respondToInteraction).toHaveBeenCalledExactlyOnceWith({
+        requestId: "native-confirm",
+        ...(answer === "dismissed" ? { cancelled: true } : { confirmed: answer === "yes" }),
+      });
+      const closed = await nextEvent(iterator);
+      if (closed.type !== "interaction.closed") throw new Error("Question did not close");
+      expect(closed).toMatchObject({
+        interactionId: interaction.interactionId,
+        reason: answer === "dismissed" ? "cancelled" : "responded",
+      });
+      expect(projector.project(closed).messages).toMatchObject([
+        { method: "item/completed", params: { item: { id: syntheticItemId } } },
+      ]);
+
+      transport?.event({
+        type: "tool.completed",
+        callId: "bash-tool",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "complete" }], exitCode: 0 },
+        isError: false,
+      });
+      const commandCompleted = await nextEvent(iterator);
+      if (commandCompleted.type !== "item.completed") throw new Error("Command did not complete");
+      expect(commandCompleted.snapshot).toMatchObject({
+        item: { type: "commandExecution", itemId: commandStarted.item.itemId, exitCode: 0 },
+        outcome: { status: "succeeded" },
+      });
+      expect(projector.project(commandCompleted).messages).toMatchObject([
+        {
+          method: "item/completed",
+          params: { item: { id: commandStarted.item.itemId, type: "commandExecution" } },
+        },
+      ]);
+      transport?.succeed("");
+      const userCompleted = await nextEvent(iterator);
+      if (userCompleted.type !== "item.completed") throw new Error("User Item did not complete");
+      projector.project(userCompleted);
+      const turnCompleted = await nextEvent(iterator);
+      if (turnCompleted.type !== "turn.completed") throw new Error("Turn did not complete");
+      expect(projector.project(turnCompleted).completedTurn).toMatchObject({ status: "completed" });
+      await session.close();
+    },
+  );
 
   it("maps confirm, input, and editor Questions without inferring Approval", async () => {
     for (const request of [

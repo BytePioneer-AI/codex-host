@@ -1016,8 +1016,21 @@ export class OmpRpcSession {
     while (newline >= 0) {
       const frame = this.#buffer.subarray(0, newline);
       this.#buffer = this.#buffer.subarray(newline + 1);
+      let parsed: unknown;
       try {
-        const decoded = this.#frameDecoder.push(JSON.parse(textDecoder.decode(frame)));
+        parsed = JSON.parse(textDecoder.decode(frame));
+      } catch (error) {
+        this.#fail(
+          new OmpRpcFaultError(
+            "protocolError",
+            `Omp RPC returned invalid JSONL: ${message(error)}`,
+          ),
+        );
+        newline = this.#buffer.indexOf(0x0a);
+        continue;
+      }
+      try {
+        const decoded = this.#frameDecoder.push(parsed);
         if (decoded === null) {
           newline = this.#buffer.indexOf(0x0a);
           continue;
@@ -1033,7 +1046,7 @@ export class OmpRpcSession {
             ? error
             : new OmpRpcFaultError(
                 "protocolError",
-                `Omp RPC returned invalid JSONL: ${message(error)}`,
+                `Omp RPC frame handling failed: ${message(error)}`,
               ),
         );
       }
@@ -1232,9 +1245,9 @@ export class OmpRpcSession {
       throw new OmpRpcFaultError("protocolError", "Omp RPC Subagent frame has no stable ID");
     }
     const nativeSubagentId = nativeIdValue;
-    const callId = nonBlankString(payload.parentToolCallId)
-      ? payload.parentToolCallId
-      : nativeSubagentId;
+    // A task batch shares one parentToolCallId across all of its children.
+    // Delegate lifecycle identity must follow the stable native child ID.
+    const callId = nativeSubagentId;
     const emit = active?.onEvent ?? this.#options.onSubagentEvent;
     if (value.type === "subagent_event") {
       emit?.({ type: "subagent.transcript.changed", callId, nativeSubagentId });

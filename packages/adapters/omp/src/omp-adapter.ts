@@ -84,7 +84,7 @@ import {
   type OmpAvailableCommand,
 } from "./omp-slash-commands.js";
 import { mapOmpSnapshot, resolveOmpForkBoundary, type OmpSessionHistory } from "./omp-history.js";
-import { readOmpSessionHistory } from "./omp-session-file.js";
+import { readOmpSessionHistory, verifyOmpSessionCwd } from "./omp-session-file.js";
 import { OmpSessionImport } from "./session-import.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
@@ -899,7 +899,7 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
-    if (this.#phase !== "open") {
+    if (this.#phase !== "open" && this.#phase !== "faulted") {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (this.#active || this.#acceptingTurn || this.#configuring) {
@@ -913,8 +913,25 @@ class OmpHarnessSession implements HarnessSession {
       };
     }
     try {
-      const transport = await this.#ensureTransport();
-      const history = await transport.getEntries();
+      const transport = this.#phase === "faulted" ? this.#transport : await this.#ensureTransport();
+      if (!transport)
+        return { ok: false, error: invalidState("Omp Session has no history transport") };
+      let history: OmpSessionHistory;
+      if (this.#phase === "faulted") {
+        // A failed writer must stop before its durable history can be forked.
+        // Read only: preserve the fault and never restart the source Session.
+        await transport.close();
+        const sessionFile = transport.state.sessionFile;
+        if (!sessionFile) throw new Error("Omp faulted Session has no persisted history");
+        await verifyOmpSessionCwd({
+          sessionFile,
+          sessionId: transport.state.sessionId,
+          expectedCwd: this.#cwd,
+        });
+        history = await readOmpSessionHistory(sessionFile);
+      } else {
+        history = await transport.getEntries();
+      }
       return {
         ok: true,
         value: {
@@ -1049,6 +1066,20 @@ class OmpHarnessSession implements HarnessSession {
       void transport
         .runTurn(text, (event) => this.#handleTurnEvent(active, event))
         .then(async (result) => {
+          if (!result.agentInvoked) {
+            this.#completeTurn(
+              active,
+              result.error !== undefined
+                ? { status: "failed", error: normalizedError(result.error, "nativeFailure") }
+                : result.cancelled
+                  ? { status: "cancelled", reason: "Cancelled by user" }
+                  : { status: "succeeded" },
+              result.text,
+              undefined,
+              true,
+            );
+            return;
+          }
           try {
             const identity = await this.#completedTurnIdentity(active, transport);
             this.#completeTurn(
@@ -1611,14 +1642,27 @@ class OmpHarnessSession implements HarnessSession {
         }
         if (this.#requestedThinkingOptionId) {
           if (!thinkingLevels) {
-            throw new OmpAdapterFaultError({
-              code: "unsupported",
-              message: "Installed Omp does not support Thinking selection",
-              retryable: false,
-            });
+            const current = nativeModelFromState(state);
+            const thinkingAlreadyOff =
+              this.#requestedThinkingOptionId === "off" &&
+              (state.thinkingLevel === "off" ||
+                (current !== null &&
+                  (await transport.getAvailableModels()).some(
+                    (model) => sameOmpModel(model, current) && model.reasoning === false,
+                  )));
+            // A non-reasoning Model has no native Thinking selector. The
+            // catalog's Off option is already satisfied; do not send a setter.
+            if (!thinkingAlreadyOff) {
+              throw new OmpAdapterFaultError({
+                code: "unsupported",
+                message: "Installed Omp does not support Thinking selection",
+                retryable: false,
+              });
+            }
+          } else {
+            state = await transport.selectThinkingOption(this.#requestedThinkingOptionId);
+            thinkingLevels = await transport.getAvailableThinkingLevels();
           }
-          state = await transport.selectThinkingOption(this.#requestedThinkingOptionId);
-          thinkingLevels = await transport.getAvailableThinkingLevels();
         } else {
           const reconciled = await reconcileThinkingLevel(transport, state, thinkingLevels);
           state = reconciled.state;
@@ -2121,6 +2165,7 @@ class OmpHarnessSession implements HarnessSession {
     outcome: TurnOutcome,
     finalText?: string,
     nativeTurnRef?: NativeTurnRef,
+    ephemeral?: true,
   ): void {
     if (this.#active !== active) return;
     this.#active = null;
@@ -2157,6 +2202,7 @@ class OmpHarnessSession implements HarnessSession {
       turnId: active.command.turnId,
       outcome,
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
+      ...(ephemeral ? { ephemeral } : {}),
     });
     active.resolveCompletion();
     queueMicrotask(() => {

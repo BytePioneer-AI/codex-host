@@ -99,6 +99,14 @@ jobs:
           --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools
           -- -D warnings && npm run test:rust
 
+      - name: Setup cargo-zigbuild
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zigbuild"
+          "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
+          echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
+
       # Keep packaging evidence even when an unrelated check fails; reuse this runner.
       - name: Smoke-test Linux npm package
         if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
@@ -144,6 +152,14 @@ jobs:
           cargo clippy --workspace --all-targets --locked
           --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools
           -- -D warnings && npm run test:rust
+
+      - name: Setup cargo-zigbuild
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zigbuild"
+          "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
+          echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
 
       - name: Smoke-test Linux ARM64 npm package
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}

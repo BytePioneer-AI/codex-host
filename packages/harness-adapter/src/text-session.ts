@@ -497,6 +497,8 @@ export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
   nativeTurnRef?: NativeTurnRef;
+  /** Native operation completed without a history Turn; project without persisting an identity. */
+  ephemeral?: true;
   outcome: TurnOutcome;
 }
 

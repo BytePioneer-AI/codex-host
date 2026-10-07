@@ -18,6 +18,7 @@ import {
   buildPreinstalledHarnessPlugins,
   preinstalledHarnessPluginPaths,
 } from "./harness-plugins.mjs";
+import { linuxGlibcCargoArguments, stripLinuxDebugInfo } from "./linux-glibc.mjs";
 import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -154,11 +155,11 @@ export function npmReleaseBuildCommands(
       label: "Rust release build",
       command: "cargo",
       args: [
-        "build",
+        ...(target.hostPlatform === "linux"
+          ? linuxGlibcCargoArguments(target.rustTarget)
+          : ["build", "--target", target.rustTarget]),
         "--release",
         "--locked",
-        "--target",
-        target.rustTarget,
         "--package",
         "codexhost-launcher",
         "--package",
@@ -1091,6 +1092,7 @@ export async function prepareNpmPackage({
     "npm Updater",
     true,
   );
+  if (target.hostPlatform === "linux") stripLinuxDebugInfo({ packageRoot });
 
   await runCommand(
     {

@@ -1033,6 +1033,7 @@ export function createConnectionsSettingsPage(
             item.agentSnapshot !== undefined,
         );
         const agentByKey = new Map(groupableItems.map((item) => [item.key, item]));
+        const catalog = groupableItems.map((item) => ({ id: item.key, name: item.name }));
         const preferenceOrder = groupPreference
           .list(
             new Set(
@@ -1040,13 +1041,9 @@ export function createConnectionsSettingsPage(
                 .filter((item) => item.agentSnapshot.availability === "notInstalled")
                 .map((item) => item.agentSnapshot.agent),
             ),
+            catalog,
           )
           .filter((entry) => agentByKey.has(entry.agent));
-        for (const item of groupableItems) {
-          if (!preferenceOrder.some((entry) => entry.agent === item.key)) {
-            preferenceOrder.push({ agent: item.key as ExternalRendererAgent, section: "main" });
-          }
-        }
         const mainEntries = preferenceOrder.filter((entry) => entry.section === "main");
         const moreEntries = preferenceOrder.filter((entry) => entry.section === "more");
         const nextInSection = (
@@ -1091,7 +1088,7 @@ export function createConnectionsSettingsPage(
               : messages.connectionGroupMoveToMain,
           dragHandleTitle: messages.connectionGroupDragHandle,
           toggleSection() {
-            groupPreference.moveAgent(agent, section === "main" ? "more" : "main", null);
+            groupPreference.moveAgent(agent, section === "main" ? "more" : "main", null, catalog);
           },
           onDragStart(event) {
             if (groupDisabled) {
@@ -1121,7 +1118,7 @@ export function createConnectionsSettingsPage(
             event.preventDefault();
             if (!draggingAgent) return;
             const { beforeAgent } = dropTargetSection(agent, event);
-            groupPreference.moveAgent(draggingAgent, section, beforeAgent);
+            groupPreference.moveAgent(draggingAgent, section, beforeAgent, catalog);
             draggingAgent = null;
             clearDropIndicators();
           },
@@ -1168,7 +1165,7 @@ export function createConnectionsSettingsPage(
             event.preventDefault();
             zone.dataset.connectionDragOver = "false";
             if (!draggingAgent) return;
-            groupPreference.moveAgent(draggingAgent, "more", null);
+            groupPreference.moveAgent(draggingAgent, "more", null, catalog);
             draggingAgent = null;
             clearDropIndicators();
           });

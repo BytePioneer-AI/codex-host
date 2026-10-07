@@ -543,7 +543,11 @@ export function mountRendererAgentPicker(
     // Order follows `groupPreference.list()` — the same order the user just
     // dragged into on the Connections page — not `enabledAgents`'s fixed
     // (host-configured) order, so reordering actually shows up here too.
-    for (const entry of groupPreference.list()) {
+    const catalog = enabledAgents.map((id) => ({
+      id,
+      name: plugins.find((plugin) => plugin.id === id)?.name ?? id,
+    }));
+    for (const entry of groupPreference.list(notInstalled, catalog)) {
       const agent = entry.agent as RendererAgent;
       if (!enabledSet.has(agent) || seen.has(agent)) continue;
       seen.add(agent);

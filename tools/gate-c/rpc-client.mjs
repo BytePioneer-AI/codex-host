@@ -65,7 +65,8 @@ function signalProcessTree(child, signal) {
   try {
     process.kill(-child.pid, signal);
   } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
+    // macOS reports EPERM when the group only holds exited (zombie) processes.
+    if (error?.code !== "ESRCH" && error?.code !== "EPERM") throw error;
   }
 }
 

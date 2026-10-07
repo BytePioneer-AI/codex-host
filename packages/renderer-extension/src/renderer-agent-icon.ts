@@ -34,8 +34,12 @@ export function compatibleRendererPluginPresentation(
   plugin: HarnessPluginDescriptor | undefined,
   reference: HarnessPluginDescriptor | undefined,
 ): HarnessPluginDescriptor | undefined {
-  return plugin && !plugin.iconStyle && plugin.icon && reference?.id === plugin.id &&
-    reference.icon === plugin.icon && reference.iconStyle
+  return plugin &&
+    !plugin.iconStyle &&
+    plugin.icon &&
+    reference?.id === plugin.id &&
+    reference.icon === plugin.icon &&
+    reference.iconStyle
     ? { ...plugin, iconStyle: reference.iconStyle }
     : plugin;
 }

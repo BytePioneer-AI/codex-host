@@ -124,7 +124,9 @@ test("unknown plugin presentation and configuration work without a Renderer regi
   expect(errors).toEqual([]);
 });
 
-test("preserves original plugin artwork and Pi text coloring in both themes", async ({ page }, info) => {
+test("preserves original plugin artwork and Pi text coloring in both themes", async ({
+  page,
+}, info) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.setContent(`<!doctype html><body style="background:#202020;color:#eeeeee;font:16px system-ui">
@@ -137,9 +139,14 @@ test("preserves original plugin artwork and Pi text coloring in both themes", as
   await expect(pi).toHaveAttribute("viewBox", "0 0 24 24");
   for (const id of ["kiro-cli", "hermes", "grok", "omp"]) {
     await expect(page.locator(`#${id} img`).first()).toBeVisible();
-    await expect.poll(() => page.locator(`#${id} img`).first().evaluate(
-      (image: HTMLImageElement) => image.complete && image.naturalWidth > 0,
-    )).toBe(true);
+    await expect
+      .poll(() =>
+        page
+          .locator(`#${id} img`)
+          .first()
+          .evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0),
+      )
+      .toBe(true);
   }
   await expect(page.locator("#hermes img").first()).toHaveCSS("padding", "1px");
   await page.screenshot({ path: info.outputPath("icons-dark.png") });

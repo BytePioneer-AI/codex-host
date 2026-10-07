@@ -64,17 +64,37 @@ const pluginPresentationShape = {
     .object({
       vector: z
         .object({
-          viewBox: z.string().max(128).regex(/^-?\d+(?:\.\d+)?(?: +-?\d+(?:\.\d+)?){3}$/u),
+          viewBox: z
+            .string()
+            .max(128)
+            .regex(/^-?\d+(?:\.\d+)?(?: +-?\d+(?:\.\d+)?){3}$/u),
           color: z.string().regex(/^(?:currentColor|#[a-f0-9]{6})$/iu),
-          paths: z.array(z.object({
-            d: z.string().min(1).max(32768).regex(/^[MmLlHhVvCcSsQqTtAaZz\d.,+eE\s-]+$/u),
-            fillRule: z.enum(["evenodd", "nonzero"]).optional(),
-            fill: z.string().regex(/^(?:currentColor|#[a-f0-9]{6})$/iu).optional(),
-          }).strict()).min(1).max(32),
+          paths: z
+            .array(
+              z
+                .object({
+                  d: z
+                    .string()
+                    .min(1)
+                    .max(32768)
+                    .regex(/^[MmLlHhVvCcSsQqTtAaZz\d.,+eE\s-]+$/u),
+                  fillRule: z.enum(["evenodd", "nonzero"]).optional(),
+                  fill: z
+                    .string()
+                    .regex(/^(?:currentColor|#[a-f0-9]{6})$/iu)
+                    .optional(),
+                })
+                .strict(),
+            )
+            .min(1)
+            .max(32),
         })
         .strict()
         .optional(),
-      background: z.string().regex(/^#[a-f0-9]{6}$/iu).optional(),
+      background: z
+        .string()
+        .regex(/^#[a-f0-9]{6}$/iu)
+        .optional(),
       borderRadius: z.number().min(0).max(50).optional(),
       paddingRatio: z.number().min(0).max(0.25).optional(),
     })

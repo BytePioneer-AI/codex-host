@@ -279,7 +279,9 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       name: "Remote plugin",
       version: "1",
       icon: "data:image/svg+xml;base64,PHN2Zy8+",
-      iconStyle: { vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0h4v4z" }] } },
+      iconStyle: {
+        vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0h4v4z" }] },
+      },
     });
     const local = {
       listHarnessPlugins: vi.fn(async () => ({ plugins: [] })),
@@ -319,11 +321,20 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
   it("keeps main-branch styling for an identical old remote image without replacing metadata", async () => {
     installFakeBrowser();
     const localPlugin = harnessPluginDescriptorSchema.parse({
-      id: "pi", name: "Local Pi", version: "new",
+      id: "pi",
+      name: "Local Pi",
+      version: "new",
       icon: "data:image/svg+xml;base64,PHN2Zy8+",
-      iconStyle: { vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0h4v4z" }] } },
+      iconStyle: {
+        vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0h4v4z" }] },
+      },
     });
-    const remotePlugin = { ...localPlugin, name: "Remote Pi", version: "old", iconStyle: undefined };
+    const remotePlugin = {
+      ...localPlugin,
+      name: "Remote Pi",
+      version: "old",
+      iconStyle: undefined,
+    };
     const local = {
       listHarnessPlugins: async () => ({ plugins: [localPlugin] }),
       inspectHarness: async () => readyInspection(),
@@ -338,7 +349,8 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     const probe = installRendererBindingProbe({});
     probe.setAdapter(
       { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
-      undefined, undefined,
+      undefined,
+      undefined,
       {
         currentHostId: () => "local",
         knownHostIds: () => ["local", "remote"],
@@ -348,13 +360,21 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     try {
       const getPlugin = testState.sidebarOptions?.getPlugin;
       assert(getPlugin);
-      await vi.waitFor(() => expect(getPlugin("remote", "pi")).toEqual({
-        ...remotePlugin, iconStyle: localPlugin.iconStyle,
-      }));
-      expect(testState.getConnectionDiagnostics?.()?.snapshot().hosts
-        .find(({ hostId }) => hostId === "remote")?.agents[0]?.plugin).toEqual({
-          ...remotePlugin, iconStyle: localPlugin.iconStyle,
-        });
+      await vi.waitFor(() =>
+        expect(getPlugin("remote", "pi")).toEqual({
+          ...remotePlugin,
+          iconStyle: localPlugin.iconStyle,
+        }),
+      );
+      expect(
+        testState
+          .getConnectionDiagnostics?.()
+          ?.snapshot()
+          .hosts.find(({ hostId }) => hostId === "remote")?.agents[0]?.plugin,
+      ).toEqual({
+        ...remotePlugin,
+        iconStyle: localPlugin.iconStyle,
+      });
     } finally {
       probe.dispose();
     }

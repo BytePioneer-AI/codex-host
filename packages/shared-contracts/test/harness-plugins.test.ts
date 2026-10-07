@@ -103,9 +103,17 @@ describe("Harness plugin public contracts", () => {
       { paddingRatio: -1 },
       { paddingRatio: 1 },
       { css: "position:fixed" },
-      { vector: { viewBox: "0 0 24 24", color: "url(https://example.com)", paths: [{ d: "M0 0" }] } },
+      {
+        vector: { viewBox: "0 0 24 24", color: "url(https://example.com)", paths: [{ d: "M0 0" }] },
+      },
       { vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "<script/>" }] } },
-      { vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0", onclick: "run()" }] } },
+      {
+        vector: {
+          viewBox: "0 0 24 24",
+          color: "currentColor",
+          paths: [{ d: "M0 0", onclick: "run()" }],
+        },
+      },
     ]) {
       expect(
         harnessPluginManifestSchema.safeParse({ ...manifest, iconStyle: invalid }).success,

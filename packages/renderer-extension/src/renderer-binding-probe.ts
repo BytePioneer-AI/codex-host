@@ -99,10 +99,7 @@ import {
   installRendererDelegationMention,
   type RendererDelegationMentionControl,
 } from "./renderer-delegation-mention.js";
-import {
-  compatibleRendererPluginPresentation,
-  rendererAgentLabel,
-} from "./renderer-agent-icon.js";
+import { compatibleRendererPluginPresentation, rendererAgentLabel } from "./renderer-agent-icon.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
   RendererConnectionDiagnostics,
@@ -863,9 +860,10 @@ export function installRendererBindingProbe(
   };
   function pluginForHost(hostId: string, agent: string): HarnessPluginDescriptor | undefined {
     const plugin = hostHarnessAvailabilityState(hostId).plugins?.find(({ id }) => id === agent);
-    const reference = hostId === "local"
-      ? undefined
-      : hostHarnessAvailabilityState("local").plugins?.find(({ id }) => id === agent);
+    const reference =
+      hostId === "local"
+        ? undefined
+        : hostHarnessAvailabilityState("local").plugins?.find(({ id }) => id === agent);
     return compatibleRendererPluginPresentation(plugin, reference);
   }
   const codexAccountsForHost = (hostId: string | null): RendererCodexAccountState | null => {
@@ -3070,9 +3068,7 @@ export function installRendererBindingProbe(
       return enabledAgents
         .filter((agent) => agent === "codex" || availability[agent] === "ready")
         .map((agent) => {
-          const plugin = mounted?.hostId
-            ? pluginForHost(mounted.hostId, agent)
-            : undefined;
+          const plugin = mounted?.hostId ? pluginForHost(mounted.hostId, agent) : undefined;
           return { agent, label: rendererAgentLabel(agent, plugin), ...(plugin ? { plugin } : {}) };
         });
     },

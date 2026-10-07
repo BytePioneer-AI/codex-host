@@ -341,11 +341,12 @@ export function launcherInvocation(artifacts, piPath = null) {
   return { command: artifacts.launcher, arguments: arguments_ };
 }
 
-function runChild(invocation, root, spawnImplementation = spawn) {
+function runChild(invocation, root, spawnImplementation = spawn, environment = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawnImplementation(invocation.command, invocation.arguments, {
       cwd: root,
       stdio: "inherit",
+      env: environment,
       windowsHide: false,
     });
     child.once("error", reject);
@@ -417,6 +418,15 @@ export async function runDevelopmentDesktop({
     );
   }
 
+  // Keep environment proxy support enabled, but silence its experimental
+  // warning in build/runtime children. Preserve all existing Node options.
+  environment = {
+    ...environment,
+    NODE_OPTIONS: [environment.NODE_OPTIONS, "--disable-warning=UNDICI-EHPA"]
+      .filter(Boolean)
+      .join(" "),
+  };
+
   const startedAt = performance.now();
   const logElapsed = (label, since) => {
     console.log(`codexhost dev: ${label}: ${((performance.now() - since) / 1000).toFixed(2)}s`);
@@ -424,7 +434,7 @@ export async function runDevelopmentDesktop({
   const cleanupInvocation = runningDesktopCleanupInvocation(platform);
   if (cleanupInvocation) {
     console.log("codexhost dev: stopping any running Codex Desktop");
-    const cleanupResult = await runChild(cleanupInvocation, root, spawnImplementation);
+    const cleanupResult = await runChild(cleanupInvocation, root, spawnImplementation, environment);
     if (cleanupResult.code !== 0) {
       const reason = cleanupResult.signal
         ? `signal ${cleanupResult.signal}`
@@ -442,6 +452,7 @@ export async function runDevelopmentDesktop({
       npmBuildInvocation(environment, platform, nodePath),
       root,
       spawnImplementation,
+      environment,
     );
     logElapsed("build elapsed", buildStartedAt);
     if (buildResult.code !== 0) {

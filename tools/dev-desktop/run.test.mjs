@@ -406,6 +406,47 @@ describe("development Desktop start", () => {
     expect(spawnImplementation).toHaveBeenCalledTimes(1);
   });
 
+  it.each([undefined, "--trace-warnings"])(
+    "silences only the proxy warning in children while preserving Node options (%s)",
+    async (nodeOptions) => {
+      const root = temporaryDirectory();
+      const nodePath = path.join(root, "node.exe");
+      materializeArtifacts(root, "win32", nodePath);
+      const environment = {
+        PATH: path.join(root, "missing"),
+        NODE_USE_ENV_PROXY: "1",
+        HTTPS_PROXY: "http://127.0.0.1:7897",
+        ...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
+      };
+      const originalEnvironment = { ...environment };
+      const spawnImplementation = vi.fn(() => exitingChild());
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      await expect(
+        runDevelopmentDesktop({
+          root,
+          platform: "win32",
+          nodePath,
+          environment,
+          spawnImplementation,
+        }),
+      ).resolves.toBe(0);
+
+      // Cleanup, build and Launcher all pass the same selective suppression
+      // to their children, without disabling the proxy or changing the caller.
+      expect(spawnImplementation).toHaveBeenCalledTimes(3);
+      for (const [, , options] of spawnImplementation.mock.calls) {
+        expect(options.env).toMatchObject({
+          NODE_OPTIONS: [nodeOptions, "--disable-warning=UNDICI-EHPA"].filter(Boolean).join(" "),
+          NODE_USE_ENV_PROXY: "1",
+          HTTPS_PROXY: environment.HTTPS_PROXY,
+        });
+      }
+      expect(environment).toEqual(originalEnvironment);
+    },
+  );
+
   it("skips builds only when explicitly requested", async () => {
     const root = temporaryDirectory();
     const nodePath = path.join(root, "node.exe");

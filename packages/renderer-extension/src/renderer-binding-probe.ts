@@ -919,7 +919,7 @@ export function installRendererBindingProbe(
   const isMountedComposer = (composer: Element): boolean =>
     composer.isConnected &&
     composer.matches(CODEX_COMPOSER_SELECTOR) &&
-    !isOrbitComposer(composer) &&
+    orbitComposerKind(composer) === "codex" &&
     mountedByComposer.has(composer);
 
   const isCurrentModelRequest = (mounted: MountedComposer, generation: number): boolean =>

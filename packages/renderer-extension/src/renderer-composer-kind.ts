@@ -27,10 +27,12 @@ export function orbitComposerKind(composer: Element): OrbitComposerKind {
           if (typeof value === "boolean") return value ? "orbit" : "codex";
         }
       }
-      // The DOM pointer exists but the bounded published-tree walk gave up
-      // (a cycle, no published root, or the visited-fiber cap). Classifying
-      // such a root as a native Codex composer mounted cloud rooms and
-      // blocked their submissions, so it stays unmounted instead.
+      // The DOM pointer exists but the bounded walk gave up (a return cycle
+      // or the visited-fiber cap). Classifying such a root as a native Codex
+      // composer mounted cloud rooms and blocked their submissions, so it
+      // stays unmounted instead. Chains without a published root keep the
+      // documented partial-binding inspection path: without an explicit
+      // Orbit owner they classify as native.
       return walked ? "codex" : "unknown";
     }
     element = element.parentElement;

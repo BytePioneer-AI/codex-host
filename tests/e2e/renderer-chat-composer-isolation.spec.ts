@@ -171,6 +171,56 @@ test("an unclassifiable composer root is never mounted and never intercepts", as
   expect(await dispatchInputIntents(page)).toEqual(unmodifiedInputResults);
 });
 
+test("a mounted composer classified as unknown stops intercepting native sends", async ({
+  page,
+}) => {
+  await page.setContent(
+    '<form data-codex-composer-root><div contenteditable="true" role="textbox">draft</div><button type="submit" aria-label="Send">Send</button></form>',
+  );
+  await setOrbitComposer(page, false);
+  await page.addScriptTag({ content: browserBundle });
+  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(1);
+  // A later scan classifies the mounted root as unknown (unpublished cyclic
+  // ancestry). The retained state must not make the submission listeners
+  // block native sends, and the scan must not churn the controls away. The
+  // send button's disabled render belongs to the retained mounted state (its
+  // ownership request failed on the pseudo conversation target), so the
+  // meaningful assertions here are native propagation and retention.
+  const result = await page.locator('[role="textbox"]').evaluate((editor) => {
+    const fiber: { memoizedProps: Record<string, unknown>; return: unknown } = {
+      memoizedProps: { isOrbit: true, conversationId: "dot-room" },
+      return: null,
+    };
+    fiber.return = fiber;
+    Object.defineProperty(editor, "__reactFiber$dot", { configurable: true, value: fiber });
+
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    const submit = new Event("submit", { bubbles: true, cancelable: true });
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    const form = editor.closest("form");
+    const send = form?.querySelector('button[type="submit"]');
+    if (!form || !send) throw new Error("Missing fixture submission controls");
+    let received = 0;
+    const receive = (event: Event) => {
+      received += 1;
+      event.preventDefault();
+    };
+    editor.addEventListener("keydown", receive, { once: true });
+    form.addEventListener("submit", receive, { once: true });
+    send.addEventListener("click", receive, { once: true });
+    editor.dispatchEvent(enter);
+    form.dispatchEvent(submit);
+    send.dispatchEvent(click);
+    return { received };
+  });
+  expect(result).toEqual({ received: 3 });
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  // Retention policy: an unknown classification keeps the mounted state until
+  // a scan can classify the root again.
+  await page.locator("form").evaluate((root) => root.setAttribute("aria-hidden", "true"));
+  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(1);
+});
+
 test("a mounted root becoming dot stops intercepting before the next scan", async ({ page }) => {
   await page.setContent(
     '<form data-codex-composer-root><div contenteditable="true" role="textbox">draft</div><button type="submit" aria-label="Send">Send</button></form>',

@@ -5,7 +5,30 @@
   "version": "0.1.0",
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.png",
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
+      },
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
+      }
+    ],
+    "before": {
+      "en": "On macOS/Linux, install Git first. Linux also needs curl and xz-utils.",
+      "zh-CN": "macOS / Linux 请先安装 Git；Linux 还需要 curl 和 xz-utils。"
+    },
+    "after": {
+      "en": "After installation, run hermes to complete login or setup.",
+      "zh-CN": "安装后运行 hermes，完成登录或配置。"
+    }
+  },
   "links": {
+    "website": "https://hermes-agent.nousresearch.com/",
+    "installation": "https://hermes-agent.nousresearch.com/docs/getting-started/installation",
     "documentation": "https://hermes-agent.nousresearch.com/docs"
   }
 }

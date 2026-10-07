@@ -83,7 +83,10 @@ export interface CreateSessionInput {
 }
 
 export interface ResumeSessionInput {
-  /** Saved selection hints for Harnesses that initialize configuration lazily. */
+  /** Persisted configuration hints, not new user commands. The Adapter owns restoration:
+   * initialize lazy configuration, restore a saved mode, or retain authoritative native state.
+   * Host never replays configuration commands after open; publish the confirmed state.
+   */
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   kind: "resume";

@@ -573,8 +573,8 @@ describe("Harness plugin registry lifetime", () => {
       throw new Error("failure");
     });
     const bClose = vi.spyOn(b, "close");
-    registry.register(first, a);
-    registry.register(second, b);
+    await registry.register(first, a);
+    await registry.register(second, b);
     first.name = "changed";
     expect(registry.list()[0]?.name).toBe("First");
     await expect(registry.close()).rejects.toBeInstanceOf(AggregateError);

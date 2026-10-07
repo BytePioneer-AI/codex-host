@@ -689,6 +689,26 @@ describe("DSH V4 session operations", () => {
     if (!resumed.ok) throw new Error(resumed.error.message);
     expect(resumed.value.initialState.effectivePermissionModeId).toBe("danger-full-access");
     await resumed.value.close();
+    const restored = await adapter.open({
+      kind: "resume",
+      nativeRef: ref,
+      cwd,
+      permissionModeId: "workspace-write" as never,
+    });
+    if (!restored.ok) throw new Error(restored.error.message);
+    await expect(restored.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { state: { effectivePermissionModeId: "workspace-write" } },
+    });
+    expect(connection.calls).toContainEqual({
+      endpoint: "commands/execute",
+      args: {
+        agentId: "session-v4",
+        line: "/permission workspace-write",
+        submittedAttachments: [],
+      },
+    });
+    await restored.value.close();
     await adapter.close();
   });
 

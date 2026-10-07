@@ -58,9 +58,13 @@ describe("Renderer Agent picker presentation", () => {
         },
       ),
     ).toBe("Agent: Codex · reviewer@example.com (locked)");
-    expect(rendererAgentPickerTooltip({ agent: "claude-code", phase: "locked" }, undefined)).toBe(
-      "Agent: Claude Code (locked)",
-    );
+    expect(
+      rendererAgentPickerTooltip({ agent: "claude-code", phase: "locked" }, undefined, {
+        id: "claude-code" as never,
+        name: "Claude Code",
+        version: "1",
+      }),
+    ).toBe("Agent: Claude Code (locked)");
   });
 
   it("keeps a Codex draft switchable while disabling unavailable external Agents", () => {
@@ -91,11 +95,31 @@ describe("Renderer Agent picker presentation", () => {
     });
   });
 
+  it("lets an unavailable saved draft explicitly switch to Codex even with an empty plugin directory", () => {
+    expect(
+      rendererAgentPickerView({ agent: "removed-plugin", phase: "draft" }, "ready", false, [
+        "codex",
+      ]),
+    ).toMatchObject({
+      label: "removed-plugin",
+      triggerDisabled: false,
+      nativeModelHidden: true,
+      optionDisabled: { codex: false },
+    });
+  });
+
   it("hides the native Model for an external Agent and locks submitted selection", () => {
     expect(
-      rendererAgentPickerView({ agent: "pi", phase: "locked" }, "ready", false, ["codex", "pi"], {
-        pi: "ready",
-      }),
+      rendererAgentPickerView(
+        { agent: "pi", phase: "locked" },
+        "ready",
+        false,
+        ["codex", "pi"],
+        {
+          pi: "ready",
+        },
+        { id: "pi" as never, name: "Pi", version: "1" },
+      ),
     ).toEqual({
       label: "Pi",
       triggerDisabled: true,

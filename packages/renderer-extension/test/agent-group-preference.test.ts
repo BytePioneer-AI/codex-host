@@ -7,7 +7,7 @@ import {
 describe("Host-confirmed Agent grouping", () => {
   it("folds only confirmed missing installations by default", () => {
     const store = createAgentGroupPreferenceStore(null);
-    expect(store.list(new Set(["pi"])).find((entry) => entry.agent === "pi")?.section).toBe("more");
+    expect(store.list(new Set(["pi"]))).toEqual([]); // No synthesized built-in Harness entries.
     expect(store.sectionOf("pi", true)).toBe("more");
     expect(store.sectionOf("pi", false)).toBe("main");
   });

@@ -53,6 +53,40 @@ describe("Harness plugin public contracts", () => {
     ).toBe(false);
   });
 
+  it("validates plugin-owned localized presentation as display-only data", () => {
+    const presentation = {
+      ...manifest,
+      links: { website: "https://example.com", installation: "https://example.com/install" },
+      notice: { en: "Requires native protocol validation", "zh-CN": "需校验原生协议" },
+      installation: {
+        commands: [{ terminal: "Terminal", command: "native-installer" }],
+        before: { en: "Install prerequisites" },
+      },
+    };
+    expect(harnessPluginManifestSchema.parse(presentation)).toEqual(presentation);
+    expect(
+      harnessPluginManifestSchema.safeParse({
+        ...presentation,
+        notice: { "zh-CN": "缺少回退文本" },
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessPluginManifestSchema.safeParse({
+        ...presentation,
+        installation: { ...presentation.installation, execute: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessPluginManifestSchema.safeParse({
+        ...presentation,
+        installation: {
+          commands: [],
+          downloads: [{ label: "installer", url: "javascript:alert(1)" }],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects duplicate enablement and backend data in the public manifest", () => {
     expect(
       harnessPluginConfigurationSchema.safeParse({

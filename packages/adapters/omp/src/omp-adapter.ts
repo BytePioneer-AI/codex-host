@@ -2579,6 +2579,16 @@ export class OmpAdapter implements HarnessAdapter {
         permissionMode: "yolo",
         permissionModeId: OMP_DEFAULT_PERMISSION_MODE_ID,
       });
+      if (input.kind === "resume" && input.permissionModeId) {
+        const restored = await session.execute({
+          type: "permissionMode.select",
+          permissionModeId: input.permissionModeId,
+        });
+        if (!restored.ok) {
+          await session.close();
+          return restored;
+        }
+      }
       return { ok: true, value: session };
     } catch (error) {
       await transport?.close().catch(() => undefined);

@@ -15,7 +15,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`architecture/harness-plugin-runtime.md`](architecture/harness-plugin-runtime.md) | 当前插件加载、预装发行、运行时契约与安全边界；修改插件系统时首先阅读。 |
+| [`architecture/harness-plugin-runtime.md`](architecture/harness-plugin-runtime.md) | 当前 Cordis 生命周期、Host 目录驱动的 Renderer、预装发行、契约与安全边界；修改插件系统时首先阅读。 |
 | [`architecture/harness-plugin-architecture.md`](architecture/harness-plugin-architecture.md) | 插件化目标架构与未完成迁移方案；规划后续解耦时阅读，接口示例不代表当前 API。 |
 | [`architecture/harness-command-integration.md`](architecture/harness-command-integration.md) | Harness 原生命令的 Adapter、Host、Renderer 边界；新增命令能力时阅读。 |
 | [`architecture/harness-executable-discovery.md`](architecture/harness-executable-discovery.md) | Harness CLI 的跨平台发现、连接页安装指引和 DSH 特殊连接范围；修改安装指引、发现或启动逻辑时阅读。 |

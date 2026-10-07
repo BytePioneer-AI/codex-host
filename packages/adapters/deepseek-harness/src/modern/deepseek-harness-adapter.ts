@@ -512,6 +512,13 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       this.#sessions.add(openedSession);
       await this.#startEvents();
       this.#assertAccepting();
+      if (input.kind === "resume" && input.permissionModeId) {
+        const restored = await openedSession.execute({
+          type: "permissionMode.select",
+          permissionModeId: input.permissionModeId,
+        });
+        if (!restored.ok) throw new AdapterOperationError(restored.error);
+      }
       return { ok: true, value: openedSession };
     } catch (error) {
       await session?.close().catch(() => undefined);

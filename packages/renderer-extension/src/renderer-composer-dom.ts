@@ -8,6 +8,7 @@ import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
   AccountCreditsSnapshot,
   CodexAccountSummary,
+  HarnessPluginDescriptor,
   ThreadUsageSnapshot,
 } from "@codexhost/shared-contracts";
 import {
@@ -84,6 +85,7 @@ export interface ComposerAgentControl {
   composer: Element;
   root: HTMLElement;
   picker: RendererAgentPickerControl;
+  setPlugins(plugins: readonly HarnessPluginDescriptor[]): void;
   modelPicker: RendererModelPickerControl;
   permissionModePicker: RendererPermissionModePickerControl;
   nativeModelControl: NativeModelControlState | null;
@@ -710,6 +712,22 @@ export function mountComposerAgentControl(
     composerId,
     root: picker.root,
     picker,
+    setPlugins(plugins: readonly HarnessPluginDescriptor[]) {
+      if (control.picker.plugins === plugins) return;
+      const next = mountRendererAgentPicker(
+        composerId,
+        ["codex", ...plugins.map(({ id }) => id)],
+        onSelect,
+        onDownload,
+        onOpenProviderPicker,
+        undefined,
+        plugins,
+      );
+      control.picker.root.replaceWith(next.root);
+      control.picker.dispose();
+      control.picker = next;
+      control.root = next.root;
+    },
     modelPicker,
     permissionModePicker,
     nativeModelControl,

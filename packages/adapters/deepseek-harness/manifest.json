@@ -5,5 +5,29 @@
   "version": "0.0.0",
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
-  "links": { "installation": "https://github.com/deepseek-ai/deepseek-harness" }
+  "icon": "./assets/icon.svg",
+  "links": {
+    "website": "https://github.com/deepseek-ai/deepseek-harness",
+    "installation": "https://github.com/deepseek-ai/deepseek-harness#run"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux / Windows · Terminal / PowerShell",
+        "command": "npm install -g @deepseek-ai/dsh@latest"
+      }
+    ],
+    "before": {
+      "en": "Requires Node.js. Installs npm's latest version; connection still requires native protocol validation.",
+      "zh-CN": "需先安装 Node.js。安装 npm 最新版本；连接仍需通过原生协议校验。"
+    },
+    "after": {
+      "en": "Check again, then open Web UI to configure your provider. Stop any manually started dsh web first.",
+      "zh-CN": "重新检测后，打开 Web UI 配置 Provider。若已手动启动 dsh web，请先停止。"
+    }
+  },
+  "notice": {
+    "en": "Requires DSH 0.1.7-rc.1 or later and the V4 protocol. Verified with 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1 and 0.2.0-rc.2; other versions require native protocol validation.",
+    "zh-CN": "需要 DSH 0.1.7-rc.1 或更高版本及 V4 协议。已验证 0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2；其他版本仍需通过原生协议校验。"
+  }
 }

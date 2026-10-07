@@ -6,5 +6,24 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.png",
-  "links": { "installation": "https://grok.com/" }
+  "links": {
+    "website": "https://www.npmjs.com/package/@xai-official/grok",
+    "installation": "https://www.npmjs.com/package/@xai-official/grok"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux / Windows · Terminal / PowerShell",
+        "command": "npm install -g @xai-official/grok"
+      }
+    ],
+    "before": {
+      "en": "Requires Node.js 20 or later (including npm).",
+      "zh-CN": "需要 Node.js 20 或更高版本（包含 npm）。"
+    },
+    "after": {
+      "en": "After installation, run grok to complete login or setup.",
+      "zh-CN": "安装后运行 grok，完成登录或配置。"
+    }
+  }
 }

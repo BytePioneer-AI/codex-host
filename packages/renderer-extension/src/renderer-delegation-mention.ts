@@ -20,7 +20,10 @@ import {
   harnessCommandMentionPath,
 } from "@codexhost/shared-contracts";
 
-import type { HarnessCommandDescriptor } from "@codexhost/shared-contracts";
+import type {
+  HarnessCommandDescriptor,
+  HarnessPluginDescriptor,
+} from "@codexhost/shared-contracts";
 
 import type { RendererAgent } from "./agent-selection-state.js";
 import { createRendererAgentIcon } from "./renderer-agent-icon.js";
@@ -64,6 +67,7 @@ const TRIGGER_PATTERN = /(?:^|\s)#([^\s#]*)$/u;
 export interface RendererDelegationTarget {
   agent: RendererAgent;
   label: string;
+  plugin?: HarnessPluginDescriptor;
 }
 
 export interface RendererDelegationTrigger {
@@ -181,15 +185,14 @@ function skillsTitle(locale: RendererSettingsLocale): string {
   return locale === "zh-CN" ? "技能" : "Skills";
 }
 
-function iconUrl(agent: RendererAgent, ownerDocument: Document): string | null {
-  const icon = createRendererAgentIcon(agent, 16, ownerDocument);
+function iconUrl(
+  agent: RendererAgent,
+  ownerDocument: Document,
+  plugin?: HarnessPluginDescriptor,
+): string | null {
+  const icon = createRendererAgentIcon(agent, 16, ownerDocument, plugin);
   if (icon.tagName.toLowerCase() === "img") return (icon as HTMLImageElement).src || null;
-  const view = ownerDocument.defaultView;
-  if (!view?.XMLSerializer) return null;
-  const markup = new view.XMLSerializer()
-    .serializeToString(icon)
-    .replaceAll("currentColor", "#808080");
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(markup)}`;
+  return null;
 }
 
 function cssString(value: string): string {
@@ -225,9 +228,10 @@ function syncChipStyle(
   const rules = [
     withPseudo(" > span:last-child") + "{display:none;}",
     withPseudo("::after") + "{content:attr(agent-mention-display-name);}",
-    ...targets.flatMap(({ agent }) => {
-      if (!cache.has(agent)) cache.set(agent, iconUrl(agent, ownerDocument));
-      const url = cache.get(agent);
+    ...targets.flatMap(({ agent, plugin }) => {
+      const key = plugin?.icon ?? agent;
+      if (!cache.has(key)) cache.set(key, iconUrl(agent, ownerDocument, plugin));
+      const url = cache.get(key);
       if (!url) return [];
       const selector = `[agent-mention-path=${cssString(delegationMentionPath(agent))}]::before`;
       return [
@@ -441,7 +445,11 @@ export function installRendererDelegationMention(
         rows.push(
           optionRow(
             { kind: "agent", target },
-            rowContent(createRendererAgentIcon(target.agent, 16, ownerDocument), target.label, ""),
+            rowContent(
+              createRendererAgentIcon(target.agent, 16, ownerDocument, target.plugin),
+              target.label,
+              "",
+            ),
           ),
         );
       }

@@ -1,136 +1,49 @@
+import { harnessPluginDescriptorSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
+import { createRendererAgentIcon, rendererAgentLabel } from "../src/renderer-agent-icon.js";
 
-import { createRendererAgentIcon } from "../src/renderer-agent-icon.js";
-import antigravityAgentIconUrl from "../src/assets/antigravity-agent.svg";
-import kiroAgentIconUrl from "../src/assets/kiro-agent.svg";
-import codeBuddyAgentIconUrl from "../src/assets/codebuddy-agent.svg";
-import workBuddyAgentIconUrl from "../src/assets/workbuddy-agent.svg";
-import cursorAgentIconUrl from "../src/assets/cursor-agent.svg";
-import hermesAgentIconUrl from "../src/assets/hermes-agent.png";
-import qoderAgentIconUrl from "../src/assets/qoder-agent.svg";
-import kimiAgentIconUrl from "../src/assets/kimi-agent.svg";
+const plugin = harnessPluginDescriptorSchema.parse({
+  id: "previously-unknown",
+  name: "Independent Harness",
+  version: "1",
+  icon: "data:image/svg+xml;base64,PHN2Zy8+",
+});
 
-describe("Renderer Agent icons", () => {
-  it("renders OpenCode with the bundled official square mark", () => {
+describe("Renderer plugin presentation", () => {
+  it("uses the target Host descriptor without inline SVG or bundled external artwork", () => {
     const image = {
       src: "",
       alt: "unset",
       draggable: true,
       style: {},
     } as unknown as HTMLImageElement;
-    const ownerDocument = {
-      createElement(tagName: string) {
-        expect(tagName).toBe("img");
+    const document = {
+      createElement(tag: string) {
+        expect(tag).toBe("img");
         return image;
       },
-    } as unknown as Document;
-
-    expect(createRendererAgentIcon("opencode", 16, ownerDocument)).toBe(image);
-    expect(image.src).toMatch(/opencode-agent\.png$/);
+    } as Document;
+    expect(createRendererAgentIcon(plugin.id, 16, document, plugin)).toBe(image);
+    expect(image.src).toBe(plugin.icon);
     expect(image.alt).toBe("");
     expect(image.draggable).toBe(false);
-    expect(image.style.width).toBe("16px");
-    expect(image.style.height).toBe("16px");
+    expect(image.style).toMatchObject({ width: "16px", height: "16px" });
+    expect(rendererAgentLabel(plugin.id, plugin)).toBe("Independent Harness");
+    expect(rendererAgentLabel(plugin.id)).toBe(plugin.id);
+    expect(rendererAgentLabel(plugin.id, { ...plugin, name: "Remote name" })).toBe("Remote name");
   });
 
-  it("renders OMP with the bundled image asset", () => {
-    const image = {
-      src: "",
-      alt: "unset",
-      draggable: true,
-      style: {},
-    } as unknown as HTMLImageElement;
-    const ownerDocument = {
-      createElement(tagName: string) {
-        expect(tagName).toBe("img");
-        return image;
+  it("keeps a missing plugin identity visible rather than disguising it as Codex", () => {
+    const element = { style: {}, textContent: "", setAttribute() {} } as unknown as HTMLElement;
+    const document = {
+      createElement(tag: string) {
+        expect(tag).toBe("span");
+        return element;
       },
-    } as unknown as Document;
-
-    expect(createRendererAgentIcon("omp", 16, ownerDocument)).toBe(image);
-    expect(image.src).toMatch(/^data:image\/svg\+xml,/);
-    expect(image.alt).toBe("");
-    expect(image.draggable).toBe(false);
-    expect(image.style.width).toBe("16px");
-    expect(image.style.height).toBe("16px");
-    expect(image.style.borderRadius).toBe("22.37%");
-  });
-
-  it("renders Grok with the bundled image asset", () => {
-    const image = {
-      src: "",
-      alt: "unset",
-      draggable: true,
-      style: {},
-    } as unknown as HTMLImageElement;
-    const ownerDocument = {
-      createElement(tagName: string) {
-        expect(tagName).toBe("img");
-        return image;
-      },
-    } as unknown as Document;
-
-    expect(createRendererAgentIcon("grok", 16, ownerDocument)).toBe(image);
-    expect(image.src).toMatch(/grok-agent\.png$/);
-    expect(image.alt).toBe("");
-    expect(image.draggable).toBe(false);
-    expect(image.style.width).toBe("16px");
-    expect(image.style.height).toBe("16px");
-    expect(image.style.borderRadius).toBe("22.37%");
-  });
-
-  it("renders Hermes on a light plate so its dark official mark stays visible", () => {
-    const image = {
-      src: "",
-      alt: "unset",
-      draggable: true,
-      style: {},
-    } as unknown as HTMLImageElement;
-    const ownerDocument = {
-      createElement(tagName: string) {
-        expect(tagName).toBe("img");
-        return image;
-      },
-    } as unknown as Document;
-
-    expect(createRendererAgentIcon("hermes", 16, ownerDocument)).toBe(image);
-    expect(image.src).toBe(hermesAgentIconUrl);
-    expect(image.style).toMatchObject({
-      width: "16px",
-      height: "16px",
-      padding: "1px",
-      borderRadius: "22.37%",
-      background: "#d8d8e8",
-    });
-  });
-
-  it.each([
-    ["antigravity", antigravityAgentIconUrl],
-    ["kiro-cli", kiroAgentIconUrl],
-    ["codebuddy", codeBuddyAgentIconUrl],
-    ["workbuddy", workBuddyAgentIconUrl],
-    ["cursor-cli", cursorAgentIconUrl],
-    ["qoder", qoderAgentIconUrl],
-    ["qoder-cn", qoderAgentIconUrl],
-    ["kimi-code", kimiAgentIconUrl],
-  ] as const)("renders %s with the bundled SVG asset", (agent, assetUrl) => {
-    const image = {
-      src: "",
-      alt: "unset",
-      draggable: true,
-      style: {},
-    } as unknown as HTMLImageElement;
-    const ownerDocument = {
-      createElement(tagName: string) {
-        expect(tagName).toBe("img");
-        return image;
-      },
-    } as unknown as Document;
-    expect(createRendererAgentIcon(agent, 16, ownerDocument)).toBe(image);
-    expect(image.src).toBe(assetUrl);
-    expect(image.alt).toBe("");
-    expect(image.draggable).toBe(false);
-    expect(image.style.width).toBe("16px");
-    expect(image.style.height).toBe("16px");
+    } as Document;
+    expect(createRendererAgentIcon("missing-plugin", 16, document)).toBe(element);
+    expect(element.textContent).toBe("M");
+    expect(rendererAgentLabel("missing-plugin")).toBe("missing-plugin");
+    expect(rendererAgentLabel("codex")).toBe("Codex");
   });
 });

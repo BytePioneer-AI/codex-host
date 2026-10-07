@@ -6,5 +6,21 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
-  "links": { "installation": "https://code.claude.com/docs/en/quickstart" }
+  "links": {
+    "website": "https://code.claude.com/",
+    "installation": "https://code.claude.com/docs/en/quickstart"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl -fsSL https://claude.ai/install.sh | bash"
+      },
+      { "terminal": "Windows · PowerShell", "command": "irm https://claude.ai/install.ps1 | iex" }
+    ],
+    "after": {
+      "en": "After installation, run claude to complete login or setup.",
+      "zh-CN": "安装后运行 claude，完成登录或配置。"
+    }
+  }
 }

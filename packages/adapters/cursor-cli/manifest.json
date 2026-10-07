@@ -6,7 +6,24 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl https://cursor.com/install -fsS | bash"
+      },
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "irm 'https://cursor.com/install?win32=true' | iex"
+      }
+    ],
+    "after": {
+      "en": "After installation, run agent to complete login or setup.",
+      "zh-CN": "安装后运行 agent，完成登录或配置。"
+    }
+  },
   "links": {
+    "website": "https://cursor.com/",
     "documentation": "https://cursor.com/docs/cli/acp",
     "installation": "https://cursor.com/docs/cli/installation"
   }

@@ -35,14 +35,37 @@ const documentationUrlSchema = z
     "Plugin documentation links must be credential-free HTTPS URLs",
   );
 
+const localizedTextSchema = z
+  .object({ en: z.string().max(4096), "zh-CN": z.string().max(4096).optional() })
+  .strict();
+
+/** Display-only instructions. Commands are copied by users, never executed from metadata. */
+export const harnessInstallationGuideSchema = z
+  .object({
+    commands: z
+      .array(z.object({ terminal: z.string().max(256), command: z.string().max(4096) }).strict())
+      .max(8),
+    before: localizedTextSchema.optional(),
+    after: localizedTextSchema.optional(),
+    downloads: z
+      .array(z.object({ label: z.string().max(128), url: documentationUrlSchema }).strict())
+      .max(8)
+      .optional(),
+  })
+  .strict();
+export type HarnessInstallationGuide = z.infer<typeof harnessInstallationGuideSchema>;
+
 const pluginPresentationShape = {
   id: harnessPluginIdSchema,
   name: z.string().trim().min(1).max(128),
   version: z.string().min(1).max(128),
+  installation: harnessInstallationGuideSchema.optional(),
+  notice: localizedTextSchema.optional(),
   /** The factory accepts a persisted local entrypoint through its construction context. */
   launchCommand: z.literal(true).optional(),
   links: z
     .object({
+      website: documentationUrlSchema.optional(),
       documentation: documentationUrlSchema.optional(),
       installation: documentationUrlSchema.optional(),
     })

@@ -21,7 +21,6 @@ import {
 } from "@codexhost/protocol-core";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
-  permissionModeFixedAtCreate,
   type HarnessId,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
@@ -577,7 +576,7 @@ export class ExternalThreadRuntime {
       ...(restoredSelection?.thinkingOptionId
         ? { thinkingOptionId: restoredSelection.thinkingOptionId }
         : {}),
-      ...(harnessId === "grok" && restoredSelection?.permissionModeId
+      ...(restoredSelection?.permissionModeId
         ? { permissionModeId: restoredSelection.permissionModeId }
         : {}),
     });
@@ -586,27 +585,6 @@ export class ExternalThreadRuntime {
     }
     const session = opened.value;
     try {
-      if (
-        restoredSelection?.permissionModeId &&
-        harnessId !== "opencode" &&
-        !permissionModeFixedAtCreate(session.capabilities.configuration)
-      ) {
-        if (!session.capabilities.configuration.selectPermissionMode) {
-          throw new ExternalThreadOpenError({
-            code: -32076,
-            message: "External Harness does not support restored Permission Mode selection",
-          });
-        }
-        const selected = await session.execute({
-          type: "permissionMode.select",
-          permissionModeId: restoredSelection.permissionModeId,
-        });
-        if (!selected.ok) {
-          throw new ExternalThreadOpenError(
-            mapExternalThreadHarnessError(selected.error, "resume"),
-          );
-        }
-      }
       const snapshot = await session.readSnapshot();
       if (!snapshot.ok) {
         throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
@@ -623,16 +601,12 @@ export class ExternalThreadRuntime {
         ? restoredState.effectivePermissionModeId
         : restoredSelection?.permissionModeId;
       let transportModelId = aligned.record.transportModelId;
-      // OMP can silently replace an unavailable Model during resume, while OpenCode's
-      // additive Permission API cannot reliably restore a stale mode. Persist live state so the
-      // next restore does not reapply an obsolete transport token.
-      if ((harnessId === "omp" || harnessId === "opencode") && effectiveModel) {
+      // Native confirmed state wins over persisted configuration hints for every plugin.
+      if (restoredState && effectiveModel) {
         const liveSelection: ExternalConfigurationSelection = {
           model: effectiveModel,
           ...(effectiveThinkingOptionId ? { thinkingOptionId: effectiveThinkingOptionId } : {}),
-          ...((harnessId === "omp" || harnessId === "opencode") && effectivePermissionModeId
-            ? { permissionModeId: effectivePermissionModeId }
-            : {}),
+          ...(effectivePermissionModeId ? { permissionModeId: effectivePermissionModeId } : {}),
         };
         transportModelId = encodeExternalTransportSelection(harnessId, liveSelection);
         if (transportModelId !== aligned.record.transportModelId) {

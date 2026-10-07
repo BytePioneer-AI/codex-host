@@ -1,5 +1,5 @@
 import type { HarnessDisplayEntries } from "@codexhost/shared-contracts";
-import { KNOWN_RENDERER_AGENTS, type ExternalRendererAgent } from "./agent-selection-state.js";
+import type { ExternalRendererAgent } from "./agent-selection-state.js";
 
 /** Display-only grouping; never affects installation or availability. */
 export type AgentGroupSection = "main" | "more";
@@ -25,9 +25,6 @@ export interface AgentGroupPreferenceStore {
   setWriter(writer: ((entries: HarnessDisplayEntries) => void) | null): void;
 }
 export const AGENT_GROUP_PREFERENCE_STORAGE_KEY = "codexhost.agentGroupPreference.v1";
-const EXTERNAL_AGENTS = KNOWN_RENDERER_AGENTS.filter(
-  (agent): agent is ExternalRendererAgent => agent !== "codex",
-);
 function safeLocalStorage(): Storage | null {
   try {
     return typeof window !== "undefined" ? window.localStorage : null;
@@ -48,9 +45,6 @@ export function createAgentGroupPreferenceStore(
       seen.add(entry.agent);
       return true;
     });
-    for (const agent of EXTERNAL_AGENTS) {
-      if (!seen.has(agent)) result.push({ agent, section: "auto" });
-    }
     return result;
   };
   const legacyEntries = (): HarnessDisplayEntries => {
@@ -105,7 +99,7 @@ export function createAgentGroupPreferenceStore(
     },
     list(notInstalled) {
       return entries
-        .filter((entry) => (EXTERNAL_AGENTS as readonly string[]).includes(entry.agent))
+        .filter((entry) => entry.agent !== "codex")
         .map((entry) => ({
           agent: entry.agent as ExternalRendererAgent,
           section:
@@ -121,7 +115,7 @@ export function createAgentGroupPreferenceStore(
       return section && section !== "auto" ? section : notInstalled ? "more" : "main";
     },
     moveAgent(agent, section, beforeAgent = null) {
-      if (!EXTERNAL_AGENTS.includes(agent)) return;
+      if (agent === "codex") return;
       const next = entries.filter((entry) => entry.agent !== agent);
       const index =
         beforeAgent && beforeAgent !== agent

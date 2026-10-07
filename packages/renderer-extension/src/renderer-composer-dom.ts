@@ -713,7 +713,20 @@ export function mountComposerAgentControl(
     root: picker.root,
     picker,
     setPlugins(plugins: readonly HarnessPluginDescriptor[]) {
-      if (control.picker.plugins === plugins) return;
+      // Rendering can produce a new array (and remote presentation objects)
+      // without changing the catalog. Replacing the picker closes its popover.
+      const current = control.picker.plugins;
+      if (
+        current === plugins ||
+        (current.length === plugins.length &&
+          current.every(
+            (plugin, index) =>
+              plugin === plugins[index] ||
+              JSON.stringify(plugin) === JSON.stringify(plugins[index]),
+          ))
+      ) {
+        return;
+      }
       const next = mountRendererAgentPicker(
         composerId,
         ["codex", ...plugins.map(({ id }) => id)],

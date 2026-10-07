@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { HarnessPluginDescriptor } from "@codexhost/shared-contracts";
 import { build } from "esbuild";
 import path from "node:path";
 
@@ -153,6 +154,62 @@ test("transcript updates skip sidebar scans and Composer reconciliation", async 
   expect(await page.evaluate(() => (window as unknown as TestWindow).sidebarScans)).toBeGreaterThan(
     0,
   );
+});
+
+test("unchanged plugin refresh preserves the open Harness picker", async ({ page }) => {
+  await page.setContent(`
+    <form data-codex-composer-root>
+      <textarea></textarea><div><button type="submit">Send</button></div>
+    </form>
+  `);
+  await page.addScriptTag({ content: browserBundle });
+  const result = await page.evaluate(async () => {
+    const api = (window as unknown as TestWindow).observerTest;
+    const composer = document.querySelector("form");
+    const sendButton = document.querySelector<HTMLButtonElement>('[type="submit"]');
+    if (!composer || !sendButton) throw new Error("Missing Composer fixture");
+    const noop = () => {};
+    const plugins: HarnessPluginDescriptor[] = [
+      { id: "pi" as HarnessPluginDescriptor["id"], name: "Pi", version: "1.0.0" },
+    ];
+    let refresh = () => {};
+    const control = api.mountComposerAgentControl(
+      composer,
+      "composer-plugin-refresh",
+      sendButton,
+      ["codex", "pi"],
+      noop,
+      noop,
+      () => queueMicrotask(() => refresh()),
+      noop,
+      noop,
+      noop,
+      noop,
+    );
+    control.setPlugins(plugins);
+    const original = control.picker;
+    // Opening the picker refreshes accounts, which renders a new catalog array.
+    refresh = () => control.setPlugins([...plugins]);
+    original.trigger.click();
+    await Promise.resolve();
+    const preservedArray = control.picker === original && original.menu.matches(":popover-open");
+    // Remote presentation fallback and refreshed responses can also clone descriptors.
+    control.setPlugins(structuredClone(plugins));
+    const preservedDescriptors =
+      control.picker === original && original.menu.matches(":popover-open");
+    control.setPlugins(plugins.map((plugin) => ({ ...plugin, name: "Updated Pi" })));
+    const updated =
+      control.picker !== original && control.picker.menu.textContent?.includes("Updated Pi");
+    control.setPlugins([]);
+    const removed = control.picker.agents.length === 1 && control.picker.agents[0] === "codex";
+    return { preservedArray, preservedDescriptors, updated, removed };
+  });
+  expect(result).toEqual({
+    preservedArray: true,
+    preservedDescriptors: true,
+    updated: true,
+    removed: true,
+  });
 });
 
 test("restoring unchanged native attributes does not feed the observer", async ({ page }) => {

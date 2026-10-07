@@ -1611,14 +1611,27 @@ class OmpHarnessSession implements HarnessSession {
         }
         if (this.#requestedThinkingOptionId) {
           if (!thinkingLevels) {
-            throw new OmpAdapterFaultError({
-              code: "unsupported",
-              message: "Installed Omp does not support Thinking selection",
-              retryable: false,
-            });
+            const current = nativeModelFromState(state);
+            const thinkingAlreadyOff =
+              this.#requestedThinkingOptionId === "off" &&
+              (state.thinkingLevel === "off" ||
+                (current !== null &&
+                  (await transport.getAvailableModels()).some(
+                    (model) => sameOmpModel(model, current) && model.reasoning === false,
+                  )));
+            // A non-reasoning Model has no native Thinking selector. The
+            // catalog's Off option is already satisfied; do not send a setter.
+            if (!thinkingAlreadyOff) {
+              throw new OmpAdapterFaultError({
+                code: "unsupported",
+                message: "Installed Omp does not support Thinking selection",
+                retryable: false,
+              });
+            }
+          } else {
+            state = await transport.selectThinkingOption(this.#requestedThinkingOptionId);
+            thinkingLevels = await transport.getAvailableThinkingLevels();
           }
-          state = await transport.selectThinkingOption(this.#requestedThinkingOptionId);
-          thinkingLevels = await transport.getAvailableThinkingLevels();
         } else {
           const reconciled = await reconcileThinkingLevel(transport, state, thinkingLevels);
           state = reconciled.state;

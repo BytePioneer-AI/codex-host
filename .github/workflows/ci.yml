@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   push:
     branches:
       - main
@@ -56,6 +59,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
+        id: dependencies
         run: npm ci --prefer-offline
 
       - name: Check formatting
@@ -75,12 +79,12 @@ jobs:
         run: npm run test:typescript
 
       # Linux x64 covers governance, browser/contracts, and the nested Gate runner test.
-      # Windows runs only platform-sensitive files (see tests/vitest.config.js);
-      # pure-logic files are covered by the Linux and macOS lanes.
+      # Secondary OS lanes run only platform-sensitive files (see tests/vitest.config.js);
+      # Linux x64 covers platform-independent logic.
       - name: Test TypeScript (cross-platform)
         if: runner.os != 'Linux'
         env:
-          CODEXHOST_TEST_SCOPE: ${{ runner.os == 'Windows' && 'platform' || '' }}
+          CODEXHOST_TEST_SCOPE: platform
         run: >
           npm run test:typescript --
           --exclude 'packages/repository-automation/test/**'
@@ -96,19 +100,19 @@ jobs:
           -- -D warnings && npm run test:rust
 
       - name: Setup cargo-zigbuild
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
         run: |
           python3 -m venv "$RUNNER_TEMP/zigbuild"
           "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
             --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
           echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
 
+      # Keep packaging evidence even when an unrelated check fails; reuse this runner.
       - name: Smoke-test Linux npm package
-        if: runner.os == 'Linux'
-        run: >
-          node scripts/release/smoke-npm-package.mjs
-          --target linux-x64
-          --version 0.1.6-ci.0
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
+        run: |
+          npm run build:typescript
+          node scripts/release/smoke-npm-package.mjs --target linux-x64 --version 0.1.6-ci.0
 
   check-linux-arm64:
     name: Check Linux ARM64
@@ -138,16 +142,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
+        id: dependencies
         run: npm ci --prefer-offline
 
-      # Keep the same cross-platform coverage as macOS and Windows.
-      - name: Test TypeScript (cross-platform)
-        run: >
-          npm run test:typescript --
-          --exclude 'packages/repository-automation/test/**'
-          --exclude 'packages/shared-contracts/test/**'
-          --exclude 'packages/renderer-extension/test/**'
-          --exclude 'tools/gate-claude-code/run.test.mjs'
+      # Linux x64 owns TS tests; ARM64 verifies native code and the installed package.
 
       - name: Check Rust
         run: >
@@ -156,6 +154,7 @@ jobs:
           -- -D warnings && npm run test:rust
 
       - name: Setup cargo-zigbuild
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: |
           python3 -m venv "$RUNNER_TEMP/zigbuild"
           "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
@@ -163,7 +162,7 @@ jobs:
           echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
 
       - name: Smoke-test Linux ARM64 npm package
-        run: >
-          node scripts/release/smoke-npm-package.mjs
-          --target linux-arm64
-          --version 0.1.6-ci.0
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: |
+          npm run build:typescript
+          node scripts/release/smoke-npm-package.mjs --target linux-arm64 --version 0.1.6-ci.0

@@ -28,7 +28,16 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   // Watches sit above the sessions so either end may belong to any registered session.
   readonly #watchService: DelegationWatchService;
 
-  constructor(options: { diagnose?: (error: unknown) => void } = {}) {
+  readonly #remoteRead:
+    ((input: ThreadReadInput) => ReturnType<DelegationControlApi["read"]>) | undefined;
+
+  constructor(
+    options: {
+      diagnose?: (error: unknown) => void;
+      remoteRead?: (input: ThreadReadInput) => ReturnType<DelegationControlApi["read"]>;
+    } = {},
+  ) {
+    this.#remoteRead = options.remoteRead;
     this.#watchService = new DelegationWatchService(this, options);
   }
 
@@ -78,10 +87,20 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async read(input: ThreadReadInput) {
+    if (input.hostId !== undefined && input.hostId !== "local") {
+      if (!input.hostId || !this.#remoteRead)
+        throw new DelegationControlError(
+          "RUNTIME_UNREACHABLE",
+          "Remote Thread reading is unavailable",
+        );
+      return this.#remoteRead(input);
+    }
     return (await this.#registrationForThread(input.threadId)).read(input);
   }
 
   async wait(input: ThreadWaitInput) {
+    if (input.hostId !== undefined && input.hostId !== "local")
+      throw new DelegationControlError("INVALID_ARGUMENT", "Remote Hosts support thread read only");
     return (await this.#registrationForThread(input.threadId)).wait(input);
   }
 

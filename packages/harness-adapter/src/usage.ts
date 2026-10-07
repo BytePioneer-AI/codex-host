@@ -24,7 +24,6 @@ const tokenFields = [
   "cachedInputTokens",
   "cacheWriteInputTokens",
   "outputTokens",
-  "outputTokensPerSecond",
   "reasoningOutputTokens",
   "totalTokens",
   "contextWindowTokens",
@@ -49,6 +48,7 @@ const usageFields = new Set<keyof HostUsage>([
   "totalCostUsd",
   "totalCredits",
   "contextUsagePercent",
+  "outputTokensPerSecond",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {

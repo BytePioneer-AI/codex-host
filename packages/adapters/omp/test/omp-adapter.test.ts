@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { HarnessOutput, HostUsage } from "@codexhost/harness-adapter";
+import type { HarnessOutput, HostEvent, HostUsage } from "@codexhost/harness-adapter";
 import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -61,7 +61,7 @@ class FakeOmpTransport implements OmpTurnTransport {
     return [{ provider: "synthetic", id: "model", reasoning: true }];
   }
 
-  async getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[]> {
+  async getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null> {
     return [harnessThinkingOptionIdSchema.parse("high")];
   }
 
@@ -149,7 +149,14 @@ class FakeOmpTransport implements OmpTurnTransport {
       ],
       leafId: "assistant-1",
     };
-    this.#resolveTurn?.({ text, cancelled: false });
+    this.#resolveTurn?.({ text, cancelled: false, agentInvoked: true });
+  }
+
+  completeWithoutHistory(result: OmpTurnResult): void {
+    if (result.text) {
+      this.event({ type: "text.delta", messageId: "prompt-request-1", delta: result.text });
+    }
+    this.#resolveTurn?.(result);
   }
 
   runTurn(_text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult> {
@@ -200,13 +207,13 @@ class FakeOmpTransport implements OmpTurnTransport {
           ],
           leafId: "assistant-1",
         };
-        this.#resolveTurn?.({ text: "done", cancelled: false });
+        this.#resolveTurn?.({ text: "done", cancelled: false, agentInvoked: true });
       });
     });
   }
 
   async abort(): Promise<void> {
-    this.#resolveTurn?.({ text: "", cancelled: true });
+    this.#resolveTurn?.({ text: "", cancelled: true, agentInvoked: true });
   }
 
   async close(): Promise<void> {}
@@ -261,6 +268,84 @@ afterEach(async () => {
 });
 
 describe("OMP Adapter Session environment", () => {
+  it("starts a non-reasoning Model with Off without requiring a native Thinking selector", async () => {
+    const transport = new FakeOmpTransport();
+    transport.state = {
+      ...transport.state,
+      thinkingLevel: null,
+      availableThinkingLevels: null,
+    };
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue(null);
+    vi.spyOn(transport, "getAvailableModels").mockResolvedValue([
+      { provider: "synthetic", id: "model", reasoning: false },
+    ]);
+    const selectThinking = vi.spyOn(transport, "selectThinkingOption");
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("off"),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({ ok: true });
+      expect(selectThinking).not.toHaveBeenCalled();
+      await expect(
+        opened.value.execute({
+          type: "turn.start",
+          turnId: "non-reasoning-turn" as HostTurnId,
+          input: [{ type: "text", text: "Reply OK" }],
+        }),
+      ).resolves.toMatchObject({ ok: true });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("accepts an already confirmed Off state when older OMP omits Thinking capabilities", async () => {
+    const transport = new FakeOmpTransport();
+    transport.state.thinkingLevel = harnessThinkingOptionIdSchema.parse("off");
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue(null);
+    const selectThinking = vi.spyOn(transport, "selectThinkingOption");
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("off"),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({ ok: true });
+      expect(selectThinking).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each(["off", "high"])(
+    "rejects unconfirmed %s on a reasoning Model without a native Thinking selector",
+    async (level) => {
+      const transport = new FakeOmpTransport();
+      transport.state.thinkingLevel = null;
+      vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue(null);
+      const adapter = new OmpAdapter({}, { createTransport: () => transport });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse(level),
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "unsupported" },
+        });
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
   it("uses OMP's native yolo default without changing ordinary create semantics", async () => {
     const transport = new FakeOmpTransport();
     const createTransport = vi.fn(() => transport);
@@ -597,6 +682,162 @@ async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
   if (output.kind !== "event") throw new Error("Expected a Harness event output");
   return output.event;
 }
+
+async function nextTurnEvents(iterator: AsyncIterator<HarnessOutput>): Promise<HostEvent[]> {
+  const events: HostEvent[] = [];
+  for (;;) {
+    const event = await nextEvent(iterator);
+    events.push(event);
+    if (event.type === "turn.completed") return events;
+  }
+}
+
+describe("OMP Adapter local command completion", () => {
+  it.each([
+    { name: "text output", text: "Context: 12% used", cancelled: false, status: "succeeded" },
+    { name: "empty output", text: "", cancelled: false, status: "succeeded" },
+    {
+      name: "native error",
+      text: "Context unavailable",
+      cancelled: true,
+      error: "Unable to read context",
+      status: "failed",
+    },
+    { name: "cancellation", text: "Cancelled", cancelled: true, status: "cancelled" },
+  ])("completes $name without native history or identity", async (testCase) => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    expect(
+      await opened.value.execute({
+        type: "turn.start",
+        turnId: "local-command" as HostTurnId,
+        input: [{ type: "text", text: "/context" }],
+      }),
+    ).toEqual({ ok: true, value: { turnId: "local-command" } });
+
+    transport.completeWithoutHistory({
+      agentInvoked: false,
+      text: testCase.text,
+      cancelled: testCase.cancelled,
+      ...("error" in testCase ? { error: testCase.error } : {}),
+    });
+    const events = await nextTurnEvents(iterator);
+    const outcome = {
+      status: testCase.status,
+      ...(testCase.status === "failed"
+        ? { error: { code: "nativeFailure", message: testCase.error, retryable: true } }
+        : testCase.status === "cancelled"
+          ? { reason: "Cancelled by user" }
+          : {}),
+    };
+    expect(events.at(-1)).toEqual({
+      type: "turn.completed",
+      turnId: "local-command",
+      outcome,
+      ephemeral: true,
+    });
+    expect(events.filter((event) => event.type === "item.completed")).toEqual([
+      {
+        type: "item.completed",
+        turnId: "local-command",
+        snapshot: {
+          item: { type: "agentMessage", itemId: expect.any(String), text: testCase.text },
+          outcome,
+        },
+      },
+    ]);
+    expect(
+      events
+        .flatMap((event) =>
+          event.type === "item.updated" && event.update.type === "text.append"
+            ? [event.update.text]
+            : [],
+        )
+        .join(""),
+    ).toBe(testCase.text);
+    expect(await transport.getEntries()).toEqual({ entries: [], leafId: null });
+    await adapter.close();
+  });
+
+  it("accepts a normal prompt after local completion and preserves its native identity", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "local-first" as HostTurnId,
+      input: [{ type: "text", text: "/context" }],
+    });
+    transport.completeWithoutHistory({
+      agentInvoked: false,
+      text: "Context: 12% used",
+      cancelled: false,
+    });
+    expect((await nextTurnEvents(iterator)).at(-1)).toMatchObject({
+      outcome: { status: "succeeded" },
+      ephemeral: true,
+    });
+
+    expect(
+      await opened.value.execute({
+        type: "turn.start",
+        turnId: "normal-next" as HostTurnId,
+        input: [{ type: "text", text: "edit" }],
+      }),
+    ).toEqual({ ok: true, value: { turnId: "normal-next" } });
+    transport.succeed("Edited");
+    const normalCompletion = (await nextTurnEvents(iterator)).at(-1);
+    expect(normalCompletion).not.toHaveProperty("ephemeral");
+    expect(normalCompletion).toMatchObject({
+      type: "turn.completed",
+      turnId: "normal-next",
+      outcome: {
+        status: "succeeded",
+        checkpoint: { nativeSessionId: "omp-parent", checkpointId: "user-1" },
+      },
+      nativeTurnRef: { nativeSessionId: "omp-parent", nativeTurnKey: "user-1" },
+    });
+    await adapter.close();
+  });
+
+  it("rejects normal success without a newly persisted native User Entry", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "missing-history" as HostTurnId,
+      input: [{ type: "text", text: "edit" }],
+    });
+    transport.completeWithoutHistory({ agentInvoked: true, text: "Edited", cancelled: false });
+    expect((await nextTurnEvents(iterator)).at(-1)).toEqual({
+      type: "turn.completed",
+      turnId: "missing-history",
+      outcome: {
+        status: "failed",
+        error: {
+          code: "protocolError",
+          message: "Omp Turn persisted 0 new User Entries; exactly one is required",
+          retryable: false,
+        },
+      },
+    });
+    await adapter.close();
+  });
+});
 
 describe("OMP Adapter Subagents", () => {
   it("projects native Subagent lifecycle into a Host delegation Item", async () => {

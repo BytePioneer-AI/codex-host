@@ -41,16 +41,18 @@ export async function readMessages(
   return messages;
 }
 
-export const contentId = (messageID: string, index: number) =>
-  hostItemIdSchema.parse(`${messageID}:${index}`);
+export const contentId = (messageID: string, type: "text" | "reasoning", ordinal: number) =>
+  hostItemIdSchema.parse(`${messageID}:${type}:${ordinal}`);
 
 export function assistantItems(
   message: SessionMessageAssistant,
   limit: number,
 ): HostItemSnapshot[] {
-  return message.content.map((part, index): HostItemSnapshot => {
-    const itemId = contentId(message.id, index);
+  // Native stream ordinals count each content type separately, not array positions.
+  const ordinals = { text: 0, reasoning: 0 };
+  return message.content.map((part): HostItemSnapshot => {
     if (part.type === "text" || part.type === "reasoning") {
+      const itemId = contentId(message.id, part.type, ordinals[part.type]++);
       return {
         item: {
           type: part.type === "text" ? "agentMessage" : "reasoning",
@@ -70,7 +72,7 @@ export function assistantItems(
     return {
       item: {
         type: "toolExecution",
-        itemId,
+        itemId: hostItemIdSchema.parse(`${message.id}:tool:${part.id}`),
         toolName: part.name,
         namespace: "opencode",
         arguments: typeof state.input === "string" ? state.input : state.input,

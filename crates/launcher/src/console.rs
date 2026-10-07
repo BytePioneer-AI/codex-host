@@ -69,6 +69,8 @@ fn node_command(command: &ConsoleCommand) -> Result<Command, Box<dyn Error>> {
     let launcher = env::current_exe()?.canonicalize()?;
     let mut process = Command::new(&command.node);
     process
+        // Suppress only the experimental proxy notice, not other diagnostics.
+        .arg("--disable-warning=UNDICI-EHPA")
         .arg(node_entrypoint_path(&command.console_server))
         .env(LAUNCHER_EXECUTABLE_ENV, &launcher)
         .stdin(Stdio::null());
@@ -360,6 +362,19 @@ pub fn inspect_json(
 mod tests {
     use super::*;
 
+    #[test]
+    fn console_node_suppresses_only_the_experimental_proxy_warning() {
+        let command = node_command(&ConsoleCommand {
+            node: PathBuf::from("node"),
+            console_server: PathBuf::from("console-server.mjs"),
+        })
+        .expect("console command");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--disable-warning=UNDICI-EHPA", "console-server.mjs"]
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn terminal_launch_uses_the_address_from_ensure_without_asking_again() {
@@ -374,7 +389,7 @@ mod tests {
         std::fs::write(
             &node,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$2\" >> '{}'\nif [ \"$2\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:4399/'; fi\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$3\" >> '{}'\nif [ \"$3\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:4399/'; fi\n",
                 calls.display()
             ),
         )

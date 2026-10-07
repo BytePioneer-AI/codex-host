@@ -10,6 +10,11 @@ on:
         description: "Existing annotated tag to release (for example, v0.1.0)"
         required: true
         type: string
+      github_prerelease:
+        description: "Mark GitHub Release as prerelease without changing the npm dist-tag"
+        required: false
+        default: false
+        type: boolean
       skip_npm:
         description: "Skip npm publication and publish GitHub installers only"
         required: false
@@ -346,7 +351,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease == 'true' || (github.event_name == 'workflow_dispatch' && inputs.github_prerelease) }}
           TAG: ${{ needs.prepare.outputs.tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
@@ -385,7 +390,7 @@ jobs:
               --notes-file release-metadata/release-notes.md
             )
             if [[ "$PRERELEASE" == "true" ]]; then
-              flags+=(--prerelease)
+              flags+=(--prerelease --latest=false)
             else
               flags+=(--latest)
             fi

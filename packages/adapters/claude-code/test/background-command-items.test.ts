@@ -1,4 +1,5 @@
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import type * as FsPromises from "node:fs/promises";
+import { appendFile, mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -8,11 +9,19 @@ import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts"
 
 import { ClaudeBackgroundCommandItems } from "../src/background-command-items.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
+
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = hostItemIdSchema.parse("bash-item-1");
 let directory: string | undefined;
 
 afterEach(async () => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.mocked(open).mockReset();
   if (directory) await rm(directory, { recursive: true, force: true });
   directory = undefined;
 });
@@ -67,7 +76,9 @@ describe("Claude background command Items", () => {
     await appendFile(file, "wörld\n");
 
     expect(items.settle(notification("failed", file))).toBe(true);
-    expect(items.settle(notification("completed", file))).toBe(false);
+    // A duplicate still belongs to this command while the final read is pending.
+    expect(items.settle(notification("completed", file))).toBe(true);
+    expect(items.taskIds()).toEqual([]);
     const completed = await completion(events);
 
     const appended = events
@@ -127,5 +138,66 @@ describe("Claude background command Items", () => {
     expect(events).toMatchObject([
       { type: "item.completed", snapshot: { outcome: { status: "cancelled", reason: "closed" } } },
     ]);
+  });
+
+  it("keeps the native result when abandoned during the final output open", async () => {
+    const file = await outputFile();
+    await writeFile(file, "late output");
+    const handle = await open(file, "r");
+    const read = vi.spyOn(handle, "read");
+    const close = vi.spyOn(handle, "close");
+    const pendingOpen = Promise.withResolvers<FsPromises.FileHandle>();
+    vi.mocked(open).mockReturnValueOnce(pendingOpen.promise);
+    const { events, items } = follow(undefined);
+    try {
+      items.settle(notification("failed", file));
+      await Promise.resolve();
+      items.abandonAll("Session closed");
+      expect(items.taskIds()).toEqual([]);
+      expect(events).toMatchObject([
+        { type: "item.completed", snapshot: { outcome: { status: "failed" } } },
+      ]);
+      pendingOpen.resolve(handle);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(read).not.toHaveBeenCalled();
+      expect(events).toHaveLength(1);
+    } finally {
+      items.abandonAll("test ended");
+      pendingOpen.resolve(handle);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    }
+  });
+
+  it("ignores late output and queued polls after abandonment", async () => {
+    const file = await outputFile();
+    const handle = await open(file, "r");
+    const pendingRead = Promise.withResolvers<undefined>();
+    const read = vi.spyOn(handle, "read").mockImplementation(async () => {
+      await pendingRead.promise;
+      return { bytesRead: 1, buffer: Buffer.from("x") };
+    });
+    const close = vi.spyOn(handle, "close");
+    vi.mocked(open).mockClear().mockResolvedValueOnce(handle);
+    vi.useFakeTimers();
+    const { events, items } = follow(file);
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(read).toHaveBeenCalledOnce();
+      // Queue another poll and the final read behind the in-flight read.
+      await vi.advanceTimersByTimeAsync(1_000);
+      items.settle(notification("completed", file));
+      items.abandonAll("Session closed");
+      pendingRead.resolve(undefined);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(read).toHaveBeenCalledOnce();
+      expect(open).toHaveBeenCalledOnce();
+      expect(events).toMatchObject([
+        { type: "item.completed", snapshot: { outcome: { status: "succeeded" } } },
+      ]);
+    } finally {
+      items.abandonAll("test ended");
+      pendingRead.resolve(undefined);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    }
   });
 });

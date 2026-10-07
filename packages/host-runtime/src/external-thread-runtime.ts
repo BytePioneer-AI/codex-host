@@ -54,6 +54,8 @@ export interface ExternalThread {
   requestedThinkingOptionId?: HarnessThinkingOptionId;
   requestedPermissionModeId?: HarnessPermissionModeId;
   record: StoredThreadRecordV1;
+  /** Keep a draft's Native identity in memory until the user submits work. */
+  unsubmittedPrewarm: boolean;
   sessionId: string;
   stateObserver: SessionStateObserver;
   thread: JsonObject;
@@ -260,6 +262,7 @@ export class ExternalThreadRuntime {
     requestedPermissionModeId?: HarnessPermissionModeId;
     transportModelId?: string;
     restoredState?: HarnessSessionState;
+    unsubmittedPrewarm?: boolean;
   }): ExternalThread {
     const harnessId = input.record.harnessId as ExternalHarnessId;
     if (!this.#adapters.has(harnessId)) {
@@ -295,6 +298,7 @@ export class ExternalThreadRuntime {
         ? { requestedPermissionModeId: effectivePermissionModeId }
         : {}),
       record: input.record,
+      unsubmittedPrewarm: input.unsubmittedPrewarm === true,
       sessionId: input.sessionId,
       stateObserver: new SessionStateObserver(observerState),
       thread: running
@@ -318,6 +322,19 @@ export class ExternalThreadRuntime {
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
     return externalThread;
+  }
+
+  /** Commit before executing user work; return whether a Thread can now be published. */
+  async submitPrewarm(thread: ExternalThread): Promise<boolean> {
+    if (!thread.unsubmittedPrewarm) return false;
+    const nativeRef = thread.stateObserver.state.nativeRef;
+    if (nativeRef) {
+      thread.record = await this.#repository.commitNative(thread.id, nativeRef);
+    }
+    // If identity is deferred, its later Session event will commit and publish it.
+    // Keep the draft hidden on persistence failure, without executing user work.
+    thread.unsubmittedPrewarm = false;
+    return thread.record.state === "ready";
   }
 
   async replace(

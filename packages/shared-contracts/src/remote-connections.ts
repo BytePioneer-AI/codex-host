@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { delegationReadParamsSchema } from "./delegation-read.js";
 import { jsonValueSchema } from "./json-value.js";
 import { remoteUpdateParamsSchema } from "./remote-runtime.js";
 
@@ -22,9 +23,14 @@ export const codexSshDraftSchema = z.strictObject({
   identity: z.string().max(4096).nullable(),
 });
 
-/** Fixed settings operations only. Neither arbitrary native fetches nor Thread requests. */
+/** Fixed settings operations and explicit read-only Thread access; no arbitrary requests. */
 export const remoteConnectionsRequestSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("list") }),
+  z.strictObject({
+    action: z.literal("read-thread"),
+    hostId: hostId.refine((id) => id !== "local"),
+    input: delegationReadParamsSchema,
+  }),
   z.strictObject({
     action: z.literal("save"),
     draft: codexSshDraftSchema,

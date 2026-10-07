@@ -1,4 +1,6 @@
 import {
+  DELEGATION_READ_METHOD,
+  delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
   THREAD_PREWARM_DISCARD_METHOD,
   threadPrewarmDiscardParamsSchema,
@@ -131,6 +133,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
+import { settleExternalOutputFailure } from "./external-output-failure.js";
 import { isSessionImportRequest, SessionImportRequests } from "./session-import-requests.js";
 import {
   ExternalHistoryRequestError,
@@ -1245,6 +1248,27 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(request, -32090, "Remote service is updating; reconnect shortly"),
       );
+      return;
+    }
+    if (request.method === DELEGATION_READ_METHOD) {
+      const parsed = delegationReadParamsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid Thread read request"));
+        return;
+      }
+      const shared = await this.#options.sharedThreads?.route(request);
+      if (shared) {
+        await this.#writer.json(shared);
+        return;
+      }
+      await this.#waitForPlugins();
+      const result = await this.#delegationCoordinator.read({
+        threadId: parsed.data.threadId,
+        view: parsed.data.view,
+        ...(parsed.data.cursor !== undefined ? { cursor: parsed.data.cursor } : {}),
+        ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
@@ -3513,6 +3537,9 @@ export class AppServerHost {
     else this.#manualCompactionTurns.delete(thread);
 
     try {
+      if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+        await this.#notifyExternalThreadStarted(thread.thread);
+      }
       const result = await commands.execute({
         turnId,
         commandId: descriptor.id,
@@ -3865,7 +3892,7 @@ export class AppServerHost {
     const session = sessionResult.value;
     await this.#externalRuntime.idleRelease.runOperation(record.hostThreadId, async () => {
       try {
-        if (session.initialState.nativeRef) {
+        if (session.initialState.nativeRef && params[EXTERNAL_THREAD_PREWARM_PARAM] !== true) {
           record = await this.#repository.commitNative(
             record.hostThreadId,
             session.initialState.nativeRef,
@@ -3879,6 +3906,7 @@ export class AppServerHost {
         const externalThread = this.#registerExternalThread({
           record,
           session,
+          unsubmittedPrewarm: params[EXTERNAL_THREAD_PREWARM_PARAM] === true,
           sessionId: record.hostThreadId,
           thread,
           turns: [],
@@ -3912,11 +3940,9 @@ export class AppServerHost {
             },
           }),
         );
-        await this.#writer.json({
-          method: "thread/started",
-          emittedAtMs: Date.now(),
-          params: { thread },
-        });
+        // Draft prewarms remain provisional even when the Harness already has
+        // an identity. Only user submission may publish them to Desktop history.
+        if (record.state === "ready") await this.#notifyExternalThreadStarted(thread);
       } catch {
         this.#externalRuntime.remove(record.hostThreadId);
         this.#routeObservationTracker.forgetThread(record.hostThreadId);
@@ -3938,6 +3964,7 @@ export class AppServerHost {
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
     requestedPermissionModeId?: HarnessPermissionModeId;
+    unsubmittedPrewarm?: boolean;
   }): ExternalThread {
     return this.#externalRuntime.register(input);
   }
@@ -4583,6 +4610,9 @@ export class AppServerHost {
     thread.responseGates.set(turnId, gate);
 
     try {
+      if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+        await this.#notifyExternalThreadStarted(thread.thread);
+      }
       const result = await thread.session.execute({
         type: "turn.start",
         turnId,
@@ -4686,6 +4716,13 @@ export class AppServerHost {
     } catch (error) {
       this.#externalRuntime.idleRelease.outputFailed(thread);
       this.#diagnose(error);
+      this.#externalSteering.fault(thread.id, new Error(errorMessage(error)));
+      await settleExternalOutputFailure(
+        thread,
+        error,
+        (output) => this.#projectHarnessOutput(thread, output),
+        (failure) => this.#diagnose(failure),
+      );
     } finally {
       this.#externalSteering.fault(
         thread.id,
@@ -4749,13 +4786,17 @@ export class AppServerHost {
     if (event.type === "session.state.changed") {
       try {
         if (event.state.nativeRef) {
-          if (!thread.record.nativeSessionRef) {
-            thread.record = await this.#repository.commitNative(thread.id, event.state.nativeRef);
-          } else if (
-            thread.record.nativeSessionRef.harnessId !== event.state.nativeRef.harnessId ||
-            thread.record.nativeSessionRef.nativeSessionId !== event.state.nativeRef.nativeSessionId
+          const nativeRef = thread.record.nativeSessionRef ?? thread.stateObserver.state.nativeRef;
+          if (
+            nativeRef &&
+            (nativeRef.harnessId !== event.state.nativeRef.harnessId ||
+              nativeRef.nativeSessionId !== event.state.nativeRef.nativeSessionId)
           ) {
             throw new Error("External Session changed Native identity");
+          }
+          if (!thread.record.nativeSessionRef && !thread.unsubmittedPrewarm) {
+            thread.record = await this.#repository.commitNative(thread.id, event.state.nativeRef);
+            await this.#notifyExternalThreadStarted(thread.thread);
           }
         }
         thread.stateObserver.update(event.state);
@@ -4851,6 +4892,11 @@ export class AppServerHost {
         promise: Promise.resolve(),
         resolve: () => undefined,
       });
+      // Real native work is no longer a disposable draft, even when it was
+      // initiated by the Harness rather than a Desktop submission.
+      if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+        await this.#notifyExternalThreadStarted(thread.thread);
+      }
       return;
     }
 
@@ -4867,7 +4913,8 @@ export class AppServerHost {
       await this.#resolveDesktopQuestion(event.interactionId);
     }
     const ephemeralTurn =
-      event.type === "turn.completed" && thread.ephemeralTurnIds.has(event.turnId);
+      event.type === "turn.completed" &&
+      (event.ephemeral === true || thread.ephemeralTurnIds.has(event.turnId));
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#persistTerminalIdentity(thread, event);
       if (persistenceError) {

@@ -141,6 +141,16 @@ export class DraftAgentController<Composer extends object> {
     return this.#state(composer);
   }
 
+  /** Release the DOM identity while retaining configuration owned by a target.
+   * A cloud composer may reuse this element before a different native draft.
+   * A successful replacement transfer retains the shared submission marker.
+   */
+  detach(composer: Composer, preservePendingSubmission = false): void {
+    const state = this.#states.get(composer);
+    if (state && !preservePendingSubmission) this.#pendingSubmissions.delete(state);
+    this.#states.delete(composer);
+  }
+
   mount(
     composer: Composer,
     target: readonly unknown[] | null,

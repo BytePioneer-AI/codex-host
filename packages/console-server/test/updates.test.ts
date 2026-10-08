@@ -112,7 +112,9 @@ describe("console updates", () => {
 
   it("hands off to the Updater before returning", async () => {
     const { target, environment } = await npmLayout("linux");
-    const spawnUpdater = vi.fn(() => Object.assign(new EventEmitter(), { pid: 4321 }) as never);
+    const spawnUpdater = vi.fn<(executable: string, requestPath: string) => never>(
+      () => Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never,
+    );
     const onHandedOff = vi.fn();
     const updates = createConsoleUpdates({
       onHandedOff,
@@ -127,8 +129,20 @@ describe("console updates", () => {
     });
 
     await updates.check(target);
-    const result = await updates.start(target);
+    const starting = updates.start(target);
+    await vi.waitFor(() => expect(spawnUpdater).toHaveBeenCalledOnce());
+    expect(onHandedOff).not.toHaveBeenCalled();
+    const call = spawnUpdater.mock.calls[0];
+    if (!call) throw new Error("Updater was not spawned");
+    const spawnedRequest = JSON.parse(await readFile(call[1], "utf8"));
+    const status = JSON.parse(await readFile(spawnedRequest.status_path, "utf8"));
+    await writeFile(
+      spawnedRequest.status_path,
+      JSON.stringify({ ...status, phase: "waiting-for-exit" }),
+    );
+    const result = await starting;
 
+    expect(result.status.phase).toBe("waiting-for-exit");
     expect(result.status).toMatchObject({ version: "1.1.0", installation: "npm" });
     expect(onHandedOff).toHaveBeenCalledOnce();
     const requestPath = (spawnUpdater.mock.calls[0] as unknown as [string, string])[1];
@@ -144,6 +158,9 @@ describe("console updates", () => {
     const { target, environment } = await npmLayout("linux");
     await rm(environment.CODEXHOST_NPM_CLI_PATH);
     const onHandedOff = vi.fn();
+    const spawnUpdater = vi.fn<(executable: string, requestPath: string) => never>(
+      () => Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never,
+    );
     const updates = createConsoleUpdates({
       onHandedOff,
       waitForHandoff: true,
@@ -153,15 +170,49 @@ describe("console updates", () => {
       fetchLatest: async () => release,
       manager: createBackgroundUpdateManager({
         platform: "linux",
-        spawnUpdater: () => Object.assign(new EventEmitter(), { pid: 4321 }) as never,
+        spawnUpdater,
       }),
     });
     await expect(updates.start(target)).rejects.toThrow();
     expect(onHandedOff).not.toHaveBeenCalled();
     await expect(updates.status()).resolves.toMatchObject({ status: { phase: "failed" } });
     await writeFile(environment.CODEXHOST_NPM_CLI_PATH, "");
-    await expect(updates.start(target)).resolves.toMatchObject({ status: { phase: "prepared" } });
-    await expect(updates.status()).resolves.toMatchObject({ status: { phase: "prepared", error: null } });
+    const retry = updates.start(target);
+    await vi.waitFor(() => expect(spawnUpdater).toHaveBeenCalledOnce());
+    const call = spawnUpdater.mock.calls[0];
+    if (!call) throw new Error("Updater was not spawned");
+    const request = JSON.parse(await readFile(call[1], "utf8"));
+    const status = JSON.parse(await readFile(request.status_path, "utf8"));
+    await writeFile(request.status_path, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
+    await expect(retry).resolves.toMatchObject({ status: { phase: "waiting-for-exit" } });
+    await expect(updates.status()).resolves.toMatchObject({
+      status: { phase: "waiting-for-exit", error: null },
+    });
+  });
+
+  it.each(["error", "exit"])("does not hand off after an Updater %s", async (event) => {
+    const { target, environment } = await npmLayout("linux");
+    const onHandedOff = vi.fn();
+    const child = Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() });
+    const updates = createConsoleUpdates({
+      onHandedOff,
+      waitForHandoff: true,
+      environment,
+      platform: "linux",
+      stateDirectory: path.join(root, "state"),
+      fetchLatest: async () => release,
+      manager: createBackgroundUpdateManager({
+        platform: "linux",
+        spawnUpdater: () => {
+          queueMicrotask(() => child.emit(event, new Error("spawn failed")));
+          return child as never;
+        },
+      }),
+    });
+    await expect(updates.start(target)).rejects.toThrow();
+    expect(onHandedOff).not.toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledOnce();
+    await expect(updates.status()).resolves.toMatchObject({ status: { phase: "failed" } });
   });
 
   it("refuses to update while codexhost is running", async () => {

@@ -249,7 +249,7 @@ export function createHostUpdateCoordinator(
                       onPrepared,
                     });
             }
-            if (platform !== "darwin") manager.start(prepared);
+            if (platform !== "darwin") await manager.start(prepared);
           } catch (error) {
             await lock.release();
             rejectPrepared(error);

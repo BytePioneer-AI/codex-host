@@ -57,7 +57,7 @@ export interface ConsoleUpdates {
 export interface CreateConsoleUpdatesOptions {
   /** Called once the Updater owns the update; the console must then exit. */
   onHandedOff(): void;
-  /** Terminal commands must stay alive until preparation and Updater launch finish. */
+  /** Terminal commands must stay alive until the Updater confirms handoff. */
   waitForHandoff?: boolean;
   environment?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
@@ -306,7 +306,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
             // The console runs outside the Codex Desktop process tree on every
             // platform, so it starts the Updater itself and then exits so the
             // Updater's wait on this process completes.
-            manager.start(prepared);
+            await manager.start(prepared);
             handedOff = true;
             options.onHandedOff();
           } catch (error) {

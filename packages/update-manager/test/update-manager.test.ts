@@ -99,7 +99,20 @@ describe("background update manager", () => {
       randomId: () => "npm-fixture",
       now: () => 1_700_000_000_000,
       spawnUpdater: (executable, requestPath) =>
-        spawn(process.execPath, ["-e", "process.exit(0)", executable, requestPath]),
+        spawn(process.execPath, [
+          "-e",
+          `
+          const fs = require("node:fs");
+          const request = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          setTimeout(() => {
+            const status = JSON.parse(fs.readFileSync(request.status_path, "utf8"));
+            fs.writeFileSync(request.status_path, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
+          }, 150);
+          setTimeout(() => process.exit(0), 500);
+        `,
+          executable,
+          requestPath,
+        ]),
     });
 
     const prepared = await manager.prepareNpm({
@@ -135,9 +148,12 @@ describe("background update manager", () => {
       updatedAt: 1_700_000_000,
     });
 
-    const started = manager.start(prepared);
+    const started = await manager.start(prepared);
     expect(started.updaterPid).toBeTypeOf("number");
-    expect(() => manager.start(prepared)).toThrow("already started");
+    await expect(manager.readStatus(prepared.statusPath)).resolves.toMatchObject({
+      phase: "waiting-for-exit",
+    });
+    await expect(async () => manager.start(prepared)).rejects.toThrow("already started");
   });
 
   it.skipIf(process.platform !== "win32")(

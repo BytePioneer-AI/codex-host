@@ -269,6 +269,115 @@ afterEach(async () => {
 });
 
 describe("OMP Adapter Session environment", () => {
+  it.each([
+    { effective: "xhigh", levels: ["low", "high", "max"], expected: "high" },
+    { effective: null, levels: ["low", "high"], expected: "high" },
+    { effective: "xhigh", levels: ["off", "low"], expected: "low" },
+  ])(
+    "reconciles requested Thinking after native selection returns $effective with $levels",
+    async ({ effective, levels, expected }) => {
+      const transport = new FakeOmpTransport();
+      const requested = harnessThinkingOptionIdSchema.parse("xhigh");
+      const supported = levels.map((level) => harnessThinkingOptionIdSchema.parse(level));
+      const fallback = harnessThinkingOptionIdSchema.parse(expected);
+      vi.spyOn(transport, "getAvailableThinkingLevels")
+        .mockResolvedValueOnce([requested])
+        .mockResolvedValue(supported);
+      const selectThinking = vi
+        .spyOn(transport as OmpTurnTransport, "selectThinkingOption")
+        .mockImplementation(async (level) => {
+          transport.state = {
+            ...transport.state,
+            thinkingLevel:
+              level === requested
+                ? effective === null
+                  ? null
+                  : harnessThinkingOptionIdSchema.parse(effective)
+                : level,
+            availableThinkingLevels: supported,
+          };
+          return transport.state;
+        });
+      const adapter = new OmpAdapter({}, { createTransport: () => transport });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          thinkingOptionId: requested,
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const snapshot = await opened.value.readSnapshot();
+        expect(snapshot).toMatchObject({
+          ok: true,
+          value: {
+            state: {
+              effectiveThinkingOptionId: fallback,
+              availableThinkingOptions: supported.map((id) => ({ id })),
+            },
+          },
+        });
+        expect(selectThinking.mock.calls).toEqual([[requested], [fallback]]);
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
+  it("preserves a supported effective Thinking level after requested selection", async () => {
+    const transport = new FakeOmpTransport();
+    const requested = harnessThinkingOptionIdSchema.parse("high");
+    const effective = harnessThinkingOptionIdSchema.parse("low");
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue([effective, requested]);
+    const selectThinking = vi
+      .spyOn(transport, "selectThinkingOption")
+      .mockImplementation(async () => {
+        transport.state = { ...transport.state, thinkingLevel: effective };
+        return transport.state;
+      });
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: requested,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { state: { effectiveThinkingOptionId: effective } },
+      });
+      expect(selectThinking.mock.calls).toEqual([[requested]]);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("does not reconcile a failed requested Thinking selection", async () => {
+    const transport = new FakeOmpTransport();
+    const requested = harnessThinkingOptionIdSchema.parse("xhigh");
+    const selectThinking = vi
+      .spyOn(transport, "selectThinkingOption")
+      .mockRejectedValue(new Error("Native Thinking selection failed"));
+    const closeTransport = vi.spyOn(transport, "close");
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: requested,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "nativeFailure", message: "Native Thinking selection failed" },
+      });
+      expect(selectThinking.mock.calls).toEqual([[requested]]);
+      expect(closeTransport).toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("starts a non-reasoning Model with Off without requiring a native Thinking selector", async () => {
     const transport = new FakeOmpTransport();
     transport.state = {

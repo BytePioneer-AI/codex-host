@@ -916,6 +916,14 @@ export function installRendererBindingProbe(
   const usageRefreshTimers = new Map<Element, number>();
   const usageRefreshAttempts = new Map<Element, number>();
 
+  // Re-read requests that settle while a retained root cannot be classified.
+  const ownershipRecovery = new WeakMap<MountedComposer, number>();
+  const modelRecovery = new WeakMap<MountedComposer, number>();
+  const isRetainedComposer = (mounted: MountedComposer): boolean =>
+    mounted.composer.isConnected &&
+    mounted.composer.matches(CODEX_COMPOSER_SELECTOR) &&
+    mountedByComposer.get(mounted.composer) === mounted;
+
   const isMountedComposer = (composer: Element): boolean =>
     composer.isConnected &&
     composer.matches(CODEX_COMPOSER_SELECTOR) &&
@@ -931,6 +939,19 @@ export function installRendererBindingProbe(
     isMountedComposer(mounted.composer) &&
     mountedByComposer.get(mounted.composer) === mounted &&
     controller.isCurrentOwnershipRequest(mounted.composer, generation);
+
+  const finishModelRequest = (mounted: MountedComposer, generation: number): void => {
+    if (isCurrentModelRequest(mounted, generation)) {
+      renderMounted(mounted);
+    } else if (
+      isRetainedComposer(mounted) &&
+      controller.isCurrentModelRequest(mounted.composer, generation) &&
+      orbitComposerKind(mounted.composer) === "unknown"
+    ) {
+      modelRecovery.set(mounted, generation);
+      scheduleScan();
+    }
+  };
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
     const state = controller.recordSubmission(composer);
@@ -1289,6 +1310,8 @@ export function installRendererBindingProbe(
 
   const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
     if (!isMountedComposer(mounted.composer)) return;
+    ownershipRecovery.delete(mounted);
+    modelRecovery.delete(mounted);
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (!threadId) {
       mounted.ownershipStatus = "not-required";
@@ -1374,6 +1397,13 @@ export function installRendererBindingProbe(
             scheduleThreadUsageRefresh(mounted);
           }
         }
+      } else if (
+        isRetainedComposer(mounted) &&
+        controller.isCurrentOwnershipRequest(mounted.composer, generation) &&
+        orbitComposerKind(mounted.composer) === "unknown"
+      ) {
+        ownershipRecovery.set(mounted, generation);
+        scheduleScan();
       }
     }
   };
@@ -1426,6 +1456,7 @@ export function installRendererBindingProbe(
   };
 
   const loadExternalCatalog = async (mounted: MountedComposer): Promise<void> => {
+    modelRecovery.delete(mounted);
     void refreshCommands(mounted);
     const state = controller.get(mounted.composer);
     if (state.agent === "codex") return;
@@ -1692,7 +1723,7 @@ export function installRendererBindingProbe(
       if (catalogRequest && catalogRequests.get(mounted) === catalogRequest) {
         catalogRequests.delete(mounted);
       }
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -1847,7 +1878,7 @@ export function installRendererBindingProbe(
         error: error instanceof Error ? error.message : String(error),
       };
     } finally {
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -1984,7 +2015,7 @@ export function installRendererBindingProbe(
         selectionRejected: true,
       };
     } finally {
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -2119,7 +2150,7 @@ export function installRendererBindingProbe(
         error: error instanceof Error ? error.message : String(error),
       };
     } finally {
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -2695,9 +2726,10 @@ export function installRendererBindingProbe(
       }
     }
     for (const [composer, mounted] of mountedByComposer) {
+      const kind = orbitComposerKind(composer);
       if (
         !composer.isConnected ||
-        orbitComposerKind(composer) === "orbit" ||
+        kind === "orbit" ||
         !composer.matches(CODEX_COMPOSER_SELECTOR) ||
         !mounted.control.root.isConnected
       ) {
@@ -2710,14 +2742,36 @@ export function installRendererBindingProbe(
         }
         mounted.codexUsageGate.dispose();
         disposeComposerAgentControl(mounted.control);
+        ownershipRecovery.delete(mounted);
+        modelRecovery.delete(mounted);
         mountedByComposer.delete(composer);
         controller.detach(composer, transferredComposers.has(composer));
         continue;
       }
+      // Unknown roots retain state, but cannot derive targets or retry requests.
+      if (kind === "unknown") continue;
+      if (refreshTargets) refreshMountedConversationTarget(mounted);
+      const ownershipGeneration = ownershipRecovery.get(mounted);
+      const modelGeneration = modelRecovery.get(mounted);
+      ownershipRecovery.delete(mounted);
+      modelRecovery.delete(mounted);
+      const recoverOwnership =
+        ownershipGeneration !== undefined &&
+        controller.isCurrentOwnershipRequest(composer, ownershipGeneration);
+      const recoverModel =
+        modelGeneration !== undefined &&
+        controller.isCurrentModelRequest(composer, modelGeneration);
+      if (
+        recoverOwnership ||
+        (recoverModel && threadIdFromComposerModelTarget(mounted.modelTarget))
+      ) {
+        void loadThreadOwnership(mounted);
+      } else if (recoverModel) {
+        void loadExternalCatalog(mounted);
+      }
       const state = controller.get(composer);
       const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
-      if (refreshTargets) refreshMountedConversationTarget(mounted);
       showCodexUsageGateStatus(mounted, mounted.codexUsageGate.refresh());
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {

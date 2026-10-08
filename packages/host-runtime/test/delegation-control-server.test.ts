@@ -31,6 +31,7 @@ describe("delegation control server", () => {
         start,
         send: vi.fn(),
         cancel: vi.fn(),
+        answer: vi.fn(),
         read: vi.fn(),
         wait: vi.fn(),
         list: vi.fn(),
@@ -87,6 +88,7 @@ describe("delegation control server", () => {
         start: vi.fn(),
         send: vi.fn(),
         cancel: vi.fn(),
+        answer: vi.fn(),
         read: vi.fn(),
         wait: vi.fn(),
         list: vi.fn(),
@@ -118,6 +120,14 @@ describe("delegation control server", () => {
       harnessId: "pi" as const,
       cancelled: true,
     }));
+    const answer = vi.fn(async () => ({
+      threadId: "thread-1",
+      interactionId: "interaction-1",
+      turnId: "turn-2",
+      harnessId: "pi" as const,
+      status: "running" as const,
+      next: { read: "read", wait: "wait" },
+    }));
     const server = await startDelegationControlServer({
       token,
       api: {
@@ -126,6 +136,7 @@ describe("delegation control server", () => {
         start: vi.fn(),
         send,
         cancel,
+        answer,
         read: vi.fn(),
         wait: vi.fn(),
         list: vi.fn(),
@@ -137,8 +148,25 @@ describe("delegation control server", () => {
         authorized({ threadId: "thread-1", message: "continue" }),
       );
       await fetch(`${server.endpoint}/v1/thread/cancel`, authorized({ threadId: "thread-1" }));
+      const answered = await fetch(
+        `${server.endpoint}/v1/thread/answer`,
+        authorized({
+          threadId: "thread-1",
+          interactionId: "interaction-1",
+          result: { answers: { decision: { answers: ["continue"] } } },
+        }),
+      );
       expect(send).toHaveBeenCalledWith({ threadId: "thread-1", message: "continue" });
       expect(cancel).toHaveBeenCalledWith({ threadId: "thread-1" });
+      expect(answer).toHaveBeenCalledWith({
+        threadId: "thread-1",
+        interactionId: "interaction-1",
+        result: { answers: { decision: { answers: ["continue"] } } },
+      });
+      await expect(answered.json()).resolves.toMatchObject({
+        interactionId: "interaction-1",
+        status: "running",
+      });
     } finally {
       await server.close();
     }
@@ -153,6 +181,7 @@ describe("delegation control server", () => {
         start: vi.fn(),
         send: vi.fn(),
         cancel: vi.fn(),
+        answer: vi.fn(),
         read: vi.fn(async () => {
           throw new Error("synthetic failure");
         }),
@@ -201,6 +230,7 @@ describe("delegation control server", () => {
       start,
       send: vi.fn(),
       cancel: vi.fn(),
+      answer: vi.fn(),
       read: vi.fn(),
       wait: vi.fn(),
       list: vi.fn(),

@@ -63,6 +63,13 @@ function duration(milliseconds: number): string {
 function describe(watch: Watch): string {
   const link = threadLink(watch.threadId);
   switch (watch.outcome) {
+    case "needsInput": {
+      // The request ID lets the receiver answer without guessing which Question fired.
+      const request = watch.interactionId
+        ? `, request ${watch.interactionId}${watch.turnId ? `, Turn ${watch.turnId}` : ""}`
+        : "";
+      return `${link} is waiting for an answer${request}. Read the current Question with 'codexhost thread read ${watch.threadId}' and answer it with 'codexhost thread answer <thread> --interaction <id> --answers-file <file>'.`;
+    }
     case "timedOut":
       return `${link} has not reached a terminal state after ${duration(watch.timeoutMs)}; this watch expired. Run 'codexhost thread watch' again to keep waiting.`;
     case "unreadable":
@@ -79,7 +86,7 @@ function describe(watch: Watch): string {
 
 function notification(watches: readonly Watch[]): string {
   return [
-    "[codexhost thread watch] Watched Threads stopped or the watch expired. This reports execution state only, not that the work is correct or accepted. Inspect each Thread with 'codexhost thread read <thread>' before relying on it.",
+    "[codexhost thread watch] Watched Threads stopped, are waiting for an answer, or the watch expired. This reports execution state only, not that the work is correct or accepted. Inspect each Thread with 'codexhost thread read <thread>' before relying on it.",
     ...watches.map((watch) => `- ${describe(watch)}`),
   ].join("\n");
 }
@@ -131,6 +138,15 @@ export class DelegationWatchService {
       timeoutMs: input.timeoutMs,
     };
     if (terminal(target.status)) return { ...result, state: "alreadyTerminal" };
+    // A Question already waiting needs no watch: report it once, immediately,
+    // instead of registering a notification the caller would get anyway.
+    if (target.pendingQuestions?.length) {
+      return {
+        ...result,
+        state: "alreadyNeedsInput",
+        pendingQuestions: target.pendingQuestions,
+      };
+    }
     const existing = this.#watches.find(
       (watch) =>
         watch.state === "watching" &&
@@ -154,12 +170,22 @@ export class DelegationWatchService {
   async watches(): Promise<ThreadWatchListResult> {
     return {
       watches: this.#watches.map(
-        ({ threadId, notifyThreadId, state, outcome, turnId, reason, registeredAt }) => ({
+        ({
+          threadId,
+          notifyThreadId,
+          state,
+          outcome,
+          turnId,
+          interactionId,
+          reason,
+          registeredAt,
+        }) => ({
           threadId,
           notifyThreadId,
           state,
           ...(outcome ? { outcome } : {}),
           ...(turnId ? { turnId } : {}),
+          ...(interactionId ? { interactionId } : {}),
           ...(reason ? { reason } : {}),
           registeredAt,
         }),
@@ -195,10 +221,11 @@ export class DelegationWatchService {
       if (watch.state !== "watching") continue;
       const observed = await this.#observe(watch);
       if (!observed) continue;
-      const { outcome, turnId } = observed;
+      const { outcome, turnId, interactionId } = observed;
       watch.state = "pendingDelivery";
       watch.outcome = outcome;
       if (turnId) watch.turnId = turnId;
+      if (interactionId) watch.interactionId = interactionId;
       watch.deliveryDeadline = Date.now() + DELIVERY_WINDOW_MS;
     }
     const subscribers = new Set(
@@ -214,13 +241,23 @@ export class DelegationWatchService {
 
   async #observe(
     watch: Watch,
-  ): Promise<{ outcome: ThreadWatchOutcome; turnId?: string } | undefined> {
+  ): Promise<{ outcome: ThreadWatchOutcome; turnId?: string; interactionId?: string } | undefined> {
     try {
       const snapshot = await this.#api.read({ threadId: watch.threadId, view: "result" });
       if (terminal(snapshot.status)) {
         return {
           outcome: snapshot.status as ThreadWatchOutcome,
           ...(snapshot.turn ? { turnId: snapshot.turn.turnId } : {}),
+        };
+      }
+      const pending = snapshot.pendingQuestions?.[0];
+      if (pending) {
+        // A Question outranks the deadline: the Turn is alive but cannot finish
+        // without an answer, and the request names the Turn it belongs to.
+        return {
+          outcome: "needsInput",
+          interactionId: pending.interactionId,
+          turnId: pending.turnId,
         };
       }
       delete watch.unreadableSince;

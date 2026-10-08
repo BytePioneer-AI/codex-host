@@ -1039,7 +1039,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         timeout.cancel();
       }
     } catch (error) {
-      failures.push(error);
+      // Confirmed process-tree shutdown below supersedes a missing task terminal. Without
+      // an owned process, closing the SDK stream alone cannot prove the task stopped.
+      if (!this.#children.some((child) => child.pid !== undefined)) failures.push(error);
     }
     const stopOwnedProcesses = async (): Promise<void> => {
       const stopped = await Promise.allSettled(

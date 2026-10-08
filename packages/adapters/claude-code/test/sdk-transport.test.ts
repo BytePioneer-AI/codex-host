@@ -2265,6 +2265,40 @@ describe("Claude history replacement fence", () => {
     expect(value.fakeQuery.stopTask).toHaveBeenCalledWith("still-running");
   });
 
+  it.skipIf(process.platform === "win32")(
+    "confirms forced process shutdown without a native task terminal",
+    async () => {
+      const value = fixture();
+      await value.transport.start();
+      const spawnProcess = options(value).spawnClaudeCodeProcess;
+      if (!spawnProcess) throw new Error("Missing native process ownership hook");
+      const child = spawnProcess({
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('ready'); setInterval(()=>{},1000)"],
+        signal: new AbortController().signal,
+        cwd: process.cwd(),
+        env: process.env,
+      }) as ChildProcessWithoutNullStreams;
+      try {
+        await once(child.stdout, "data");
+        value.fakeQuery.stopTask.mockImplementation(async () => undefined);
+        value.fakeQuery.push({
+          type: "system",
+          subtype: "task_started",
+          task_id: "still-running",
+        } as unknown as SDKMessage);
+        await delay(0);
+        expect(value.transport.hasBackgroundTasks()).toBe(true);
+        await expect(value.transport.close()).resolves.toBeUndefined();
+        expect(value.fakeQuery.stopTask).toHaveBeenCalledWith("still-running");
+        expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      } finally {
+        child.kill("SIGKILL");
+        await value.transport.close().catch(() => undefined);
+      }
+    },
+  );
+
   it("rejects close if native output cannot be drained", async () => {
     const value = fixture();
     await value.transport.start();

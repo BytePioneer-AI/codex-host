@@ -323,6 +323,31 @@ test("an external draft root reused after dot follows the new native draft prefe
     page.evaluate(() => window.__codexhostRendererBindingProbeV1?.status().selections[0]);
   expect(await selection()).toMatchObject({ agent: "pi", phase: "draft" });
   const oldId = (await selection())?.composerId;
+  // Preferences are Host-scoped. Give the fixture a real local Host context
+  // rather than treating a missing request bridge as the local Host.
+  await page.evaluate(() => {
+    const unavailable = async () => {
+      throw new Error("Unused fixture method");
+    };
+    const client = new Proxy(
+      {},
+      {
+        get(_target, key) {
+          if (key === "currentHostId" || key === "clientForHost" || key === "knownHostIds")
+            return undefined;
+          if (typeof key === "string" && key.startsWith("subscribe")) return () => () => undefined;
+          return unavailable;
+        },
+      },
+    );
+    Object.defineProperty(window, "fixturePreferenceClient", { configurable: true, value: client });
+    window.__codexhostRendererBindingProbeV1?.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      client as never,
+    );
+  });
   expect(await nativeSubmitResults(page, true)).toEqual({ received: 3 });
   await page.locator("form").evaluate((root) => root.setAttribute("aria-hidden", "false"));
   await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
@@ -341,6 +366,7 @@ test("an external draft root reused after dot follows the new native draft prefe
         route = agent;
         return true;
       },
+      Reflect.get(window, "fixturePreferenceClient"),
     );
     return route;
   });

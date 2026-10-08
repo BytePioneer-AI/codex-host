@@ -1,8 +1,8 @@
-import { threadOwnershipListResultSchema } from "@codexhost/shared-contracts";
+import { threadSteeringInspectResultSchema } from "@codexhost/shared-contracts";
 import { verifyNativeCodexThread } from "./renderer-native-thread.js";
 import { isUnsupportedMethod } from "./renderer-request-sender.js";
 
-const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
+const THREAD_STEERING_INSPECT_METHOD = "codexhost/thread/steering/inspect";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -134,9 +134,9 @@ async function preserveQueuedFollowUps(
 }
 
 /**
- * Use Desktop's normal start presentation BEFORE it creates an old-Turn steering Item.
- * Only this operation's outgoing start RPC becomes steer; Host owns stop/wait/start.
- * Official Threads retain the original steer implementation and response semantics.
+ * For a steer the Host delivers as a new Turn, use Desktop's normal start presentation BEFORE it
+ * creates an old-Turn steering Item. Only this operation's outgoing start RPC becomes steer; Host
+ * owns stop/wait/start. Official Threads and native same-Turn steering keep Desktop's own steer.
  */
 export function installRendererExternalSteering(
   target: unknown,
@@ -233,14 +233,14 @@ export function installRendererExternalSteering(
     } catch {
       // Official steering must not depend on our additional presentation binding.
     }
-    let ownershipResponse: unknown;
+    let inspectResponse: unknown;
     try {
-      ownershipResponse = await originalSend.call(manager, THREAD_OWNERSHIP_LIST_METHOD, {
-        threadIds: [threadId],
+      inspectResponse = await originalSend.call(manager, THREAD_STEERING_INSPECT_METHOD, {
+        threadId,
       });
     } catch (error) {
-      if (!isUnsupportedMethod(error, THREAD_OWNERSHIP_LIST_METHOD)) throw error;
-      // A stock remote app-server has no Host ownership RPC. Confirm the native
+      if (!isUnsupportedMethod(error, THREAD_STEERING_INSPECT_METHOD)) throw error;
+      // A stock remote app-server has no Host steering inspection RPC. Confirm the native
       // Thread through that same connection before using Desktop's native steer.
       await verifyNativeCodexThread(
         (method, params) => originalSend.call(manager, method, params),
@@ -249,11 +249,10 @@ export function installRendererExternalSteering(
       if (disposed) throw new Error("External steering binding was disposed");
       return originalSteer.apply(manager, args);
     }
-    const ownership = threadOwnershipListResultSchema.parse(ownershipResponse);
-    const owner = ownership.threads.find((thread) => thread.threadId === threadId)?.owner;
-    if (!owner) throw new Error("Thread ownership could not be resolved for steering");
+    const { delivery } = threadSteeringInspectResultSchema.parse(inspectResponse);
     if (disposed) throw new Error("External steering binding was disposed");
-    if (owner === "codex") return originalSteer.apply(manager, args);
+    // Native steering joins the running Turn, which is exactly Desktop's own steer presentation.
+    if (delivery !== "newTurn") return originalSteer.apply(manager, args);
     if (!host) throw new Error("Desktop turn submission binding is unavailable");
     const currentRole = manager.getStreamRole?.(threadId);
     if (isRecord(currentRole) && currentRole.role === "follower")

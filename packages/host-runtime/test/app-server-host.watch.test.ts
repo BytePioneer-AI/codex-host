@@ -64,6 +64,64 @@ async function watchFixture() {
 }
 
 describe("watch delivery through native Codex resume", () => {
+  it.each(["accepted", "rejected", "unknown"] as const)(
+    "steers a running native parent and handles an %s receipt without duplicate delivery",
+    async (receipt) => {
+      const value = await watchFixture();
+      try {
+        const read = await readJsonLine(value.fixture.official.stdin);
+        value.answer(read.id, {
+          result: {
+            thread: {
+              id: "native-parent",
+              status: { type: "active" },
+              turns: [{ id: "parent-turn", status: "inProgress" }],
+            },
+          },
+        });
+        const steer = await readJsonLine(value.fixture.official.stdin);
+        expect(steer).toMatchObject({
+          method: "turn/steer",
+          params: { threadId: "native-parent", expectedTurnId: "parent-turn" },
+        });
+        expect(value.send).toHaveBeenCalledWith(expect.objectContaining({ steer: true }));
+        if (receipt === "rejected") {
+          value.answer(steer.id, { error: { code: -32602, message: "Turn has ended" } });
+          // A proven rejection can retry; an idle parent then receives one new Turn.
+          const resume = await value.readThenResume();
+          value.answer(resume.id, value.idle);
+          const start = await readJsonLine(value.fixture.official.stdin);
+          expect(start).toMatchObject({ method: "turn/start" });
+          value.answer(start.id, { result: { turn: { id: "next-turn" } } });
+        } else {
+          value.answer(
+            steer.id,
+            receipt === "accepted" ? { result: { turnId: "parent-turn" } } : {},
+          );
+        }
+        await vi.waitFor(async () => {
+          const watches = (await value.service.watches()).watches;
+          if (receipt === "unknown") {
+            expect(watches).toMatchObject([
+              {
+                state: "undeliverable",
+                reason: expect.stringContaining("Delivery outcome unknown"),
+              },
+            ]);
+          } else {
+            expect(watches).toEqual([]);
+          }
+        });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(value.send).toHaveBeenCalledTimes(receipt === "rejected" ? 2 : 1);
+        expect(value.fixture.official.stdin.read()).toBeNull();
+      } finally {
+        value.service.close();
+        await stopFixture(value.fixture);
+      }
+    },
+  );
+
   it.each<{ label: string; response: JsonObject }>([
     { label: "rejected", response: { error: { code: -32603, message: "resume unavailable" } } },
     { label: "missing result", response: {} },

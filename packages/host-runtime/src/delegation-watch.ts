@@ -35,7 +35,7 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /**
- * A failed send is retried only when the call chain proves no Turn started.
+ * A failed send is retried only when the call chain proves the input was not accepted.
  * - permanent: the notified Thread is missing or read-only; retrying cannot help.
  * - rejected: THREAD_BUSY is decided before any start, and `notStarted` marks a
  *   start the target explicitly refused, so a retry cannot duplicate it.
@@ -235,13 +235,17 @@ export class DelegationWatchService {
     return Date.now() >= watch.deadline ? { outcome: "timedOut" } : undefined;
   }
 
-  /** All notifications pending for one subscriber start a single Turn. */
+  /** All notifications pending for one subscriber arrive as one steered message. */
   async #deliver(notifyThreadId: string): Promise<void> {
     const pending = this.#watches.filter(
       (watch) => watch.state === "pendingDelivery" && watch.notifyThreadId === notifyThreadId,
     );
     try {
-      await this.#api.send({ threadId: notifyThreadId, message: notification(pending) });
+      await this.#api.send({
+        threadId: notifyThreadId,
+        message: notification(pending),
+        steer: true,
+      });
       for (const watch of pending) this.#remove(watch);
     } catch (error) {
       const failure = deliveryFailure(error);
@@ -252,7 +256,7 @@ export class DelegationWatchService {
           watch.state = "undeliverable";
           watch.reason =
             failure === "unknown"
-              ? `Delivery outcome unknown; the notification may already have started a Turn, so it is not retried (${message})`
+              ? `Delivery outcome unknown; the notification may already have been accepted, so it is not retried (${message})`
               : message;
         }
       }

@@ -40,7 +40,7 @@ Gateway 保留 `/help`、`/tools`、`/context`、`/version`（原生 `slash.exec
 
 因此自动阶段以 `commentary` 状态消息展示开始、原生提示与阶段结束，明确说明提交结果未知，不生成暗示成功的 `contextCompaction` Item，也不依据文本、Token 下降或聊天成功推断压缩成功。Turn 结束、失败、取消或关闭时收尾未确认的观察消息，保留原生 Turn 结果；这些消息不是最终回答，不写入原生历史。当前 Gateway 没有可靠的自动压缩提交成功／失败／取消结果接口；闲置阶段不合成 Host Turn，尚无完整自动压缩生命周期或标准 Summarizing 控件对齐。
 
-`/model` 使用专门的确认配置接口；`/reset`、原地 undo/rewind、queue/steer 不作为命令暴露，避免破坏 Host 历史或绕过排他 Turn。
+`/model` 使用专门的确认配置接口；`/reset`、原地 undo/rewind，以及 slash 形式的 queue/steer 不作为命令暴露，避免破坏 Host 历史或绕过排他 Turn。Gateway 的同轮插入使用 `session.steer`，见下文。
 
 ## 精确 Fork 与修订上一条
 
@@ -69,3 +69,13 @@ Gateway 保留 `CODEXHOST_CLI_PATH`、`CODEXHOST_RUNTIME_ENDPOINT`、`CODEXHOST_
 协议 fixture 测试覆盖 Question/审批/配置确认、diff 片段、命令与压缩失败/取消、迟到事件、重复回答、进程故障、Gateway-only 路由及 owner，并覆盖 Usage 并发／旧响应、目录截断／来源过滤／撤销、自动压缩心跳／未知提交结果及只读 RPC 非致命超时。可选原生测试用 `CODEXHOST_HERMES_NATIVE_TEST_PYTHON` 指向已安装的上述 Hermes Python；在隔离 HERMES_HOME 下真实执行 SessionDB 派生/回滚/压缩 lineage，运行本地 OpenAI 模拟服务驱动真实 gateway/clarify/terminal 与恢复，并验证进程内技能预加载、用户已有技能保留、原先没有委派说明的会话恢复，以及 Host CLI 环境。测试不调用付费模型；尚未进行真实外部模型压缩或 Desktop 端到端验收。另有 `CODEXHOST_HERMES_NATIVE_TEST_LAUNCHER` 选入的 managed-runtime 测试，验证正式启动器下的模型解析、真实 SessionDB 历史、精确 Fork、源历史不变、委派 preload、Gateway 懒恢复，以及导入样式的无 locator 引用通过真实 Gateway 恢复；使用原生 home root 下的临时独立 home 共享已安装依赖，不修改用户配置或历史，不发模型请求。自定义原生安装根可通过 `CODEXHOST_HERMES_NATIVE_TEST_HOME_ROOT` 指定。
 
 版本兼容回归在真实 Hermes 子进程中仅替换发布版本和 contract 元数据，验证创建、工具交互、历史读取、Fork 与恢复；不修改安装文件。原生发现测试覆盖超过 1,000 条候选、旧原生存储的 cwd 元数据、压缩根身份去重、无 locator 引用和数据库／配置不变；定向测试覆盖删除及元数据复查、关闭取消、超时、坏响应和错误隔离。Gateway 引用无论旧、新或缺少 contract 元数据都可恢复。实际接口缺失、响应格式错误、会话身份不一致或历史校验失败仍会报错；这些检查不依赖版本号。元数据替换测试不代表已经验证其他发布版本的全部接口行为。
+
+## 同轮插入
+
+Gateway 主路径声明 `capabilities.steer`。`turn.steer` 调用 `session.steer`，参数是 `{session_id, text}`。`queued` 表示原生接受；`rejected` 是 `invalidState`，不计入本轮插队数。没有版本号门槛。
+
+空文本是 `invalidRequest`。目标不是当前活跃 Turn、会话已关闭，或插入期间 Turn 已经结束，是 `invalidState`。Adapter 不取消、不另起 Turn，也不发布 `userMessage`。忙时 `turn.start` 仍是 `sessionBusy`。
+
+现有历史投影把每一条带 `user_text` 的用户行当成一轮，包括插入行。Adapter 不按 `display_kind` 把插入并回原提问。本轮结束时，锚点之后新出现的 Native Turn 数等于 1 加本轮已被原生接受的插队数，才把第一条（原提问）当作本轮身份。数量不符，或开始时的锚点已经不在历史里，仍然失败。零插队且没有新行时，保持原先可以没有 NativeTurnRef 的成功结果。
+
+未实机验证。本机没有 Hermes。行为依据 gateway `session.steer` 的 `queued` / `rejected` 回执，以及现有用户行分轮。单元测试覆盖 gateway 声明、RPC 参数、非活跃目标、身份计数、数量不符、忙时 `turn.start`，以及不发布 `userMessage`。

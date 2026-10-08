@@ -15,6 +15,7 @@ import {
 // commands still run through native slash.exec, not a Host implementation.
 // Source/desktop metadata rejects other unreviewed built-ins. These protect
 // native control paths and aliases even if a plugin tries to use their names.
+// Gateway turn.steer calls session.steer directly.
 const HERMES_EXCLUSIONS = new Set([
   "q",
   "s",

@@ -9,16 +9,8 @@ class RpcTarget {}
 class Manager extends RpcTarget {
   readonly #identity = "local";
   readonly requests = vi.fn(async (method: unknown) => {
-    if (method === "codexhost/thread/ownership/list") {
-      return {
-        threads: [
-          {
-            threadId: "thread",
-            owner: this.owner,
-            ...(this.owner === "external" ? { harnessId: "pi" } : {}),
-          },
-        ],
-      };
+    if (method === "codexhost/thread/steering/inspect") {
+      return { delivery: this.owner === "codex" ? "official" : "newTurn" };
     }
     if (method === "turn/steer") return { turnId: "replacement" };
     return { data: ["available"] };
@@ -120,7 +112,7 @@ describe("Desktop RpcTarget method visibility", () => {
       });
       expect(manager.presented).toHaveLength(1);
       expect(manager.requests.mock.calls.map(([method]) => method)).toEqual([
-        "codexhost/thread/ownership/list",
+        "codexhost/thread/steering/inspect",
         "turn/steer",
       ]);
     } finally {

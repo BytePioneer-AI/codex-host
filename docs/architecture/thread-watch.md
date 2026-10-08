@@ -36,13 +36,13 @@
 
 ## 送达
 
-- 通知通过普通的 `send` 在被通知 Thread 中启动一个新 Turn，外部 Harness 与原生 Codex 使用同一路径；不做同轮注入。
-- 被通知 Thread 正忙时通知保持待送达并重试，最长 6 小时。`THREAD_BUSY` 从不被当作已送达；`thread send` 自身“不排队”的语义不变。
+- 通知固定通过 `send({ steer: true })` 送达。被通知 Thread 空闲时启动新 Turn；运行中时使用原生 steer，不支持原生插队的外部 Harness 复用 Desktop 的停止后重发操作。
+- 正在切换 Turn 等暂时不能接收通知的情况保持待送达并重试，最长 6 小时。`THREAD_BUSY` 从不被当作已送达；普通 `thread send` 自身“不排队”的语义不变。
 - 投递失败只有在调用链能证明没有启动 Turn 时才重试：
   - `THREAD_BUSY`（启动前判定），或错误带 `notStarted`（例如原生 Codex 的 resume 校验失败，或 `turn/start` 明确返回错误）：保持待送达并重试；
   - 被通知 Thread 不存在或只读：立即标记 `undeliverable`；
   - 其他失败都视为结果未知，包括 Harness 启动确认超时后包装成的 `DELEGATION_FAILED`：原生可能已经启动了 Turn，为避免重复唤醒不再重试，标记 `undeliverable` 并在原因中说明。
-- 每次投递将同一个被通知 Thread 当前所有待送达通知合并为一条消息，包括此前轮询积累的通知，只启动一个 Turn。
+- 每次投递将同一个被通知 Thread 当前所有待送达通知合并为一条消息，包括此前轮询积累的通知，只进行一次送达。
 - 被通知 Thread 不存在、只读，或超过 6 小时仍无法送达时，watch 标记为 `undeliverable` 并保留原因，可由 `thread watches` 查看；最多保留最近 50 条无法送达记录。
 
 ## 与 Stop 的关系

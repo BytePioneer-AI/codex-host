@@ -22,6 +22,8 @@ import {
   type TurnStartCommand,
   type TurnStartAccepted,
   type TurnCancelCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnCancelAccepted,
   type InteractionRespondCommand,
   type InteractionRespondAccepted,
@@ -586,6 +588,7 @@ export class CursorSession implements HarnessSession {
     }
   }
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -598,6 +601,7 @@ export class CursorSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -607,6 +611,8 @@ export class CursorSession implements HarnessSession {
   > {
     if (this.#closed) return rejected("invalidState", "Cursor session is closed");
     if (command.type === "interaction.respond") return this.#interactions.respond(command);
+    // Cursor ACP cancels the running prompt on a second session/prompt; it has no native steer.
+    if (command.type === "turn.steer") return rejected("unsupported", "Cursor ACP cannot steer");
     if (command.type === "turn.cancel") {
       if (!this.#active || this.#active.command.turnId !== command.turnId)
         return rejected("invalidState", "Cursor turn is not active");

@@ -11,6 +11,7 @@ import {
 import { CodeBuddyCopyCleanup } from "./copy-cleanup.js";
 import { codeBuddyInvocation } from "./command.js";
 import { bounded, CodeBuddyError, record } from "./common.js";
+import { probeCodeBuddyProductVersion, type CodeBuddySteerResult } from "./steer.js";
 
 export interface CodeBuddyClientHandlers {
   update(notification: SessionNotification): void;
@@ -20,8 +21,11 @@ export interface CodeBuddyClientHandlers {
 }
 
 export interface CodeBuddyClient {
+  /** Unprefixed product semver from `--version`, or null when the probe did not run or did not match. */
+  readonly nativeVersion?: string | null;
   initialize(): Promise<Record<string, unknown>>;
   open(cwd: string, sessionId?: string): Promise<Record<string, unknown>>;
+  steer?(sessionId: string, text: string): Promise<CodeBuddySteerResult>;
   configure(sessionId: string, configId: string, value: string): Promise<Record<string, unknown>>;
   prompt(sessionId: string, input: string): Promise<Record<string, unknown>>;
   cancel(sessionId: string): Promise<void>;
@@ -49,6 +53,8 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
   readonly #copyCleanup: CodeBuddyCopyCleanup | undefined;
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #connection: ClientSideConnection;
+  readonly #invocation: ReturnType<CodeBuddyInvocationFactory>;
+  #nativeVersion: string | null = null;
   readonly #exited: Promise<void>;
   #closing: Promise<void> | undefined;
   #failure: unknown;
@@ -73,6 +79,7 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
       options.ephemeral,
       this.#copyCleanup?.arguments,
     );
+    this.#invocation = invocation;
     this.#child = spawn(invocation.command, invocation.arguments, {
       cwd: options.cwd,
       env: invocation.environment,
@@ -154,21 +161,37 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
     return label ? bounded(work, timeout, label, (error) => this.#fault(error)) : work;
   }
 
+  get nativeVersion(): string | null {
+    return this.#nativeVersion;
+  }
+
   async initialize() {
-    const result = await this.#request(
-      () =>
-        this.#connection.initialize({
-          protocolVersion: 1,
-          clientInfo: { name: "codexhost", version: "0.0.0" },
-          clientCapabilities: { _meta: { "codebuddy.ai": { question: true } } },
-        }),
-      "ACP initialize",
-      15_000,
+    const versionProbe = probeCodeBuddyProductVersion(
+      this.#invocation.command,
+      this.#invocation.arguments,
+      this.#invocation.environment,
+      this.options.cwd,
     );
-    if (result.protocolVersion !== 1 || !result.agentCapabilities?.loadSession) {
-      throw new CodeBuddyError("unsupported", "ACP v1 with session/load is required");
+    try {
+      const result = await this.#request(
+        () =>
+          this.#connection.initialize({
+            protocolVersion: 1,
+            clientInfo: { name: "codexhost", version: "0.0.0" },
+            clientCapabilities: { _meta: { "codebuddy.ai": { question: true } } },
+          }),
+        "ACP initialize",
+        15_000,
+      );
+      this.#nativeVersion = await versionProbe;
+      if (result.protocolVersion !== 1 || !result.agentCapabilities?.loadSession) {
+        throw new CodeBuddyError("unsupported", "ACP v1 with session/load is required");
+      }
+      return record(result);
+    } catch (error) {
+      this.#nativeVersion = await versionProbe;
+      throw error;
     }
-    return record(result);
   }
 
   async open(cwd: string, sessionId?: string) {
@@ -203,6 +226,23 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
 
   async cancel(sessionId: string) {
     await this.#request(() => this.#connection.cancel({ sessionId }), "ACP cancel");
+  }
+
+  async steer(sessionId: string, text: string): Promise<CodeBuddySteerResult> {
+    const result = record(
+      await this.#request(
+        () =>
+          this.#connection.extMethod("session/steer", {
+            sessionId,
+            contentBlocks: [{ type: "text", text }],
+          }),
+        "ACP steer",
+      ),
+    );
+    return {
+      steered: result.steered === true,
+      ...(typeof result.reason === "string" ? { reason: result.reason } : {}),
+    };
   }
 
   async removeCopy() {

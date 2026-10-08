@@ -120,6 +120,7 @@ export class HarnessDelegationCoordinator {
     text: string,
     turnId: string,
   ) => Promise<void>;
+  readonly #steerExternalTurn: (thread: ExternalThread, text: string) => Promise<string>;
   readonly #notifyThreadStarted: (thread: JsonObject) => Promise<void>;
   readonly #inspectOfficial: (input: HarnessInspectInput) => Promise<HarnessInspectResult>;
   readonly #readOfficial: (input: ThreadReadInput) => Promise<DelegationThreadSnapshot>;
@@ -149,6 +150,7 @@ export class HarnessDelegationCoordinator {
       restoredState?: HarnessSessionState;
     }): ExternalThread;
     startExternalTurn(thread: ExternalThread, text: string, turnId: string): Promise<void>;
+    steerExternalTurn(thread: ExternalThread, text: string): Promise<string>;
     notifyThreadStarted(thread: JsonObject): Promise<void>;
     inspectOfficial(input: HarnessInspectInput): Promise<HarnessInspectResult>;
     readOfficial(input: ThreadReadInput): Promise<DelegationThreadSnapshot>;
@@ -168,6 +170,7 @@ export class HarnessDelegationCoordinator {
     this.#repository = input.repository;
     this.#registerExternalThread = input.registerExternalThread;
     this.#startExternalTurn = input.startExternalTurn;
+    this.#steerExternalTurn = input.steerExternalTurn;
     this.#notifyThreadStarted = input.notifyThreadStarted;
     this.#inspectOfficial = input.inspectOfficial;
     this.#readOfficial = input.readOfficial;
@@ -408,6 +411,9 @@ export class HarnessDelegationCoordinator {
   }
 
   async #send(input: ThreadSendInput): Promise<ThreadSendResult> {
+    if (input.steer !== undefined && typeof input.steer !== "boolean") {
+      throw new DelegationControlError("INVALID_ARGUMENT", "steer must be a boolean");
+    }
     if (!input.message?.trim()) {
       throw new DelegationControlError("INVALID_ARGUMENT", "Message must not be empty");
     }
@@ -427,7 +433,11 @@ export class HarnessDelegationCoordinator {
       });
     }
     if (this.#externalThreadBusy(thread) || thread.activeTurnId) {
-      throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+      if (!input.steer) {
+        throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+      }
+      const turnId = await this.#steerExternalTurn(thread, input.message);
+      return this.#turnResult(thread.id, turnId, thread.harnessId);
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
     try {

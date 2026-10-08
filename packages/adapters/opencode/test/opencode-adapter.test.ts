@@ -1684,6 +1684,35 @@ describe("OpenCode HarnessAdapter", () => {
     await adapter.close();
   });
 
+  it("rejects turn.steer without submitting another prompt", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(turn("running", "work"));
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+    expect(session.capabilities.steer).toBeUndefined();
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("running"),
+        input: [{ type: "text", text: "insert" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("other"),
+        input: [{ type: "text", text: "insert" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(transport.promptCalls).toHaveLength(1);
+    await expect(session.execute(turn("again"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    await session.close();
+    await adapter.close();
+  });
+
   it("waits for native idle after an abort error before admitting another Turn", async () => {
     const { adapter, session, transport } = await openFixture();
     const iterator = session.outputs[Symbol.asyncIterator]();

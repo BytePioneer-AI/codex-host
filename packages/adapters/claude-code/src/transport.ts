@@ -65,6 +65,21 @@ export type ClaudeInteractionResponse =
   | { type: "question"; requestId: string; answers: Record<string, string> }
   | { type: "question"; requestId: string; cancelled: true };
 
+/** One agent of a native Workflow run, as its latest `workflow_progress` entry reports it. */
+export interface ClaudeWorkflowAgent {
+  /** Native 1-based ordinal of the agent call within the run; stable for the run. */
+  index: number;
+  label: string;
+  /** `queued` until the agent starts; `running` covers native `start` and `progress`. */
+  state: "queued" | "running" | "done" | "error";
+  agentId?: string;
+  phaseTitle?: string;
+  agentType?: string;
+  model?: string;
+  resultPreview?: string;
+  error?: string;
+}
+
 export interface ClaudeLastRequestUsage {
   requestId?: string;
   model?: string;
@@ -145,7 +160,39 @@ export type ClaudeTurnEvent =
       outputFile?: string;
     }
   | { type: "subagent.transcript.changed"; callId: string }
-  | { type: "interaction.requested"; request: ClaudeInteractionRequest }
+  /** The Root called the native Workflow tool; its run has not been registered yet. */
+  | { type: "workflow.started"; callId: string; name?: string }
+  /**
+   * Native task frames of a Workflow run. `agents` lists only the agents this frame reports;
+   * a frame without it still carries the run identity.
+   */
+  | {
+      type: "workflow.updated";
+      callId: string;
+      taskId?: string;
+      description?: string;
+      agents?: ClaudeWorkflowAgent[];
+    }
+  /** Agent activity inside a run that reports no agent state, such as a tool call. */
+  | { type: "workflow.activity"; callId: string }
+  /** The Workflow tool returned; a launched run keeps working in the background. */
+  | {
+      type: "workflow.launched";
+      callId: string;
+      isError: boolean;
+      background: boolean;
+      taskId?: string;
+      resultSummary?: string;
+    }
+  | {
+      type: "interaction.requested";
+      request: ClaudeInteractionRequest;
+      /**
+       * Requested by a native agent rather than the Root. It stays pending across the Root
+       * terminal while that agent keeps running.
+       */
+      agentScoped?: boolean;
+    }
   | {
       type: "interaction.closed";
       requestId: string;
@@ -211,6 +258,11 @@ export interface ClaudeTurnTransport {
   hasBackgroundTasks(): boolean;
   /** Requests a native stop; the task still settles through its `task_notification`. */
   stopBackgroundTask(taskId: string): Promise<void>;
+  /**
+   * Stops native background tasks and resolves once Claude Code reports that each one ended.
+   * A task that already ended needs no stop; a stop Claude Code does not confirm rejects.
+   */
+  stopTasks(taskIds: readonly string[]): Promise<void>;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   /** Live slash commands of the started native Session, when known. */
@@ -245,6 +297,11 @@ export interface ClaudeTurnTransport {
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void>;
   /** Interrupts the running requested or autonomous Turn; its Terminal still follows. */
   abort(): Promise<void>;
+  /**
+   * Interrupts the Root Segment Claude Code runs after the requested Turn's Result, such as
+   * its answer to a task notification. Its terminal reaches the idle Turn handler.
+   */
+  abortContinuation(): Promise<void>;
   close(): Promise<void>;
 }
 

@@ -1660,6 +1660,38 @@ describe("ClaudeSdkTransport Question callbacks", () => {
     expect(events.at(-1)).toMatchObject({ reason: "cancelled" });
   });
 
+  it("denies a held agent approval when the transport closes", async () => {
+    const value = fixture();
+    const idleEvents: ClaudeTurnEvent[] = [];
+    value.transport.setIdleTurnHandler({
+      onEvent: (event) => idleEvents.push(event),
+      onTerminal: () => undefined,
+    });
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    value.transport.setIdleLive(true);
+    const permission = canUseTool(
+      "Bash",
+      { command: "ls" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "agent-bash-tool",
+        requestId: "agent-bash-control",
+        displayName: "Bash",
+        agentID: "agent-1",
+      },
+    );
+    expect(idleEvents).toMatchObject([{ type: "interaction.requested", agentScoped: true }]);
+
+    await value.transport.close();
+    await expect(permission).resolves.toMatchObject({
+      behavior: "deny",
+      toolUseID: "agent-bash-tool",
+    });
+    expect(idleEvents.at(-1)).toMatchObject({ type: "interaction.closed", reason: "cancelled" });
+  });
+
   it("closes a pending callback once when its AbortSignal fires", async () => {
     const value = fixture();
     await value.transport.start();
@@ -2633,5 +2665,468 @@ describe("ClaudeSdkTransport background task stop", () => {
       value.fakeQuery.stopTask.mockImplementation(async () => undefined);
       await transport.close();
     }
+  });
+});
+
+describe("ClaudeSdkTransport confirmed background stops", () => {
+  function liveTasks(fakeQuery: FakeQuery, taskIds: string[]): void {
+    fakeQuery.push({
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: taskIds.map((task_id) => ({ task_id, task_type: "local_agent" })),
+    } as unknown as SDKMessage);
+  }
+
+  function shortTimeoutTransport(value: ReturnType<typeof fixture>) {
+    return new ClaudeSdkTransport({
+      command: process.execPath,
+      cwd: process.cwd(),
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      openMode: "create",
+      permissionMode: "default",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
+      closeTimeoutMs: 20,
+      abortTimeoutMs: 20,
+      onPermissionModeChanged: value.onPermissionModeChanged,
+      onFault: value.onFault,
+      onPlanLimit: value.onPlanLimit,
+      queryFactory: value.queryFactory,
+    });
+  }
+
+  it("resolves once Claude Code reports each stopped task", async () => {
+    const value = fixture();
+    await value.transport.start();
+    try {
+      liveTasks(value.fakeQuery, ["workflow-1", "agent-1"]);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+
+      await value.transport.stopTasks(["workflow-1", "agent-1", "workflow-1"]);
+
+      expect(value.fakeQuery.stopTask.mock.calls).toEqual([["workflow-1"], ["agent-1"]]);
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("accepts a failed stop for a task that already ended", async () => {
+    const value = fixture();
+    value.fakeQuery.stopTask.mockRejectedValueOnce(new Error("No task found with ID: agent-1"));
+    await value.transport.start();
+    try {
+      await expect(value.transport.stopTasks(["agent-1"])).resolves.toBeUndefined();
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("rejects a stop Claude Code acknowledges but does not carry out", async () => {
+    const value = fixture();
+    // The control request succeeds, but the task stays in the native live set.
+    value.fakeQuery.stopTask.mockImplementation(async () => undefined);
+    const transport = shortTimeoutTransport(value);
+    await transport.start();
+    try {
+      liveTasks(value.fakeQuery, ["agent-1"]);
+      await vi.waitFor(() => expect(transport.hasBackgroundTasks()).toBe(true));
+      await expect(transport.stopTasks(["agent-1"])).rejects.toThrow(
+        "Claude background task stop was not confirmed",
+      );
+    } finally {
+      liveTasks(value.fakeQuery, []);
+      await vi.waitFor(() => expect(transport.hasBackgroundTasks()).toBe(false));
+      await transport.close();
+    }
+  });
+
+  it("rejects a failed stop for a task Claude Code still runs", async () => {
+    const value = fixture();
+    value.fakeQuery.stopTask.mockRejectedValueOnce(new Error("stop failed"));
+    await value.transport.start();
+    try {
+      liveTasks(value.fakeQuery, ["agent-1"]);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+      await expect(value.transport.stopTasks(["agent-1"])).rejects.toThrow("stop failed");
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("interrupts a Root continuation that runs after the requested Turn", async () => {
+    const value = fixture();
+    const idleEvents: ClaudeTurnEvent[] = [];
+    const terminals: ClaudeTransportTurnResult[] = [];
+    value.transport.setIdleTurnHandler({
+      onEvent: (event) => idleEvents.push(event),
+      onTerminal: (result) => terminals.push(result),
+    });
+    await value.transport.start();
+    value.transport.setIdleLive(true);
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "init",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    await vi.waitFor(() => expect(idleEvents).toContainEqual({ type: "segment.started" }));
+
+    await value.transport.abortContinuation();
+    expect(value.fakeQuery.interrupt).toHaveBeenCalledOnce();
+    value.fakeQuery.push({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      errors: [],
+      terminal_reason: "aborted_streaming",
+    } as unknown as SDKMessage);
+    await vi.waitFor(() =>
+      expect(terminals).toEqual([{ status: "cancelled", reason: "aborted_streaming" }]),
+    );
+    await value.transport.close();
+  });
+});
+
+describe("ClaudeSdkTransport Ultracode", () => {
+  const ultracode = harnessThinkingOptionIdSchema.parse("ultracode");
+  const enter = { alwaysThinkingEnabled: true, effortLevel: "xhigh", ultracode: true };
+
+  it("turns Ultracode on before the first message and confirms it from native settings", async () => {
+    const value = fixture("create", "default", ultracode);
+
+    await value.transport.start();
+
+    expect(options(value).thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(options(value).effort).toBe("xhigh");
+    expect(value.fakeQuery.applyFlagSettings).toHaveBeenCalledTimes(1);
+    expect(value.fakeQuery.applyFlagSettings).toHaveBeenCalledWith(enter);
+    expect(value.fakeQuery.getSettings).toHaveBeenCalledTimes(1);
+    await value.transport.close();
+  });
+
+  it("fails startup when Claude Code does not put Ultracode into effect", async () => {
+    const value = fixture("create", "default", ultracode);
+    value.fakeQuery.getSettings.mockResolvedValueOnce({
+      applied: { ultracode: false, ultracodeRequested: true, ultracodeAvailable: false },
+      effective: {},
+    });
+    const close = vi.spyOn(value.fakeQuery, "close");
+
+    await expect(value.transport.start()).rejects.toMatchObject({
+      name: "ClaudeUltracodeUnavailableError",
+      reason: "unavailable",
+    });
+    expect(close).toHaveBeenCalled();
+    expect(value.transport.slashCommands()).toBeNull();
+  });
+
+  it("fails closed when the native settings cannot be read", async () => {
+    const value = fixture("create", "default", ultracode);
+    value.fakeQuery.getSettings.mockRejectedValueOnce(new Error("unknown control request"));
+
+    await expect(value.transport.start()).rejects.toMatchObject({ reason: "unverifiable" });
+  });
+
+  it("restores the confirmed selection when a live switch to Ultracode is not honored", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("high"));
+    await value.transport.start();
+    // Claude Code before 2.1.154 merges the unknown key and reports no Ultracode state.
+    value.fakeQuery.getSettings
+      .mockResolvedValueOnce({ applied: { effort: "xhigh" } })
+      .mockResolvedValueOnce({ applied: { effort: "high" } });
+
+    await expect(value.transport.setThinkingOption(ultracode)).rejects.toMatchObject({
+      reason: "unsupportedVersion",
+    });
+    // The restored selection is read back as well.
+    expect(value.fakeQuery.getSettings).toHaveBeenCalledTimes(2);
+    expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("medium"));
+
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [enter],
+      [{ alwaysThinkingEnabled: true, effortLevel: "high", ultracode: false }],
+      // The rejected selection never took effect, so leaving it sends no Ultracode key.
+      [{ alwaysThinkingEnabled: true, effortLevel: "medium" }],
+    ]);
+    await value.transport.close();
+  });
+
+  it("clears Ultracode explicitly when leaving it", async () => {
+    const value = fixture("create", "default", ultracode);
+    await value.transport.start();
+
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("xhigh"));
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("off"));
+    await value.transport.setThinkingOption(ultracode);
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("off"));
+
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [enter],
+      [{ alwaysThinkingEnabled: true, effortLevel: "xhigh", ultracode: false }],
+      [{ alwaysThinkingEnabled: false }],
+      [enter],
+      [{ alwaysThinkingEnabled: false, ultracode: false }],
+    ]);
+    expect(value.fakeQuery.getSettings).toHaveBeenCalledTimes(2);
+    await value.transport.close();
+  });
+
+  it("rejects a Model that cannot keep Ultracode and restores the previous Model", async () => {
+    const value = fixture("create", "default", ultracode);
+    await value.transport.start();
+    value.fakeQuery.getSettings.mockResolvedValueOnce({
+      applied: { ultracode: false, ultracodeRequested: true, ultracodeAvailable: false },
+      effective: { enableWorkflows: true },
+    });
+
+    await expect(value.transport.setModel("haiku")).rejects.toMatchObject({
+      reason: "modelUnsupported",
+    });
+    expect(value.fakeQuery.setModel.mock.calls).toEqual([["haiku"], [undefined]]);
+    expect(value.fakeQuery.applyFlagSettings.mock.calls.at(-1)).toEqual([enter]);
+    // Ultracode is confirmed on again with the previous Model.
+    expect(value.fakeQuery.getSettings).toHaveBeenCalledTimes(3);
+    expect(value.onFault).not.toHaveBeenCalled();
+
+    await value.transport.setModel("sonnet");
+    await value.transport.setModel("opus");
+    expect(value.fakeQuery.setModel.mock.calls.slice(2)).toEqual([["sonnet"], ["opus"]]);
+    await value.transport.close();
+  });
+
+  it("faults the Session when the confirmed state cannot be restored", async () => {
+    const value = fixture("create", "default", ultracode);
+    await value.transport.start();
+    value.fakeQuery.getSettings.mockResolvedValueOnce({ applied: { ultracode: false } });
+    const restoreFailure = new Error("native restore failed");
+    value.fakeQuery.setModel.mockResolvedValueOnce(undefined).mockRejectedValueOnce(restoreFailure);
+
+    await expect(value.transport.setModel("haiku")).rejects.toMatchObject({
+      reason: "notApplied",
+    });
+    expect(value.onFault).toHaveBeenCalledWith(restoreFailure);
+    await value.transport.close();
+  });
+
+  it("faults the Session when the previous Model does not bring Ultracode back", async () => {
+    const value = fixture("create", "default", ultracode);
+    await value.transport.start();
+    const unavailable = {
+      applied: { ultracode: false, ultracodeRequested: true, ultracodeAvailable: false },
+      effective: { enableWorkflows: true },
+    };
+    value.fakeQuery.getSettings
+      .mockResolvedValueOnce(unavailable)
+      .mockResolvedValueOnce(unavailable);
+
+    await expect(value.transport.setModel("haiku")).rejects.toMatchObject({
+      reason: "modelUnsupported",
+    });
+    expect(value.onFault).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "modelUnsupported" }),
+    );
+    await value.transport.close();
+  });
+
+  it("faults the Session when Claude Code keeps Ultracode on after a rejected switch", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("high"));
+    await value.transport.start();
+    value.fakeQuery.getSettings
+      .mockResolvedValueOnce({ applied: { ultracode: false } })
+      .mockResolvedValueOnce({ applied: { ultracode: true } });
+
+    await expect(value.transport.setThinkingOption(ultracode)).rejects.toMatchObject({
+      reason: "notApplied",
+    });
+    expect(value.onFault).toHaveBeenCalledWith(
+      new Error("Claude Code kept Ultracode on after it was cleared"),
+    );
+    await value.transport.close();
+  });
+
+  it("leaves other selections unconfirmed and untouched by Ultracode", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("max"));
+    await value.transport.start();
+    await value.transport.setModel("haiku");
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("low"));
+
+    expect(value.fakeQuery.getSettings).not.toHaveBeenCalled();
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [{ alwaysThinkingEnabled: true, effortLevel: "low" }],
+    ]);
+    await value.transport.close();
+  });
+});
+
+describe("ClaudeSdkTransport Workflow agent Interactions", () => {
+  const workflowProgress = {
+    type: "system",
+    subtype: "task_progress",
+    task_id: "workflow-task",
+    tool_use_id: "workflow-call",
+    description: "Count lines",
+    workflow_progress: [
+      { type: "workflow_phase", index: 1, title: "Count" },
+      {
+        type: "workflow_agent",
+        index: 1,
+        label: "count:a.txt",
+        agentId: "agent-a",
+        state: "start",
+        startedAt: 1,
+      },
+    ],
+    session_id: "00000000-0000-4000-8000-000000000001",
+  } as unknown as SDKMessage;
+
+  it("keeps an agent approval pending across the Root terminal and names the agent", async () => {
+    const value = fixture();
+    const idleEvents: ClaudeTurnEvent[] = [];
+    value.transport.setIdleTurnHandler({
+      onEvent: (event) => idleEvents.push(event),
+      onTerminal: () => undefined,
+    });
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000010",
+      (event) => events.push(event),
+    );
+    value.fakeQuery.push(workflowProgress);
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(expect.objectContaining({ type: "workflow.updated" })),
+    );
+
+    const permission = canUseTool(
+      "Bash",
+      { command: "wc -l a.txt" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "agent-bash-tool",
+        requestId: "agent-bash-control",
+        displayName: "Bash",
+        description: "Count lines",
+        agentID: "agent-a",
+      },
+    );
+    expect(events.at(-1)).toEqual({
+      type: "interaction.requested",
+      request: {
+        type: "approval",
+        requestId: "claude-approval-1",
+        title: "count:a.txt: Bash",
+        description: "Count lines",
+      },
+      agentScoped: true,
+    });
+
+    completeTurn(value.fakeQuery);
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    expect(events.filter(({ type }) => type === "interaction.closed")).toEqual([]);
+
+    value.transport.setIdleLive(true);
+    await value.transport.respondToInteraction({
+      type: "approval",
+      requestId: "claude-approval-1",
+      decision: "allowOnce",
+    });
+    await expect(permission).resolves.toMatchObject({
+      behavior: "allow",
+      toolUseID: "agent-bash-tool",
+    });
+    expect(idleEvents).toContainEqual({
+      type: "interaction.closed",
+      requestId: "claude-approval-1",
+      reason: "responded",
+    });
+    await value.transport.close();
+  });
+
+  it("shows held continuation approvals and denies agent approvals once the held Turn ends", async () => {
+    const value = fixture();
+    const idleEvents: ClaudeTurnEvent[] = [];
+    const terminals: ClaudeTransportTurnResult[] = [];
+    value.transport.setIdleTurnHandler({
+      onEvent: (event) => idleEvents.push(event),
+      onTerminal: (result) => terminals.push(result),
+    });
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    value.transport.setIdleLive(true);
+
+    const rootPermission = canUseTool(
+      "Edit",
+      { file_path: "/synthetic/file" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "root-edit-tool",
+        requestId: "root-edit-control",
+        displayName: "Edit file",
+      },
+    );
+    const agentPermission = canUseTool(
+      "Bash",
+      { command: "ls" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "agent-bash-tool",
+        requestId: "agent-bash-control",
+        displayName: "Bash",
+        agentID: "agent-unlabeled",
+      },
+    );
+    expect(idleEvents).toEqual([
+      {
+        type: "interaction.requested",
+        request: { type: "approval", requestId: "claude-approval-1", title: "Edit file" },
+      },
+      {
+        type: "interaction.requested",
+        request: { type: "approval", requestId: "claude-approval-2", title: "Bash" },
+        agentScoped: true,
+      },
+    ]);
+
+    completeTurn(value.fakeQuery);
+    await expect(rootPermission).resolves.toMatchObject({ behavior: "deny" });
+    await vi.waitFor(() => expect(terminals).toEqual([{ status: "succeeded" }]));
+    expect(idleEvents.at(-1)).toEqual({
+      type: "interaction.closed",
+      requestId: "claude-approval-1",
+      reason: "superseded",
+    });
+
+    const closedEvents = idleEvents.length;
+    value.transport.setIdleLive(false);
+    await expect(agentPermission).resolves.toMatchObject({ behavior: "deny" });
+    // The Host Turn already closed its Interactions; nothing is left to notify.
+    expect(idleEvents).toHaveLength(closedEvents);
+    await value.transport.close();
+  });
+
+  it("denies agent approvals when no Host Turn can show them", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+
+    await expect(
+      canUseTool(
+        "Bash",
+        { command: "ls" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "agent-bash-tool",
+          requestId: "agent-bash-control",
+          displayName: "Bash",
+          agentID: "agent-a",
+        },
+      ),
+    ).resolves.toMatchObject({ behavior: "deny" });
+    await value.transport.close();
   });
 });

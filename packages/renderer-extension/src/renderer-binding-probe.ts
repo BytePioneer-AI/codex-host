@@ -227,6 +227,10 @@ export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
   return explicitRefresh || (!initialDiscoveryReady && previous !== next) || !configurationReady;
 }
 
+// Unique per rejected Model or Thinking choice, so the picker shows its notice
+// again when the user repeats a choice that Host rejects with the same message.
+let nextModelSelectionErrorId = 0;
+
 function isExternalConfigurationReadyView(
   modelView: ExternalModelControlView,
   permissionModeView: ExternalPermissionModeControlView,
@@ -1861,6 +1865,8 @@ export function installRendererBindingProbe(
         ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
         thinkingSelectionSupported: supportsThinkingSelection,
         error: error instanceof Error ? error.message : String(error),
+        selectionRejected: "model",
+        selectionErrorId: ++nextModelSelectionErrorId,
       };
     } finally {
       if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
@@ -2132,6 +2138,8 @@ export function installRendererBindingProbe(
         ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
         thinkingSelectionSupported: true,
         error: error instanceof Error ? error.message : String(error),
+        selectionRejected: "thinking",
+        selectionErrorId: ++nextModelSelectionErrorId,
       };
     } finally {
       if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);

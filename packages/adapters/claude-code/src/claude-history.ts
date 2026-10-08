@@ -79,6 +79,27 @@ function displayedUserText(text: string): string {
   return text;
 }
 
+const WORKFLOW_TASK_FRAME = "[Workflow harness \u2014 computed task]";
+const WORKFLOW_TASK_MARKER = "The computed task text follows:\n";
+const WORKFLOW_REQUEST_FRAME = "[Workflow harness \u2014 user request]";
+
+/**
+ * A Workflow agent receives its computed task inside a native frame that indents every
+ * line. Show the task itself; keep the native text when the frame is not recognized.
+ */
+function workflowTaskText(text: string): string {
+  if (!text.startsWith(WORKFLOW_TASK_FRAME)) return text;
+  const marker = text.indexOf(WORKFLOW_TASK_MARKER);
+  if (marker < 0) return text;
+  const lines = text.slice(marker + WORKFLOW_TASK_MARKER.length).split("\n");
+  if (!lines.every((line) => line.trim().length === 0 || line.startsWith("  "))) return text;
+  const task = lines
+    .map((line) => line.slice(2))
+    .join("\n")
+    .trim();
+  return task.length > 0 ? task : text;
+}
+
 function localCommandStdoutText(text: string): string | null {
   const match = localCommandStdoutPattern.exec(text);
   if (!match) return null;
@@ -163,6 +184,24 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
 
 function isHumanUser(message: ClaudeHistoryMessage): boolean {
   return visibleUserTextParts(message).length > 0;
+}
+
+/**
+ * Ultracode relays the user request that triggered a Workflow ahead of the agent's computed
+ * task. The parent Thread already shows that request, so the agent's Thread starts at the task.
+ */
+function isWorkflowRequestRelay(
+  message: ClaudeHistoryMessage,
+  next: ClaudeHistoryMessage | undefined,
+): boolean {
+  const parts = visibleUserTextParts(message);
+  if (parts.length === 0 || !parts.every((part) => part.startsWith(WORKFLOW_REQUEST_FRAME))) {
+    return false;
+  }
+  return (
+    next !== undefined &&
+    visibleUserTextParts(next).some((part) => part.startsWith(WORKFLOW_TASK_FRAME))
+  );
 }
 
 function turnOutcome(messages: ClaudeHistoryMessage[]): HistoricalTurnOutcome {
@@ -469,6 +508,10 @@ export function mapClaudeSubagentSnapshot(
       index += 1;
       continue;
     }
+    if (user && turns.length === 0 && isWorkflowRequestRelay(user, messages[index + 1])) {
+      index += 1;
+      continue;
+    }
     let end = index + 1;
     while (end < messages.length && !isHumanUser(messages[end] as ClaudeHistoryMessage)) end += 1;
     const turnMessages = messages.slice(index, end);
@@ -580,7 +623,10 @@ export function mapClaudeSubagentSnapshot(
           }
         : {}),
       input: user
-        ? visibleUserTextParts(user).map((text) => ({ type: "text", text }))
+        ? visibleUserTextParts(user).map((text) => ({
+            type: "text",
+            text: turns.length === 0 ? workflowTaskText(text) : text,
+          }))
         : turns.length === 0
           ? [subagentPrompt(parentValues, nativeSubagentId)]
               .filter((text): text is string => text !== undefined)

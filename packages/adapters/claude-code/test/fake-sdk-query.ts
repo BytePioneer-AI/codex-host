@@ -36,6 +36,14 @@ export class FakeQuery {
   );
   readonly setModel = vi.fn(async () => undefined);
   readonly applyFlagSettings = vi.fn(async () => undefined);
+  readonly getSettings = vi.fn(async (): Promise<unknown> => ({
+    applied: {
+      effort: "xhigh",
+      ultracode: true,
+      ultracodeRequested: true,
+      ultracodeAvailable: true,
+    },
+  }));
   readonly setPermissionMode = vi.fn(async () => undefined);
   #closed = false;
   #messages: SDKMessage[] = [];

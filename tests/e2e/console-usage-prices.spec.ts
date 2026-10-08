@@ -1053,6 +1053,10 @@ test("projects, sessions and CSV follow the filters", async ({ page }) => {
   const recent = table(page, "最近会话");
   await expect(recent.locator("tbody tr").first()).toContainText("lib");
   await expect(recent.locator("thead")).toContainText("最近活跃");
+  await expect(page.getByRole("heading", { name: /^(最近会话|最耗会话)$/ })).toHaveText([
+    "最近会话",
+    "最耗会话",
+  ]);
 
   const downloaded = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出 CSV", exact: true }).click();

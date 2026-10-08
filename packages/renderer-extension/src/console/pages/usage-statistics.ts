@@ -437,10 +437,10 @@ export function createUsageStatisticsPage(
             projectPanel(data),
             hourlyPanel(data),
           ),
-          sessionsPanel(messages.topSessions, data.sessions, "sessions"),
           data.recentSessions
             ? sessionsPanel(messages.recentSessions, data.recentSessions, "recent")
             : null,
+          sessionsPanel(messages.topSessions, data.sessions, "sessions"),
         ]);
       }
 

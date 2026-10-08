@@ -164,6 +164,10 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 | DeepSeek Harness | 原生 `--version`，独立查询 npm `@deepseek-ai/dsh` 的 `latest`，不受安装渠道限制。识别的全局安装更新原 prefix；npx 安装显式更新原缓存并验证离线启动版本。Python wheel、桌面载体及项目安装仍使用原安装方式更新，不创建或更新另一份全局安装。 |
 | Hermes | 原生 `--version`、`update --plan`、`update --check`；使用原生渠道判定和提交标识而非普通 SemVer 比较。仅可原地更新且能报告提交标识、支持非交互与 Gateway 重启延后的干净 Git 安装执行 `update --yes --no-gateway-restart`；桌面包、Docker、Nix 等仍由原生安装所有者更新。 |
 
+Qoder 检查遇到不认识的输出（包括尚未识别的本地化文本）会拒绝判断更新状态，并在 Adapter 错误及本地诊断日志中保留有长度上限、已脱敏的原生输出；Host 仍向页面返回统一失败信息，不转发插件异常正文，也不会据此执行更新。
+
+Grok 的 npm 更新明确信任官方包 `@xai-official/grok` 的 `postinstall`，由该原生脚本替换 `~/.grok/bin/grok`。仅在检测到 npm 安装且用户发起更新时，Adapter 在本次更新子进程的 `npm_config_allow_scripts` 中保留已有允许项并追加该包，同时调用 `update --force-reinstall`。它不修改用户的持久 npm 配置或进程全局环境；其他安装渠道继续使用原生 `update`。
+
 检查不发起 Model Turn、不安装任何内容。只有用户明确点击更新才调用原生安装器；并发更新合并为一次，检查不与更新后版本回读竞争，安装后版本未改变不报告成功。普通命令有 30 秒超时，更新命令最多 5 分钟，最新版本网络读取有 15 秒超时；失败后可重新打开连接页触发自动检查。更新的是 Harness CLI，不是 Host 插件或 codexhost 自身，不降级较新安装，不主动重启已有 Session。关闭设置只停止页面更新，不取消已接受的原生更新；现有进程的升级行为遵循 Harness 本身。
 
 无法安全检查最新版本的安装返回 `latestVersion: "Unknown"` 和手动更新说明，而非假称与已安装版本一致；Connections 详情显示 Adapter 的说明，不将这种安装标为「已是最新」。npm 识别包含确实指向对应包入口的 Windows shim；版本比较区分预发布标识并忽略 build metadata，避免预发布间更新被漏判或发生降级。

@@ -70,6 +70,48 @@ async function requestShutdown(port: number): Promise<void> {
   if (!response.ok) throw new Error(`console shutdown failed: HTTP ${response.status}`);
 }
 
+/** Stops only this installation's console. The server verifies the observed
+ * instance again at shutdown, so a port changing owners cannot stop another
+ * installation. An older server without this route leaves the update blocked.
+ */
+export async function stopConsoleForUpdate(options: {
+  appDirectory: string;
+  environment?: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const port = consolePort(options.environment ?? process.env);
+  const probe = await probeConsole(port);
+  if (probe.kind === "foreign") {
+    throw new Error("console instance could not be identified before update");
+  }
+  if (probe.kind === "free" || probe.appDirectory !== options.appDirectory) return;
+  if (!Number.isSafeInteger(probe.pid) || probe.pid <= 0) {
+    throw new Error("console returned an invalid process ID");
+  }
+  const response = await fetch(`http://127.0.0.1:${port}/api/shutdown-for-update`, {
+    method: "POST",
+    headers: { [CONSOLE_REQUEST_HEADER]: "1", "content-type": "application/json" },
+    body: JSON.stringify({ expectedPid: probe.pid, expectedAppDirectory: options.appDirectory }),
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) throw new Error(`console update shutdown failed: HTTP ${response.status}`);
+  const deadline = Date.now() + 5_000;
+  while (processIsAlive(probe.pid)) {
+    if (Date.now() >= deadline) throw new Error("console did not exit before update");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    // Permission errors and unexpected failures cannot prove it exited.
+    return true;
+  }
+}
+
 export interface OpenConsoleOptions {
   appDirectory: string;
   entryPath: string;

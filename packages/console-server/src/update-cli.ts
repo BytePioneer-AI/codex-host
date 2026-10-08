@@ -14,7 +14,13 @@ export async function runUpdateCommand(
     write(`codexhost ${checked.currentVersion} is up to date.`);
     return;
   }
-  if (!checked.installationAvailable) throw new Error("No supported update for this installation");
+  if (!checked.installationAvailable) {
+    // Windows and macOS Updaters require a Launcher cleanup handoff, which a terminal cannot grant.
+    const release = checked.releaseNotesUrl ? ` (${checked.releaseNotesUrl})` : "";
+    throw new Error(
+      `codexhost ${checked.latestVersion} is available but cannot be installed from the terminal here. Update from Codex settings, or install the release manually${release}.`,
+    );
+  }
   write(`Updating codexhost ${checked.currentVersion} → ${checked.latestVersion}...`);
   const { status } = await updates.start(target);
   if (status.phase === "failed") throw new Error(status.error ?? "Update failed");

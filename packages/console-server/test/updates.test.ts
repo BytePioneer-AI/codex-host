@@ -1,9 +1,13 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 
-import { createBackgroundUpdateManager } from "@codexhost/update-manager";
+import {
+  createBackgroundUpdateManager,
+  expectedInstallerAssetName,
+} from "@codexhost/update-manager";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createConsoleUpdates, type ConsoleUpdateTarget } from "../src/updates.js";
@@ -24,6 +28,35 @@ const release = {
   releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.1.0",
   assets: [],
 };
+const releaseWithInstallers = {
+  ...release,
+  assets: (["windows-x64", "macos-arm64"] as const).map((target) => {
+    const name = expectedInstallerAssetName(release.version, target);
+    return {
+      name,
+      size: 1024,
+      digest: `sha256:${"a".repeat(64)}`,
+      downloadUrl: `https://github.com/BytePioneer-AI/codex-host/releases/download/v${release.version}/${name}`,
+    };
+  }),
+};
+
+const offlineHandoffCases = [
+  { platform: "win32", distribution: "npm", target: "windows-x64", installation: "npm" },
+  {
+    platform: "win32",
+    distribution: "installer",
+    target: "windows-x64",
+    installation: "windows-installer",
+  },
+  { platform: "darwin", distribution: "npm", target: "macos-arm64", installation: "npm" },
+  {
+    platform: "darwin",
+    distribution: "installer",
+    target: "macos-arm64",
+    installation: "macos-dmg",
+  },
+] as const;
 
 async function npmLayout(platform: NodeJS.Platform = process.platform) {
   const packageRoot = path.join(root, "package");
@@ -57,10 +90,11 @@ async function npmLayout(platform: NodeJS.Platform = process.platform) {
 
 describe("console updates", () => {
   it("reports an available update from distribution metadata alone", async () => {
-    const { target, environment } = await npmLayout();
+    const { target, environment } = await npmLayout("linux");
     const updates = createConsoleUpdates({
       onHandedOff: vi.fn(),
       environment,
+      platform: "linux",
       stateDirectory: path.join(root, "state"),
       fetchLatest: async () => release,
     });
@@ -73,6 +107,65 @@ describe("console updates", () => {
       error: null,
     });
   });
+
+  it.each(offlineHandoffCases)(
+    "reports offline $platform $distribution updates without offering installation",
+    async ({ platform, distribution, target: releaseTarget, installation }) => {
+      const { target, environment } = await npmLayout(platform);
+      target.distribution = {
+        schemaVersion: 1,
+        version: "1.0.0",
+        distribution,
+        target: releaseTarget,
+      };
+      const updates = createConsoleUpdates({
+        onHandedOff: vi.fn(),
+        environment,
+        platform,
+        stateDirectory: path.join(root, "state"),
+        fetchLatest: async () => releaseWithInstallers,
+      });
+
+      await expect(updates.check(target)).resolves.toMatchObject({
+        installation,
+        latestVersion: "1.1.0",
+        updateAvailable: true,
+        installationAvailable: false,
+        releaseNotes: "Fixes",
+        releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.1.0",
+        error: null,
+      });
+    },
+  );
+
+  it.each(offlineHandoffCases)(
+    "rejects offline $platform $distribution starts before acquiring a lock or fetching the release",
+    async ({ platform, distribution, target: releaseTarget }) => {
+      const { target, environment } = await npmLayout(platform);
+      target.distribution = {
+        schemaVersion: 1,
+        version: "1.0.0",
+        distribution,
+        target: releaseTarget,
+      };
+      const fetchLatest = vi.fn(async () => release);
+      const stateDirectory = path.join(root, "state");
+      const updates = createConsoleUpdates({
+        onHandedOff: vi.fn(),
+        environment,
+        platform,
+        stateDirectory,
+        fetchLatest,
+      });
+
+      await expect(updates.start(target)).rejects.toMatchObject({
+        code: "unsupported",
+        message: expect.stringContaining("Codex settings"),
+      });
+      expect(fetchLatest).not.toHaveBeenCalled();
+      expect(existsSync(stateDirectory)).toBe(false);
+    },
+  );
 
   it("hands off to the Updater before returning", async () => {
     const { target, environment } = await npmLayout("linux");

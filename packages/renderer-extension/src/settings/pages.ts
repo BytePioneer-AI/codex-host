@@ -325,7 +325,9 @@ function updatesPage(
       manualNpm.hidden = true;
       const manualNpmDescription = document.createElement("p");
       manualNpmDescription.className = "settings-update-manual-description";
-      manualNpmDescription.textContent = messages.updateManualNpmDescription;
+      manualNpmDescription.textContent = windows
+        ? messages.updateWindowsNpmDescription
+        : messages.updateManualNpmDescription;
       const manualNpmCommandRow = document.createElement("div");
       manualNpmCommandRow.className = "settings-update-command";
       const manualNpmCommand = document.createElement("code");
@@ -401,11 +403,13 @@ function updatesPage(
 
       // Presentation-only: emphasise the manual path once the automatic one has
       // visibly failed.
-      const setManualFallback = (fallback: boolean): void => {
+      const setManualFallback = (fallback: boolean, manualOnly = false): void => {
         // While automatic update works, manual download is a one-line escape hatch;
         // once it fails, the section returns at full weight.
         controls.className =
-          !fallback && !windows ? "settings-update-controls is-quiet" : "settings-update-controls";
+          !fallback && !manualOnly
+            ? "settings-update-controls is-quiet"
+            : "settings-update-controls";
         manualNpmDescription.textContent = windows
           ? messages.updateWindowsNpmDescription
           : fallback
@@ -589,13 +593,14 @@ function updatesPage(
           result.status?.phase === "failed" && result.status.version === result.latestVersion
             ? result.status
             : null;
+        const manualOnly = result.updateAvailable && !result.installationAvailable && !result.error;
         const view = result.error ? "error" : result.updateAvailable ? "available" : "current";
         panel.dataset.updateState = view;
         panel.replaceChildren();
-        setManualFallback(Boolean(result.error) || actionableStatus !== null);
+        setManualFallback(Boolean(result.error) || actionableStatus !== null, manualOnly);
         // Every state gets a status line; a bare button in an empty card reads as unfinished.
         const inlineUpdate =
-          !result.error && !windows && !actionableStatus && result.updateAvailable;
+          !result.error && !actionableStatus && result.updateAvailable && !manualOnly;
         if (inlineUpdate) panel.dataset.inline = "";
         else delete panel.dataset.inline;
         panel.append(
@@ -606,11 +611,11 @@ function updatesPage(
               ? (statusMessage(actionableStatus, messages) ?? messages.updateFailed)
               : result.error
                 ? messages.updateFailed
-                : result.updateAvailable
-                  ? windows
-                    ? messages.updateWindowsManualRequired
-                    : messages.updateAvailable
-                  : messages.updateUpToDate,
+                : manualOnly
+                  ? messages.updateManualRequired
+                  : result.updateAvailable
+                    ? messages.updateAvailable
+                    : messages.updateUpToDate,
           ),
         );
         if (actionableStatus?.error) {
@@ -626,7 +631,7 @@ function updatesPage(
           panel.append(error);
         }
         const buttons: HTMLElement[] = [];
-        if (!windows && result.updateAvailable && result.installationAvailable) {
+        if (result.updateAvailable && result.installationAvailable) {
           const update = document.createElement("button");
           update.type = "button";
           update.className = "settings-command-button";

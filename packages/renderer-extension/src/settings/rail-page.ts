@@ -104,6 +104,8 @@ export function attachRendererSettingsRailPage(
     // Settings only covers the native page. Reselecting an already-current Home
     // would reset its conversation to `/`; dismiss the cover instead. If the
     // native location or selection is unclear/changed, leave navigation alone.
+    // This document capture handler assumes native navigation runs later (currently
+    // during bubbling). Recheck this ordering if Desktop adds earlier capture listeners.
     if (
       event.button === 0 &&
       !event.metaKey &&

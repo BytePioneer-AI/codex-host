@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -234,6 +234,195 @@ describe("Host update coordinator", () => {
       expect(await readFile(updaterRequestPath, "utf8")).not.toEqual(""),
     );
     expect(spawnUpdater).not.toHaveBeenCalled();
+  });
+
+  it("checks Windows npm releases but requires a manual update before locking or preparing", async () => {
+    const fixture = await npmFixture();
+    const localAppData = path.join(fixture.root, "local-app-data");
+    fixture.environment.LOCALAPPDATA = localAppData;
+    await writeFile(
+      path.join(path.dirname(fixture.hostRuntimePath), "codexhost-distribution.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.2",
+        distribution: "npm",
+        target: "windows-x64",
+      }),
+    );
+    await file(
+      path.join(path.dirname(fixture.hostRuntimePath), "..", "libexec", "codexhost-updater.exe"),
+    );
+    const spawnUpdater = vi.fn(() => ({ pid: 779 }) as unknown as ChildProcess);
+    const prepareNpm = vi.fn(async () => {
+      throw new Error("Windows npm updates must not be prepared");
+    });
+    const manager = {
+      ...createBackgroundUpdateManager({
+        platform: "win32",
+        randomId: () => "windows",
+        spawnUpdater,
+        now: () => 10_000,
+      }),
+      prepareNpm,
+    };
+    const fetchLatest = vi.fn(async () => release());
+    const coordinator = createHostUpdateCoordinator({
+      hostRuntimePath: fixture.hostRuntimePath,
+      environment: fixture.environment,
+      platform: "win32",
+      architecture: "x64",
+      manager,
+      fetchLatest,
+    });
+
+    await expect(coordinator.start()).rejects.toThrow(
+      "Windows npm installations require a manual update",
+    );
+    await expect(readdir(path.join(localAppData, "codexhost", "updates"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(fetchLatest).not.toHaveBeenCalled();
+    await expect(coordinator.check()).resolves.toMatchObject({
+      currentVersion: "1.2.2",
+      installation: "npm",
+      latestVersion: "1.2.3",
+      updateAvailable: true,
+      installationAvailable: false,
+      releaseNotes: "Release 1.2.3",
+      releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+      error: null,
+    });
+    await expect(coordinator.start()).rejects.toThrow(
+      "Windows npm installations require a manual update",
+    );
+    expect(fetchLatest).toHaveBeenCalledTimes(1);
+    expect(prepareNpm).not.toHaveBeenCalled();
+    expect(spawnUpdater).not.toHaveBeenCalled();
+  });
+
+  it("hands a verified Windows installer to Launcher without starting the Helper", async () => {
+    const fixture = await npmFixture();
+    const localAppData = path.join(fixture.root, "local-app-data");
+    fixture.environment.LOCALAPPDATA = localAppData;
+    await writeFile(
+      path.join(path.dirname(fixture.hostRuntimePath), "codexhost-distribution.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.2",
+        distribution: "installer",
+        target: "windows-x64",
+      }),
+    );
+    await file(path.join(fixture.root, "platform", "libexec", "codexhost-updater.exe"));
+    const bytes = Buffer.from("windows-installer-fixture");
+    const spawnUpdater = vi.fn(() => ({ pid: 780 }) as unknown as ChildProcess);
+    const manager = createBackgroundUpdateManager({
+      platform: "win32",
+      randomId: () => "windows-installer",
+      spawnUpdater,
+      download: async (_source, destination) => {
+        await writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
+        return { bytes: bytes.length, finalUrl: "https://downloads.example.test/final" };
+      },
+    });
+    const coordinator = createHostUpdateCoordinator({
+      hostRuntimePath: fixture.hostRuntimePath,
+      environment: fixture.environment,
+      platform: "win32",
+      architecture: "x64",
+      manager,
+      fetchLatest: async () => ({
+        ...release(),
+        assets: [
+          {
+            name: "codexhost-1.2.3-windows-x64.exe",
+            size: bytes.length,
+            digest: `sha256:${digest(bytes)}`,
+            downloadUrl:
+              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+          },
+        ],
+      }),
+    });
+
+    await expect(coordinator.start()).resolves.toMatchObject({
+      status: { version: "1.2.3", installation: "windows-installer" },
+    });
+    const operation = path.join(
+      localAppData,
+      "codexhost",
+      "updates",
+      "update-1.2.3-windows-installer",
+    );
+    const requestPath = path.join(operation, "request-v1.json");
+    await vi.waitFor(async () => expect(await readFile(requestPath, "utf8")).not.toEqual(""));
+    const request = JSON.parse(await readFile(requestPath, "utf8"));
+    expect(request.installation).toMatchObject({
+      kind: "windows-installer",
+      installer_path: path.join(operation, "update.exe"),
+      artifact_sha256: digest(bytes),
+      install_root: path.join(fixture.root, "platform"),
+    });
+    await expect(coordinator.status()).resolves.toMatchObject({
+      status: { phase: "prepared", installation: "windows-installer" },
+    });
+    expect(spawnUpdater).not.toHaveBeenCalled();
+  });
+
+  it("does not reinstall an already installed release after a failed restart", async () => {
+    const fixture = await npmFixture();
+    const localAppData = path.join(fixture.root, "local-app-data");
+    fixture.environment.LOCALAPPDATA = localAppData;
+    await writeFile(
+      path.join(path.dirname(fixture.hostRuntimePath), "codexhost-distribution.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.3",
+        distribution: "installer",
+        target: "windows-x64",
+      }),
+    );
+    await file(path.join(fixture.root, "platform", "libexec", "codexhost-updater.exe"));
+    const stateDirectory = path.join(localAppData, "codexhost", "updates");
+    const operation = path.join(stateDirectory, "update-failed-restart");
+    await mkdir(operation, { recursive: true });
+    await writeFile(
+      path.join(operation, "status-v1.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.3",
+        installation: "windows-installer",
+        phase: "failed",
+        updatedAt: Math.floor(Date.now() / 1000),
+        error: "Restart readiness check failed",
+      }),
+    );
+    const prepareWindowsInstaller = vi.fn(async () => {
+      throw new Error("An installed release must not be prepared again");
+    });
+    const coordinator = createHostUpdateCoordinator({
+      hostRuntimePath: fixture.hostRuntimePath,
+      environment: fixture.environment,
+      platform: "win32",
+      architecture: "x64",
+      manager: {
+        ...createBackgroundUpdateManager({ platform: "win32" }),
+        prepareWindowsInstaller,
+      },
+      fetchLatest: async () => release("1.2.3"),
+    });
+
+    await expect(coordinator.check()).resolves.toMatchObject({
+      currentVersion: "1.2.3",
+      latestVersion: "1.2.3",
+      updateAvailable: false,
+      installationAvailable: false,
+      status: { version: "1.2.3", phase: "failed", error: "Restart readiness check failed" },
+    });
+    await expect(coordinator.start()).rejects.toThrow(
+      "The selected update is no longer the current GitHub Release",
+    );
+    expect(prepareWindowsInstaller).not.toHaveBeenCalled();
   });
 
   it("returns before a macOS artifact download completes", async () => {

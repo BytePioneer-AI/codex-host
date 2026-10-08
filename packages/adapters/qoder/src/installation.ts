@@ -1,3 +1,4 @@
+import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 import {
   createInstallationManager,
   installationVersion,
@@ -50,8 +51,13 @@ export function createQoderInstallation(
         };
       if (
         !/already\s+(?:on|at)\s+(?:the\s+)?latest|up.to.date|no updates?\s+available/i.test(output)
-      )
-        throw new Error("Qoder update check returned an unknown response");
+      ) {
+        const diagnostic = `Qoder update check returned an unknown response: ${sanitizeDiagnosticTail(output)}`;
+        // Local diagnostics only: redaction does not make native output safe for the UI.
+        // Host must keep mapping this exception to its generic installation error.
+        console.warn(diagnostic);
+        throw new Error(diagnostic);
+      }
       return {
         currentVersion,
         latestVersion: currentVersion,

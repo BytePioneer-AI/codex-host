@@ -62,6 +62,20 @@ describe("update command", () => {
     await expect(runUpdateCommand(target, updates, vi.fn())).rejects.toThrow("Quit Codex Desktop");
   });
 
+  it("points to Codex settings or a manual install when the terminal cannot install", async () => {
+    const updates = fixture();
+    const checked = await updates.check(target);
+    updates.check.mockResolvedValue({
+      ...checked,
+      installationAvailable: false,
+      releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.1.0",
+    });
+    await expect(runUpdateCommand(target, updates, vi.fn())).rejects.toThrow(
+      "codexhost 1.1.0 is available but cannot be installed from the terminal here. Update from Codex settings, or install the release manually (https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.1.0).",
+    );
+    expect(updates.start).not.toHaveBeenCalled();
+  });
+
   it("rejects unknown arguments before inspecting or updating", async () => {
     await expect(updateFromCommand("/unused", ["extra"])).rejects.toThrow("accepts no arguments");
   });

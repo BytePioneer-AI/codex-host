@@ -1,6 +1,6 @@
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JsonLineCollector, requestId } from "./app-server-host-fixture.js";
+import { JsonLineCollector, requestId, writeRequest } from "./app-server-host-fixture.js";
 
 const timeoutMs = process.platform === "win32" ? 10_000 : 2_000;
 
@@ -25,7 +25,7 @@ describe("JsonLineCollector", () => {
     output.end();
   });
 
-  it("still rejects missing output at the platform-specific deadline", async () => {
+  it("rejects missing output at the platform-specific deadline and retains a later response", async () => {
     vi.useFakeTimers();
     const output = new PassThrough();
     const collector = new JsonLineCollector(output);
@@ -34,6 +34,13 @@ describe("JsonLineCollector", () => {
 
     await vi.advanceTimersByTimeAsync(timeoutMs);
     await rejection;
+    expect(vi.getTimerCount()).toBe(0);
+
+    writeRequest(output, { id: 34, result: {} });
+    await expect(collector.waitFor((message) => requestId(message, 34))).resolves.toEqual({
+      id: 34,
+      result: {},
+    });
     expect(vi.getTimerCount()).toBe(0);
     output.end();
   });

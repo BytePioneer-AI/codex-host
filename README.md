@@ -99,7 +99,7 @@ Grab the installer for your platform from [Releases](https://github.com/BytePion
 
 > Linux is supported on x64 and ARM64. See the [Linux guide](docs/platforms/linux/linux.md).
 
-Run `codexhost update` to check for the latest release and prepare an upgrade from your terminal. Quit Codex Desktop first if an upgrade is available. Once preparation completes, the background updater installs it and restarts codexhost. An up-to-date installation exits without changes.
+Run `codexhost update` to check for the latest release from your terminal. On Linux npm installations, quit Codex Desktop first if an upgrade is available; once preparation completes, the background updater installs it and restarts codexhost. On Windows and macOS the command only reports the available version; update from Codex settings or install the release manually. An up-to-date installation exits without changes.
 
 <details>
 <summary>Installation troubleshooting</summary>

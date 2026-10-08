@@ -5,14 +5,13 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
-import { DraftAgentController, KNOWN_RENDERER_AGENTS } from "../src/agent-selection-state.js";
+import { DraftAgentController } from "../src/agent-selection-state.js";
 import { restoredThreadOwnership } from "../src/renderer-binding-probe.js";
 import { modelSelectionForAgent } from "../src/versioned-renderer-adapter.js";
-import { RENDERER_AGENT_INSTALL_URLS } from "../src/renderer-agent-picker.js";
+import { pluginDescriptor } from "../../../tests/fixtures/harness-plugin-descriptors.js";
 
 describe("CodeBuddy Desktop selection", () => {
   it("keeps model/effort/permissions isolated and round trips the shared plugin carrier", () => {
-    expect(KNOWN_RENDERER_AGENTS).toContain("codebuddy");
     const controller = new DraftAgentController<object>(),
       composer = {};
     const model = harnessModelRefSchema.parse({ id: "cb.bmF0aXZl" });
@@ -42,7 +41,7 @@ describe("CodeBuddy Desktop selection", () => {
     ).toEqual({ agent: "codebuddy", model, thinkingOptionId: thought, permissionModeId: mode });
     controller.setExternalThinkingOption(composer, "codebuddy", undefined);
     expect(controller.thinkingOptionForAgent(composer, "codebuddy")).toBeUndefined();
-    expect(RENDERER_AGENT_INSTALL_URLS.codebuddy).toBe(
+    expect(pluginDescriptor("codebuddy").links?.installation).toBe(
       "https://www.codebuddy.ai/docs/zh/cli/overview",
     );
   });
@@ -56,6 +55,6 @@ describe("CodeBuddy Desktop selection", () => {
         locked: true,
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
       }),
-    ).toThrow("incompatible");
+    ).toThrow("identity mismatch");
   });
 });

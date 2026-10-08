@@ -14,6 +14,18 @@ import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const runtimeLicenses = [
   {
+    packageName: "@deepseek-ai/cordis",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cordis-LICENSE.txt",
+  },
+  {
+    packageName: "@deepseek-ai/cosmokit",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cosmokit-LICENSE.txt",
+  },
+  {
     packageName: "@agentclientprotocol/sdk",
     license: "Apache-2.0",
     source: "LICENSE",
@@ -262,6 +274,8 @@ export function expectedPayloadPaths(target) {
     "licenses/OpenCode-v2-Client-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
+    "licenses/Cordis-LICENSE.txt",
+    "licenses/Cosmokit-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",

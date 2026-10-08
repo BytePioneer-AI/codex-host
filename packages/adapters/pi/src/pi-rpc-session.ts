@@ -22,6 +22,7 @@ import {
   optionalPiStateContextUsage,
   parsePiSessionUsage,
   parsePiStateContextUsage,
+  type PiUsageObservation,
 } from "./pi-usage.js";
 import type { PiNativeModel, PiNativeModelRef } from "./pi-model-catalog.js";
 import { verifyPiSessionCwd } from "./pi-session-file.js";
@@ -493,6 +494,8 @@ export class PiRpcSession {
   readonly #processAdapter: PiRpcProcessAdapter;
   #activeTurn: ActiveTurn | null = null;
   #autonomousTurnHandler: ((turn: PiAutonomousTurn) => void) | null = null;
+  #usageHandler: ((observation: PiUsageObservation) => void) | null = null;
+  #usageRequestStartedAtMs: number | null = null;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
@@ -555,6 +558,42 @@ export class PiRpcSession {
 
   inspectSubagent(id: string): Promise<PiSubagentInspection> {
     return this.#subagents.inspect(id);
+  }
+
+  setUsageHandler(handler: (observation: PiUsageObservation) => void): void {
+    this.#usageHandler = handler;
+  }
+
+  /** Every finished assistant message is one model request, with or without an active Turn. */
+  #observeUsage(value: Record<string, unknown>): void {
+    if (value.type === "message_start") {
+      this.#usageRequestStartedAtMs = null;
+      return;
+    }
+    // Generation starts at the first output token: the first thinking, text or tool-call block
+    // or delta. Prefill before it is excluded, as in DeepSeek dsh's decode time.
+    if (value.type === "message_update") {
+      const event = value.assistantMessageEvent;
+      if (
+        this.#usageRequestStartedAtMs === null &&
+        isRecord(event) &&
+        typeof event.type === "string" &&
+        /^(text|thinking|reasoning|thought|toolcall)_(start|delta)$/u.test(event.type)
+      ) {
+        this.#usageRequestStartedAtMs = Date.now();
+      }
+      return;
+    }
+    if (value.type === "message_end" && isRecord(value.message)) {
+      if (value.message.role !== "assistant") return;
+      const startedAtMs = this.#usageRequestStartedAtMs;
+      this.#usageRequestStartedAtMs = null;
+      this.#usageHandler?.({
+        message: value.message,
+        startedAtMs,
+        completedAtMs: Date.now(),
+      });
+    }
   }
 
   setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void {
@@ -1013,6 +1052,7 @@ export class PiRpcSession {
       return;
     }
     if (this.#subagents.handle(value)) return;
+    this.#observeUsage(value);
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
       this.#compactionTurn = this.#activeTurn;

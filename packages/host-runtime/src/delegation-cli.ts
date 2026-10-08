@@ -28,6 +28,17 @@ function normalizeThreadId(value: string): string {
   return normalized;
 }
 
+function readThreadReference(value: string): { threadId: string; hostId?: string } {
+  if (!value.startsWith("thread://")) return { threadId: normalizeThreadId(value) };
+  const match = /^thread:\/\/([^/?#]+)(?:\?hostId=([^&#]+))?$/u.exec(value);
+  if (!match?.[1])
+    throw new DelegationControlError("INVALID_ARGUMENT", "Thread reference is invalid");
+  return {
+    threadId: normalizeThreadId(match[1]),
+    ...(match[2] ? { hostId: decodeURIComponent(match[2]) } : {}),
+  };
+}
+
 function positiveInteger(value: string | undefined, name: string, maximum?: number): number {
   const number = Number(value);
   if (!value || !Number.isSafeInteger(number) || number <= 0 || (maximum && number > maximum)) {
@@ -332,7 +343,13 @@ export async function runDelegationCli(input: {
       return 0;
     }
     if (group === "thread" && (command === "read" || command === "wait")) {
-      rejectUnknown(parsed, ["--view", "--cursor", "--limit", "--timeout-ms"]);
+      rejectUnknown(parsed, [
+        "--view",
+        "--cursor",
+        "--limit",
+        "--timeout-ms",
+        ...(command === "read" ? ["--host"] : []),
+      ]);
       if (parsed.positionals.length !== 1)
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
@@ -354,8 +371,19 @@ export async function runDelegationCli(input: {
       const threadId = parsed.positionals[0];
       if (!threadId)
         throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
+      const reference =
+        command === "read"
+          ? readThreadReference(threadId)
+          : { threadId: normalizeThreadId(threadId) };
+      const hostId = value(parsed, "--host");
+      if (hostId && reference.hostId && hostId !== reference.hostId)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--host conflicts with the Thread reference",
+        );
       const body = {
-        threadId: normalizeThreadId(threadId),
+        ...reference,
+        ...(hostId ? { hostId } : {}),
         view,
         ...(value(parsed, "--cursor") ? { cursor: value(parsed, "--cursor") } : {}),
         ...(value(parsed, "--limit")

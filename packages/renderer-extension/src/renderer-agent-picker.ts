@@ -8,8 +8,8 @@ import type {
   RendererAgent,
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
-import type { CodexAccountSummary } from "@codexhost/shared-contracts";
-import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "./renderer-agent-icon.js";
+import type { CodexAccountSummary, HarnessPluginDescriptor } from "@codexhost/shared-contracts";
+import { createRendererAgentIcon, rendererAgentLabel } from "./renderer-agent-icon.js";
 import { requestConnectionsPageFocus } from "./settings/connections-page.js";
 import {
   rendererSettingsMessages,
@@ -58,26 +58,6 @@ function openConnectionsSettings(opener?: HTMLElement): void {
   openSettingsPage("connections", opener);
 }
 
-export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = {
-  pi: "https://pi.dev/",
-  "claude-code": "https://code.claude.com/docs/en/quickstart",
-  "deepseek-harness": "https://github.com/deepseek-ai/deepseek-harness",
-  opencode: "https://opencode.ai/docs/",
-  grok: "https://grok.com/",
-  omp: "https://github.com/can1357/oh-my-pi",
-  antigravity: "https://antigravity.google/product/antigravity-cli",
-  "kiro-cli": "https://kiro.dev/docs/cli/",
-  codebuddy: "https://www.codebuddy.ai/docs/zh/cli/overview",
-  workbuddy: "https://www.workbuddy.ai/docs/workbuddy/Quickstart",
-  "cursor-cli": "https://cursor.com/docs/cli/installation",
-  hermes: "https://hermes-agent.nousresearch.com/docs",
-  qoder: "https://docs.qoder.com/",
-  "qoder-cn": "https://docs.qoder.cn/",
-  "kimi-code": "https://moonshotai.github.io/kimi-code/en/guides/getting-started.html",
-  zcode:
-    "https://github.com/BytePioneer-AI/codex-host/blob/main/docs/harnesses/zcode/zcode-harness-integration.md#%E5%AE%89%E8%A3%85",
-};
-
 type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 
 export const CONTROL_ATTRIBUTE = "data-codexhost-agent-control";
@@ -107,6 +87,7 @@ export interface RendererAgentPickerControl {
   ownershipError: HTMLElement;
   menu: HTMLElement;
   agents: readonly RendererAgent[];
+  plugins: readonly HarnessPluginDescriptor[];
   options: Partial<Record<RendererAgent, AgentOptionControl>>;
   updateAvailability(availability: AgentAvailability): void;
   close(): void;
@@ -144,12 +125,13 @@ export function rendererAgentMenuPlacement(
 export function rendererAgentPickerTooltip(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   activeAccount: CodexAccountSummary | undefined,
+  plugin?: HarnessPluginDescriptor,
 ): string {
   const account =
     state.agent === "codex" && activeAccount
       ? ` · ${activeAccount.email ?? activeAccount.label}`
       : "";
-  return `Agent: ${RENDERER_AGENT_LABELS[state.agent]}${account}${state.phase === "locked" ? " (locked)" : ""}`;
+  return `Agent: ${rendererAgentLabel(state.agent, plugin)}${account}${state.phase === "locked" ? " (locked)" : ""}`;
 }
 
 export function rendererAgentPickerView(
@@ -158,6 +140,7 @@ export function rendererAgentPickerView(
   switching: boolean,
   agents: readonly RendererAgent[],
   availability: AgentAvailability = {},
+  plugin?: HarnessPluginDescriptor,
 ): RendererAgentPickerView {
   const optionDisabled = Object.fromEntries(
     agents.map((agent) => [
@@ -178,8 +161,9 @@ export function rendererAgentPickerView(
       .map((agent) => [agent, availability[agent] === "error"]),
   ) as Partial<Record<ExternalRendererAgent, boolean>>;
   return {
-    label: RENDERER_AGENT_LABELS[state.agent],
-    triggerDisabled: switching || state.phase === "locked" || agents.length < 2,
+    label: rendererAgentLabel(state.agent, plugin),
+    triggerDisabled:
+      switching || state.phase === "locked" || (agents.length < 2 && state.agent === "codex"),
     nativeModelHidden: switching || state.agent !== "codex",
     optionDisabled,
     downloadVisible,
@@ -216,6 +200,7 @@ export function mountRendererAgentPicker(
   onDownload: (agent: ExternalRendererAgent) => void,
   onOpen?: () => void,
   groupPreference: AgentGroupPreferenceStore = getSharedAgentGroupPreferenceStore(),
+  plugins: readonly HarnessPluginDescriptor[] = [],
 ): RendererAgentPickerControl {
   const root = document.createElement("div");
   root.setAttribute(CONTROL_ATTRIBUTE, composerId);
@@ -370,13 +355,14 @@ export function mountRendererAgentPicker(
     check.style.visibility = "hidden";
 
     const label = document.createElement("span");
-    label.textContent = RENDERER_AGENT_LABELS[agent];
+    const plugin = plugins.find(({ id }) => id === agent);
+    label.textContent = rendererAgentLabel(agent, plugin);
     label.style.minWidth = "0";
     label.style.flex = "1 1 auto";
     label.style.overflow = "hidden";
     label.style.textOverflow = "ellipsis";
     label.style.whiteSpace = "nowrap";
-    button.append(createRendererAgentIcon(agent), label);
+    button.append(createRendererAgentIcon(agent, 20, document, plugin), label);
     button.addEventListener("click", () => {
       const selected = button.getAttribute("aria-pressed") === "true";
       close();
@@ -557,7 +543,11 @@ export function mountRendererAgentPicker(
     // Order follows `groupPreference.list()` — the same order the user just
     // dragged into on the Connections page — not `enabledAgents`'s fixed
     // (host-configured) order, so reordering actually shows up here too.
-    for (const entry of groupPreference.list()) {
+    const catalog = enabledAgents.map((id) => ({
+      id,
+      name: plugins.find((plugin) => plugin.id === id)?.name ?? id,
+    }));
+    for (const entry of groupPreference.list(notInstalled, catalog)) {
       const agent = entry.agent as RendererAgent;
       if (!enabledSet.has(agent) || seen.has(agent)) continue;
       seen.add(agent);
@@ -665,6 +655,7 @@ export function mountRendererAgentPicker(
     ownershipError,
     menu,
     agents: [...enabledAgents],
+    plugins,
     options,
     updateAvailability(availability) {
       const next = new Set(
@@ -709,10 +700,18 @@ export function renderRendererAgentPicker(
     switching,
     control.agents,
     availability,
+    control.plugins.find(({ id }) => id === state.agent),
   );
   control.updateAvailability(availability);
   if (control.iconSlot.dataset.agent !== state.agent) {
-    control.iconSlot.replaceChildren(createRendererAgentIcon(state.agent));
+    control.iconSlot.replaceChildren(
+      createRendererAgentIcon(
+        state.agent,
+        20,
+        document,
+        control.plugins.find(({ id }) => id === state.agent),
+      ),
+    );
     control.iconSlot.dataset.agent = state.agent;
   }
   control.trigger.disabled = view.triggerDisabled || ownershipError;
@@ -727,7 +726,11 @@ export function renderRendererAgentPicker(
   );
   control.trigger.title = ownershipError
     ? pickerGroupMessages().ownershipErrorLabel
-    : rendererAgentPickerTooltip(state, currentCodexAccount ?? undefined);
+    : rendererAgentPickerTooltip(
+        state,
+        currentCodexAccount ?? undefined,
+        control.plugins.find(({ id }) => id === state.agent),
+      );
   control.trigger.style.cursor = control.trigger.disabled ? "not-allowed" : "pointer";
   control.trigger.style.opacity = control.trigger.disabled && !switching ? "0.72" : "1";
   control.iconSlot.style.display = switching || ownershipError ? "none" : "inline-flex";
@@ -762,7 +765,10 @@ export function renderRendererAgentPicker(
         option.action.style.color = "#f87171";
         option.action.style.font = "800 13px/1 system-ui, sans-serif";
         option.action.style.opacity = "1";
-        const label = `${RENDERER_AGENT_LABELS[agent]} connection error — open Settings for details`;
+        const label = `${rendererAgentLabel(
+          agent,
+          control.plugins.find(({ id }) => id === agent),
+        )} connection error — open Settings for details`;
         option.action.setAttribute("aria-label", label);
         option.action.title = label;
       } else {
@@ -771,7 +777,10 @@ export function renderRendererAgentPicker(
         option.action.style.color = "inherit";
         option.action.style.font = "600 18px/1 system-ui, sans-serif";
         option.action.style.opacity = "0.72";
-        const label = `Install ${RENDERER_AGENT_LABELS[agent]}`;
+        const label = `Install ${rendererAgentLabel(
+          agent,
+          control.plugins.find(({ id }) => id === agent),
+        )}`;
         option.action.setAttribute("aria-label", label);
         option.action.title = label;
       }

@@ -1,3 +1,4 @@
+import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
 import type {
   HarnessAccountSnapshot,
   HarnessInstallationState,
@@ -20,7 +21,8 @@ import type {
   NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import type { HostUsage } from "./usage.js";
+import type { HostUsage, HostUsageRequest } from "./usage.js";
+import type { HarnessSessionUsageCapability } from "./session-usage.js";
 import type { HarnessCredentialExport, HarnessCredentialImports } from "./credential-imports.js";
 
 export type {
@@ -83,7 +85,10 @@ export interface CreateSessionInput {
 }
 
 export interface ResumeSessionInput {
-  /** Saved selection hints for Harnesses that initialize configuration lazily. */
+  /** Persisted configuration hints, not new user commands. The Adapter owns restoration:
+   * initialize lazy configuration, restore a saved mode, or retain authoritative native state.
+   * Host never replays configuration commands after open; publish the confirmed state.
+   */
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   kind: "resume";
@@ -438,6 +443,21 @@ export interface SessionUsageChangedEvent {
   observedForTurnId?: HostTurnId;
 }
 
+/** One native model request's usage; Host derives cost, cache and speed metrics from these. */
+export interface UsageRequestEvent {
+  type: "usage.request";
+  request: HostUsageRequest;
+}
+
+/**
+ * Sent after replaying native history on every open, and again with `complete: false` when a
+ * running request's usage is missing. The first one switches the Thread to Host metering.
+ */
+export interface UsageHistoryEvent {
+  type: "usage.history";
+  complete: boolean;
+}
+
 export interface SubagentStateChangedEvent {
   type: "subagent.state.changed";
   nativeSubagentId: string;
@@ -494,6 +514,8 @@ export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
   nativeTurnRef?: NativeTurnRef;
+  /** Native operation completed without a history Turn; project without persisting an identity. */
+  ephemeral?: true;
   outcome: TurnOutcome;
 }
 
@@ -512,6 +534,8 @@ export interface SessionFaultedEvent {
 export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
+  | UsageRequestEvent
+  | UsageHistoryEvent
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
@@ -603,6 +627,10 @@ export interface HarnessAdapter {
    */
   readonly liveCommandCatalog?: boolean;
   readonly sessionImport?: HarnessSessionImportCapability;
+  /** Read-only local usage for the machine-wide statistics; never starts a native process. */
+  readonly usageStatistics?: HarnessUsageStatisticsCapability;
+  /** Optional read-only usage for sessions on an already-owned native connection. */
+  readonly sessionUsage?: HarnessSessionUsageCapability;
   readonly subagents?: HarnessSubagentCapability;
   readonly webUi?: HarnessWebUiAction;
   /** Fresh read-only quota for current native authentication. Return null when unavailable;

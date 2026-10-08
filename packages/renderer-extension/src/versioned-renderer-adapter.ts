@@ -160,25 +160,6 @@ declare global {
   }
 }
 
-const KIRO_CLI_HARNESS_ID = harnessIdSchema.parse("kiro-cli");
-
-function transportModelIdForAgent(agent: RendererAgent): string | null {
-  if (agent === "pi") return PI_TRANSPORT_MODEL_ID;
-  if (agent === "claude-code") return CLAUDE_CODE_TRANSPORT_MODEL_ID;
-  if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
-  if (agent === "opencode") return OPENCODE_TRANSPORT_MODEL_ID;
-  if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
-  if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
-  if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
-  if (agent === "kiro-cli") return encodeHarnessPluginRoute({ harnessId: KIRO_CLI_HARNESS_ID });
-  if (agent === "codebuddy" || agent === "workbuddy" || agent === "cursor-cli")
-    return encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse(agent) });
-  if (agent === "qoder" || agent === "qoder-cn" || agent === "kimi-code" || agent === "zcode") {
-    return encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse(agent) });
-  }
-  return null;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -853,45 +834,16 @@ export function modelSelectionForAgent(
   thinkingOptionId?: HarnessThinkingOptionId,
   permissionModeId?: HarnessPermissionModeId,
 ): ModelPowerSelection | null {
-  const transportModelId =
-    agent === "pi"
-      ? piTransportModelId(model, thinkingOptionId)
-      : agent === "claude-code"
-        ? claudeTransportModelId(model, permissionModeId, thinkingOptionId)
-        : agent === "deepseek-harness"
-          ? deepSeekHarnessTransportModelId(model, permissionModeId)
-          : agent === "opencode"
-            ? openCodeTransportModelId(model, permissionModeId, thinkingOptionId)
-            : agent === "grok"
-              ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
-              : agent === "omp"
-                ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
-                : agent === "antigravity"
-                  ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
-                  : agent === "kiro-cli" ||
-                      agent === "codebuddy" ||
-                      agent === "workbuddy" ||
-                      agent === "cursor-cli"
-                    ? encodeHarnessPluginRoute({
-                        harnessId: harnessIdSchema.parse(agent),
-                        ...(model ? { model } : {}),
-                        ...(thinkingOptionId && agent !== "cursor-cli" ? { thinkingOptionId } : {}),
-                        ...(permissionModeId ? { permissionModeId } : {}),
-                      })
-                    : agent === "hermes"
-                      ? hermesTransportModelId(model, permissionModeId)
-                      : agent === "qoder" ||
-                          agent === "qoder-cn" ||
-                          agent === "kimi-code" ||
-                          agent === "zcode"
-                        ? encodeHarnessPluginRoute({
-                            harnessId: harnessIdSchema.parse(agent),
-                            ...(model ? { model } : {}),
-                            ...(thinkingOptionId ? { thinkingOptionId } : {}),
-                            ...(permissionModeId ? { permissionModeId } : {}),
-                          })
-                        : transportModelIdForAgent(agent);
-  return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
+  if (agent === "codex") return officialSelection;
+  return {
+    model: encodeHarnessPluginRoute({
+      harnessId: harnessIdSchema.parse(agent),
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    }),
+    reasoningEffort,
+  };
 }
 
 export function installCurrentRendererAdapter(): {

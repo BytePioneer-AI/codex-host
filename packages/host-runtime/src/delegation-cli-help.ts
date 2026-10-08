@@ -19,8 +19,9 @@ To be notified when that Turn ends, run thread watch after sending.`,
   "thread cancel": `codexhost thread cancel <thread> [--format json|compact]
 Request cancellation of the active Turn while preserving the Thread and history.
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
-  "thread read": `codexhost thread read <thread> [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
-Read immediately without starting a Turn. The default result view reports the latest Turn's status and result.
+  "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
+Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
+The default result view reports the latest Turn's status and result.
 The messages view pages visible user/Agent messages, oldest first. Default limit 25, maximum 100; --cursor and --limit require --view messages.
 hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.
 Compact messages output contains only the message page and status; compact result output includes the latest nonempty progress while running.

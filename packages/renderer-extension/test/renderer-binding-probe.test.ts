@@ -1,6 +1,8 @@
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -691,12 +693,12 @@ describe("Renderer Composer DOM behavior", () => {
 
     expect(isNativeContextUsageControlCandidate(native)).toBe(true);
     expect(nativeContextUsageControlForComposer(composer)).toBe(native);
-    expect(formatRendererCacheHitRate(99.9)).toBe("CH 99.9%");
+    expect(formatRendererCacheHitRate(99.9)).toBe("99.9%");
     expect(formatRendererCost(0.168)).toBe("$0.168");
-    expect(formatRendererTokenCount(87000)).toBe("87k");
-    expect(formatRendererTokenCount(6700)).toBe("6.7k");
-    expect(formatRendererTokenCount(375000)).toBe("375k");
-    expect(rendererUsageTriggerMaxWidth()).toBe("min(140px, 22vw)");
+    expect(formatRendererTokenCount(87000)).toBe("87K");
+    expect(formatRendererTokenCount(6700)).toBe("6.7K");
+    expect(formatRendererTokenCount(375000)).toBe("375K");
+    expect(rendererUsageTriggerMaxWidth()).toBe("min(240px, 30vw)");
   });
 
   it("places Usage beside the native context wrapper when it is present", () => {
@@ -1303,7 +1305,7 @@ describe("Renderer Composer DOM behavior", () => {
       restoredThreadOwnership({
         owner: "external",
         harnessId: "hermes",
-        transportModelId: "codexhost/plugin-v1@synthetic",
+        transportModelId: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("hermes") }),
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
         effectiveModel: harnessModelRefSchema.parse({
           id: "hermes-model-v1.emFpOmdsbS01LXR1cmJv",

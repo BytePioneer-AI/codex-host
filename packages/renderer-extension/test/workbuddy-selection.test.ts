@@ -8,16 +8,15 @@ import {
   hostThreadIdSchema,
 } from "@codexhost/shared-contracts";
 
-import { DraftAgentController, KNOWN_RENDERER_AGENTS } from "../src/agent-selection-state.js";
+import { DraftAgentController } from "../src/agent-selection-state.js";
 import { restoredThreadOwnership } from "../src/renderer-binding-probe.js";
-import { RENDERER_AGENT_LABELS } from "../src/renderer-agent-icon.js";
-import { RENDERER_AGENT_INSTALL_URLS } from "../src/renderer-agent-picker.js";
+import { rendererAgentLabel } from "../src/renderer-agent-icon.js";
+import { pluginDescriptor } from "../../../tests/fixtures/harness-plugin-descriptors.js";
 import { rendererAgentForThreadOwnership } from "../src/renderer-sidebar-agent-icons.js";
 import { modelSelectionForAgent } from "../src/versioned-renderer-adapter.js";
 
 describe("WorkBuddy Desktop selection", () => {
   it("keeps WorkBuddy configuration isolated and round trips the shared plugin route", () => {
-    expect(KNOWN_RENDERER_AGENTS).toContain("workbuddy");
     const controller = new DraftAgentController<object>();
     const composer = {};
     const workBuddyModel = harnessModelRefSchema.parse({ id: "cb.d29ya2J1ZGR5" });
@@ -69,8 +68,8 @@ describe("WorkBuddy Desktop selection", () => {
         harnessId: harnessIdSchema.parse("workbuddy"),
       }),
     ).toBe("workbuddy");
-    expect(RENDERER_AGENT_LABELS.workbuddy).toBe("WorkBuddy");
-    expect(RENDERER_AGENT_INSTALL_URLS.workbuddy).toBe(
+    expect(rendererAgentLabel("workbuddy", pluginDescriptor("workbuddy"))).toBe("WorkBuddy");
+    expect(pluginDescriptor("workbuddy").links?.installation).toBe(
       "https://www.workbuddy.ai/docs/workbuddy/Quickstart",
     );
   });
@@ -85,6 +84,6 @@ describe("WorkBuddy Desktop selection", () => {
         locked: true,
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
       }),
-    ).toThrow("incompatible");
+    ).toThrow("identity mismatch");
   });
 });

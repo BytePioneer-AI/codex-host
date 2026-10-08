@@ -102,6 +102,10 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
+    env:
+      # Skip rust-toolchain.toml component installs (rustfmt/clippy); they conflict with the
+      # runner-provided toolchain on Linux ARM64 and the release build does not need them.
+      RUSTUP_TOOLCHAIN: 1.97.1
     strategy:
       fail-fast: false
       matrix:
@@ -175,6 +179,14 @@ jobs:
           --version ${{ needs.prepare.outputs.version }}
           --pack
           --skip-build
+
+      - name: Setup cargo-zigbuild
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zigbuild"
+          "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
+          echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
 
       - name: Build and smoke-test Linux npm package
         if: runner.os == 'Linux'

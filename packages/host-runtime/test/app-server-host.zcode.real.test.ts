@@ -51,7 +51,12 @@ describe.skipIf(!app)("ZCode installed plugin through Host routing", () => {
           content: [],
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 5, output_tokens: 0 },
+          usage: {
+            input_tokens: 5,
+            output_tokens: 0,
+            cache_read_input_tokens: 3,
+            cache_creation_input_tokens: 2,
+          },
         },
       });
       event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
@@ -59,6 +64,7 @@ describe.skipIf(!app)("ZCode installed plugin through Host routing", () => {
         index: 0,
         delta: { type: "text_delta", text: "ZCODE_HOST_ROUTE_OK" },
       });
+      await new Promise((resolve) => setTimeout(resolve, 25));
       event("content_block_stop", { index: 0 });
       event("message_delta", {
         delta: { stop_reason: "end_turn", stop_sequence: null },
@@ -115,6 +121,23 @@ describe.skipIf(!app)("ZCode installed plugin through Host routing", () => {
       expect(JSON.stringify(history)).toContain("ZCODE_HOST_ROUTE_OK");
       const reread = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
       expect(reread?.turnMappings).toEqual(persisted?.turnMappings);
+      writeRequest(fixture.desktopInput, {
+        id: 713,
+        method: "codexhost/thread/usage/inspect",
+        params: { threadId },
+      });
+      const usage = await fixture.collector.waitFor((message) => requestId(message, 713));
+      expect(usage).toMatchObject({
+        result: {
+          usage: {
+            sessionCacheHitRatePercent: 30,
+            outputTokensPerSecond: expect.any(Number),
+            timeToFirstOutputMs: expect.any(Number),
+          },
+        },
+      });
+      // fixture-model has no price: metering must not invent one or reuse native cost: 0.
+      expect(usage).not.toHaveProperty("result.usage.totalCostUsd");
       expect(fixture.official.stdin.read()).toBeNull();
     } finally {
       await stopFixture(fixture);

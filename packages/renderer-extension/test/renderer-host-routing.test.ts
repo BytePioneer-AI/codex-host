@@ -1,5 +1,9 @@
 import { installRendererDraftPrewarmPolicyDirect } from "@codexhost/desktop-control";
-import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
+import {
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
+  hostThreadIdSchema,
+} from "@codexhost/shared-contracts";
 import { afterEach, assert, expect, it, vi } from "vitest";
 import { installCurrentRendererAdapter } from "../src/versioned-renderer-adapter.js";
 
@@ -273,7 +277,9 @@ it("does not copy an external carrier to a native remote Composer", async () => 
     await remote.requestClient.sendRequest("thread/start", { model: "native-model" });
     expect(remote.nativeSend).toHaveBeenCalledWith("thread/start", { model: "native-model" });
     await local.requestClient.sendRequest("thread/start", { model: "native-model" });
-    expect(local.nativeSend).toHaveBeenCalledWith("thread/start", { model: "codexhost/pi-native" });
+    expect(local.nativeSend).toHaveBeenCalledWith("thread/start", {
+      model: encodeHarnessPluginRoute({ harnessId: piRequest.harnessId }),
+    });
   } finally {
     adapter.dispose();
   }

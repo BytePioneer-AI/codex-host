@@ -217,6 +217,8 @@ export const harnessSessionStateSchema = z.custom<HarnessSessionState>((value) =
 const eventKeys = new Map<string, ReadonlySet<string>>([
   ["session.state.changed", new Set(["type", "state"])],
   ["session.usage.changed", new Set(["type", "usage", "observedForTurnId"])],
+  ["usage.request", new Set(["type", "request"])],
+  ["usage.history", new Set(["type", "complete"])],
   ["subagent.state.changed", new Set(["type", "nativeSubagentId", "status", "resultSummary"])],
   ["subagent.transcript.changed", new Set(["type", "nativeSubagentId"])],
   ["turn.started", new Set(["type", "turnId"])],
@@ -272,6 +274,7 @@ export const harnessOutputSchema = z.custom<HarnessOutput>((value) => {
     if (event.type === "session.state.changed")
       return harnessSessionStateSchema.safeParse(event.state).success;
     if (event.type === "session.faulted") return harnessErrorSchema.safeParse(event.error).success;
+    if (event.type === "usage.history") return typeof event.complete === "boolean";
     return true;
   }
   if (output.kind === "interaction") {

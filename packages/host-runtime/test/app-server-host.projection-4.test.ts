@@ -566,7 +566,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("round-trips an early Approval through the reviewed Codex native request", async () => {
+  it("round-trips an early Approval without plugin presentation metadata", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);
     const session = fixture.adapter.sessions[0];
@@ -581,7 +581,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: -1_000_001,
       method: "mcpServer/elicitation/request",
       params: {
-        serverName: "Pi",
+        serverName: fixture.adapter.harnessId,
         threadId,
         turnId,
         mode: "form",

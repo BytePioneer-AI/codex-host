@@ -1,4 +1,9 @@
-import type { OpenCodeClient, OpenCodeEvent, SessionInfo } from "@opencode/client";
+import type {
+  OpenCodeClient,
+  OpenCodeEvent,
+  SessionInfo,
+  SessionMessageInfo,
+} from "@opencode/client";
 import {
   HarnessOutputChannel,
   type HarnessSession,
@@ -30,7 +35,8 @@ import type { HarnessModelCatalog, HostTurnId } from "@codexhost/shared-contract
 import { decodeOpenCodeModelRef, decodeOpenCodeVariant } from "../model-catalog.js";
 import { openCodeCommandCatalog } from "../opencode-adapter.js";
 import type { V2Connection } from "./connection.js";
-import { contentId, readHistory, terminalItemOutcome } from "./history.js";
+import { contentId, readHistory, readMessages, terminalItemOutcome } from "./history.js";
+import { v2UsageRequest } from "./usage.js";
 import { errorResult, failure, harnessId, v2Permissions, v2State, v2Usage } from "./state.js";
 import {
   formInteraction,
@@ -66,6 +72,16 @@ export function v2Capabilities(catalog: HarnessModelCatalog): HarnessSessionCapa
   };
 }
 
+/** Stream events that carry a step's first output token, matching Pi's first-block timing. */
+const FIRST_OUTPUT_EVENTS = new Set<string>([
+  "session.reasoning.started",
+  "session.reasoning.delta",
+  "session.text.started",
+  "session.text.delta",
+  "session.tool.input.started",
+  "session.tool.input.delta",
+]);
+
 export class V2Session implements HarnessSession {
   readonly harnessId = harnessId;
   readonly capabilities;
@@ -82,6 +98,11 @@ export class V2Session implements HarnessSession {
   #reconciling: Promise<void> | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
   #configuring = false;
+  #cacheHitRatePercent: number | undefined;
+  /** Assistant messages already published as usage requests. */
+  readonly #meteredMessages = new Set<string>();
+  /** Adapter receive time of each assistant message's first reasoning, text or tool input. */
+  readonly #firstOutputAt = new Map<string, number>();
 
   constructor(
     readonly client: OpenCodeClient,
@@ -132,6 +153,7 @@ export class V2Session implements HarnessSession {
         }
       })();
     });
+    await this.#replayUsage();
     this.#timer = setInterval(() => {
       void this.#refresh();
     }, 400);
@@ -333,6 +355,13 @@ export class V2Session implements HarnessSession {
       event.data.sessionID !== this.info.id
     )
       return;
+    if (
+      FIRST_OUTPUT_EVENTS.has(event.type) &&
+      "assistantMessageID" in event.data &&
+      typeof event.data.assistantMessageID === "string" &&
+      !this.#firstOutputAt.has(event.data.assistantMessageID)
+    )
+      this.#firstOutputAt.set(event.data.assistantMessageID, Date.now());
     if (event.type === "session.step.started") active.assistants.add(event.data.assistantMessageID);
     if (
       (event.type === "session.text.delta" || event.type === "session.reasoning.delta") &&
@@ -355,6 +384,59 @@ export class V2Session implements HarnessSession {
     if (!event.type.endsWith(".delta")) void this.#refresh();
   }
 
+  /** Publishes assistant messages not yet metered; returns false when one is unusable. */
+  #meterUsage(messages: readonly SessionMessageInfo[], historical: boolean): boolean {
+    let usable = true;
+    const previousCacheHitRate = this.#cacheHitRatePercent;
+    for (const message of messages) {
+      let request;
+      try {
+        request = v2UsageRequest(message, historical, this.#firstOutputAt.get(message.id));
+      } catch {
+        this.#cacheHitRatePercent = undefined;
+        if (this.#meteredMessages.has(message.id)) continue;
+        this.#meteredMessages.add(message.id);
+        if (!historical) this.#emit({ type: "usage.history", complete: false });
+        usable = false;
+        continue;
+      }
+      if (!request) continue;
+      // Follow native message order, including requests already metered on an earlier refresh.
+      this.#cacheHitRatePercent =
+        request.inputTokens > 0 && request.cachedInputTokens !== undefined
+          ? (request.cachedInputTokens / request.inputTokens) * 100
+          : undefined;
+      if (this.#meteredMessages.has(message.id)) continue;
+      this.#meteredMessages.add(message.id);
+      this.#firstOutputAt.delete(message.id);
+      this.#emit({ type: "usage.request", request });
+    }
+    if (this.#cacheHitRatePercent !== previousCacheHitRate)
+      this.#emit({
+        type: "session.usage.changed",
+        usage: this.#usage(),
+      });
+    return usable;
+  }
+
+  #usage() {
+    const usage = v2Usage(this.info);
+    if (this.#cacheHitRatePercent !== undefined)
+      usage.cacheHitRatePercent = this.#cacheHitRatePercent;
+    return usage;
+  }
+
+  /** Replays every metered request of the native history, then declares it complete. */
+  async #replayUsage(): Promise<void> {
+    let complete = false;
+    try {
+      complete = this.#meterUsage(await readMessages(this.client, this.info.id), true);
+    } catch {
+      complete = false;
+    }
+    this.#emit({ type: "usage.history", complete });
+  }
+
   #refresh(): Promise<void> {
     if (this.#closed || !this.#active?.admitted) return Promise.resolve();
     return (this.#reconciling ??= this.#reconcile()
@@ -375,6 +457,7 @@ export class V2Session implements HarnessSession {
     const { snapshot, messages } = await readHistory(this.client, info, this.limit);
     if (this.#active !== active || this.#closed) return;
     this.info = info;
+    this.#meterUsage(messages, false);
     const turns = snapshot.turns.filter((t) => !active.baseline.has(t.nativeTurnRef.nativeTurnKey));
     if (turns.length > 1)
       throw new Error("Concurrent native prompts cannot be assigned to one Host Turn");
@@ -490,7 +573,7 @@ export class V2Session implements HarnessSession {
     });
     this.#emit({
       type: "session.usage.changed",
-      usage: v2Usage(this.info),
+      usage: this.#usage(),
       observedForTurnId: active.turnId,
     });
     this.#active = undefined;

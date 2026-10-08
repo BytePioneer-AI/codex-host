@@ -5,9 +5,10 @@ import {
   type CredentialImportsResult,
   type CredentialOtherLogin,
   type CredentialSource,
+  type HarnessPluginDescriptor,
 } from "@codexhost/shared-contracts";
-import { KNOWN_RENDERER_AGENTS, type RendererAgent } from "../agent-selection-state.js";
-import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "../renderer-agent-icon.js";
+import { type RendererAgent } from "../agent-selection-state.js";
+import { createRendererAgentIcon, rendererAgentLabel } from "../renderer-agent-icon.js";
 import type { CredentialImportMessages } from "./credential-import-messages.js";
 import { accountDisplayText } from "./account-privacy.js";
 import { createRendererSettingsIcon } from "./icons.js";
@@ -87,6 +88,7 @@ export function mountCredentialImports(
   getClient: () => RendererCredentialImportClient | null,
   messages: CredentialImportMessages,
   changed: () => void,
+  pluginFor: (id: string) => HarnessPluginDescriptor | undefined = () => undefined,
 ) {
   const document = root.ownerDocument;
   let snapshot: CredentialImportsResult = { sources: [], targets: [] };
@@ -129,7 +131,7 @@ export function mountCredentialImports(
   sectionCount.className = "settings-pi-accounts__count";
   sectionToggle.append(
     createRendererSettingsIcon("chevron-right", 14),
-    createRendererAgentIcon("pi", 16, document),
+    createRendererAgentIcon("pi", 16, document, pluginFor("pi")),
     sectionTitle,
     sectionCount,
   );
@@ -196,7 +198,7 @@ export function mountCredentialImports(
       ? "settings-harness-account__logo"
       : "settings-harness-account__logo settings-pi-accounts__other-mark";
     if (agent) mark.dataset.agent = agent;
-    mark.append(createRendererAgentIcon(agent ?? "pi", 26, document));
+    mark.append(createRendererAgentIcon(agent ?? "pi", 26, document, pluginFor(agent ?? "pi")));
     return mark;
   };
   const renderRow = (record: CredentialImportRecord): HTMLElement => {
@@ -205,7 +207,7 @@ export function mountCredentialImports(
     row.tabIndex = -1;
     row.dataset.importName = record.name;
     row.setAttribute("aria-label", shown(record.source.label));
-    const agent = KNOWN_RENDERER_AGENTS.find((candidate) => candidate === record.source.harnessId);
+    const agent = record.source.harnessId;
     const mark = createMark(agent);
     const identity = document.createElement("div");
     identity.className = "settings-pi-accounts__identity";
@@ -218,10 +220,7 @@ export function mountCredentialImports(
     meta.className = "settings-account-metadata";
     const source = sourceOf(record);
     const parts: HTMLElement[] = [
-      metaPart(
-        (agent && RENDERER_AGENT_LABELS[agent]) || record.source.harnessId,
-        "settings-pi-accounts__agent",
-      ),
+      metaPart(rendererAgentLabel(agent, pluginFor(agent)), "settings-pi-accounts__agent"),
       metaPart(`${record.name}/…`, undefined, true),
       metaPart(messages.copied),
     ];
@@ -276,7 +275,7 @@ export function mountCredentialImports(
     const agent = login.vendor ? VENDOR_AGENTS[login.vendor] : undefined;
     row.setAttribute(
       "aria-label",
-      [shown(login.label ?? login.provider), agent && RENDERER_AGENT_LABELS[agent]]
+      [shown(login.label ?? login.provider), agent && rendererAgentLabel(agent, pluginFor(agent))]
         .filter(Boolean)
         .join(" · "),
     );
@@ -437,10 +436,10 @@ export function mountCredentialImports(
         label.textContent = shown(choice.label);
         label.translate = false;
         const existing = importedRecords().find((record) => record.source.id === choice.id);
-        const agent = KNOWN_RENDERER_AGENTS.find((candidate) => candidate === choice.harnessId);
+        const agent = choice.harnessId;
         const detail = document.createElement("span");
         detail.textContent = [
-          (agent && RENDERER_AGENT_LABELS[agent]) || choice.harnessId,
+          rendererAgentLabel(agent, pluginFor(agent)),
           existing
             ? messages.sourceImported.replace("{name}", existing.name)
             : messages.sourceCurrent,
@@ -641,7 +640,7 @@ export function mountCredentialImports(
       const hint = record ? messages.importedHint.replace("{name}", record.name) : messages.add;
       button.title = hint;
       button.setAttribute("aria-label", hint);
-      button.append(createRendererAgentIcon("pi", 12, document));
+      button.append(createRendererAgentIcon("pi", 12, document, pluginFor("pi")));
       if (record) {
         // Copied: show the entry the login became in Pi; clicking reveals it in the Pi section.
         button.dataset.state = "imported";

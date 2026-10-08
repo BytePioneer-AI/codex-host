@@ -1,4 +1,25 @@
 import type { HarnessAdapter } from "./text-session.js";
+import type { HarnessSessionUsageCapability } from "./session-usage.js";
+export type {
+  HarnessSessionUsageCapability,
+  HarnessSessionUsageHistory,
+  HarnessSessionUsageObservation,
+} from "./session-usage.js";
+import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
+
+/** A capability-only plugin: no session inspection, creation or native process ownership. */
+export interface HarnessUsageStatisticsAdapter {
+  readonly harnessId: HarnessAdapter["harnessId"];
+  readonly usageStatistics: HarnessUsageStatisticsCapability;
+  readonly sessionUsage?: HarnessSessionUsageCapability;
+  close(): Promise<void>;
+}
+
+export interface HarnessUsageStatisticsPluginModule {
+  createUsageStatisticsAdapter(
+    context: HarnessPluginContext,
+  ): HarnessUsageStatisticsAdapter | Promise<HarnessUsageStatisticsAdapter>;
+}
 
 export interface HarnessLocalPage {
   show(): Promise<void>;

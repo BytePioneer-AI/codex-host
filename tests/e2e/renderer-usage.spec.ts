@@ -89,6 +89,36 @@ const { outputFiles } = await build({
             planFiveHourResetsAtUnix: 1_756_130_400,
           });
         };
+        globalThis.updateRendererGrokUsage = (locale) => {
+          renderRendererUsageControl(usage, {
+            apiOutputTokensPerSecond: 1571 / 19.057,
+            timeToFirstOutputMs: 1250,
+            totalCostUsd: 0.09920104,
+            costSource: "native",
+            inputTokens: 78636,
+            outputTokens: 1571,
+          }, locale);
+        };
+        globalThis.updateRendererUsageMetered = () => {
+          renderRendererUsageControl(usage, {
+            cacheHitRatePercent: 92.9,
+            sessionCacheHitRatePercent: 81.25,
+            outputTokensPerSecond: 64.2,
+            timeToFirstOutputMs: 1250,
+            inputTokens: 62300,
+            outputTokens: 7600,
+            totalCostUsd: 0.78,
+            costSource: "publicPrice",
+          }, "zh-CN");
+        };
+        globalThis.updateRendererUsagePartialCost = () => {
+          renderRendererUsageControl(usage, {
+            cacheHitRatePercent: 99.6,
+            totalCostUsd: 12.232,
+            costSource: "publicPrice",
+            unpricedModels: ["gpt-5.3-codex-spark"],
+          }, "zh-CN");
+        };
         globalThis.updateRendererUsageChinese = () => {
           renderRendererUsageControl(usage, {
             cacheHitRatePercent: 92.9,
@@ -117,6 +147,36 @@ const { outputFiles } = await build({
 
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer Usage bundle was not generated");
+
+for (const locale of ["zh-CN", "en"]) {
+  test(`Grok API average speed is not generation TPS (${locale})`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 650, height: 650 });
+    await page.setContent(
+      '<!doctype html><body style="margin:16px;padding-top:350px;font:14px system-ui"></body>',
+    );
+    await page.addScriptTag({ content: browserBundle });
+    await page.evaluate((language) => {
+      Reflect.get(globalThis, "setupRendererUsage")();
+      Reflect.get(globalThis, "updateRendererGrokUsage")(language);
+    }, locale);
+    const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+    await expect(usage).toContainText("API 82.4 tok/s");
+    await expect(usage).toContainText("$0.099");
+    await usage.hover();
+    const popover = page.getByRole("dialog");
+    await expect(popover).toBeVisible();
+    await expect(popover).toContainText(locale === "zh-CN" ? "API 平均速度" : "API average speed");
+    await expect(popover).toContainText(
+      locale === "zh-CN" ? "含首字等待" : "including first-token wait",
+    );
+    await expect(popover).not.toContainText(
+      locale === "zh-CN" ? "输出速度（TPS）" : "Output speed (TPS)",
+    );
+    await expect(popover).toContainText("TTFT");
+    await expect(popover).toContainText(locale === "zh-CN" ? "1.3 秒" : "1.3s");
+    await page.screenshot({ path: testInfo.outputPath(`grok-api-${locale}.png`) });
+  });
+}
 
 for (const width of [1280, 375]) {
   test(`Kiro credits and context popover at ${width}px`, async ({ page }, testInfo) => {
@@ -213,15 +273,15 @@ test("renders Usage immediately to the left of the model control", async ({ page
   if (!popoverBox || !triggerBox) throw new Error("Usage popover geometry is unavailable");
   expect(popoverBox.y + popoverBox.height).toBeLessThanOrEqual(triggerBox.y + 1);
   await expect(popover).toContainText("Context");
-  await expect(popover).toContainText("29.3% / 272k");
+  await expect(popover).toContainText("29.3% / 272K");
   await expect(popover).toContainText("Latest cache hit");
   await expect(popover).toContainText("Cache read");
-  await expect(popover).toContainText("375k");
-  await expect(popover).toContainText("Cache write");
-  await expect(popover).toContainText("1.2k");
+  await expect(popover).toContainText("375K");
+  await expect(popover).toContainText("Cache read / write");
+  await expect(popover).toContainText("1.2K");
   await expect(popover).toContainText("Input / output");
-  await expect(popover).toContainText("87k / 6.7k");
-  await expect(popover).toContainText("Session cost estimate");
+  await expect(popover).toContainText("87K / 6.7K");
+  await expect(popover).toContainText("Cost estimate");
   await expect(popover).toContainText("$0.822");
   await expect
     .poll(() =>
@@ -356,13 +416,61 @@ test("renders the Usage popover in Chinese when the settings locale is Chinese",
   await expect(popover).toBeVisible();
   await expect(popover).toContainText("用量");
   await expect(popover).toContainText("上下文");
-  await expect(popover).toContainText("最近缓存命中率");
+  await expect(popover).toContainText("最近缓存命中");
   await expect(popover).toContainText("缓存读取");
-  await expect(popover).toContainText("缓存写入");
-  await expect(popover).toContainText("Token 总数");
+  await expect(popover).not.toContainText("缓存读取 / 写入");
+  await expect(popover).toContainText("缓存读取");
+  await expect(popover).toContainText("总数");
   await expect(popover).toContainText("输入 / 输出");
-  await expect(popover).toContainText("会话费用估算");
+  await expect(popover).toContainText("费用估算");
   await expect(popover).not.toContainText("Latest cache hit");
+});
+
+test("shows Host-metered usage rows", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0;padding-top:320px"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererUsageMetered");
+    if (typeof update !== "function") throw new Error("Metered Usage update is unavailable");
+    update();
+  });
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText("最近缓存命中（CH）92.9%");
+  await expect(popover).toContainText("平均缓存命中81.3%");
+  await expect(popover).toContainText("输出速度（TPS）64.2 tok/s");
+  await expect(popover).toContainText("首 token（TTFT）1.3 秒");
+  await expect(popover.locator("[data-codexhost-usage-group]")).toHaveText([
+    "会话",
+    "本轮",
+    "Token",
+  ]);
+  await expect(popover).toContainText("费用估算$0.780");
+  await expect(popover).not.toContainText("按公开 API 价格计算");
+});
+
+test("marks a cost that leaves unpriced Models out as a lower bound", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0;padding-top:320px"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererUsagePartialCost");
+    if (typeof update !== "function") throw new Error("Partial cost update is unavailable");
+    update();
+  });
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await expect(usage).toHaveText("CH 99.6% · ≥$12.23");
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
+  await expect(popover).toContainText("费用估算≥$12.23");
+  await expect(popover).toContainText("未计价：gpt-5.3-codex-spark");
 });
 
 test("omits plan limits from the Usage trigger and popover", async ({ page }) => {
@@ -379,7 +487,7 @@ test("omits plan limits from the Usage trigger and popover", async ({ page }) =>
 
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
   await expect(usage).toBeVisible();
-  await expect(usage).toHaveText("CH 99% · $1.373");
+  await expect(usage).toHaveText("CH 99% · $1.37");
   await expect(usage).not.toContainText("5-hour");
   await expect(usage).not.toContainText("45%");
 

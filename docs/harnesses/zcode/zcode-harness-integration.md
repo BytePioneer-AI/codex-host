@@ -91,6 +91,12 @@ F008 的处理：本次验证失败（结果记 `error`，诊断带 `duplicate: 
 - 空 V4 草稿由原生以 deferred 语义持有，首条发送才持久化；尚未发送的草稿关闭后不能恢复。
 - 官方 MCP 插件拿不到身份 Header；浏览器、Computer Use、Off-Peak、自动化和账号切换 UI 不提供。会话标题生成同样会请求 Header 并触发一次验证，结果不影响主轮。
 
+## Host 用量计量
+
+ZCode 3.14.4 已接入 Host 请求级计量，规则见[会话用量计量](../../product/usage-metering.md)。恢复时通过原生 RPC 快照回放 assistant `info.tokens`，运行中关联主请求的开始、输出和完成事件，按消息 ID 去重，轮末补齐最终快照；不直接读数据库，不增加持久化账本。输入已包含缓存、输出已包含思考，模型取请求自身的 ID，不传账号/个人 Provider 别名。
+
+`v4/conversation/usage` 的输入是上下文增量合计（不是每次请求输入之和），主请求的缓存计数为零，因此只保留其原生 Token 展示，不用于费用或平均缓存计算。缓存字段在流中缺失的请求等轮末快照补齐。速度只使用可靠关联的请求事件时间；原生协议不提供思考开始事件，明确含思考 Token 的请求暂不计速度。失败/取消且原生只有零占位、没有 Provider 用量时不计入，系统时间线记录不计入；错误计量记录只令会话派生指标失效，不影响会话执行。
+
 ## 验证
 
 个人 Coding Plan 聚焦测试为 `test/personal-coding-plan.test.ts` 与 `test/personal-coding-plan.native.test.ts`。前者覆盖两个账号家族、权益边界、只读凭据、精确账号 Key、设置目录与旧版选择、账号变更、错误脱敏及取消。后者需设置 `CODEXHOST_TEST_ZCODE_APP` 并安装 `openssl`：用隔离目录、合成凭据、原生 CLI 和本地 HTTPS 模型服务，验证仅有个人 Coding Plan 时的模型发现、默认选择、请求鉴权、多轮、恢复，以及与自定义 Provider 的切换。临时证书仅通过子进程 `NODE_EXTRA_CA_CERTS` 信任，不关闭 TLS 验证；模拟服务将签名开关设为关闭，因此不覆盖真实签名握手、真实付费账号或真实扣费。macOS / ZCode 3.14.4 上这两种账号家族的原生测试已通过；正式服务端的订阅响应和真实账号调用仍需单独验收。

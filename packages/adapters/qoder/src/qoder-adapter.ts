@@ -39,6 +39,7 @@ import type {
 } from "./qoder-sdk-types.js";
 import { QoderSession } from "./qoder-sdk-transport.js";
 import { QoderSessionImport } from "./qoder-session-import.js";
+import { createQoderUsageStatistics } from "./qoder-usage-statistics.js";
 
 import { QODER_RUNTIMES, qoderAuthForEnvironment, type QoderVariant } from "./qoder-runtime.js";
 
@@ -68,6 +69,7 @@ export class QoderAdapter implements HarnessAdapter {
   readonly commandCatalog = QODER_FALLBACK_COMMAND_CATALOG;
   readonly liveCommandCatalog = true;
   readonly sessionImport: QoderSessionImport;
+  readonly usageStatistics: ReturnType<typeof createQoderUsageStatistics>;
 
   readonly #commandOverride: string | undefined;
   readonly #environment: Record<string, string | undefined>;
@@ -99,6 +101,10 @@ export class QoderAdapter implements HarnessAdapter {
     this.#commandOverride =
       options.commandOverride ?? options.environment?.[runtime.commandEnvironmentVariable];
     this.#environment = qoderEnvironment(options.environment);
+    this.usageStatistics = createQoderUsageStatistics(
+      { ...process.env, ...options.environment },
+      this.#variant,
+    );
     this.#platform = options.platform ?? process.platform;
     this.#queryFactory = options.queryFactory ?? ((input) => runtime.sdk.query(input));
     this.#forkSession = options.forkSession ?? runtime.sdk.forkSession;

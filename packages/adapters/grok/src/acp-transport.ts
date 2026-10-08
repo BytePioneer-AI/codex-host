@@ -96,6 +96,13 @@ export type GrokTransportEvent =
       metadata?: Record<string, unknown>;
     }
   | { type: "usage"; update: SessionUpdate; metadata?: Record<string, unknown> }
+  | { type: "tool.input.delta"; text: string; metadata?: Record<string, unknown> }
+  | {
+      type: "response.completed";
+      usage?: unknown;
+      messageId?: string;
+      metadata?: Record<string, unknown>;
+    }
   | {
       type: "turn.completed";
       nativeTurnKey: string;
@@ -274,6 +281,26 @@ function transportEvent(
   metadata?: Record<string, unknown>,
 ): GrokTransportEvent | null {
   const extension = update as unknown as Record<string, unknown>;
+  if (extension.sessionUpdate === "response_completed") {
+    return {
+      type: "response.completed",
+      ...(extension.usage !== undefined ? { usage: extension.usage } : {}),
+      ...(typeof extension.message_id === "string" && extension.message_id
+        ? { messageId: extension.message_id }
+        : {}),
+      ...(metadata ? { metadata } : {}),
+    };
+  }
+  if (
+    extension.sessionUpdate === "tool_call_delta_chunk" &&
+    typeof extension.arguments_delta === "string"
+  ) {
+    return {
+      type: "tool.input.delta",
+      text: extension.arguments_delta,
+      ...(metadata ? { metadata } : {}),
+    };
+  }
   if (
     extension.sessionUpdate === "turn_completed" &&
     typeof extension.prompt_id === "string" &&
@@ -565,6 +592,17 @@ export class GrokAcpTransport {
     return this.readHistory(this.sessionId);
   }
 
+  /** Native cumulative usage since this process attached, not persisted Session totals. */
+  async getUsage(): Promise<unknown> {
+    if (!this.#connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
+    const result = await withTimeout(
+      this.#connection.request("_x.ai/session/usage", { sessionId: this.sessionId }),
+      this.#options.commandTimeoutMs,
+      "Grok Session usage",
+    );
+    return isRecord(result) ? result.usage : undefined;
+  }
+
   async readHistory(sessionId: string, cwd = this.#options.cwd): Promise<GrokTransportEvent[]> {
     return readGrokNativeHistory({ ...this.#options, cwd }, sessionId);
   }
@@ -842,6 +880,8 @@ export class GrokAcpTransport {
         prompt: [{ type: "text", text }],
       });
     } finally {
+      // The SDK can resolve prompt before dispatching notifications from the same read.
+      await yieldToEventLoop();
       if (this.#activePrompt === active) this.#activePrompt = null;
     }
   }
@@ -886,7 +926,11 @@ export class GrokAcpTransport {
       if (this.#activeCompact === active) this.#activeCompact = null;
     }
   }
-  async setModel(modelId: string, reasoningEffort?: string): Promise<void> {
+  async setModel(
+    modelId: string,
+    reasoningEffort?: string,
+    contextWindowTokens?: number,
+  ): Promise<void> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId) throw new Error("Grok ACP Session is unavailable");
     const response = await connection.request<unknown, Record<string, unknown>>(
@@ -895,6 +939,9 @@ export class GrokAcpTransport {
         sessionId: this.#sessionId,
         modelId,
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(contextWindowTokens !== undefined
+          ? { _meta: { contextWindow: contextWindowTokens } }
+          : {}),
       },
     );
     if (!isRecord(response) || !isRecord(response._meta) || !isRecord(response._meta.model)) {

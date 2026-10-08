@@ -52,6 +52,7 @@ import {
 import {
   codeBuddyCanonicalCwd,
   historyUsage,
+  historyUsageRequests,
   pendingNativeHistoryRewind,
   readNativeHistory,
   snapshotFromHistory,
@@ -88,6 +89,7 @@ export class CodeBuddySession implements HarnessSession {
   initialUsage: HostUsage | null = null;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly outputs = this.#channel.outputs;
+  readonly #meteredRequests = new Set<string>();
   readonly subagents: CodeBuddySubagents;
   #client: CodeBuddyClient;
   #generation = 0;
@@ -103,6 +105,7 @@ export class CodeBuddySession implements HarnessSession {
   #fault: ReturnType<typeof nativeError> | undefined;
   #hasTurn = false;
   #usage: HostUsage | null = null;
+  #refreshingUsage = false;
   #context: Pick<HostUsage, "contextWindowTokens" | "contextUsedTokens" | "contextUsagePercent"> =
     {};
 
@@ -190,6 +193,7 @@ export class CodeBuddySession implements HarnessSession {
                 type: "session.usage.changed",
                 usage: { ...this.#usage, ...this.#context },
               });
+              void this.refreshUsage();
             }
             this.#active?.output.update(update);
           } catch (error) {
@@ -227,7 +231,11 @@ export class CodeBuddySession implements HarnessSession {
       this.#hasTurn =
         snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile).turns.length > 0;
       this.#usage = historyUsage(history);
+      this.#meterHistory(history, true);
       rewind = pendingNativeHistoryRewind(history);
+    } else {
+      // A new Session has no native requests yet.
+      this.#emit({ type: "usage.history", complete: true });
     }
     await this.#client.initialize();
     const opened = await this.#client.open(this.input.cwd, this.#ref?.nativeSessionId);
@@ -288,6 +296,17 @@ export class CodeBuddySession implements HarnessSession {
   #emit(event: HostEvent) {
     this.#channel.emit({ kind: "event", event });
   }
+
+  /** Publishes native requests not yet metered; the first read also declares completeness. */
+  #meterHistory(history: string, historical: boolean) {
+    const { requests, complete } = historyUsageRequests(history, historical);
+    for (const request of requests) {
+      if (this.#meteredRequests.has(request.requestId)) continue;
+      this.#meteredRequests.add(request.requestId);
+      this.#emit({ type: "usage.request", request });
+    }
+    if (historical || !complete) this.#emit({ type: "usage.history", complete });
+  }
   #apply(config: ReturnType<typeof configuration>, emit = true) {
     this.#config = config;
     if (this.#ref && record(this.#ref.locator).codebuddyDerived === 1)
@@ -334,6 +353,8 @@ export class CodeBuddySession implements HarnessSession {
         this.profile,
       );
       this.#usage = historyUsage(history);
+      // Requests the last Turn added, now persisted; CodeBuddy ACP reports no per-request usage.
+      this.#meterHistory(history, false);
       return {
         ...this.subagents.project(
           snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile),
@@ -349,6 +370,33 @@ export class CodeBuddySession implements HarnessSession {
       )
         return { turns: [], state: this.#state };
       throw error;
+    }
+  }
+
+  /** Read persisted request usage without waiting for the ACP prompt (including tool waits). */
+  async refreshUsage(): Promise<void> {
+    if (this.#refreshingUsage || this.#closed || this.#fault || this.#replaying || !this.#ref)
+      return;
+    this.#refreshingUsage = true;
+    const active = this.#active,
+      generation = this.#generation;
+    try {
+      const history = await this.readHistory(
+        this.input.cwd,
+        this.#ref,
+        this.environment,
+        this.profile,
+      );
+      if (this.#closed || this.#fault || this.#active !== active || this.#generation !== generation)
+        return;
+      this.#usage = historyUsage(history);
+      this.#meterHistory(history, false);
+      this.#emit({ type: "session.usage.changed", usage: { ...this.#usage, ...this.#context } });
+    } catch {
+      // The native file may not exist yet or may be mid-append. Telemetry must not fail a Turn;
+      // the next native usage notification, explicit refresh or terminal snapshot retries.
+    } finally {
+      this.#refreshingUsage = false;
     }
   }
 

@@ -181,6 +181,21 @@ describe("Renderer Settings lifecycle", () => {
     lifecycle.dispose();
   });
 
+  it("passes the local statistics transport to settings pages", () => {
+    const requestUsageStatistics = vi.fn(async () => ({}));
+    const ownerWindow = {
+      navigator: { languages: ["en"] },
+      document: {},
+      setTimeout,
+      clearTimeout,
+    } as unknown as Window;
+    const lifecycle = installRendererSettingsLifecycle(ownerWindow, { requestUsageStatistics });
+    expect(vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1)?.[8]).toBe(
+      requestUsageStatistics,
+    );
+    lifecycle.dispose();
+  });
+
   it("binds Session import to its narrow client and closes only after navigation", async () => {
     const events: string[] = [];
     const client = {

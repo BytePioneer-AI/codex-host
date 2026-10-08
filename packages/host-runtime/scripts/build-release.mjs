@@ -9,14 +9,20 @@ const forbiddenInputFragments = [
   "/node_modules/@codexhost/adapter-",
   "/node_modules/@anthropic-ai/",
   "/node_modules/@agentclientprotocol/",
-  "/node_modules/@deepseek-ai/",
+  "/node_modules/@deepseek-ai/dsh",
   "/node_modules/@opencode-ai/",
   "/test/",
   "/tests/",
   "/tools/",
 ];
 const forbiddenBundleReferences = ["sourceMappingURL="];
-const allowedRuntimePackages = new Set(["diff", "ws", "zod"]);
+const allowedRuntimePackages = new Set([
+  "@deepseek-ai/cordis",
+  "@deepseek-ai/cosmokit",
+  "diff",
+  "ws",
+  "zod",
+]);
 
 function normalizedInputPath(value) {
   return `/${value.replaceAll("\\", "/").replace(/^\/+|\/+$/gu, "")}/`;

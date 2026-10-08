@@ -7,13 +7,18 @@ import type {
   SessionMessageAssistant,
   PermissionRequest,
 } from "@opencode/client";
-import { HarnessOutputChannel, type HarnessOutput } from "@codexhost/harness-adapter";
+import {
+  HarnessOutputChannel,
+  type HarnessOutput,
+  type HostEvent,
+} from "@codexhost/harness-adapter";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
 import { harnessModelCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { openCodeMajor } from "../src/version.js";
 import { assistantItems, projectHistory, readMessages } from "../src/v2/history.js";
 import { v2Locator, v2Permissions, v2Ref } from "../src/v2/state.js";
 import { V2Session } from "../src/v2/session.js";
+import { v2UsageRequest } from "../src/v2/usage.js";
 import { formInteraction, replyInteraction } from "../src/v2/interactions.js";
 import { readCatalog } from "../src/v2/catalog.js";
 
@@ -53,6 +58,8 @@ function fixture() {
   const native = new HarnessOutputChannel<OpenCodeEvent>();
   const messages: SessionMessageInfo[] = [];
   const events: HarnessOutput[] = [];
+  /** Host usage metering events, kept apart from the lifecycle the other tests assert. */
+  const usage: HostEvent[] = [];
   const prompt = vi.fn(async () => {
     messages.push(user());
     return { id: "inbox" };
@@ -88,7 +95,14 @@ function fixture() {
   );
   sessions.push(session);
   void (async () => {
-    for await (const event of session.outputs) events.push(event);
+    for await (const event of session.outputs) {
+      if (
+        event.kind === "event" &&
+        (event.event.type === "usage.request" || event.event.type === "usage.history")
+      )
+        usage.push(event.event);
+      else events.push(event);
+    }
   })();
   const emit = (type: string, data: object = {}) =>
     native.emit({ type, data: { sessionID: info.id, ...data } } as OpenCodeEvent);
@@ -112,6 +126,7 @@ function fixture() {
     native,
     messages,
     events,
+    usage,
     prompt,
     interrupt,
     emit,
@@ -383,6 +398,192 @@ describe("OpenCode v2 Session lifecycle", () => {
     f.emit("session.text.delta", { assistantMessageID: "old", ordinal: 0, delta: "late" });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(f.events).toHaveLength(length);
+  });
+  it("replays metered history on open and meters each finished step once", async () => {
+    const f = fixture();
+    f.messages.push(user("earlier"), {
+      ...assistant("earlier answer"),
+      id: "assistant-earlier",
+      time: { created: 2, streamed: 3, completed: 9 },
+      tokens: { input: 10, output: 4, reasoning: 2, cache: { read: 30, write: 5 } },
+    });
+    // An unfinished step has no Tokens and no usage.
+    f.messages.push({ ...assistant("cut off"), id: "assistant-unfinished" });
+    f.messages.push({ ...idle(), id: "idle-earlier" });
+    await f.start();
+    expect(f.usage).toEqual([
+      {
+        type: "usage.request",
+        request: {
+          requestId: "assistant-earlier",
+          historical: true,
+          model: "model",
+          provider: "test",
+          inputTokens: 45,
+          cachedInputTokens: 30,
+          cacheWriteInputTokens: 5,
+          outputTokens: 6,
+          reasoningOutputTokens: 2,
+        },
+      },
+      { type: "usage.history", complete: true },
+    ]);
+
+    await f.turn();
+    const beforeOutput = Date.now();
+    f.emit("session.step.started", { assistantMessageID: "assistant-live" });
+    f.emit("session.reasoning.delta", {
+      assistantMessageID: "assistant-live",
+      ordinal: 0,
+      delta: "thinking",
+    });
+    // The native event stream is consumed asynchronously, so the observation can land later.
+    const streamed = Date.now() + 2_000;
+    const completed = streamed + 68_000;
+    f.messages.push({
+      ...assistant("live answer"),
+      id: "assistant-live",
+      // Native steps can finish long after streaming while their tools execute.
+      time: { created: beforeOutput - 5_000, streamed, completed },
+      tokens: { input: 1, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
+    });
+    f.emit("session.step.ended", { assistantMessageID: "assistant-live" });
+    f.messages.push(idle());
+    f.emit("session.execution.succeeded");
+    await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+    const live = f.usage.filter(
+      (event) => event.type === "usage.request" && event.request.requestId === "assistant-live",
+    );
+    expect(live).toEqual([
+      {
+        type: "usage.request",
+        request: expect.objectContaining({ outputTokens: 8, completedAtMs: streamed }),
+      },
+    ]);
+    expect(live[0]).not.toHaveProperty("request.historical");
+    const started = live[0]?.type === "usage.request" ? live[0].request.startedAtMs : undefined;
+    // Timed from the observed first output, not from creation or OpenCode's `streamed`.
+    expect(started).toBeGreaterThanOrEqual(beforeOutput);
+    expect(started).toBeLessThan(streamed);
+  });
+  it("restores recent CH and updates it before tool waits end, retaining it at Turn completion", async () => {
+    const f = fixture();
+    f.messages.push(
+      user("history"),
+      {
+        ...assistant("older"),
+        id: "older",
+        tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 99, write: 0 } },
+      },
+      {
+        ...assistant("latest"),
+        tokens: { input: 20, output: 1, reasoning: 0, cache: { read: 60, write: 20 } },
+      },
+      idle(),
+    );
+    const cacheEvents = () =>
+      f.events.filter((e) => e.kind === "event" && e.event.type === "session.usage.changed");
+    await f.start();
+    await vi.waitFor(() =>
+      expect(cacheEvents().at(-1)).toMatchObject({
+        event: { usage: { cacheHitRatePercent: 60 } },
+      }),
+    );
+    await f.turn();
+    f.messages.push({
+      ...assistant("tool call"),
+      id: "live",
+      tokens: { input: 100, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    });
+    f.emit("session.step.ended", { assistantMessageID: "live" });
+    await vi.waitFor(() =>
+      expect(cacheEvents().at(-1)).toMatchObject({
+        event: { usage: { cacheHitRatePercent: 0 } },
+      }),
+    );
+    expect(f.completed()).toHaveLength(0);
+    f.messages.push({ ...idle(), id: "live-idle" });
+    f.emit("session.execution.succeeded");
+    await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+    expect(cacheEvents().at(-1)).toMatchObject({
+      event: { usage: { cacheHitRatePercent: 0 }, observedForTurnId: "host-turn" },
+    });
+    expect(f.usage.filter((e) => e.type === "usage.request")).toHaveLength(3);
+  });
+
+  it("keeps CH in native order when an older request's usage arrives late", async () => {
+    const f = fixture();
+    f.messages.push(
+      user("history"),
+      { ...assistant("older"), id: "older" },
+      {
+        ...assistant("latest"),
+        tokens: { input: 20, output: 1, reasoning: 0, cache: { read: 60, write: 20 } },
+      },
+      idle(),
+    );
+    await f.start();
+    await f.turn();
+    f.messages[1] = {
+      ...assistant("older"),
+      id: "older",
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 99, write: 0 } },
+    };
+    f.emit("session.updated");
+    await vi.waitFor(() =>
+      expect(f.usage.filter((e) => e.type === "usage.request")).toHaveLength(2),
+    );
+    const cacheEvents = f.events.filter(
+      (e) => e.kind === "event" && e.event.type === "session.usage.changed",
+    );
+    expect(cacheEvents).toHaveLength(1);
+    expect(cacheEvents[0]).toMatchObject({ event: { usage: { cacheHitRatePercent: 60 } } });
+  });
+
+  it.each([0, -1, Number.NaN, undefined])(
+    "clears old CH for zero input or invalid cache %s",
+    async (cached) => {
+      const f = fixture();
+      f.messages.push(
+        user("history"),
+        {
+          ...assistant("history"),
+          tokens: { input: 20, output: 1, reasoning: 0, cache: { read: 80, write: 0 } },
+        },
+        idle(),
+      );
+      await f.start();
+      await f.turn();
+      f.messages.push({
+        ...assistant("unknown"),
+        id: "live",
+        tokens: { input: 0, output: 1, reasoning: 0, cache: { read: cached as number, write: 0 } },
+      });
+      f.emit("session.step.ended", { assistantMessageID: "live" });
+      await vi.waitFor(() => {
+        const changes = f.events.filter(
+          (e) => e.kind === "event" && e.event.type === "session.usage.changed",
+        );
+        expect(changes).toHaveLength(2);
+        expect(changes.at(-1)).not.toHaveProperty("event.usage.cacheHitRatePercent");
+      });
+      expect(f.completed()).toHaveLength(0);
+    },
+  );
+
+  it("keeps usage but omits timing when the stream end is unavailable", () => {
+    const request = v2UsageRequest(
+      {
+        ...assistant("interrupted"),
+        time: { created: 1, completed: 70_000 },
+        tokens: { input: 1, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+      false,
+      1_000,
+    );
+    expect(request).toMatchObject({ outputTokens: 8 });
+    expect(request).not.toHaveProperty("startedAtMs");
+    expect(request).not.toHaveProperty("completedAtMs");
   });
   it("rejects concurrent starts and emits no lifecycle for rejected admission", async () => {
     const f = fixture();

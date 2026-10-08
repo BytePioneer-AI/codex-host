@@ -1,5 +1,5 @@
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
-import { isOrbitComposer } from "./renderer-composer-kind.js";
+import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
   catalogModelForRef,
@@ -915,10 +915,18 @@ export function installRendererBindingProbe(
   const usageRefreshTimers = new Map<Element, number>();
   const usageRefreshAttempts = new Map<Element, number>();
 
+  // Re-read requests that settle while a retained root cannot be classified.
+  const ownershipRecovery = new WeakMap<MountedComposer, number>();
+  const modelRecovery = new WeakMap<MountedComposer, number>();
+  const isRetainedComposer = (mounted: MountedComposer): boolean =>
+    mounted.composer.isConnected &&
+    mounted.composer.matches(CODEX_COMPOSER_SELECTOR) &&
+    mountedByComposer.get(mounted.composer) === mounted;
+
   const isMountedComposer = (composer: Element): boolean =>
     composer.isConnected &&
     composer.matches(CODEX_COMPOSER_SELECTOR) &&
-    !isOrbitComposer(composer) &&
+    orbitComposerKind(composer) === "codex" &&
     mountedByComposer.has(composer);
 
   const isCurrentModelRequest = (mounted: MountedComposer, generation: number): boolean =>
@@ -930,6 +938,19 @@ export function installRendererBindingProbe(
     isMountedComposer(mounted.composer) &&
     mountedByComposer.get(mounted.composer) === mounted &&
     controller.isCurrentOwnershipRequest(mounted.composer, generation);
+
+  const finishModelRequest = (mounted: MountedComposer, generation: number): void => {
+    if (isCurrentModelRequest(mounted, generation)) {
+      renderMounted(mounted);
+    } else if (
+      isRetainedComposer(mounted) &&
+      controller.isCurrentModelRequest(mounted.composer, generation) &&
+      orbitComposerKind(mounted.composer) === "unknown"
+    ) {
+      modelRecovery.set(mounted, generation);
+      scheduleScan();
+    }
+  };
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
     const state = controller.recordSubmission(composer);
@@ -1304,6 +1325,8 @@ export function installRendererBindingProbe(
 
   const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
     if (!isMountedComposer(mounted.composer)) return;
+    ownershipRecovery.delete(mounted);
+    modelRecovery.delete(mounted);
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (!threadId) {
       mounted.ownershipStatus = "not-required";
@@ -1389,6 +1412,13 @@ export function installRendererBindingProbe(
             scheduleThreadUsageRefresh(mounted);
           }
         }
+      } else if (
+        isRetainedComposer(mounted) &&
+        controller.isCurrentOwnershipRequest(mounted.composer, generation) &&
+        orbitComposerKind(mounted.composer) === "unknown"
+      ) {
+        ownershipRecovery.set(mounted, generation);
+        scheduleScan();
       }
     }
   };
@@ -1441,6 +1471,8 @@ export function installRendererBindingProbe(
   };
 
   const loadExternalCatalog = async (mounted: MountedComposer): Promise<void> => {
+    if (!isMountedComposer(mounted.composer)) return;
+    modelRecovery.delete(mounted);
     void refreshCommands(mounted);
     const state = controller.get(mounted.composer);
     if (state.agent === "codex") return;
@@ -1711,7 +1743,7 @@ export function installRendererBindingProbe(
       if (catalogRequest && catalogRequests.get(mounted) === catalogRequest) {
         catalogRequests.delete(mounted);
       }
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -1869,7 +1901,7 @@ export function installRendererBindingProbe(
         selectionErrorId: ++nextModelSelectionErrorId,
       };
     } finally {
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -2004,7 +2036,7 @@ export function installRendererBindingProbe(
         selectionRejected: true,
       };
     } finally {
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -2142,7 +2174,7 @@ export function installRendererBindingProbe(
         selectionErrorId: ++nextModelSelectionErrorId,
       };
     } finally {
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -2639,7 +2671,7 @@ export function installRendererBindingProbe(
     if (
       mountedByComposer.has(composer) ||
       !composer.isConnected ||
-      isOrbitComposer(composer) ||
+      orbitComposerKind(composer) !== "codex" ||
       !composer.matches(CODEX_COMPOSER_SELECTOR)
     ) {
       return;
@@ -2752,7 +2784,7 @@ export function installRendererBindingProbe(
       const replacementTarget = findComposerModelTarget(target);
       const replacementHostId = activeModelHostId(target);
       if (
-        isOrbitComposer(target) ||
+        orbitComposerKind(target) !== "codex" ||
         !shouldTransferComposerState(
           replacement.sourceModelTarget,
           replacementTarget,
@@ -2771,9 +2803,10 @@ export function installRendererBindingProbe(
       }
     }
     for (const [composer, mounted] of mountedByComposer) {
+      const kind = orbitComposerKind(composer);
       if (
         !composer.isConnected ||
-        isOrbitComposer(composer) ||
+        kind === "orbit" ||
         !composer.matches(CODEX_COMPOSER_SELECTOR) ||
         !mounted.control.root.isConnected
       ) {
@@ -2786,14 +2819,36 @@ export function installRendererBindingProbe(
         }
         mounted.codexUsageGate.dispose();
         disposeComposerAgentControl(mounted.control);
+        ownershipRecovery.delete(mounted);
+        modelRecovery.delete(mounted);
         mountedByComposer.delete(composer);
         controller.detach(composer, transferredComposers.has(composer));
         continue;
       }
+      // Unknown roots retain state, but cannot derive targets or retry requests.
+      if (kind === "unknown") continue;
+      if (refreshTargets) refreshMountedConversationTarget(mounted);
+      const ownershipGeneration = ownershipRecovery.get(mounted);
+      const modelGeneration = modelRecovery.get(mounted);
+      ownershipRecovery.delete(mounted);
+      modelRecovery.delete(mounted);
+      const recoverOwnership =
+        ownershipGeneration !== undefined &&
+        controller.isCurrentOwnershipRequest(composer, ownershipGeneration);
+      const recoverModel =
+        modelGeneration !== undefined &&
+        controller.isCurrentModelRequest(composer, modelGeneration);
+      if (
+        recoverOwnership ||
+        (recoverModel && threadIdFromComposerModelTarget(mounted.modelTarget))
+      ) {
+        void loadThreadOwnership(mounted);
+      } else if (recoverModel) {
+        void loadExternalCatalog(mounted);
+      }
       const state = controller.get(composer);
       const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
-      if (refreshTargets) refreshMountedConversationTarget(mounted);
       showCodexUsageGateStatus(mounted, mounted.codexUsageGate.refresh());
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {

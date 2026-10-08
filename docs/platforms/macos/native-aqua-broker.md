@@ -91,6 +91,10 @@ be supplied through this mechanism. The managed remote Claude plugin opts in,
 including the scoped Node executable used by the CLI, so its shell tools can
 read/delegate through the owning Host. Other broker clients retain their default
 behavior. Native login files and keychain state stay in the user's home/session.
+Directly launched packaged remote Runtimes also resolve the sibling native CLI
+and their own Node executable when Launcher-provided paths are absent. Delegation
+therefore stays on the Runtime's installed candidate instead of a stale PATH CLI;
+explicitly configured CLI/Node paths retain precedence.
 
 Discovery reconnects on the next explicit caller request after service startup or
 connection loss. Existing wrappers can recover on snapshot read or a subsequent

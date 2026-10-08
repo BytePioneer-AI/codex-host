@@ -1,4 +1,5 @@
 import { cp, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -96,6 +97,65 @@ describe("Harness plugin discovery and loading", () => {
     await registry.close();
     await registry.close();
     expect(await readFile(marker, "utf8")).toBe("closed");
+  });
+
+  it("settles statistics before importing Session plugins, including failed statistics plugins", async () => {
+    const directory = await root(["usage-agent", "broken-usage", "chat-agent"]);
+    const marker = path.join(directory, "chat-imported");
+    await plugin(directory, "usage-agent", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() { return {
+        harnessId: "usage-agent", close: async () => {},
+        usageStatistics: { listSources: async () => [], readSource: async () => [] }
+      }; }`,
+    });
+    await plugin(directory, "broken-usage", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() { throw new Error("failed"); }`,
+    });
+    await plugin(directory, "chat-agent", {
+      code: `import { writeFileSync } from "node:fs";
+        import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+        writeFileSync(${JSON.stringify(marker)}, "started");
+        export function createHarnessAdapter() { return new FakeHarnessAdapter("chat-agent"); }`,
+    });
+    const ready = vi.fn((adapters) => {
+      expect([...adapters.keys()].sort()).toEqual(["broken-usage", "usage-agent"]);
+      expect(existsSync(marker)).toBe(false);
+    });
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      onUsageAdaptersLoaded: ready,
+    });
+    try {
+      expect(ready).toHaveBeenCalledOnce();
+      expect(existsSync(marker)).toBe(true);
+      expect([...registry.adapters.keys()]).toContain("chat-agent");
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it("rejects malformed optional session usage capabilities", async () => {
+    const directory = await root(["broken-usage"]);
+    await plugin(directory, "broken-usage", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() {
+        return { harnessId: "broken-usage", close: async () => {},
+          usageStatistics: { listSources: async () => [], readSource: async () => [] },
+          sessionUsage: { read: async () => null }
+        };
+      }`,
+    });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    try {
+      expect(diagnose).toHaveBeenCalledWith({ code: "loadFailed", id: "broken-usage" });
+      expect([...registry.usageAdapters.values()][0]?.sessionUsage).toBeUndefined();
+    } finally {
+      await registry.close();
+    }
   });
 
   it.each(["throw", "invalid", "incompatible"])(

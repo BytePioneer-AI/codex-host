@@ -110,9 +110,23 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 不控制原生会话的插件可以在 Manifest 声明 `"kind": "usage"`，导出 `createUsageStatisticsAdapter(context)`，返回公共 `HarnessUsageStatisticsAdapter`：`harnessId`、`usageStatistics`、`close()`。没有 `inspect/open`，也不运行会话插件的 `warmup`。未声明 `kind` 的既有插件继续使用 `createHarnessAdapter`，无需迁移。
 
-这类插件复用同一可信目录、显式启用、身份校验、加载超时、失败隔离和关闭流程；目录描述保留 `kind: "usage"`。Registry 将其与可创建 Session 的 Adapter 分开，Host 只把读取能力接入公共全局统计，不将它加入聊天、模型选择、会话导入或委派路由。加载失败通过统计失败信息报告，不伪造空结果或 Session 方法。
+这类插件复用同一可信目录、显式启用、身份校验、加载超时、失败隔离和关闭流程；目录描述保留 `kind: "usage"`。Registry 将其与可创建 Session 的 Adapter 分开，Host 把统计能力接入公共全局统计，可选的 `sessionUsage` 能力接入会话浮窗，不将它加入聊天、模型选择、会话导入或委派路由。加载失败通过统计失败信息报告，不伪造空结果或 Session 方法。
 
-预装的 `codex-usage`（显示名 Codex）是这种插件，实现在 `packages/adapters/codex-usage`。官方 `codex` 身份仍保留给原生路径；插件只读 rollout，不改变 Codex 的聊天、分叉和恢复操作，也不读取账户配额。统计插件可以脱离 Desktop 加载，私有解析与公共 Host 汇总分离，详见[全局用量统计](../product/usage-statistics.md)。
+预装的 `codex-usage`（显示名 Codex）是这种插件，实现在 `packages/adapters/codex-usage`。官方 `codex` 身份仍保留给原生路径；插件只读 rollout，并观察现有官方连接的会话用量与轮次通知，不改变 Codex 的聊天、分叉和恢复操作，也不读取账户配额。统计插件可以脱离 Desktop 加载，私有解析与公共 Host 汇总分离，详见[全局用量统计](../product/usage-statistics.md)。
+
+### 可选的独立会话用量
+
+普通 Adapter 和仅统计 Adapter 均可声明 `sessionUsage?: HarnessSessionUsageCapability`，不要求实现 `inspect/open/execute` 或创建假的 Session。类型从 `@codexhost/harness-adapter/plugin` 导出：
+
+- `observe(message)`：同步、无 I/O 地观察现有原生连接，忽略不认识的消息；插件解析私有协议，返回归一化的 Session ID、用量快照或轮次 started/output/completed 事实。目前 Host 在官方连接输出上提供此入口，不是任意原生连接的自动发现机制。
+- `read(sessionId, signal)`：返回替换式的完整请求历史、完整性标志及可选原生快照；无所属数据返回 `null`，不稳定或失败的读取拒绝。不能启动进程或写原生存储。返回的历史请求复用 `HostUsageRequest`，费用及缓存率由公共 `UsageMeter` 计算。
+- `requestOptions?({ method, params, initializeParams })`：可选的原生通知订阅参数补丁，仅用于遥测/通知选择，不得改变命令、模型或用户输入。Host 保留 method、ID 及其他参数；初始化订阅协商等待仅统计插件加载阶段完成（含既有加载失败/超时隔离），不等待随后加载的聊天插件；之后的命令不等待插件。插件缺失、未加载、返回 null 或抛错时原样透传。初始化成功后的有效原生参数（含补丁）作为后续协商依据，公共层不解析 Harness 私有开关。`reset?()` 用于重新初始化连接时丢弃插件的实时计时边界。
+- `shouldForwardNotification?(message)`：同步决定是否向原生客户端转发通知，只用于保持客户端原本的订阅意图。插件额外订阅的内部遥测可以返回 false，仍供 `observe` 计量；原本已订阅的通知继续转发。Host 仅对无 ID 的通知调用，不拦截 RPC 请求/响应；能力缺失或抛错时默认转发。
+- 观测结果可以提供独立的 `requestTiming`（Turn/请求身份、输出 Token、起止毫秒）或 `timingUnavailable`。Host 复用统一计量器累计速度，不把这些观测重复计入费用历史；缺失/含混区间会停止本轮速度更新，但保留该会话最近有效的显示值，直到新的有效测量覆盖。原生帧进入 Host 时的观测时间传给插件，不使用插件异步加载完成的时刻计速。
+- Host 按原生 Session ID 合并并发读取；同一 Session 的事实由同一个能力实例提供。实时快照优先于历史快照；跨越新用量通知的旧读取不得宣称历史完整。失败时隐藏旧总费用，不影响原生帧或已有实时 Token。TTFT 由 Host 用接收时刻计量，更新走现有会话用量通知。
+- 关闭会取消读取并丢弃迟到结果。未实现能力的既有插件无需修改；外部 `HarnessSession` 的原有用量事件路径不迁移。插件加载器校验可选能力的方法形状；此接口仍是可信进程内契约，不是安全沙箱。
+
+Codex 的会话用量解析已从公共协议层迁入 `codex-usage`，账户配额解析仍属于既有官方账户通路。具体指标和当前限制见[会话用量计量](../product/usage-metering.md#官方-codex-会话)。
 
 插件 Bundle 保留 `/*! ... */` 等第三方许可注释。
 

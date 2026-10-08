@@ -270,7 +270,7 @@ describe("UsageMeter timing", () => {
     expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(60);
   });
 
-  it("publishes no speed for a Turn without timed requests", () => {
+  it("keeps the last speed for a Turn without timed requests", () => {
     const meter = completeMeter();
     meter.turnStarted("turn-1", 0);
     meter.recordRequest(
@@ -281,6 +281,28 @@ describe("UsageMeter timing", () => {
     meter.turnStarted("turn-2", 0);
     meter.recordRequest(request("b"), "turn-2");
     meter.turnCompleted("turn-2");
+    expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(10);
+  });
+
+  it("retains the last valid speed through invalidation and reset, without sharing it across sessions", () => {
+    const meter = completeMeter();
     expect(meter.derive(null, prices)?.outputTokensPerSecond).toBeUndefined();
+    meter.turnStarted("one", 0);
+    meter.recordOutputTiming(
+      { requestId: "r", outputTokens: 80, startedAtMs: 0, completedAtMs: 1000 },
+      "one",
+    );
+    // Retention must not depend on whether the UI already read the value.
+    meter.invalidateOutputTiming("one");
+    expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(80);
+    meter.resetTurnTiming();
+    expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(80);
+    meter.turnStarted("two", 2000);
+    meter.recordOutputTiming(
+      { requestId: "next", outputTokens: 0, startedAtMs: 2000, completedAtMs: 3000 },
+      "two",
+    );
+    expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(0);
+    expect(completeMeter().derive(null, prices)?.outputTokensPerSecond).toBeUndefined();
   });
 });

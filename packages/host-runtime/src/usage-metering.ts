@@ -29,6 +29,8 @@ export class UsageMeter {
   #turnOutputMs = 0;
   #timeToFirstOutputMs: number | undefined;
   #outputTokensPerSecond: number | undefined;
+  #timingUnavailable = false;
+  readonly #timedRequests = new Set<string>();
 
   get metered(): boolean {
     return this.#metered;
@@ -55,12 +57,72 @@ export class UsageMeter {
       activeTurnId !== null &&
       activeTurnId === this.#turnId
     ) {
-      this.#turnOutputTokens += request.outputTokens;
-      this.#turnOutputMs += duration;
-      // Running average of the Turn so far; the previous Turn's value stays until now.
-      this.#outputTokensPerSecond = this.#turnOutputTokens / (this.#turnOutputMs / 1000);
+      this.recordOutputTiming(
+        {
+          requestId: request.requestId,
+          outputTokens: request.outputTokens,
+          startedAtMs: request.startedAtMs ?? 0,
+          completedAtMs: request.completedAtMs ?? 0,
+        },
+        activeTurnId,
+      );
     }
     return true;
+  }
+
+  /** Live timing is independent of history replacement and cannot create billing entries. */
+  recordOutputTiming(
+    request: {
+      requestId: string;
+      outputTokens: number;
+      startedAtMs: number;
+      completedAtMs: number;
+    },
+    turnId: string,
+  ): boolean {
+    if (
+      turnId !== this.#turnId ||
+      this.#timingUnavailable ||
+      this.#timedRequests.has(request.requestId)
+    )
+      return false;
+    if (
+      !request.requestId ||
+      ![request.outputTokens, request.startedAtMs, request.completedAtMs].every(
+        (value) => Number.isSafeInteger(value) && value >= 0,
+      ) ||
+      request.completedAtMs <= request.startedAtMs
+    ) {
+      this.invalidateOutputTiming(turnId);
+      return true;
+    }
+    this.#timedRequests.add(request.requestId);
+    this.#turnOutputTokens += request.outputTokens;
+    this.#turnOutputMs += request.completedAtMs - request.startedAtMs;
+    this.#outputTokensPerSecond = this.#turnOutputTokens / (this.#turnOutputMs / 1000);
+    return true;
+  }
+
+  invalidateOutputTiming(turnId: string): void {
+    if (turnId !== this.#turnId) return;
+    this.#timingUnavailable = true;
+  }
+
+  /** Discard in-flight timing across connections, but keep the last valid displayed speed. */
+  resetTurnTiming(): void {
+    this.#turnId = null;
+    this.#turnStartedAtMs = null;
+    this.#timeToFirstOutputMs = undefined;
+    this.#timedRequests.clear();
+    this.#timingUnavailable = false;
+  }
+
+  /** Replace a read-only session history after recovery, append, rollback or file replacement. */
+  replaceHistory(requests: readonly HostUsageRequest[], complete: boolean): void {
+    this.#requests.clear();
+    this.#invalidRecord = false;
+    for (const request of requests) this.recordRequest({ ...request, historical: true }, null);
+    this.recordHistory(complete);
   }
 
   recordHistory(complete: boolean): void {
@@ -74,6 +136,8 @@ export class UsageMeter {
     this.#turnOutputObserved = false;
     this.#turnOutputTokens = 0;
     this.#turnOutputMs = 0;
+    this.#timedRequests.clear();
+    this.#timingUnavailable = false;
   }
 
   /** Returns true when this is the Turn's first visible output. */
@@ -88,8 +152,7 @@ export class UsageMeter {
 
   turnCompleted(turnId: string): void {
     if (turnId !== this.#turnId) return;
-    // A Turn without timed requests publishes no speed rather than a stale one.
-    if (this.#turnOutputMs === 0) this.#outputTokensPerSecond = undefined;
+    // No new measurement does not erase the last valid speed.
     this.#turnId = null;
     this.#turnStartedAtMs = null;
   }
@@ -128,12 +191,12 @@ export class UsageMeter {
         const cacheHitRate = this.#sessionCacheHitRatePercent();
         if (cacheHitRate !== null) usage.sessionCacheHitRatePercent = cacheHitRate;
       }
-      if (this.#outputTokensPerSecond !== undefined) {
-        usage.outputTokensPerSecond = this.#outputTokensPerSecond;
-      }
     } else if (usage.totalCostUsd !== undefined) {
       usage.costSource = "native";
     }
+    if (this.#timingUnavailable) delete usage.outputTokensPerSecond;
+    if (this.#outputTokensPerSecond !== undefined)
+      usage.outputTokensPerSecond = this.#outputTokensPerSecond;
     if (this.#timeToFirstOutputMs !== undefined) {
       usage.timeToFirstOutputMs = this.#timeToFirstOutputMs;
     }

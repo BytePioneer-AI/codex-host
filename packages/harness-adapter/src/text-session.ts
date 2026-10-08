@@ -22,6 +22,7 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import type { HostUsage, HostUsageRequest } from "./usage.js";
+import type { HarnessSessionUsageCapability } from "./session-usage.js";
 import type { HarnessCredentialExport, HarnessCredentialImports } from "./credential-imports.js";
 
 export type {
@@ -628,6 +629,8 @@ export interface HarnessAdapter {
   readonly sessionImport?: HarnessSessionImportCapability;
   /** Read-only local usage for the machine-wide statistics; never starts a native process. */
   readonly usageStatistics?: HarnessUsageStatisticsCapability;
+  /** Optional read-only usage for sessions on an already-owned native connection. */
+  readonly sessionUsage?: HarnessSessionUsageCapability;
   readonly subagents?: HarnessSubagentCapability;
   readonly webUi?: HarnessWebUiAction;
   /** Fresh read-only quota for current native authentication. Return null when unavailable;

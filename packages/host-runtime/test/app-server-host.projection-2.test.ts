@@ -1524,7 +1524,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
   });
 
   it("projects official Codex token Usage and account rate limits for inspection", async () => {
-    const fixture = createFixture();
+    const fixture = createFixture({ codexUsage: true });
     fixture.official.stdin.on("data", (chunk: Buffer) => {
       for (const line of chunk.toString("utf8").split("\n")) {
         if (!line) continue;
@@ -1605,6 +1605,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
           contextUsedTokens: 240,
           contextWindowTokens: 2_000,
           cacheHitRatePercent: 75,
+          sessionCacheHitRatePercent: 75,
         },
       },
     });
@@ -1677,6 +1678,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
   it("keeps cumulative Thread Usage independent from native Account changes", async () => {
     const fixture = createFixture({
+      codexUsage: true,
       accountControl: {
         currentAccountId: () => null,
         snapshot: () => ({

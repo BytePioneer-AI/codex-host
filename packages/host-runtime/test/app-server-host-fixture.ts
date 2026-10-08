@@ -1,7 +1,7 @@
 import type { RuntimeMaintenance } from "../src/runtime-maintenance.js";
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -268,6 +268,7 @@ export function createFixture(
     sharedThreads?: SharedThreadBridge;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
+    codexUsage?: boolean;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
@@ -291,6 +292,20 @@ export function createFixture(
     options.externalAdapters?.get("pi") ?? new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const mappingStoreDirectory =
     options.mappingStoreDirectory ?? mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
+  let pluginDirectory = options.pluginDirectory;
+  if (options.codexUsage) {
+    pluginDirectory = path.join(mappingStoreDirectory, "plugins");
+    mkdirSync(pluginDirectory, { recursive: true });
+    cpSync(
+      path.resolve("packages/host-runtime/dist/plugins/codex-usage"),
+      path.join(pluginDirectory, "codex-usage"),
+      { recursive: true },
+    );
+    writeFileSync(
+      path.join(pluginDirectory, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["codex-usage"] }),
+    );
+  }
   const mappingStore =
     options.mappingStore ?? new MappingStore({ directory: mappingStoreDirectory });
   const desktopInput = new PassThrough();
@@ -321,7 +336,7 @@ export function createFixture(
       CODEXHOST_DATA_DIR: mappingStoreDirectory,
       ...(options.environment ?? {}),
     },
-    ...(options.pluginDirectory ? { pluginRoots: [options.pluginDirectory] } : {}),
+    ...(pluginDirectory ? { pluginRoots: [pluginDirectory] } : {}),
     externalAdapters:
       options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,

@@ -57,15 +57,37 @@ export interface LoadHarnessPluginsOptions {
   warmup?: boolean;
   /** Dedicated runtime owners (e.g. a Broker) may instantiate only their requested plugin. */
   onlyIds?: ReadonlySet<string>;
+  /** Load statistics-only plugins first and publish their settled registry before Session
+   * plugins start. Ownership/cleanup remains with the returned registry.
+   */
+  onUsageAdaptersLoaded?: (adapters: ReadonlyMap<string, HarnessUsageStatisticsAdapter>) => void;
   diagnose?: (diagnostic: HarnessPluginDiagnostic) => void;
 }
 
 type Candidate = InstalledHarnessPlugin;
 type PluginAdapter = HarnessAdapter | HarnessUsageStatisticsAdapter;
 
+function hasValidSessionUsage(value: object): boolean {
+  const capability: unknown = Reflect.get(value, "sessionUsage");
+  return (
+    capability === undefined ||
+    (capability !== null &&
+      typeof capability === "object" &&
+      ["observe", "read"].every((key) => typeof Reflect.get(capability, key) === "function") &&
+      ["requestOptions", "shouldForwardNotification", "reset"].every(
+        (key) =>
+          Reflect.get(capability, key) === undefined ||
+          typeof Reflect.get(capability, key) === "function",
+      ))
+  );
+}
+
 function isAdapter(value: unknown): value is HarnessAdapter {
   if (!value || typeof value !== "object") return false;
-  return ["inspect", "open", "close"].every((key) => typeof Reflect.get(value, key) === "function");
+  return (
+    hasValidSessionUsage(value) &&
+    ["inspect", "open", "close"].every((key) => typeof Reflect.get(value, key) === "function")
+  );
 }
 
 function isUsageAdapter(value: unknown): value is HarnessUsageStatisticsAdapter {
@@ -73,6 +95,7 @@ function isUsageAdapter(value: unknown): value is HarnessUsageStatisticsAdapter 
     return false;
   const capability: unknown = Reflect.get(value, "usageStatistics");
   return (
+    hasValidSessionUsage(value) &&
     !!capability &&
     typeof capability === "object" &&
     ["listSources", "readSource"].every(
@@ -251,6 +274,7 @@ export async function loadHarnessPlugins(
   // Filesystem discovery and synchronous plugin execution are not preemptible.
   if (options.signal?.aborted) return registry;
   let next = 0;
+  let batch = pending;
   const loaded = new Map<
     Candidate,
     { descriptor: HarnessPluginDescriptor; adapter: PluginAdapter }
@@ -258,7 +282,7 @@ export async function loadHarnessPlugins(
   const worker = async (): Promise<void> => {
     for (;;) {
       if (options.signal?.aborted) return;
-      const candidate = pending[next++];
+      const candidate = batch[next++];
       if (!candidate) return;
       if (options.signal?.aborted) return;
       const { manifest } = candidate;
@@ -308,10 +332,21 @@ export async function loadHarnessPlugins(
       loaded.set(candidate, { descriptor, adapter });
     }
   };
-  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, () => worker()));
-  for (const candidate of pending) {
-    const entry = loaded.get(candidate);
-    if (entry) await registry.register(entry.descriptor, entry.adapter);
+  const batches = options.onUsageAdaptersLoaded
+    ? [
+        pending.filter((c) => c.manifest.kind === "usage"),
+        pending.filter((c) => c.manifest.kind !== "usage"),
+      ]
+    : [pending];
+  for (const [index, candidates] of batches.entries()) {
+    batch = candidates;
+    next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, batch.length) }, () => worker()));
+    for (const candidate of batch) {
+      const entry = loaded.get(candidate);
+      if (entry) await registry.register(entry.descriptor, entry.adapter);
+    }
+    if (index === 0) options.onUsageAdaptersLoaded?.(registry.usageAdapters);
   }
   return registry;
 }

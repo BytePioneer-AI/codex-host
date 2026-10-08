@@ -77,7 +77,7 @@ import type {
   HostApprovalResponse,
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
-import { parseHostUsage, type HostEvent, type HostUsage } from "@codexhost/harness-adapter";
+import type { HostEvent, HostUsage } from "@codexhost/harness-adapter";
 import type {
   HarnessPluginContext,
   HarnessUsageStatisticsAdapter,
@@ -256,6 +256,7 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
 import { ModelPriceCatalog } from "./model-prices.js";
+import { ObservedSessionUsage } from "./observed-session-usage.js";
 import type { UsageStatistics, UsageStatisticsSource } from "./usage-statistics.js";
 import { USAGE_STATISTICS_METHOD, usageStatisticsParamsSchema } from "@codexhost/shared-contracts";
 import {
@@ -275,7 +276,6 @@ import {
   mapExternalThreadHarnessError,
   projectCodexRateLimitsToCredits,
   observeCodexRateLimits,
-  observeCodexTokenUsage,
   observeDeletedProject,
   parseJsonFrame,
   projectCodexThreadUsage,
@@ -630,6 +630,7 @@ export class AppServerHost {
   readonly #externalSteering = new ExternalTurnSteering();
   readonly #liveCommandCache = new LiveCommandCatalogCache();
   readonly #modelPrices: ModelPriceCatalog;
+  readonly #observedSessionUsage: ObservedSessionUsage;
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
@@ -646,7 +647,6 @@ export class AppServerHost {
   #activeWorkDrainWaiters = new Set<() => void>();
   #pendingOfficialDelegationThreads = new Set<string>();
   #pendingOfficialTerminalStatuses = new Map<string, DelegationStartResult["status"]>();
-  #officialUsageByThread = new Map<string, HostUsage>();
   readonly #officialRateLimits = new AccountRateLimits();
   #routeObservationTracker = new RequestRouteObservationTracker();
   #officialServerRequests = new Map<JsonRpcId, JsonRpcId>();
@@ -664,6 +664,7 @@ export class AppServerHost {
   #closeRequested = false;
   readonly #pluginLoadAbort = new AbortController();
   #pluginLoading: Promise<void> | undefined;
+  #usagePluginsReady: Promise<void> | undefined;
   readonly #desktopRequests = new DesktopRequestQueue();
   #drainActiveWorkOnInputEnd = false;
   #desktopInputEnded = false;
@@ -676,6 +677,14 @@ export class AppServerHost {
       ...options,
     };
     this.#modelPrices = options.modelPrices ?? new ModelPriceCatalog();
+    this.#observedSessionUsage = new ObservedSessionUsage(
+      () =>
+        [...this.#externalAdapters.values(), ...this.#usageOnlyAdapters].flatMap((adapter) =>
+          adapter.sessionUsage ? [adapter.sessionUsage] : [],
+        ),
+      this.#modelPrices,
+      (error) => this.#diagnose(error),
+    );
     this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) => {
       this.#noteDesktopReply(value);
       return this.#takeConsoleReply(value);
@@ -892,15 +901,27 @@ export class AppServerHost {
   }
 
   #waitForPlugins(): Promise<void> {
-    return (this.#pluginLoading ??= this.#loadInstalledPlugins().catch((error: unknown) => {
-      this.#diagnose(`Harness plugin load failed: ${errorMessage(error)}`);
-    }));
+    if (!this.#pluginLoading) {
+      const ready = Promise.withResolvers<undefined>();
+      const usageReady = () => ready.resolve(undefined);
+      this.#usagePluginsReady = ready.promise;
+      this.#pluginLoading = this.#loadInstalledPlugins(usageReady)
+        .catch((error: unknown) => {
+          this.#diagnose(`Harness plugin load failed: ${errorMessage(error)}`);
+        })
+        .finally(usageReady);
+    }
+    return this.#pluginLoading;
   }
 
-  async #loadInstalledPlugins(): Promise<void> {
+  async #loadInstalledPlugins(usageReady: () => void): Promise<void> {
     if (!this.#options.pluginRoots || this.#pluginLoadAbort.signal.aborted) return;
     const plugins = await loadHarnessPlugins({
       roots: this.#options.pluginRoots,
+      onUsageAdaptersLoaded: (adapters) => {
+        if (!this.#pluginLoadAbort.signal.aborted) this.#usageOnlyAdapters = [...adapters.values()];
+        usageReady();
+      },
       launchCommandForPlugin: (id) => this.#launchSettings.initialCommand(id),
       context: this.#options.pluginContext ?? {
         environment: this.#options.environment ?? process.env,
@@ -922,6 +943,7 @@ export class AppServerHost {
   }
 
   async #closeAdapters(): Promise<void> {
+    this.#observedSessionUsage.close();
     const results = await Promise.allSettled([
       this.#plugins?.close(),
       ...[...new Set(this.#options.externalAdapters?.values())].map((adapter) =>
@@ -962,7 +984,8 @@ export class AppServerHost {
           .catch((closeError: unknown) => this.#diagnose(closeError));
       }
     }
-    // Keep the existing whole-registry loading policy, but do not hold up Desktop initialization.
+    // Load statistics plugins before native subscription negotiation; Session plugins continue
+    // independently and must not hold up the official initialization.
     void this.#waitForPlugins().then(() => this.#attachUsageStatistics());
     this.#options.sharedThreads?.start((message) => {
       void this.#writer.json(message).catch((error: unknown) => this.#diagnose(error));
@@ -1157,7 +1180,16 @@ export class AppServerHost {
             this.#officialRuntimeScope.gate.phase === "ready"
               ? this.#officialRuntimeScope.owner.generation
               : undefined;
-          const response = await this.#officialRuntime.initializeProtocol(requestObject(request));
+          // Native exclusions are immutable after initialization. Wait for the statistics
+          // phase to settle (including loader failures/timeouts), not an arbitrary race and
+          // not the much larger Session plugin registry.
+          void this.#waitForPlugins();
+          await this.#usagePluginsReady;
+          const params = requestObject(request);
+          const options = this.#observedSessionUsage.requestOptions("initialize", params);
+          const nativeParams = options ? { ...params, ...options } : params;
+          const response = await this.#officialRuntime.initializeProtocol(nativeParams);
+          if (!isRecord(response.error)) this.#observedSessionUsage.initialized(nativeParams);
           await this.#writer.json({ ...response, id: request.id });
           this.#nativeAccountObserver?.initialized(nativeGeneration);
         } catch (error) {
@@ -2132,6 +2164,19 @@ export class AppServerHost {
       return;
     }
     try {
+      // Optional plugin-owned notification subscription options. Never wait for plugin startup
+      // here: enhancement must not delay native commands or interrupt handling.
+      const options = isRecord(request.params)
+        ? this.#observedSessionUsage.requestOptions(request.method, request.params)
+        : null;
+      if (options) {
+        const original = parseJsonFrame(frame);
+        if (isRecord(original))
+          frame = encodeJsonFrame({
+            ...original,
+            params: { ...(isRecord(original.params) ? original.params : {}), ...options },
+          });
+      }
       await this.#officialRuntime.sendFrame(frame);
       this.#markDesktopRequestAnswered(request.id);
     } catch {
@@ -2157,6 +2202,7 @@ export class AppServerHost {
       return;
     }
     const parsed = input.value;
+    const observedAtMs = Date.now();
     this.#observeOfficialTurnStartResponse(parsed);
     let forwarded: JsonValue = parsed;
     if (isRecord(parsed) && typeof parsed.method === "string" && "id" in parsed) {
@@ -2174,18 +2220,6 @@ export class AppServerHost {
     if (accountScopedNotification) {
       if (parsed.method === "account/updated") this.#officialRateLimits.reset(input.accountId);
     }
-    const tokenUsage = observeCodexTokenUsage(parsed);
-    if (tokenUsage) {
-      const previous = this.#officialUsageByThread.get(tokenUsage.threadId);
-      try {
-        this.#officialUsageByThread.set(
-          tokenUsage.threadId,
-          parseHostUsage({ ...(previous ?? {}), ...tokenUsage.usage }),
-        );
-      } catch {
-        // Ignore an invalid native observation while preserving the official frame.
-      }
-    }
     const rateLimits = observeCodexRateLimits(parsed);
     if (rateLimits) this.#officialRateLimits.observe(input.accountId, rateLimits);
     // Owner already rejects retired generations.
@@ -2195,8 +2229,24 @@ export class AppServerHost {
       this.#diagnose(error);
     }
     this.#routeObservationTracker.bindOfficialResponse(parsed);
-    if (forwarded === parsed) await this.#writer.frame(input.frame);
-    else await this.#writer.json(forwarded);
+    const privateTelemetry =
+      isRecord(parsed) &&
+      typeof parsed.method === "string" &&
+      !("id" in parsed) &&
+      !this.#observedSessionUsage.shouldForwardNotification(parsed);
+    if (!privateTelemetry) {
+      if (forwarded === parsed) await this.#writer.frame(input.frame);
+      else await this.#writer.json(forwarded);
+    }
+    // Plugin startup and history I/O must never delay the official protocol. Promise
+    // callbacks preserve observation order and the original receipt timestamps.
+    void (this.#usagePluginsReady ?? Promise.resolve())
+      .then(async () => {
+        for (const threadId of this.#observedSessionUsage.observe(parsed, observedAtMs)) {
+          await this.#writer.json({ method: THREAD_USAGE_UPDATED_METHOD, params: { threadId } });
+        }
+      })
+      .catch((error: unknown) => this.#diagnose(error));
     this.#nativeAccountObserver?.observe(parsed);
     const deletedProjectId = observeDeletedProject(parsed);
     if (deletedProjectId) {
@@ -3310,12 +3360,13 @@ export class AppServerHost {
         );
         return;
       }
+      await this.#waitForPlugins();
       const accountId = await this.#currentCodexAccountId();
       if (accountId) await this.#refreshOfficialRateLimits(accountId);
       const accountCredits = this.#officialAccountCredits(accountId ?? undefined);
       const result = threadUsageInspectionSchema.parse({
         threadId: params.data.threadId,
-        usage: this.#officialUsageByThread.get(params.data.threadId) ?? null,
+        usage: await this.#observedSessionUsage.read(params.data.threadId),
         ...(accountCredits ? { accountCredits } : {}),
       });
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));

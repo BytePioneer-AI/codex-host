@@ -87,7 +87,9 @@ Claude Code quota path are unchanged.
 New clients may opt into forwarding the Host's scoped delegation environment:
 `CODEXHOST_CLI_PATH`, `CODEXHOST_RUNTIME_ENDPOINT`, `CODEXHOST_RUNTIME_TOKEN`, and
 `CODEXHOST_THREAD_ID`. HOME, PATH, loader variables and native credentials cannot
-be supplied through this mechanism. Existing Claude clients retain their default
+be supplied through this mechanism. The managed remote Claude plugin opts in,
+including the scoped Node executable used by the CLI, so its shell tools can
+read/delegate through the owning Host. Other broker clients retain their default
 behavior. Native login files and keychain state stay in the user's home/session.
 
 Discovery reconnects on the next explicit caller request after service startup or

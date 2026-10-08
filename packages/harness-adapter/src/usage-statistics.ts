@@ -88,7 +88,10 @@ export function usageSessionTitle(value: unknown): string | undefined {
   if (normalized.length <= MAX_SESSION_TITLE_LENGTH) return normalized;
   const characters = [...normalized];
   if (characters.length <= MAX_SESSION_TITLE_LENGTH) return normalized;
-  return `${characters.slice(0, MAX_SESSION_TITLE_LENGTH - 1).join("").trimEnd()}…`;
+  return `${characters
+    .slice(0, MAX_SESSION_TITLE_LENGTH - 1)
+    .join("")
+    .trimEnd()}…`;
 }
 
 function sessionIdOk(value: unknown): value is string {

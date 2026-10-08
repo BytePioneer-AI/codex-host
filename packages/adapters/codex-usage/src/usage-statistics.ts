@@ -39,12 +39,7 @@ function fingerprint(files: readonly SourceFile[], extra = ""): string {
 function typedPrompt(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const text = value.trim();
-  if (
-    !text ||
-    text.startsWith("<") ||
-    text.startsWith("# AGENTS.md") ||
-    text.startsWith("<!--")
-  ) {
+  if (!text || text.startsWith("<") || text.startsWith("# AGENTS.md") || text.startsWith("<!--")) {
     return undefined;
   }
   return usageSessionTitle(text);
@@ -64,10 +59,7 @@ function userItemPrompt(payload: Record<string, unknown> | null): string | undef
   return undefined;
 }
 
-async function readThreadNames(
-  home: string,
-  signal: AbortSignal,
-): Promise<Map<string, string>> {
+async function readThreadNames(home: string, signal: AbortSignal): Promise<Map<string, string>> {
   const names = new Map<string, string>();
   try {
     for await (const line of jsonlRecords(
@@ -177,7 +169,11 @@ export async function readCodexRollouts(
           break;
         case "compacted": {
           const record = object(p.latest_token_usage_record);
-          if (record && p.compaction_response_id && record.response_id === p.compaction_response_id) {
+          if (
+            record &&
+            p.compaction_response_id &&
+            record.response_id === p.compaction_response_id
+          ) {
             if (!usage(record.usage)) options.onIncomplete?.();
             counters.record(at, model, record, true);
           }
@@ -241,9 +237,7 @@ export async function readCodexRollouts(
       ...(v.usage.known & 8 ? { cacheWriteInputTokens: written } : {}),
       ...(v.usage.known & 16 ? { reasoningOutputTokens: reasoning } : {}),
     });
-    return entry
-      ? [withUsageSession(entry, { sessionId: thread, cwd, title: firstPrompt })]
-      : [];
+    return entry ? [withUsageSession(entry, { sessionId: thread, cwd, title: firstPrompt })] : [];
   });
 }
 

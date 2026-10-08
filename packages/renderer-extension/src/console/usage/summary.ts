@@ -44,12 +44,7 @@ export function summaryTiles(
   const tokens = unmetered(totals)
     ? { value: "—", approximation: null }
     : tokenSummary(total, locale);
-  const tokenTile = tile(
-    "tokens",
-    messages.tokenUsage,
-    tokens.value,
-    tokens.approximation,
-  );
+  const tokenTile = tile("tokens", messages.tokenUsage, tokens.value, tokens.approximation);
   const unknownInput = totals.inputTokens - totals.cacheKnownInputTokens;
   const cache = totals.cachedInputTokens + totals.cacheWriteInputTokens;
   const parts = [

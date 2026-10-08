@@ -497,25 +497,52 @@ describe("UsageStatistics", () => {
 });
 
 it("uses persisted Desktop titles by Harness/native identity and reflects renames without reparsing", async () => {
-  const storage = new FakeStorage(new Map([["one", {
-    fingerprint: "1",
-    entries: [
-      entry("mapped", { sessionId: "native-session", sessionTitle: "Raw first prompt", cwd: "/project" }),
-      entry("outside", { sessionId: "unmapped-session", sessionTitle: "Native title", cwd: "/project" }),
-    ],
-  }]]));
+  const storage = new FakeStorage(
+    new Map([
+      [
+        "one",
+        {
+          fingerprint: "1",
+          entries: [
+            entry("mapped", {
+              sessionId: "native-session",
+              sessionTitle: "Raw first prompt",
+              cwd: "/project",
+            }),
+            entry("outside", {
+              sessionId: "unmapped-session",
+              sessionTitle: "Native title",
+              cwd: "/project",
+            }),
+          ],
+        },
+      ],
+    ]),
+  );
   const adapter = Object.assign(new FakeHarnessAdapter(harnessIdSchema.parse("pi")), {
     usageStatistics: storage,
   });
   const other = Object.assign(new FakeHarnessAdapter(harnessIdSchema.parse("omp")), {
-    usageStatistics: new FakeStorage(new Map([["one", {
-      fingerprint: "1",
-      entries: [entry("mapped", { sessionId: "native-session", sessionTitle: "Other Harness title" })],
-    }]])),
+    usageStatistics: new FakeStorage(
+      new Map([
+        [
+          "one",
+          {
+            fingerprint: "1",
+            entries: [
+              entry("mapped", { sessionId: "native-session", sessionTitle: "Other Harness title" }),
+            ],
+          },
+        ],
+      ]),
+    ),
   });
   const usageStatistics = statistics();
   const fixture = createFixture({
-    externalAdapters: new Map([["pi", adapter], ["omp", other]]),
+    externalAdapters: new Map([
+      ["pi", adapter],
+      ["omp", other],
+    ]),
     usageStatistics,
   });
   try {
@@ -533,43 +560,74 @@ it("uses persisted Desktop titles by Harness/native identity and reflects rename
     await fixture.mappingStore.commitReady({
       hostThreadId: record.hostThreadId,
       nativeSessionRef: nativeSessionRefSchema.parse({
-        harnessId: "pi", nativeSessionId: "native-session", formatVersion: 1,
+        harnessId: "pi",
+        nativeSessionId: "native-session",
+        formatVersion: 1,
       }),
     });
     await fixture.host.handleConsoleRequest(USAGE_STATISTICS_METHOD, { range: "all" });
     await usageStatistics.settled();
     const initial = await usageStatistics.get("all");
     const expected = expect.arrayContaining([
-      expect.objectContaining({ harness: "pi", sessionId: "native-session", title: "理解项目背景" }),
-      expect.objectContaining({ harness: "pi", sessionId: "unmapped-session", title: "Native title" }),
-      expect.objectContaining({ harness: "omp", sessionId: "native-session", title: "Other Harness title" }),
+      expect.objectContaining({
+        harness: "pi",
+        sessionId: "native-session",
+        title: "理解项目背景",
+      }),
+      expect.objectContaining({
+        harness: "pi",
+        sessionId: "unmapped-session",
+        title: "Native title",
+      }),
+      expect.objectContaining({
+        harness: "omp",
+        sessionId: "native-session",
+        title: "Other Harness title",
+      }),
     ]);
     expect(initial.sessions).toEqual(expected);
     expect(initial.recentSessions).toEqual(expected);
     const reads = [...storage.reads];
     // Exercise the real Desktop write path, not a statistics-only title mock.
     writeRequest(fixture.desktopInput, {
-      id: 91, method: "thread/name/set",
+      id: 91,
+      method: "thread/name/set",
       params: { threadId: record.hostThreadId, name: "新的会话标题" },
     });
     await fixture.collector.waitFor((message) => message.id === 91);
     const renamed = await usageStatistics.get("all");
-    expect(renamed.sessions).toContainEqual(expect.objectContaining({
-      harness: "pi", sessionId: "native-session", title: "新的会话标题",
-    }));
-    expect(renamed.recentSessions).toContainEqual(expect.objectContaining({
-      harness: "pi", sessionId: "native-session", title: "新的会话标题",
-    }));
+    expect(renamed.sessions).toContainEqual(
+      expect.objectContaining({
+        harness: "pi",
+        sessionId: "native-session",
+        title: "新的会话标题",
+      }),
+    );
+    expect(renamed.recentSessions).toContainEqual(
+      expect.objectContaining({
+        harness: "pi",
+        sessionId: "native-session",
+        title: "新的会话标题",
+      }),
+    );
     expect(renamed.totals).toEqual(initial.totals);
     expect(storage.reads).toEqual(reads);
     await fixture.mappingStore.setTitle(record.hostThreadId, "");
-    expect((await usageStatistics.get("all")).sessions).toContainEqual(expect.objectContaining({
-      harness: "pi", sessionId: "native-session", title: "Raw first prompt",
-    }));
+    expect((await usageStatistics.get("all")).sessions).toContainEqual(
+      expect.objectContaining({
+        harness: "pi",
+        sessionId: "native-session",
+        title: "Raw first prompt",
+      }),
+    );
     vi.spyOn(fixture.mappingStore, "listThreads").mockRejectedValueOnce(new Error("unavailable"));
-    expect((await usageStatistics.get("all")).sessions).toContainEqual(expect.objectContaining({
-      harness: "pi", sessionId: "native-session", title: "Raw first prompt",
-    }));
+    expect((await usageStatistics.get("all")).sessions).toContainEqual(
+      expect.objectContaining({
+        harness: "pi",
+        sessionId: "native-session",
+        title: "Raw first prompt",
+      }),
+    );
   } finally {
     usageStatistics.close();
     await stopFixture(fixture);
@@ -609,17 +667,26 @@ it("serves statistics through the Host from Adapters that expose local usage", a
 });
 
 it("selects the latest named ready mapping and never borrows titles for a fork", async () => {
-  const storage = new FakeStorage(new Map([["one", {
-    fingerprint: "1",
-    entries: [
-      entry("parent", { sessionId: "parent-session", sessionTitle: "Native parent" }),
-      entry("fork", { sessionId: "fork-session", sessionTitle: "Native fork" }),
-    ],
-  }]]));
+  const storage = new FakeStorage(
+    new Map([
+      [
+        "one",
+        {
+          fingerprint: "1",
+          entries: [
+            entry("parent", { sessionId: "parent-session", sessionTitle: "Native parent" }),
+            entry("fork", { sessionId: "fork-session", sessionTitle: "Native fork" }),
+          ],
+        },
+      ],
+    ]),
+  );
   const mapped = (title: string, updatedAt: string): UsageSessionTitleRecord => ({
     harnessId: harnessIdSchema.parse("pi"),
     nativeSessionRef: nativeSessionRefSchema.parse({
-      harnessId: "pi", nativeSessionId: "parent-session", formatVersion: 1,
+      harnessId: "pi",
+      nativeSessionId: "parent-session",
+      formatVersion: 1,
     }),
     state: "ready",
     title,
@@ -633,18 +700,26 @@ it("selects the latest named ready mapping and never borrows titles for a fork",
     { ...mapped("错配的标题", "2026-10-08T12:00:00Z"), harnessId: harnessIdSchema.parse("omp") },
   ];
   const stats = statistics();
-  stats.attach(() => [{ harness: "pi", capability: storage }], async () => records);
+  stats.attach(
+    () => [{ harness: "pi", capability: storage }],
+    async () => records,
+  );
   try {
     const result = await settledGet(stats);
-    expect(result.sessions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ sessionId: "parent-session", title: "最新 标题" }),
-      expect.objectContaining({ sessionId: "fork-session", title: "Native fork" }),
-    ]));
+    expect(result.sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sessionId: "parent-session", title: "最新 标题" }),
+        expect.objectContaining({ sessionId: "fork-session", title: "Native fork" }),
+      ]),
+    );
     // Mapping deletion takes effect even when the native parse fingerprint has not changed.
     records = [];
-    expect((await stats.get("all")).sessions).toContainEqual(expect.objectContaining({
-      sessionId: "parent-session", title: "Native parent",
-    }));
+    expect((await stats.get("all")).sessions).toContainEqual(
+      expect.objectContaining({
+        sessionId: "parent-session",
+        title: "Native parent",
+      }),
+    );
     expect(storage.reads).toEqual(["one"]);
   } finally {
     stats.close();

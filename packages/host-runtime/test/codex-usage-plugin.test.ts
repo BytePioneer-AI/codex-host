@@ -356,7 +356,7 @@ it("negotiates telemetry even when its cold load exceeds the former 250ms cutoff
   const entry = path.join(plugins, "codex-usage", "plugin.mjs");
   await writeFile(
     entry,
-    `await new Promise(r => setTimeout(r, 500));\n${await readFile(entry, "utf8")}`,
+    `await new Promise(r => setTimeout(r, 1500));\n${await readFile(entry, "utf8")}`,
   );
   const fixture = createFixture({ pluginDirectory: plugins, environment: { CODEX_HOME: home } });
   try {
@@ -365,7 +365,11 @@ it("negotiates telemetry even when its cold load exceeds the former 250ms cutoff
       capabilities: { experimentalApi: true, optOutNotificationMethods: ["rawResponse/completed"] },
     };
     writeRequest(fixture.desktopInput, { id: 81, method: "initialize", params });
-    const initialize = await readJsonLine(fixture.official.stdin);
+    // Cold imports can exceed readJsonLine's ordinary 1s budget, especially on Windows CI.
+    const initialize = await readJsonLine(
+      fixture.official.stdin,
+      process.platform === "win32" ? 10_000 : 4000,
+    );
     writeRequest(fixture.official.stdout, {
       id: requiredMessageId(initialize),
       result: { userAgent: "fixture" },
@@ -387,6 +391,8 @@ it("negotiates telemetry even when its cold load exceeds the former 250ms cutoff
     });
     await fixture.collector.waitFor((message) => requestId(message, 82));
   } finally {
+    // A failed handshake assertion must not leave shutdown waiting for an unanswered RPC.
+    fixture.host.close();
     await stopFixture(fixture);
   }
 });

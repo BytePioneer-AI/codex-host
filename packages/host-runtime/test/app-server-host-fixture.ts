@@ -159,14 +159,17 @@ export function writeRequest(stream: PassThrough, value: JsonObject): void {
 
 export const jsonLineBuffers = new WeakMap<PassThrough, string>();
 
-export async function readJsonLine(stream: PassThrough): Promise<JsonObject> {
+export async function readJsonLine(stream: PassThrough, timeoutMs = 1000): Promise<JsonObject> {
   let buffer = jsonLineBuffers.get(stream) ?? "";
   if (!buffer.includes("\n")) {
-    await vi.waitFor(() => {
-      const chunk = stream.read() as Buffer | string | null;
-      if (chunk !== null) buffer += String(chunk);
-      expect(buffer).toContain("\n");
-    });
+    await vi.waitFor(
+      () => {
+        const chunk = stream.read() as Buffer | string | null;
+        if (chunk !== null) buffer += String(chunk);
+        expect(buffer).toContain("\n");
+      },
+      { timeout: timeoutMs },
+    );
   }
   const newline = buffer.indexOf("\n");
   const line = buffer.slice(0, newline);

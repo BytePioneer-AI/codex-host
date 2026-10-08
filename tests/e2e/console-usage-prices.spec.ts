@@ -256,23 +256,35 @@ const tile = (page: Page, key: string) => page.locator(`.console-usage-tile[data
 const tileValue = (page: Page, key: string) => tile(page, key).locator("strong");
 
 async function expectTokenColumns(page: Page) {
-  const layout = await tile(page, "tokens").locator("[data-token-part]").evaluateAll((nodes) =>
-    nodes.map((node) => {
-      const column = node.getBoundingClientRect();
-      const label = node.querySelector(".console-usage-tile__part-label")?.getBoundingClientRect();
-      const value = node.querySelector(".console-usage-tile__part-value")?.getBoundingClientRect();
-      return {
-        top: column.top,
-        width: column.width,
-        labelAbove: !!label && !!value && label.bottom <= value.top,
-        valueFits: !!value && value.left >= column.left && value.right <= column.right,
-      };
-    }),
-  );
+  const layout = await tile(page, "tokens")
+    .locator("[data-token-part]")
+    .evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const column = node.getBoundingClientRect();
+        const label = node
+          .querySelector(".console-usage-tile__part-label")
+          ?.getBoundingClientRect();
+        const value = node
+          .querySelector(".console-usage-tile__part-value")
+          ?.getBoundingClientRect();
+        return {
+          top: column.top,
+          width: column.width,
+          labelAbove: !!label && !!value && label.bottom <= value.top,
+          valueFits: !!value && value.left >= column.left && value.right <= column.right,
+        };
+      }),
+    );
   expect(layout).toHaveLength(3);
   expect(layout.every((column) => column.labelAbove && column.valueFits)).toBe(true);
-  expect(Math.max(...layout.map((column) => column.top)) - Math.min(...layout.map((column) => column.top))).toBeLessThan(1);
-  expect(Math.max(...layout.map((column) => column.width)) - Math.min(...layout.map((column) => column.width))).toBeLessThan(1);
+  expect(
+    Math.max(...layout.map((column) => column.top)) -
+      Math.min(...layout.map((column) => column.top)),
+  ).toBeLessThan(1);
+  expect(
+    Math.max(...layout.map((column) => column.width)) -
+      Math.min(...layout.map((column) => column.width)),
+  ).toBeLessThan(1);
 }
 const group = (page: Page, name: string) => page.getByRole("group", { name, exact: true });
 const modelFilter = (page: Page) => page.getByRole("button", { name: "按模型筛选", exact: true });
@@ -518,7 +530,8 @@ test("long inline credits do not push the cost column outside the table", async 
         amountWidth: amount.clientWidth,
         amountScrollWidth: amount.scrollWidth,
         nowrap: getComputedStyle(amount).whiteSpace,
-        sourceLeft: element.querySelector(".console-usage-cost__source")?.getBoundingClientRect().left,
+        sourceLeft: element.querySelector(".console-usage-cost__source")?.getBoundingClientRect()
+          .left,
         amountRight: amount.getBoundingClientRect().right,
       };
     }),
@@ -871,14 +884,18 @@ for (const surface of ["console", "desktop"] as const) {
     await group(page, "趋势").getByRole("button", { name: "Token", exact: true }).click();
     const chart = page.locator(".console-usage-chart-wrap.is-selectable");
     await expect(chart.locator(".console-usage-chart__label")).toContainText([
-      "0", "6000 万", "1.2 亿",
+      "0",
+      "6000 万",
+      "1.2 亿",
     ]);
     expect(
-      await chart.locator(".console-usage-chart__label").evaluateAll((labels) =>
-        labels.slice(0, 3).every((label) =>
-          label instanceof SVGGraphicsElement && label.getBBox().x >= 0,
+      await chart
+        .locator(".console-usage-chart__label")
+        .evaluateAll((labels) =>
+          labels
+            .slice(0, 3)
+            .every((label) => label instanceof SVGGraphicsElement && label.getBBox().x >= 0),
         ),
-      ),
     ).toBe(true);
     await chart.focus();
     await page.keyboard.press("End");
@@ -907,7 +924,8 @@ for (const surface of ["console", "desktop"] as const) {
       // Unpriced: cost still counts only what has a price, without a lower-bound mark.
       request("unpriced", { model: "mystery-model", inputTokens: 5_000, outputTokens: 0 }),
     ]);
-    if (surface === "desktop") await page.locator("[data-codexhost-settings-trigger] button").click();
+    if (surface === "desktop")
+      await page.locator("[data-codexhost-settings-trigger] button").click();
     await openStatistics(page);
     await expect(page.locator(".console-usage-tile")).toHaveCount(3);
     for (const [key, label, value] of [
@@ -922,25 +940,39 @@ for (const surface of ["console", "desktop"] as const) {
     const parts = tile(page, "tokens").locator("[data-token-part]");
     await expect(parts).toHaveText(["输入 15.5 万", "输出 1 万", "缓存 85 万"]);
     await expectTokenColumns(page);
-    await expect(tile(page, "tokens").locator(".console-usage-tile__breakdown")).not.toContainText("/");
+    await expect(tile(page, "tokens").locator(".console-usage-tile__breakdown")).not.toContainText(
+      "/",
+    );
     // Quantities are plain text: neither native title hints nor a question-mark cursor.
     await expect(tile(page, "tokens").locator("[title]")).toHaveCount(0);
     await tileValue(page, "tokens").hover();
-    expect(await tileValue(page, "tokens").evaluate((node) => getComputedStyle(node).cursor)).not.toBe("help");
+    expect(
+      await tileValue(page, "tokens").evaluate((node) => getComputedStyle(node).cursor),
+    ).not.toBe("help");
     await tile(page, "tokens").locator('[data-token-part="cache"]').hover();
-    expect(await parts.evaluateAll((nodes) => nodes.some((node) => getComputedStyle(node).cursor === "help"))).toBe(false);
+    expect(
+      await parts.evaluateAll((nodes) =>
+        nodes.some((node) => getComputedStyle(node).cursor === "help"),
+      ),
+    ).toBe(false);
     await expect(page.getByText("≥")).toHaveCount(0);
-    await page.locator(".console-usage-tiles").screenshot({ path: info.outputPath("token-summary-cards.png") });
+    await page
+      .locator(".console-usage-tiles")
+      .screenshot({ path: info.outputPath("token-summary-cards.png") });
     await page.screenshot({ path: info.outputPath("token-breakdown.png") });
 
     // Three aligned columns also stay intact on a narrow full-width card.
     await page.setViewportSize({ width: 420, height: 900 });
     await expectTokenColumns(page);
-    expect(await parts.evaluateAll((nodes) => nodes.every((node) => {
-      const row = node.closest(".console-usage-tile")?.getBoundingClientRect();
-      const rect = node.getBoundingClientRect();
-      return row && rect.left >= row.left && rect.right <= row.right;
-    }))).toBe(true);
+    expect(
+      await parts.evaluateAll((nodes) =>
+        nodes.every((node) => {
+          const row = node.closest(".console-usage-tile")?.getBoundingClientRect();
+          const rect = node.getBoundingClientRect();
+          return row && rect.left >= row.left && rect.right <= row.right;
+        }),
+      ),
+    ).toBe(true);
     await page.screenshot({ path: info.outputPath("token-breakdown-narrow.png") });
     await page.setViewportSize({ width: 1200, height: 900 });
     await page.emulateMedia({ colorScheme: "dark" });
@@ -953,20 +985,27 @@ for (const surface of ["console", "desktop"] as const) {
     await expect(tileValue(page, "cost")).toHaveText("$0.160");
   });
 
-  test(`billion-scale Token breakdown stays in three columns (${surface})`, async ({ page }, info) => {
+  test(`billion-scale Token breakdown stays in three columns (${surface})`, async ({
+    page,
+  }, info) => {
     await page.setViewportSize({ width: 1200, height: 900 });
     const state = await setup(page, surface);
-    state.entries.set("test-harness", [request("large-cache", {
-      inputTokens: 14_103_712_122,
-      cachedInputTokens: 13_522_000_000,
-      cacheWriteInputTokens: 50_000_000,
-      outputTokens: 60_020_200,
-    })]);
-    if (surface === "desktop") await page.locator("[data-codexhost-settings-trigger] button").click();
+    state.entries.set("test-harness", [
+      request("large-cache", {
+        inputTokens: 14_103_712_122,
+        cachedInputTokens: 13_522_000_000,
+        cacheWriteInputTokens: 50_000_000,
+        outputTokens: 60_020_200,
+      }),
+    ]);
+    if (surface === "desktop")
+      await page.locator("[data-codexhost-settings-trigger] button").click();
     await openStatistics(page);
     await expect(tileValue(page, "tokens")).toHaveText("14,163,732,322 ≈ 141.64 亿");
     await expect(tile(page, "tokens").locator("[data-token-part]")).toHaveText([
-      "输入 5.32 亿", "输出 6002.02 万", "缓存 135.72 亿",
+      "输入 5.32 亿",
+      "输出 6002.02 万",
+      "缓存 135.72 亿",
     ]);
     await expectTokenColumns(page);
     await tile(page, "tokens").screenshot({ path: info.outputPath("token-columns.png") });
@@ -989,11 +1028,14 @@ for (const surface of ["console", "desktop"] as const) {
       }),
       unknown,
     ]);
-    if (surface === "desktop") await page.locator("[data-codexhost-settings-trigger] button").click();
+    if (surface === "desktop")
+      await page.locator("[data-codexhost-settings-trigger] button").click();
     await openStatistics(page);
     await expect(tileValue(page, "tokens")).toHaveText("1,300");
     await expect(tile(page, "tokens").locator("[data-token-part]")).toHaveText([
-      "输入 300", "输出 50", "缓存 950",
+      "输入 300",
+      "输出 50",
+      "缓存 950",
     ]);
     await expect(tile(page, "tokens").locator("[title]")).toHaveCount(0);
     await expect(tileValue(page, "cache")).toHaveText("85.7%");
@@ -1005,25 +1047,35 @@ for (const surface of ["console", "desktop"] as const) {
     delete unknown.cachedInputTokens;
     delete unknown.cacheWriteInputTokens;
     state.entries.set("test-harness", [unknown]);
-    if (surface === "desktop") await page.locator("[data-codexhost-settings-trigger] button").click();
+    if (surface === "desktop")
+      await page.locator("[data-codexhost-settings-trigger] button").click();
     await openStatistics(page);
     await expect(tileValue(page, "tokens")).toHaveText("220");
     await expect(tile(page, "tokens").locator("[data-token-part]")).toHaveText([
-      "输入 200", "输出 20", "缓存 —",
+      "输入 200",
+      "输出 20",
+      "缓存 —",
     ]);
     await expect(tileValue(page, "cache")).toHaveText("—");
   });
 
   test(`overview shows missing Token counts as unknown (${surface})`, async ({ page }) => {
     const state = await setup(page, surface);
-    state.entries.set("test-harness", [request("unmetered", {
-      inputTokens: 0, outputTokens: 0, tokensUnknown: true,
-    })]);
-    if (surface === "desktop") await page.locator("[data-codexhost-settings-trigger] button").click();
+    state.entries.set("test-harness", [
+      request("unmetered", {
+        inputTokens: 0,
+        outputTokens: 0,
+        tokensUnknown: true,
+      }),
+    ]);
+    if (surface === "desktop")
+      await page.locator("[data-codexhost-settings-trigger] button").click();
     await openStatistics(page);
     await expect(tileValue(page, "tokens")).toHaveText("—");
     await expect(tile(page, "tokens").locator("[data-token-part]")).toHaveText([
-      "输入 —", "输出 —", "缓存 —",
+      "输入 —",
+      "输出 —",
+      "缓存 —",
     ]);
     await expect(tileValue(page, "cost")).toHaveText("—");
   });
@@ -1033,13 +1085,23 @@ test.describe("English overview", () => {
   test.use({ locale: "en-US" });
   test("keeps compact totals without quantity hover hints", async ({ page }) => {
     const state = await setup(page);
-    state.entries.set("test-harness", [request("cached", {
-      inputTokens: 1_050, cachedInputTokens: 900, cacheWriteInputTokens: 50, outputTokens: 30,
-    })]);
-    await page.getByRole("navigation").getByRole("button", { name: "Usage statistics", exact: true }).click();
+    state.entries.set("test-harness", [
+      request("cached", {
+        inputTokens: 1_050,
+        cachedInputTokens: 900,
+        cacheWriteInputTokens: 50,
+        outputTokens: 30,
+      }),
+    ]);
+    await page
+      .getByRole("navigation")
+      .getByRole("button", { name: "Usage statistics", exact: true })
+      .click();
     await expect(tileValue(page, "tokens")).toHaveText("1.1K");
     await expect(tile(page, "tokens").locator("[data-token-part]")).toHaveText([
-      "Input 100", "Output 30", "Cache 950",
+      "Input 100",
+      "Output 30",
+      "Cache 950",
     ]);
     await expect(tile(page, "tokens").locator("[title]")).toHaveCount(0);
   });
@@ -1228,7 +1290,9 @@ test("the trend stacks Harnesses, labels its axes, and selects a day by click or
   await expect(chart.locator(".console-usage-chart__column")).toHaveCount(5);
 });
 
-test("session titles stay above muted projects with copying and filtering intact", async ({ page }, info) => {
+test("session titles stay above muted projects with copying and filtering intact", async ({
+  page,
+}, info) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   const copied: string[] = [];
   await page.exposeFunction("recordCopiedSession", (id: string) => copied.push(id));
@@ -1239,11 +1303,22 @@ test("session titles stay above muted projects with copying and filtering intact
   const state = await setup(page);
   const longTitle = "修复 Hermes 连接检测并核对运行环境、构建依赖和会话恢复行为".repeat(3);
   state.entries = new Map([
-    ["pi", [
-      request("named", { sessionId: "named-session", sessionTitle: longTitle, cwd: "/work/codex-host" }),
-      request("short", { sessionId: "short-session", sessionTitle: "理解项目背景", cwd: "/work/analysis" }),
-      request("unnamed", { sessionId: "unnamed-session" }),
-    ]],
+    [
+      "pi",
+      [
+        request("named", {
+          sessionId: "named-session",
+          sessionTitle: longTitle,
+          cwd: "/work/codex-host",
+        }),
+        request("short", {
+          sessionId: "short-session",
+          sessionTitle: "理解项目背景",
+          cwd: "/work/analysis",
+        }),
+        request("unnamed", { sessionId: "unnamed-session" }),
+      ],
+    ],
   ]);
   await openStatistics(page);
   for (const heading of ["最耗会话", "最近会话"]) {
@@ -1252,7 +1327,10 @@ test("session titles stay above muted projects with copying and filtering intact
     await expect(name.locator(".is-title")).toHaveText(longTitle);
     await expect(name.locator(".is-title")).toHaveAttribute("title", new RegExp("named-session"));
     await expect(name.locator(".console-usage-row-filter")).toHaveText("codex-host");
-    await expect(name.locator(".console-usage-row-filter")).toHaveAttribute("title", /\/work\/codex-host/);
+    await expect(name.locator(".console-usage-row-filter")).toHaveAttribute(
+      "title",
+      /\/work\/codex-host/,
+    );
     await expect(panel.getByRole("button", { name: "未命名", exact: true })).toBeVisible();
     const layout = await name.evaluate((element) => {
       const title = element.querySelector(".is-title");
@@ -1281,11 +1359,15 @@ test("session titles stay above muted projects with copying and filtering intact
   }
   await table(page, "最近会话").getByRole("button", { name: longTitle, exact: true }).click();
   await expect.poll(() => copied).toEqual(["named-session"]);
-  await expect(table(page, "最近会话").getByRole("button", { name: "已复制", exact: true })).toBeVisible();
+  await expect(
+    table(page, "最近会话").getByRole("button", { name: "已复制", exact: true }),
+  ).toBeVisible();
   await table(page, "最近会话").getByRole("button", { name: "codex-host", exact: true }).click();
   await expect.poll(() => state.lastParams.project).toBe("/work/codex-host");
   await expect(table(page, "最近会话").locator("tbody tr")).toHaveCount(1);
-  await expect(table(page, "最近会话").getByRole("button", { name: "codex-host", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    table(page, "最近会话").getByRole("button", { name: "codex-host", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   await table(page, "最近会话").screenshot({ path: info.outputPath("session-project-filter.png") });
 });
 

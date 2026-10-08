@@ -74,21 +74,34 @@ describe("console updates", () => {
     });
   });
 
-  it.each(["failed", "succeeded", "prepared"])("does not display historical %s state", async (phase) => {
-    const { target, environment } = await npmLayout();
-    const stateDirectory = path.join(root, "state");
-    const directory = path.join(stateDirectory, "update-old");
-    await mkdir(directory, { recursive: true });
-    await writeFile(path.join(directory, "status-v1.json"), JSON.stringify({
-      schemaVersion: 1, version: "1.1.0", installation: "npm", phase,
-      updatedAt: Math.floor(Date.now() / 1000), error: "old failure",
-    }));
-    const updates = createConsoleUpdates({
-      onHandedOff: vi.fn(), environment, stateDirectory, fetchLatest: async () => release,
-    });
-    await expect(updates.check(target)).resolves.toMatchObject({ status: null });
-    await expect(updates.status()).resolves.toEqual({ status: null });
-  });
+  it.each(["failed", "succeeded", "prepared"])(
+    "does not display historical %s state",
+    async (phase) => {
+      const { target, environment } = await npmLayout();
+      const stateDirectory = path.join(root, "state");
+      const directory = path.join(stateDirectory, "update-old");
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        path.join(directory, "status-v1.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "1.1.0",
+          installation: "npm",
+          phase,
+          updatedAt: Math.floor(Date.now() / 1000),
+          error: "old failure",
+        }),
+      );
+      const updates = createConsoleUpdates({
+        onHandedOff: vi.fn(),
+        environment,
+        stateDirectory,
+        fetchLatest: async () => release,
+      });
+      await expect(updates.check(target)).resolves.toMatchObject({ status: null });
+      await expect(updates.status()).resolves.toEqual({ status: null });
+    },
+  );
 
   it("recovers the locked task and keeps its result after completion", async () => {
     const { environment } = await npmLayout();
@@ -96,17 +109,36 @@ describe("console updates", () => {
     const directory = path.join(stateDirectory, "update-active");
     const statusPath = path.join(directory, "status-v1.json");
     await mkdir(directory, { recursive: true });
-    const status = { schemaVersion: 1, version: "1.1.0", installation: "npm",
-      phase: "prepared", updatedAt: Math.floor(Date.now() / 1000) };
+    const status = {
+      schemaVersion: 1,
+      version: "1.1.0",
+      installation: "npm",
+      phase: "prepared",
+      updatedAt: Math.floor(Date.now() / 1000),
+    };
     await writeFile(statusPath, JSON.stringify(status));
-    await writeFile(path.join(stateDirectory, "active-update-v1.lock"), JSON.stringify({
-      ownerPid: process.pid, statusPath,
-    }));
-    const options = { onHandedOff: vi.fn(), environment, stateDirectory, fetchLatest: async () => release };
+    await writeFile(
+      path.join(stateDirectory, "active-update-v1.lock"),
+      JSON.stringify({
+        ownerPid: process.pid,
+        statusPath,
+      }),
+    );
+    const options = {
+      onHandedOff: vi.fn(),
+      environment,
+      stateDirectory,
+      fetchLatest: async () => release,
+    };
     const updates = createConsoleUpdates(options);
     await expect(updates.status()).resolves.toMatchObject({ status: { phase: "prepared" } });
-    await writeFile(statusPath, JSON.stringify({ ...status, phase: "failed", error: "current failure" }));
-    await expect(updates.status()).resolves.toMatchObject({ status: { phase: "failed", error: "current failure" } });
+    await writeFile(
+      statusPath,
+      JSON.stringify({ ...status, phase: "failed", error: "current failure" }),
+    );
+    await expect(updates.status()).resolves.toMatchObject({
+      status: { phase: "failed", error: "current failure" },
+    });
     await expect(createConsoleUpdates(options).status()).resolves.toEqual({ status: null });
   });
 

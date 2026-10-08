@@ -198,14 +198,13 @@ export function createUsageStatisticsPage(
       let error: string | null = null;
       let loadedAt = 0;
       let poll: number | undefined;
-      const tables: Record<"harness" | "model" | "project" | "sessions" | "recent", TableState> =
-        {
-          harness: { sort: "share", descending: true, expanded: false },
-          model: { sort: "share", descending: true, expanded: false },
-          project: { sort: "share", descending: true, expanded: false },
-          sessions: { sort: "measure", descending: true, expanded: false },
-          recent: { sort: "last", descending: true, expanded: false },
-        };
+      const tables: Record<"harness" | "model" | "project" | "sessions" | "recent", TableState> = {
+        harness: { sort: "share", descending: true, expanded: false },
+        model: { sort: "share", descending: true, expanded: false },
+        project: { sort: "share", descending: true, expanded: false },
+        sessions: { sort: "measure", descending: true, expanded: false },
+        recent: { sort: "last", descending: true, expanded: false },
+      };
       const pointer: ChartPointer = { index: -1, x: 0 };
       const names = new Map<string, string>();
       let copiedSession: string | null = null;

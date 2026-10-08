@@ -106,7 +106,10 @@ describe("background update manager", () => {
           const request = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
           setTimeout(() => {
             const status = JSON.parse(fs.readFileSync(request.status_path, "utf8"));
-            fs.writeFileSync(request.status_path, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
+            // Match the real updater: readers see either complete status, never a truncated file.
+            const temporary = request.status_path + ".ready.tmp";
+            fs.writeFileSync(temporary, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
+            fs.renameSync(temporary, request.status_path);
           }, 150);
           setTimeout(() => process.exit(0), 500);
         `,

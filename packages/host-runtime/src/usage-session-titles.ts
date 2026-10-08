@@ -16,8 +16,7 @@ export function withHostSessionTitles(
   for (const record of records) {
     const ref = record.nativeSessionRef;
     const title = usageSessionTitle(record.title);
-    if (record.state !== "ready" || !ref || ref.harnessId !== record.harnessId || !title)
-      continue;
+    if (record.state !== "ready" || !ref || ref.harnessId !== record.harnessId || !title) continue;
     const key = `${record.harnessId}\u0000${ref.nativeSessionId}`;
     const previous = titles.get(key);
     // A native Session may have been imported more than once. Prefer the latest named mapping.

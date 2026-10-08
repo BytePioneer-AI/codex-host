@@ -36,6 +36,15 @@ the official `node_repl.exe` next to Desktop's `NODE_REPL_NODE_PATH`; it does no
 search PATH or modify the official runtime. Arguments, stdio, and exit status
 are forwarded, with the child supervised by the existing Windows job mechanism.
 
+The official `node_repl` resolves `CODEX_CLI_PATH` before clearing its kernel
+child's environment. When that child calls the Shim's top-level `sandbox`
+command without either CLI path override, the Shim discovers and validates the
+Desktop-managed official CLI, just as it does for the macOS sandbox callback.
+It never searches PATH. Explicit CLI targets remain authoritative, and other
+commands without a managed override still fail closed. The official CLI retains
+ownership of sandbox policy, authentication, and tool approvals; this callback
+does not start a Host Runtime or acquire its owner lease.
+
 The wrapper and sparse-environment CLI helper path recover the current user's
 static Windows proxy configuration through WinHTTP. Explicit proxy environment
 values, including empty values and `NODE_USE_ENV_PROXY=0`, take precedence.

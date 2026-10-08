@@ -590,6 +590,13 @@ test("an external draft catalog settling while unknown is reloaded after recover
   });
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
   const initialCalls = await calls();
+  // Host notifications must not bypass classification or consume the retry
+  // marker while the retained draft is still unknown.
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed")),
+  );
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  expect(await calls()).toBe(initialCalls);
   await page.locator('[role="textbox"]').evaluate((editor) => {
     Object.defineProperty(editor, "__reactFiber$dot", {
       configurable: true,

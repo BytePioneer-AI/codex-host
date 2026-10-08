@@ -72,6 +72,54 @@ function registration(threadId: string): DelegationControlRegistration {
 }
 
 describe("DelegationControlRegistry", () => {
+  it("uses only the calling Thread's execution identity for same-Host reads", async () => {
+    const caller = registration("caller");
+    caller.executionHostId = (id) => (id === "caller" ? "ssh:mac" : undefined);
+    const target = registration("target");
+    const remoteRead = vi.fn(async (input: unknown) => {
+      void input;
+      throw new Error("remote unavailable");
+    });
+    const registry = new DelegationControlRegistry({ remoteRead });
+    registry.register(caller);
+    registry.register(target);
+    const input = {
+      threadId: "target",
+      view: "result" as const,
+      hostId: "ssh:mac",
+      callerThreadId: "caller",
+    };
+    expect(await registry.read(input)).toMatchObject({ hostId: "ssh:mac", threadId: "target" });
+    expect(target.read).toHaveBeenCalledExactlyOnceWith({ threadId: "target", view: "result" });
+    expect(remoteRead).not.toHaveBeenCalled();
+    for (const read of [
+      { threadId: input.threadId, hostId: input.hostId, view: input.view },
+      { ...input, callerThreadId: "different-client" },
+      { ...input, hostId: "ssh:other" },
+    ])
+      await expect(registry.read(read)).rejects.toThrow("remote unavailable");
+    expect(target.read).toHaveBeenCalledOnce();
+    expect(remoteRead.mock.calls.at(-1)?.[0]).not.toHaveProperty("callerThreadId");
+    registry.close();
+  });
+
+  it("fails closed on ambiguous caller context", async () => {
+    const registry = new DelegationControlRegistry();
+    for (let index = 0; index < 2; index++) {
+      const caller = registration("caller");
+      caller.executionHostId = () => "ssh:mac";
+      registry.register(caller);
+    }
+    await expect(
+      registry.read({
+        callerThreadId: "caller",
+        threadId: "target",
+        hostId: "ssh:mac",
+        view: "result",
+      }),
+    ).rejects.toMatchObject({ code: "PARENT_THREAD_AMBIGUOUS" });
+    registry.close();
+  });
   it("uses the shared SSH catalog with multiple GUI sessions while keeping command ownership", async () => {
     const registry = new DelegationControlRegistry();
     const owner = registration("shared");

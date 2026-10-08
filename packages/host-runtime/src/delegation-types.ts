@@ -129,6 +129,8 @@ export interface ThreadCancelResult {
 }
 
 export interface ThreadReadInput {
+  /** Internal caller context from the CLI; not forwarded to another Host. */
+  callerThreadId?: string;
   /** Explicit Desktop Host identity; never inferred from the Thread ID. */
   hostId?: string;
   threadId: string;
@@ -236,6 +238,7 @@ export interface DelegationControlApi {
 }
 
 export interface DelegationControlRegistration extends DelegationControlApi {
+  executionHostId?(threadId: string): string | undefined;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;
 }

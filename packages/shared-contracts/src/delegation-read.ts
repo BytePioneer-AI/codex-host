@@ -7,6 +7,8 @@ export const REMOTE_THREAD_CONTROL_TIMEOUT_MS = 40_000;
 
 /** Read-only, Host-local operation. Remote routing is performed by the caller. */
 export const DELEGATION_READ_METHOD = "codexhost/thread/delegation-read";
+/** Per-submission Desktop connection identity; never a machine-global Host alias. */
+export const THREAD_REFERENCE_SOURCE_HOST_PARAM = "codexhostSourceHostId";
 export const delegationReadParamsSchema = z.strictObject({
   threadId: z.string().min(1).max(1024),
   view: z.enum(["result", "messages"]),

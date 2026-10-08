@@ -57,6 +57,7 @@ import { managedDelegationSkillReference } from "./delegation-skill.js";
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import { NativeAccountObserver } from "./native-account-observer.js";
 import { nativeThreadSupportsReferences } from "./native-thread-reference-capability.js";
+import { THREAD_REFERENCE_SOURCE_HOST_PARAM } from "@codexhost/shared-contracts";
 import {
   HarnessAccountInspectionCache,
   listedHarnessAccounts,
@@ -626,6 +627,7 @@ export class AppServerHost {
   readonly #launchSettings: HarnessLaunchSettingsStore;
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
+  readonly #executionHosts = new WeakMap<ExternalThread, string>();
   readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering = new ExternalTurnSteering();
   readonly #liveCommandCache = new LiveCommandCatalogCache();
@@ -853,6 +855,10 @@ export class AppServerHost {
       list: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.list(input)),
       canHandleStart: (input) => this.#canHandleDelegationStart(input),
       ownsThread: (threadId) => this.#ownsDelegationThread(threadId),
+      executionHostId: (threadId) => {
+        const thread = this.#externalRuntime.get(threadId);
+        return thread ? this.#executionHosts.get(thread) : undefined;
+      },
     });
     this.#unregisterDelegationApi =
       typeof unregisterDelegationApi === "function" ? unregisterDelegationApi : undefined;
@@ -4579,6 +4585,7 @@ export class AppServerHost {
         text,
         undefined,
         typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
+        params[THREAD_REFERENCE_SOURCE_HOST_PARAM],
       );
       try {
         await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));
@@ -4611,6 +4618,7 @@ export class AppServerHost {
             typeof requestObject(request).clientUserMessageId === "string"
               ? (requestObject(request).clientUserMessageId as string)
               : undefined,
+            requestObject(request)[THREAD_REFERENCE_SOURCE_HOST_PARAM],
           ),
       );
       try {
@@ -4639,12 +4647,13 @@ export class AppServerHost {
     inputText: string,
     assertActive?: () => void,
     clientUserMessageId?: string,
+    sourceHostId?: unknown,
   ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
     const text = restoreHarnessCommandMentions(inputText);
     const commands = thread.session.commands;
     if (!commands || !isExternalCommandCandidate(text)) {
       assertActive?.();
-      return this.#beginExternalTurn(thread, text, clientUserMessageId);
+      return this.#beginExternalTurn(thread, text, clientUserMessageId, sourceHostId);
     }
     this.#pendingExternalCommandRequests.add(thread.id);
     try {
@@ -4657,7 +4666,7 @@ export class AppServerHost {
       assertActive?.();
       if (!command) {
         this.#pendingExternalCommandRequests.delete(thread.id);
-        return await this.#beginExternalTurn(thread, text, clientUserMessageId);
+        return await this.#beginExternalTurn(thread, text, clientUserMessageId, sourceHostId);
       }
       return await this.#beginExternalCommand(thread, command.descriptor, command.arguments);
     } catch (error) {
@@ -4676,6 +4685,7 @@ export class AppServerHost {
     thread: ExternalThread,
     text: string,
     clientUserMessageId?: string,
+    sourceHostId?: unknown,
   ): Promise<{
     turnId: HostTurnId;
     turn: JsonObject;
@@ -4714,6 +4724,17 @@ export class AppServerHost {
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
 
+    const previousHostId = this.#executionHosts.get(thread);
+    if (
+      typeof sourceHostId === "string" &&
+      sourceHostId.length > 0 &&
+      sourceHostId.length <= 1024 &&
+      !/[\u0000-\u0020\u007f]/u.test(sourceHostId)
+    ) {
+      this.#executionHosts.set(thread, sourceHostId);
+    } else {
+      this.#executionHosts.delete(thread);
+    }
     try {
       if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
         await this.#notifyExternalThreadStarted(thread.thread);
@@ -4726,6 +4747,8 @@ export class AppServerHost {
       if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
       return { turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {
+      if (previousHostId === undefined) this.#executionHosts.delete(thread);
+      else this.#executionHosts.set(thread, previousHostId);
       thread.running = false;
       thread.activeTurnId = null;
       thread.projectedTurns.delete(turnId);

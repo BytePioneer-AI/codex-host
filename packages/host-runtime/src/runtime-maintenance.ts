@@ -152,7 +152,9 @@ export class RuntimeMaintenance {
       installation(this.options.runtimePath, this.options.environment),
       this.#resources(),
     ]);
-    if (this.#update.phase === "idle" || this.#blocked) {
+    // Also re-read after a recorded failure: a late helper may still be alive, or a kill may
+    // have left installing/restarting on disk that should surface instead of a stale failed.
+    if (this.#update.phase === "idle" || this.#blocked || this.#update.phase === "failed") {
       try {
         const value: unknown = JSON.parse(await readFile(this.#statusPath, "utf8"));
         const parsed = runtimeStatusSchema.shape.update.parse(value);
@@ -282,22 +284,36 @@ export class RuntimeMaintenance {
     );
     // The service's supervisor terminates every descendant when the service stops, detached
     // ones included. A shell starts the helper in the background and exits, which re-parents
-    // the helper to init so it survives the restart it performs.
+    // the helper to init so it survives the restart it performs. Echo $! so a start-timeout
+    // can still terminate that helper before it installs.
     const starter = spawn(
       "/bin/sh",
-      ["-c", '"$0" remote --request "$1" </dev/null >/dev/null 2>&1 &', helper, request],
-      { detached: true, stdio: "ignore", env: this.options.environment },
+      ["-c", '"$0" remote --request "$1" </dev/null >/dev/null 2>&1 & echo $!', helper, request],
+      { detached: true, stdio: ["ignore", "pipe", "ignore"], env: this.options.environment },
     );
+    let pidOutput = "";
+    starter.stdout?.on("data", (chunk: Buffer | string) => {
+      pidOutput += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    });
     await new Promise<void>((resolve, reject) => {
       starter.once("error", reject);
       starter.once("exit", (code) =>
         code === 0 ? resolve() : reject(new Error("Remote updater could not be started")),
       );
     });
+    const helperPid = Number.parseInt(pidOutput.trim(), 10);
+    if (!Number.isSafeInteger(helperPid) || helperPid <= 0) {
+      throw new Error("Remote updater could not be started");
+    }
     // The helper records its own PID first; from then on status() can tell whether it is alive.
     const deadline = Date.now() + UPDATER_START_TIMEOUT_MS;
     while (!(await this.#helperReported())) {
       if (Date.now() >= deadline) {
+        try {
+          process.kill(helperPid);
+        } catch {
+          /* Already exited, or we lack permission to signal it. */
+        }
         const failure = "Remote updater did not start";
         await writeFile(
           this.#statusPath,

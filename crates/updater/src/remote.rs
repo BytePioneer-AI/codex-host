@@ -47,6 +47,15 @@ fn run(command: &mut Command) -> Result<(), Box<dyn Error>> {
     }
 }
 fn status(request: &Request, phase: &str, error: Option<String>) -> Result<(), Box<dyn Error>> {
+    // Never clobber a Host-side start timeout / cancellation with a late "installing" write.
+    if phase != "failed"
+        && let Ok(bytes) = fs::read(&request.status_path)
+        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && value["phase"].as_str() == Some("failed")
+        && value["targetVersion"].as_str() == Some(request.version.as_str())
+    {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     let temporary = request.status_path.with_extension("tmp");
     fs::write(
         &temporary,
@@ -85,13 +94,31 @@ pub(crate) fn apply(path: &Path) -> Result<(), Box<dyn Error>> {
             return Err("remote updater paths must be absolute".into());
         }
     }
+    // If the Host already timed out and recorded failure, do not overwrite it or install.
+    if status_already_failed(&request)? {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     // Record this process first: the service that started it only knows it by this PID.
     status(&request, "installing", None)?;
+    // Host may have timed out between the check and this write; bail before installing.
+    if status_already_failed(&request)? {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     let result = apply_locked(&request);
     if let Err(error) = &result {
         let _ = status(&request, "failed", Some(error.to_string()));
     }
     result
+}
+fn status_already_failed(request: &Request) -> Result<bool, Box<dyn Error>> {
+    let Ok(bytes) = fs::read(&request.status_path) else {
+        return Ok(false);
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(false);
+    };
+    Ok(value["phase"].as_str() == Some("failed")
+        && value["targetVersion"].as_str() == Some(request.version.as_str()))
 }
 fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&request.lock_directory)?;

@@ -46,13 +46,19 @@ async function fixture(remote = false) {
   await control.status();
   return { control, root, runtimePath, metadata };
 }
-/** Stands in for the shell that starts the helper: the helper reports its PID, the shell exits. */
+/** Stands in for the shell that starts the helper: echo $!, report status PID, then exit. */
 function helperStartedBy(statusPath: string, targetVersion: string, updaterPid: number) {
-  const starter = new EventEmitter();
-  void writeFile(
-    statusPath,
-    JSON.stringify({ phase: "installing", targetVersion, error: null, updaterPid }),
-  ).then(() => starter.emit("exit", 0));
+  const starter = new EventEmitter() as EventEmitter & {
+    stdout: EventEmitter;
+  };
+  starter.stdout = new EventEmitter();
+  queueMicrotask(() => {
+    starter.stdout.emit("data", `${updaterPid}\n`);
+    void writeFile(
+      statusPath,
+      JSON.stringify({ phase: "installing", targetVersion, error: null, updaterPid }),
+    ).then(() => starter.emit("exit", 0));
+  });
   return starter;
 }
 describe("runtime maintenance", () => {
@@ -167,7 +173,7 @@ describe("runtime maintenance", () => {
       // The helper is started through a shell that exits, so the service is not its parent.
       const [command, args, options] = call;
       expect(command).toBe("/bin/sh");
-      expect(args[1]).toMatch(/&$/u);
+      expect(args[1]).toMatch(/& echo \$!$/u);
       expect(options).toMatchObject({ detached: true });
       const request = JSON.parse(await readFile(args[3], "utf8"));
       expect(request).toMatchObject({ version: "0.11.0", restartOnly: true });
@@ -223,4 +229,62 @@ describe("runtime maintenance", () => {
     await writeFile(path.join(path.dirname(f.runtimePath), "plugins/enabled.json"), '["pi"]');
     expect((await f.control.status()).restartRequired).toBe(true);
   });
+  it.skipIf(process.platform === "win32")(
+    "kills the detached helper when start times out before updaterPid is written",
+    async () => {
+      const f = await fixture(true);
+      const statusPath = path.join(f.root, "data/remote-update.json");
+      const helperPid = 42_424;
+      const kill = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: number | string) => {
+        if (pid === helperPid) return true;
+        // Preserve liveliness probes used by status().
+        if (signal === 0) return true;
+        return true;
+      }) as typeof process.kill);
+      spawn.mockImplementation(() => {
+        const starter = new EventEmitter() as EventEmitter & { stdout: EventEmitter };
+        starter.stdout = new EventEmitter();
+        // Defer exit past the Host attaching listeners (same race the real shell avoids).
+        queueMicrotask(() => {
+          starter.stdout.emit("data", `${helperPid}\n`);
+          queueMicrotask(() => starter.emit("exit", 0));
+        });
+        return starter;
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date"] });
+      const pending = f.control.start("0.12.0");
+      let settled = false;
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      for (let i = 0; i < 300 && !settled; i += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        await vi.advanceTimersByTimeAsync(50);
+      }
+      await expect(pending).rejects.toThrow("Remote updater did not start");
+      expect(kill).toHaveBeenCalledWith(helperPid);
+      expect(JSON.parse(await readFile(statusPath, "utf8"))).toMatchObject({
+        phase: "failed",
+        error: "Remote updater did not start",
+      });
+      // A late helper write still surfaces through status() after the recorded failure.
+      await writeFile(
+        statusPath,
+        JSON.stringify({
+          phase: "installing",
+          targetVersion: "0.12.0",
+          error: null,
+          updaterPid: helperPid,
+        }),
+      );
+      expect((await f.control.status()).update.phase).toBe("installing");
+      kill.mockRestore();
+    },
+    15_000,
+  );
 });

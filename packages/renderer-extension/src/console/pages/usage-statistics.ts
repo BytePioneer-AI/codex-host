@@ -12,6 +12,7 @@ import {
 import { h } from "../dom.js";
 import { usageModelLabel } from "../usage/model-labels.js";
 import { costWithCredits } from "../usage/credits.js";
+import { summaryTiles } from "../usage/summary.js";
 import type { ConsoleMessages } from "../messages.js";
 import { createModelPricesDialog } from "../model-prices.js";
 import { createRendererSettingsIcon } from "../../settings/icons.js";
@@ -46,7 +47,7 @@ import {
   baseName,
   cacheHitRate,
   cost,
-  count,
+  count as formatCount,
   datesBetween,
   emptyTotals,
   fill,
@@ -55,14 +56,14 @@ import {
   measured,
   percent,
   projectNames,
-  tokenCount,
+  tokenCount as formatTokenCount,
   tokensWithoutCache,
   unmetered,
   type Measure,
   type Totals,
 } from "../usage/format.js";
 
-type HostRequest = (method: string, params: unknown) => Promise<unknown>;
+export type RendererUsageStatisticsRequest = (method: string, params: unknown) => Promise<unknown>;
 type Granularity = "day" | "week" | "month";
 
 /** Console Host method that names the installed Harness plugins. */
@@ -162,12 +163,13 @@ function weekStart(date: string): string {
  * Machine-wide usage of the local Host: every native session of the Harnesses that expose local
  * usage, at the public price by Model ID. The Host aggregates for the chosen range and filters;
  * the page renders the facets, lets any row, legend entry or day narrow the view, and keeps its
- * controls, focus and hover across refreshes. Tokens are shown as input
- * without cache reads and writes, with the cache on its own.
+ * controls, focus and hover across refreshes. The overview includes cache in its total, with
+ * input, output and cache beneath it; the trend and rankings retain the non-cache measure.
  */
 export function createUsageStatisticsPage(
   consoleMessages: ConsoleMessages,
-  request: HostRequest,
+  request: RendererUsageStatisticsRequest,
+  pageLocale?: string,
 ): RendererSettingsPageDefinition {
   const messages = consoleMessages.usageStatistics;
   return Object.freeze({
@@ -176,7 +178,10 @@ export function createUsageStatisticsPage(
     icon: "dashboard" as const,
     mount(context: RendererSettingsPageMountContext) {
       const document = context.content.ownerDocument;
-      const locale = document.documentElement.lang || "en";
+      const locale = pageLocale ?? (document.documentElement.lang || "en");
+      const count = (value: number): string => formatCount(value, locale);
+      const tokenCount = (totals: Totals, value: number): string =>
+        formatTokenCount(totals, value, locale);
       const saved = readView();
       const view: View = {
         range: saved.range ?? "30d",
@@ -425,7 +430,7 @@ export function createUsageStatisticsPage(
           return;
         }
         rebuildKeepingFocus(body, [
-          tiles(data),
+          summaryTiles(document, data.totals, messages, locale),
           // One day has one column: the hourly panel shows that day instead.
           data.range === "today" ? null : trendPanel(data),
           h(
@@ -561,27 +566,6 @@ export function createUsageStatisticsPage(
         );
       }
 
-      /** Three figures, each a label and one number: cost, tokens without cache, cache hits. */
-      function tiles(data: UsageStatisticsResult): HTMLElement {
-        const totals = data.totals;
-        const tile = (key: string, label: string, value: string): HTMLElement =>
-          h(
-            document,
-            "div",
-            { className: "console-usage-tile", "data-tile": key },
-            h(document, "span", { className: "console-usage-tile__label" }, label),
-            h(document, "strong", {}, value),
-          );
-        return h(
-          document,
-          "div",
-          { className: "console-usage-tiles" },
-          tile("cost", messages.cost, cost(totals)),
-          tile("tokens", messages.tokenUsage, count(tokensWithoutCache(totals))),
-          tile("cache", messages.cacheHitRate, cacheHitRate(totals)),
-        );
-      }
-
       function trendPanel(data: UsageStatisticsResult): HTMLElement {
         const first = data.from ?? data.daily[0]?.date ?? data.to;
         const dates = datesBetween(first, data.to);
@@ -699,6 +683,7 @@ export function createUsageStatisticsPage(
           ),
           trendChart(document, {
             key: "trend",
+            locale,
             buckets: [...buckets.values()],
             series,
             measure: view.measure,

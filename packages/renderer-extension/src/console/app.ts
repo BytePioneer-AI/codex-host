@@ -4,11 +4,12 @@ import { startAgentGroupSync } from "../agent-group-sync.js";
 import { getSharedAgentGroupPreferenceStore } from "../agent-group-preference.js";
 import { createConsoleConnectionDiagnostics } from "./connection-diagnostics.js";
 import consoleCss from "./console.css";
+import consoleComponentsCss from "./components.css";
+import usageCss from "./usage/usage.css";
 import { h } from "./dom.js";
 import { consoleMessages, type ConsoleMessages } from "./messages.js";
 import { createOfflineHarnessesPage } from "./pages/harnesses-offline.js";
 import { hostPage } from "./pages/host-required.js";
-import { createUsageStatisticsPage } from "./pages/usage-statistics.js";
 import { createOverviewPage } from "./pages/overview.js";
 import { ConsoleState } from "./state.js";
 import { createConsoleRemoteConnections } from "./remote-connections.js";
@@ -140,6 +141,7 @@ export function startConsoleApp(document: Document): void {
     null,
     () => null,
     () => remoteConnections,
+    (method, params) => manager.sendRequest(method, params),
   );
   const navigate = (pageId: string): void => {
     window.location.hash = pageId;
@@ -165,13 +167,7 @@ export function startConsoleApp(document: Document): void {
         hostPage(required(settingsPages, "remote-connections"), messages, state),
         hostPage(required(settingsPages, "accounts"), messages, state),
         hostPage(required(settingsPages, "session-import"), messages, state),
-        hostPage(
-          createUsageStatisticsPage(messages, (method, params) =>
-            manager.sendRequest(method, params),
-          ),
-          messages,
-          state,
-        ),
+        hostPage(required(settingsPages, "usage-statistics"), messages, state),
         required(settingsPages, "updates"),
       ],
     },
@@ -187,7 +183,9 @@ export function startConsoleApp(document: Document): void {
   const shadow = root.attachShadow({ mode: "open" });
   // Constructable sheets: the page CSP forbids inline style elements.
   const sheet = new CSSStyleSheet();
-  sheet.replaceSync(`${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleCss}`);
+  sheet.replaceSync(
+    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${consoleCss}`,
+  );
   shadow.adoptedStyleSheets = [sheet];
 
   const navigation = h(document, "nav", {

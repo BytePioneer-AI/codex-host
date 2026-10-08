@@ -22,7 +22,29 @@ test.use({ locale: "zh-CN", timezoneId: "Asia/Shanghai" });
 const { outputFiles } = await build({
   stdin: {
     contents: `import { startConsoleApp } from "./packages/renderer-extension/src/console/app.ts";
-      startConsoleApp(document);`,
+      import { installRendererBindingProbe } from "./packages/renderer-extension/src/renderer-binding-probe.ts";
+      if (location.pathname === "/desktop") {
+        const local = { hostId: "local", manager: {
+          async sendRequest(method, params) {
+            const response = await fetch("/api/host/request", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ method, params }),
+            });
+            const value = await response.json();
+            if (value.error) throw new Error(value.error.message);
+            return value.result;
+          },
+        } };
+        const remote = { hostId: "remote", manager: {
+          sendRequest() { throw new Error("Statistics must not use the active remote Host"); },
+        } };
+        window.__codexhostHostRoutingV1 = {
+          forHost: (id) => id === "local" ? local : remote,
+          current: () => remote,
+          knownHostIds: () => ["local", "remote"],
+        };
+        installRendererBindingProbe();
+      } else startConsoleApp(document);`,
     resolveDir: path.resolve(import.meta.dirname, "../.."),
     sourcefile: "console-usage-prices-fixture.ts",
     loader: "ts",
@@ -74,7 +96,7 @@ test.afterEach(async () => {
  * A console against a Host whose statistics come from the real aggregation over the given
  * entries; prices are the fixture's overrides, so a saved price restates the figures.
  */
-async function setup(page: Page) {
+async function setup(page: Page, surface: "console" | "desktop" = "console") {
   const state = {
     prices: new Map<string, ModelPriceOverride>(),
     /** Entries per Harness; the default is one priced-on-demand request. */
@@ -125,10 +147,22 @@ async function setup(page: Page) {
   await page.route("http://console.test/**", async (route) => {
     const url = new URL(route.request().url());
     let value: unknown = {};
-    if (url.pathname === "/") {
+    if (url.pathname === "/" || url.pathname === "/desktop") {
       await route.fulfill({
         contentType: "text/html",
-        body: "<!doctype html><html><body></body></html>",
+        body:
+          surface === "desktop"
+            ? `<!doctype html><html><head><style>
+              body { margin: 0; display: flex; height: 100vh; }
+              nav { width: 56px; display: flex; flex-direction: column; }
+              nav button { width: 36px; height: 36px; }
+              main { flex: 1; }
+            </style></head><body>
+              <nav data-app-navigation-rail><div>
+                <button data-sidebar-destination="builtin:home" aria-current="page">H</button>
+              </div></nav><main>Native content</main>
+            </body></html>`
+            : "<!doctype html><html><body></body></html>",
       });
       return;
     }
@@ -203,7 +237,7 @@ async function setup(page: Page) {
       error: state.invalidFile ? "invalid JSON" : null,
     };
   }
-  await page.goto("http://console.test/");
+  await page.goto(surface === "desktop" ? "http://console.test/desktop" : "http://console.test/");
   await page.addScriptTag({ content: bundle });
   return state;
 }
@@ -220,6 +254,26 @@ const inputPrice = (page: Page) => page.getByRole("textbox", { name: "输入", e
 const outputPrice = (page: Page) => page.getByRole("textbox", { name: "输出", exact: true });
 const tile = (page: Page, key: string) => page.locator(`.console-usage-tile[data-tile="${key}"]`);
 const tileValue = (page: Page, key: string) => tile(page, key).locator("strong");
+
+async function expectTokenColumns(page: Page) {
+  const layout = await tile(page, "tokens").locator("[data-token-part]").evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const column = node.getBoundingClientRect();
+      const label = node.querySelector(".console-usage-tile__part-label")?.getBoundingClientRect();
+      const value = node.querySelector(".console-usage-tile__part-value")?.getBoundingClientRect();
+      return {
+        top: column.top,
+        width: column.width,
+        labelAbove: !!label && !!value && label.bottom <= value.top,
+        valueFits: !!value && value.left >= column.left && value.right <= column.right,
+      };
+    }),
+  );
+  expect(layout).toHaveLength(3);
+  expect(layout.every((column) => column.labelAbove && column.valueFits)).toBe(true);
+  expect(Math.max(...layout.map((column) => column.top)) - Math.min(...layout.map((column) => column.top))).toBeLessThan(1);
+  expect(Math.max(...layout.map((column) => column.width)) - Math.min(...layout.map((column) => column.width))).toBeLessThan(1);
+}
 const group = (page: Page, name: string) => page.getByRole("group", { name, exact: true });
 const modelFilter = (page: Page) => page.getByRole("button", { name: "按模型筛选", exact: true });
 const projectFilter = (page: Page) => page.getByRole("button", { name: "按项目筛选", exact: true });
@@ -237,6 +291,44 @@ async function choose(page: Page, filter: ReturnType<typeof modelFilter>, option
     .first()
     .click();
 }
+
+test("built-in settings reuse statistics, filters and prices through the local Host", async ({
+  page,
+}, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const state = await setup(page, "desktop");
+  await page.locator("[data-codexhost-settings-trigger] button").click();
+  await openStatistics(page);
+  await expect(tileValue(page, "cost")).toHaveText("—");
+  await expect(tileValue(page, "tokens")).toHaveText("3,000,000 ≈ 300 万");
+  await page.screenshot({ path: info.outputPath("desktop-statistics.png") });
+
+  await group(page, "用量统计").getByRole("button", { name: "7 天", exact: true }).click();
+  await expect.poll(() => state.lastParams.range).toBe("7d");
+  await page.getByRole("button", { name: "设置价格", exact: true }).click();
+  await inputPrice(page).fill("2");
+  await outputPrice(page).fill("3");
+  await page.getByRole("dialog").screenshot({ path: info.outputPath("desktop-price-dialog.png") });
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await expect(tileValue(page, "cost")).toHaveText("$8.00");
+  expect(state.prices.get("custom-model")).toEqual({ input: 2, output: 3 });
+  await page.screenshot({ path: info.outputPath("desktop-statistics-priced.png") });
+
+  await page.locator('.settings-nav-button[data-page-id="appearance"]').click();
+  const reads = state.statisticsReads;
+  await expect(page.locator(".console-usage")).toHaveCount(0);
+  await page.locator('.settings-nav-button[data-page-id="usage-statistics"]').click();
+  await expect.poll(() => state.statisticsReads).toBeGreaterThan(reads);
+  await expect(tileValue(page, "cost")).toHaveText("$8.00");
+  await expect(
+    group(page, "用量统计").getByRole("button", { name: "7 天", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.screenshot({ path: info.outputPath("desktop-statistics-return.png") });
+  expect(errors).toEqual([]);
+});
 
 test("row dialog saves prices without a header entry and preserves filters and a polling draft", async ({
   page,
@@ -757,35 +849,200 @@ async function setupDashboard(page: Page) {
   return state;
 }
 
-test("three tiles show cost, tokens without cache and the cache hit rate, nothing else", async ({
-  page,
-}) => {
-  const state = await setup(page);
-  state.prices.set("custom-model", { input: 1, output: 1 });
-  state.entries.set("test-harness", [
-    request("cached", {
-      inputTokens: 1_000_000,
-      cachedInputTokens: 800_000,
-      cacheWriteInputTokens: 50_000,
-      outputTokens: 10_000,
-    }),
-    // Unpriced: the cost counts only what has a price, shown without a lower-bound mark.
-    request("unpriced", { model: "mystery-model", inputTokens: 5_000, outputTokens: 0 }),
-  ]);
-  await openStatistics(page);
-  await expect(page.locator(".console-usage-tile")).toHaveCount(3);
-  for (const [key, label, value] of [
-    ["cost", "费用", "$0.160"],
-    ["tokens", "Token 用量", "165K"],
-    ["cache", "缓存命中率", "79.6%"],
-  ] as const) {
-    // A label and one number; no notes, averages or comparisons.
-    await expect(tile(page, key).locator(":scope > *")).toHaveCount(2);
-    await expect(tile(page, key).locator(".console-usage-tile__label")).toHaveText(label);
-    await expect(tileValue(page, key)).toHaveText(value);
-  }
-  await expect(page.getByText("≥")).toHaveCount(0);
-  await expect(page.getByText("不含缓存读取与写入")).toHaveCount(0);
+for (const surface of ["console", "desktop"] as const) {
+  test(`Chinese statistics show an exact Token total and 万/亿 units (${surface})`, async ({
+    page,
+  }, info) => {
+    await page.setViewportSize({ width: 1200, height: 900 });
+    const state = await setup(page, surface);
+    state.entries.set("test-harness", [
+      request("large", { inputTokens: 100_000_000, outputTokens: 16_222_990 }),
+    ]);
+    if (surface === "desktop") {
+      await page.locator("[data-codexhost-settings-trigger] button").click();
+    }
+    await openStatistics(page);
+    await expect(tileValue(page, "tokens")).toHaveText("116,222,990 ≈ 1.16 亿");
+    await expect(tileValue(page, "tokens").locator("small")).toHaveText("≈ 1.16 亿");
+    await expect(table(page, "按模型")).toContainText("1 亿");
+    await expect(table(page, "按模型")).toContainText("1622.3 万");
+    await page.screenshot({ path: info.outputPath("chinese-total.png") });
+
+    await group(page, "趋势").getByRole("button", { name: "Token", exact: true }).click();
+    const chart = page.locator(".console-usage-chart-wrap.is-selectable");
+    await expect(chart.locator(".console-usage-chart__label")).toContainText([
+      "0", "6000 万", "1.2 亿",
+    ]);
+    expect(
+      await chart.locator(".console-usage-chart__label").evaluateAll((labels) =>
+        labels.slice(0, 3).every((label) =>
+          label instanceof SVGGraphicsElement && label.getBBox().x >= 0,
+        ),
+      ),
+    ).toBe(true);
+    await chart.focus();
+    await page.keyboard.press("End");
+    await expect(page.locator(".console-usage-trend .console-usage-tooltip")).toContainText(
+      "1.16 亿",
+    );
+    await page.screenshot({ path: info.outputPath("chinese-trend.png") });
+  });
+}
+
+for (const surface of ["console", "desktop"] as const) {
+  test(`three tiles show a cache-inclusive overview with input/output/cache (${surface})`, async ({
+    page,
+  }, info) => {
+    await page.setViewportSize({ width: 1200, height: 900 });
+    const state = await setup(page, surface);
+    state.prices.set("custom-model", { input: 1, output: 1 });
+    state.entries.set("test-harness", [
+      request("cached", {
+        inputTokens: 1_000_000,
+        cachedInputTokens: 800_000,
+        cacheWriteInputTokens: 50_000,
+        outputTokens: 10_000,
+        reasoningOutputTokens: 5_000,
+      }),
+      // Unpriced: cost still counts only what has a price, without a lower-bound mark.
+      request("unpriced", { model: "mystery-model", inputTokens: 5_000, outputTokens: 0 }),
+    ]);
+    if (surface === "desktop") await page.locator("[data-codexhost-settings-trigger] button").click();
+    await openStatistics(page);
+    await expect(page.locator(".console-usage-tile")).toHaveCount(3);
+    for (const [key, label, value] of [
+      ["cost", "费用", "$0.160"],
+      ["tokens", "总 Token", "1,015,000 ≈ 101.5 万"],
+      ["cache", "缓存命中率", "79.6%"],
+    ] as const) {
+      await expect(tile(page, key).locator(":scope > *")).toHaveCount(key === "tokens" ? 3 : 2);
+      await expect(tile(page, key).locator(".console-usage-tile__label")).toHaveText(label);
+      await expect(tileValue(page, key)).toHaveText(value);
+    }
+    const parts = tile(page, "tokens").locator("[data-token-part]");
+    await expect(parts).toHaveText(["输入 15.5 万", "输出 1 万", "缓存 85 万"]);
+    await expectTokenColumns(page);
+    await expect(tile(page, "tokens").locator(".console-usage-tile__breakdown")).not.toContainText("/");
+    // Quantities are plain text: neither native title hints nor a question-mark cursor.
+    await expect(tile(page, "tokens").locator("[title]")).toHaveCount(0);
+    await tileValue(page, "tokens").hover();
+    expect(await tileValue(page, "tokens").evaluate((node) => getComputedStyle(node).cursor)).not.toBe("help");
+    await tile(page, "tokens").locator('[data-token-part="cache"]').hover();
+    expect(await parts.evaluateAll((nodes) => nodes.some((node) => getComputedStyle(node).cursor === "help"))).toBe(false);
+    await expect(page.getByText("≥")).toHaveCount(0);
+    await page.locator(".console-usage-tiles").screenshot({ path: info.outputPath("token-summary-cards.png") });
+    await page.screenshot({ path: info.outputPath("token-breakdown.png") });
+
+    // Three aligned columns also stay intact on a narrow full-width card.
+    await page.setViewportSize({ width: 420, height: 900 });
+    await expectTokenColumns(page);
+    expect(await parts.evaluateAll((nodes) => nodes.every((node) => {
+      const row = node.closest(".console-usage-tile")?.getBoundingClientRect();
+      const rect = node.getBoundingClientRect();
+      return row && rect.left >= row.left && rect.right <= row.right;
+    }))).toBe(true);
+    await page.screenshot({ path: info.outputPath("token-breakdown-narrow.png") });
+    await page.setViewportSize({ width: 1200, height: 900 });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.screenshot({ path: info.outputPath("token-breakdown-dark.png") });
+
+    // A GUI filter updates both the inclusive total and all three subfigures together.
+    await table(page, "按模型").getByRole("button", { name: "custom-model", exact: true }).click();
+    await expect(tileValue(page, "tokens")).toHaveText("1,010,000 ≈ 101 万");
+    await expect(parts).toHaveText(["输入 15 万", "输出 1 万", "缓存 85 万"]);
+    await expect(tileValue(page, "cost")).toHaveText("$0.160");
+  });
+
+  test(`billion-scale Token breakdown stays in three columns (${surface})`, async ({ page }, info) => {
+    await page.setViewportSize({ width: 1200, height: 900 });
+    const state = await setup(page, surface);
+    state.entries.set("test-harness", [request("large-cache", {
+      inputTokens: 14_103_712_122,
+      cachedInputTokens: 13_522_000_000,
+      cacheWriteInputTokens: 50_000_000,
+      outputTokens: 60_020_200,
+    })]);
+    if (surface === "desktop") await page.locator("[data-codexhost-settings-trigger] button").click();
+    await openStatistics(page);
+    await expect(tileValue(page, "tokens")).toHaveText("14,163,732,322 ≈ 141.64 亿");
+    await expect(tile(page, "tokens").locator("[data-token-part]")).toHaveText([
+      "输入 5.32 亿", "输出 6002.02 万", "缓存 135.72 亿",
+    ]);
+    await expectTokenColumns(page);
+    await tile(page, "tokens").screenshot({ path: info.outputPath("token-columns.png") });
+    await page.setViewportSize({ width: 420, height: 900 });
+    await expectTokenColumns(page);
+    await tile(page, "tokens").screenshot({ path: info.outputPath("token-columns-narrow.png") });
+  });
+
+  test(`overview keeps unknown cache breakdown honest (${surface})`, async ({ page }) => {
+    const state = await setup(page, surface);
+    const unknown = request("unknown-cache", { inputTokens: 200, outputTokens: 20 });
+    delete unknown.cachedInputTokens;
+    delete unknown.cacheWriteInputTokens;
+    state.entries.set("test-harness", [
+      request("known-cache", {
+        inputTokens: 1_050,
+        cachedInputTokens: 900,
+        cacheWriteInputTokens: 50,
+        outputTokens: 30,
+      }),
+      unknown,
+    ]);
+    if (surface === "desktop") await page.locator("[data-codexhost-settings-trigger] button").click();
+    await openStatistics(page);
+    await expect(tileValue(page, "tokens")).toHaveText("1,300");
+    await expect(tile(page, "tokens").locator("[data-token-part]")).toHaveText([
+      "输入 300", "输出 50", "缓存 950",
+    ]);
+    await expect(tile(page, "tokens").locator("[title]")).toHaveCount(0);
+    await expect(tileValue(page, "cache")).toHaveText("85.7%");
+  });
+
+  test(`overview does not show unknown cache as zero (${surface})`, async ({ page }) => {
+    const state = await setup(page, surface);
+    const unknown = request("unknown-cache", { inputTokens: 200, outputTokens: 20 });
+    delete unknown.cachedInputTokens;
+    delete unknown.cacheWriteInputTokens;
+    state.entries.set("test-harness", [unknown]);
+    if (surface === "desktop") await page.locator("[data-codexhost-settings-trigger] button").click();
+    await openStatistics(page);
+    await expect(tileValue(page, "tokens")).toHaveText("220");
+    await expect(tile(page, "tokens").locator("[data-token-part]")).toHaveText([
+      "输入 200", "输出 20", "缓存 —",
+    ]);
+    await expect(tileValue(page, "cache")).toHaveText("—");
+  });
+
+  test(`overview shows missing Token counts as unknown (${surface})`, async ({ page }) => {
+    const state = await setup(page, surface);
+    state.entries.set("test-harness", [request("unmetered", {
+      inputTokens: 0, outputTokens: 0, tokensUnknown: true,
+    })]);
+    if (surface === "desktop") await page.locator("[data-codexhost-settings-trigger] button").click();
+    await openStatistics(page);
+    await expect(tileValue(page, "tokens")).toHaveText("—");
+    await expect(tile(page, "tokens").locator("[data-token-part]")).toHaveText([
+      "输入 —", "输出 —", "缓存 —",
+    ]);
+    await expect(tileValue(page, "cost")).toHaveText("—");
+  });
+}
+
+test.describe("English overview", () => {
+  test.use({ locale: "en-US" });
+  test("keeps compact totals without quantity hover hints", async ({ page }) => {
+    const state = await setup(page);
+    state.entries.set("test-harness", [request("cached", {
+      inputTokens: 1_050, cachedInputTokens: 900, cacheWriteInputTokens: 50, outputTokens: 30,
+    })]);
+    await page.getByRole("navigation").getByRole("button", { name: "Usage statistics", exact: true }).click();
+    await expect(tileValue(page, "tokens")).toHaveText("1.1K");
+    await expect(tile(page, "tokens").locator("[data-token-part]")).toHaveText([
+      "Input 100", "Output 30", "Cache 950",
+    ]);
+    await expect(tile(page, "tokens").locator("[title]")).toHaveCount(0);
+  });
 });
 
 test("models priced by the Harness's own record offer no price to set or edit", async ({
@@ -846,7 +1103,7 @@ test("the model filter tells all models from the unknown model and searches", as
   await expect(modelFilter(page)).toHaveText("未知模型");
   expect(state.lastParams).toMatchObject({ model: null });
   // Only the request without a model: 1M input and 2M output.
-  await expect(tileValue(page, "tokens")).toHaveText("3M");
+  await expect(tileValue(page, "tokens")).toHaveText("3,000,000 ≈ 300 万");
   await page.getByRole("button", { name: "清除筛选", exact: true }).click();
   await expect(modelFilter(page)).toHaveText("全部模型");
   expect(state.lastParams).not.toHaveProperty("model");

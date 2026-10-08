@@ -51,6 +51,7 @@ export interface ChartPointer {
 
 export interface TrendOptions {
   key: string;
+  locale?: string;
   buckets: Bucket[];
   series: Series[];
   measure: Measure;
@@ -72,13 +73,20 @@ export function trendChart(document: Document, options: TrendOptions): HTMLEleme
   const { buckets, series, measure, pointer } = options;
   const width = 720;
   const height = 190;
-  const left = 46;
   const top = 8;
   const bottom = 22;
-  const plot = width - left;
   const baseY = height - bottom;
   const values = buckets.map((bucket) => measured(bucket.totals, measure));
   const ceiling = niceCeiling(Math.max(0, ...values));
+  const axisLabels = [0, 0.5, 1].map((fraction) =>
+    axisValue(measure, ceiling * fraction, options.locale),
+  );
+  // Chinese units take more horizontal space than K/M/B; keep the labels inside the SVG.
+  const left =
+    measure === "tokens" && /^zh(?:-|$)/iu.test(options.locale ?? "en")
+      ? Math.max(46, ...axisLabels.map((label) => label.length * 8 + 16))
+      : 46;
+  const plot = width - left;
   const slot = plot / Math.max(buckets.length, 1);
   const bar = Math.max(1, Math.min(28, slot * 0.72));
   const chart = svg(document, "svg", {
@@ -104,7 +112,7 @@ export function trendChart(document: Document, options: TrendOptions): HTMLEleme
       "text-anchor": "end",
       class: "console-usage-chart__label",
     });
-    label.textContent = axisValue(measure, ceiling * fraction);
+    label.textContent = axisValue(measure, ceiling * fraction, options.locale);
     chart.append(label);
   }
 
@@ -236,7 +244,7 @@ export function trendChart(document: Document, options: TrendOptions): HTMLEleme
         tooltipLine(
           document,
           options.labels.tokens,
-          formatMeasure("tokens", measured(bucket.totals, "tokens")),
+          formatMeasure("tokens", measured(bucket.totals, "tokens"), options.locale),
           {
             strong: measure === "tokens",
           },
@@ -248,7 +256,11 @@ export function trendChart(document: Document, options: TrendOptions): HTMLEleme
                 tooltipLine(
                   document,
                   item.label,
-                  formatMeasure(measure, measured(totals ?? emptyTotals(), measure)),
+                  formatMeasure(
+                    measure,
+                    measured(totals ?? emptyTotals(), measure),
+                    options.locale,
+                  ),
                   { swatch: item.color },
                 ),
               ),
@@ -358,7 +370,7 @@ export function hourlyChart(
     tooltipLine(
       document,
       options.labels.tokens,
-      formatMeasure("tokens", measured(totals, "tokens")),
+      formatMeasure("tokens", measured(totals, "tokens"), options.locale),
       {
         strong: measure === "tokens",
       },

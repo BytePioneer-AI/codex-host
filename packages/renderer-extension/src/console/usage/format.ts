@@ -54,6 +54,11 @@ export function inputWithoutCache(totals: Totals): number {
   return totals.inputTokens - totals.cachedInputTokens - totals.cacheWriteInputTokens;
 }
 
+/** All processed tokens; normalized input already includes cache, output includes reasoning. */
+export function tokensWithCache(totals: Totals): number {
+  return totals.inputTokens + totals.outputTokens;
+}
+
 /** Input without cache plus output. Cache reads and writes are shown on their own. */
 export function tokensWithoutCache(totals: Totals): number {
   return inputWithoutCache(totals) + totals.outputTokens;
@@ -87,11 +92,40 @@ export function cost(totals: Totals): string {
 }
 
 /** A token count, or "—" when no request of the row reported any. */
-export function tokenCount(totals: Totals, value: number): string {
-  return unmetered(totals) ? "—" : formatRendererTokenCount(value);
+export function tokenCount(totals: Totals, value: number, locale = "en"): string {
+  return unmetered(totals) ? "—" : count(value, locale);
 }
 
-export const count = formatRendererTokenCount;
+function isChinese(locale: string): boolean {
+  return /^zh(?:-|$)/iu.test(locale);
+}
+
+/** Chinese readers use ten-thousands and hundred-millions, not K/M/B. */
+export function count(value: number, locale = "en"): string {
+  if (!isChinese(locale)) return formatRendererTokenCount(value);
+  const absolute = Math.abs(value);
+  if (absolute < 10_000) return value.toLocaleString(locale, { maximumFractionDigits: 0 });
+  // Promote a rounded 10,000 万 to 亿 rather than displaying the awkward boundary value.
+  const hundredMillions =
+    absolute >= 100_000_000 || Number((absolute / 10_000).toFixed(2)) >= 10_000;
+  const divisor = hundredMillions ? 100_000_000 : 10_000;
+  return `${Number((value / divisor).toFixed(2))} ${hundredMillions ? "亿" : "万"}`;
+}
+
+/** Keep the exact total prominent; its Chinese approximation is a secondary reading aid. */
+export function tokenSummary(
+  value: number,
+  locale = "en",
+): {
+  value: string;
+  approximation: string | null;
+} {
+  if (!isChinese(locale)) return { value: count(value), approximation: null };
+  return {
+    value: value.toLocaleString(locale, { maximumFractionDigits: 0 }),
+    approximation: Math.abs(value) >= 10_000 ? `≈ ${count(value, locale)}` : null,
+  };
+}
 
 /** Cache reads over all input whose split is known, cache writes included. */
 export function cacheHitRate(totals: Totals): string {
@@ -100,13 +134,13 @@ export function cacheHitRate(totals: Totals): string {
     : "—";
 }
 
-export function formatMeasure(measure: Measure, value: number): string {
-  return measure === "cost" ? money(value) : count(value);
+export function formatMeasure(measure: Measure, value: number, locale = "en"): string {
+  return measure === "cost" ? money(value) : count(value, locale);
 }
 
-/** Compact axis label: `$1.2K`, `$12`, `3.4M`. */
-export function axisValue(measure: Measure, value: number): string {
-  if (measure !== "cost") return count(value);
+/** Compact axis label; Token units follow the viewer's language, USD notation stays unchanged. */
+export function axisValue(measure: Measure, value: number, locale = "en"): string {
+  if (measure !== "cost") return count(value, locale);
   if (value >= 1_000) return `$${count(value)}`;
   return `$${Number(value.toFixed(2))}`;
 }

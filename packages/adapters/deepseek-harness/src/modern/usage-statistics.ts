@@ -10,6 +10,7 @@ import type {
 } from "@codexhost/harness-adapter";
 import {
   usageEntryFromRequest,
+  usageSessionTitle,
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 
@@ -75,14 +76,16 @@ export async function readDshUsage(file: string): Promise<HarnessUsageEntry[]> {
     : buffer.toString("utf8");
   const entries: HarnessUsageEntry[] = [];
   // The journal opens with a `"type":"session"` header naming the session and its cwd.
-  let session: { sessionId?: string; cwd?: string } = {};
+  let session: { sessionId?: string; cwd?: string; title?: string } = {};
   for (const line of text.split("\n")) {
     if (entries.length === 0 && line.startsWith('{"type":"session"')) {
       try {
         const header = JSON.parse(line) as Record<string, unknown>;
+        const title = usageSessionTitle(header.title ?? header.name);
         session = {
           ...(typeof header.id === "string" ? { sessionId: header.id } : {}),
           ...(typeof header.cwd === "string" ? { cwd: header.cwd } : {}),
+          ...(title ? { title } : {}),
         };
       } catch {
         // A damaged header only loses the attribution.

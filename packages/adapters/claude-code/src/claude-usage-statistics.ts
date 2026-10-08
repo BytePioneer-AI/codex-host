@@ -10,6 +10,7 @@ import {
   jsonlUsageSources,
   nativeTimeMs,
   usageEntryFromRequest,
+  usageSessionTitle,
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 
@@ -40,7 +41,14 @@ export async function readClaudeUsage(
   // Every line names its session and working directory; a subagent's lines name the parent's.
   let sessionId: unknown;
   let cwd: unknown;
-  for await (const line of jsonlRecords(file, '"assistant"', signal)) {
+  let customTitle: string | undefined;
+  let generatedTitle: string | undefined;
+  let firstPrompt: string | undefined;
+  for await (const line of jsonlRecords(file, '"type"', signal)) {
+    if (line.type === "custom-title") customTitle = usageSessionTitle(line.customTitle);
+    else if (line.type === "ai-title") generatedTitle = usageSessionTitle(line.aiTitle);
+    else if (line.type === "summary") generatedTitle ??= usageSessionTitle(line.summary);
+    else if (!firstPrompt && line.type === "user") firstPrompt = claudeUserPrompt(line.message);
     if (line.type !== "assistant" || !isRecord(line.message)) continue;
     sessionId ??= line.sessionId;
     cwd ??= line.cwd;
@@ -55,13 +63,37 @@ export async function readClaudeUsage(
     const entry =
       record.kind === "request" && at !== null && usageEntryFromRequest(record.request, at);
     if (entry)
-      entries.push(withUsageSession(entry, { sessionId: text(sessionId), cwd: text(cwd) }));
+      entries.push(
+        withUsageSession(entry, {
+          sessionId: text(sessionId),
+          cwd: text(cwd),
+          title: customTitle ?? generatedTitle ?? firstPrompt,
+        }),
+      );
   }
   return entries;
 }
 
 function text(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function claudeUserPrompt(message: unknown): string | undefined {
+  if (!isRecord(message) || message.role !== "user") return undefined;
+  const { content } = message;
+  const raw =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .filter(
+              (block) => isRecord(block) && block.type === "text" && typeof block.text === "string",
+            )
+            .map((block) => String(block.text))
+            .join(" ")
+        : "";
+  const title = usageSessionTitle(raw);
+  return title && !/^<(?:local-command-|command-)/u.test(title) ? title : undefined;
 }
 
 export function createClaudeUsageStatistics(

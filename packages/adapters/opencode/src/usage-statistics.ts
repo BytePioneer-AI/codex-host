@@ -10,6 +10,7 @@ import type {
 import {
   nativeTimeMs,
   usageEntryFromRequest,
+  usageSessionTitle,
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 import type { SessionMessageInfo } from "@opencode/client";
@@ -68,10 +69,22 @@ export async function readOpenCodeUsage(file: string): Promise<HarnessUsageEntry
     );
     // Working directory of each session, from whichever session tables this version has.
     const directories = new Map<string, string>();
+    const titles = new Map<string, string>();
     for (const table of ["session", "session_v2"]) {
       if (!tables.has(table)) continue;
-      for (const row of database.prepare(`SELECT id, directory FROM ${table}`).iterate()) {
+      const columns = new Set(
+        database
+          .prepare(`PRAGMA table_info(${table})`)
+          .all()
+          .map((row) => String(row.name)),
+      );
+      const titleColumn = columns.has("title") ? ", title" : "";
+      for (const row of database
+        .prepare(`SELECT id, directory${titleColumn} FROM ${table}`)
+        .iterate()) {
         if (typeof row.directory === "string") directories.set(String(row.id), row.directory);
+        const title = usageSessionTitle(row.title);
+        if (title) titles.set(String(row.id), title);
       }
     }
     const entries = new Map<string, HarnessUsageEntry>();
@@ -91,6 +104,7 @@ export async function readOpenCodeUsage(file: string): Promise<HarnessUsageEntry
           withUsageSession(entry, {
             sessionId,
             cwd: sessionId === undefined ? undefined : directories.get(sessionId),
+            title: sessionId === undefined ? undefined : titles.get(sessionId),
           }),
         );
       }

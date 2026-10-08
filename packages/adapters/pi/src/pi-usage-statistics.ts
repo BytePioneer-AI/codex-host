@@ -8,11 +8,25 @@ import {
   jsonlUsageSources,
   nativeTimeMs,
   usageEntryFromRequest,
+  usageSessionTitle,
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 
 import { piSessionImportDirectory } from "./pi-session-import.js";
 import { piUsageRecord } from "./pi-usage.js";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function piUserText(content: unknown): string | undefined {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  return content
+    .filter((block) => isRecord(block) && block.type === "text" && typeof block.text === "string")
+    .map((block) => String(block.text))
+    .join(" ");
+}
 
 /**
  * Every assistant message in one Pi session file, keyed by response ID or native entry ID and time. A fork starts
@@ -23,15 +37,23 @@ export async function readPiUsage(file: string, signal: AbortSignal): Promise<Ha
   const entries: HarnessUsageEntry[] = [];
   // The session header (`"type":"session"`, with id and cwd) opens the file.
   const header = await jsonlHeader(file, (record) => record.type === "session", signal);
+  let name: string | undefined;
   const session = {
     sessionId: typeof header?.id === "string" ? header.id : undefined,
     cwd: typeof header?.cwd === "string" ? header.cwd : undefined,
   };
-  for await (const line of jsonlRecords(file, '"assistant"', signal)) {
+  for await (const line of jsonlRecords(file, '"type"', signal)) {
+    if (line.type === "session_info") {
+      name = usageSessionTitle(line.name) ?? name;
+      continue;
+    }
     if (line.type !== "message") continue;
+    const message = line.message as Record<string, unknown>;
+    if (!name && message?.role === "user") {
+      name = usageSessionTitle(piUserText(message.content));
+    }
     const record = piUsageRecord(line.message);
     if (record?.kind !== "request") continue;
-    const message = line.message as Record<string, unknown>;
     const at = nativeTimeMs(message.timestamp) ?? nativeTimeMs(line.timestamp);
     const entry = at !== null && usageEntryFromRequest(record.request, at);
     if (!entry) continue;
@@ -42,7 +64,9 @@ export async function readPiUsage(file: string, signal: AbortSignal): Promise<Ha
     }
     entries.push(withUsageSession(entry, session));
   }
-  return entries;
+  return name
+    ? entries.map((entry) => withUsageSession(entry, { ...session, title: name }))
+    : entries;
 }
 
 export function createPiUsageStatistics(

@@ -193,12 +193,14 @@ export function createUsageStatisticsPage(
       let error: string | null = null;
       let loadedAt = 0;
       let poll: number | undefined;
-      const tables: Record<"harness" | "model" | "project" | "sessions", TableState> = {
-        harness: { sort: "share", descending: true, expanded: false },
-        model: { sort: "share", descending: true, expanded: false },
-        project: { sort: "share", descending: true, expanded: false },
-        sessions: { sort: "measure", descending: true, expanded: false },
-      };
+      const tables: Record<"harness" | "model" | "project" | "sessions" | "recent", TableState> =
+        {
+          harness: { sort: "share", descending: true, expanded: false },
+          model: { sort: "share", descending: true, expanded: false },
+          project: { sort: "share", descending: true, expanded: false },
+          sessions: { sort: "measure", descending: true, expanded: false },
+          recent: { sort: "last", descending: true, expanded: false },
+        };
       const pointer: ChartPointer = { index: -1, x: 0 };
       const names = new Map<string, string>();
       let copiedSession: string | null = null;
@@ -435,7 +437,10 @@ export function createUsageStatisticsPage(
             projectPanel(data),
             hourlyPanel(data),
           ),
-          sessionsPanel(data),
+          sessionsPanel(messages.topSessions, data.sessions, "sessions"),
+          data.recentSessions
+            ? sessionsPanel(messages.recentSessions, data.recentSessions, "recent")
+            : null,
         ]);
       }
 
@@ -1075,26 +1080,32 @@ export function createUsageStatisticsPage(
         );
       }
 
-      function sessionsPanel(data: UsageStatisticsResult): HTMLElement {
+      function sessionsPanel(
+        title: string,
+        rows: UsageStatisticsSession[],
+        tableKey: "sessions" | "recent",
+      ): HTMLElement {
         const columns: Column<UsageStatisticsSession>[] = [
           {
             key: "session",
             label: messages.session,
+            sort: (row) => row.title ?? row.sessionId,
             cell: (row) => {
               const project = keyOf(row.project);
               const id = `${row.harness}:${row.sessionId}`;
+              const label = row.title || messages.untitledSession;
               const copy = focusKey(
                 h(
                   document,
                   "button",
                   {
                     type: "button",
-                    className: "console-usage-link console-usage-copy",
-                    title: `${messages.copyId}: ${row.sessionId}`,
+                    className: "console-usage-link console-usage-copy is-title",
+                    title: `${label} · ${messages.copyId}: ${row.sessionId}`,
                   },
-                  copiedSession === id ? messages.copied : row.sessionId.slice(0, 8),
+                  copiedSession === id ? messages.copied : label,
                 ),
-                `sessions:copy:${id}`,
+                `${tableKey}:copy:${id}`,
               );
               copy.addEventListener("click", () => {
                 void navigator.clipboard
@@ -1108,9 +1119,9 @@ export function createUsageStatisticsPage(
               return h(
                 document,
                 "span",
-                { className: "console-usage-name" },
-                rowFilter("project", project, projectName(project), row.project ?? undefined),
+                { className: "console-usage-session" },
                 copy,
+                rowFilter("project", project, projectName(project), row.project ?? undefined),
               );
             },
           },
@@ -1167,20 +1178,20 @@ export function createUsageStatisticsPage(
               ]),
         ];
         return panel(
-          messages.topSessions,
-          data.sessions.length === 0
+          title,
+          rows.length === 0
             ? h(document, "p", { className: "console-muted" }, messages.empty)
             : dataTable(document, {
-                key: "sessions",
+                key: tableKey,
                 columns,
-                rows: data.sessions,
-                state: tables.sessions,
+                rows,
+                state: tables[tableKey],
                 limit: SESSION_LIMIT,
                 sortLabel: (label) => fill(messages.sortBy, { name: label }),
                 moreLabel: (hidden) => fill(messages.showMore, { count: hidden }),
                 lessLabel: messages.showLess,
                 onState: (state) => {
-                  tables.sessions = state;
+                  tables[tableKey] = state;
                   render();
                 },
               }),

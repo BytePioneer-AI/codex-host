@@ -47,6 +47,8 @@ export interface HarnessUsageEntry {
   reasoningOutputTokens?: number;
   /** Native session (thread) the request belongs to, when the storage names it. */
   sessionId?: string;
+  /** Display name of that session, when the storage names it. */
+  sessionTitle?: string;
   /** Absolute working directory of that session, when the storage names it. */
   cwd?: string;
   /**
@@ -69,10 +71,25 @@ export interface HarnessUsageEntry {
 export interface HarnessUsageSession {
   sessionId?: string | null | undefined;
   cwd?: string | null | undefined;
+  /** Native display name: user-given, agent-generated, or first typed prompt. */
+  title?: string | null | undefined;
 }
 
 const MAX_SESSION_ID_LENGTH = 512;
 const MAX_CWD_LENGTH = 4096;
+/** Matches magpie's Codex index cap; long first prompts are cut on a character. */
+const MAX_SESSION_TITLE_LENGTH = 200;
+
+/** Single-line session name, or undefined when the storage has none the Host can show. */
+export function usageSessionTitle(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.replaceAll("\0", "").replaceAll(/\s+/gu, " ").trim();
+  if (!normalized) return undefined;
+  if (normalized.length <= MAX_SESSION_TITLE_LENGTH) return normalized;
+  const characters = [...normalized];
+  if (characters.length <= MAX_SESSION_TITLE_LENGTH) return normalized;
+  return `${characters.slice(0, MAX_SESSION_TITLE_LENGTH - 1).join("").trimEnd()}…`;
+}
 
 function sessionIdOk(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= MAX_SESSION_ID_LENGTH;
@@ -98,11 +115,13 @@ export function withUsageSession(
 ): HarnessUsageEntry {
   const sessionId = sessionIdOk(session.sessionId) ? session.sessionId : undefined;
   const cwd = cwdOk(session.cwd) ? session.cwd : undefined;
+  const sessionTitle = sessionId !== undefined ? usageSessionTitle(session.title) : undefined;
   if (sessionId === undefined && cwd === undefined) return entry;
   return {
     ...entry,
     ...(sessionId !== undefined ? { sessionId } : {}),
     ...(cwd !== undefined ? { cwd } : {}),
+    ...(sessionTitle !== undefined ? { sessionTitle } : {}),
   };
 }
 
@@ -162,6 +181,11 @@ export function parseHarnessUsageEntry(value: unknown): HarnessUsageEntry | null
   if (((entry.reasoningOutputTokens as number | undefined) ?? 0) > entry.outputTokens) return null;
   if (entry.sessionId !== undefined && !sessionIdOk(entry.sessionId)) return null;
   if (entry.cwd !== undefined && !cwdOk(entry.cwd)) return null;
+  if (entry.sessionTitle !== undefined) {
+    const sessionTitle = usageSessionTitle(entry.sessionTitle);
+    if (sessionTitle === undefined) return null;
+    entry.sessionTitle = sessionTitle;
+  }
   if (entry.tokensUnknown !== undefined && entry.tokensUnknown !== true) return null;
   if (
     entry.costUsd !== undefined &&

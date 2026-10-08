@@ -879,13 +879,15 @@ export class AppServerHost {
   }
 
   #attachUsageStatistics(): void {
-    this.#options.usageStatistics?.attach((): UsageStatisticsSource[] =>
-      [...new Set([...this.#externalAdapters.values(), ...this.#usageOnlyAdapters])].flatMap(
-        (adapter) =>
-          adapter.usageStatistics
-            ? [{ harness: adapter.harnessId, capability: adapter.usageStatistics }]
-            : [],
-      ),
+    this.#options.usageStatistics?.attach(
+      (): UsageStatisticsSource[] =>
+        [...new Set([...this.#externalAdapters.values(), ...this.#usageOnlyAdapters])].flatMap(
+          (adapter) =>
+            adapter.usageStatistics
+              ? [{ harness: adapter.harnessId, capability: adapter.usageStatistics }]
+              : [],
+        ),
+      () => this.#repository.list(),
     );
   }
 

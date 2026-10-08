@@ -101,6 +101,12 @@ describe("usage session attribution", () => {
       sessionId: "s",
       cwd: "/work",
     });
+    expect(withUsageSession(entry, { sessionId: "s", title: "  Hello\nworld  " })).toEqual({
+      ...entry,
+      sessionId: "s",
+      sessionTitle: "Hello world",
+    });
+    expect(withUsageSession(entry, { title: "orphan name" })).toBe(entry);
     expect(withUsageSession(entry, { cwd: "C:\\work" })).toEqual({ ...entry, cwd: "C:\\work" });
     for (const cwd of ["", "relative/dir", "/a\u0000b", `/${"x".repeat(5000)}`]) {
       expect(withUsageSession(entry, { cwd })).toBe(entry);

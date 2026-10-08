@@ -10,6 +10,7 @@ import {
   jsonlRecords,
   jsonlUsageSources,
   nativeTimeMs,
+  usageSessionTitle,
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 
@@ -29,16 +30,23 @@ export function grokHome(environment: NodeJS.ProcessEnv): string {
 }
 
 /** When a forked or restored session was made; its earlier turns are copies of its source's. */
-async function forkedAtMs(directory: string): Promise<number | null> {
+async function grokSummary(
+  directory: string,
+): Promise<{ forkedAt: number | null; title?: string }> {
   try {
     const summary: unknown = JSON.parse(
       await readFile(path.join(directory, "summary.json"), "utf8"),
     );
-    return isRecord(summary) && typeof summary.parent_session_id === "string"
-      ? nativeTimeMs(summary.created_at)
-      : null;
+    if (!isRecord(summary)) return { forkedAt: null };
+    const title =
+      usageSessionTitle(summary.generated_title) ?? usageSessionTitle(summary.session_summary);
+    return {
+      forkedAt:
+        typeof summary.parent_session_id === "string" ? nativeTimeMs(summary.created_at) : null,
+      ...(title ? { title } : {}),
+    };
   } catch {
-    return null;
+    return { forkedAt: null };
   }
 }
 
@@ -66,12 +74,18 @@ export async function readGrokUsage(
   file: string,
   signal: AbortSignal,
 ): Promise<HarnessUsageEntry[]> {
-  const forkedAt = await forkedAtMs(path.dirname(file));
+  const summary = await grokSummary(path.dirname(file));
+  const forkedAt = summary.forkedAt;
+  let title = summary.title;
   const session = grokSession(file);
   const entries: HarnessUsageEntry[] = [];
-  for await (const line of jsonlRecords(file, '"turn_completed"', signal)) {
+  for await (const line of jsonlRecords(file, '"sessionUpdate"', signal)) {
     const params = isRecord(line.params) ? line.params : {};
     const update = isRecord(params.update) ? params.update : {};
+    if (!title && update.sessionUpdate === "user_message_chunk") {
+      title = usageSessionTitle(isRecord(update.content) ? update.content.text : undefined);
+      continue;
+    }
     const usage = isRecord(update.usage) ? update.usage : {};
     if (update.sessionUpdate !== "turn_completed" || typeof update.prompt_id !== "string") continue;
     const meta = isRecord(params._meta) ? params._meta : {};
@@ -112,7 +126,7 @@ export async function readGrokUsage(
                 ? { costUsd: 0 }
                 : {}),
           },
-          session,
+          { ...session, ...(title ? { title } : {}) },
         ),
       );
     }

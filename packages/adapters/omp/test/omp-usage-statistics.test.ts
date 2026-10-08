@@ -79,6 +79,7 @@ it("reads OMP session files with a title line and subagents in the artifacts fol
       // The header after OMP's title line names the session and where it ran.
       sessionId: "s1",
       cwd: "/work/omp",
+      sessionTitle: "A session",
     },
     expect.objectContaining({ id: "r2", occurredAtMs: 6_000 }),
   ]);

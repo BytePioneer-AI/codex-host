@@ -91,3 +91,25 @@ it("attributes requests to the transcript's session and working directory", asyn
   expect(bare).not.toHaveProperty("sessionId");
   expect(bare).not.toHaveProperty("cwd");
 });
+
+it("names a session from custom-title, else the first user prompt", async () => {
+  const project = path.join(home, "projects", "-work-app");
+  await mkdir(project, { recursive: true });
+  await writeFile(
+    path.join(project, "named.jsonl"),
+    [
+      JSON.stringify({
+        type: "user",
+        sessionId: "named",
+        cwd: "/work/app",
+        message: { role: "user", content: "first prompt" },
+      }),
+      JSON.stringify({ type: "custom-title", customTitle: " Renamed chat ", sessionId: "named" }),
+      assistant("m1", "2026-10-05T01:00:00.000Z", 3, { sessionId: "named", cwd: "/work/app" }),
+    ].join("\n"),
+  );
+  const capability = createClaudeUsageStatistics({ CLAUDE_CONFIG_DIR: home });
+  expect(await capability.readSource(path.join(project, "named.jsonl"), signal)).toEqual([
+    expect.objectContaining({ sessionId: "named", sessionTitle: "Renamed chat" }),
+  ]);
+});

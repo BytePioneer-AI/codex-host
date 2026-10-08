@@ -10,6 +10,7 @@ import {
   jsonlUsageSources,
   nativeTimeMs,
   parseHarnessUsageEntry,
+  usageSessionTitle,
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 
@@ -35,6 +36,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function qoderUserText(message: unknown): string | undefined {
+  if (!isRecord(message)) return undefined;
+  const { content } = message;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  return content
+    .filter((block) => isRecord(block) && block.type === "text" && typeof block.text === "string")
+    .map((block) => String(block.text))
+    .join(" ");
+}
+
 function count(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -51,8 +63,16 @@ export async function readQoderUsage(
   const messages = new Map<string, { at: number | null; entry?: HarnessUsageEntry }>();
   let sessionId: unknown;
   let cwd: unknown;
-  for await (const line of jsonlRecords(file, '"assistant"', signal)) {
+  let customTitle: string | undefined;
+  let summary: string | undefined;
+  let firstPrompt: string | undefined;
+  for await (const line of jsonlRecords(file, '"type"', signal)) {
     signal.throwIfAborted();
+    if (line.type === "custom-title") customTitle = usageSessionTitle(line.customTitle);
+    else if (!summary && line.type === "summary") summary = usageSessionTitle(line.summary);
+    else if (!firstPrompt && line.type === "user") {
+      firstPrompt = usageSessionTitle(qoderUserText(line.message));
+    }
     if (line.type !== "assistant" || !isRecord(line.message)) continue;
     sessionId ??= line.sessionId;
     cwd ??= line.cwd;
@@ -98,6 +118,7 @@ export async function readQoderUsage(
   const session = {
     sessionId: typeof sessionId === "string" ? sessionId : undefined,
     cwd: typeof cwd === "string" ? cwd : undefined,
+    title: customTitle ?? summary ?? firstPrompt,
   };
   return [...messages.values()].flatMap(({ entry }) =>
     entry ? [withUsageSession(entry, session)] : [],

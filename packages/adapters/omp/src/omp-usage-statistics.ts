@@ -8,6 +8,7 @@ import {
   jsonlUsageSources,
   nativeTimeMs,
   usageEntryFromRequest,
+  usageSessionTitle,
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 
@@ -26,9 +27,11 @@ export async function readOmpUsage(
   const entries: HarnessUsageEntry[] = [];
   // The session header (`"type":"session"`, with id and cwd) opens the file.
   const header = await jsonlHeader(file, (record) => record.type === "session", signal);
+  const titled = await jsonlHeader(file, (record) => record.type === "title", signal);
   const session = {
     sessionId: typeof header?.id === "string" ? header.id : undefined,
     cwd: typeof header?.cwd === "string" ? header.cwd : undefined,
+    title: usageSessionTitle(titled?.title),
   };
   for await (const line of jsonlRecords(file, '"assistant"', signal)) {
     if (line.type !== "message") continue;

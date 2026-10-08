@@ -201,6 +201,30 @@ describe("Codex native counters", () => {
     expect(bare[0]).not.toHaveProperty("cwd");
   });
 
+  it("names a session from the first typed user prompt, skipping AGENTS.md dumps", async () => {
+    const entries = await read([
+      meta(THREAD, { cwd: "/work/codex" }),
+      row("response_item", {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "<recommended_plugins> unused plugins" }],
+      }),
+      row("response_item", {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "# AGENTS.md instructions for /work\n\nDo not." }],
+      }),
+      row("response_item", {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Fix the login page\n\nKeep tests green." }],
+      }),
+      context(),
+      record("r1", tokens(100, 10, 50), tokens(100, 10, 50)),
+    ]);
+    expect(entries[0]).toMatchObject({ sessionTitle: "Fix the login page Keep tests green." });
+  });
+
   it("leaves out parent history a spawned subagent replays before its first turn", async () => {
     const entries = await read([
       meta(THREAD, { forked_from_id: "parent", timestamp: new Date(BASE).toISOString() }),
@@ -284,6 +308,29 @@ describe("Codex read-only storage", () => {
     ]);
     await expect(reader.readSource(source.id, signal)).rejects.toThrow("changed while reading");
     expect((await reader.listSources(signal))[0]?.fingerprint).not.toBe(source.fingerprint);
+  });
+
+  it("prefers the session index name over the first typed prompt", async () => {
+    await file(`sessions/${filename()}`, [
+      meta(),
+      row("response_item", {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Typed prompt" }],
+      }),
+      context(),
+      record("r1", tokens(100, 10), tokens(100, 10)),
+    ]);
+    await writeFile(
+      path.join(root, "session_index.jsonl"),
+      `${JSON.stringify({ id: THREAD, thread_name: "Index title" })}\n`,
+    );
+    const reader = createCodexUsageStatistics({ CODEX_HOME: root });
+    const source = (await reader.listSources(signal))[0];
+    if (!source) throw new Error("missing fixture source");
+    expect((await reader.readSource(source.id, signal))[0]).toMatchObject({
+      sessionTitle: "Index title",
+    });
   });
 
   it("does not discard divergent archive files merely because their names match", async () => {

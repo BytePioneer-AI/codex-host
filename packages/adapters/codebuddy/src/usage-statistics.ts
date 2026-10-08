@@ -9,6 +9,7 @@ import {
   jsonlUsageSources,
   nativeTimeMs,
   usageEntryFromRequest,
+  usageSessionTitle,
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 
@@ -19,6 +20,18 @@ function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function codeBuddyUserText(row: Record<string, unknown>): string | undefined {
+  if (row.type !== "message" || row.role !== "user") return undefined;
+  const { content } = row;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  return content
+    .map((part) => record(part))
+    .filter((part) => typeof part.text === "string")
+    .map((part) => String(part.text))
+    .join(" ");
 }
 
 /**
@@ -33,7 +46,13 @@ export async function readCodeBuddyUsage(
   const messages = new Map<string, { data: Record<string, unknown>; at: number | null }>();
   let sessionId: unknown;
   let cwd: unknown;
-  for await (const row of jsonlRecords(file, '"rawUsage"', signal)) {
+  let customTitle: string | undefined;
+  let generatedTitle: string | undefined;
+  let firstPrompt: string | undefined;
+  for await (const row of jsonlRecords(file, '"type"', signal)) {
+    if (row.type === "custom-title") customTitle = usageSessionTitle(row.customTitle);
+    else if (row.type === "ai-title") generatedTitle = usageSessionTitle(row.aiTitle);
+    else if (!firstPrompt) firstPrompt = usageSessionTitle(codeBuddyUserText(row));
     if (typeof row.type !== "string" || !NATIVE_MESSAGE_TYPES.has(row.type)) continue;
     sessionId ??= row.sessionId;
     cwd ??= row.cwd;
@@ -55,6 +74,7 @@ export async function readCodeBuddyUsage(
         withUsageSession(entry, {
           sessionId: typeof sessionId === "string" ? sessionId : undefined,
           cwd: typeof cwd === "string" ? cwd : undefined,
+          title: customTitle ?? generatedTitle ?? firstPrompt,
         }),
       );
     }

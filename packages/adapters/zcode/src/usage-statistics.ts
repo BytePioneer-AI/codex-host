@@ -10,6 +10,7 @@ import type {
 import {
   nativeTimeMs,
   usageEntryFromRequest,
+  usageSessionTitle,
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 
@@ -40,12 +41,24 @@ export async function readZcodeUsage(file: string): Promise<HarnessUsageEntry[]>
   try {
     const entries: HarnessUsageEntry[] = [];
     const directories = new Map<string, string>();
+    const titles = new Map<string, string>();
     const hasSessions = database
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'")
       .get();
     if (hasSessions) {
-      for (const row of database.prepare("SELECT id, directory FROM session").iterate()) {
+      const columns = new Set(
+        database
+          .prepare("PRAGMA table_info(session)")
+          .all()
+          .map((row) => String(row.name)),
+      );
+      const titleColumn = columns.has("title") ? ", title" : "";
+      for (const row of database
+        .prepare(`SELECT id, directory${titleColumn} FROM session`)
+        .iterate()) {
         if (typeof row.directory === "string") directories.set(String(row.id), row.directory);
+        const title = usageSessionTitle(row.title);
+        if (title) titles.set(String(row.id), title);
       }
     }
     for (const row of database.prepare("SELECT id, session_id, data FROM message").iterate()) {
@@ -74,7 +87,13 @@ export async function readZcodeUsage(file: string): Promise<HarnessUsageEntry[]>
         usage.kind === "request" && at !== null && usageEntryFromRequest(usage.request, at);
       if (entry) {
         const sessionId = String(row.session_id);
-        entries.push(withUsageSession(entry, { sessionId, cwd: directories.get(sessionId) }));
+        entries.push(
+          withUsageSession(entry, {
+            sessionId,
+            cwd: directories.get(sessionId),
+            title: titles.get(sessionId),
+          }),
+        );
       }
     }
     return entries;

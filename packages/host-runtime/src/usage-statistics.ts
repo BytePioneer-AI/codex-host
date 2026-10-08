@@ -16,6 +16,8 @@ import type {
   UsageStatisticsTotals,
 } from "@codexhost/shared-contracts";
 
+import { withHostSessionTitles, type UsageSessionTitleRecord } from "./usage-session-titles.js";
+
 import {
   cacheWrite1hPrice,
   type ModelPrice,
@@ -24,7 +26,7 @@ import {
 } from "./model-prices.js";
 
 /** Bump when a reader's output changes meaning, so cached parses are read again. */
-const CACHE_VERSION = 6;
+const CACHE_VERSION = 7;
 const STALE_AFTER_MS = 10_000;
 const WARM_DELAY_MS = 3_000;
 /** At most one rewrite of a Harness's cache file per interval while its sessions keep growing. */
@@ -70,6 +72,7 @@ type CompactEntry = [
   number | null,
   number | null,
   boolean,
+  string | null,
 ];
 
 function compact(entry: HarnessUsageEntry): CompactEntry {
@@ -88,6 +91,7 @@ function compact(entry: HarnessUsageEntry): CompactEntry {
     entry.costUsd ?? null,
     entry.credits ?? null,
     entry.tokensUnknown === true,
+    entry.sessionTitle ?? null,
   ];
 }
 
@@ -104,9 +108,9 @@ function interner(): (value: unknown) => unknown {
 }
 
 function expand(value: unknown, intern: (value: unknown) => unknown): HarnessUsageEntry | null {
-  if (!Array.isArray(value) || value.length !== 14) return null;
+  if (!Array.isArray(value) || value.length !== 15) return null;
   const [id, occurredAtMs, model, input, cached, written, written1h, output, reasoning] = value;
-  const [sessionId, cwd, costUsd, credits, tokensUnknown] = value.slice(9);
+  const [sessionId, cwd, costUsd, credits, tokensUnknown, sessionTitle] = value.slice(9);
   return parseHarnessUsageEntry({
     id,
     occurredAtMs,
@@ -122,6 +126,7 @@ function expand(value: unknown, intern: (value: unknown) => unknown): HarnessUsa
     ...(costUsd !== null ? { costUsd } : {}),
     ...(credits !== null ? { credits } : {}),
     ...(tokensUnknown === true ? { tokensUnknown } : {}),
+    ...(sessionTitle !== null ? { sessionTitle: intern(sessionTitle) } : {}),
   });
 }
 
@@ -269,6 +274,7 @@ export class UsageStatistics {
   readonly #caches = new Map<string, HarnessCache>();
   readonly #failures = new Map<string, string>();
   #sources: (() => readonly UsageStatisticsSource[]) | null = null;
+  #readThreadTitles: (() => Promise<readonly UsageSessionTitleRecord[]>) | undefined;
   #loaded: Promise<void> | null = null;
   #refreshing: Promise<void> | null = null;
   #refreshedAtMs = 0;
@@ -285,9 +291,13 @@ export class UsageStatistics {
     this.#directory = path.join(options.directory, `v${CACHE_VERSION}`);
   }
 
-  /** The Harnesses to read; call once their plugins are loaded. */
-  attach(sources: () => readonly UsageStatisticsSource[]): void {
+  /** Attach native storage and, optionally, fresh persisted Desktop title metadata. */
+  attach(
+    sources: () => readonly UsageStatisticsSource[],
+    readThreadTitles?: () => Promise<readonly UsageSessionTitleRecord[]>,
+  ): void {
     this.#sources = sources;
+    this.#readThreadTitles = readThreadTitles;
     this.#scheduleWarm();
   }
 
@@ -317,11 +327,19 @@ export class UsageStatistics {
     }
     const now = this.#now();
     if (!this.#refreshing && now - this.#refreshedAtMs > STALE_AFTER_MS) this.#startRefresh();
-    return this.#aggregate(
+    const result = this.#aggregate(
       typeof params === "string" ? { range: params } : params,
       now,
       await this.#options.prices.lookup(),
     );
+    if (this.#readThreadTitles && (result.sessions.length || result.recentSessions?.length)) {
+      try {
+        return withHostSessionTitles(result, await this.#readThreadTitles());
+      } catch (error) {
+        this.#options.diagnose?.(`Usage statistics Thread titles unavailable: ${message(error)}`);
+      }
+    }
+    return result;
   }
 
   /** Completes the current refresh, for tests and callers that need a settled result. */
@@ -592,6 +610,8 @@ export class UsageStatistics {
         harness: string;
         sessionId: string;
         project: string | null;
+        title?: string;
+        titleAtMs?: number;
         models: Map<string, number>;
         firstAtMs: number;
         lastAtMs: number;
@@ -653,6 +673,13 @@ export class UsageStatistics {
           sessions.set(key, session);
         }
         session.project ??= project;
+        if (
+          entry.sessionTitle &&
+          (session.titleAtMs === undefined || entry.occurredAtMs >= session.titleAtMs)
+        ) {
+          session.title = entry.sessionTitle;
+          session.titleAtMs = entry.occurredAtMs;
+        }
         if (model !== null) session.models.set(model, (session.models.get(model) ?? 0) + 1);
         session.firstAtMs = Math.min(session.firstAtMs, entry.occurredAtMs);
         session.lastAtMs = Math.max(session.lastAtMs, entry.occurredAtMs);
@@ -661,8 +688,22 @@ export class UsageStatistics {
     }
 
     // The top sessions by cost and by tokens without cache: a cheap model's long session and an
-    // expensive model's short one both make the list.
+    // expensive model's short one both make the list. Latest sessions are a second list, newest
+    // last activity first, as magpie's Usage → Sessions page does.
     const allSessions = [...sessions.values()];
+    const toSession = (session: (typeof allSessions)[number]): UsageStatisticsSession => ({
+      harness: session.harness,
+      sessionId: session.sessionId,
+      project: session.project,
+      ...(session.title ? { title: session.title } : {}),
+      models: [...session.models]
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, MODELS_PER_SESSION)
+        .map(([name]) => name),
+      firstAtMs: session.firstAtMs,
+      lastAtMs: session.lastAtMs,
+      ...session.totals,
+    });
     const top = new Set([
       ...[...allSessions]
         .sort((left, right) => right.totals.costUsd - left.totals.costUsd)
@@ -672,22 +713,20 @@ export class UsageStatistics {
         .slice(0, SESSIONS_PER_MEASURE),
     ]);
     const sessionList: UsageStatisticsSession[] = [...top]
-      .map((session) => ({
-        harness: session.harness,
-        sessionId: session.sessionId,
-        project: session.project,
-        models: [...session.models]
-          .sort((left, right) => right[1] - left[1])
-          .slice(0, MODELS_PER_SESSION)
-          .map(([name]) => name),
-        firstAtMs: session.firstAtMs,
-        lastAtMs: session.lastAtMs,
-        ...session.totals,
-      }))
+      .map(toSession)
       .sort(
         (left, right) =>
           right.costUsd - left.costUsd || tokensWithoutCache(right) - tokensWithoutCache(left),
       );
+    const recentSessions: UsageStatisticsSession[] = [...allSessions]
+      .sort(
+        (left, right) =>
+          right.lastAtMs - left.lastAtMs ||
+          right.firstAtMs - left.firstAtMs ||
+          left.sessionId.localeCompare(right.sessionId),
+      )
+      .slice(0, SESSIONS_PER_MEASURE)
+      .map(toSession);
 
     // A model without a price may have been listed since the table was fetched.
     if (unlistedModel) this.#options.prices.missing();
@@ -748,6 +787,7 @@ export class UsageStatistics {
         .map((row) => ({ ...row, harnessPricedRequests: harnessPriced.get(row.model) ?? 0 })),
       byProject: grouped(byProject, (name) => ({ project: name })).slice(0, 4096),
       sessions: sessionList,
+      recentSessions,
     };
   }
 }

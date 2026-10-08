@@ -60,6 +60,8 @@ export const usageStatisticsSessionSchema = z.strictObject({
   harness,
   sessionId: z.string().min(1).max(512),
   project: project.nullable(),
+  /** Persisted Desktop title for a mapped Session, otherwise its native name; may be absent. */
+  title: z.string().min(1).max(200).optional(),
   /** Models the session used, most requests first. */
   models: z.array(model).max(16),
   firstAtMs: count,
@@ -144,6 +146,11 @@ export const usageStatisticsResultSchema = z.strictObject({
    * requests without a native session are not listed here but count everywhere else.
    */
   sessions: z.array(usageStatisticsSessionSchema).max(100),
+  /**
+   * The sessions last active in the range, newest first, all filters applied. Optional for older
+   * Hosts; missing is treated as no list rather than no sessions.
+   */
+  recentSessions: z.array(usageStatisticsSessionSchema).max(100).optional(),
 });
 
 export type UsageStatisticsParams = z.infer<typeof usageStatisticsParamsSchema>;

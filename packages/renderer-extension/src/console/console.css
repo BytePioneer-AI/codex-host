@@ -1380,11 +1380,11 @@ button.console-usage-legend__item:hover {
 }
 
 .console-usage-cost__credit {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
   gap: 6px;
-  max-width: 100%;
+  width: 100%;
 }
 
 .console-usage-cost__credit.is-secondary {
@@ -1400,7 +1400,7 @@ button.console-usage-legend__item:hover {
 }
 
 .console-usage-cost__amount {
-  flex: none;
+  grid-column: 2;
   white-space: nowrap;
 }
 
@@ -1510,6 +1510,39 @@ th[aria-sort] .console-usage-sort__mark {
   color: var(--settings-subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
+}
+
+.console-usage-session {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  width: 28em;
+  max-width: 100%;
+}
+
+.console-usage-copy.is-title {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-usage-session .console-usage-row-filter {
+  overflow: hidden;
+  color: var(--settings-muted);
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-usage-session .console-usage-row-filter:hover,
+.console-usage-session .console-usage-row-filter[aria-pressed="true"] {
+  color: var(--settings-focus);
 }
 
 .console-usage-more {

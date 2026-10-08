@@ -426,12 +426,16 @@ test("long inline credits do not push the cost column outside the table", async 
         amountWidth: amount.clientWidth,
         amountScrollWidth: amount.scrollWidth,
         nowrap: getComputedStyle(amount).whiteSpace,
+        sourceLeft: element.querySelector(".console-usage-cost__source")?.getBoundingClientRect().left,
+        amountRight: amount.getBoundingClientRect().right,
       };
     }),
   );
   for (const [index, line] of lineBounds.entries()) {
     expect(line.amountScrollWidth).toBeLessThanOrEqual(line.amountWidth + 1);
     expect(line.nowrap).toBe("nowrap");
+    expect(line.sourceLeft).toBe(lineBounds[0]?.sourceLeft);
+    expect(line.amountRight).toBe(lineBounds[0]?.amountRight);
     if (index > 0) expect(line.top).toBeGreaterThan(lineBounds[index - 1]?.bottom ?? 0);
   }
 });
@@ -967,6 +971,67 @@ test("the trend stacks Harnesses, labels its axes, and selects a day by click or
   await expect(chart.locator(".console-usage-chart__column")).toHaveCount(5);
 });
 
+test("session titles stay above muted projects with copying and filtering intact", async ({ page }, info) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const copied: string[] = [];
+  await page.exposeFunction("recordCopiedSession", (id: string) => copied.push(id));
+  // This HTTP fixture has no secure-context clipboard; prepare the native API before launch.
+  await page.addInitScript(`Object.defineProperty(navigator, "clipboard", {
+    value: { writeText: window.recordCopiedSession }
+  });`);
+  const state = await setup(page);
+  const longTitle = "修复 Hermes 连接检测并核对运行环境、构建依赖和会话恢复行为".repeat(3);
+  state.entries = new Map([
+    ["pi", [
+      request("named", { sessionId: "named-session", sessionTitle: longTitle, cwd: "/work/codex-host" }),
+      request("short", { sessionId: "short-session", sessionTitle: "理解项目背景", cwd: "/work/analysis" }),
+      request("unnamed", { sessionId: "unnamed-session" }),
+    ]],
+  ]);
+  await openStatistics(page);
+  for (const heading of ["最耗会话", "最近会话"]) {
+    const panel = table(page, heading);
+    const name = panel.locator(".console-usage-session").filter({ hasText: longTitle });
+    await expect(name.locator(".is-title")).toHaveText(longTitle);
+    await expect(name.locator(".is-title")).toHaveAttribute("title", new RegExp("named-session"));
+    await expect(name.locator(".console-usage-row-filter")).toHaveText("codex-host");
+    await expect(name.locator(".console-usage-row-filter")).toHaveAttribute("title", /\/work\/codex-host/);
+    await expect(panel.getByRole("button", { name: "未命名", exact: true })).toBeVisible();
+    const layout = await name.evaluate((element) => {
+      const title = element.querySelector(".is-title");
+      const project = element.querySelector(".console-usage-row-filter");
+      if (!title || !project) throw new Error("Missing session hierarchy");
+      return {
+        titleBottom: title.getBoundingClientRect().bottom,
+        projectTop: project.getBoundingClientRect().top,
+        titleLeft: title.getBoundingClientRect().left,
+        projectLeft: project.getBoundingClientRect().left,
+        titleFont: parseFloat(getComputedStyle(title).fontSize),
+        projectFont: parseFloat(getComputedStyle(project).fontSize),
+        titleColor: getComputedStyle(title).color,
+        projectColor: getComputedStyle(project).color,
+        clipped: title.scrollWidth > title.clientWidth,
+        ellipsis: getComputedStyle(title).textOverflow,
+      };
+    });
+    expect(layout.projectTop).toBeGreaterThan(layout.titleBottom);
+    expect(layout.projectLeft).toBe(layout.titleLeft);
+    expect(layout.projectFont).toBeLessThan(layout.titleFont);
+    expect(layout.projectColor).not.toBe(layout.titleColor);
+    expect(layout.clipped).toBe(true);
+    expect(layout.ellipsis).toBe("ellipsis");
+    await panel.screenshot({ path: info.outputPath(`${heading}-session-hierarchy.png`) });
+  }
+  await table(page, "最近会话").getByRole("button", { name: longTitle, exact: true }).click();
+  await expect.poll(() => copied).toEqual(["named-session"]);
+  await expect(table(page, "最近会话").getByRole("button", { name: "已复制", exact: true })).toBeVisible();
+  await table(page, "最近会话").getByRole("button", { name: "codex-host", exact: true }).click();
+  await expect.poll(() => state.lastParams.project).toBe("/work/codex-host");
+  await expect(table(page, "最近会话").locator("tbody tr")).toHaveCount(1);
+  await expect(table(page, "最近会话").getByRole("button", { name: "codex-host", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await table(page, "最近会话").screenshot({ path: info.outputPath("session-project-filter.png") });
+});
+
 test("projects, sessions and CSV follow the filters", async ({ page }) => {
   const state = await setupDashboard(page);
   await openStatistics(page);
@@ -984,6 +1049,10 @@ test("projects, sessions and CSV follow the filters", async ({ page }) => {
   const sessions = table(page, "最耗会话");
   await expect(sessions.locator("tbody tr").first()).toContainText("lib");
   await expect(sessions.locator("thead")).toContainText("最近活跃");
+
+  const recent = table(page, "最近会话");
+  await expect(recent.locator("tbody tr").first()).toContainText("lib");
+  await expect(recent.locator("thead")).toContainText("最近活跃");
 
   const downloaded = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出 CSV", exact: true }).click();

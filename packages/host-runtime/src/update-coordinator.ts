@@ -9,10 +9,9 @@ import {
   cleanupTerminalUpdateState,
   compareSemanticVersions,
   createBackgroundUpdateManager,
-  discoverLatestUpdateStatus,
+  discoverActiveUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
-  isUpdateOperationActive,
   recoverUpdateOperationLock,
   resolveInstalledUpdateContext,
   readRuntimeMetadata,
@@ -86,17 +85,16 @@ export function createHostUpdateCoordinator(
     });
   let candidate: CodexhostLatestRelease | null = null;
 
+  let currentStatusPath: string | null = null;
+
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {
-    const discovered = await discoverLatestUpdateStatus(context.common.stateDirectory);
-    if (!discovered) return null;
-    if (
-      discovered.status.phase !== "succeeded" &&
-      discovered.status.phase !== "failed" &&
-      !(await isUpdateOperationActive(context.common.stateDirectory))
-    ) {
-      return null;
+    if (!currentStatusPath) {
+      const active = await discoverActiveUpdateStatus(context.common.stateDirectory);
+      if (!active) return null;
+      currentStatusPath = active.statusPath;
     }
-    return publicStatus(discovered.status);
+    const status = await manager.readStatus(currentStatusPath);
+    return status ? publicStatus(status) : null;
   }
 
   async function installable(
@@ -188,6 +186,7 @@ export function createHostUpdateCoordinator(
         throw new Error("Another update operation is already active");
       }
 
+      currentStatusPath = null;
       let resolvePrepared!: (info: {
         version: string;
         installation: BackgroundUpdateStatus["installation"];
@@ -217,6 +216,7 @@ export function createHostUpdateCoordinator(
           statusPath: string;
         }): Promise<void> => {
           await lock.setStatusPath(info.statusPath);
+          currentStatusPath = info.statusPath;
           resolvePrepared(info);
         };
         const prepareAndStart = async (): Promise<void> => {

@@ -42,6 +42,25 @@ export async function isUpdateOperationActive(stateDirectory: string): Promise<b
   return regularFile(path.join(stateDirectory, LOCK_FILE));
 }
 
+// Recover only the operation named by the lock, never an unrelated historical result.
+export async function discoverActiveUpdateStatus(
+  stateDirectory: string,
+): Promise<DiscoveredUpdateStatus | null> {
+  if (!path.isAbsolute(stateDirectory)) throw new Error("update state directory must be absolute");
+  const lockPath = path.join(stateDirectory, LOCK_FILE);
+  if (!(await regularFile(lockPath))) return null;
+  try {
+    const lock = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
+    if (typeof lock.statusPath !== "string" || !path.isAbsolute(lock.statusPath)) return null;
+    if (!(await regularFile(lock.statusPath))) return null;
+    const status = parseUpdateStatus(JSON.parse(await readFile(lock.statusPath, "utf8")));
+    if (TERMINAL_PHASES.has(status.phase)) return null;
+    return { statusPath: lock.statusPath, status };
+  } catch {
+    return null;
+  }
+}
+
 export async function discoverLatestUpdateStatus(
   stateDirectory: string,
 ): Promise<DiscoveredUpdateStatus | null> {

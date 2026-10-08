@@ -309,11 +309,11 @@ describe("Host update coordinator", () => {
     });
   });
 
-  it("ignores a prepared status without an active operation lock", async () => {
+  it.each(["prepared", "failed", "succeeded"])("ignores historical %s status without an active operation lock", async (phase) => {
     const fixture = await npmFixture();
     const home = fixture.environment.HOME;
     if (!home) throw new Error("fixture HOME is missing");
-    const stateDirectory = path.join(home, ".codexhost", "updates");
+    const stateDirectory = path.join(home, "Library", "Application Support", "codexhost", "updates");
     await mkdir(path.join(stateDirectory, "update-stale"), { recursive: true });
     await writeFile(
       path.join(stateDirectory, "update-stale", "status-v1.json"),
@@ -321,8 +321,8 @@ describe("Host update coordinator", () => {
         schemaVersion: 1,
         version: "1.2.3",
         installation: "npm",
-        phase: "prepared",
-        updatedAt: 20,
+        phase,
+        updatedAt: Math.floor(Date.now() / 1000),
       }),
     );
     const coordinator = createHostUpdateCoordinator({
@@ -334,6 +334,7 @@ describe("Host update coordinator", () => {
     });
 
     await expect(coordinator.check()).resolves.toMatchObject({ status: null });
+    await expect(coordinator.status()).resolves.toEqual({ status: null });
   });
 
   it("does not reject during construction when npm runtime paths are missing", async () => {

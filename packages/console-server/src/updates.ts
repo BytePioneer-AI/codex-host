@@ -12,10 +12,9 @@ import {
   compareSemanticVersions,
   createBackgroundUpdateManager,
   defaultUpdateStateDirectory,
-  discoverLatestUpdateStatus,
+  discoverActiveUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
-  isUpdateOperationActive,
   recoverUpdateOperationLock,
   selectInstallerReleaseArtifact,
   readRuntimeMetadata,
@@ -128,18 +127,16 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   let candidate: CodexhostLatestRelease | null = null;
   let handedOff = false;
 
+  let currentStatusPath: string | null = null;
+
   async function latestStatus(): Promise<UpdateStatus | null> {
-    const directory = stateDirectory();
-    const discovered = await discoverLatestUpdateStatus(directory);
-    if (!discovered) return null;
-    if (
-      discovered.status.phase !== "succeeded" &&
-      discovered.status.phase !== "failed" &&
-      !(await isUpdateOperationActive(directory))
-    ) {
-      return null;
+    if (!currentStatusPath) {
+      const active = await discoverActiveUpdateStatus(stateDirectory());
+      if (!active) return null;
+      currentStatusPath = active.statusPath;
     }
-    return publicStatus(discovered.status);
+    const status = await manager.readStatus(currentStatusPath);
+    return status ? publicStatus(status) : null;
   }
 
   function installable(metadata: DistributionMetadata, release: CodexhostLatestRelease): boolean {
@@ -281,6 +278,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         if (existing) return { status: existing };
         throw new ConsoleUpdateError("busy", "Another update operation is already active");
       }
+      currentStatusPath = null;
       try {
         const release = await fetchLatest();
         if (
@@ -302,6 +300,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
           try {
             const prepared = await prepare(metadata, target, release, async (info) => {
               await lock.setStatusPath(info.statusPath);
+              currentStatusPath = info.statusPath;
               resolvePrepared(info.statusPath);
             });
             // The console runs outside the Codex Desktop process tree on every

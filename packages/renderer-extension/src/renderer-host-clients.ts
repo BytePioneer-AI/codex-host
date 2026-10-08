@@ -83,7 +83,6 @@ export function createRendererHostClients(
                   const message = event.data;
                   if (
                     disposed ||
-                    readRouting()?.forHost(route.hostId) !== route ||
                     !message ||
                     typeof message !== "object" ||
                     !("type" in message) ||
@@ -91,7 +90,8 @@ export function createRendererHostClients(
                     !("hostId" in message) ||
                     message.hostId !== route.hostId ||
                     !("method" in message) ||
-                    message.method !== THREAD_USAGE_UPDATED_METHOD
+                    message.method !== THREAD_USAGE_UPDATED_METHOD ||
+                    readRouting()?.forHost(route.hostId) !== route
                   )
                     return;
                   listener(message);

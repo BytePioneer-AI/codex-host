@@ -34,9 +34,8 @@ function fixture(hostId = "local") {
     ),
   };
   let route = { hostId, manager, policy: {} } as unknown as RendererHostRoute;
-  const routing = {
-    forHost: (id: string) => (id === hostId ? route : null),
-  } as unknown as RendererHostRouting;
+  const forHost = vi.fn((id: string) => (id === hostId ? route : null));
+  const routing = { forHost } as unknown as RendererHostRouting;
   const clients = createRendererHostClients(() => routing, messages);
   const client = clients.forHost(hostId);
   if (!client) throw Error("No client");
@@ -54,6 +53,7 @@ function fixture(hostId = "local") {
     client,
     listeners,
     manager,
+    forHost,
     removeNative,
     notification,
     post,
@@ -134,6 +134,45 @@ describe("Host usage notifications before Desktop's method filter", () => {
       f.post();
       expect(f.manager.sendRequest).toHaveBeenCalledTimes(1);
       expect(f.removeNative).toHaveBeenCalledTimes(1);
+    } finally {
+      f.clients.dispose();
+    }
+  });
+
+  it("filters unrelated window messages before discovering the Host route", () => {
+    const f = fixture();
+    f.client.subscribeThreadUsage?.(vi.fn());
+    f.forHost.mockClear();
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        f.post(null);
+        f.post({ ...f.notification, type: "mcp-request" });
+        f.post({ ...f.notification, method: "thread/tokenUsage/updated" });
+        f.post({ ...f.notification, hostId: "ssh:other" });
+        f.post(f.notification, {});
+      }
+      expect(f.forHost).not.toHaveBeenCalled();
+      expect(f.manager.sendRequest).not.toHaveBeenCalled();
+
+      // Relevant frames still validate the current connection before delivery.
+      f.post();
+      expect(f.forHost).toHaveBeenCalled();
+    } finally {
+      f.clients.dispose();
+    }
+  });
+
+  it("still rejects relevant usage frames after the Host disconnects", () => {
+    const f = fixture();
+    const changed = vi.fn();
+    f.client.subscribeThreadUsage?.(changed);
+    f.forHost.mockClear();
+    f.forHost.mockReturnValue(null);
+    try {
+      f.post();
+      expect(f.forHost).toHaveBeenCalledOnce();
+      expect(f.manager.sendRequest).not.toHaveBeenCalled();
+      expect(changed).not.toHaveBeenCalled();
     } finally {
       f.clients.dispose();
     }

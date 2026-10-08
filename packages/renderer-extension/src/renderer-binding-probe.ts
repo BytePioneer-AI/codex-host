@@ -89,7 +89,10 @@ import {
   writeNewThreadAgentPreference,
   writeNewThreadExternalConfigurationPreference,
 } from "./renderer-new-thread-preference.js";
-import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
+import {
+  installRendererSidebarAgentIcons,
+  SIDEBAR_THREAD_ROW_SELECTOR,
+} from "./renderer-sidebar-agent-icons.js";
 import {
   rendererHarnessCommandExecutesDirectly,
   routeRendererHarnessCommandSelection,
@@ -679,13 +682,14 @@ export function mutationMayAffectComposer(mutation: MutationRecord): boolean {
   if (target.closest(CODEX_COMPOSER_SELECTOR)) return true;
   if (mutation.type === "characterData") return false;
   if (
-    !target.closest(`${TRANSCRIPT_ITEM_SELECTOR}, [data-turn-key], [data-content-search-turn-key]`)
+    !target.closest(
+      `${TRANSCRIPT_ITEM_SELECTOR}, [data-turn-key], [data-content-search-turn-key], [data-app-action-sidebar-scroll], [data-app-action-sidebar-section], ${SIDEBAR_THREAD_ROW_SELECTOR}`,
+    )
   )
     return true;
-  // A disclosure containing an inline Composer can change its visibility.
+  // Transcript/sidebar updates do not change Composer ownership. Still handle
+  // actual Composer insertion/removal and visibility changes of their ancestors.
   if (mutation.type === "attributes") return target.querySelector(CODEX_COMPOSER_SELECTOR) !== null;
-  // Transcript text and tool output do not replace the Composer. Still handle
-  // inline Composers added or removed with a transcript.
   return (
     mutation.type === "childList" &&
     [...mutation.addedNodes, ...mutation.removedNodes].some(
@@ -790,7 +794,7 @@ export function installRendererBindingProbe(
   };
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: (hostId) => modelClientForHost(hostId),
-    getPlugin: (hostId, agent) => {
+    getPlugins: (hostId) => {
       const state = hostHarnessAvailabilityState(hostId);
       const client = modelClientForHost(hostId);
       // Sidebar ownership is enough to discover this Host's artwork; opening a Composer
@@ -801,7 +805,9 @@ export function installRendererBindingProbe(
       ) {
         void refreshHarnessAvailabilityForHost(hostId);
       }
-      return state.directoryClient === client ? pluginForHost(hostId, agent) : undefined;
+      return state.directoryClient === client
+        ? state.plugins?.map((plugin) => pluginForHost(hostId, plugin.id) ?? plugin)
+        : undefined;
     },
     getLocalAgent: localAgentForSidebarThread,
   });
@@ -2428,9 +2434,11 @@ export function installRendererBindingProbe(
   }
 
   const reloadMountedOwnershipForHost = (): void => {
+    let changed = false;
     for (const mounted of mountedByComposer.values()) {
       const hostId = activeModelHostId(mounted.composer);
       if (!hostId || mounted.hostId === hostId) continue;
+      changed = true;
       if (!threadIdFromComposerModelTarget(mounted.modelTarget)) {
         controller.clearPendingSubmission(mounted.composer);
         controller.beginModelRequest(mounted.composer);
@@ -2472,7 +2480,7 @@ export function installRendererBindingProbe(
       renderMounted(mounted);
       void loadThreadOwnership(mounted);
     }
-    sidebarAgentIcons.refresh();
+    if (changed) sidebarAgentIcons.refresh();
   };
 
   function reconcileHarnessAvailabilityHost(): void {
@@ -2484,11 +2492,13 @@ export function installRendererBindingProbe(
     // Hidden/native Composers can belong to a different Host. Never rebind
     // every Thread to the globally selected Host when navigating between them.
     reloadMountedOwnershipForHost();
+    let connectionsChanged = false;
     for (const target of new Set([...mountedByComposer.values()].map((m) => m.hostId))) {
       if (!target) continue;
       const client = modelClientForHost(target);
       const previous = usageSubscriptions.get(target);
       if (previous?.client === client) continue;
+      connectionsChanged ||= previous !== undefined;
       previous?.dispose();
       usageSubscriptions.delete(target);
       if (!client?.subscribeThreadUsage) continue;
@@ -2499,10 +2509,13 @@ export function installRendererBindingProbe(
           applyThreadUsageUpdate(target, update);
         });
         usageSubscriptions.set(target, { client, dispose });
+        connectionsChanged = true;
       } catch {
         // A missing notification channel must not block request-based usage reads.
       }
     }
+    // A reconnect can replace the client without changing the Composer's Host ID.
+    if (connectionsChanged) sidebarAgentIcons.refresh();
     const hostId = activeModelHostId();
     if (
       !hostId ||

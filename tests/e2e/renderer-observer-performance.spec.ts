@@ -19,6 +19,8 @@ type TestWindow = Window & {
     installRendererSidebarAgentIcons: typeof installRendererSidebarAgentIcons;
   };
   sidebarScans: number;
+  sidebarReads: number;
+  sidebarIcons: ReturnType<typeof installRendererSidebarAgentIcons>;
 };
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -48,7 +50,7 @@ if (!browserBundle) throw new Error("Observer regression bundle was not generate
 
 test("transcript updates skip sidebar scans and Composer reconciliation", async ({ page }) => {
   await page.setContent(`
-    <aside>${Array.from({ length: 160 }, (_, i) => `<div data-app-action-sidebar-thread-row data-app-action-sidebar-thread-id="thread-${i}" data-app-action-sidebar-thread-host-id="local"><div data-thread-title-trigger><span data-thread-title>Thread ${i}</span></div></div>`).join("")}</aside>
+    <aside data-app-action-sidebar-scroll>${Array.from({ length: 1000 }, (_, i) => `<div data-app-action-sidebar-thread-row data-app-action-sidebar-thread-id="thread-${i}" data-app-action-sidebar-thread-host-id="local"><div data-thread-title-trigger><span data-thread-title>Thread ${i}</span></div></div>`).join("")}</aside>
     <section data-local-conversation-item-target-ids="item-1"><p>Response</p></section>
     <form data-codex-composer-root><div contenteditable="true" role="textbox">draft</div></form>
   `);
@@ -61,15 +63,20 @@ test("transcript updates skip sidebar scans and Composer reconciliation", async 
       if (selector === "[data-app-action-sidebar-thread-row]") target.sidebarScans += 1;
       return query(selector);
     }) as typeof document.querySelectorAll;
-    target.observerTest.installRendererSidebarAgentIcons({
+    target.sidebarReads = 0;
+    target.sidebarIcons = target.observerTest.installRendererSidebarAgentIcons({
       getClient: () => null,
-      getLocalAgent: () => "pi",
+      getLocalAgent: () => {
+        target.sidebarReads += 1;
+        return "pi";
+      },
     });
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     target.sidebarScans = 0;
+    target.sidebarReads = 0;
   });
-  await expect(page.locator("[data-codexhost-sidebar-agent-icon]")).toHaveCount(160);
+  await expect(page.locator("[data-codexhost-sidebar-agent-icon]")).toHaveCount(1000);
   const result = await page.evaluate(async () => {
     const target = window as unknown as TestWindow;
     const transcript = document.querySelector("section");
@@ -150,10 +157,127 @@ test("transcript updates skip sidebar scans and Composer reconciliation", async 
     wrapper.append(row);
     aside.append(wrapper);
   });
-  await expect(page.locator("[data-codexhost-sidebar-agent-icon]")).toHaveCount(161);
-  expect(await page.evaluate(() => (window as unknown as TestWindow).sidebarScans)).toBeGreaterThan(
-    0,
+  await expect(page.locator("[data-codexhost-sidebar-agent-icon]")).toHaveCount(1001);
+  const appended = await page.evaluate(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const target = window as unknown as TestWindow;
+    return { scans: target.sidebarScans, reads: target.sidebarReads };
+  });
+  expect(appended.scans).toBe(0);
+  expect(appended.reads).toBeLessThanOrEqual(2); // only the new row and its own icon insertion
+
+  // Replacing a title still repairs that row; detached rows can be reinserted and
+  // keep participating in incremental observation without rescanning their peers.
+  const repaired = await page.evaluate(async () => {
+    const target = window as unknown as TestWindow;
+    target.sidebarReads = 0;
+    const row = document.querySelector("aside")?.firstElementChild;
+    const trigger = row?.querySelector("[data-thread-title-trigger]");
+    if (!row || !trigger) throw new Error("Missing sidebar row");
+    trigger.innerHTML = "<span data-thread-title>Replaced title</span>";
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const repaired = row.querySelectorAll("[data-codexhost-sidebar-agent-icon]").length;
+    const reads = target.sidebarReads;
+    row.remove();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    document.querySelector("aside")?.append(row);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    return {
+      repaired,
+      reads,
+      reinserted: row.querySelectorAll("[data-codexhost-sidebar-agent-icon]").length,
+      scans: target.sidebarScans,
+    };
+  });
+  expect(repaired).toMatchObject({ repaired: 1, reinserted: 1, scans: 0 });
+  expect(repaired.reads).toBeLessThanOrEqual(2);
+  const cleanup = await page.evaluate(async () => {
+    const target = window as unknown as TestWindow;
+    const row = document.querySelector("aside")?.lastElementChild;
+    if (!row) throw new Error("Missing reinserted row");
+    row.removeAttribute("data-app-action-sidebar-thread-row");
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const cleared = row.querySelectorAll("[data-codexhost-sidebar-agent-icon]").length;
+    row.setAttribute("data-app-action-sidebar-thread-row", "");
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const restored = row.querySelectorAll("[data-codexhost-sidebar-agent-icon]").length;
+    target.sidebarIcons.dispose();
+    return {
+      cleared,
+      restored,
+      remaining: document.querySelectorAll("[data-codexhost-sidebar-agent-icon]").length,
+    };
+  });
+  expect(cleanup).toEqual({ cleared: 0, restored: 1, remaining: 0 });
+});
+
+test("sidebar pagination and decoration skip Composer reconciliation, but Composer lifecycle changes still pass", async ({
+  page,
+}) => {
+  await page.setContent(
+    `<div data-app-action-sidebar-scroll><section data-app-action-sidebar-section><div data-app-action-sidebar-thread-row><span data-thread-title>Thread</span></div></section></div>`,
   );
+  await page.addScriptTag({ content: browserBundle });
+  const result = await page.evaluate(() => {
+    const { mutationMayAffectComposer } = (window as unknown as TestWindow).observerTest;
+    const sidebar = document.querySelector("[data-app-action-sidebar-scroll]");
+    const section = sidebar?.querySelector("section");
+    const row = section?.firstElementChild;
+    const title = row?.querySelector("span");
+    if (!sidebar || !section || !row || !title) throw new Error("Missing sidebar fixture");
+    const observer = new MutationObserver(() => {});
+    observer.observe(document.body, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    const relevant = () => observer.takeRecords().filter(mutationMayAffectComposer).length;
+    title.textContent = "New title";
+    row.append(document.createElement("span"));
+    const next = row.cloneNode(true) as Element;
+    section.append(next);
+    const loading = document.createElement("div");
+    sidebar.append(loading);
+    loading.remove();
+    section.setAttribute("hidden", "");
+    const sidebarOnly = relevant();
+    const composer = document.createElement("form");
+    composer.setAttribute("data-codex-composer-root", "");
+    next.appendChild(composer);
+    const composerAdded = relevant();
+    section.removeAttribute("hidden");
+    const ancestorVisibility = relevant();
+    composer.append(document.createElement("button"));
+    const composerControl = relevant();
+    composer.removeAttribute("data-codex-composer-root");
+    const identityRemoved = relevant();
+    composer.setAttribute("data-codex-composer-root", "");
+    relevant();
+    next.remove();
+    const composerRemoved = relevant();
+    observer.disconnect();
+    return {
+      sidebarOnly,
+      composerAdded,
+      ancestorVisibility,
+      composerControl,
+      identityRemoved,
+      composerRemoved,
+    };
+  });
+  expect(result).toEqual({
+    sidebarOnly: 0,
+    composerAdded: 1,
+    ancestorVisibility: 1,
+    composerControl: 1,
+    identityRemoved: 1,
+    composerRemoved: 1,
+  });
 });
 
 test("unchanged plugin refresh preserves the open Harness picker", async ({ page }) => {

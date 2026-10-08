@@ -22,6 +22,7 @@ const testState = vi.hoisted(() => ({
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
   getSessionImportClient: null as null | (() => RendererSessionImportClient | null),
   sidebarOptions: null as null | Parameters<typeof installRendererSidebarAgentIcons>[0],
+  sidebarRefresh: vi.fn(),
   documentListeners: new Map<string, EventListener>(),
   modelTarget: ["conversation", "thread-a"] as readonly unknown[],
   prewarmClears: 0,
@@ -97,11 +98,12 @@ vi.mock("../src/versioned-renderer-adapter.js", async (importOriginal) => {
 });
 
 vi.mock("../src/renderer-sidebar-agent-icons.js", () => ({
+  SIDEBAR_THREAD_ROW_SELECTOR: "[data-app-action-sidebar-thread-row]",
   installRendererSidebarAgentIcons: (
     options: Parameters<typeof installRendererSidebarAgentIcons>[0],
   ) => {
     testState.sidebarOptions = options;
-    return { refresh: vi.fn(), dispose: vi.fn() };
+    return { refresh: testState.sidebarRefresh, dispose: vi.fn() };
   },
 }));
 
@@ -307,12 +309,12 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     try {
       await vi.waitFor(() => expect(local.listHarnessPlugins).toHaveBeenCalledOnce());
       expect(remote.listHarnessPlugins).not.toHaveBeenCalled();
-      const getPlugin = testState.sidebarOptions?.getPlugin;
-      assert(getPlugin);
-      expect(getPlugin("remote", plugin.id)).toBeUndefined();
-      await vi.waitFor(() => expect(getPlugin("remote", plugin.id)).toEqual(plugin));
+      const getPlugins = testState.sidebarOptions?.getPlugins;
+      assert(getPlugins);
+      expect(getPlugins("remote")).toBeUndefined();
+      await vi.waitFor(() => expect(getPlugins("remote")).toEqual([plugin]));
       expect(remote.listHarnessPlugins).toHaveBeenCalledOnce();
-      expect(getPlugin("local", plugin.id)).toBeUndefined();
+      expect(getPlugins("local")).toEqual([]);
     } finally {
       probe.dispose();
     }
@@ -358,13 +360,12 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       } as never,
     );
     try {
-      const getPlugin = testState.sidebarOptions?.getPlugin;
-      assert(getPlugin);
+      const getPlugins = testState.sidebarOptions?.getPlugins;
+      assert(getPlugins);
       await vi.waitFor(() =>
-        expect(getPlugin("remote", "pi")).toEqual({
-          ...remotePlugin,
-          iconStyle: localPlugin.iconStyle,
-        }),
+        expect(getPlugins("remote")).toEqual([
+          { ...remotePlugin, iconStyle: localPlugin.iconStyle },
+        ]),
       );
       expect(
         testState
@@ -702,6 +703,108 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     ]);
     flushFrame();
     expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refresh sidebar ownership during unchanged Host reconciliation, but refreshes on a Host switch", async () => {
+    installFakeBrowser();
+    let hostId = "local";
+    const host = {
+      listHarnessPlugins: async () => ({ plugins: [] }),
+      inspectThread: vi.fn(async () => ({ owner: "codex", locked: true })),
+      inspectThreadCommands: async () => ({ commands: [] }),
+      inspectThreadUsage: async () => ({ threadId: "thread-a", usage: null }),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      { currentHostId: () => hostId, clientForHost: () => host } as never,
+    );
+    const getAgent = testState.sidebarOptions?.getLocalAgent;
+    assert(getAgent);
+    await vi.waitFor(() =>
+      expect(getAgent({ hostId: "local", threadId: "thread-a", draftId: null })).toBe("codex"),
+    );
+    const notify = testState.notifyMutations;
+    assert(notify);
+    const reconcile = () => {
+      notify([
+        {
+          type: "attributes",
+          target: testState.editor,
+          addedNodes: [],
+          removedNodes: [],
+        } as unknown as MutationRecord,
+      ]);
+      for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+    };
+    testState.sidebarRefresh.mockClear();
+    for (let index = 0; index < 10; index += 1) reconcile();
+    expect(testState.sidebarRefresh).not.toHaveBeenCalled();
+
+    hostId = "remote";
+    reconcile();
+    expect(testState.sidebarRefresh).toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(getAgent({ hostId: "remote", threadId: "thread-a", draftId: null })).toBe("codex"),
+    );
+  });
+
+  it("refreshes sidebar ownership when a mounted Host disconnects or replaces its client without changing Host ID", async () => {
+    installFakeBrowser();
+    const unsubscribe = vi.fn();
+    const host = {
+      listHarnessPlugins: async () => ({ plugins: [] }),
+      inspectThread: async () => ({ owner: "codex", locked: true }),
+      inspectThreadCommands: async () => ({ commands: [] }),
+      inspectThreadUsage: async () => ({ threadId: "thread-a", usage: null }),
+      subscribeThreadUsage: vi.fn(() => unsubscribe),
+    };
+    let client: typeof host | null = host;
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    await vi.waitFor(() =>
+      expect(
+        testState.sidebarOptions?.getLocalAgent?.({
+          hostId: "local",
+          threadId: "thread-a",
+          draftId: null,
+        }),
+      ).toBe("codex"),
+    );
+    const notify = testState.notifyMutations;
+    assert(notify);
+    const reconcile = () => {
+      notify([
+        {
+          type: "attributes",
+          target: testState.editor,
+          addedNodes: [],
+          removedNodes: [],
+        } as unknown as MutationRecord,
+      ]);
+      for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+    };
+    for (const next of [null, { ...host }]) {
+      testState.sidebarRefresh.mockClear();
+      client = next;
+      reconcile();
+      expect(testState.sidebarRefresh).toHaveBeenCalledOnce();
+      testState.sidebarRefresh.mockClear();
+      reconcile();
+      expect(testState.sidebarRefresh).not.toHaveBeenCalled();
+    }
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(host.subscribeThreadUsage).toHaveBeenCalledTimes(2);
   });
 
   it("does not rediscover the request route for unrelated sidebar rows", async () => {

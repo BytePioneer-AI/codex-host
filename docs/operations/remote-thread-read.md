@@ -20,7 +20,10 @@ ID; when that Thread's execution identity matches the requested Host, the Runtim
 reads locally while preserving the Host-qualified result link. User text and
 links are unchanged. This context is per Thread/Turn, not a global alias or a
 guess from a hostname/target Thread ID. A rejected submission cannot replace the
-previous context; a later context-free submission clears it. Standalone CLI
+previous context; a later context-free submission clears it. Registered Harness
+commands (such as `/init`) use the same context update and rollback boundary as
+ordinary prompt Turns, before invoking the native command. A command without
+source context clears the prior identity too. Standalone CLI
 commands without caller context use the bare Thread ID or `--host local` on the
 owning machine. Foreign reads still require a Desktop connection and never fall
 back to local history. Context is in memory and is restored by the next Desktop

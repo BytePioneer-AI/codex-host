@@ -26,7 +26,7 @@ type Subscriber = {
 type Hook = { memoizedState?: unknown; queue?: unknown; next?: Hook | null };
 type Fiber = { memoizedProps?: unknown; memoizedState?: unknown; alternate?: unknown };
 type Instance = { value: unknown; getSnapshot(): unknown };
-type GateKind = "account" | "reserve";
+type GateKind = "account" | "accountReserveActive" | "reserve";
 
 /** One Desktop `useSyncExternalStore` subscription: memo, instance and effect hooks. */
 interface Subscription {
@@ -67,7 +67,7 @@ function hooksOf(fiber: unknown): Hook[] {
  * and hold the reserve gate. Desktop wraps the owner in a pass-through component
  * with the same props but no gate hooks, so props alone are ambiguous.
  */
-function submitOwners(composer: Element): Fiber[] {
+function submitOwnerCandidates(composer: Element): Fiber[] {
   // The ProseMirror editor is not rendered by React; start at its nearest React host.
   let element: Element | null = composer.querySelector(EDITOR_SELECTOR) ?? composer;
   for (let depth = 0; element && depth < MAX_DOM_DEPTH; depth += 1) {
@@ -75,27 +75,53 @@ function submitOwners(composer: Element): Fiber[] {
       name.startsWith("__reactFiber$"),
     );
     if (key) {
-      const owners = committedReactAncestors(
-        Object.getOwnPropertyDescriptor(element, key)?.value,
-      ).filter(
+      return committedReactAncestors(Object.getOwnPropertyDescriptor(element, key)?.value).filter(
         ({ memoizedProps: props }) =>
           isRecord(props) &&
           "onLocalSubmitStart" in props &&
           typeof props.submitDisabled === "boolean",
       ) as Fiber[];
-      return owners.filter((owner) => {
-        const gates = gateSubscriptions(owner);
-        return !gates.invalid && gates.reserve.length > 0;
-      });
     }
     element = element.parentElement;
   }
   return [];
 }
 
+function submitOwners(composer: Element): Fiber[] {
+  return submitOwnerCandidates(composer).filter((owner) => {
+    const gates = gateSubscriptions(owner);
+    return !gates.invalid && gates.reserve.length > 0;
+  });
+}
+
 function findSubmitOwner(composer: Element): Fiber | null {
   const owners = submitOwners(composer);
   return owners.length === 1 ? (owners[0] ?? null) : null;
+}
+
+function findOuterAccountGateOwner(composer: Element, primary: Fiber): Fiber | null | undefined {
+  let match: Fiber | null = null;
+  for (const candidate of submitOwnerCandidates(composer)) {
+    if (candidate === primary) continue;
+
+    const gates = gateSubscriptions(candidate);
+    const recognized =
+      gates.account.length + gates.accountReserveActive.length + gates.reserve.length;
+
+    if (gates.invalid) return undefined;
+    if (recognized === 0) continue;
+    if (
+      gates.reserve.length !== 0 ||
+      gates.account.length !== 1 ||
+      gates.accountReserveActive.length !== 0
+    ) {
+      return undefined;
+    }
+    if (match) return undefined;
+    match = candidate;
+  }
+
+  return match;
 }
 
 function subscriptionAt(hook: Hook): Subscription | null {
@@ -203,8 +229,17 @@ function gateKind({ store, atom }: Subscription): GateKind | "mixed" | null {
   }
   const reserve = read.has("reserve.hardBlocked") && !read.has("reserve.active");
   const account = read.has("auth.authMethod") && read.has("limit.allowed");
-  // A combined selector cannot be separated into the two verified gates.
-  if (account && (read.has("reserve.hardBlocked") || read.has("reserve.active"))) return "mixed";
+  const accountReserveActive =
+    account &&
+    read.has("limit.primary_window") &&
+    read.has("limit.secondary_window") &&
+    read.has("reserve.active") &&
+    !read.has("reserve.hardBlocked");
+  // Desktop 26.928 folds the Account exhaustion selector with reserve.active.
+  // This remains a usage-only gate, but reserve.hardBlocked combinations stay ambiguous.
+  if (account && read.has("reserve.hardBlocked")) return "mixed";
+  if (accountReserveActive) return "accountReserveActive";
+  if (account && read.has("reserve.active")) return "mixed";
   if (reserve) return "reserve";
   if (account) return "account";
   return null;
@@ -243,6 +278,7 @@ function gateSubscriptions(
 ): Record<GateKind, Subscription[]> & { invalid: boolean } {
   const found: Record<GateKind, Subscription[]> & { invalid: boolean } = {
     account: [],
+    accountReserveActive: [],
     reserve: [],
     invalid: false,
   };
@@ -270,7 +306,7 @@ function discoverGates(
   const gates = gateSubscriptions(owner, projections);
   if (gates.invalid) return null;
   const found = new Map<GateKind, Subscription>();
-  for (const kind of ["account", "reserve"] as const) {
+  for (const kind of ["account", "accountReserveActive", "reserve"] as const) {
     const subscriptions = gates[kind];
     if (subscriptions.length > 1) return null;
     if (subscriptions[0]) found.set(kind, subscriptions[0]);
@@ -370,13 +406,23 @@ export interface RendererCodexUsageGate {
 
 export function createRendererCodexUsageGate(composer: Element): RendererCodexUsageGate {
   let owner: Fiber | null = null;
+  let outerAccountOwner: Fiber | null = null;
+  let outerAccountProjection: Projection | null = null;
   const projections = new Map<GateKind, Projection>();
   let retryAt = 0;
   let allowed = false;
   const release = (): void => {
     const previous = [...projections.values()];
     owner = null;
+    outerAccountOwner = null;
+
+    if (outerAccountProjection) {
+      previous.push(outerAccountProjection);
+    }
+
+    outerAccountProjection = null;
     projections.clear();
+
     for (const projection of previous) {
       try {
         projection.restore();
@@ -391,9 +437,29 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
     // The reserve gate always reads its field, so its absence means an unknown contract.
     if (!current || !gates?.has("reserve")) throw new Error("Codex usage gate is unavailable");
     owner = current;
+
     for (const [kind, gate] of gates) {
       if (!projections.has(kind)) projections.set(kind, project(gate));
     }
+
+    const outer = findOuterAccountGateOwner(composer, current);
+    if (outer === undefined) throw new Error("Outer Codex usage gate is ambiguous");
+
+    if (outer) {
+      const outerGates = gateSubscriptions(outer);
+      const account = outerGates.account[0];
+
+      if (!account) {
+        throw new Error("Outer Codex usage gate is unavailable");
+      }
+
+      outerAccountOwner = outer;
+
+      if (!outerAccountProjection) {
+        outerAccountProjection = project(account);
+      }
+    }
+
     return "bypassed";
   };
   const apply = (): RendererCodexUsageGateStatus => {
@@ -402,11 +468,37 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
       retryAt = 0;
       return "native";
     }
-    if (owner && !isBound(owner, projections.values())) {
+    if (owner) {
+      const currentOuterAccountOwner = findOuterAccountGateOwner(composer, owner);
+      if (currentOuterAccountOwner === undefined) {
+        release();
+        retryAt = Date.now() + RETRY_DELAY_MS;
+        return "unsupported";
+      }
+      if (currentOuterAccountOwner !== outerAccountOwner) {
+        release();
+        retryAt = 0;
+      }
+    }
+
+    if (
+      (owner && !isBound(owner, projections.values())) ||
+      (outerAccountOwner &&
+        outerAccountProjection &&
+        !isBound(outerAccountOwner, [outerAccountProjection]))
+    ) {
       release();
       retryAt = 0;
     }
-    if (owner && projections.size === 2) return "bypassed";
+
+    if (
+      owner &&
+      projections.has("reserve") &&
+      (projections.has("account") || projections.has("accountReserveActive")) &&
+      (!outerAccountOwner || outerAccountProjection)
+    ) {
+      return "bypassed";
+    }
     if (Date.now() < retryAt) return owner ? "bypassed" : "unsupported";
     retryAt = Date.now() + RETRY_DELAY_MS;
     try {

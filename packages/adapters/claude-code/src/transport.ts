@@ -238,7 +238,8 @@ export interface ClaudeIdleTurnHandler {
  * Terminal without any; the Segment's events and Terminal then follow live.
  */
 export interface ClaudeAutonomousTurnHandler extends ClaudeIdleTurnHandler {
-  start(nativeTurnKey: string): void;
+  /** The opaque Turn key may be synthetic; only an observed User UUID belongs in native history. */
+  start(nativeTurnKey: string, userMessageId: string | null): void;
 }
 
 export interface ClaudeTurnTransport {

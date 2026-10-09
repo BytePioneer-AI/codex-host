@@ -123,7 +123,7 @@ interface AutonomousSegment {
   accumulator: ClaudeNativeTurnAccumulator;
   /** Events held until the Segment starts its autonomous Turn. */
   events: ClaudeTurnEvent[];
-  nativeTurnKey: string | null;
+  userMessageId: string | null;
   /** The autonomous Turn has started; later events go to it as they arrive. */
   live: boolean;
 }
@@ -1167,7 +1167,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   /** Starts the Segment's autonomous Turn and releases the events it held, in native order. */
   #startAutonomousTurn(autonomous: AutonomousSegment, handler: ClaudeAutonomousTurnHandler): void {
     autonomous.live = true;
-    handler.start(autonomous.nativeTurnKey ?? `autonomous-${Date.now()}`);
+    handler.start(autonomous.userMessageId ?? `autonomous-${Date.now()}`, autonomous.userMessageId);
     for (const event of autonomous.events.splice(0)) handler.onEvent(event);
   }
 
@@ -1237,18 +1237,18 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
               this.#provider ? { provider: this.#provider } : {},
             ),
             events: [],
-            nativeTurnKey: null,
+            userMessageId: null,
             live: false,
           });
         if (
-          autonomous.nativeTurnKey === null &&
+          autonomous.userMessageId === null &&
           isRecord(message) &&
           message.type === "user" &&
           (message.parent_tool_use_id === null || message.parent_tool_use_id === undefined) &&
           typeof message.uuid === "string" &&
           message.uuid.length > 0
         ) {
-          autonomous.nativeTurnKey = message.uuid;
+          autonomous.userMessageId = message.uuid;
         }
         const interpreted = autonomous.accumulator.consume(message);
         for (const event of interpreted.events) {

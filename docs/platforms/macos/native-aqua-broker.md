@@ -97,6 +97,9 @@ the adapter retains its existing HOME, system PATH, proxy and configuration
 variables. Replacing that environment with only the scoped delegation variables
 can make real Turns fail OAuth refresh even while account inspection succeeds.
 The overlay is a fresh object for each Session and does not mutate either input.
+Permission prerequisites use that same effective environment as the native
+Transport, retaining declared sandbox flags without permitting unsandboxed root
+to bypass permissions.
 Directly launched packaged remote Runtimes also resolve the sibling native CLI
 and their own Node executable when Launcher-provided paths are absent. Delegation
 therefore stays on the Runtime's installed candidate instead of a stale PATH CLI;

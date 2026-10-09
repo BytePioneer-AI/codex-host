@@ -3204,9 +3204,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
-    const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(
-      input.environment,
-    );
+    // Permission prerequisites and the native process must observe the same environment.
+    const environment = input.environment
+      ? { ...this.#environment, ...input.environment }
+      : undefined;
+    const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(environment);
     if (!bypassPermissionsAvailable && requestedPermissionModeId === "bypassPermissions") {
       // Claude Code exits at startup for this request. An explicit create fails visibly, while a
       // restored mode falls back to the native default so the existing Thread stays usable.
@@ -3327,10 +3329,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       () => this.#sessions.delete(session),
       (planLimit) => this.#recordPlanLimit(session, planLimit),
       {
-        // Broker delegation variables supplement the native login/shell environment.
-        ...(input.environment
-          ? { environment: { ...this.#environment, ...input.environment } }
-          : {}),
+        ...(environment ? { environment } : {}),
         bypassPermissionsAvailable,
         openMode,
         pendingSessions: this.#pendingSessions,

@@ -683,6 +683,121 @@ fn select_host_paths(
     (configured_node, configured_runtime)
 }
 
+/// Optional `(node, host-runtime)` paths found under a libexec install root.
+type DiscoveredBundledHostPaths = Option<(Option<OsString>, Option<OsString>)>;
+
+/// Official install layout: `<root>/libexec/codexhost-shim` + `<root>/runtime/node` +
+/// `<root>/app/host-runtime.mjs`. Codex Desktop's WSL agent environment often launches this
+/// Windows Shim without `CODEXHOST_*` env from the launcher; discover paths from the binary.
+///
+/// `need_node` / `need_runtime` limit which bundled files must exist so a caller that already
+/// configured one Host path is not blocked by the other file being absent.
+///
+/// `Ok(None)` means this binary is not under `libexec` (keep stock fallback). `Err` means the
+/// install root was recognized but required Host Runtime files are missing.
+fn discover_bundled_host_paths(
+    current_executable: &Path,
+    need_node: bool,
+    need_runtime: bool,
+) -> Result<DiscoveredBundledHostPaths, String> {
+    if !need_node && !need_runtime {
+        return Ok(None);
+    }
+    let Some(libexec) = current_executable.parent() else {
+        return Ok(None);
+    };
+    if libexec.file_name() != Some(OsStr::new("libexec")) {
+        return Ok(None);
+    }
+    let Some(root) = libexec.parent() else {
+        return Err(format!(
+            "codexhost install layout is incomplete: {} has no parent install root",
+            libexec.display()
+        ));
+    };
+    let node = root
+        .join("runtime")
+        .join(format!("node{}", env::consts::EXE_SUFFIX));
+    let host_runtime = root.join("app").join("host-runtime.mjs");
+    let mut missing = Vec::new();
+    let discovered_node = if need_node {
+        if node.is_file() {
+            Some(node.into_os_string())
+        } else {
+            missing.push(node.display().to_string());
+            None
+        }
+    } else {
+        None
+    };
+    let discovered_runtime = if need_runtime {
+        if host_runtime.is_file() {
+            Some(host_runtime.into_os_string())
+        } else {
+            missing.push(host_runtime.display().to_string());
+            None
+        }
+    } else {
+        None
+    };
+    if !missing.is_empty() {
+        return Err(format!(
+            "codexhost install under {} is incomplete; missing: {}",
+            root.display(),
+            missing.join(", ")
+        ));
+    }
+    Ok(Some((discovered_node, discovered_runtime)))
+}
+
+fn default_codexhost_data_directory() -> Option<PathBuf> {
+    // Match Host Runtime / console fallbacks: `$HOME/.codexhost` (Windows: `%USERPROFILE%`).
+    #[cfg(windows)]
+    {
+        env::var_os("USERPROFILE")
+            .or_else(|| env::var_os("HOME"))
+            .map(|home| PathBuf::from(home).join(".codexhost"))
+    }
+    #[cfg(not(windows))]
+    {
+        env::var_os("HOME").map(|home| PathBuf::from(home).join(".codexhost"))
+    }
+}
+
+fn resolve_host_runtime_launch(
+    current_executable: &Path,
+    desktop_helper: bool,
+    require_host_runtime: bool,
+) -> ShimResult<(Option<OsString>, Option<OsString>, Option<PathBuf>)> {
+    let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
+    let mut paths = select_host_paths(
+        env::var_os(HOST_NODE_PATH_ENV),
+        env::var_os(HOST_RUNTIME_PATH_ENV),
+        launcher_managed,
+        env::var_os(NPM_NODE_PATH_ENV),
+        env::var_os(NPM_PACKAGE_ROOT_ENV),
+    );
+    // Helpers must keep stock CLI routing. Skip bundled discovery when this Shim is a
+    // nested Desktop helper, including env-less Desktop trees without LAUNCHER_PID.
+    if !desktop_helper && (paths.0.is_none() || paths.1.is_none()) {
+        match discover_bundled_host_paths(current_executable, paths.0.is_none(), paths.1.is_none())
+        {
+            Ok(Some((node, runtime))) => {
+                paths = (paths.0.or(node), paths.1.or(runtime));
+            }
+            Ok(None) => {}
+            // Incomplete libexec installs only fail when this invocation needs Host Runtime;
+            // `--version` and other stock forwards must still work.
+            Err(error) if require_host_runtime => return Err(error.into()),
+            Err(_) => {}
+        }
+    }
+    let data_directory = env::var_os(DATA_DIRECTORY_ENV)
+        .map(PathBuf::from)
+        .or_else(default_codexhost_data_directory);
+    Ok((paths.0, paths.1, data_directory))
+}
+
 #[must_use]
 fn is_managed_remote_listener(arguments: &[OsString]) -> bool {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -697,37 +812,19 @@ fn is_managed_remote_listener(arguments: &[OsString]) -> bool {
     }
 }
 
-#[must_use]
-fn host_runtime_paths_are_configured() -> bool {
-    let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
-    matches!(
-        select_host_paths(
-            env::var_os(HOST_NODE_PATH_ENV),
-            env::var_os(HOST_RUNTIME_PATH_ENV),
-            launcher_managed,
-            env::var_os(NPM_NODE_PATH_ENV),
-            env::var_os(NPM_PACKAGE_ROOT_ENV),
-        ),
-        (Some(_), Some(_))
-    )
-}
-
 fn child_command(
     arguments: &[OsString],
     current_executable: &Path,
     stock_codex_path: &Path,
     desktop_helper: bool,
+    host_node: Option<OsString>,
+    host_runtime: Option<OsString>,
+    data_directory: Option<&Path>,
 ) -> ShimResult<Command> {
     let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
     let inherited_remote_profile = launcher_managed
         && env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1"));
-    let host_paths = select_host_paths(
-        env::var_os(HOST_NODE_PATH_ENV),
-        env::var_os(HOST_RUNTIME_PATH_ENV),
-        launcher_managed,
-        env::var_os(NPM_NODE_PATH_ENV),
-        env::var_os(NPM_PACKAGE_ROOT_ENV),
-    );
+    let host_paths = (host_node, host_runtime);
     let remote_proxy_environment =
         if env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
             proxy_environment()
@@ -759,6 +856,8 @@ fn child_command(
                     .env_remove(REMOTE_LISTENER_CHILD_ENV);
                 if inherited_remote_profile {
                     command.env_remove(DATA_DIRECTORY_ENV);
+                } else if let Some(data_directory) = data_directory {
+                    command.env(DATA_DIRECTORY_ENV, data_directory);
                 }
                 command.envs(remote_proxy_environment);
                 configure_background_command(&mut command);
@@ -859,15 +958,20 @@ pub fn run_proxy_with_observer(
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
     let desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
-    let local_host_runtime = !desktop_helper
-        && should_start_host_runtime(arguments)
-        && host_runtime_paths_are_configured()
+    let require_host_runtime = !desktop_helper && should_start_host_runtime(arguments);
+    let (host_node, host_runtime, data_directory) =
+        resolve_host_runtime_launch(&current_executable, desktop_helper, require_host_runtime)?;
+    let local_host_runtime = require_host_runtime
+        && host_node.is_some()
+        && host_runtime.is_some()
         && !is_managed_remote_listener(arguments)
-        && env::var_os(DATA_DIRECTORY_ENV).is_some();
+        && data_directory.is_some();
     let mut local_runtime_lease = if local_host_runtime {
-        Some(LocalRuntimeLease::acquire(&PathBuf::from(
-            env::var_os(DATA_DIRECTORY_ENV).ok_or("CODEXHOST_DATA_DIR is unavailable")?,
-        ))?)
+        Some(LocalRuntimeLease::acquire(
+            data_directory
+                .as_ref()
+                .ok_or("CODEXHOST_DATA_DIR is unavailable")?,
+        )?)
     } else {
         None
     };
@@ -876,6 +980,9 @@ pub fn run_proxy_with_observer(
         &current_executable,
         &stock_codex_path,
         desktop_helper,
+        host_node,
+        host_runtime,
+        data_directory.as_deref(),
     )?;
     command
         .stdin(Stdio::piped())
@@ -981,9 +1088,13 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{PROCESS_TREE_REFRESH_INTERVAL, ShutdownSignals, process_tree_refresh_due};
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+
     use super::{
-        app_server_subcommand_index, is_default_remote_unix_listener, select_host_paths,
-        should_start_host_runtime, should_start_host_runtime_for_originator,
+        app_server_subcommand_index, discover_bundled_host_paths, is_default_remote_unix_listener,
+        select_host_paths, should_start_host_runtime, should_start_host_runtime_for_originator,
     };
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
@@ -1138,6 +1249,78 @@ mod tests {
                     .into_os_string()
             )
         );
+    }
+
+    #[test]
+    fn discovers_bundled_host_paths_from_an_official_libexec_layout() {
+        let root = env::temp_dir().join(format!("codexhost-shim-bundled-{}", std::process::id()));
+        let libexec = root.join("libexec");
+        let runtime = root.join("runtime");
+        let app = root.join("app");
+        fs::create_dir_all(&libexec).unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&app).unwrap();
+        let shim = libexec.join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX));
+        let node = runtime.join(format!("node{}", env::consts::EXE_SUFFIX));
+        let host_runtime = app.join("host-runtime.mjs");
+        fs::write(&shim, b"shim").unwrap();
+        fs::write(&node, b"node").unwrap();
+        fs::write(&host_runtime, b"runtime").unwrap();
+
+        let discovered = discover_bundled_host_paths(&shim, true, true)
+            .expect("layout ok")
+            .expect("bundled layout");
+        assert_eq!(PathBuf::from(discovered.0.expect("node")), node);
+        assert_eq!(PathBuf::from(discovered.1.expect("runtime")), host_runtime);
+
+        let runtime_only = discover_bundled_host_paths(&shim, false, true)
+            .expect("layout ok")
+            .expect("runtime only");
+        assert!(runtime_only.0.is_none());
+        assert_eq!(
+            PathBuf::from(runtime_only.1.expect("runtime")),
+            host_runtime
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn discover_bundled_host_paths_ignores_non_libexec_binaries() {
+        let root =
+            env::temp_dir().join(format!("codexhost-shim-non-libexec-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let shim = root.join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX));
+        fs::write(&shim, b"shim").unwrap();
+        assert_eq!(
+            discover_bundled_host_paths(&shim, true, true).expect("not bundled"),
+            None
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn discover_bundled_host_paths_reports_incomplete_libexec_installs() {
+        let root =
+            env::temp_dir().join(format!("codexhost-shim-incomplete-{}", std::process::id()));
+        let libexec = root.join("libexec");
+        fs::create_dir_all(&libexec).unwrap();
+        let shim = libexec.join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX));
+        fs::write(&shim, b"shim").unwrap();
+        let error = discover_bundled_host_paths(&shim, true, true).expect_err("incomplete install");
+        assert!(
+            error.contains("incomplete") && error.contains("host-runtime.mjs"),
+            "{error}"
+        );
+        // Already-configured Node must not require the bundled Node file.
+        let only_runtime =
+            discover_bundled_host_paths(&shim, false, true).expect_err("runtime missing");
+        assert!(only_runtime.contains("host-runtime.mjs"), "{only_runtime}");
+        assert!(
+            !only_runtime.contains(&format!("node{}", env::consts::EXE_SUFFIX)),
+            "{only_runtime}"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

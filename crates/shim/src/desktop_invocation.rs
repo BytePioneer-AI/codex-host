@@ -7,14 +7,18 @@ use codexhost_platform::ProcessSnapshot;
 pub(crate) fn is_desktop_helper(_stock_codex_path: &std::path::Path) -> bool {
     #[cfg(target_os = "windows")]
     {
-        let Some(launcher_id) = std::env::var(super::LAUNCHER_PID_ENV)
+        if let Some(launcher_id) = std::env::var(super::LAUNCHER_PID_ENV)
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
             .filter(|id| *id != 0)
-        else {
-            return false;
-        };
-        is_helper_descendant(std::process::id(), launcher_id, |id| {
+        {
+            return is_helper_descendant(std::process::id(), launcher_id, |id| {
+                codexhost_platform::process_snapshot(id).ok()
+            });
+        }
+        // Env-less Desktop still nests helpers under ChatGPT.exe. Detect that so
+        // bundled Host Runtime discovery cannot re-enter for one-shot app-servers.
+        is_helper_under_live_desktop(std::process::id(), |id| {
             codexhost_platform::process_snapshot(id).ok()
         })
     }
@@ -64,6 +68,48 @@ fn is_macos_desktop_helper(stock_codex_path: &std::path::Path) -> Option<bool> {
         child = parent;
     }
     None
+}
+
+#[cfg(target_os = "windows")]
+fn is_helper_under_live_desktop(
+    shim_id: u32,
+    inspect: impl FnMut(u32) -> Option<ProcessSnapshot>,
+) -> bool {
+    let Ok(desktop_ids) = codexhost_platform::desktop_process_ids() else {
+        return false;
+    };
+    is_helper_under_desktop_ids(shim_id, &desktop_ids.into_iter().collect(), inspect)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_helper_under_desktop_ids(
+    shim_id: u32,
+    desktop: &std::collections::HashSet<u32>,
+    mut inspect: impl FnMut(u32) -> Option<ProcessSnapshot>,
+) -> bool {
+    if desktop.is_empty() {
+        return false;
+    }
+    let Some(mut child) = inspect(shim_id) else {
+        return false;
+    };
+    for depth in 1..=32 {
+        if child.parent_id == 0 || child.parent_id == child.id {
+            return false;
+        }
+        let Some(parent) = inspect(child.parent_id) else {
+            return false;
+        };
+        if parent.started_at_micros > child.started_at_micros {
+            return false;
+        }
+        if desktop.contains(&parent.id) {
+            // Desktop → shim is the Host entry. Deeper nests are one-shot helpers.
+            return depth > 1;
+        }
+        child = parent;
+    }
+    false
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -136,5 +182,18 @@ mod tests {
             Some(snapshot(id, id - 1))
         }));
         assert_eq!(calls, 33);
+    }
+
+    #[test]
+    fn env_less_desktop_helpers_are_detected_by_desktop_ancestry() {
+        use std::collections::HashSet;
+        let desktop = HashSet::from([2u32]);
+        let inspect = |id| (id >= 1).then(|| snapshot(id, id - 1));
+        // Desktop(2) → shim(3): Host entry
+        assert!(!is_helper_under_desktop_ids(3, &desktop, inspect));
+        // Desktop(2) → … → shim(4+): helper
+        assert!(is_helper_under_desktop_ids(4, &desktop, inspect));
+        assert!(is_helper_under_desktop_ids(5, &desktop, inspect));
+        assert!(!is_helper_under_desktop_ids(3, &HashSet::new(), inspect));
     }
 }

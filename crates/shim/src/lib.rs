@@ -686,20 +686,43 @@ fn select_host_paths(
 /// Official install layout: `<root>/libexec/codexhost-shim` + `<root>/runtime/node` +
 /// `<root>/app/host-runtime.mjs`. Codex Desktop's WSL agent environment often launches this
 /// Windows Shim without `CODEXHOST_*` env from the launcher; discover paths from the binary.
-fn discover_bundled_host_paths(current_executable: &Path) -> Option<(OsString, OsString)> {
-    let libexec = current_executable.parent()?;
+///
+/// `Ok(None)` means this binary is not under `libexec` (keep stock fallback). `Err` means the
+/// install root was recognized but required Host Runtime files are missing.
+fn discover_bundled_host_paths(
+    current_executable: &Path,
+) -> Result<Option<(OsString, OsString)>, String> {
+    let Some(libexec) = current_executable.parent() else {
+        return Ok(None);
+    };
     if libexec.file_name() != Some(OsStr::new("libexec")) {
-        return None;
+        return Ok(None);
     }
-    let root = libexec.parent()?;
+    let Some(root) = libexec.parent() else {
+        return Err(format!(
+            "codexhost install layout is incomplete: {} has no parent install root",
+            libexec.display()
+        ));
+    };
     let node = root
         .join("runtime")
         .join(format!("node{}", env::consts::EXE_SUFFIX));
     let host_runtime = root.join("app").join("host-runtime.mjs");
-    if !node.is_file() || !host_runtime.is_file() {
-        return None;
+    let mut missing = Vec::new();
+    if !node.is_file() {
+        missing.push(node.display().to_string());
     }
-    Some((node.into_os_string(), host_runtime.into_os_string()))
+    if !host_runtime.is_file() {
+        missing.push(host_runtime.display().to_string());
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "codexhost install under {} is incomplete; missing: {}",
+            root.display(),
+            missing.join(", ")
+        ));
+    }
+    Ok(Some((node.into_os_string(), host_runtime.into_os_string())))
 }
 
 fn default_codexhost_data_directory() -> Option<PathBuf> {
@@ -718,7 +741,8 @@ fn default_codexhost_data_directory() -> Option<PathBuf> {
 
 fn resolve_host_runtime_launch(
     current_executable: &Path,
-) -> (Option<OsString>, Option<OsString>, Option<PathBuf>) {
+    desktop_helper: bool,
+) -> ShimResult<(Option<OsString>, Option<OsString>, Option<PathBuf>)> {
     let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
     let mut paths = select_host_paths(
         env::var_os(HOST_NODE_PATH_ENV),
@@ -727,18 +751,17 @@ fn resolve_host_runtime_launch(
         env::var_os(NPM_NODE_PATH_ENV),
         env::var_os(NPM_PACKAGE_ROOT_ENV),
     );
-    if paths.0.is_none() || paths.1.is_none() {
-        if let Some((node, runtime)) = discover_bundled_host_paths(current_executable) {
-            paths = (
-                paths.0.or(Some(node)),
-                paths.1.or(Some(runtime)),
-            );
+    // Helpers must keep stock CLI routing. Skip bundled discovery when this Shim is a
+    // nested Desktop helper, including env-less Desktop trees without LAUNCHER_PID.
+    if !desktop_helper && (paths.0.is_none() || paths.1.is_none()) {
+        if let Some((node, runtime)) = discover_bundled_host_paths(current_executable)? {
+            paths = (paths.0.or(Some(node)), paths.1.or(Some(runtime)));
         }
     }
     let data_directory = env::var_os(DATA_DIRECTORY_ENV)
         .map(PathBuf::from)
         .or_else(default_codexhost_data_directory);
-    (paths.0, paths.1, data_directory)
+    Ok((paths.0, paths.1, data_directory))
 }
 
 #[must_use]
@@ -902,7 +925,7 @@ pub fn run_proxy_with_observer(
     let shutdown_signals = ShutdownSignals::install()?;
     let desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
     let (host_node, host_runtime, data_directory) =
-        resolve_host_runtime_launch(&current_executable);
+        resolve_host_runtime_launch(&current_executable, desktop_helper)?;
     let local_host_runtime = !desktop_helper
         && should_start_host_runtime(arguments)
         && host_node.is_some()
@@ -1214,7 +1237,9 @@ mod tests {
         fs::write(&node, b"node").unwrap();
         fs::write(&host_runtime, b"runtime").unwrap();
 
-        let discovered = discover_bundled_host_paths(&shim).expect("bundled layout");
+        let discovered = discover_bundled_host_paths(&shim)
+            .expect("layout ok")
+            .expect("bundled layout");
         assert_eq!(PathBuf::from(discovered.0), node);
         assert_eq!(PathBuf::from(discovered.1), host_runtime);
 
@@ -1230,7 +1255,25 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let shim = root.join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX));
         fs::write(&shim, b"shim").unwrap();
-        assert!(discover_bundled_host_paths(&shim).is_none());
+        assert_eq!(discover_bundled_host_paths(&shim).expect("not bundled"), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn discover_bundled_host_paths_reports_incomplete_libexec_installs() {
+        let root = env::temp_dir().join(format!(
+            "codexhost-shim-incomplete-{}",
+            std::process::id()
+        ));
+        let libexec = root.join("libexec");
+        fs::create_dir_all(&libexec).unwrap();
+        let shim = libexec.join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX));
+        fs::write(&shim, b"shim").unwrap();
+        let error = discover_bundled_host_paths(&shim).expect_err("incomplete install");
+        assert!(
+            error.contains("incomplete") && error.contains("host-runtime.mjs"),
+            "{error}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

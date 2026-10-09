@@ -7,17 +7,18 @@ use codexhost_platform::ProcessSnapshot;
 pub(crate) fn is_desktop_helper(_stock_codex_path: &std::path::Path) -> bool {
     #[cfg(target_os = "windows")]
     {
-        if let Some(launcher_id) = std::env::var(super::LAUNCHER_PID_ENV)
+        // Stale/exited launcher PID falls through to Desktop ancestry below.
+        if std::env::var(super::LAUNCHER_PID_ENV)
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
             .filter(|id| *id != 0)
+            .is_some_and(|launcher_id| {
+                is_helper_descendant(std::process::id(), launcher_id, |id| {
+                    codexhost_platform::process_snapshot(id).ok()
+                })
+            })
         {
-            if is_helper_descendant(std::process::id(), launcher_id, |id| {
-                codexhost_platform::process_snapshot(id).ok()
-            }) {
-                return true;
-            }
-            // Stale/exited launcher PID: keep checking Desktop ancestry below.
+            return true;
         }
         // Env-less or stale-launcher Desktop still nests helpers under ChatGPT.exe.
         // Detect that so bundled Host Runtime discovery cannot re-enter for helpers.

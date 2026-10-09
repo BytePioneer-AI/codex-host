@@ -683,6 +683,9 @@ fn select_host_paths(
     (configured_node, configured_runtime)
 }
 
+/// Optional `(node, host-runtime)` paths found under a libexec install root.
+type DiscoveredBundledHostPaths = Option<(Option<OsString>, Option<OsString>)>;
+
 /// Official install layout: `<root>/libexec/codexhost-shim` + `<root>/runtime/node` +
 /// `<root>/app/host-runtime.mjs`. Codex Desktop's WSL agent environment often launches this
 /// Windows Shim without `CODEXHOST_*` env from the launcher; discover paths from the binary.
@@ -696,7 +699,7 @@ fn discover_bundled_host_paths(
     current_executable: &Path,
     need_node: bool,
     need_runtime: bool,
-) -> Result<Option<(Option<OsString>, Option<OsString>)>, String> {
+) -> Result<DiscoveredBundledHostPaths, String> {
     if !need_node && !need_runtime {
         return Ok(None);
     }
@@ -777,11 +780,8 @@ fn resolve_host_runtime_launch(
     // Helpers must keep stock CLI routing. Skip bundled discovery when this Shim is a
     // nested Desktop helper, including env-less Desktop trees without LAUNCHER_PID.
     if !desktop_helper && (paths.0.is_none() || paths.1.is_none()) {
-        match discover_bundled_host_paths(
-            current_executable,
-            paths.0.is_none(),
-            paths.1.is_none(),
-        ) {
+        match discover_bundled_host_paths(current_executable, paths.0.is_none(), paths.1.is_none())
+        {
             Ok(Some((node, runtime))) => {
                 paths = (paths.0.or(node), paths.1.or(runtime));
             }
@@ -1251,13 +1251,9 @@ mod tests {
         );
     }
 
-
     #[test]
     fn discovers_bundled_host_paths_from_an_official_libexec_layout() {
-        let root = env::temp_dir().join(format!(
-            "codexhost-shim-bundled-{}",
-            std::process::id()
-        ));
+        let root = env::temp_dir().join(format!("codexhost-shim-bundled-{}", std::process::id()));
         let libexec = root.join("libexec");
         let runtime = root.join("runtime");
         let app = root.join("app");
@@ -1281,17 +1277,18 @@ mod tests {
             .expect("layout ok")
             .expect("runtime only");
         assert!(runtime_only.0.is_none());
-        assert_eq!(PathBuf::from(runtime_only.1.expect("runtime")), host_runtime);
+        assert_eq!(
+            PathBuf::from(runtime_only.1.expect("runtime")),
+            host_runtime
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn discover_bundled_host_paths_ignores_non_libexec_binaries() {
-        let root = env::temp_dir().join(format!(
-            "codexhost-shim-non-libexec-{}",
-            std::process::id()
-        ));
+        let root =
+            env::temp_dir().join(format!("codexhost-shim-non-libexec-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let shim = root.join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX));
         fs::write(&shim, b"shim").unwrap();
@@ -1304,10 +1301,8 @@ mod tests {
 
     #[test]
     fn discover_bundled_host_paths_reports_incomplete_libexec_installs() {
-        let root = env::temp_dir().join(format!(
-            "codexhost-shim-incomplete-{}",
-            std::process::id()
-        ));
+        let root =
+            env::temp_dir().join(format!("codexhost-shim-incomplete-{}", std::process::id()));
         let libexec = root.join("libexec");
         fs::create_dir_all(&libexec).unwrap();
         let shim = libexec.join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX));
@@ -1318,9 +1313,13 @@ mod tests {
             "{error}"
         );
         // Already-configured Node must not require the bundled Node file.
-        let only_runtime = discover_bundled_host_paths(&shim, false, true).expect_err("runtime missing");
+        let only_runtime =
+            discover_bundled_host_paths(&shim, false, true).expect_err("runtime missing");
         assert!(only_runtime.contains("host-runtime.mjs"), "{only_runtime}");
-        assert!(!only_runtime.contains(&format!("node{}", env::consts::EXE_SUFFIX)), "{only_runtime}");
+        assert!(
+            !only_runtime.contains(&format!("node{}", env::consts::EXE_SUFFIX)),
+            "{only_runtime}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

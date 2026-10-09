@@ -186,6 +186,14 @@ describe("Claude live autonomous continuation (issue #495)", () => {
         await live.session.execute(textTurn("run-tests"));
         backgroundCommandTurn(live.fakeQuery, "bash-call-1", "bash-task-1");
         await vi.waitFor(() => expect(completion(live.events, "run-tests")).toBeDefined());
+        const requested = completion(live.events, "run-tests");
+        if (
+          requested?.type !== "turn.completed" ||
+          !requested.nativeTurnRef ||
+          !requested.outcome.checkpoint
+        ) {
+          throw new Error("Requested Turn has no native identity or checkpoint");
+        }
 
         const userMessageId = "00000000-0000-4000-8000-0000000000a1";
         const checkpointId = "00000000-0000-4000-8000-0000000000a2";
@@ -239,8 +247,31 @@ describe("Claude live autonomous continuation (issue #495)", () => {
             message: { role: "user", content: "Background command completed" },
           });
         }
-        const snapshot = await live.session.readSnapshot();
-        expect(snapshot, JSON.stringify(snapshot)).toMatchObject({ ok: true });
+        // The autonomous messages cannot confirm that the previous requested Turn was saved.
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+        live.history.unshift({
+          type: "user",
+          uuid: requested.nativeTurnRef.nativeTurnKey,
+          session_id: SESSION_ID,
+          message: { role: "user", content: "run-tests" },
+        });
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+        live.history.splice(1, 0, {
+          type: "assistant",
+          uuid: requested.outcome.checkpoint.checkpointId,
+          session_id: SESSION_ID,
+          message: { role: "assistant", content: "Tests are running in the background." },
+        });
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { turns: [{ input: [{ text: "run-tests" }] }, ...(hasUserMessage ? [{}] : [])] },
+        });
         await expect(live.session.readSnapshot()).resolves.toMatchObject({ ok: true });
         await expect(live.session.execute(textTurn("continue"))).resolves.toMatchObject({
           ok: true,

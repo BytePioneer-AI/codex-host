@@ -2752,10 +2752,12 @@ class ClaudeHarnessSession implements HarnessSession {
           formatVersion: 1,
         })
       : null;
-    // A terminal-only Segment says nothing about the previous Turn's transcript persistence.
+    // New Segments cannot confirm that earlier Turns have reached the transcript.
+    // Only readSnapshot clears IDs after observing them all in native history.
     if (active.userMessageId || active.checkpointId) {
       this.#unpersistedMessageIds = [
         ...new Set([
+          ...this.#unpersistedMessageIds,
           ...(active.userMessageId ? [active.userMessageId] : []),
           ...(active.checkpointId ? [active.checkpointId] : []),
         ]),

@@ -780,6 +780,7 @@ export class AppServerHost {
       consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
       diagnose: (error) => this.#diagnose(error),
       subagentRunning: (threadId) => this.#subagentThreadStatuses.get(threadId) === "active",
+      hasRunningDescendants: (threadId) => this.#hasRunningSubagents(threadId),
       idleRelease: {
         queue: this.#desktopRequests,
         onClosed: async (thread) => {
@@ -4985,7 +4986,18 @@ export class AppServerHost {
     if (event.type === "session.faulted") {
       this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));
+      this.#externalRuntime.markSessionUnavailable(thread);
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
+      // Idle Threads must not keep a dead Session; the next open restores from disk.
+      if (
+        !thread.running &&
+        !thread.activeTurnId &&
+        !this.#hasRunningSubagents(thread.id) &&
+        !thread.session.hasBackgroundWork?.()
+      ) {
+        // Do not await: discard waits on outputTask, and this handler runs inside it.
+        void this.#externalRuntime.discardUnavailableIdle(thread);
+      }
       return;
     }
 
@@ -5148,6 +5160,12 @@ export class AppServerHost {
   }
 
   async #refreshOpenSubagentThread(threadId: string, terminal = true): Promise<void> {
+    await this.#desktopRequests.run(threadId, async () => {
+      await this.#refreshOpenSubagentThreadBody(threadId, terminal);
+    });
+  }
+
+  async #refreshOpenSubagentThreadBody(threadId: string, terminal: boolean): Promise<void> {
     const child = this.#externalRuntime.get(threadId);
     if (!child) return;
     const previousItems = new Map(

@@ -13,6 +13,22 @@ feature. Installing codexhost on both machines alone is not enough: the local
 Desktop must have the requested Host connection available. The Host ID is the
 Desktop connection identity, not an arbitrary SSH hostname or URL.
 
+For a remote external Harness submission, the renderer supplies its submitting
+connection identity on that start/steer request. The Host retains that identity
+for the accepted external Turn. The CLI supplies its Host-provided calling Thread
+ID; when that Thread's execution identity matches the requested Host, the Runtime
+reads locally while preserving the Host-qualified result link. User text and
+links are unchanged. This context is per Thread/Turn, not a global alias or a
+guess from a hostname/target Thread ID. A rejected submission cannot replace the
+previous context; a later context-free submission clears it. Registered Harness
+commands (such as `/init`) use the same context update and rollback boundary as
+ordinary prompt Turns, before invoking the native command. A command without
+source context clears the prior identity too. Standalone CLI
+commands without caller context use the bare Thread ID or `--host local` on the
+owning machine. Foreign reads still require a Desktop connection and never fall
+back to local history. Context is in memory and is restored by the next Desktop
+submission after a Runtime restart.
+
 The authenticated local Runtime delegates a fixed `read-thread` operation over
 the existing Launcher/Controller channel. The renderer selects exactly that
 Host's existing request client. The remote `codexhost/thread/delegation-read`

@@ -1,5 +1,7 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 import { describe, expect, it } from "vitest";
 
@@ -12,6 +14,35 @@ import {
 } from "../src/run-host-runtime.js";
 
 describe("Host Runtime composition", () => {
+  it("pins a directly launched remote Runtime to its own packaged CLI and Node", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "cx-runtime-cli-"));
+    const runtime = path.join(root, "app", "host-runtime.mjs");
+    const launcher = path.join(
+      root,
+      "bin",
+      process.platform === "win32" ? "codexhost.exe" : "codexhost",
+    );
+    try {
+      expect(delegationCliEnvironment({}, runtime)).toEqual({});
+      mkdirSync(path.dirname(launcher), { recursive: true });
+      writeFileSync(launcher, "synthetic executable");
+      expect(delegationCliEnvironment({}, runtime)).toEqual({
+        CODEXHOST_CLI_PATH: launcher,
+        CODEXHOST_CLI_NODE_PATH: process.execPath,
+      });
+      expect(
+        delegationCliEnvironment(
+          { CODEXHOST_CLI_PATH: "/explicit/cli", CODEXHOST_CLI_NODE_PATH: process.execPath },
+          runtime,
+        ),
+      ).toEqual({
+        CODEXHOST_CLI_PATH: "/explicit/cli",
+        CODEXHOST_CLI_NODE_PATH: process.execPath,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it("keeps the native Launcher as the CLI and supplies npm's Node only when present", () => {
     const launcher = path.resolve("/opt/codexhost/bin/codexhost");
     const node = path.resolve("/usr/local/bin/node");

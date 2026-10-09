@@ -96,6 +96,12 @@
 | --- | --- |
 | [`harnesses/zcode/zcode-harness-integration.md`](harnesses/zcode/zcode-harness-integration.md) | 直连已装 ZCode Desktop 的 Agent CLI、Start Plan／个人 Coding Plan 账号接入、自定义 Provider、常驻验证页与验证边界；安装或维护 ZCode Adapter 时阅读。 |
 
+## 独立 Web 应用
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库独立 Web/PWA 的源码构建、插件复用、启动隔离、存储及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
+
 ## 账号与 Desktop 产品接入
 
 | 文档 | 内容与阅读时机 |

@@ -10,7 +10,10 @@
   },
   "workspaces": [
     "packages/*",
-    "packages/adapters/*"
+    "packages/adapters/*",
+    "apps/web-ui",
+    "apps/web-ui/packages/*/*",
+    "apps/web-ui/vendor/*"
   ],
   "prettier": {
     "arrowParens": "always",
@@ -28,6 +31,12 @@
     "build": "npm run build:typescript && npm run build:renderer && npm run build:rust",
     "build:typescript": "tsc -b && npm run build:plugins",
     "build:plugins": "node scripts/release/harness-plugins.mjs --output packages/host-runtime/dist/plugins",
+    "build:web": "npm run build:typescript && npm run build:web:ui && npm run pack --workspace=@codexhost/web-server",
+    "build:web:ui": "node --import tsx apps/web-ui/scripts/build.ts",
+    "start:web": "node --import tsx packages/web-server/scripts/preview.ts",
+    "test:web": "npm run test --workspace=@codexhost/web-server",
+    "test:web:browser": "npm run test:browser --workspace=@codexhost/web-server",
+    "test:web:distribution": "npm run test:distribution --workspace=@codexhost/web-server",
     "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",
     "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim --package codexhost-updater",
     "release:prepare": "node scripts/release/prepare-version.mjs",
@@ -40,7 +49,7 @@
     "lint": "eslint . && node tools/check-boundaries.mjs",
     "format": "prettier --write . && cargo fmt --all",
     "format:check": "prettier --check . && cargo fmt --all --check",
-    "test:typescript": "npm run build:typescript && vitest run --config tests/vitest.config.js",
+    "test:typescript": "npm run build:typescript && vitest run --config tests/vitest.config.js && npm run test:web",
     "test:deepseek:coverage": "npm run build:typescript && vitest run --config tests/vitest.deepseek-coverage.config.js",
     "test:rust": "cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
     "test": "npm run test:typescript && npm run test:rust",
@@ -88,6 +97,8 @@
     "@tailwindcss/postcss": "4.3.3",
     "@types/node": "24.13.3",
     "@types/ws": "8.18.1",
+    "tsx": "4.22.4",
+    "vite": "8.1.5",
     "@vitest/coverage-v8": "4.1.10",
     "diff": "8.0.2",
     "esbuild": "0.28.1",

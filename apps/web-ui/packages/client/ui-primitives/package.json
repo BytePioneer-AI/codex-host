@@ -1,0 +1,40 @@
+{
+  "name": "@deepseek-ai/dsh-client-ui-primitives",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-gfm": "^3.1.0",
+    "mdast-util-math": "^3.0.0",
+    "micromark-extension-gfm": "^3.0.0",
+    "micromark-extension-math": "^3.1.0",
+    "micromark-factory-space": "^2.0.1",
+    "micromark-util-character": "^2.1.1",
+    "micromark-util-symbol": "^2.0.1",
+    "micromark-core-commonmark": "^2.0.3",
+    "micromark-util-classify-character": "^2.0.1",
+    "clsx": "^2.0.0",
+    "katex": "^0.16.47",
+    "micromark-util-sanitize-uri": "^2.0.1",
+    "simple-icons": "16.31.0",
+    "shiki": "^4.3.1",
+    "@shikijs/langs": "^4.3.1",
+    "diff": "^9.0.0",
+    "@deepseek-ai/dsh-util-code-language": "*",
+    "anser": "^2.3.5",
+    "@deepseek-ai/dsh-client-store": "*",
+    "@deepseek-ai/dsh-util-workspace-path": "*"
+  }
+}

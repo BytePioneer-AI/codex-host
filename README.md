@@ -84,6 +84,10 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
   <img width="90%" src="docs/imgs/codexhost-native-overview.png" alt="Claude Code, Pi, Grok Build, and Oh My Pi sessions running in Codex Desktop, with Diff review, Fork, Worktree, and Agent switching">
 </div>
 
+## Standalone Web development
+
+This checkout also contains an independent Web/PWA application using the same Harness Adapter sources. Run `npm ci`, `npm run build:web`, then `npm run start:web` for the isolated Claude Code preview. This does not launch or restart Codex Desktop. See [the Web guide](docs/product/standalone-web.md) for plugin distribution, storage isolation and current limitations.
+
 ## Quick Start
 
 **Option 1: npm** (macOS / Windows / Linux)

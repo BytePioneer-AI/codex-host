@@ -203,6 +203,8 @@ interface ActiveTurn {
   /** Native requests raised by agents; they stay open while a held Turn waits for them. */
   agentScopedRequestIds: Set<string>;
   checkpointId: string | null;
+  /** Submitted or observed native User UUID, independent of the opaque Turn identity. */
+  userMessageId: string | null;
   nativeTurnKey: string;
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
@@ -933,6 +935,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interactionByRequestId: new Map(),
       agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId: null,
       nativeTurnKey,
       nativeTurnRef: null,
       cancellationRequested: false,
@@ -964,6 +967,7 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#handleTurnEvent(active, event);
       });
       // Claude preserves caller-assigned User Message UUIDs in native history.
+      active.userMessageId = nativeTurnRef.nativeTurnKey;
       active.nativeTurnRef = nativeTurnRef;
       void running.then(
         (result) => this.#finishResult(active, result),
@@ -1082,6 +1086,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interactionByRequestId: new Map(),
       agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId: null,
       nativeTurnKey,
       nativeTurnRef: null,
       cancellationRequested: false,
@@ -1691,8 +1696,8 @@ class ClaudeHarnessSession implements HarnessSession {
       });
       this.#transport = transport;
       transport.setAutonomousTurnHandler({
-        start: (nativeTurnKey) => {
-          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey);
+        start: (nativeTurnKey, userMessageId) => {
+          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey, userMessageId);
         },
         onEvent: (event) => this.#deliverLiveEvent(this.#autonomousTarget, event),
         onTerminal: (result) => {
@@ -2217,7 +2222,7 @@ class ClaudeHarnessSession implements HarnessSession {
    * it; otherwise it becomes a live autonomous Turn, so the Thread shows it running and a new
    * request waits instead of absorbing it.
    */
-  #startAutonomousTurn(segmentKey: string): ActiveTurn | null {
+  #startAutonomousTurn(segmentKey: string, userMessageId: string | null): ActiveTurn | null {
     if (this.#phase !== "open") return null;
     const current = this.#active;
     if (current?.held) return current;
@@ -2265,6 +2270,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interactionByRequestId: new Map(),
       agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId,
       nativeTurnKey,
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: this.harnessId,
@@ -2748,7 +2754,7 @@ class ClaudeHarnessSession implements HarnessSession {
       : null;
     this.#unpersistedMessageIds = [
       ...new Set([
-        ...(active.nativeTurnRef ? [active.nativeTurnRef.nativeTurnKey] : []),
+        ...(active.userMessageId ? [active.userMessageId] : []),
         ...(active.checkpointId ? [active.checkpointId] : []),
       ]),
     ];

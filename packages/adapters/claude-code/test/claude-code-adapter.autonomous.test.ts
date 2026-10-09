@@ -15,9 +15,10 @@ const SESSION_ID = "00000000-0000-4000-8000-000000000001";
 /** A real Claude Adapter over the real SDK Transport; only the native Query is scripted. */
 async function liveSession() {
   const fakeQuery = new FakeQuery();
+  const history: unknown[] = [];
   let uuid = 0;
   const dependencies: ClaudeAdapterDependencies = {
-    randomUUID: () => `claude-id-${++uuid}`,
+    randomUUID: () => (++uuid === 1 ? SESSION_ID : `claude-id-${uuid}`),
     bypassPermissionsAvailable: () => true,
     inspectInstallation: () => undefined,
     createInspector: () => ({
@@ -31,7 +32,7 @@ async function liveSession() {
     deleteSession: async () => undefined,
     forkSession: async () => ({ sessionId: "derived-session" }),
     getSessionInfo: async () => ({ cwd: "/synthetic" }),
-    readSessionMessages: async () => [],
+    readSessionMessages: async () => structuredClone(history),
     readSubagentMessages: async () => [],
     createTransport: (input) =>
       new ClaudeSdkTransport({
@@ -58,6 +59,7 @@ async function liveSession() {
   return {
     events,
     fakeQuery,
+    history,
     session,
     async close() {
       await session.close();
@@ -176,6 +178,104 @@ function completion(events: readonly HostEvent[], turnId: string) {
 }
 
 describe("Claude live autonomous continuation (issue #495)", () => {
+  it.each([false, true])(
+    "reads history after a failed autonomous Turn using only transcript message IDs (user UUID: %s)",
+    async (hasUserMessage) => {
+      const live = await liveSession();
+      try {
+        await live.session.execute(textTurn("run-tests"));
+        backgroundCommandTurn(live.fakeQuery, "bash-call-1", "bash-task-1");
+        await vi.waitFor(() => expect(completion(live.events, "run-tests")).toBeDefined());
+
+        const userMessageId = "00000000-0000-4000-8000-0000000000a1";
+        const checkpointId = "00000000-0000-4000-8000-0000000000a2";
+        if (hasUserMessage) {
+          commandNotification(live.fakeQuery, userMessageId, "bash-call-1", "bash-task-1");
+        } else {
+          // Native quota failures can answer a task notification without a streamed User UUID.
+          push(live.fakeQuery, {
+            type: "system",
+            subtype: "task_notification",
+            task_id: "bash-task-1",
+            tool_use_id: "bash-call-1",
+            status: "failed",
+            summary: "Background command timed out",
+          });
+        }
+        assistantText(live.fakeQuery, checkpointId, "You've hit your session limit");
+        result(live.fakeQuery, "error_during_execution");
+        await vi.waitFor(() => expect(autonomousTurnIds(live.events)).toHaveLength(1));
+        const [turnId] = autonomousTurnIds(live.events);
+        if (!turnId) throw new Error("Autonomous Turn did not start");
+        await vi.waitFor(() =>
+          expect(completion(live.events, turnId)).toMatchObject({
+            nativeTurnRef: {
+              nativeTurnKey: hasUserMessage ? userMessageId : expect.stringMatching(/^autonomous-/),
+            },
+            outcome: { status: "failed", checkpoint: { checkpointId } },
+          }),
+        );
+
+        // A real Assistant checkpoint still must reach native history before a read succeeds.
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+        live.history.push({
+          type: "assistant",
+          uuid: checkpointId,
+          session_id: SESSION_ID,
+          message: { role: "assistant", content: "You've hit your session limit" },
+        });
+        if (hasUserMessage) {
+          await expect(live.session.readSnapshot()).resolves.toMatchObject({
+            ok: false,
+            error: { code: "sessionBusy" },
+          });
+          live.history.unshift({
+            type: "user",
+            uuid: userMessageId,
+            session_id: SESSION_ID,
+            message: { role: "user", content: "Background command completed" },
+          });
+        }
+        const snapshot = await live.session.readSnapshot();
+        expect(snapshot, JSON.stringify(snapshot)).toMatchObject({ ok: true });
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({ ok: true });
+        await expect(live.session.execute(textTurn("continue"))).resolves.toMatchObject({
+          ok: true,
+        });
+      } finally {
+        await live.close();
+      }
+    },
+  );
+
+  it("does not wait for a synthetic Turn key when an autonomous failure has no checkpoint", async () => {
+    const live = await liveSession();
+    try {
+      await live.session.execute(textTurn("start"));
+      result(live.fakeQuery);
+      await vi.waitFor(() => expect(completion(live.events, "start")).toBeDefined());
+      live.history.push({
+        type: "user",
+        uuid: "claude-id-2",
+        session_id: SESSION_ID,
+        message: { role: "user", content: "start" },
+      });
+      result(live.fakeQuery, "error_during_execution");
+      await vi.waitFor(() => expect(autonomousTurnIds(live.events)).toHaveLength(1));
+      const [turnId] = autonomousTurnIds(live.events);
+      if (!turnId) throw new Error("Autonomous Turn did not start");
+      await vi.waitFor(() =>
+        expect(completion(live.events, turnId)).toMatchObject({ outcome: { status: "failed" } }),
+      );
+      await expect(live.session.readSnapshot()).resolves.toMatchObject({ ok: true });
+    } finally {
+      await live.close();
+    }
+  });
+
   it("shows a background command continuation live and keeps each Segment in its own Turn", async () => {
     const live = await liveSession();
     try {

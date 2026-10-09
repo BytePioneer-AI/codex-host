@@ -56,7 +56,7 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }): void {
     const handler = this.autonomousTurnHandler;
     if (!handler) throw new Error("No fake Claude autonomous Turn handler");
-    handler.start(turn.nativeTurnKey);
+    handler.start(turn.nativeTurnKey, turn.nativeTurnKey);
     for (const event of turn.events) handler.onEvent(event);
     handler.onTerminal(turn.result);
   }
@@ -3182,7 +3182,7 @@ describe("Claude Code HarnessAdapter", () => {
                 turnId: hostTurnIdSchema.parse("racing-request"),
                 commandId: "claude.compact",
               });
-        handler.start("racing-continuation");
+        handler.start("racing-continuation", "racing-continuation");
         await expect(admission).resolves.toMatchObject({
           ok: false,
           error: { code: "sessionBusy", retryable: true },
@@ -3236,7 +3236,7 @@ describe("Claude Code HarnessAdapter", () => {
       const transport = transports[0];
       const handler = transport?.autonomousTurnHandler;
       if (!transport || !handler) throw new Error("Fake Claude transport was not created");
-      handler.start("stray-segment");
+      handler.start("stray-segment", "stray-segment");
       handler.onEvent({ type: "text.delta", messageId: "stray-assistant", delta: "STRAY" });
       handler.onTerminal({ status: "succeeded" });
       transport.delta("OWN");

@@ -17,6 +17,10 @@ Linux 版本支持 x86-64 和 ARM64 上的官方 ChatGPT `.deb` 和 `.rpm` 包�
 
 运行时要求 `/proc` 已挂载，并且 Linux 支持 `pidfd`。目前不支持 Snap、Flatpak、AppImage、本地或迁移后的安装、包装脚本或 `alternatives` 启动器、跨架构执行，以及 codexhost Linux installer 包。codexhost 在 Linux 上通过 npm 安装和更新。
 
+## 原生 Codex CLI
+
+可以使用 `codexhost launch --codex-cli /absolute/path/to/codex` 或在 Launcher 的环境中设置 `CODEX_CLI_PATH`，独立选择原生 Codex CLI。未指定时仍使用包内 CLI；显式选择无效时直接报错。该设置不改变 Desktop 安装格式的支持范围。优先级、校验和诊断见[原生 Codex CLI 选择](../../architecture/native-codex-cli-selection.md)。
+
 ## Renderer 兼容性
 
 Renderer 集成失败会在后台恢复，不会显示兼容弹窗，也不会写入本地警告确认。外部 Agent 集成不可用时，受管 Desktop 仍可通过官方 Codex 路由使用。Controller 的首次握手仍会对格式错误或不受支持的 readiness 输出按失败关闭处理。

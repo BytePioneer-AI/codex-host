@@ -780,6 +780,7 @@ export class AppServerHost {
       consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
       diagnose: (error) => this.#diagnose(error),
       subagentRunning: (threadId) => this.#subagentThreadStatuses.get(threadId) === "active",
+      hasRunningDescendants: (threadId) => this.#hasRunningSubagents(threadId),
       idleRelease: {
         queue: this.#desktopRequests,
         onClosed: async (thread) => {
@@ -4994,7 +4995,8 @@ export class AppServerHost {
         !this.#hasRunningSubagents(thread.id) &&
         !thread.session.hasBackgroundWork?.()
       ) {
-        await this.#externalRuntime.discardUnavailableIdle(thread);
+        // Do not await: discard waits on outputTask, and this handler runs inside it.
+        void this.#externalRuntime.discardUnavailableIdle(thread);
       }
       return;
     }
@@ -5158,6 +5160,12 @@ export class AppServerHost {
   }
 
   async #refreshOpenSubagentThread(threadId: string, terminal = true): Promise<void> {
+    await this.#desktopRequests.run(threadId, async () => {
+      await this.#refreshOpenSubagentThreadBody(threadId, terminal);
+    });
+  }
+
+  async #refreshOpenSubagentThreadBody(threadId: string, terminal: boolean): Promise<void> {
     const child = this.#externalRuntime.get(threadId);
     if (!child) return;
     const previousItems = new Map(

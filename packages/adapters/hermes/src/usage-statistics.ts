@@ -55,13 +55,18 @@ export function hermesUsageEntry(row: Record<string, unknown>): HarnessUsageEntr
   const cacheRead = tokenCount(row.cache_read_tokens) ? row.cache_read_tokens : 0;
   const cacheWrite = tokenCount(row.cache_write_tokens) ? row.cache_write_tokens : 0;
   const reasoning = tokenCount(row.reasoning_tokens) ? row.reasoning_tokens : 0;
-  if (apiCalls === 0 && input === 0 && output === 0) return null;
+  if (apiCalls === 0 && input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0) {
+    return null;
+  }
   const id = typeof row.id === "string" && row.id.length > 0 ? row.id : null;
-  const lastActivity =
-    typeof row.last_activity_at === "number" ? Math.floor(row.last_activity_at * 1000) : null;
-  const started = typeof row.started_at === "number" ? Math.floor(row.started_at * 1000) : null;
-  const at = lastActivity ?? started;
-  if (id === null || at === null || at <= 0) return null;
+  // Safe-integer seconds that still denote a real date; `usageEntryFromRequest` rejects the rest.
+  const epochSeconds = (value: unknown): number | null => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return null;
+    const ms = Math.floor(value * 1000);
+    return Number.isSafeInteger(ms) && !Number.isNaN(new Date(ms).getTime()) ? ms : null;
+  };
+  const at = epochSeconds(row.last_activity_at) ?? epochSeconds(row.started_at);
+  if (id === null || at === null) return null;
   const request: HostUsageRequest = {
     requestId: id,
     ...(typeof row.model === "string" && row.model.length > 0 ? { model: row.model } : {}),

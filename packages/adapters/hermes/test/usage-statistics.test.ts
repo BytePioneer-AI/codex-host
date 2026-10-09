@@ -79,6 +79,24 @@ it("skips sessions without any usage and falls back for metadata", async () => {
   });
 });
 
+it("keeps cache-only sessions and rejects unusable timestamps", async () => {
+  const file = await writeDatabase(
+    `('cacheonly', NULL, '/work', NULL, NULL, 5, 6, 0, 0, 0, 300, 0, 0),
+     ('badtime', 'glm-5.2', '/work', NULL, NULL, 1e18, 1e18, 2, 10, 3, 0, 0, 0),
+     ('fallback', NULL, NULL, NULL, NULL, 5, 1e18, 1, 4, 2, 0, 0, 0)`,
+  );
+  const capability = createHermesUsageStatistics({ HERMES_HOME: home });
+  await capability.listSources(signal);
+  const entries = await capability.readSource(file, signal);
+  // Cache-only usage is real spend; absurd seconds fall back to started_at, or drop the row
+  // when both timestamps are out of range.
+  expect(entries.map((entry) => entry.id).sort()).toEqual(["cacheonly", "fallback"]);
+  const cacheOnly = entries.find((entry) => entry.id === "cacheonly");
+  expect(cacheOnly?.cachedInputTokens).toBe(300);
+  expect(cacheOnly?.occurredAtMs).toBe(6_000);
+  expect(entries.find((entry) => entry.id === "fallback")?.occurredAtMs).toBe(5_000);
+});
+
 it("has no source without a database and tracks database changes", async () => {
   const capability = createHermesUsageStatistics({ HERMES_HOME: home });
   expect(await capability.listSources(signal)).toEqual([]);

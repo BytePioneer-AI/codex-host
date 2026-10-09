@@ -12,12 +12,15 @@ pub(crate) fn is_desktop_helper(_stock_codex_path: &std::path::Path) -> bool {
             .and_then(|value| value.parse::<u32>().ok())
             .filter(|id| *id != 0)
         {
-            return is_helper_descendant(std::process::id(), launcher_id, |id| {
+            if is_helper_descendant(std::process::id(), launcher_id, |id| {
                 codexhost_platform::process_snapshot(id).ok()
-            });
+            }) {
+                return true;
+            }
+            // Stale/exited launcher PID: keep checking Desktop ancestry below.
         }
-        // Env-less Desktop still nests helpers under ChatGPT.exe. Detect that so
-        // bundled Host Runtime discovery cannot re-enter for one-shot app-servers.
+        // Env-less or stale-launcher Desktop still nests helpers under ChatGPT.exe.
+        // Detect that so bundled Host Runtime discovery cannot re-enter for helpers.
         is_helper_under_live_desktop(std::process::id(), |id| {
             codexhost_platform::process_snapshot(id).ok()
         })

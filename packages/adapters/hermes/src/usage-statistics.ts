@@ -7,7 +7,11 @@ import type {
   HarnessUsageSource,
   HarnessUsageStatisticsCapability,
 } from "@codexhost/harness-adapter";
-import { usageEntryFromRequest, usageSessionTitle, withUsageSession } from "@codexhost/harness-adapter/usage-statistics";
+import {
+  usageEntryFromRequest,
+  usageSessionTitle,
+  withUsageSession,
+} from "@codexhost/harness-adapter/usage-statistics";
 
 import type { HostUsageRequest } from "@codexhost/harness-adapter";
 
@@ -21,7 +25,9 @@ import type { HostUsageRequest } from "@codexhost/harness-adapter";
 export function hermesStateDatabasePath(environment: NodeJS.ProcessEnv): string {
   const home = environment.HOME || environment.USERPROFILE || os.homedir();
   const configured = environment.HERMES_HOME;
-  return path.resolve(configured ? path.join(configured, "state.db") : path.join(home, ".hermes", "state.db"));
+  return path.resolve(
+    configured ? path.join(configured, "state.db") : path.join(home, ".hermes", "state.db"),
+  );
 }
 
 async function fingerprint(file: string): Promise<string | null> {
@@ -51,7 +57,8 @@ export function hermesUsageEntry(row: Record<string, unknown>): HarnessUsageEntr
   const reasoning = tokenCount(row.reasoning_tokens) ? row.reasoning_tokens : 0;
   if (apiCalls === 0 && input === 0 && output === 0) return null;
   const id = typeof row.id === "string" && row.id.length > 0 ? row.id : null;
-  const lastActivity = typeof row.last_activity_at === "number" ? Math.floor(row.last_activity_at * 1000) : null;
+  const lastActivity =
+    typeof row.last_activity_at === "number" ? Math.floor(row.last_activity_at * 1000) : null;
   const started = typeof row.started_at === "number" ? Math.floor(row.started_at * 1000) : null;
   const at = lastActivity ?? started;
   if (id === null || at === null || at <= 0) return null;
@@ -62,7 +69,9 @@ export function hermesUsageEntry(row: Record<string, unknown>): HarnessUsageEntr
     outputTokens: output,
     ...(reasoning > 0 ? { reasoningOutputTokens: reasoning } : {}),
     // Both buckets exist whenever either does: the writer records them as a pair.
-    ...(cacheRead > 0 || cacheWrite > 0 ? { cachedInputTokens: cacheRead, cacheWriteInputTokens: cacheWrite } : {}),
+    ...(cacheRead > 0 || cacheWrite > 0
+      ? { cachedInputTokens: cacheRead, cacheWriteInputTokens: cacheWrite }
+      : {}),
   };
   const entry = usageEntryFromRequest(request, at);
   if (!entry) return null;

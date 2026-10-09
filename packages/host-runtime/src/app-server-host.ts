@@ -4985,7 +4985,17 @@ export class AppServerHost {
     if (event.type === "session.faulted") {
       this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));
+      this.#externalRuntime.markSessionUnavailable(thread);
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
+      // Idle Threads must not keep a dead Session; the next open restores from disk.
+      if (
+        !thread.running &&
+        !thread.activeTurnId &&
+        !this.#hasRunningSubagents(thread.id) &&
+        !thread.session.hasBackgroundWork?.()
+      ) {
+        await this.#externalRuntime.discardUnavailableIdle(thread);
+      }
       return;
     }
 

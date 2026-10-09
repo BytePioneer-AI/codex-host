@@ -2904,6 +2904,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
+  readonly #environment: NodeJS.ProcessEnv;
   readonly #importIndex: ClaudeSessionImportIndex;
   readonly #importScope = new SessionImportScope({
     closedMessage: "Claude Code Adapter is closed",
@@ -2924,6 +2925,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     const environment = options.environment ?? process.env;
+    this.#environment = environment;
     this.#importIndex = new ClaudeSessionImportIndex(environment);
     this.usageStatistics = createClaudeUsageStatistics(environment);
     this.#pendingSessions = new ClaudePendingSessions(environment);
@@ -3325,7 +3327,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       () => this.#sessions.delete(session),
       (planLimit) => this.#recordPlanLimit(session, planLimit),
       {
-        ...(input.environment ? { environment: input.environment } : {}),
+        // Broker delegation variables supplement the native login/shell environment.
+        ...(input.environment
+          ? { environment: { ...this.#environment, ...input.environment } }
+          : {}),
         bypassPermissionsAvailable,
         openMode,
         pendingSessions: this.#pendingSessions,

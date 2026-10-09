@@ -91,6 +91,12 @@ be supplied through this mechanism. The managed remote Claude plugin opts in,
 including the scoped Node executable used by the CLI, so its shell tools can
 read/delegate through the owning Host. Other broker clients retain their default
 behavior. Native login files and keychain state stay in the user's home/session.
+The Claude adapter overlays this per-session map on its own native environment
+for both create and resume. The broker still rejects foreign HOME/PATH values;
+the adapter retains its existing HOME, system PATH, proxy and configuration
+variables. Replacing that environment with only the scoped delegation variables
+can make real Turns fail OAuth refresh even while account inspection succeeds.
+The overlay is a fresh object for each Session and does not mutate either input.
 Directly launched packaged remote Runtimes also resolve the sibling native CLI
 and their own Node executable when Launcher-provided paths are absent. Delegation
 therefore stays on the Runtime's installed candidate instead of a stale PATH CLI;

@@ -592,6 +592,52 @@ describe("Claude Code HarnessAdapter", () => {
     );
     await adapter.close();
   });
+  it.each(["create", "resume"] as const)(
+    "preserves native environment with scoped delegation on %s",
+    async (kind) => {
+      const nativeEnvironment = {
+        HOME: "/native-user",
+        PATH: "/usr/bin:/bin:/native-tools",
+        HTTPS_PROXY: "http://127.0.0.1:2080",
+        CLAUDE_CONFIG_DIR: "/native-user/claude-config",
+      };
+      const { adapter, dependencies } = fixture({ environment: nativeEnvironment });
+      try {
+        for (const threadId of ["first-thread", "second-thread"]) {
+          const environment = {
+            CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+            CODEXHOST_RUNTIME_TOKEN: `synthetic-${threadId}`,
+            CODEXHOST_THREAD_ID: threadId,
+          };
+          const opened = await adapter.open({
+            cwd: "/synthetic",
+            environment,
+            ...(kind === "resume"
+              ? {
+                  kind,
+                  nativeRef: nativeSessionRefSchema.parse({
+                    harnessId: "claude-code",
+                    nativeSessionId: `native-${threadId}`,
+                    formatVersion: 1,
+                  }),
+                }
+              : { kind }),
+          });
+          if (!opened.ok) throw new Error(opened.error.message);
+          await opened.value.execute(textTurn(`environment-${threadId}`));
+          expect(dependencies.createTransport).toHaveBeenLastCalledWith(
+            expect.objectContaining({ environment: { ...nativeEnvironment, ...environment } }),
+          );
+          expect(environment).not.toHaveProperty("HOME");
+          await opened.value.close();
+        }
+        expect(nativeEnvironment).not.toHaveProperty("CODEXHOST_THREAD_ID");
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
   it("opens and closes unused Sessions without creating a Transport", async () => {
     const { adapter, dependencies } = fixture();
     const session = await openSession(adapter);

@@ -813,6 +813,20 @@ fn resolve_stock_codex_path(
     let stock_codex_path = match env::var_os(STOCK_CODEX_PATH_ENV) {
         Some(configured) => PathBuf::from(configured),
         None => {
+            #[cfg(target_os = "windows")]
+            if let Some(local_app_data) = env::var_os("LOCALAPPDATA")
+                && let Ok(stock_copy) =
+                    PathBuf::from(local_app_data).join("codexhost/stock/codex-real.exe").canonicalize()
+                && stock_copy.is_file()
+            {
+                // IFEO redirects every codex.exe image to this shim; resolving
+                // stock through the managed cache would recurse into the shim.
+                return Ok(validate_proxy_target(
+                    current_executable,
+                    &stock_copy,
+                )?);
+            }
+
             #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             return Err(format!("{STOCK_CODEX_PATH_ENV} is required").into());
 
@@ -948,7 +962,16 @@ pub fn run_proxy(arguments: &[OsString]) -> ShimResult<i32> {
 }
 
 pub fn run_from_environment() -> ShimResult<i32> {
-    let arguments = env::args_os().skip(1).collect::<Vec<_>>();
+    let mut arguments = env::args_os().skip(1).collect::<Vec<_>>();
+    // IFEO Debugger invocation shape: "<shim> <original image path> <original
+    // arguments...>". The injected image path is not a Codex CLI argument.
+    if arguments.len() > 1
+        && arguments
+            .first()
+            .is_some_and(|argument| Path::new(argument).is_file())
+    {
+        arguments.remove(0);
+    }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if arguments.first().and_then(|argument| argument.to_str())
         == Some("--codexhost-remote-terminate")

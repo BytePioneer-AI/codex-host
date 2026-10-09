@@ -238,6 +238,13 @@ fn desktop_cli_candidate(
 
 #[cfg(target_os = "windows")]
 fn find_desktop_cli_cache(local_app_data: &Path) -> Result<Option<PathBuf>, PlatformError> {
+    // The host chain swaps the managed CLI image for the shim; the pristine CLI
+    // is preserved beside it as the stock proxy target. Prefer it so the stock
+    // path never identifies the shim itself.
+    let stock_copy = local_app_data.join("codexhost/stock/codex-real.exe");
+    if let Ok(canonical) = stock_copy.canonicalize() {
+        return Ok(Some(canonical));
+    }
     let cache_root = local_app_data.join("OpenAI/Codex/bin");
     let canonical_cache_root = match cache_root.canonicalize() {
         Ok(root) => root,

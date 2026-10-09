@@ -46,7 +46,25 @@ fn run(command: &mut Command) -> Result<(), Box<dyn Error>> {
         thread::sleep(Duration::from_millis(100));
     }
 }
+fn cancel_path(request: &Request) -> PathBuf {
+    request.status_path.with_extension("cancel")
+}
+fn cancel_requested(request: &Request) -> bool {
+    let Ok(bytes) = fs::read(cancel_path(request)) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    value["targetVersion"].as_str() == Some(request.version.as_str())
+}
 fn status(request: &Request, phase: &str, error: Option<String>) -> Result<(), Box<dyn Error>> {
+    // Host writes remote-update.cancel before recording failed. That marker is the
+    // source of truth for cancellation: the helper must not install after it appears,
+    // even if a late rename briefly overwrites the JSON status file.
+    if phase != "failed" && (cancel_requested(request) || status_already_failed(request)?) {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     let temporary = request.status_path.with_extension("tmp");
     fs::write(
         &temporary,
@@ -54,7 +72,15 @@ fn status(request: &Request, phase: &str, error: Option<String>) -> Result<(), B
             &json!({"phase":phase,"targetVersion":request.version,"error":error,"updaterPid":std::process::id()}),
         )?,
     )?;
+    // Re-check immediately before publishing so a Host cancel during the write still wins.
+    if phase != "failed" && (cancel_requested(request) || status_already_failed(request)?) {
+        let _ = fs::remove_file(&temporary);
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     fs::rename(temporary, &request.status_path)?;
+    if phase != "failed" && cancel_requested(request) {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     Ok(())
 }
 fn remote(request: &Request, action: &str) -> Result<(), Box<dyn Error>> {
@@ -85,13 +111,31 @@ pub(crate) fn apply(path: &Path) -> Result<(), Box<dyn Error>> {
             return Err("remote updater paths must be absolute".into());
         }
     }
+    // If the Host already timed out (cancel marker and/or failed status), do not install.
+    if status_already_failed(&request)? || cancel_requested(&request) {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     // Record this process first: the service that started it only knows it by this PID.
     status(&request, "installing", None)?;
+    // Host may have timed out between the check and this write; bail before installing.
+    if status_already_failed(&request)? || cancel_requested(&request) {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     let result = apply_locked(&request);
     if let Err(error) = &result {
         let _ = status(&request, "failed", Some(error.to_string()));
     }
     result
+}
+fn status_already_failed(request: &Request) -> Result<bool, Box<dyn Error>> {
+    let Ok(bytes) = fs::read(&request.status_path) else {
+        return Ok(false);
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(false);
+    };
+    Ok(value["phase"].as_str() == Some("failed")
+        && value["targetVersion"].as_str() == Some(request.version.as_str()))
 }
 fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&request.lock_directory)?;
@@ -121,6 +165,9 @@ fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
                 &json!({"ownerPid":std::process::id(),"statusPath":null,"remoteUpdate":true}),
             )?,
         )?;
+        if cancel_requested(request) || status_already_failed(request)? {
+            return Err("Remote update was cancelled before the helper started".into());
+        }
         let before: serde_json::Value = serde_json::from_slice(&fs::read(
             request.package_root.join("app/codexhost-distribution.json"),
         )?)?;

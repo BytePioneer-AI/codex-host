@@ -10,6 +10,7 @@ import {
   realpath,
   stat,
   readdir,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -67,8 +68,10 @@ async function installation(
 export class RuntimeMaintenance {
   readonly #running: Promise<Installation | null>;
   readonly #statusPath: string;
+  readonly #cancelPath: string;
   #update: Update = { phase: "idle", targetVersion: null, error: null };
   #blocked = false;
+  #watch: ReturnType<typeof setInterval> | null = null;
   #starting: Promise<RuntimeStatus> | null = null;
   #startingVersion: string | null = null;
   constructor(
@@ -79,6 +82,30 @@ export class RuntimeMaintenance {
     this.#statusPath = path.join(
       options.environment.CODEXHOST_DATA_DIR ?? path.join(home, ".codexhost", "remote", "data"),
       "remote-update.json",
+    );
+    this.#cancelPath = path.join(path.dirname(this.#statusPath), "remote-update.cancel");
+  }
+  #ensureWatching(): void {
+    if (this.#watch) return;
+    this.#watch = setInterval(() => {
+      void this.status()
+        .catch(() => undefined)
+        .then(() => {
+          if (!this.#blocked && this.#watch) {
+            clearInterval(this.#watch);
+            this.#watch = null;
+          }
+        });
+    }, UPDATER_WATCH_INTERVAL_MS);
+    this.#watch.unref();
+  }
+  async #recordStartFailure(version: string, failure: string): Promise<void> {
+    // Cancel marker first: helper treats it as authoritative even if JSON is overwritten.
+    await writeFile(this.#cancelPath, JSON.stringify({ targetVersion: version }), { mode: 0o600 });
+    await writeFile(
+      this.#statusPath,
+      JSON.stringify({ phase: "failed", targetVersion: version, error: failure }),
+      { mode: 0o600 },
     );
   }
   #sshPending = new Set<string>();
@@ -152,7 +179,9 @@ export class RuntimeMaintenance {
       installation(this.options.runtimePath, this.options.environment),
       this.#resources(),
     ]);
-    if (this.#update.phase === "idle" || this.#blocked) {
+    // Also re-read after a recorded failure: a late helper may still be alive, or a kill may
+    // have left installing/restarting on disk that should surface instead of a stale failed.
+    if (this.#update.phase === "idle" || this.#blocked || this.#update.phase === "failed") {
       try {
         const value: unknown = JSON.parse(await readFile(this.#statusPath, "utf8"));
         const parsed = runtimeStatusSchema.shape.update.parse(value);
@@ -176,8 +205,16 @@ export class RuntimeMaintenance {
             parsed.error = "The previous remote update was interrupted; retry the update";
           }
         }
-        if (this.#update === observedUpdate) this.#update = parsed;
-        if (["failed", "succeeded"].includes(this.#update.phase)) this.#blocked = false;
+        if (this.#update === observedUpdate) {
+          this.#update = parsed;
+          if (["installing", "restarting"].includes(this.#update.phase)) {
+            // A late helper after start-timeout must keep operations blocked and watched.
+            this.#blocked = true;
+            this.#ensureWatching();
+          } else if (["failed", "succeeded"].includes(this.#update.phase)) {
+            this.#blocked = false;
+          }
+        }
       } catch {
         /* No previous operation, or an atomic replacement is in progress. */
       }
@@ -264,6 +301,7 @@ export class RuntimeMaintenance {
     await chmod(helper, 0o700);
     const request = path.join(work, "request.json");
     this.#update = { phase: "installing", targetVersion: version, error: null };
+    await unlink(this.#cancelPath).catch(() => undefined);
     await writeFile(this.#statusPath, JSON.stringify(this.#update), { mode: 0o600 });
     await writeFile(
       request,
@@ -282,41 +320,45 @@ export class RuntimeMaintenance {
     );
     // The service's supervisor terminates every descendant when the service stops, detached
     // ones included. A shell starts the helper in the background and exits, which re-parents
-    // the helper to init so it survives the restart it performs.
+    // the helper to init so it survives the restart it performs. Echo $! so a start-timeout
+    // can still terminate that helper before it installs.
     const starter = spawn(
       "/bin/sh",
-      ["-c", '"$0" remote --request "$1" </dev/null >/dev/null 2>&1 &', helper, request],
-      { detached: true, stdio: "ignore", env: this.options.environment },
+      ["-c", '"$0" remote --request "$1" </dev/null >/dev/null 2>&1 & echo $!', helper, request],
+      { detached: true, stdio: ["ignore", "pipe", "ignore"], env: this.options.environment },
     );
+    let pidOutput = "";
+    starter.stdout?.on("data", (chunk: Buffer | string) => {
+      pidOutput += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    });
+    // `close` runs after stdio ends; `exit` can fire earlier while PID bytes are still buffered.
     await new Promise<void>((resolve, reject) => {
       starter.once("error", reject);
-      starter.once("exit", (code) =>
+      starter.once("close", (code) =>
         code === 0 ? resolve() : reject(new Error("Remote updater could not be started")),
       );
     });
+    const helperPid = Number.parseInt(pidOutput.trim(), 10);
+    if (!Number.isSafeInteger(helperPid) || helperPid <= 0) {
+      throw new Error("Remote updater could not be started");
+    }
     // The helper records its own PID first; from then on status() can tell whether it is alive.
     const deadline = Date.now() + UPDATER_START_TIMEOUT_MS;
     while (!(await this.#helperReported())) {
       if (Date.now() >= deadline) {
+        try {
+          process.kill(helperPid);
+        } catch {
+          /* Already exited, or we lack permission to signal it. */
+        }
         const failure = "Remote updater did not start";
-        await writeFile(
-          this.#statusPath,
-          JSON.stringify({ phase: "failed", targetVersion: version, error: failure }),
-          { mode: 0o600 },
-        );
+        await this.#recordStartFailure(version, failure);
         throw new Error(failure);
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     // Requests stay blocked until the helper finishes or dies; nothing else may be asking.
-    const watch = setInterval(() => {
-      void this.status()
-        .catch(() => undefined)
-        .then(() => {
-          if (!this.#blocked) clearInterval(watch);
-        });
-    }, UPDATER_WATCH_INTERVAL_MS);
-    watch.unref();
+    this.#ensureWatching();
   }
   async #helperReported(): Promise<boolean> {
     try {

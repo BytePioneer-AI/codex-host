@@ -25,8 +25,12 @@ export interface ModelDirectoryState {
   retainedEffort?: string;
   /** Whether the current selection is present in the available catalog; null while unresolved. */
   routable: boolean | null;
-  /** Successfully loaded provider groups (last good load). */
+  /** Models of the current Harness only; shared by the model menu and /model command. */
   groups: readonly ModelProviderGroup[];
+  /** All ready Harnesses from the same authoritative catalog. */
+  harnesses: readonly ModelProviderGroup[];
+  /** Harness fixed by native session history, or null before the first Turn. */
+  boundHarnessId: string | null;
   /** Provider-local failures from the last load; usable groups stay usable. */
   failures: readonly ModelCatalogFailure[];
   /** Lifecycle of the in-flight operation. */
@@ -44,6 +48,8 @@ export class ModelDirectory {
     current: null,
     routable: null,
     groups: [],
+    harnesses: [],
+    boundHarnessId: null,
     failures: [],
     status: "idle",
     pending: null,
@@ -192,6 +198,9 @@ export class ModelDirectory {
     const catalog = this.catalog.store.getSnapshot();
     const projected = modelSelectionProjection(this.projected.getSnapshot());
     const intended = projected?.next ?? catalog.value?.default;
+    const boundHarnessId = projected?.lastUsed?.provider ?? null;
+    const harnesses = catalog.value?.groups ?? [];
+    const groups = harnesses.filter((group) => group.id === (boundHarnessId ?? intended?.provider));
     const reasoning = intended === undefined ? undefined : this.catalog.reasoningFor(intended);
     const effort = intended?.reasoningEffort ?? reasoning?.defaultEffort;
     const retainedEffort =
@@ -203,7 +212,9 @@ export class ModelDirectory {
         current: catalog.value === null ? null : this.store.getSnapshot().current,
         ...(retainedEffort === undefined ? {} : { retainedEffort }),
         routable: null,
-        groups: catalog.value?.groups ?? [],
+        groups,
+        harnesses,
+        boundHarnessId,
         failures: catalog.value?.failures ?? [],
         status: catalog.status === "error" ? "error" : "loading",
         pending: this.store.getSnapshot().pending,
@@ -212,13 +223,8 @@ export class ModelDirectory {
       return;
     }
     const selection = projected.next ?? catalog.value.default;
-    // CodexHost: providers are Harnesses, and a Session that already ran on one Harness cannot
-    // move its native session to another, so the picker offers only that Harness's models.
-    const lockedProvider = projected.lastUsed?.provider;
-    const groups =
-      lockedProvider === undefined
-        ? catalog.value.groups
-        : catalog.value.groups.filter((group) => group.id === lockedProvider);
+    // Provider is the legacy wire field for Harness identity. Native history fixes it;
+    // before the first Turn, the Harness picker may change it through the same selection RPC.
     const routable = groups.some(
       (group) =>
         group.id === selection.provider &&
@@ -229,7 +235,9 @@ export class ModelDirectory {
       ...(retainedEffort === undefined ? {} : { retainedEffort }),
       routable,
       groups,
-      failures: lockedProvider === undefined ? catalog.value.failures : [],
+      harnesses,
+      boundHarnessId,
+      failures: catalog.value.failures,
       status: this.store.getSnapshot().status === "selecting" ? "selecting" : "ready",
       pending: this.store.getSnapshot().pending,
       error: null,

@@ -43,6 +43,11 @@ export const en = {
 /** Simplified Chinese dictionary for the current-session popup gate. */
 export const accessZh = {
   mode: "访问模式，当前：{name}",
+  "native.atCreate": "此 Harness 仅允许在创建原生会话前选择权限模式。",
+  "native.confirm.title": "启用 {name}？",
+  "native.confirm.description": "此原生模式可能跳过权限确认，请确认你信任当前任务。",
+  "native.confirm.enable": "启用此模式",
+  "native.error": "权限切换失败：{message}",
   close: "关闭",
   "preset.readOnly": "仅可查看",
   "preset.workspaceWrite": "工作区内修改",
@@ -69,6 +74,13 @@ export type PermissionAccessKey = keyof typeof accessZh;
 /** English dictionary for the current-session popup gate. */
 export const accessEn = {
   mode: "Access mode, current: {name}",
+  "native.atCreate":
+    "This Harness only allows permission selection before creating its native session.",
+  "native.confirm.title": "Enable {name}?",
+  "native.confirm.description":
+    "This native mode may skip permission checks. Only enable it for a trusted task.",
+  "native.confirm.enable": "Enable mode",
+  "native.error": "Permission switch failed: {message}",
   close: "Close",
   "preset.readOnly": "Read Only",
   "preset.workspaceWrite": "Workspace Write",

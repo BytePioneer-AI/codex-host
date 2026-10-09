@@ -471,7 +471,11 @@ const CONTENT_TYPES: Record<string, string> = {
   ".map": "application/json; charset=utf-8",
 };
 
-function contentTypeOf(path: string): string {
+/** Resolve the MIME type shared by Web assets and Harness brand resources.
+ * @param path Asset file path.
+ * @returns Known content type, or an opaque binary fallback.
+ */
+export function contentTypeOf(path: string): string {
   const dot = path.lastIndexOf(".");
   return CONTENT_TYPES[dot < 0 ? "" : path.slice(dot)] ?? "application/octet-stream";
 }

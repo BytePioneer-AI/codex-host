@@ -1,0 +1,6 @@
+{
+  "id": "other",
+  "name": "Other Harness",
+  "entry": "./plugin.ts",
+  "icon": "./icon.svg"
+}

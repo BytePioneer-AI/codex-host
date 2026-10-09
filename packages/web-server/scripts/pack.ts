@@ -3,7 +3,7 @@
  *
  *   dist/codexhost-web/
  *     server.mjs              bundled server (ws, web-push, qrcode-terminal inlined)
- *     preview.mjs             isolated localhost Claude Code launcher
+ *     preview.mjs             isolated localhost launcher (excludes Codex/Pi)
  *     web/                    Vite shell + composed client plugins + plugins.json
  *     adapters/codex/         bundled Codex Harness adapter
  *     adapters/<id>/          optional prebuilt Harness plugins
@@ -160,9 +160,11 @@ writeFileSync(
 
 To preview alongside CodexHost Desktop, use \`node preview.mjs\` (requires bundled Claude Code).
 This launcher removes inherited CODEXHOST_* variables, NODE_OPTIONS and NODE_PATH from the server environment.
-It enables only Claude Code from this distribution, listens on 127.0.0.1, keeps authentication enabled,
+It defaults to Claude Code, listens on 127.0.0.1, keeps authentication enabled,
 and uses ~/.codexhost-web-preview and ~/codexhost-web-preview-workspace.
-Optional preview flags: --port, --data, --workspace. Stop with Ctrl+C.
+Use \`--harness all\` for every bundled session plugin except Codex/Pi, or \`--harness <id,...>\` for a subset.
+Selection requires installed/authenticated native CLIs and does not imply full Web capability verification.
+Optional preview flags: --port, --data, --workspace, --harness. Stop with Ctrl+C.
 Do not launch server.mjs directly from a CodexHost-managed session with inherited Desktop settings.
 Codex and Pi are intentionally excluded from preview; their CLI routing still needs separate verification.
 

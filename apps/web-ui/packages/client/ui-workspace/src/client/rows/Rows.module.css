@@ -117,6 +117,7 @@
 }
 
 .slot {
+  position: relative;
   flex: none;
   width: 16px;
   height: 20px;
@@ -124,6 +125,20 @@
   align-items: center;
   justify-content: center;
   color: var(--dsw-alias-label-tertiary);
+}
+
+.statusOverlay {
+  display: contents;
+}
+
+/* Keep the actual Harness visible while activity overlays a small status badge. */
+.slot:has([data-harness-id]) .statusOverlay {
+  display: inline-flex;
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  transform: scale(0.65);
+  transform-origin: bottom right;
 }
 
 .visuallyHidden {

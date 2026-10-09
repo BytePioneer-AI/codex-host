@@ -290,7 +290,7 @@ describe("Sessions with a scripted Harness", () => {
     );
     assert.deepEqual(
       modes.options.map((option) => option.value),
-      ["ask", "yolo"],
+      ["ask", "yolo", "reject-native"],
     );
     const result = await bench.call<{ result: { kind: string } }>("commands/execute", {
       agentId: sessionId,
@@ -310,6 +310,48 @@ describe("Sessions with a scripted Harness", () => {
       args: { request: { sessionId, provider: "other", model: "x" } },
     });
     assert.equal(rejected.ok, false);
+  });
+
+  it("keeps native catalogs session-scoped, forwards live IDs and rejects creation-only changes", async () => {
+    const fakeId = await newSession();
+    await prompt(fakeId, "native live");
+    await waitFor(() => turnEnds(fakeId).length === 1, "live session");
+    await bench.call("commands/execute", { agentId: fakeId, line: "/permission yolo" });
+    assert.ok(
+      defined(globalThis.fakeHarnessLog).some(
+        (entry) => entry.command === "permissionMode.select" && entry.permissionModeId === "yolo",
+      ),
+    );
+    const otherId = await newSession();
+    await bench.call("session/selectModel", {
+      request: { sessionId: otherId, provider: "other", model: "other-model" },
+    });
+    const projection = (id: string) =>
+      bench.data.readJson<Record<string, unknown>>(`sessions/${id}/projections.json`, {});
+    assert.deepEqual(projection(fakeId).harnessIdentity, { id: "fake", name: "Fake Harness" });
+    assert.deepEqual(projection(otherId).harnessIdentity, { id: "other", name: "Other Harness" });
+    const other = projection(otherId).nativePermissions as {
+      locked: boolean;
+      catalog: { modes: Array<{ id: string; label: string; dangerous?: boolean }> };
+    };
+    assert.equal(other.locked, false);
+    assert.equal(other.catalog.modes[0]?.label, "Native Auto");
+    assert.equal(other.catalog.modes[1]?.dangerous, true);
+    await prompt(otherId, "native creation");
+    await waitFor(() => turnEnds(otherId).length === 1, "creation-only session");
+    const refused = await bench.call<{ result: { kind: string } }>("commands/execute", {
+      agentId: otherId,
+      line: "/permission other-full",
+    });
+    assert.equal(refused.result.kind, "error");
+    const fakeCatalog = await bench.call<{ options: Array<{ value: string }> }>(
+      "permissionPresets/catalog",
+      { sessionId: fakeId },
+    );
+    assert.deepEqual(
+      fakeCatalog.options.map((mode) => mode.value),
+      ["ask", "yolo", "reject-native"],
+    );
   });
 
   it("rejects attachments instead of dropping them", async () => {

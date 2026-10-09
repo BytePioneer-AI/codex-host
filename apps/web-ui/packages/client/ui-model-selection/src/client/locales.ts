@@ -11,6 +11,11 @@
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
   "provider.account": "DeepSeek 账号",
+  "harness.select": "选择 Harness",
+  "harness.aria": "选择 Harness，当前 {name}",
+  "harness.bound": "当前会话已绑定此 Harness；使用其他 Harness 请新建会话。",
+  "harness.unavailable": "不可用",
+  "harness.empty": "没有就绪的 Harness。",
   "command.label": "模型",
   "command.description": "选择本会话使用的模型",
   "option.loadError": "目录加载失败：{message}",
@@ -42,6 +47,12 @@ export type ModelKey = keyof typeof zh;
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
   "provider.account": "DeepSeek Account",
+  "harness.select": "Select Harness",
+  "harness.aria": "Select Harness, current {name}",
+  "harness.bound":
+    "This conversation is bound to its Harness. Start a new conversation to use another.",
+  "harness.unavailable": "Unavailable",
+  "harness.empty": "No ready Harnesses.",
   "command.label": "Model",
   "command.description": "Select the model for this conversation",
   "option.loadError": "Catalog failed to load: {message}",

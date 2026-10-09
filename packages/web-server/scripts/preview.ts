@@ -1,27 +1,61 @@
-/** Launch the packed Claude Code preview without inheriting CodexHost routing. */
+/** Launch the packed preview without inheriting CodexHost routing. */
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-import { previewLaunch } from "../src/preview-launch.ts";
+import { PREVIEW_EXCLUDED_HARNESSES, previewLaunch } from "../src/preview-launch.ts";
 
 const { values } = parseArgs({
   options: {
     port: { type: "string" },
     data: { type: "string" },
     workspace: { type: "string" },
+    harness: { type: "string" },
   },
 });
 const distribution = import.meta.filename.endsWith(".mjs")
   ? import.meta.dirname
   : resolve(import.meta.dirname, "../dist/codexhost-web");
-const manifest = JSON.parse(
-  readFileSync(resolve(distribution, "adapters/claude-code/manifest.json"), "utf8"),
-) as { id: string };
-if (manifest.id !== "claude-code")
-  throw new Error("Preview requires a bundled Claude Code Adapter");
-const launch = previewLaunch(distribution, values, process.env);
+const adapters = resolve(distribution, "adapters");
+const available = readdirSync(adapters, { withFileTypes: true })
+  .filter(
+    (entry) => entry.isDirectory() && existsSync(resolve(adapters, entry.name, "manifest.json")),
+  )
+  .map((entry) => ({
+    directory: entry.name,
+    manifest: JSON.parse(readFileSync(resolve(adapters, entry.name, "manifest.json"), "utf8")) as {
+      id: string;
+      kind?: string;
+    },
+  }));
+const harness =
+  values.harness === "all"
+    ? available
+        .filter(
+          ({ manifest }) =>
+            manifest.kind !== "usage" && !PREVIEW_EXCLUDED_HARNESSES.includes(manifest.id),
+        )
+        .map(({ manifest }) => manifest.id)
+        .sort()
+        .join(",")
+    : values.harness;
+const launch = previewLaunch(
+  distribution,
+  { ...values, ...(harness === undefined ? {} : { harness }) },
+  process.env,
+);
+const selected = launch.args[launch.args.indexOf("--harness") + 1] as string;
+for (const id of selected.split(",")) {
+  if (
+    !available.some(
+      ({ directory, manifest }) =>
+        directory === id && manifest.id === id && manifest.kind !== "usage",
+    )
+  ) {
+    throw new Error(`Preview requires a bundled session Adapter for ${id}`);
+  }
+}
 const child = spawn(process.execPath, launch.args, {
   env: launch.env,
   cwd: distribution,

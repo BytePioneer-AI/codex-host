@@ -147,6 +147,12 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
      * An archived row keeps that cell blank — neither its status dot nor this
      * seat renders there, and its live status appears on the hover card only.
      */
+    /** Persistent identity decoration, independent of transient activity and available on archived rows. */
+    "sidebar.session.row.identity": {
+      kind: "list";
+      scope: "root";
+      owner: SessionRowScheduleOwnerProps;
+    };
     "sidebar.session.row.leading": {
       kind: "list";
       scope: "root";
@@ -490,6 +496,7 @@ export type WorkspaceBrowserProps = PropsRuntime<"sidebar.workspaces"> &
     | "sidebar.workspaces.directoryFlow"
     | "sidebar.workspaces.session.menu.item"
     | "sidebar.workspaces.session.row.action"
+    | "sidebar.session.row.identity"
     | "sidebar.session.row.leading"
     | "sidebar.session.row.hover"
   > &

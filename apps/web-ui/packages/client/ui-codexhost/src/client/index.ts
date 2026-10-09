@@ -12,6 +12,8 @@ import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { ImportIcon } from "./ImportIcon.tsx";
+import type {} from "@deepseek-ai/dsh-api-session-controller/client";
+import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
 import { ensureServiceWorker } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
@@ -31,7 +33,7 @@ export const NS = "codexhostImport";
 export const PANEL_ID = "codexhost-import" as MainPanelId;
 
 /** Services used by the panel. */
-export const inject = ["slots", "locale", "layout", "uiWorkspace"];
+export const inject = ["slots", "locale", "layout", "uiWorkspace", "sessions"];
 
 /**
  * Contribute the sidebar entry and its main-column page.
@@ -77,6 +79,17 @@ export function apply(ctx: ClientContext): void {
         locale: NS,
       },
       NotificationsRow,
+    ),
+  );
+
+  ctx.slots.inject("sidebar.session.row.identity", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.session.row.identity",
+        id: "codexhost.harness",
+        inject: () => ({ list: ctx.sessions.list }),
+      },
+      SessionHarnessIcon,
     ),
   );
 

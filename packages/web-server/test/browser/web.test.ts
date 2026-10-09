@@ -87,6 +87,90 @@ for (const viewport of [
   );
 }
 
+for (const width of [390, 1280]) {
+  it(
+    `separates Harness identity from its models and locks native history at ${width}px`,
+    { timeout: 60_000 },
+    async (t) => {
+      const url = await startServer(
+        t,
+        serverRoot,
+        ["--import", "tsx", "src/main.ts"],
+        ["--adapters", "test/fake-harness"],
+      );
+      const browser = await chromium.launch();
+      t.after(() => browser.close());
+      const page = await browser.newPage({
+        viewport: { width, height: 900 },
+        isMobile: width < 600,
+        hasTouch: width < 600,
+      });
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.goto(url);
+      const harness = () =>
+        page.getByRole("button", { name: "Select Harness, current Other Harness", exact: true });
+      await page
+        .getByRole("button", { name: "Select Harness, current Fake Harness", exact: true })
+        .click();
+      await page.getByRole("menuitem", { name: "Other Harness", exact: true }).waitFor();
+      const bounds = await page.getByRole("menu").boundingBox();
+      assert.ok(
+        bounds && bounds.x >= 0 && bounds.x + bounds.width <= width,
+        "Harness menu fits the viewport",
+      );
+      await screenshot(page, `harness-menu-${width}`);
+      await page.getByRole("menuitem", { name: "Other Harness", exact: true }).click();
+      await harness().waitFor();
+      await page
+        .getByRole("button", { name: "Select model, current Other Model", exact: true })
+        .click();
+      await page
+        .getByRole("menuitem")
+        .filter({ hasText: /^Model/u })
+        .click();
+      await page.getByRole("menuitemradio", { name: "Other Alternate", exact: true }).waitFor();
+      assert.equal(
+        await page.getByRole("menuitemradio", { name: "Fake Model", exact: true }).count(),
+        0,
+      );
+      await screenshot(page, `harness-models-${width}`);
+      await page.getByRole("menuitemradio", { name: "Other Alternate", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Select model, current Other Alternate", exact: true })
+        .waitFor();
+      await page
+        .getByRole("textbox", { name: composerLabel, exact: true })
+        .fill("picker acceptance");
+      await page.getByRole("button", { name: "Send message", exact: true }).click();
+      await page.getByText("echo: picker acceptance", { exact: true }).waitFor();
+      await harness().click();
+      await page
+        .getByText(
+          "This conversation is bound to its Harness. Start a new conversation to use another.",
+          { exact: true },
+        )
+        .waitFor();
+      assert.equal(
+        await page.getByRole("menuitem", { name: "Fake Harness", exact: true }).isDisabled(),
+        true,
+      );
+      assert.equal(
+        await page.getByRole("menuitem", { name: "Other Harness", exact: true }).isDisabled(),
+        false,
+      );
+      await screenshot(page, `harness-bound-${width}`);
+      await page.keyboard.press("Escape");
+      await page.reload();
+      await harness().waitFor();
+      await page
+        .getByRole("button", { name: "Select model, current Other Alternate", exact: true })
+        .waitFor();
+      assert.deepEqual(errors, []);
+    },
+  );
+}
+
 it(
   "a phone can send, reconnect, and reopen durable conversation history",
   { timeout: 60_000 },

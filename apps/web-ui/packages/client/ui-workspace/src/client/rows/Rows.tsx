@@ -51,6 +51,7 @@ type RowTranslate = WorkspaceBrowserProps["t"];
 type RowRenderSlots = PropsRenderSlots<
   | "sidebar.workspaces.session.menu.item"
   | "sidebar.workspaces.session.row.action"
+  | "sidebar.session.row.identity"
   | "sidebar.session.row.leading"
   | "sidebar.session.row.hover"
 >["renderSlot"];
@@ -653,6 +654,7 @@ export function SessionNodeItem({
 } & PropsRenderSlots<
   | "sidebar.workspaces.session.menu.item"
   | "sidebar.workspaces.session.row.action"
+  | "sidebar.session.row.identity"
   | "sidebar.session.row.leading"
   | "sidebar.session.row.hover"
 >) {
@@ -735,13 +737,16 @@ export function SessionNodeItem({
           blank — the grayed row carries the archived look — and their live
           status stays on the hover card only. */}
       <span className={css.slot}>
-        {!row.archived &&
-          !row.blank &&
-          (showStatus ? (
-            <SessionStatusDots statuses={statuses} />
-          ) : (
-            renderSlot("sidebar.session.row.leading", { sessionId: node.id })
-          ))}
+        {renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
+        <span className={css.statusOverlay}>
+          {!row.archived &&
+            !row.blank &&
+            (showStatus ? (
+              <SessionStatusDots statuses={statuses} />
+            ) : (
+              renderSlot("sidebar.session.row.leading", { sessionId: node.id })
+            ))}
+        </span>
       </span>
       <span
         ref={titleRef}

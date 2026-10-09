@@ -74,7 +74,10 @@ export interface Adapter {
 
 export interface HarnessSessionLike {
   readonly harnessId: string;
-  readonly capabilities: unknown;
+  readonly capabilities: {
+    configuration?: { selectPermissionMode: boolean; permissionModeScope?: "live" | "atCreate" };
+    steering?: { native?: boolean };
+  };
   readonly initialState: {
     nativeRef?: unknown;
     effectiveModel?: ModelRef;

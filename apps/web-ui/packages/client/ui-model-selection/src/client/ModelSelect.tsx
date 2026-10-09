@@ -2,7 +2,7 @@
  * ModelSelect: the composer's named model seat (`conversation.input.model`).
  * Two-level selection per figma 496:26454's MenuDropdown: the root menu is
  * the Model / Effort row pair (label + current value + a right chevron),
- * each drilling into its own list — the provider-grouped model list over
+ * each drilling into its own list — the current Harness's model list over
  * the shared directory, and the effort levels. The trigger (313:14108's
  * ToggleButton) shows both: model name + effort in the caption tone.
  * Model catalogs above four entries show search, which retains focus while
@@ -658,20 +658,24 @@ export function ModelSelect({
                     </button>
                   </div>
                 )}
-                {state.failures.map((failure) => (
-                  <div className={css.warning} key={failure.id}>
-                    <span>
-                      {t("warning.groupLoad", {
-                        name:
-                          failure.id === "deepseek-account" ? t("provider.account") : failure.name,
-                        message: failure.message,
-                      })}
-                    </span>
-                    <button type="button" className={css.retry} onClick={reload}>
-                      {t("retry")}
-                    </button>
-                  </div>
-                ))}
+                {state.failures
+                  .filter((failure) => failure.id === state.current?.provider)
+                  .map((failure) => (
+                    <div className={css.warning} key={failure.id}>
+                      <span>
+                        {t("warning.groupLoad", {
+                          name:
+                            failure.id === "deepseek-account"
+                              ? t("provider.account")
+                              : failure.name,
+                          message: failure.message,
+                        })}
+                      </span>
+                      <button type="button" className={css.retry} onClick={reload}>
+                        {t("retry")}
+                      </button>
+                    </div>
+                  ))}
                 <div
                   ref={groupsRef}
                   id={`${id}-models`}

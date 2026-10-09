@@ -1,5 +1,5 @@
 /**
- * Model selection plugin, browser half — TWO entries over ONE per-session
+ * Harness/model selection plugin, browser half — composer controls and /model over ONE per-session
  * directory owned by ModelDirectoryResolver (`ctx.modelDirectories`). The /model popupSelect
  * contribution and the composer's named `conversation.input.model` seat share
  * one Host-generation `session/modelCatalog` catalog, combine it with the Session's
@@ -26,7 +26,7 @@ import { IconDataOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ModelDirectoryState } from "./directory.ts";
 import { ModelDirectoryResolver } from "./service.ts";
 import type { ModelSelectInjected } from "./slots.ts";
-import { ModelSelect } from "./ModelSelect.tsx";
+import { ModelControls } from "./ModelControls.tsx";
 import { en, zh, type ModelKey } from "./locales.ts";
 import { orderModelProviders } from "./provider-order.ts";
 
@@ -66,7 +66,9 @@ function optionsOf(directory: ModelDirectoryState, t: TranslateNS<"model">): Sel
       });
     }
   }
-  for (const failure of directory.failures) {
+  for (const failure of directory.failures.filter(
+    (item) => item.id === directory.current?.provider,
+  )) {
     rows.push({
       id: `failure/${failure.id}`,
       label: failure.id === "deepseek-account" ? t("provider.account") : failure.name,
@@ -199,7 +201,7 @@ export function apply(ctx: ClientContext): void {
             };
           },
         },
-        ModelSelect,
+        ModelControls,
       ),
     );
   });

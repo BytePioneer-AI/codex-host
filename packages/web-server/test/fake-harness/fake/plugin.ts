@@ -45,9 +45,13 @@ class Channel {
 let nextSession = 0;
 
 class FakeSession {
-  readonly harnessId = "fake";
   readonly capabilities = {
-    configuration: { selectModel: true, selectThinkingOption: true, selectPermissionMode: true },
+    configuration: {
+      selectModel: true,
+      selectThinkingOption: true,
+      selectPermissionMode: true,
+      permissionModeScope: "live" as "live" | "atCreate",
+    },
     history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
   };
   readonly initialUsage = null;
@@ -57,11 +61,18 @@ class FakeSession {
   private responses = new Map<string, (value: unknown) => void>();
   private cancel: (() => void) | undefined;
 
-  constructor(readonly nativeId: string) {
+  constructor(
+    readonly nativeId: string,
+    readonly harnessId = "fake",
+    modelId = "fake-model",
+    permissionModeId = "ask",
+    scope: "live" | "atCreate" = "live",
+  ) {
+    this.capabilities.configuration.permissionModeScope = scope;
     this.initialState = {
-      nativeRef: { harnessId: "fake", nativeSessionId: nativeId },
-      effectiveModel: { id: "fake-model" },
-      effectivePermissionModeId: "ask",
+      nativeRef: { harnessId, nativeSessionId: nativeId },
+      effectiveModel: { id: modelId },
+      effectivePermissionModeId: permissionModeId,
     };
   }
 
@@ -93,11 +104,28 @@ class FakeSession {
   async execute(command: Record<string, unknown> & { type: string }): Promise<unknown> {
     globalThis.fakeHarnessLog?.push({
       command: command.type,
+      ...(command.type === "permissionMode.select"
+        ? { permissionModeId: command.permissionModeId }
+        : {}),
       ...(command.type === "turn.start"
         ? { text: (command.input as Array<{ text: string }>)[0]?.text }
         : {}),
     });
     switch (command.type) {
+      case "permissionMode.select":
+        if (command.permissionModeId === "reject-native")
+          return {
+            ok: false,
+            error: { code: "nativeRejected", message: "Native permission refusal" },
+          };
+        this.channel.emit({
+          kind: "event",
+          event: {
+            type: "session.state.changed",
+            state: { effectivePermissionModeId: command.permissionModeId },
+          },
+        });
+        return { ok: true, value: {} };
       case "turn.start": {
         const text = (command.input as Array<{ text: string }>).map((part) => part.text).join("\n");
         const steps = globalThis.fakeHarnessScripts?.[text] ?? [
@@ -149,40 +177,66 @@ class FakeSession {
   }
 }
 
-export function createHarnessAdapter(): unknown {
+export function createHarnessAdapter({
+  harnessId = "fake",
+  modelId = "fake-model",
+  modelLabel = "Fake Model",
+  permissionModes = {
+    modes: [
+      { id: "ask", label: "Ask" },
+      { id: "yolo", label: "Yolo", description: "Skip native permission checks", dangerous: true },
+      { id: "reject-native", label: "Rejected mode" },
+    ],
+    defaultModeId: "ask",
+  },
+  permissionModeScope = "live",
+}: {
+  harnessId?: string;
+  modelId?: string;
+  modelLabel?: string;
+  permissionModes?: {
+    modes: Array<{ id: string; label: string; description?: string; dangerous?: boolean }>;
+    defaultModeId: string;
+  };
+  permissionModeScope?: "live" | "atCreate";
+} = {}) {
   return {
-    harnessId: "fake",
+    harnessId,
     async inspect() {
       return {
         status: "ready",
         catalog: {
-          models: [{ ref: { id: "fake-model" }, label: "Fake Model" }],
-          defaultModel: { id: "fake-model" },
+          models: [{ ref: { id: modelId }, label: modelLabel }],
+          defaultModel: { id: modelId },
           thinkingOptions: [],
         },
-        permissionModes: {
-          modes: [
-            { id: "ask", label: "Ask" },
-            { id: "yolo", label: "Yolo" },
-          ],
-          defaultModeId: "ask",
-        },
+        permissionModes,
         capabilities: {
           configuration: {
             selectModel: true,
             selectThinkingOption: false,
             selectPermissionMode: true,
+            permissionModeScope,
           },
           history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
         },
       };
     },
-    async open(input: { kind: string; nativeRef?: { nativeSessionId: string } }) {
+    async open(input: {
+      kind: string;
+      nativeRef?: { nativeSessionId: string };
+      model?: { id: string };
+      permissionModeId?: string;
+    }) {
       globalThis.fakeHarnessLog?.push({ open: input.kind });
       return {
         ok: true,
         value: new FakeSession(
-          input.nativeRef?.nativeSessionId ?? `fake-native-${String(++nextSession)}`,
+          input.nativeRef?.nativeSessionId ?? `${harnessId}-native-${String(++nextSession)}`,
+          harnessId,
+          input.model?.id ?? modelId,
+          input.permissionModeId ?? permissionModes.defaultModeId,
+          permissionModeScope,
         ),
       };
     },

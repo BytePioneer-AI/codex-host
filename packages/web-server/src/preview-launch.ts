@@ -1,12 +1,16 @@
-/** Isolated, localhost-only Claude Code preview of the packed Web application. */
+/** Isolated, localhost-only preview of the packed Web application. */
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-/** Optional preview paths and port; Harness selection is deliberately fixed. */
+/** Harnesses whose native CLI routing is not yet verified alongside Desktop. */
+export const PREVIEW_EXCLUDED_HARNESSES: readonly string[] = ["codex", "pi"];
+
+/** Optional preview paths, port and comma-separated Harness ids. */
 export interface PreviewOptions {
   port?: string;
   data?: string;
   workspace?: string;
+  harness?: string;
 }
 
 /**
@@ -24,6 +28,14 @@ export function previewLaunch(
   args: string[];
   env: NodeJS.ProcessEnv;
 } {
+  const harnesses = [
+    ...new Set((options.harness ?? "claude-code").split(",").map((id) => id.trim())),
+  ];
+  for (const id of harnesses) {
+    if (!/^[a-z0-9][a-z0-9-]*$/u.test(id) || PREVIEW_EXCLUDED_HARNESSES.includes(id)) {
+      throw new Error(`Harness ${id || "(empty)"} is not allowed in the isolated preview`);
+    }
+  }
   const env = Object.fromEntries(
     Object.entries(environment).filter(([key]) => {
       const name = key.toUpperCase();
@@ -41,7 +53,7 @@ export function previewLaunch(
       "--adapters",
       resolve(distribution, "adapters"),
       "--harness",
-      "claude-code",
+      harnesses.join(","),
       "--data",
       resolve(options.data ?? join(homedir(), ".codexhost-web-preview")),
       "--workspace",

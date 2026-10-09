@@ -24,7 +24,7 @@ import { Sessions } from "./sessions.ts";
 import { Settings } from "./settings.ts";
 import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
-import { WebAssets, type AssetResponse } from "./web-assets.ts";
+import { WebAssets, contentTypeOf, type AssetResponse } from "./web-assets.ts";
 import { Workspaces } from "./workspaces.ts";
 
 /** Packed distribution: `server.mjs` sits next to `web/plugins.json`. */
@@ -205,7 +205,7 @@ const server = createServer((request, response) => {
         response,
         icon === undefined || !existsSync(icon)
           ? undefined
-          : { body: readFileSync(icon), contentType: "image/svg+xml" },
+          : { body: readFileSync(icon), contentType: contentTypeOf(icon) },
       );
       return;
     }

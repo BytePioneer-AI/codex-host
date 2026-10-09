@@ -293,6 +293,7 @@ type SessionTreeProps = Pick<
   PropsRenderSlots<
     | "sidebar.workspaces.session.menu.item"
     | "sidebar.workspaces.session.row.action"
+    | "sidebar.session.row.identity"
     | "sidebar.session.row.leading"
     | "sidebar.session.row.hover"
   > & {

@@ -47,10 +47,14 @@ it(
         id: "fake",
         name: "Fake Harness",
         entry: "./plugin.mjs",
-        icon: "./assets/icon.svg",
+        icon: "./assets/icon.png",
       }),
     );
-    writeFileSync(join(plugin, "assets/icon.svg"), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const icon = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0uoAAAAASUVORK5CYII=",
+      "base64",
+    );
+    writeFileSync(join(plugin, "assets/icon.png"), icon);
     const output = join(root, "output");
     await exec(
       process.execPath,
@@ -68,7 +72,10 @@ it(
     const index = await fetch(url);
     assert.equal(index.status, 200);
     assert.match(await index.text(), /CodexHost/u);
-    assert.equal((await fetch(new URL("harness-icons/fake", url))).status, 200);
+    const iconResponse = await fetch(new URL("harness-icons/fake", url));
+    assert.equal(iconResponse.status, 200);
+    assert.equal(iconResponse.headers.get("content-type"), "image/png");
+    assert.deepEqual(Buffer.from(await iconResponse.arrayBuffer()), icon);
     const catalog = await fetch(new URL("api/session/modelCatalog", url), {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -131,5 +138,49 @@ it(
     );
     assert.equal(received.args[received.args.indexOf("--data") + 1], join(preview, "data"));
     assert.equal(received.args.includes("--no-auth"), false);
+
+    for (const [id, kind] of [
+      ["pi", "session"],
+      ["codex", "session"],
+      ["opencode", "session"],
+      ["usage", "usage"],
+    ] as const) {
+      mkdirSync(join(preview, "adapters", id), { recursive: true });
+      writeFileSync(join(preview, "adapters", id, "manifest.json"), JSON.stringify({ id, kind }));
+    }
+    const previewEnv = {
+      PATH: process.env.PATH,
+      HOME: root,
+      CODEXHOST_RUNTIME_TOKEN: "test-host-token",
+    };
+    const { stdout: allStdout } = await exec(
+      process.execPath,
+      [join(preview, "preview.mjs"), "--harness", "all"],
+      { cwd: root, env: previewEnv },
+    );
+    const all = JSON.parse(allStdout) as { args: string[]; env: NodeJS.ProcessEnv };
+    assert.equal(all.args[all.args.indexOf("--harness") + 1], "claude-code,opencode");
+    assert.equal(all.args[all.args.indexOf("--host") + 1], "127.0.0.1");
+    assert.equal(all.env.CODEXHOST_RUNTIME_TOKEN, undefined);
+    assert.equal(all.args.includes("--no-auth"), false);
+    assert.equal(all.args.includes("--import-recent"), false);
+    for (const id of ["pi", "codex"]) {
+      await assert.rejects(
+        exec(process.execPath, [join(preview, "preview.mjs"), "--harness", id], {
+          cwd: root,
+          env: previewEnv,
+        }),
+        /not allowed/u,
+      );
+    }
+    for (const id of ["missing", "usage"]) {
+      await assert.rejects(
+        exec(process.execPath, [join(preview, "preview.mjs"), "--harness", id], {
+          cwd: root,
+          env: previewEnv,
+        }),
+        /bundled session Adapter/u,
+      );
+    }
   },
 );

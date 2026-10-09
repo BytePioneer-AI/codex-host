@@ -100,3 +100,23 @@
 .chevronOpen {
   transform: rotate(180deg);
 }
+
+.optionCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  max-width: 270px;
+  white-space: normal;
+  text-align: left;
+}
+
+.description {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dangerous {
+  color: var(--dsw-alias-state-danger-primary, #c2413b);
+}

@@ -9,6 +9,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import type { HarnessRegistry, HarnessSessionLike } from "./harnesses.ts";
+import { nativePermissionView } from "./session-presentation.ts";
 import {
   TurnProjector,
   type HostItem,
@@ -174,21 +175,7 @@ export class Sessions {
     this.coldProjections.delete(sessionId);
     const runtime: Runtime = { meta, log, running: false, queue: [], interactions: new Map() };
     this.runtimes.set(sessionId, runtime);
-    // A draft that has not chosen a Harness shows the current default Harness's permission mode.
-    if (
-      meta.harnessId === undefined &&
-      meta.permissionModeId === undefined &&
-      meta.origin === undefined
-    ) {
-      void this.permissionCatalog(sessionId).then(
-        (catalog) => {
-          if (runtime.meta.harnessId === undefined && runtime.meta.permissionModeId === undefined) {
-            runtime.log.setProjection("permissions", { currentValue: catalog.defaultPreset });
-          }
-        },
-        () => undefined,
-      );
-    }
+    void this.refreshNativePermissions(runtime).catch(() => undefined);
     return runtime;
   }
 
@@ -223,7 +210,7 @@ export class Sessions {
       projections: {
         kind: "cached",
         asOfSeq: Math.max(runtime?.log.lastSeq ?? 0, 0),
-        values: projections,
+        values: { ...projections, harnessIdentity: this.harnessIdentity(meta) },
       },
     };
   }
@@ -337,6 +324,7 @@ export class Sessions {
     const session = result.value;
     runtime.harness = session;
     this.applyState(runtime, session.initialState);
+    void this.refreshNativePermissions(runtime).catch(() => undefined);
     void this.pump(runtime, session);
     return session;
   }
@@ -418,6 +406,7 @@ export class Sessions {
     switch (event.type) {
       case "session.state.changed":
         this.applyState(runtime, event.state as HarnessSessionLike["initialState"]);
+        void this.refreshNativePermissions(runtime).catch(() => undefined);
         return;
       case "session.usage.changed": {
         const usage = event.usage as {
@@ -905,20 +894,13 @@ export class Sessions {
       meta.selection = selection;
       this.saveMeta(meta);
       this.harnesses.preferredSelection = selection;
-      // An unbound session that switches Harness takes the new Harness's default permission mode
-      // unless the user picked one explicitly.
-      if (
-        meta.harnessId === undefined &&
-        meta.permissionModeId === undefined &&
-        previousProvider !== selection.provider
-      ) {
-        void this.permissionCatalog(request.sessionId).then(
-          (catalog) => {
-            runtime.log.setProjection("permissions", { currentValue: catalog.defaultPreset });
-          },
-          () => undefined,
-        );
+      if (meta.harnessId === undefined && previousProvider !== selection.provider) {
+        // Identical mode IDs from different Harnesses need not have identical semantics.
+        delete meta.permissionModeId;
+        this.saveMeta(meta);
       }
+      runtime.log.setProjection("harnessIdentity", this.harnessIdentity(meta));
+      await this.refreshNativePermissions(runtime);
       this.data.writeJson("preferences.json", {
         ...this.data.readJson<Record<string, unknown>>("preferences.json", {}),
         defaultSelection: selection,
@@ -1118,6 +1100,48 @@ export class Sessions {
     return (await this.harnesses.modelCatalog()).default.provider;
   }
 
+  private readonly permissionEpochs = new WeakMap<Runtime, number>();
+
+  private harnessIdentity(meta: SessionMeta): { id: string; name: string } | null {
+    const id = meta.harnessId ?? meta.selection?.provider;
+    return id === undefined ? null : { id, name: this.harnesses.manifest(id)?.name ?? id };
+  }
+
+  /** Publish native metadata on the same per-session projection stream as its effective mode. */
+  private async refreshNativePermissions(runtime: Runtime): Promise<void> {
+    const epoch = (this.permissionEpochs.get(runtime) ?? 0) + 1;
+    this.permissionEpochs.set(runtime, epoch);
+    runtime.log.setProjection("nativePermissions", null);
+    if (runtime.meta.harnessId === undefined && runtime.meta.selection === undefined) {
+      const catalog = await this.harnesses.modelCatalog();
+      if (this.permissionEpochs.get(runtime) !== epoch) return;
+      if (runtime.meta.selection === undefined && catalog.groups.length > 0) {
+        runtime.meta.selection = catalog.default;
+        this.saveMeta(runtime.meta);
+        runtime.log.setProjection("modelSelection", {
+          lastUsed: runtime.meta.lastUsed ?? null,
+          next: catalog.default,
+        });
+      }
+    }
+    const id = await this.harnessIdOf(runtime);
+    const inspection = await this.harnesses.inspect(id);
+    if (this.permissionEpochs.get(runtime) !== epoch || id !== (await this.harnessIdOf(runtime)))
+      return;
+    const view = nativePermissionView(
+      id,
+      inspection,
+      runtime.meta.nativeRef !== undefined || runtime.harness !== undefined,
+      runtime.harness?.capabilities.configuration,
+    );
+    runtime.log.setProjection("harnessIdentity", this.harnessIdentity(runtime.meta));
+    runtime.log.setProjection("nativePermissions", view);
+    if (view.catalog !== null) {
+      const mode = runtime.meta.permissionModeId ?? view.catalog.defaultModeId;
+      runtime.log.setProjection("permissions", { currentValue: mode });
+    }
+  }
+
   /** Permission presets offered for a session's Harness. */
   async permissionCatalog(sessionId?: string): Promise<{
     options: Array<{ value: string; name: string }>;
@@ -1130,11 +1154,18 @@ export class Sessions {
         : this.runtime(sessionId);
     const harnessId = await this.harnessIdOf(runtime);
     const inspection = await this.harnesses.inspect(harnessId);
-    const modes = inspection.status === "ready" ? inspection.permissionModes : undefined;
-    const options = modes?.modes.map((mode) => ({ value: mode.id, name: mode.label })) ?? [
-      { value: "default", name: "Default" },
-    ];
-    return { options, defaultOptions: options, defaultPreset: modes?.defaultModeId ?? "default" };
+    const modes =
+      inspection.status === "ready" && inspection.capabilities.configuration.selectPermissionMode
+        ? inspection.permissionModes
+        : undefined;
+    const options =
+      modes?.modes.map((mode) => ({
+        value: mode.id,
+        name: mode.label,
+        ...(mode.description === undefined ? {} : { description: mode.description }),
+        ...(mode.dangerous === undefined ? {} : { dangerous: mode.dangerous }),
+      })) ?? [];
+    return { options, defaultOptions: options, defaultPreset: modes?.defaultModeId ?? "" };
   }
 
   // ---- subagents ---------------------------------------------------------------------------
@@ -1594,6 +1625,7 @@ export class Sessions {
     const session = opened.value;
     runtime.harness = session;
     this.applyState(runtime, session.initialState);
+    void this.refreshNativePermissions(runtime).catch(() => undefined);
     void this.pump(runtime, session);
     this.updateStats(runtime);
     this.scheduleIdleRelease(runtime);
@@ -1665,6 +1697,25 @@ export class Sessions {
     const runtime = this.runtime(sessionId);
     const commandId = randomUUID();
     if (name === "permission") {
+      const id = await this.harnessIdOf(runtime);
+      const inspection = await this.harnesses.inspect(id);
+      const view = nativePermissionView(
+        id,
+        inspection,
+        runtime.meta.nativeRef !== undefined || runtime.harness !== undefined,
+        runtime.harness?.capabilities.configuration,
+      );
+      if (!view.selectable || view.locked || runtime.opening !== undefined) {
+        return {
+          commandId,
+          result: {
+            kind: "error",
+            text: view.locked
+              ? "This Harness only allows permission selection before creating its native session."
+              : "Permission mode selection is not available for this session.",
+          },
+        };
+      }
       const catalog = await this.permissionCatalog(sessionId);
       const mode = catalog.options.find(
         (option) =>
@@ -1689,6 +1740,7 @@ export class Sessions {
       runtime.meta.permissionModeId = mode.value;
       this.saveMeta(runtime.meta);
       runtime.log.setProjection("permissions", { currentValue: mode.value });
+      await this.refreshNativePermissions(runtime);
       runtime.log.append("command/run", {
         commandId,
         name,

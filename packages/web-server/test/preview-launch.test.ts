@@ -45,6 +45,34 @@ it("removes inherited Host routing and Node injection without changing the paren
   assert.equal(args.includes("--import-recent"), false);
 });
 
+it("accepts explicit Harness ids without relaxing isolation", () => {
+  const launch = previewLaunch(
+    "/packed",
+    { harness: "claude-code, opencode,claude-code" },
+    { CODEXHOST_IMPORT_RECENT: "10", NODE_PATH: "/unsafe" },
+  );
+  assert.equal(launch.args[launch.args.indexOf("--harness") + 1], "claude-code,opencode");
+  assert.deepEqual(launch.env, {});
+  assert.equal(launch.args.includes("--no-auth"), false);
+  assert.equal(launch.args.includes("--import-recent"), false);
+});
+
+it("rejects Pi, Codex, empty ids and unsafe selection syntax before spawning", () => {
+  for (const harness of [
+    "pi",
+    "codex",
+    "claude-code,pi",
+    "claude-code, codex",
+    "",
+    "claude-code,",
+    "../other",
+    "--no-auth",
+    "PI",
+  ]) {
+    assert.throws(() => previewLaunch("/packed", { harness }, {}), /not allowed/u);
+  }
+});
+
 it("passes only isolated settings to the actual child process", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "codexhost-preview-"));
   t.after(() => {
@@ -56,7 +84,12 @@ it("passes only isolated settings to the actual child process", async (t) => {
   );
   const launch = previewLaunch(
     root,
-    { port: "0", data: join(root, "data"), workspace: join(root, "workspace") },
+    {
+      port: "0",
+      data: join(root, "data"),
+      workspace: join(root, "workspace"),
+      harness: "claude-code,opencode",
+    },
     {
       PATH: process.env.PATH,
       HOME: root,
@@ -77,6 +110,6 @@ it("passes only isolated settings to the actual child process", async (t) => {
   );
   assert.equal(received.env.NODE_OPTIONS, undefined);
   assert.equal(received.env.NODE_PATH, undefined);
-  assert.equal(received.args[received.args.indexOf("--harness") + 1], "claude-code");
+  assert.equal(received.args[received.args.indexOf("--harness") + 1], "claude-code,opencode");
   assert.equal(received.args[received.args.indexOf("--data") + 1], join(root, "data"));
 });

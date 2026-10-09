@@ -251,18 +251,17 @@ describe("Claude live autonomous continuation (issue #495)", () => {
     },
   );
 
-  it("does not wait for a synthetic Turn key when an autonomous failure has no checkpoint", async () => {
+  it("preserves pending transcript IDs when an autonomous failure has no checkpoint", async () => {
     const live = await liveSession();
     try {
       await live.session.execute(textTurn("start"));
+      assistantText(live.fakeQuery, "start-checkpoint", "Started");
       result(live.fakeQuery);
       await vi.waitFor(() => expect(completion(live.events, "start")).toBeDefined());
-      live.history.push({
-        type: "user",
-        uuid: "claude-id-2",
-        session_id: SESSION_ID,
-        message: { role: "user", content: "start" },
-      });
+      const started = completion(live.events, "start");
+      if (started?.type !== "turn.completed" || !started.nativeTurnRef) {
+        throw new Error("Requested Turn has no native identity");
+      }
       result(live.fakeQuery, "error_during_execution");
       await vi.waitFor(() => expect(autonomousTurnIds(live.events)).toHaveLength(1));
       const [turnId] = autonomousTurnIds(live.events);
@@ -270,6 +269,26 @@ describe("Claude live autonomous continuation (issue #495)", () => {
       await vi.waitFor(() =>
         expect(completion(live.events, turnId)).toMatchObject({ outcome: { status: "failed" } }),
       );
+      await expect(live.session.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      live.history.push({
+        type: "user",
+        uuid: started.nativeTurnRef.nativeTurnKey,
+        session_id: SESSION_ID,
+        message: { role: "user", content: "start" },
+      });
+      await expect(live.session.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      live.history.push({
+        type: "assistant",
+        uuid: "start-checkpoint",
+        session_id: SESSION_ID,
+        message: { role: "assistant", content: "Started" },
+      });
       await expect(live.session.readSnapshot()).resolves.toMatchObject({ ok: true });
     } finally {
       await live.close();

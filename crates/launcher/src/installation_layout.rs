@@ -166,6 +166,37 @@ mod tests {
         );
     }
 
+    /// A packaged Desktop validates the injected `CODEX_CLI_PATH` itself, and some
+    /// hosts cannot read a path whose target lives on another volume. Deployments
+    /// place the installation behind a directory junction, so the layout must be
+    /// derived from the link the caller passed in, not from its resolved target.
+    #[test]
+    fn keeps_directory_links_in_the_derived_layout() {
+        let link = env::temp_dir().join("codexhost-linked");
+        let target = env::temp_dir().join("codexhost-linked-target");
+        let executable = link
+            .join("bin")
+            .join(format!("codexhost{}", env::consts::EXE_SUFFIX));
+
+        // The layout is pure path arithmetic, so no file needs to exist for the
+        // derivation itself; the assertion is that the link prefix survives.
+        let resources = InstalledResources::from_executable(&executable)
+            .expect("linked installation layout");
+
+        assert_eq!(
+            resources.shim,
+            link.join("libexec")
+                .join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX))
+        );
+        assert_eq!(
+            resources.node,
+            link.join("runtime")
+                .join(format!("node{}", env::consts::EXE_SUFFIX))
+        );
+        assert!(resources.shim.starts_with(&link));
+        assert!(!resources.shim.starts_with(&target));
+    }
+
     #[test]
     fn resolves_resources_from_a_source_checkout() {
         let root = env::temp_dir().join("codexhost source checkout");

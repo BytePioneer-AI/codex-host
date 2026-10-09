@@ -246,6 +246,28 @@ pub fn canonical_existing_file(path: &Path) -> Result<PathBuf, PlatformError> {
     path.canonicalize().map_err(PlatformError::Io)
 }
 
+/// Validates that `path` is an existing file and returns it in absolute form
+/// **without** resolving symbolic links or Windows reparse points.
+///
+/// Packaged Desktop hosts validate the injected `CODEX_CLI_PATH` themselves, and
+/// some of them cannot read paths that live on a volume they have no access to
+/// (a separate data partition, a network share, a VHD). Deployments work around
+/// that by placing the installation behind a directory junction. Resolving the
+/// link here would hand the host the *target* path on the other volume and
+/// reinstate the very rejection the junction was created to avoid, so the
+/// caller-visible path is preserved instead.
+///
+/// The existence check still follows links, so a broken link is still reported.
+pub fn existing_file_preserving_links(path: &Path) -> Result<PathBuf, PlatformError> {
+    if !path.is_file() {
+        return Err(PlatformError::NotFound(format!(
+            "executable path '{}' does not exist or is not a file",
+            path.display()
+        )));
+    }
+    Ok(path.to_path_buf())
+}
+
 #[cfg(target_os = "windows")]
 pub fn node_entrypoint_path(path: &Path) -> PathBuf {
     use std::ffi::OsString;

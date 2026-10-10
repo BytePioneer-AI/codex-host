@@ -15,8 +15,8 @@ import type {} from "@deepseek-ai/dsh-schedule/client";
 import type {} from "@deepseek-ai/dsh-subagent/client";
 import {
   Button,
-  IconArchiveOutlineRegular,
-  IconUnarchiveOutlineRegular,
+  OpenAIArchiveIcon as IconArchiveOutlineRegular,
+  OpenAIUnarchiveIcon as IconUnarchiveOutlineRegular,
   MenuItemButton,
   Modal,
   Tooltip,
@@ -54,9 +54,9 @@ export function ArchiveSessionMenuItem({
       shortcut={archived ? undefined : shortcut}
       icon={
         archived ? (
-          <IconUnarchiveOutlineRegular size={14} />
+          <IconUnarchiveOutlineRegular size={16} />
         ) : (
-          <IconArchiveOutlineRegular size={14} />
+          <IconArchiveOutlineRegular size={16} />
         )
       }
       onSelect={() => {
@@ -98,9 +98,9 @@ export function ArchiveSessionRowButton({
         }}
       >
         {archived ? (
-          <IconUnarchiveOutlineRegular size={14} />
+          <IconUnarchiveOutlineRegular size={16} />
         ) : (
-          <IconArchiveOutlineRegular size={14} />
+          <IconArchiveOutlineRegular size={16} />
         )}
       </button>
     </Tooltip>

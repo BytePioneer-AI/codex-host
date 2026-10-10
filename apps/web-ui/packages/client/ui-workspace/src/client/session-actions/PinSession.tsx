@@ -7,8 +7,8 @@
  * notice) lives in the injected callbacks, not here.
  */
 import {
-  IconPinFillRegular,
-  IconPinOutlineRegular,
+  OpenAIPinFilledIcon as IconPinFillRegular,
+  OpenAIPinIcon as IconPinOutlineRegular,
   MenuItemButton,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -79,7 +79,7 @@ export function PinSessionRowButton(props: SessionRowActionProps<PinSessionInjec
           (pinned ? unpinSession : pinSession)(sessionId);
         }}
       >
-        {pinned ? <IconPinFillRegular size={14} /> : <IconPinOutlineRegular size={14} />}
+        {pinned ? <IconPinFillRegular size={16} /> : <IconPinOutlineRegular size={16} />}
       </button>
     </Tooltip>
   );

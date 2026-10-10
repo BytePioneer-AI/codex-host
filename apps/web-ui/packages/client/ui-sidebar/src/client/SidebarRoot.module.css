@@ -397,8 +397,7 @@
   white-space: nowrap;
 }
 
-/* New Session: 38px bar, 12px radius (figma 133:7634 geometry, squared-off
-   corners); collapsed it renders as the rail's plain icon control. */
+/* New chat is a quiet navigation row, not a raised call-to-action card. */
 .newSession {
   container-type: inline-size;
   position: relative;
@@ -407,15 +406,15 @@
   align-items: center;
   justify-content: center;
   gap: 0;
-  height: 38px;
-  padding: 8px 12px;
-  margin: 0 2px 12px;
+  height: 36px;
+  padding: 6px 8px;
+  margin: 0 0 2px;
   box-sizing: border-box;
-  border: 0.5px solid var(--dsw-alias-border-l3);
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-button-elevated-fill);
+  border: none;
+  border-radius: 6px;
+  background: transparent;
   color: var(--dsw-alias-label-primary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   line-height: 22px;
   cursor: pointer;
@@ -423,7 +422,7 @@
 }
 
 .newSession:hover {
-  background: var(--dsw-alias-button-floating-hover);
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 /* macOS: the themed elevated fill reads as a foreign slab on the vibrancy
@@ -482,11 +481,22 @@
   display: flex;
   width: 100cqw;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
+  justify-content: flex-start;
+  gap: 8px;
 }
 .newSessionContent > svg {
   flex: none;
+}
+
+.collapsed .newSessionContent {
+  justify-content: center;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .root:not(.collapsed) .newSession,
+  .root:not(.collapsed) .panelRow {
+    min-height: 44px;
+  }
 }
 
 .newSessionShortcut {
@@ -506,7 +516,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-bottom: 8px;
+  margin-bottom: 16px;
 }
 
 /* Panel entries share the New Session bar's 12px radius and 2px inset, the
@@ -515,15 +525,16 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 2px;
+  margin: 0;
   min-height: 36px;
   padding: 7px 8px;
   box-sizing: border-box;
   border: none;
-  border-radius: var(--dsw-radius-md);
+  border-radius: 6px;
   background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
+  font-size: 13px;
   line-height: 22px;
   text-align: left;
   cursor: pointer;

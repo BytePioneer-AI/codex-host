@@ -1,6 +1,6 @@
 /** Sidebar entry icon for the import panel. */
 import type { ReactNode } from "react";
-import { IconDownloadOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
+import { OpenAIDownloadIcon as IconDownloadOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar/client";
 

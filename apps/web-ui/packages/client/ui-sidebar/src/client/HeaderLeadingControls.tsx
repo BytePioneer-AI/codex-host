@@ -1,7 +1,7 @@
 /** Window-chrome controls for the fully hidden sidebar (frame shell.leading seat). */
 import {
-  IconNewChatOutlineRegular,
-  IconPanelLeftOutlineRegular,
+  OpenAINewChatIcon as IconNewChatOutlineRegular,
+  OpenAISidebarIcon as IconPanelLeftOutlineRegular,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { InjectFace, PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";

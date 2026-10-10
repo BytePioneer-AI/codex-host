@@ -1,6 +1,7 @@
 /** React-commit-driven movement and entry/exit fades for the sidebar's keyed rows. */
 import { Component, createRef, type ReactNode } from "react";
 import css from "./AnimatedRows.module.css";
+import { navigateSidebar, syncSidebarTabStop } from "./sidebar-keyboard.ts";
 
 const ROW_FADE_MS = 100;
 const ROW_GLIDE_MS = 200;
@@ -55,6 +56,10 @@ export class AnimatedRows extends Component<AnimatedRowsProps> {
   private readonly movements = new Map<HTMLElement, Animation>();
   private readonly exits = new Map<string, { element: HTMLElement; animation: Animation }>();
 
+  override componentDidMount(): void {
+    syncSidebarTabStop(this.list.current);
+  }
+
   override getSnapshotBeforeUpdate(previous: AnimatedRowsProps): RowSnapshot | null {
     const list = this.list.current;
     if (
@@ -92,6 +97,7 @@ export class AnimatedRows extends Component<AnimatedRowsProps> {
     _state: unknown,
     snapshot: RowSnapshot | null,
   ): void {
+    syncSidebarTabStop(this.list.current);
     if (snapshot === null) {
       if (
         !sameRows(previous, this.props) ||
@@ -221,6 +227,8 @@ export class AnimatedRows extends Component<AnimatedRowsProps> {
           className={this.props.className}
           role="tree"
           aria-label={this.props.label}
+          onKeyDown={navigateSidebar}
+          onFocusCapture={() => syncSidebarTabStop(this.list.current)}
           onPointerDownCapture={() => {
             this.armed = true;
           }}

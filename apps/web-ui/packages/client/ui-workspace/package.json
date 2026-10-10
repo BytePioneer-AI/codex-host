@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "scripts": {
+    "test:sidebar": "node --import tsx --test test/sidebar-window.test.ts"
+  },
   "exports": {
     ".": {
       "types": "./src/index.ts",

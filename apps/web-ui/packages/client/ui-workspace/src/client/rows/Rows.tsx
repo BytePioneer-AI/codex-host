@@ -16,16 +16,16 @@ import clsx from "clsx";
 import type { PropsRenderSlots } from "@deepseek-ai/dsh-client-ui-slots";
 import {
   HoverCard,
-  IconArchiveOutlineRegular,
-  IconEditOutlineRegular,
-  IconEllipsisOutlineRegular,
+  OpenAIArchiveIcon as IconArchiveOutlineRegular,
+  OpenAIEditIcon as IconEditOutlineRegular,
+  OpenAIMoreIcon as IconEllipsisOutlineRegular,
   IconFolderCloseRegular,
   IconFolderOpenRegular,
-  IconNewChatOutlineRegular,
-  IconPinFillRegular,
-  IconTrashOutlineRegular,
-  IconTriangleRightFillRegular,
-  IconUnarchiveOutlineRegular,
+  OpenAIPlusIcon as IconNewChatOutlineRegular,
+  OpenAIPinFilledIcon as IconPinFillRegular,
+  OpenAITrashIcon as IconTrashOutlineRegular,
+  OpenAICaretRightIcon as IconTriangleRightFillRegular,
+  OpenAIUnarchiveIcon as IconUnarchiveOutlineRegular,
   Menu,
   relativeTime,
   StateDot,
@@ -107,7 +107,7 @@ function restTitle(title: HTMLSpanElement): void {
  * stays put — a barely-clipped title moving a few pixels reads as jitter, not a
  * reveal. Leaving returns the title to the start in one step, because the
  * resting ellipsis and the narrowed cell would otherwise meet the text while it
- * travelled back. Reduced motion jumps to the far edge instead of crawling.
+ * travelled back. Reduced motion keeps the title still; the hover card reveals it.
  * @param title - ref to the row's clipping title element.
  * @returns stable pointer enter/leave handlers for the row.
  */
@@ -130,14 +130,17 @@ function useTitleMarquee(title: RefObject<HTMLSpanElement | null>): {
         const element = title.current;
         const range = element.scrollWidth - element.clientWidth;
         if (range <= MIN_TITLE_REVEAL_PX) return;
-        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-          placeTitle(element, range, range);
-          return;
-        }
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
         cancelAnimationFrame(frame.current);
         let previous: number | undefined;
+        let started: number | undefined;
         let position = 0;
         const step = (now: DOMHighResTimeStamp): void => {
+          started ??= now;
+          if (now - started < 400) {
+            frame.current = requestAnimationFrame(step);
+            return;
+          }
           position += previous === undefined ? 0 : (now - previous) * TITLE_MARQUEE_PX_PER_MS;
           previous = now;
           placeTitle(element, Math.min(position, range), range);
@@ -273,6 +276,7 @@ export function ProjectRowItem({
   const label = row.workspaceId === undefined ? t("group.ungrouped") : row.label;
   const active = containsCurrentDescendant || (group.expanded && group.containsCurrent);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
   const workspaceMenuItems = [
     { id: "rename", label: t("rename"), icon: <IconEditOutlineRegular /> },
     { id: "delete", label: t("delete.workspace"), icon: <IconTrashOutlineRegular />, danger: true },
@@ -283,6 +287,21 @@ export function ProjectRowItem({
       data-row-key={`workspace:${group.key}`}
       role="treeitem"
       aria-expanded={row.expanded}
+      tabIndex={-1}
+      onContextMenu={(e) => {
+        if (!actions || (e.target as HTMLElement).closest("button")) return;
+        e.preventDefault();
+        setContextPoint(new DOMRect(e.clientX, e.clientY, 0, 0));
+        setMenuOpen(true);
+      }}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget || !actions) return;
+        if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+          e.preventDefault();
+          setContextPoint(null);
+          setMenuOpen(true);
+        }
+      }}
       onClick={onToggle}
       draggable={drag !== undefined}
       onDragStart={
@@ -323,14 +342,18 @@ export function ProjectRowItem({
               else actions.delete();
             }}
             portal
-            closeOnPointerLeave
+            autoFocus
+            getAnchorRect={contextPoint === null ? undefined : () => contextPoint}
             anchor={
               <button
                 type="button"
                 className={css.iconButton}
                 aria-label={t("actions.workspace.aria", { name: label })}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
                 onClick={(e) => {
                   e.stopPropagation();
+                  setContextPoint(null);
                   setMenuOpen((v) => !v);
                 }}
               >
@@ -478,7 +501,7 @@ function PinnedIndicator({ t }: { t: RowTranslate }) {
   const label = t("row.pinned");
   return (
     <span className={css.pinIndicator} role="img" aria-label={label} title={label}>
-      <IconPinFillRegular size={14} />
+      <IconPinFillRegular size={16} />
     </span>
   );
 }
@@ -519,7 +542,7 @@ function SessionHoverContent({
       ))}
       {node.archived && (
         <div className={clsx(css.hoverStatus, css.hoverArchived)}>
-          <IconArchiveOutlineRegular size={14} />
+          <IconArchiveOutlineRegular size={16} />
           <span>{t("row.archived")}</span>
         </div>
       )}
@@ -591,7 +614,7 @@ export function SearchResultItem({
                   onUnarchive(result.id);
                 }}
               >
-                <IconUnarchiveOutlineRegular size={14} />
+                <IconUnarchiveOutlineRegular size={16} />
               </button>
             </Tooltip>
           </span>
@@ -669,6 +692,7 @@ export function SessionNodeItem({
   // their drop targets to fellow pinned rows.
   const draggable = drag !== undefined && !row.blank && !row.archived;
   const [menuOpen, setMenuOpen] = useState(false);
+  const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
   // The menu's open state, bound into the row entries' `useMenuOpenState` hook.
   const menuOpenState = useMemo((): MenuOpenState => [menuOpen, setMenuOpen], [menuOpen]);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -694,11 +718,32 @@ export function SessionNodeItem({
       )}
       role="treeitem"
       aria-selected={selected}
+      aria-current={selected ? "page" : undefined}
+      tabIndex={-1}
+      onContextMenu={(e) => {
+        if (row.blank || (e.target as HTMLElement).closest("button")) return;
+        e.preventDefault();
+        setContextPoint(new DOMRect(e.clientX, e.clientY, 0, 0));
+        setMenuOpen(true);
+      }}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget || row.blank) return;
+        if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+          e.preventDefault();
+          setContextPoint(null);
+          setMenuOpen(true);
+        } else if (e.key === "F2" && !row.archived) {
+          e.preventDefault();
+          onRenameRequest(node.id, row.title);
+        }
+      }}
       aria-description={row.archived ? t("toast.archivedNotOpenable") : undefined}
       onClick={() => {
         onOpen(node.id);
       }}
-      onPointerEnter={marquee.enter}
+      onPointerEnter={(e) => {
+        if (e.pointerType === "mouse") marquee.enter();
+      }}
       onPointerLeave={marquee.leave}
       draggable={draggable}
       onDragStart={
@@ -750,6 +795,7 @@ export function SessionNodeItem({
       </span>
       <span
         ref={titleRef}
+        data-session-title
         className={css.title}
         onDoubleClick={
           row.blank
@@ -762,63 +808,71 @@ export function SessionNodeItem({
       >
         {title}
       </span>
-      {/* A blank New Session row is a provisional placeholder: nothing has
+      <span className={css.trailing}>
+        {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs
           (rename/fork/archive) would all act on content that does not
           exist — both trailing cells stay off until the first prompt. */}
-      {!row.blank && (
-        <span
-          className={css.time}
-          aria-hidden={primaryStatus.trailingLabel === undefined ? undefined : true}
-        >
-          {primaryStatus.trailingLabel ?? timeLabel(row.updatedAt, now, t)}
-        </span>
-      )}
-      {/* Trails the time so the marker occupies the same right-edge cell as
+        {!row.blank && (
+          <span
+            className={css.time}
+            aria-hidden={primaryStatus.trailingLabel === undefined ? undefined : true}
+          >
+            {primaryStatus.trailingLabel ?? timeLabel(row.updatedAt, now, t)}
+          </span>
+        )}
+        {/* Trails the time so the marker occupies the same right-edge cell as
           the hover pin button that replaces it. */}
-      {row.pinned && !row.archived && <PinnedIndicator t={t} />}
-      {/* The strip's clicks stay in the strip: the trigger and every
+        {row.pinned && !row.archived && <PinnedIndicator t={t} />}
+        {/* The strip's clicks stay in the strip: the trigger and every
           row.action entry act without also opening the row, so an entry's
           button needs no propagation handling of its own. */}
-      {!row.blank && (
-        <span
-          className={css.rowActions}
-          onClick={(e) => {
-            e.stopPropagation();
-          }}
-        >
-          <Menu
-            open={menuOpen}
-            onClose={() => {
-              setMenuOpen(false);
+        {!row.blank && (
+          <span
+            className={css.rowActions}
+            onClick={(e) => {
+              e.stopPropagation();
             }}
-            portal
-            closeOnPointerLeave
-            anchor={
-              <button
-                type="button"
-                className={css.iconButton}
-                aria-label={t("actions.session.aria", { name: title })}
-                onClick={() => {
-                  setMenuOpen((v) => !v);
-                }}
-              >
-                <IconEllipsisOutlineRegular />
-              </button>
-            }
           >
-            {renderSlot(
-              "sidebar.workspaces.session.menu.item",
-              { sessionId: node.id, displayTitle: row.title },
-              { hookContext: menuOpenState },
-            )}
-          </Menu>
-          {renderSlot("sidebar.workspaces.session.row.action", {
-            sessionId: node.id,
-            displayTitle: row.title,
-          })}
-        </span>
-      )}
+            <Menu
+              open={menuOpen}
+              onClose={() => {
+                setMenuOpen(false);
+              }}
+              portal
+              autoFocus
+              getAnchorRect={contextPoint === null ? undefined : () => contextPoint}
+              anchor={
+                <button
+                  type="button"
+                  className={css.iconButton}
+                  aria-label={t("actions.session.aria", { name: title })}
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  onClick={() => {
+                    setContextPoint(null);
+                    setMenuOpen((v) => !v);
+                  }}
+                >
+                  <IconEllipsisOutlineRegular />
+                </button>
+              }
+            >
+              {renderSlot(
+                "sidebar.workspaces.session.menu.item",
+                { sessionId: node.id, displayTitle: row.title },
+                { hookContext: menuOpenState },
+              )}
+            </Menu>
+            <span className={css.quickActions}>
+              {renderSlot("sidebar.workspaces.session.row.action", {
+                sessionId: node.id,
+                displayTitle: row.title,
+              })}
+            </span>
+          </span>
+        )}
+      </span>
     </div>
   );
   return (

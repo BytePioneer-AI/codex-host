@@ -135,6 +135,7 @@ for (const plugin of extraAdapters) {
 cpSync(join(repoRoot, "LICENSE"), join(out, "LICENSE"));
 mkdirSync(join(out, "licenses"), { recursive: true });
 cpSync(join(frontendRoot, "LICENSE"), join(out, "licenses/DSH-MIT.txt"));
+cpSync(join(frontendRoot, "OPENAI_ICONS_LICENSE.txt"), join(out, "licenses/OPENAI-ICONS-MIT.txt"));
 cpSync(join(frontendRoot, "THIRD_PARTY_NOTICES.md"), join(out, "licenses/THIRD_PARTY_NOTICES.md"));
 writeFileSync(
   join(out, "package.json"),
@@ -180,6 +181,7 @@ The default listener is localhost. For phones, use an HTTPS reverse proxy such a
 PWA installation and Web Push need HTTPS. Do not expose \`--no-auth\` to a network.
 
 This distribution includes LGPL-licensed CodexHost code and MIT-licensed DSH-derived UI.
+Navigation SVGs include a subset of @openai/apps-sdk-ui 0.2.2 (MIT, Copyright 2025 OpenAI).
 Retained license texts and dependency notices are in LICENSE and licenses/.
 `,
 );

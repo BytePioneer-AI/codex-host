@@ -1,5 +1,8 @@
 /** The fork action: one `sidebar.workspaces.session.menu.item` row. */
-import { IconBranchOutlineRegular, MenuItemButton } from "@deepseek-ai/dsh-client-ui-primitives";
+import {
+  OpenAIBranchIcon as IconBranchOutlineRegular,
+  MenuItemButton,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ForkSessionInjected, SessionMenuItemProps } from "../contract/slots.ts";
 
 /**

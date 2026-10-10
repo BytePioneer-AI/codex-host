@@ -18,19 +18,20 @@ import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useStat
 import clsx from "clsx";
 import {
   Button,
-  IconArchiveCheckOutlineRegular,
-  IconArchiveOffOutlineRegular,
-  IconArchiveOutlineRegular,
-  IconChevronsUpDownOutlineRegular,
-  IconClockOutlineRegular,
-  IconCloseFillRegular,
-  IconFlatListOutlineRegular,
+  OpenAIArchiveIcon as IconArchiveCheckOutlineRegular,
+  OpenAIEyeOffIcon as IconArchiveOffOutlineRegular,
+  OpenAIArchiveIcon as IconArchiveOutlineRegular,
+  OpenAISortIcon as IconChevronsUpDownOutlineRegular,
+  OpenAIClockIcon as IconClockOutlineRegular,
+  OpenAICloseIcon as IconCloseFillRegular,
+  OpenAIListIcon as IconFlatListOutlineRegular,
   IconFolderCloseRegular,
-  IconProjectAddOutlineRegular,
-  IconQueueOutlineRegular,
-  IconSearchOutlineRegular,
-  IconSlidersTwoOutlineRegular,
-  IconWorkspaceTreeOutlineRegular,
+  OpenAIFolderAddIcon as IconProjectAddOutlineRegular,
+  OpenAIListIcon as IconQueueOutlineRegular,
+  OpenAISearchIcon as IconSearchOutlineRegular,
+  OpenAIViewOptionsIcon as IconSlidersTwoOutlineRegular,
+  OpenAIFoldersIcon as IconWorkspaceTreeOutlineRegular,
+  OpenAIEyeIcon,
   Menu,
   Modal,
   Toast,
@@ -66,6 +67,7 @@ import {
 } from "../tree.ts";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
+import { GROUP_INITIAL_ROWS, SIDEBAR_PAGE_ROWS, sidebarWindow } from "./sidebar-window.ts";
 import { FLAT_SESSION_ORDER_KEY, type SessionGroupBy } from "../stores.ts";
 import { WorkspacePickFlow } from "../WorkspacePicker.tsx";
 import css from "./WorkspaceBrowser.module.css";
@@ -79,27 +81,6 @@ const EXPAND_SLIDE_MS = 300;
 const SEARCH_DEBOUNCE_MS = 250;
 /** `session.search` wire bound, measured in JavaScript UTF-16 code units. */
 const SEARCH_QUERY_MAX_CODE_UNITS = 500;
-/** Idle Session rows visible per Workspace before the local overflow control. */
-const COLLAPSED_SESSION_LIMIT = 5;
-
-/** Keep provisional and running rows outside the idle-session quota, including parents with running children. */
-function collapsedSessionRows(
-  sessions: readonly SessionNode[],
-  limit = COLLAPSED_SESSION_LIMIT,
-): {
-  rows: readonly SessionNode[];
-  hiddenCount: number;
-} {
-  let idleCount = 0;
-  const rows = sessions.filter((session) => {
-    if (session.blank || session.running || session.runningSubagentCount > 0) return true;
-    if (idleCount >= limit) return false;
-    idleCount += 1;
-    return true;
-  });
-  return { rows, hiddenCount: sessions.length - rows.length };
-}
-
 /** Keep controlled input and RPC payload inside the session.search wire contract. */
 function sanitizeSearchQuery(value: string): string {
   const withoutNul = value.replaceAll("\0", "");
@@ -183,7 +164,7 @@ function ViewOptionsMenu({
         {
           id: "show-archived",
           label: t("viewOptions.showArchived"),
-          icon: <IconQueueOutlineRegular />,
+          icon: <OpenAIEyeIcon />,
         },
         {
           id: "only-archived",
@@ -459,20 +440,6 @@ function SessionTree({
       }
     }
   }, [groupExpansion, parents, revealGroup, setGroupExpanded]);
-  useEffect(() => {
-    if (revealSessionId === undefined || revealGroup === undefined) return;
-    const group = groups.find((candidate) => candidate.key === revealGroup);
-    if (
-      group === undefined ||
-      !group.expanded ||
-      !group.sessions.some((row) => row.id === revealSessionId)
-    )
-      return;
-    if (collapsedSessionRows(group.sessions).rows.some((row) => row.id === revealSessionId)) return;
-    setSessionLimits((limits) =>
-      limits[revealGroup] === Infinity ? limits : { ...limits, [revealGroup]: Infinity },
-    );
-  }, [groups, revealGroup, revealSessionId]);
   const now = Date.now();
   const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState["over"]>): void => {
     if (sessionDropCommitted.current) return;
@@ -487,7 +454,12 @@ function SessionTree({
         : workspaces.find((workspace) => workspace.workspaceId === activeDrag.accountKey)
             ?.sessionIds;
     if (accountSessionIds === undefined) return;
-    const renderedSessions = collapsedSessionRows(group.sessions, sessionLimits[group.key]).rows;
+    const renderedSessions = sidebarWindow(
+      group.sessions,
+      sessionLimits[group.key] ?? GROUP_INITIAL_ROWS,
+      current,
+      revealSessionId,
+    ).rows;
     const nextOrder = sessionDragOrder(accountSessionIds, renderedSessions, activeDrag, over);
     if (nextOrder !== undefined) setSessionOrder(activeDrag.accountKey, nextOrder);
   };
@@ -543,8 +515,13 @@ function SessionTree({
     const children = childrenByParent.get(group.key) ?? [];
     const compatibleDrag =
       workspaceDrag !== null && parents.get(workspaceDrag.workspaceId) === parents.get(group.key);
-    const collapsed = collapsedSessionRows(group.sessions);
-    const visible = collapsedSessionRows(group.sessions, sessionLimits[group.key]);
+    const collapsed = sidebarWindow(group.sessions, GROUP_INITIAL_ROWS, current, revealSessionId);
+    const visible = sidebarWindow(
+      group.sessions,
+      sessionLimits[group.key] ?? GROUP_INITIAL_ROWS,
+      current,
+      revealSessionId,
+    );
     const sessionsExpanded = visible.hiddenCount === 0;
     rowKeys.push(`workspace:${group.key}`);
     const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
@@ -592,6 +569,7 @@ function SessionTree({
       // (WorkspaceBrowser.module.css).
       <div
         key={group.key}
+        data-sidebar-group={group.key}
         style={{ "--dsh-workspace-indent": `${depth * 12}px` } as CSSProperties}
         className={clsx(
           css.groupSection,
@@ -639,7 +617,7 @@ function SessionTree({
           t={t}
           onToggle={() => {
             if (group.expanded) {
-              setSessionLimits((limits) => ({ ...limits, [group.key]: COLLAPSED_SESSION_LIMIT }));
+              setSessionLimits((limits) => ({ ...limits, [group.key]: GROUP_INITIAL_ROWS }));
             }
             setGroupExpanded(group.key, !group.expanded);
           }}
@@ -741,16 +719,14 @@ function SessionTree({
               setSessionLimits((limits) => ({
                 ...limits,
                 [group.key]: sessionsExpanded
-                  ? COLLAPSED_SESSION_LIMIT
-                  : visible.hiddenCount <= COLLAPSED_SESSION_LIMIT
-                    ? Infinity
-                    : (limits[group.key] ?? COLLAPSED_SESSION_LIMIT) + COLLAPSED_SESSION_LIMIT,
+                  ? GROUP_INITIAL_ROWS
+                  : (limits[group.key] ?? GROUP_INITIAL_ROWS) + SIDEBAR_PAGE_ROWS,
               }));
             }}
           >
             {sessionsExpanded
               ? t("sessions.collapse")
-              : t("sessions.expand", { n: visible.hiddenCount })}
+              : t("sessions.expand", { n: Math.min(SIDEBAR_PAGE_ROWS, visible.hiddenCount) })}
           </button>
         )}
       </div>
@@ -822,10 +798,14 @@ function FlatList({
   );
   const [drag, setDrag] = useState<DragState | null>(null);
   const dropCommitted = useRef(false);
+  const [limit, setLimit] = useState(SIDEBAR_PAGE_ROWS);
   useNativeDragAcceptance(drag !== null);
   const currentId = panelActive
     ? undefined
     : Object.values(list.byId).find((session) => (session.retainedBy.mainView ?? 0) > 0)?.id;
+  const visible = sidebarWindow(rows, limit, currentId, revealSessionId);
+  const hasOverflow =
+    sidebarWindow(rows, SIDEBAR_PAGE_ROWS, currentId, revealSessionId).hiddenCount > 0;
   const commitDrag = (activeDrag: DragState, over: NonNullable<DragState["over"]>): void => {
     if (dropCommitted.current) return;
     dropCommitted.current = true;
@@ -839,14 +819,21 @@ function FlatList({
       <AnimatedRows
         className={clsx(css.list, css.flatList)}
         label={t("section.sessions")}
-        rowKeys={rows.length === 0 ? ["empty"] : rows.map((row) => `session:${row.id}`)}
+        rowKeys={
+          rows.length === 0
+            ? ["empty"]
+            : [
+                ...visible.rows.map((row) => `session:${row.id}`),
+                ...(hasOverflow ? ["overflow:flat"] : []),
+              ]
+        }
         ready={list.phase === "ready" && workspaceReady && drag === null}
-        resetKey={animationResetKey}
+        resetKey={`${animationResetKey}/${limit}`}
       >
         {rows.length === 0 && (
           <EmptySessions rowState={rowState} onLeaveArchivedOnly={onLeaveArchivedOnly} t={t} />
         )}
-        {rows.map((node) => {
+        {visible.rows.map((node) => {
           const active = drag !== null && drag.pinned === node.pinned;
           const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
             node.blank ? "after" : half;
@@ -901,6 +888,21 @@ function FlatList({
             />
           );
         })}
+        {hasOverflow && (
+          <button
+            type="button"
+            data-row-key="overflow:flat"
+            className={css.sessionOverflowButton}
+            aria-expanded={limit > SIDEBAR_PAGE_ROWS}
+            onClick={() =>
+              setLimit(visible.hiddenCount > 0 ? limit + SIDEBAR_PAGE_ROWS : SIDEBAR_PAGE_ROWS)
+            }
+          >
+            {visible.hiddenCount > 0
+              ? t("sessions.expand", { n: Math.min(SIDEBAR_PAGE_ROWS, visible.hiddenCount) })
+              : t("sessions.collapse")}
+          </button>
+        )}
       </AnimatedRows>
       <span className={css.fade} />
     </div>
@@ -1509,7 +1511,7 @@ export function WorkspaceBrowser({
                     requestSearch();
                   }}
                 >
-                  <IconSearchOutlineRegular size={searchExpanded ? 11 : 14} />
+                  <IconSearchOutlineRegular size={16} />
                 </button>
               </Tooltip>
               <input

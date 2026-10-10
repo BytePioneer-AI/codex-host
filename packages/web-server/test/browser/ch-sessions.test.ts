@@ -99,6 +99,9 @@ for (const width of [390, 1280])
         .getByRole("button", { name: "New session", exact: true })
         .filter({ hasText: "New Session" })
         .click();
+      // Wait for the requested draft, rather than typing into the previous
+      // Thread's still-mounted composer during asynchronous navigation.
+      await page.getByText("What should we build today?", { exact: true }).waitFor();
       await page
         .getByRole("textbox", {
           name: "Describe what you want to build, / commands, @ files or sessions",
@@ -106,7 +109,17 @@ for (const width of [390, 1280])
         })
         .fill("created in Web");
       await page.getByRole("button", { name: "Send message", exact: true }).click();
-      await page.getByText("CH response: created in Web", { exact: true }).waitFor();
+      await page
+        .getByText("CH response: created in Web", { exact: true })
+        .waitFor()
+        .catch(async (error: unknown) => {
+          if (process.env.CODEXHOST_TEST_SCREENSHOTS) {
+            await page.screenshot({
+              path: join(process.env.CODEXHOST_TEST_SCREENSHOTS, `ch-send-failure-${width}.png`),
+            });
+          }
+          throw error;
+        });
       assert.equal(host.requests.filter((r) => r.method === "thread/start").length, 1);
       const newThread = [...host.threads.values()].find((value) =>
         value.id.startsWith("canonical-"),
@@ -149,6 +162,8 @@ it(
     t.after(() => browser.close());
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await page.goto(url);
+    await page.waitForLoadState("networkidle");
+    await page.getByText("Native Model", { exact: true }).waitFor();
     const folder = page.getByRole("treeitem").filter({ hasText: /^project$/ });
     await folder.waitFor();
     if ((await folder.getAttribute("aria-expanded")) === "false") await folder.click();

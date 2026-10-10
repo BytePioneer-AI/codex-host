@@ -59,9 +59,9 @@
   gap: 4px;
   height: 36px;
   padding-left: 4px;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
   box-sizing: border-box;
-  border-radius: var(--dsw-radius-md);
+  border-radius: 6px;
   overflow: hidden;
   color: var(--dsw-alias-label-tertiary);
 }
@@ -72,6 +72,8 @@
 }
 
 .sectionLabel {
+  font-size: 12px;
+  font-weight: 500;
   flex: none;
   max-width: 45%;
   min-width: 0;
@@ -362,6 +364,8 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scroll-padding-block: 8px;
   margin-left: -4px;
   margin-right: var(--dsh-session-list-scrollbar-offset);
   padding-left: 4px;
@@ -378,7 +382,7 @@
 .flatList > * + *,
 .searchTree > [role="treeitem"] + [role="treeitem"],
 .groupSection > * + * {
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .searchStatus {
@@ -454,7 +458,7 @@
 }
 
 .groupSection + .groupSection {
-  margin-top: 4px;
+  margin-top: 12px;
 }
 
 .listTopDropIndicator,
@@ -508,10 +512,10 @@
 
 .sessionOverflowButton {
   width: 100%;
-  height: 28px;
+  height: 32px;
   border: none;
-  border-radius: var(--dsw-radius-sm);
-  padding: 0 12px 0 calc(28px + var(--dsh-workspace-indent, 0px));
+  border-radius: 6px;
+  padding: 0 12px 0 calc(32px + var(--dsh-workspace-indent, 0px));
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -524,8 +528,23 @@
 }
 
 .sessionOverflowButton:hover {
-  background: transparent;
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
+}
+
+.sessionOverflowButton:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .sessionOverflowButton,
+  .root:not(.rail) .iconButton {
+    min-height: 44px;
+  }
+  .root:not(.rail) .sectionHeader {
+    height: 44px;
+  }
 }
 
 .empty {

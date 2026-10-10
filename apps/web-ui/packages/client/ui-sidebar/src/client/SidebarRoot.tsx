@@ -20,9 +20,9 @@ import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   FishLogo,
-  IconNewChatOutlineMedium,
-  IconNewChatOutlineRegular,
-  IconPanelLeftOutlineRegular,
+  OpenAINewChatIcon as IconNewChatOutlineMedium,
+  OpenAINewChatIcon as IconNewChatOutlineRegular,
+  OpenAISidebarIcon as IconPanelLeftOutlineRegular,
   isDarwinDesktop,
   ShortcutKeys,
   Tooltip,
@@ -324,7 +324,7 @@ export function SidebarRoot({
           <span className={css.newSessionLabelMask}>
             <span className={css.newSessionContent}>
               {wide ? (
-                <IconNewChatOutlineMedium size={14} />
+                <IconNewChatOutlineMedium size={18} />
               ) : (
                 <IconNewChatOutlineRegular size={windowsTitlebar ? 16 : 18} />
               )}

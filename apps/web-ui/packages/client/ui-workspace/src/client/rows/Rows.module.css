@@ -3,21 +3,33 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  border-radius: var(--dsw-radius-md);
+  border-radius: 6px;
   padding: 0 8px;
   padding-inline-start: calc(8px + var(--dsh-workspace-indent, 0px));
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
   user-select: none;
   color: var(--dsw-alias-label-primary);
 }
 
 .projectRow:hover,
 .sessionRow:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, transparent);
 }
 
 .sessionRow.selected {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
+}
+
+.sessionRow.selected:hover {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+}
+
+.projectRow:focus-visible,
+.sessionRow:focus-visible,
+.iconButton:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
 }
 
 .searchResultRow {
@@ -97,13 +109,15 @@
 
 /* Compact one-line Workspace row after removing the session-count subtitle. */
 .projectRow {
-  height: 34px;
+  height: 32px;
   align-items: center;
   box-sizing: border-box;
+  color: var(--dsw-alias-label-secondary);
 }
 
-.projectRow .rowActions {
-  height: 20px;
+.projectRow .title {
+  font-size: 12px;
+  font-weight: 500;
 }
 
 /* Session cell (figma): pad 8, a 16px status slot, then a 4px title gap. */
@@ -113,7 +127,7 @@
 }
 
 .sessionRow .title {
-  margin: 0 6px 0 4px;
+  margin: 0 8px;
 }
 
 .slot {
@@ -151,17 +165,17 @@
 }
 
 .folderActive {
-  color: var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-label-primary);
 }
 
 /* Project leading slot: folder by default, expand arrow on row hover. */
 .projectRow .chevron {
   display: none;
 }
-.projectRow:hover .chevron {
+.projectRow:is(:hover, :focus-within, .menuOpen) .chevron {
   display: inline-flex;
 }
-.projectRow:hover .folder {
+.projectRow:is(:hover, :focus-within, .menuOpen) .folder {
   display: none;
 }
 
@@ -187,7 +201,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 20px;
 }
 
@@ -245,11 +259,34 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* Metadata and actions occupy the same grid cell. Visibility changes never
+   remeasure the title, so entering or leaving a row cannot move its text. */
+.trailing {
+  flex: none;
+  display: grid;
+  align-items: center;
+  justify-items: end;
+  position: relative;
+}
+
+.trailing:empty {
+  display: none;
+}
+
+.trailing > * {
+  grid-area: 1 / 1;
+}
+
 .time {
   flex: none;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 16px;
+  font-variant-numeric: tabular-nums;
   color: var(--dsw-alias-label-tertiary);
+}
+
+.trailing:has(.pinIndicator) .time {
+  padding-inline-end: 22px;
 }
 
 .pinIndicator {
@@ -278,22 +315,27 @@
   flex: none;
 }
 
-/* Trailing action buttons surface on hover only (figma 27:4668 / 27:4656):
-   bare 16px glyphs, tertiary grey; the figma gap 12 reads too airy beside
-   the 16px glyphs, so the buttons sit at 10. */
-.rowActions {
-  flex: none;
-  display: none;
+.quickActions {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 2px;
 }
 
-.projectRow:hover .rowActions,
-.sessionRow:hover .rowActions,
-.searchResultRow:hover .rowActions,
-.projectRow.menuOpen .rowActions,
-.sessionRow.menuOpen .rowActions {
+/* A stable trailing rail, available to both pointer and keyboard users. */
+.rowActions {
+  flex: none;
   display: inline-flex;
+  visibility: hidden;
+  pointer-events: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.projectRow:is(:hover, :focus-within, .menuOpen) .rowActions,
+.sessionRow:is(:hover, :focus-within, .menuOpen) .rowActions,
+.searchResultRow:is(:hover, :focus-within) .rowActions {
+  visibility: visible;
+  pointer-events: auto;
 }
 
 /* The search heading has no trailing time cell, so the unarchive action
@@ -302,16 +344,9 @@
   margin-left: auto;
 }
 
-.sessionRow:hover .time,
-.sessionRow.menuOpen .time {
-  display: none;
-}
-
-/* Hover swaps the trailing cell to the action buttons, which already carry
-   the pin/archive glyphs — hide the static markers so they do not double. */
-.sessionRow:hover .pinIndicator,
-.sessionRow.menuOpen .pinIndicator {
-  display: none;
+.sessionRow:is(:hover, :focus-within, .menuOpen) .time,
+.sessionRow:is(:hover, :focus-within, .menuOpen) .pinIndicator {
+  visibility: hidden;
 }
 
 /* The unclipped hover state drops the ellipsis, which would otherwise cover
@@ -422,18 +457,48 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 24px;
+  height: 24px;
   border: none;
-  border-radius: var(--dsw-radius-xs);
+  border-radius: 4px;
   padding: 0;
   background: transparent;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
   color: var(--dsw-alias-label-tertiary);
 }
 
 .iconButton:hover {
   color: var(--dsw-alias-label-primary);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);
+}
+
+/* Touch has no hover. Keep one large explicit menu trigger; all actions
+   remain in that menu instead of exposing small accidental archive targets. */
+@media (hover: none), (pointer: coarse) {
+  .projectRow,
+  .sessionRow {
+    min-height: 44px;
+  }
+
+  .rowActions {
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .sessionRow .quickActions {
+    display: none;
+  }
+
+  .sessionRow .time,
+  .sessionRow .pinIndicator {
+    display: none;
+  }
+
+  .iconButton {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 /* Chevrons ride the caption grey (#ADB2B8); the folder glyph stays one step
@@ -443,6 +508,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .sessionRow:hover .title {
+    text-overflow: ellipsis;
+  }
   .arrow {
     animation: none;
     transition: none;

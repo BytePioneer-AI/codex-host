@@ -57,6 +57,8 @@ export interface LoadHarnessPluginsOptions {
   warmup?: boolean;
   /** Dedicated runtime owners (e.g. a Broker) may instantiate only their requested plugin. */
   onlyIds?: ReadonlySet<string>;
+  /** A GUI proxy loads usage plugins only; the shared owner loads Session adapters. */
+  sessionPlugins?: boolean;
   /** Load statistics-only plugins first and publish their settled registry before Session
    * plugins start. Ownership/cleanup remains with the returned registry.
    */
@@ -262,6 +264,7 @@ export async function loadHarnessPlugins(
   for (const candidate of candidates) {
     const { manifest } = candidate;
     if (!candidate.enabled || (options.onlyIds && !options.onlyIds.has(manifest.id))) continue;
+    if (options.sessionPlugins === false && manifest.kind !== "usage") continue;
     if (counts.get(manifest.id) !== 1 || options.reservedIds?.has(manifest.id)) {
       if (!conflicted.has(manifest.id)) diagnose({ id: manifest.id, code: "duplicateId" });
       conflicted.add(manifest.id);

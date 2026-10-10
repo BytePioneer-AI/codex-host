@@ -945,6 +945,7 @@ export class AppServerHost {
     if (!this.#options.pluginRoots || this.#pluginLoadAbort.signal.aborted) return;
     const plugins = await loadHarnessPlugins({
       roots: this.#options.pluginRoots,
+      sessionPlugins: this.#options.sharedThreads?.options.delegateCreates !== true,
       onUsageAdaptersLoaded: (adapters) => {
         if (!this.#pluginLoadAbort.signal.aborted) this.#usageOnlyAdapters = [...adapters.values()];
         usageReady();
@@ -1514,7 +1515,9 @@ export class AppServerHost {
       this.#options.sharedThreads &&
       (request.method.startsWith("thread/") ||
         request.method.startsWith("turn/") ||
-        request.method.startsWith("codexhost/thread/"))
+        request.method.startsWith("codexhost/thread/") ||
+        request.method.startsWith("codexhost/harness/") ||
+        this.#options.sharedThreads.handlesControl(request.method))
     ) {
       try {
         const reply = await this.#options.sharedThreads.route(request);
@@ -1533,7 +1536,10 @@ export class AppServerHost {
         request.method.startsWith("thread/") ||
         request.method.startsWith("turn/") ||
         request.method.startsWith("codexhost/thread/") ||
-        request.method.startsWith("codexhost/harness/")
+        request.method.startsWith("codexhost/harness/") ||
+        request.method === LOADED_SESSIONS_METHOD ||
+        request.method === IDLE_RELEASE_SETTINGS_METHOD ||
+        request.method === USAGE_STATISTICS_METHOD
       )
     ) {
       await this.#writer.json(
@@ -2441,8 +2447,9 @@ export class AppServerHost {
 
   async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
     if (this.#options.externalOnly) {
-      // Project and section metadata remain owned by native Codex. This
-      // private client negotiates its own connection, never a GUI's session.
+      // The independent owner starts native Codex only when native metadata or
+      // an explicit native Delegation needs it, not when Web merely connects.
+      await this.#officialRuntime.initialize();
       await this.#officialRuntime.initializeProtocol({
         clientInfo: { name: "codexhost-shared-threads", version: "1" },
         capabilities: { experimentalApi: true },
@@ -2995,6 +3002,9 @@ export class AppServerHost {
     const result = await aggregateThreadList({
       query: decoded,
       records,
+      ...(this.#options.sharedThreads
+        ? { sharedThreads: await this.#options.sharedThreads.list(decoded.params) }
+        : {}),
       runtimeFor: (threadId) => {
         const thread = this.#externalRuntime.get(threadId);
         return thread ? { running: thread.running } : null;

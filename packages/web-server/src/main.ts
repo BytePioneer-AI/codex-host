@@ -9,7 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import qrcode from "qrcode-terminal";
@@ -49,6 +49,11 @@ const { values } = parseArgs({
     "session-source": { type: "string", default: "codexhost" },
     "ch-cdp": { type: "string" },
     "ch-control-directory": { type: "string" },
+    "ch-launcher": { type: "string" },
+    "ch-host-runtime": { type: "string" },
+    "ch-data": { type: "string" },
+    "ch-codex-home": { type: "string" },
+    "ch-plugins": { type: "string" },
     port: { type: "string", default: process.env.CODEXHOST_WEB_PORT ?? "3180" },
     host: { type: "string", default: process.env.CODEXHOST_WEB_HOST ?? "127.0.0.1" },
     data: {
@@ -94,6 +99,39 @@ if (!["codexhost", "standalone"].includes(values["session-source"] as string))
 const chHost =
   values["session-source"] === "codexhost"
     ? await createChHostClient({
+        launch: {
+          launcher: resolve(
+            values["ch-launcher"] ??
+              (PACKED
+                ? join(
+                    import.meta.dirname,
+                    "native",
+                    process.platform === "win32" ? "codexhost.exe" : "codexhost",
+                  )
+                : join(
+                    REPO_ROOT,
+                    "target/debug",
+                    process.platform === "win32" ? "codexhost.exe" : "codexhost",
+                  )),
+          ),
+          runtime: resolve(
+            values["ch-host-runtime"] ??
+              (PACKED
+                ? join(import.meta.dirname, "host-runtime.mjs")
+                : join(REPO_ROOT, "packages/host-runtime/dist/main.js")),
+          ),
+          dataDirectory: resolve(
+            values["ch-data"] ??
+              (values["ch-control-directory"]
+                ? dirname(resolve(values["ch-control-directory"]))
+                : join(homedir(), ".codexhost")),
+          ),
+          bundledPlugins: resolve(values["ch-plugins"] ?? defaultAdapterRoots()),
+          ...(values["ch-codex-home"] ? { codexHome: resolve(values["ch-codex-home"]) } : {}),
+        },
+        ...(values["ch-data"] && !values["ch-control-directory"]
+          ? { directory: join(resolve(values["ch-data"]), "client-hosts") }
+          : {}),
         ...(values["ch-cdp"] ? { cdp: values["ch-cdp"] } : {}),
         ...(values["ch-control-directory"] ? { directory: values["ch-control-directory"] } : {}),
       })
@@ -362,13 +400,21 @@ server.listen(Number(values.port), values.host, () => {
       if (count > 0) console.log(`  imported ${String(count)} native session(s)`);
     });
   }
-  void harnesses.modelCatalog().then((catalog) => {
-    console.log(
-      `  ready: ${catalog.groups.map((group) => `${group.name} (${String(group.models.length)} models)`).join(", ") || "none"}`,
-    );
-    for (const failure of catalog.failures)
-      console.log(`  unavailable: ${failure.name}: ${failure.message}`);
-  });
+  // Shared mode asks the canonical owner; even inspection must not construct a
+  // second set of Adapters inside the Web gateway.
+  void (sessions instanceof ChSessions ? sessions.catalog.models() : harnesses.modelCatalog())
+    .then((catalog) => {
+      console.log(
+        `  ready: ${catalog.groups.map((group) => `${group.name} (${String(group.models.length)} models)`).join(", ") || "none"}`,
+      );
+      for (const failure of catalog.failures)
+        console.log(`  unavailable: ${failure.name}: ${failure.message}`);
+    })
+    .catch((error: unknown) => {
+      console.log(
+        `  catalog unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
 });
 
 async function shutdown(): Promise<void> {

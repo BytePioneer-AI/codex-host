@@ -11,6 +11,9 @@ import {
   type ClientChannelResponse,
 } from "@codexhost/shared-contracts";
 import type { ClientChannelEvents } from "./client-channel-events.js";
+import { WebSocketServer } from "ws";
+import { attachRemoteAppServerSession } from "./remote-app-server-session.js";
+import type { RemoteAppServerSessionStreams, RemoteAppServerSession } from "./remote-app-server.js";
 
 export interface ClientChannelTarget {
   readonly clientEvents: ClientChannelEvents;
@@ -39,8 +42,20 @@ export async function startClientChannelServer(options: {
   target: ClientChannelTarget;
   environment: NodeJS.ProcessEnv;
   directory?: string;
+  owner?: "service";
+  shutdown?: () => void;
+  desktopSession?: (
+    streams: RemoteAppServerSessionStreams,
+    request: IncomingMessage,
+  ) => RemoteAppServerSession;
 }) {
   const token = randomBytes(32).toString("hex");
+  const authorized = (request: IncomingMessage): boolean => {
+    const auth = request.headers.authorization;
+    const left = Buffer.from(auth?.startsWith("Bearer ") ? auth.slice(7) : "");
+    const right = Buffer.from(token);
+    return !request.headers.origin && left.length === right.length && timingSafeEqual(left, right);
+  };
   const server = createServer((request, response) => {
     const reply = (status: number, value: unknown) => {
       response.writeHead(status, {
@@ -50,10 +65,7 @@ export async function startClientChannelServer(options: {
       response.end(JSON.stringify(value));
     };
     void (async () => {
-      const auth = request.headers.authorization;
-      const left = Buffer.from(auth?.startsWith("Bearer ") ? auth.slice(7) : "");
-      const right = Buffer.from(token);
-      if (request.headers.origin || left.length !== right.length || !timingSafeEqual(left, right)) {
+      if (!authorized(request)) {
         reply(401, { error: { code: -32001, message: "Unauthorized" } });
         return;
       }
@@ -89,6 +101,11 @@ export async function startClientChannelServer(options: {
         return;
       }
       const input = await body(request);
+      if (url.pathname === "/v1/shutdown" && options.shutdown) {
+        response.once("finish", () => setImmediate(() => options.shutdown?.()));
+        reply(200, { result: { stopping: true } });
+        return;
+      }
       if (url.pathname === "/v1/rpc" && typeof input.method === "string")
         reply(200, await options.target.handleClientRequest(input.method, input.params));
       else if (url.pathname === "/v1/snapshot" && typeof input.threadId === "string")
@@ -107,6 +124,31 @@ export async function startClientChannelServer(options: {
           },
         });
       else response.destroy();
+    });
+  });
+  const desktop = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024 * 1024 });
+  const desktopSessions = new Set<ReturnType<typeof attachRemoteAppServerSession>>();
+  let closing: Promise<void> | undefined;
+  server.on("upgrade", (request, socket, head) => {
+    const session = options.desktopSession;
+    if (closing || !session || request.url !== "/v1/desktop" || !authorized(request)) {
+      socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      return;
+    }
+    desktop.handleUpgrade(request, socket, head, (connection) => {
+      try {
+        const binding = attachRemoteAppServerSession({
+          socket: connection,
+          framing: "ndjson",
+          diagnosticOutput: process.stderr,
+          createSession: (streams) => session(streams, request),
+        });
+        desktopSessions.add(binding);
+        void binding.running.finally(() => desktopSessions.delete(binding));
+      } catch {
+        connection.on("error", () => undefined);
+        connection.close(1008, "Invalid Desktop runtime context");
+      }
     });
   });
   await new Promise<void>((resolve, reject) => {
@@ -129,6 +171,7 @@ export async function startClientChannelServer(options: {
   const temporary = `${descriptorPath}.${randomBytes(8).toString("hex")}.tmp`;
   const descriptor = {
     version: 1 as const,
+    ...(options.owner ? { owner: options.owner } : {}),
     pid: process.pid,
     port: (server.address() as AddressInfo).port,
     token,
@@ -148,12 +191,18 @@ export async function startClientChannelServer(options: {
   return {
     descriptorPath,
     descriptor,
-    async close() {
-      await rm(descriptorPath, { force: true });
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-        server.closeAllConnections();
-      });
+    close(): Promise<void> {
+      return (closing ??= (async () => {
+        for (const session of desktopSessions) session.close();
+        for (const client of desktop.clients) client.terminate();
+        desktop.close();
+        const closed = new Promise<void>((resolve) => {
+          server.close(() => resolve());
+          server.closeAllConnections();
+        });
+        await rm(descriptorPath, { force: true });
+        await Promise.all([closed, ...[...desktopSessions].map((session) => session.running)]);
+      })());
     },
   };
 }

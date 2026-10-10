@@ -8,6 +8,7 @@ import type { HarnessManifest } from "./harnesses.ts";
 export interface PackagedAdapter {
   id: string;
   directory: string;
+  kind?: "usage";
 }
 
 /**
@@ -19,6 +20,7 @@ export interface PackagedAdapter {
 export function readPackagedAdapters(
   root: string,
   selected?: ReadonlySet<string>,
+  options: { includeUsage?: boolean } = {},
 ): PackagedAdapter[] {
   const plugins: PackagedAdapter[] = [];
   for (const name of readdirSync(root).sort()) {
@@ -26,7 +28,7 @@ export function readPackagedAdapters(
     const manifestPath = join(directory, "manifest.json");
     if (!existsSync(manifestPath)) continue;
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as HarnessManifest;
-    if (manifest.kind === "usage") continue;
+    if (manifest.kind === "usage" && !options.includeUsage) continue;
     if (selected !== undefined && !selected.has(manifest.id)) continue;
     if (!/^[a-z0-9][a-z0-9-]*$/u.test(manifest.id) || manifest.id === "codex") {
       throw new Error(`Cannot include Harness id ${manifest.id}; codex is bundled separately`);
@@ -52,7 +54,11 @@ export function readPackagedAdapters(
         );
       }
     }
-    plugins.push({ id: manifest.id, directory });
+    plugins.push({
+      id: manifest.id,
+      directory,
+      ...(manifest.kind === "usage" ? { kind: "usage" as const } : {}),
+    });
   }
   for (const id of selected ?? []) {
     if (!plugins.some((plugin) => plugin.id === id))

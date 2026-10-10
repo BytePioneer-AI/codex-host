@@ -64,6 +64,7 @@ export class HostClientChannel {
   constructor(
     private readonly directory: string,
     descriptor: ClientChannelDescriptor,
+    private readonly ensureOwner?: () => Promise<void>,
   ) {
     this.descriptor = descriptor;
   }
@@ -105,11 +106,11 @@ export class HostClientChannel {
     const controller = new AbortController();
     this.controller = controller;
     this.generation++;
-    let deadline: ReturnType<typeof setTimeout> | undefined = setTimeout(
-      () => controller.abort(),
-      5000,
-    );
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
+      await this.ensureOwner?.();
+      if (this.stopped) return;
+      deadline = setTimeout(() => controller.abort(), 5000);
       const descriptor = await discoverHostClientChannel(this.directory);
       if (!descriptor) throw new Error("Host unavailable");
       this.descriptor = descriptor;

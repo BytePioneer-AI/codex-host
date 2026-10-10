@@ -1,6 +1,11 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 export { createLocalPageOpener } from "./local-page-control.js";
 export {
+  ensureHostService,
+  isHostClientChannelOnline,
+  type HostServiceLaunch,
+} from "./host-service-launch.js";
+export {
   HostClientChannel,
   discoverHostClientChannel,
   type HostClientUpdate,

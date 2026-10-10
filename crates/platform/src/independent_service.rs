@@ -1,6 +1,8 @@
 //! Explicit ownership transfer for native services launched from a supervised Desktop tree.
 //! Records describe process instances, never sessions, credentials or Harness state.
-use crate::{PlatformError, ProcessSnapshot, process_snapshot};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crate::ProcessSnapshot;
+use crate::{PlatformError, process_snapshot};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;

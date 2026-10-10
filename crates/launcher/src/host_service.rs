@@ -164,7 +164,7 @@ fn ensure(arguments: &[String], options: Options) -> Result<(), Box<dyn Error>> 
         .arg("--ready-file")
         .arg(&ready);
     clean(&mut command);
-    configure_detached_service_command(&mut command);
+    configure_detached_service_command(&mut command)?;
     let mut supervisor = command.spawn()?;
     let started = Instant::now();
     let result = loop {
@@ -290,6 +290,39 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
     result
 }
 
+// A shutdown reply only acknowledges the request. Admission is released after
+// the native supervisor proves that the entire managed process tree has exited.
+fn wait_for_shutdown(data: &Path, timeout: Duration) -> Result<(), Box<dyn Error>> {
+    let lock = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(data.join("shared-host-process.lock"))
+    {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let started = Instant::now();
+    loop {
+        match lock.try_lock_exclusive() {
+            Ok(()) => {
+                FileExt::unlock(&lock)?;
+                return Ok(());
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
+            {
+                if started.elapsed() >= timeout {
+                    return Err("Shared Host process tree exit was not confirmed".into());
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let action = arguments.first().map(String::as_str).unwrap_or("");
     if arguments.is_empty() {
@@ -314,7 +347,7 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 .stderr(Stdio::inherit())
                 .status()?;
             if status.success() {
-                Ok(())
+                wait_for_shutdown(&options.data, Duration::from_secs(10))
             } else {
                 Err("Shared Host shutdown was not confirmed".into())
             }

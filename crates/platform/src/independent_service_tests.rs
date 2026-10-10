@@ -29,7 +29,7 @@ fn service_survives_supervised_parent_cleanup() {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        configure_detached_service_command(&mut command);
+        configure_detached_service_command(&mut command).unwrap();
         let mut service = command.spawn().unwrap();
         // The outer fixture kills this foreground while it waits, proving that
         // its cleanup does not own the detached service's lifetime.

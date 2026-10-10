@@ -1,5 +1,6 @@
 /** Native CH pagination feeding a disposable, backwards-extensible Web journal. */
 import type { ChHostClient } from "./ch-host-client.ts";
+import type { ClientThreadSnapshot } from "@codexhost/shared-contracts";
 import { ChThreadView, type ChThread, type ChTurn } from "./ch-thread-view.ts";
 import type { ProjectionListener } from "./session-log.ts";
 import { RpcError } from "./transport.ts";
@@ -17,6 +18,7 @@ interface TurnsPage {
 
 export class ChThreadHistory extends ChThreadView {
   private loaded = false;
+  ownerSnapshot: ClientThreadSnapshot | undefined;
   private lastHeadReadAt = 0;
   private prefetched = false;
   private refreshing: Promise<void> | undefined;
@@ -29,14 +31,15 @@ export class ChThreadHistory extends ChThreadView {
     thread: ChThread,
     harnessId: string,
     onProjection: ProjectionListener,
+    origin = RENDER_ORIGIN,
   ) {
     const pagination = { cursor: null as string | null };
     super(
       { ...thread, turns: [] },
       harnessId,
       onProjection,
-      RENDER_ORIGIN,
-      RENDER_ORIGIN,
+      origin,
+      origin,
       () => pagination.cursor !== null,
     );
     this.pagination = pagination;
@@ -65,10 +68,15 @@ export class ChThreadHistory extends ChThreadView {
    */
   refresh(force = false): Promise<void> {
     this.refreshing ??= (async () => {
-      const { thread } = await this.host.request<{ thread: ChThread }>("thread/read", {
-        threadId: this.thread.id,
-        includeTurns: false,
-      });
+      const snapshot = await this.host.realtime?.snapshot(this.thread.id);
+      const { thread } = snapshot
+        ? { thread: snapshot.thread }
+        : await this.host.request<{ thread: ChThread }>("thread/read", {
+            threadId: this.thread.id,
+            includeTurns: false,
+          });
+      this.ensureCurrent();
+      this.ownerSnapshot = snapshot;
       if (
         !force &&
         this.loaded &&
@@ -81,7 +89,7 @@ export class ChThreadHistory extends ChThreadView {
         this.log.setProjection("title", thread.name ?? thread.preview ?? null);
         return;
       }
-      const recent = await this.page(null);
+      const recent = snapshot ? snapshot.turnsPage : await this.page(null);
       const descending = [...recent.data];
       const newestKnown = this.thread.turns.at(-1)?.id;
       let cursor = recent.nextCursor;

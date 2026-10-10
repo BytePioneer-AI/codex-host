@@ -22,7 +22,9 @@ import { PushNotifier } from "./push.ts";
 import { CLIENT_GLOBALS, CLIENT_PLUGINS } from "./plugins.ts";
 import { Sessions } from "./sessions.ts";
 import { ChSessions } from "./ch-sessions.ts";
-import { DesktopChHostClient } from "./ch-host-client.ts";
+import { createChHostClient } from "./ch-host-client.ts";
+import { serveChClientGateway } from "./ch-client-gateway.ts";
+import { harnessIconStyles } from "./harness-icon-styles.ts";
 import { Settings } from "./settings.ts";
 import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
@@ -43,6 +45,7 @@ const { values } = parseArgs({
   options: {
     "session-source": { type: "string", default: "codexhost" },
     "ch-cdp": { type: "string" },
+    "ch-control-directory": { type: "string" },
     port: { type: "string", default: process.env.CODEXHOST_WEB_PORT ?? "3180" },
     host: { type: "string", default: process.env.CODEXHOST_WEB_HOST ?? "127.0.0.1" },
     data: {
@@ -85,10 +88,16 @@ const workspaces = new Workspaces(
 );
 if (!["codexhost", "standalone"].includes(values["session-source"] as string))
   throw new Error("Unknown --session-source");
-const sessions =
-  values["session-source"] === "standalone"
-    ? new Sessions(data, harnesses, workspaces, events)
-    : new ChSessions(new DesktopChHostClient(values["ch-cdp"]), workspaces, events);
+const chHost =
+  values["session-source"] === "codexhost"
+    ? await createChHostClient({
+        ...(values["ch-cdp"] ? { cdp: values["ch-cdp"] } : {}),
+        ...(values["ch-control-directory"] ? { directory: values["ch-control-directory"] } : {}),
+      })
+    : undefined;
+const sessions = chHost
+  ? new ChSessions(chHost, workspaces, events)
+  : new Sessions(data, harnesses, workspaces, events);
 const settings = new Settings(data, events);
 const push = new PushNotifier(data);
 sessions.notifier = (notification) => {
@@ -187,6 +196,16 @@ const server = createServer((request, response) => {
         }
       }
     }
+    if (pathname.startsWith("/api/ch/v1/")) {
+      if (!sameOrigin(request)) {
+        response
+          .writeHead(403, { "content-type": "text/plain" })
+          .end("cross-origin request rejected");
+        return;
+      }
+      await serveChClientGateway(chHost, request, response);
+      return;
+    }
     if (request.method === "POST" && pathname.startsWith("/api/")) {
       if (!sameOrigin(request)) {
         response
@@ -210,6 +229,20 @@ const server = createServer((request, response) => {
     }
     if (pathname.startsWith("/plugins/")) {
       send(response, assets.plugin(url), url.includes("rev="));
+      return;
+    }
+    if (pathname === "/harness-icons/presentation.json") {
+      const plugins =
+        sessions instanceof ChSessions
+          ? await sessions.catalog.list()
+          : harnesses.ids().flatMap((id) => {
+              const manifest = harnesses.manifest(id);
+              return manifest ? [manifest] : [];
+            });
+      send(response, {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(harnessIconStyles(plugins))),
+      });
       return;
     }
     if (pathname.startsWith("/harness-icons/")) {

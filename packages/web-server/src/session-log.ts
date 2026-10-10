@@ -287,6 +287,16 @@ export class SessionLog {
     for (const sink of this.followers) sink.push({ type: "assistant-stream", frame });
   }
 
+  /** End the carrier so clients reopen a fresh generation, retaining visible content until then. */
+  reconnectFollowers(): void {
+    for (const sink of [...this.followers]) sink.end();
+  }
+
+  /** Retire a disposable history generation; existing clients must reopen it. */
+  invalidate(code: string, message: string): void {
+    for (const sink of [...this.followers]) sink.fail(code, message);
+  }
+
   // ---- followers ---------------------------------------------------------------------------
 
   follow(sink: StreamSink, request: PageWindow & { assistantStream?: boolean }): void {

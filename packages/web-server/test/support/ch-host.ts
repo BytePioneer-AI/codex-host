@@ -162,7 +162,14 @@ export class FakeChHost implements ChHostClient {
           id,
           status: "completed",
           items: [
-            { id: id + "-user", type: "userMessage", content: input },
+            {
+              id: id + "-user",
+              type: "userMessage",
+              content: input,
+              ...(typeof params.clientUserMessageId === "string"
+                ? { clientId: params.clientUserMessageId }
+                : {}),
+            },
             {
               id: id + "-agent",
               type: "agentMessage",

@@ -15,7 +15,7 @@ import type { HarnessCommandCatalog, HarnessPluginManifest } from "@codexhost/sh
 
 export type HarnessManifest = Pick<
   HarnessPluginManifest,
-  "id" | "name" | "entry" | "icon" | "kind"
+  "id" | "name" | "entry" | "icon" | "iconStyle" | "kind"
 >;
 
 interface ModelRef {

@@ -13,6 +13,7 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
+    "@codexhost/shared-contracts": "*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "mdast-util-from-markdown": "^2.0.3",

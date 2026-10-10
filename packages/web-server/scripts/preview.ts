@@ -10,6 +10,7 @@ const { values } = parseArgs({
   options: {
     "session-source": { type: "string" },
     "ch-cdp": { type: "string" },
+    "ch-control-directory": { type: "string" },
     port: { type: "string" },
     data: { type: "string" },
     workspace: { type: "string" },

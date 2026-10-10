@@ -4,6 +4,7 @@
 
 export type { CodeToolbarLabels } from "./CodeToolbar.tsx";
 export { StateDot } from "./StateDot.tsx";
+export { RemotePluginIcon } from "./RemotePluginIcon.tsx";
 export type { StateDotState } from "./StateDot.tsx";
 export { DisclosureRow } from "./DisclosureRow.tsx";
 export type { DisclosureRowProps } from "./DisclosureRow.tsx";

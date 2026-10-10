@@ -1,5 +1,5 @@
 use super::configure_detached_service_command;
-use crate::process_snapshot;
+use crate::{process_snapshot, spawn_supervised};
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -19,6 +19,11 @@ fn detached_service_releases_callers_capture_pipes() {
                 thread::sleep(Duration::from_millis(20));
             }
             return;
+        }
+        // The fixture caller must enter its native cleanup Job before it can
+        // request breakaway. The Actions runner's enclosing Job is not ours.
+        while !root.join("admitted").exists() {
+            thread::sleep(Duration::from_millis(20));
         }
         let mut command = Command::new(&executable);
         command
@@ -43,19 +48,20 @@ fn detached_service_releases_callers_capture_pipes() {
         .as_nanos();
     let root = env::temp_dir().join(format!("codexhost-pipes-{}-{nonce}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
-    let mut caller = Command::new(&executable)
+    let mut command = Command::new(&executable);
+    command
         .args(["--exact", TEST, "--nocapture"])
         .env("CODEXHOST_PIPE_TEST_ROLE", "caller")
         .env("CODEXHOST_PIPE_TEST_ROOT", &root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::piped());
+    let mut caller = spawn_supervised(&mut command).unwrap();
+    fs::write(root.join("admitted"), "admitted").unwrap();
     let (sender, receiver) = mpsc::channel();
     let pipes: [Box<dyn Read + Send>; 2] = [
-        Box::new(caller.stdout.take().unwrap()),
-        Box::new(caller.stderr.take().unwrap()),
+        Box::new(caller.take_stdout().unwrap()),
+        Box::new(caller.take_stderr().unwrap()),
     ];
     let readers: Vec<_> = pipes
         .into_iter()
@@ -68,7 +74,21 @@ fn detached_service_releases_callers_capture_pipes() {
             })
         })
         .collect();
-    assert!(caller.wait().unwrap().success());
+    let status = caller.wait().unwrap();
+    if !status.success() {
+        let output = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_default();
+        let error = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_default();
+        fs::write(root.join("stop"), "stop").unwrap();
+        for reader in readers {
+            reader.join().unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+        panic!("captured caller failed: {status}\n{output}\n{error}");
+    }
     let pid = fs::read_to_string(root.join("ready"))
         .unwrap()
         .parse()

@@ -20,16 +20,16 @@ struct ReadyOwner {
     started_at_micros: u64,
     executable: PathBuf,
 }
-fn owner_ready(data: &Path) -> bool {
+fn owner_snapshot(data: &Path) -> Option<codexhost_platform::ProcessSnapshot> {
     let record = fs::read(data.join("shared-host-ready.json"))
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<ReadyOwner>(&bytes).ok());
-    record.is_some_and(|record| {
-        codexhost_platform::process_snapshot(record.pid).is_ok_and(|live| {
-            live.started_at_micros == record.started_at_micros
-                && live.executable == record.executable
-        })
-    })
+        .and_then(|bytes| serde_json::from_slice::<ReadyOwner>(&bytes).ok())?;
+    let live = codexhost_platform::process_snapshot(record.pid).ok()?;
+    (live.started_at_micros == record.started_at_micros && live.executable == record.executable)
+        .then_some(live)
+}
+fn owner_ready(data: &Path) -> bool {
+    owner_snapshot(data).is_some()
 }
 fn publish_ready(data: &Path, pid: u32) -> Result<(), Box<dyn Error>> {
     let live = codexhost_platform::process_snapshot(pid)?;
@@ -292,7 +292,11 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
 
 // A shutdown reply only acknowledges the request. Admission is released after
 // the native supervisor proves that the entire managed process tree has exited.
-fn wait_for_shutdown(data: &Path, timeout: Duration) -> Result<(), Box<dyn Error>> {
+fn wait_for_shutdown(
+    data: &Path,
+    owner: Option<&codexhost_platform::ProcessSnapshot>,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
     let lock = match OpenOptions::new()
         .read(true)
         .write(true)
@@ -303,6 +307,7 @@ fn wait_for_shutdown(data: &Path, timeout: Duration) -> Result<(), Box<dyn Error
         Err(error) => return Err(error.into()),
     };
     let started = Instant::now();
+    let mut escalated = false;
     loop {
         match lock.try_lock_exclusive() {
             Ok(()) => {
@@ -315,6 +320,17 @@ fn wait_for_shutdown(data: &Path, timeout: Duration) -> Result<(), Box<dyn Error
             {
                 if started.elapsed() >= timeout {
                     return Err("Shared Host process tree exit was not confirmed".into());
+                }
+                // A native subprocess can retain pipes and prevent Node's graceful
+                // cleanup from completing (notably Windows CLI grandchildren).
+                // Kill only the owner captured before the authenticated request;
+                // its supervisor then cleans the entire Job/tree and releases the
+                // lock. Never terminate a replacement generation or bypass proof.
+                if !escalated && started.elapsed() >= Duration::from_secs(2) {
+                    if let Some(owner) = owner {
+                        codexhost_platform::terminate_process_instance(owner, true)?;
+                    }
+                    escalated = true;
                 }
                 thread::sleep(Duration::from_millis(25));
             }
@@ -336,6 +352,7 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         "ensure" => ensure(&arguments[1..], options),
         "serve" => serve(options),
         "stop" => {
+            let owner = owner_snapshot(&options.data);
             let mut command = Command::new(&options.node);
             clean(&mut command);
             let status = command
@@ -347,7 +364,7 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 .stderr(Stdio::inherit())
                 .status()?;
             if status.success() {
-                wait_for_shutdown(&options.data, Duration::from_secs(10))
+                wait_for_shutdown(&options.data, owner.as_ref(), Duration::from_secs(10))
             } else {
                 Err("Shared Host shutdown was not confirmed".into())
             }

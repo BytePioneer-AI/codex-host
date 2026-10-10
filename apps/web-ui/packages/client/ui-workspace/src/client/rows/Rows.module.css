@@ -1,9 +1,11 @@
 .projectRow,
 .sessionRow {
+  --dsh-row-surface: var(--dsw-specific-sidebar-fill);
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
-  border-radius: 6px;
+  border-radius: var(--dsw-radius-md);
   padding: 0 8px;
   padding-inline-start: calc(8px + var(--dsh-workspace-indent, 0px));
   cursor: pointer;
@@ -12,17 +14,31 @@
   color: var(--dsw-alias-label-primary);
 }
 
-.projectRow:hover,
-.sessionRow:hover {
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, transparent);
+.projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen),
+.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+  --dsh-row-surface: color-mix(
+    in srgb,
+    var(--dsw-alias-label-primary) 4%,
+    var(--dsw-specific-sidebar-fill)
+  );
+  background: var(--dsh-row-surface);
 }
 
 .sessionRow.selected {
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
+  --dsh-row-surface: color-mix(
+    in srgb,
+    var(--dsw-alias-label-primary) 6%,
+    var(--dsw-specific-sidebar-fill)
+  );
+  background: var(--dsh-row-surface);
 }
 
-.sessionRow.selected:hover {
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+.sessionRow.selected:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+  --dsh-row-surface: color-mix(
+    in srgb,
+    var(--dsw-alias-label-primary) 8%,
+    var(--dsw-specific-sidebar-fill)
+  );
 }
 
 .projectRow:focus-visible,
@@ -109,15 +125,9 @@
 
 /* Compact one-line Workspace row after removing the session-count subtitle. */
 .projectRow {
-  height: 32px;
+  height: 34px;
   align-items: center;
   box-sizing: border-box;
-  color: var(--dsw-alias-label-secondary);
-}
-
-.projectRow .title {
-  font-size: 12px;
-  font-weight: 500;
 }
 
 /* Session cell (figma): pad 8, a 16px status slot, then a 4px title gap. */
@@ -127,7 +137,7 @@
 }
 
 .sessionRow .title {
-  margin: 0 8px;
+  margin: 0 6px 0 4px;
 }
 
 .slot {
@@ -164,28 +174,9 @@
   white-space: nowrap;
 }
 
-.folderActive {
-  color: var(--dsw-alias-label-primary);
-}
-
-/* Project leading slot: folder by default, expand arrow on row hover. */
-.projectRow .chevron {
-  display: none;
-}
-.projectRow:is(:hover, :focus-within, .menuOpen) .chevron {
-  display: inline-flex;
-}
-.projectRow:is(:hover, :focus-within, .menuOpen) .folder {
-  display: none;
-}
-
-/* Expand arrow (filled triangle): points right closed, rotates to point down open. */
-.arrow {
-  transition: transform 150ms var(--ds-ease-in-out);
-}
-
-.arrowOpen {
-  transform: rotate(90deg);
+/* Expansion is visible immediately after clicking, not only after pointer leave. */
+.folderExpanded {
+  color: var(--dsw-alias-state-business-primary);
 }
 
 .projectText {
@@ -201,7 +192,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 20px;
 }
 
@@ -217,37 +208,9 @@
   outline: none;
 }
 
-/* Hovering a session row marquees a title wider than its cell: Rows.tsx crawls
-   it at a constant speed to its far edge while the pointer rests on the row,
-   holds it there, and returns it to the start in one step when the pointer
-   leaves. The motion is scripted frame by frame (reduced motion jumps), so no
-   scroll-behavior applies here. */
+/* Keep titles still; the existing hover card supplies the full text. */
 .sessionRow .title {
   flex: 1;
-}
-
-/* While the marquee travels, both clipping edges fade in over 12px instead of
-   hard-cutting a character: the left once the title has moved off its start
-   (data-scrolled), the right while text still remains beyond the cell
-   (data-clipped) — at the far edge the right fade lifts so the final character
-   reads at full strength. The mask rides the title span itself, so the status
-   slot and every other leading cell keep their full color. */
-.sessionRow .title[data-scrolled] {
-  mask-image: linear-gradient(to right, transparent, #000 12px);
-}
-
-.sessionRow .title[data-clipped] {
-  mask-image: linear-gradient(to left, transparent, #000 12px);
-}
-
-.sessionRow .title[data-scrolled][data-clipped] {
-  mask-image: linear-gradient(
-    to right,
-    transparent,
-    #000 12px,
-    #000 calc(100% - 12px),
-    transparent
-  );
 }
 
 .meta {
@@ -259,14 +222,13 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* Metadata and actions occupy the same grid cell. Visibility changes never
-   remeasure the title, so entering or leaving a row cannot move its text. */
+/* Only metadata reserves space. Desktop actions float above the trailing
+   edge rather than taking three button widths from every title. */
 .trailing {
   flex: none;
   display: grid;
   align-items: center;
   justify-items: end;
-  position: relative;
 }
 
 .trailing:empty {
@@ -279,7 +241,7 @@
 
 .time {
   flex: none;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 16px;
   font-variant-numeric: tabular-nums;
   color: var(--dsw-alias-label-tertiary);
@@ -321,7 +283,8 @@
   gap: 2px;
 }
 
-/* A stable trailing rail, available to both pointer and keyboard users. */
+/* On touch these remain in flow with a 44px menu target. Fine-pointer
+   actions are overlaid below, so hiding them also frees the title width. */
 .rowActions {
   flex: none;
   display: inline-flex;
@@ -331,9 +294,9 @@
   gap: 2px;
 }
 
-.projectRow:is(:hover, :focus-within, .menuOpen) .rowActions,
-.sessionRow:is(:hover, :focus-within, .menuOpen) .rowActions,
-.searchResultRow:is(:hover, :focus-within) .rowActions {
+.projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .rowActions,
+.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .rowActions,
+.searchResultRow:is(:hover, :focus-visible, :has(:focus-visible)) .rowActions {
   visibility: visible;
   pointer-events: auto;
 }
@@ -344,27 +307,33 @@
   margin-left: auto;
 }
 
-.sessionRow:is(:hover, :focus-within, .menuOpen) .time,
-.sessionRow:is(:hover, :focus-within, .menuOpen) .pinIndicator {
+.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .time,
+.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .pinIndicator {
   visibility: hidden;
 }
 
-/* The unclipped hover state drops the ellipsis, which would otherwise cover
-   the characters the marquee reached. Guarded because a touch tap
-   latches `:hover` on the row after the title has already returned: an
-   unguarded rule would strand that row without its ellipsis. */
-@media (hover: hover) {
-  .sessionRow:hover .title,
-  .sessionRow.menuOpen .title {
-    text-overflow: clip;
+@media (hover: hover) and (pointer: fine) {
+  .projectRow > .rowActions,
+  .sessionRow .rowActions {
+    position: absolute;
+    inset-inline-end: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 1;
+    background: var(--dsh-row-surface);
+    border-radius: var(--dsw-radius-sm);
   }
-}
 
-/* An open row menu pins the hover affordances (figma: the row keeps its
-   hover fill while its dropdown is up). */
-.projectRow.menuOpen,
-.sessionRow.menuOpen {
-  background: var(--dsw-alias-interactive-bg-hover);
+  .projectRow > .rowActions::before,
+  .sessionRow .rowActions::before {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: 100%;
+    width: 12px;
+    background: linear-gradient(to right, transparent, var(--dsh-row-surface));
+    pointer-events: none;
+  }
 }
 
 /* Session drag insert marker: a leading chevron and 2px rule between rows,
@@ -498,21 +467,5 @@
   .iconButton {
     width: 44px;
     height: 44px;
-  }
-}
-
-/* Chevrons ride the caption grey (#ADB2B8); the folder glyph stays one step
-   darker (tertiary, #81858C) per the cell spec. */
-.chevron {
-  color: var(--dsw-alias-label-caption);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .sessionRow:hover .title {
-    text-overflow: ellipsis;
-  }
-  .arrow {
-    animation: none;
-    transition: none;
   }
 }

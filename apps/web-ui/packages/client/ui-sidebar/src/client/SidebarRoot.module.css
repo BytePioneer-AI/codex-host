@@ -411,10 +411,10 @@
   margin: 0 0 2px;
   box-sizing: border-box;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--dsw-radius-md);
   background: transparent;
   color: var(--dsw-alias-label-primary);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   line-height: 22px;
   cursor: pointer;
@@ -530,11 +530,10 @@
   padding: 7px 8px;
   box-sizing: border-box;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--dsw-radius-md);
   background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 13px;
   line-height: 22px;
   text-align: left;
   cursor: pointer;

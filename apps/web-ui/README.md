@@ -8,6 +8,4 @@ The `generated/remote.js` and matching declarations in selected packages are pin
 
 The upstream MIT license is retained in `LICENSE`, framework package licenses remain under `vendor/`, and upstream dependency notices are retained in `THIRD_PARTY_NOTICES.md`. Local import adaptations include private npm manifests, source exports, the selected source build, and removal of the upstream standalone Web Worker preview entry. The root LGPL license does not replace these notices.
 
-Navigation icons additionally vendor a small SVG-only subset of OpenAI's public [`@openai/apps-sdk-ui` 0.2.2](https://github.com/openai/apps-sdk-ui) under MIT; the copyright and permission text are retained in [OPENAI_ICONS_LICENSE.txt](OPENAI_ICONS_LICENSE.txt). `ui-primitives/src/icons/openai-glyphs.ts` preserves the published geometry and fill rules, while `openai.tsx` adapts sizing, current color and decorative accessibility to existing controls. These are the public OpenAI glyphs, not a copy of Codex Desktop's private application or animation assets; individual private Desktop variants may differ. Harness brand assets still come from the installed plugins.
-
 See [the Web feature document](../../docs/product/standalone-web.md) for runtime isolation, commands and supported behavior.

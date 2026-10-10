@@ -1,8 +1,8 @@
 /**
  * Workspace browser tree row components (figma Cell set 14:3080): pure presentational —
- * all data and callbacks arrive via props. Hover swaps (folder->chevron,
- * time->ellipsis, action buttons) are CSS-only, and a session row's clipped
- * title marquees programmatically while the row is hovered. Workspace row
+ * all data and callbacks arrive via props. Folder color/shape follows expansion;
+ * hover swaps for time and action buttons are CSS-only. Titles stay still; dwelling
+ * on a row reveals its full title in the existing hover card. Workspace row
  * menus are visual-only except Rename/Delete. A Session row's "..." menu and
  * its hover buttons are the `sidebar.workspaces.session.menu.item` and
  * `sidebar.workspaces.session.row.action` lists, rendered through the
@@ -11,21 +11,19 @@
  * session and workspace hover cards are suppressed while a menu is open.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { RefObject } from "react";
 import clsx from "clsx";
 import type { PropsRenderSlots } from "@deepseek-ai/dsh-client-ui-slots";
 import {
   HoverCard,
-  OpenAIArchiveIcon as IconArchiveOutlineRegular,
-  OpenAIEditIcon as IconEditOutlineRegular,
-  OpenAIMoreIcon as IconEllipsisOutlineRegular,
+  IconArchiveOutlineRegular,
+  IconEditOutlineRegular,
+  IconEllipsisOutlineRegular,
   IconFolderCloseRegular,
   IconFolderOpenRegular,
-  OpenAIPlusIcon as IconNewChatOutlineRegular,
-  OpenAIPinFilledIcon as IconPinFillRegular,
-  OpenAITrashIcon as IconTrashOutlineRegular,
-  OpenAICaretRightIcon as IconTriangleRightFillRegular,
-  OpenAIUnarchiveIcon as IconUnarchiveOutlineRegular,
+  IconNewChatOutlineRegular,
+  IconPinFillRegular,
+  IconTrashOutlineRegular,
+  IconUnarchiveOutlineRegular,
   Menu,
   relativeTime,
   StateDot,
@@ -59,104 +57,6 @@ type RowRenderSlots = PropsRenderSlots<
 /** Row display title: blank rows show the localized New Session label. */
 function displayTitle(node: SessionNode, t: RowTranslate): string {
   return node.blank ? t("session.new") : node.title || t("session.untitled");
-}
-
-/* Overflow this small hides no meaningful tail; scrolling for it reads as an
-   accidental jitter, so the title stays put. */
-const MIN_TITLE_REVEAL_PX = 8;
-
-/* Marquee travel speed: slow enough to read the text as it passes. */
-const TITLE_MARQUEE_PX_PER_MS = 0.03;
-
-/**
- * Place the title's scroll position and publish the stylesheet's fade-mask
- * hooks: `data-scrolled` while the title has left its start (left fade) and
- * `data-clipped` while text remains beyond the right edge (right fade).
- * @param title - the row's clipping title element.
- * @param left - scroll offset in CSS pixels.
- * @param range - the title's maximum scroll offset in CSS pixels.
- */
-function placeTitle(title: HTMLSpanElement, left: number, range: number): void {
-  // jsdom implements no scrollTo; the lane's direct assignment is instant there
-  // anyway, so both paths land on the same position.
-  if (typeof title.scrollTo === "function") title.scrollTo({ left, behavior: "instant" });
-  else title.scrollLeft = left;
-  if (left > 0) title.dataset.scrolled = "";
-  else delete title.dataset.scrolled;
-  if (left < range) title.dataset.clipped = "";
-  else delete title.dataset.clipped;
-}
-
-/**
- * Return the title to its resting state: scrolled to the start with both fade
- * masks off, so the resting ellipsis renders at full strength.
- * @param title - the row's clipping title element.
- */
-function restTitle(title: HTMLSpanElement): void {
-  if (typeof title.scrollTo === "function") title.scrollTo({ left: 0, behavior: "instant" });
-  else title.scrollLeft = 0;
-  delete title.dataset.scrolled;
-  delete title.dataset.clipped;
-}
-
-/**
- * Marquee a title wider than its one-line cell while its row is hovered: the
- * title clips its own text, so entering crawls it at a constant speed until the
- * far edge (a fork's incremented title, for example) is in view, then rests
- * there under the pointer. Overflow of at most {@link MIN_TITLE_REVEAL_PX}
- * stays put — a barely-clipped title moving a few pixels reads as jitter, not a
- * reveal. Leaving returns the title to the start in one step, because the
- * resting ellipsis and the narrowed cell would otherwise meet the text while it
- * travelled back. Reduced motion keeps the title still; the hover card reveals it.
- * @param title - ref to the row's clipping title element.
- * @returns stable pointer enter/leave handlers for the row.
- */
-function useTitleMarquee(title: RefObject<HTMLSpanElement | null>): {
-  enter: () => void;
-  leave: () => void;
-} {
-  const frame = useRef(0);
-  useEffect(
-    () => () => {
-      cancelAnimationFrame(frame.current);
-    },
-    [],
-  );
-  return useMemo(
-    () => ({
-      enter: (): void => {
-        /* v8 ignore next -- defensive: the title span renders unconditionally. */
-        if (title.current === null) return;
-        const element = title.current;
-        const range = element.scrollWidth - element.clientWidth;
-        if (range <= MIN_TITLE_REVEAL_PX) return;
-        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-        cancelAnimationFrame(frame.current);
-        let previous: number | undefined;
-        let started: number | undefined;
-        let position = 0;
-        const step = (now: DOMHighResTimeStamp): void => {
-          started ??= now;
-          if (now - started < 400) {
-            frame.current = requestAnimationFrame(step);
-            return;
-          }
-          position += previous === undefined ? 0 : (now - previous) * TITLE_MARQUEE_PX_PER_MS;
-          previous = now;
-          placeTitle(element, Math.min(position, range), range);
-          if (position < range) frame.current = requestAnimationFrame(step);
-        };
-        frame.current = requestAnimationFrame(step);
-      },
-      leave: (): void => {
-        cancelAnimationFrame(frame.current);
-        /* v8 ignore next -- defensive: the title span renders unconditionally. */
-        if (title.current === null) return;
-        restTitle(title.current);
-      },
-    }),
-    [title],
-  );
 }
 
 /** Localized compact relative time ("刚刚"/"5分钟" in zh, "now"/"5min" in en). */
@@ -235,11 +135,9 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): "before" |
 
 /**
  * Project (workspace) header row: folder + title;
- * hover reveals the chevron and create button, and dwelling on a real
- * Workspace shows its hover card (the ungrouped bucket has none).
- * `containsCurrent` arrives on the node (derivation fact, no renderer scan).
- * @param props.group - derived group node.
- * @param props.containsCurrentDescendant - highlight an ancestor even when its subtree is collapsed.
+ * expanded folders stay blue and open even while hovered or keyboard-focused.
+ * Dwelling on a real Workspace shows its hover card (the ungrouped bucket has none).
+ * @param props.group - derived group node; expansion owns the folder appearance.
  * @param props.onToggle - expand/collapse the group.
  * @param props.onCreate - start a frontend Session inside this Workspace.
  * @param props.drag - optional workspace-row drag wiring.
@@ -249,7 +147,6 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): "before" |
  */
 export function ProjectRowItem({
   group,
-  containsCurrentDescendant = false,
   onToggle,
   onCreate,
   actions,
@@ -260,7 +157,6 @@ export function ProjectRowItem({
 }: {
   group: GroupNode;
   newShortcut?: ShortcutCatalogEntry | undefined;
-  containsCurrentDescendant?: boolean;
   onToggle: () => void;
   onCreate: () => void;
   /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
@@ -274,7 +170,6 @@ export function ProjectRowItem({
   const row = group;
   // The ungrouped bucket has no workspace title: its label is dictionary copy.
   const label = row.workspaceId === undefined ? t("group.ungrouped") : row.label;
-  const active = containsCurrentDescendant || (group.expanded && group.containsCurrent);
   const [menuOpen, setMenuOpen] = useState(false);
   const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
   const workspaceMenuItems = [
@@ -315,11 +210,8 @@ export function ProjectRowItem({
       }
       onDragEnd={drag?.end}
     >
-      <span className={clsx(css.slot, css.folder, active && css.folderActive)}>
+      <span className={clsx(css.slot, row.expanded && css.folderExpanded)}>
         {row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
-      </span>
-      <span className={clsx(css.slot, css.chevron)}>
-        <IconTriangleRightFillRegular className={clsx(css.arrow, row.expanded && css.arrowOpen)} />
       </span>
       <span className={css.projectText}>
         <span className={css.title}>{label}</span>
@@ -696,8 +588,6 @@ export function SessionNodeItem({
   // The menu's open state, bound into the row entries' `useMenuOpenState` hook.
   const menuOpenState = useMemo((): MenuOpenState => [menuOpen, setMenuOpen], [menuOpen]);
   const rowRef = useRef<HTMLDivElement>(null);
-  const titleRef = useRef<HTMLSpanElement>(null);
-  const marquee = useTitleMarquee(titleRef);
   useEffect(() => {
     if (onReveal === undefined) return;
     rowRef.current?.scrollIntoView({ block: "nearest" });
@@ -741,10 +631,6 @@ export function SessionNodeItem({
       onClick={() => {
         onOpen(node.id);
       }}
-      onPointerEnter={(e) => {
-        if (e.pointerType === "mouse") marquee.enter();
-      }}
-      onPointerLeave={marquee.leave}
       draggable={draggable}
       onDragStart={
         !draggable
@@ -794,7 +680,6 @@ export function SessionNodeItem({
         </span>
       </span>
       <span
-        ref={titleRef}
         data-session-title
         className={css.title}
         onDoubleClick={

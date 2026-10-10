@@ -73,7 +73,7 @@
 
 .sectionLabel {
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   flex: none;
   max-width: 45%;
   min-width: 0;
@@ -382,7 +382,7 @@
 .flatList > * + *,
 .searchTree > [role="treeitem"] + [role="treeitem"],
 .groupSection > * + * {
-  margin-top: 1px;
+  margin-top: 2px;
 }
 
 .searchStatus {
@@ -458,7 +458,7 @@
 }
 
 .groupSection + .groupSection {
-  margin-top: 12px;
+  margin-top: 4px;
 }
 
 .listTopDropIndicator,

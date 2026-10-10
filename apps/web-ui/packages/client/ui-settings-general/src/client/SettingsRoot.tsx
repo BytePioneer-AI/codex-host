@@ -22,7 +22,7 @@ import {
   IconCloseOutlineRegular,
   IconDataOutlineMedium,
   IconPersonalizationOutlineMedium,
-  OpenAISettingsIcon as IconSettingsOutlineMedium,
+  IconSettingsOutlineMedium,
   IconUserOutlineMedium,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ConnectionIndicatorState } from "@deepseek-ai/dsh-client-ui-primitives";

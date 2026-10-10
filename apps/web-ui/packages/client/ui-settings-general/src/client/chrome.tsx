@@ -4,7 +4,7 @@
  * The shell renders the surrounding chrome (button, nav heading row) and
  * reads each entry's `label` option for aria text.
  */
-import { OpenAISettingsIcon as IconSettingsOutlineMedium } from "@deepseek-ai/dsh-client-ui-primitives";
+import { IconSettingsOutlineMedium } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import css from "./chrome.module.css";
 

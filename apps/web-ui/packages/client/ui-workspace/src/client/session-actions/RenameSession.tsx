@@ -7,7 +7,7 @@
 import { useRef, useState } from "react";
 import {
   Button,
-  OpenAIEditIcon as IconEditOutlineRegular,
+  IconEditOutlineRegular,
   MenuItemButton,
   Modal,
 } from "@deepseek-ai/dsh-client-ui-primitives";

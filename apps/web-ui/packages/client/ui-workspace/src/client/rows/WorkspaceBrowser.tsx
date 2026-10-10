@@ -18,20 +18,19 @@ import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useStat
 import clsx from "clsx";
 import {
   Button,
-  OpenAIArchiveIcon as IconArchiveCheckOutlineRegular,
-  OpenAIEyeOffIcon as IconArchiveOffOutlineRegular,
-  OpenAIArchiveIcon as IconArchiveOutlineRegular,
-  OpenAISortIcon as IconChevronsUpDownOutlineRegular,
-  OpenAIClockIcon as IconClockOutlineRegular,
-  OpenAICloseIcon as IconCloseFillRegular,
-  OpenAIListIcon as IconFlatListOutlineRegular,
+  IconArchiveCheckOutlineRegular,
+  IconArchiveOffOutlineRegular,
+  IconArchiveOutlineRegular,
+  IconChevronsUpDownOutlineRegular,
+  IconClockOutlineRegular,
+  IconCloseFillRegular,
+  IconFlatListOutlineRegular,
   IconFolderCloseRegular,
-  OpenAIFolderAddIcon as IconProjectAddOutlineRegular,
-  OpenAIListIcon as IconQueueOutlineRegular,
-  OpenAISearchIcon as IconSearchOutlineRegular,
-  OpenAIViewOptionsIcon as IconSlidersTwoOutlineRegular,
-  OpenAIFoldersIcon as IconWorkspaceTreeOutlineRegular,
-  OpenAIEyeIcon,
+  IconProjectAddOutlineRegular,
+  IconQueueOutlineRegular,
+  IconSearchOutlineRegular,
+  IconSlidersTwoOutlineRegular,
+  IconWorkspaceTreeOutlineRegular,
   Menu,
   Modal,
   Toast,
@@ -164,7 +163,7 @@ function ViewOptionsMenu({
         {
           id: "show-archived",
           label: t("viewOptions.showArchived"),
-          icon: <OpenAIEyeIcon />,
+          icon: <IconQueueOutlineRegular />,
         },
         {
           id: "only-archived",
@@ -408,17 +407,6 @@ function SessionTree({
       }),
     );
   }, [nestWorkspaces, workspaces]);
-  const currentAncestors = useMemo(() => {
-    const keys = new Set<string>();
-    for (
-      let key = currentGroup === undefined ? undefined : parents.get(currentGroup);
-      key !== undefined;
-      key = parents.get(key)
-    ) {
-      keys.add(key);
-    }
-    return keys;
-  }, [currentGroup, parents]);
   const expandedGroups = useMemo(() => {
     const ancestorKeys = new Set<string | undefined>(parents.values());
     return [...workspaces.map((workspace) => workspace.workspaceId), UNGROUPED_KEY].filter(
@@ -612,7 +600,6 @@ function SessionTree({
         <ProjectRowItem
           newShortcut={shortcuts.find((row) => row.id === "session.new")}
           group={group}
-          containsCurrentDescendant={currentAncestors.has(group.key)}
           home={home}
           t={t}
           onToggle={() => {

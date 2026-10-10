@@ -20,9 +20,9 @@ import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   FishLogo,
-  OpenAINewChatIcon as IconNewChatOutlineMedium,
-  OpenAINewChatIcon as IconNewChatOutlineRegular,
-  OpenAISidebarIcon as IconPanelLeftOutlineRegular,
+  IconNewChatOutlineMedium,
+  IconNewChatOutlineRegular,
+  IconPanelLeftOutlineRegular,
   isDarwinDesktop,
   ShortcutKeys,
   Tooltip,

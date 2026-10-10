@@ -7,8 +7,8 @@
  * notice) lives in the injected callbacks, not here.
  */
 import {
-  OpenAIPinFilledIcon as IconPinFillRegular,
-  OpenAIPinIcon as IconPinOutlineRegular,
+  IconPinFillRegular,
+  IconPinOutlineRegular,
   MenuItemButton,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";

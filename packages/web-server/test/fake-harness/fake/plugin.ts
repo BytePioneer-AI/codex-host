@@ -58,7 +58,10 @@ class FakeSession {
   readonly initialState: Record<string, unknown>;
   private readonly channel = new Channel();
   readonly outputs = this.channel.outputs;
-  private responses = new Map<string, (value: unknown) => void>();
+  private responses = new Map<
+    string,
+    { promise: Promise<unknown>; resolve: (value: unknown) => void }
+  >();
   private cancel: (() => void) | undefined;
 
   constructor(
@@ -80,12 +83,20 @@ class FakeSession {
     this.channel.emit({ kind: "event", event: { type: "turn.started", turnId } });
     for (const step of steps) {
       if ("event" in step) this.channel.emit({ kind: "event", event: { turnId, ...step.event } });
-      else if ("interaction" in step)
+      else if ("interaction" in step) {
+        // Arm the response before publishing: the consumer may answer before
+        // the next scripted step (and its timer) has run.
+        let respond!: (value: unknown) => void;
+        const promise = new Promise<unknown>((resolve) => {
+          respond = resolve;
+        });
+        this.responses.set(step.interaction.interactionId, { promise, resolve: respond });
         this.channel.emit({ kind: "interaction", interaction: { turnId, ...step.interaction } });
-      else if ("awaitResponse" in step) {
-        const response = await new Promise((resolve) =>
-          this.responses.set(step.awaitResponse, resolve),
-        );
+      } else if ("awaitResponse" in step) {
+        const pending = this.responses.get(step.awaitResponse);
+        if (!pending) throw new Error(`No scripted interaction: ${step.awaitResponse}`);
+        const response = await pending.promise;
+        this.responses.delete(step.awaitResponse);
         globalThis.fakeHarnessLog?.push({ responded: step.awaitResponse, response });
       } else {
         await new Promise<void>((resolve) => {
@@ -151,8 +162,8 @@ class FakeSession {
         this.cancel?.();
         return { ok: true, value: { cancellationRequested: true } };
       case "interaction.respond": {
-        const resolve = this.responses.get(String(command.interactionId));
-        resolve?.(command.response);
+        const pending = this.responses.get(String(command.interactionId));
+        pending?.resolve(command.response);
         this.channel.emit({
           kind: "event",
           event: {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { it } from "node:test";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
@@ -164,21 +164,19 @@ it("does not create project groups from auto-assigned cwd alone", async (t) => {
 });
 
 it("groups assigned worktrees under their GUI project without changing execution cwd", () => {
+  const root = resolve("computer", "project");
   const snapshot = {
-    projects: [{ id: "p", name: "Selected", rootPaths: ["/computer/project"] }],
+    projects: [{ id: "p", name: "Selected", rootPaths: [root] }],
     assignments: { assigned: "p" },
     projectless: ["unselected"],
   };
   assert.equal(
-    projectGroupRoot(snapshot, "assigned", "/computer/worktrees/isolated"),
-    "/computer/project",
+    projectGroupRoot(snapshot, "assigned", resolve("computer", "worktrees", "isolated")),
+    root,
   );
-  assert.equal(
-    projectGroupRoot(snapshot, "nested", "/computer/project/subdirectory"),
-    "/computer/project",
-  );
-  assert.equal(projectGroupRoot(snapshot, "unselected", "/computer/project/generated"), undefined);
-  assert.equal(projectGroupRoot(snapshot, "unknown", "/computer/project-other"), undefined);
+  assert.equal(projectGroupRoot(snapshot, "nested", join(root, "subdirectory")), root);
+  assert.equal(projectGroupRoot(snapshot, "unselected", join(root, "generated")), undefined);
+  assert.equal(projectGroupRoot(snapshot, "unknown", `${root}-other`), undefined);
 });
 
 it("uses existing Desktop routing without installing code, and does not retry rejected writes", async (t) => {

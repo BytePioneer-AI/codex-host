@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { it } from "node:test";
 import { promisify } from "node:util";
 
@@ -26,7 +26,8 @@ it("removes inherited Host routing and Node injection without changing the paren
     NODE_PATH: "/unsafe/modules",
   };
   const original = { ...parent };
-  const { env, args } = previewLaunch("/packed", {}, parent);
+  const bundle = resolve("packed");
+  const { env, args } = previewLaunch(bundle, {}, parent);
   assert.deepEqual(env, {
     PATH: "/usr/bin",
     HOME: "/home/test",
@@ -34,7 +35,7 @@ it("removes inherited Host routing and Node injection without changing the paren
   });
   assert.deepEqual(parent, original);
   assert.equal(args[args.indexOf("--harness") + 1], "claude-code");
-  assert.equal(args[args.indexOf("--adapters") + 1], "/packed/adapters");
+  assert.equal(args[args.indexOf("--adapters") + 1], join(bundle, "adapters"));
   assert.equal(args[args.indexOf("--host") + 1], "127.0.0.1");
   assert.match(args[args.indexOf("--data") + 1] as string, /\.codexhost-web-preview$/u);
   assert.match(

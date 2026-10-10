@@ -947,7 +947,12 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
     ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
     }
-    if (file.relative !== "package.json" && text.includes("runtime/node")) {
+    // Match the executable path, not an esbuild source label such as
+    // packages/host-runtime/node_modules/@deepseek-ai/cordis/lib/index.js.
+    if (
+      file.relative !== "package.json" &&
+      /(?:^|[^\w.-])runtime[/\\]+node(?:\.exe)?(?![\w.-])/u.test(text)
+    ) {
       throw new Error(`npm package must not embed a private Node runtime: ${file.relative}`);
     }
     if (forbiddenReferences.some((reference) => text.includes(reference))) {

@@ -13,7 +13,6 @@ export type { CodexThreadUsageProjectionInput } from "./codex-usage.js";
 export {
   observeCodexRateLimitResetCredits,
   observeCodexRateLimits,
-  observeCodexTokenUsage,
   projectCodexRateLimitsToCredits,
 } from "./codex-native-usage.js";
 export type { CodexRateLimitResetCredits } from "./codex-native-usage.js";
@@ -41,6 +40,7 @@ export type {
   ExternalThreadRpcError,
 } from "./thread-fork.js";
 export {
+  carriesHostThreadListCursor,
   decodeHostThreadListCursor,
   decodeOfficialThreadListPage,
   decodeThreadArchiveRequest,

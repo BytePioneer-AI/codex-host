@@ -3,56 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   observeCodexRateLimitResetCredits,
   observeCodexRateLimits,
-  observeCodexTokenUsage,
   projectCodexRateLimitsToCredits,
 } from "../src/codex-native-usage.js";
 
 describe("Codex native Usage observations", () => {
-  it("maps thread token usage into the Host Usage shape", () => {
-    expect(
-      observeCodexTokenUsage({
-        method: "thread/tokenUsage/updated",
-        params: {
-          threadId: "native-thread",
-          turnId: "native-turn",
-          tokenUsage: {
-            total: {
-              totalTokens: 1_000,
-              inputTokens: 800,
-              cachedInputTokens: 600,
-              cacheWriteInputTokens: 10,
-              outputTokens: 200,
-              reasoningOutputTokens: 50,
-            },
-            last: {
-              totalTokens: 240,
-              inputTokens: 200,
-              cachedInputTokens: 150,
-              cacheWriteInputTokens: 5,
-              outputTokens: 40,
-              reasoningOutputTokens: 10,
-            },
-            modelContextWindow: 2_000,
-          },
-        },
-      }),
-    ).toEqual({
-      threadId: "native-thread",
-      turnId: "native-turn",
-      usage: {
-        totalTokens: 1_000,
-        inputTokens: 800,
-        cachedInputTokens: 600,
-        cacheWriteInputTokens: 10,
-        outputTokens: 200,
-        reasoningOutputTokens: 50,
-        contextUsedTokens: 240,
-        contextWindowTokens: 2_000,
-        cacheHitRatePercent: 75,
-      },
-    });
-  });
-
   it("maps account rate-limit windows to the existing five-hour and seven-day fields", () => {
     expect(
       observeCodexRateLimits({

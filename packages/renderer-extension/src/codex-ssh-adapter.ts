@@ -1,21 +1,6 @@
 /** Fixed native Codex SSH operations. Configuration stays owned by Codex. */
-export interface CodexSshConnection {
-  hostId: string;
-  displayName: string;
-  source: "codex-managed" | "discovered";
-  sshAlias: string | null;
-  sshHost: string;
-  sshPort: number | null;
-  identity: string | null;
-  autoConnect: boolean;
-  connectionAnalyticsId?: string;
-}
-export interface CodexSshDraft {
-  displayName: string;
-  hostname: string;
-  sshPort: number | null;
-  identity: string | null;
-}
+import type { CodexSshConnection, CodexSshDraft } from "@codexhost/shared-contracts";
+export type { CodexSshConnection, CodexSshDraft } from "@codexhost/shared-contracts";
 export interface CodexSshClient {
   list(signal?: AbortSignal): Promise<CodexSshConnection[]>;
   save(

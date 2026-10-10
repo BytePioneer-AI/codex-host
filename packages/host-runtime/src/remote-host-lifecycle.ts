@@ -225,9 +225,6 @@ function installedManifest(status: RemoteHostInstallationStatus): RemoteHostMani
   if (status.state === "not-installed") {
     throw new Error("Remote Host is not installed. Run: codexhost remote install");
   }
-  if (status.state === "degraded") {
-    throw new Error(`Remote Host installation is degraded: ${status.issues.join("; ")}`);
-  }
   return status;
 }
 
@@ -242,7 +239,6 @@ function managedEnvironment(
     CODEXHOST_HOST_NODE_PATH: manifest.nodePath,
     CODEXHOST_HOST_RUNTIME_PATH: manifest.hostRuntimePath,
     CODEXHOST_DATA_DIR: manifest.dataDirectory,
-    CODEXHOST_DEFAULT_AGENT: "codex",
     CODEXHOST_REMOTE_SSH_MANAGED: "1",
     PATH: `${path.dirname(manifest.wrapperPath)}${path.delimiter}${path.dirname(manifest.stockCodexPath)}${path.delimiter}${environment.PATH ?? "/usr/bin:/bin"}`,
   };
@@ -357,7 +353,11 @@ export async function startRemoteHost(
     throw new Error("Remote Host lifecycle must run on the macOS or Linux SSH host");
   }
   const lifecycle = dependencies();
-  const manifest = installedManifest(await lifecycle.inspectInstallation(options));
+  const installation = await lifecycle.inspectInstallation(options);
+  if (installation.state === "degraded") {
+    throw new Error(`Remote Host installation is degraded: ${installation.issues.join("; ")}`);
+  }
+  const manifest = installedManifest(installation);
   const socketPath = socketPathFor(environment);
   const current = await lifecycle.probeProtocol(manifest, socketPath, environment);
   if (current.state === "running") {
@@ -381,6 +381,9 @@ export async function stopRemoteHost(
     throw new Error("Remote Host lifecycle must run on the macOS or Linux SSH host");
   }
   const lifecycle = dependencies();
+  // An update can make the previous shell profile/entrypoint obsolete before reinstalling it.
+  // Stopping the existing listener does not launch either: protocol probing and the native
+  // terminator's socket-owner/process-identity checks still gate termination.
   const manifest = installedManifest(await lifecycle.inspectInstallation(options));
   const socketPath = socketPathFor(environment);
   const current = await lifecycle.probeProtocol(manifest, socketPath, environment);

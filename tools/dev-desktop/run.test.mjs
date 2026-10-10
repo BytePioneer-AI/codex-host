@@ -79,6 +79,91 @@ describe("development Desktop start", () => {
     expect(() => parseArguments(["--desktop", "private.exe"])).toThrow("unknown option");
     expect(() => parseArguments(["--agent", "codex"])).toThrow("unknown option");
     expect(() => parseArguments(["--no-build", "--no-build"])).toThrow("may only be provided once");
+    for (const value of [undefined, "latest", "0.12", "0.12.0;echo bad"]) {
+      expect(() => parseArguments(["--version", ...(value ? [value] : [])])).toThrow(
+        "semantic version",
+      );
+    }
+    expect(() => parseArguments(["--version", "0.12.0", "--version", "0.13.0"])).toThrow(
+      "may only be provided once",
+    );
+    for (const arguments_ of [
+      ["0.12.0", "0.13.0"],
+      ["0.12.0", "--version", "0.13.0"],
+      ["--version", "0.12.0", "0.13.0"],
+    ]) {
+      expect(() => parseArguments(arguments_)).toThrow("may only be provided once");
+    }
+    for (const version of ["latest", "0.12", "0.12.0;echo bad"]) {
+      expect(() => parseArguments([version])).toThrow("semantic version");
+    }
+  });
+
+  it.each([["0.12.0"], ["--version", "0.12.0"]])(
+    "accepts positional and explicit versions: %j",
+    (...arguments_) => {
+      expect(parseArguments(arguments_)).toEqual({ build: true, help: false, version: "0.12.0" });
+      expect(parseArguments([...arguments_, "--no-build"]).build).toBe(false);
+    },
+  );
+
+  it.each([undefined, "0.12.0", "0.13.0-rc.1+test"])(
+    "passes only the explicit source runtime version to the launcher: %s",
+    async (version) => {
+      const root = temporaryDirectory();
+      const nodePath = path.join(root, "node");
+      const artifacts = materializeArtifacts(root, "linux", nodePath);
+      const spawnImplementation = vi.fn(() => readyChild());
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      await runDevelopmentDesktop({
+        arguments_: [...(version ? [version] : []), "--no-build"],
+        root,
+        platform: "linux",
+        nodePath,
+        environment: { PATH: path.join(root, "missing"), CODEXHOST_DEV_VERSION: "0.99.0" },
+        spawnImplementation,
+      });
+      expect(spawnImplementation).toHaveBeenCalledOnce();
+      expect(spawnImplementation.mock.calls[0][0]).toBe(artifacts.launcher);
+      expect(spawnImplementation.mock.calls[0][2].env.CODEXHOST_DEV_VERSION).toBe(version);
+    },
+  );
+
+  it("does not let inherited npm routing replace the source Host Runtime", async () => {
+    const root = temporaryDirectory();
+    const nodePath = path.join(root, "node");
+    const artifacts = materializeArtifacts(root, "linux", nodePath);
+    const spawnImplementation = vi.fn(() => readyChild());
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const environment = {
+      PATH: path.join(root, "missing"),
+      CODEXHOST_NPM_NODE_PATH: "/installed/node",
+      CODEXHOST_NPM_CLI_PATH: "/installed/npm-cli.js",
+      CODEXHOST_NPM_LAUNCHER_PATH: "/installed/codexhost.js",
+      CODEXHOST_NPM_PACKAGE_ROOT: "/installed/package",
+      CODEXHOST_DATA_DIR: path.join(root, "explicit-data"),
+      HTTPS_PROXY: "http://127.0.0.1:1234",
+    };
+    const original = { ...environment };
+    await runDevelopmentDesktop({
+      arguments_: ["--no-build"],
+      root,
+      platform: "linux",
+      nodePath,
+      environment,
+      spawnImplementation,
+    });
+    const [command, arguments_, options] = spawnImplementation.mock.calls[0];
+    expect(command).toBe(artifacts.launcher);
+    expect(arguments_).toEqual(expect.arrayContaining(["--host-runtime", artifacts.hostRuntime]));
+    for (const key of Object.keys(environment).filter((key) => key.startsWith("CODEXHOST_NPM_"))) {
+      expect(options.env).not.toHaveProperty(key);
+    }
+    expect(options.env.CODEXHOST_DATA_DIR).toBe(environment.CODEXHOST_DATA_DIR);
+    expect(options.env.HTTPS_PROXY).toBe(environment.HTTPS_PROXY);
+    expect(environment).toEqual(original);
   });
 
   it("resolves platform development artifacts and validates regular files", () => {
@@ -320,6 +405,47 @@ describe("development Desktop start", () => {
 
     expect(spawnImplementation).toHaveBeenCalledTimes(1);
   });
+
+  it.each([undefined, "--trace-warnings"])(
+    "silences only the proxy warning in children while preserving Node options (%s)",
+    async (nodeOptions) => {
+      const root = temporaryDirectory();
+      const nodePath = path.join(root, "node.exe");
+      materializeArtifacts(root, "win32", nodePath);
+      const environment = {
+        PATH: path.join(root, "missing"),
+        NODE_USE_ENV_PROXY: "1",
+        HTTPS_PROXY: "http://127.0.0.1:7897",
+        ...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
+      };
+      const originalEnvironment = { ...environment };
+      const spawnImplementation = vi.fn(() => exitingChild());
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      await expect(
+        runDevelopmentDesktop({
+          root,
+          platform: "win32",
+          nodePath,
+          environment,
+          spawnImplementation,
+        }),
+      ).resolves.toBe(0);
+
+      // Cleanup, build and Launcher all pass the same selective suppression
+      // to their children, without disabling the proxy or changing the caller.
+      expect(spawnImplementation).toHaveBeenCalledTimes(3);
+      for (const [, , options] of spawnImplementation.mock.calls) {
+        expect(options.env).toMatchObject({
+          NODE_OPTIONS: [nodeOptions, "--disable-warning=UNDICI-EHPA"].filter(Boolean).join(" "),
+          NODE_USE_ENV_PROXY: "1",
+          HTTPS_PROXY: environment.HTTPS_PROXY,
+        });
+      }
+      expect(environment).toEqual(originalEnvironment);
+    },
+  );
 
   it("skips builds only when explicitly requested", async () => {
     const root = temporaryDirectory();

@@ -737,6 +737,130 @@ fn rejects_missing_stock_cli_without_a_cli_override() {
 }
 
 #[cfg(target_os = "windows")]
+fn windows_fixture_installation(directory: &std::path::Path) -> PathBuf {
+    let installation_root = directory.join("portable-codex");
+    let app_root = installation_root.join("app");
+    let resources = app_root.join("resources");
+    fs::create_dir_all(&resources).expect("create portable Codex resources");
+    fs::write(app_root.join("ChatGPT.exe"), b"desktop").unwrap();
+    fs::write(resources.join("app.asar"), b"asar").unwrap();
+    fs::copy(fake_codex_path(), resources.join("codex.exe")).unwrap();
+    installation_root
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_browser_sandbox_without_cli_environment_reaches_official_cli() {
+    let directory = temporary_directory();
+    let installation_root = windows_fixture_installation(&directory);
+    let mut command = Command::new(shim_path());
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("CODEXHOST_") {
+            command.env_remove(key);
+        }
+    }
+    // node_repl resolves the CLI override before clearing its kernel child's
+    // environment. The sandbox invocation retains neither CLI path override.
+    let output = command
+        .args([
+            "sandbox",
+            "windows",
+            "--",
+            "C:/official tools/node.exe",
+            "--experimental-vm-modules",
+            "C:/official tools/kernel.js",
+        ])
+        .env_remove(CODEX_CLI_PATH_ENV)
+        .env(CUSTOM_INSTALL_ROOT_ENV, &installation_root)
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_EXIT_CODE", "7")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(output.status.code(), Some(7), "{stderr}");
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr.contains(
+            "args=sandbox|windows|--|C:/official tools/node.exe|--experimental-vm-modules|C:/official tools/kernel.js"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_browser_sandbox_fallback_keeps_explicit_targets_authoritative() {
+    let directory = temporary_directory();
+    let installation_root = windows_fixture_installation(&directory);
+    for (key, target, error) in [
+        (
+            STOCK_CODEX_PATH_ENV,
+            directory.join("missing-codex.exe"),
+            "does not exist",
+        ),
+        (STOCK_CODEX_PATH_ENV, shim_path(), "Shim itself"),
+        (
+            CODEX_CLI_PATH_ENV,
+            fake_codex_path(),
+            "does not identify the running Shim",
+        ),
+        (
+            CUSTOM_INSTALL_ROOT_ENV,
+            directory.join("missing-installation"),
+            "Desktop-managed official Codex CLI could not be discovered",
+        ),
+    ] {
+        let output = Command::new(shim_path())
+            .args(["sandbox", "windows", "--", "C:/official/node.exe"])
+            .env_remove(STOCK_CODEX_PATH_ENV)
+            .env_remove(CODEX_CLI_PATH_ENV)
+            .env(CUSTOM_INSTALL_ROOT_ENV, &installation_root)
+            .env(key, target)
+            .env("PATH", fake_codex_path().parent().unwrap())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{key}: {stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(stderr.contains(error), "{key}: {stderr}");
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_browser_sandbox_fallback_rejects_unrelated_commands() {
+    let directory = temporary_directory();
+    let installation_root = windows_fixture_installation(&directory);
+    for arguments in [
+        vec!["app-server", "--listen", "stdio://"],
+        vec!["exec", "sandbox"],
+        vec!["--model", "sandbox"],
+    ] {
+        let output = Command::new(shim_path())
+            .args(arguments)
+            .env_remove(STOCK_CODEX_PATH_ENV)
+            .env_remove(CODEX_CLI_PATH_ENV)
+            .env(CUSTOM_INSTALL_ROOT_ENV, &installation_root)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(
+            stderr.contains("CODEXHOST_STOCK_CODEX_PATH is required"),
+            "{stderr}"
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "windows")]
 #[test]
 fn discovers_official_cli_when_browser_helper_preserves_only_codex_cli_path() {
     let installation_root = temporary_directory().join("portable-codex");

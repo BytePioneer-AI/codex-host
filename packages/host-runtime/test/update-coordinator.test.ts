@@ -22,6 +22,25 @@ vi.mock("@codexhost/update-manager", async (importOriginal) => ({
 }));
 
 const roots: string[] = [];
+it("reports the shared source launch version when packaged update resources are absent", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-source-update-"));
+  roots.push(root);
+  const hostRuntimePath = path.join(root, "packages/host-runtime/dist/main.js");
+  await file(hostRuntimePath);
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "codexhost", version: "0.12.0" }),
+  );
+  const coordinator = createHostUpdateCoordinator({
+    hostRuntimePath,
+    environment: { CODEXHOST_DEV_VERSION: "0.11.0" },
+  });
+  await expect(coordinator.check()).resolves.toMatchObject({
+    currentVersion: "0.11.0",
+    installation: null,
+    installationAvailable: false,
+  });
+});
 afterEach(() => {
   vi.clearAllMocks();
   vi.useRealTimers();
@@ -290,32 +309,42 @@ describe("Host update coordinator", () => {
     });
   });
 
-  it("ignores a prepared status without an active operation lock", async () => {
-    const fixture = await npmFixture();
-    const home = fixture.environment.HOME;
-    if (!home) throw new Error("fixture HOME is missing");
-    const stateDirectory = path.join(home, ".codexhost", "updates");
-    await mkdir(path.join(stateDirectory, "update-stale"), { recursive: true });
-    await writeFile(
-      path.join(stateDirectory, "update-stale", "status-v1.json"),
-      JSON.stringify({
-        schemaVersion: 1,
-        version: "1.2.3",
-        installation: "npm",
-        phase: "prepared",
-        updatedAt: 20,
-      }),
-    );
-    const coordinator = createHostUpdateCoordinator({
-      hostRuntimePath: fixture.hostRuntimePath,
-      environment: fixture.environment,
-      platform: "darwin",
-      architecture: "arm64",
-      fetchLatest: async () => release(),
-    });
+  it.each(["prepared", "failed", "succeeded"])(
+    "ignores historical %s status without an active operation lock",
+    async (phase) => {
+      const fixture = await npmFixture();
+      const home = fixture.environment.HOME;
+      if (!home) throw new Error("fixture HOME is missing");
+      const stateDirectory = path.join(
+        home,
+        "Library",
+        "Application Support",
+        "codexhost",
+        "updates",
+      );
+      await mkdir(path.join(stateDirectory, "update-stale"), { recursive: true });
+      await writeFile(
+        path.join(stateDirectory, "update-stale", "status-v1.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "1.2.3",
+          installation: "npm",
+          phase,
+          updatedAt: Math.floor(Date.now() / 1000),
+        }),
+      );
+      const coordinator = createHostUpdateCoordinator({
+        hostRuntimePath: fixture.hostRuntimePath,
+        environment: fixture.environment,
+        platform: "darwin",
+        architecture: "arm64",
+        fetchLatest: async () => release(),
+      });
 
-    await expect(coordinator.check()).resolves.toMatchObject({ status: null });
-  });
+      await expect(coordinator.check()).resolves.toMatchObject({ status: null });
+      await expect(coordinator.status()).resolves.toEqual({ status: null });
+    },
+  );
 
   it("does not reject during construction when npm runtime paths are missing", async () => {
     const fixture = await npmFixture();

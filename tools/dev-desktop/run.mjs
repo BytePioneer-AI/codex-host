@@ -167,12 +167,16 @@ echo 'codexhost dev: stopped the running Codex Desktop'
 `;
 
 export function usage() {
-  return `usage: npm start -- [--no-build]
+  return `usage: npm start [version] [-- --no-build]
 
 Stop any running Codex Desktop, then build and run the current codexhost worktree.
 
+arguments:
+  version            set the runtime version, e.g. npm start 0.12.0
+
 options:
   --no-build          reuse existing development artifacts
+  --version <semver>  alternative version syntax (npm start -- --version 0.12.0)
   --help              show this help`;
 }
 
@@ -190,6 +194,19 @@ export function parseArguments(arguments_) {
       if (buildProvided) throw new Error("--no-build may only be provided once");
       buildProvided = true;
       options.build = false;
+      continue;
+    }
+    if (argument === "--version" || !argument.startsWith("-")) {
+      if (options.version !== undefined) throw new Error("version may only be provided once");
+      const version = argument === "--version" ? arguments_[++index] : argument;
+      if (
+        !version ||
+        !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u.test(
+          version,
+        )
+      )
+        throw new Error("expected a semantic version, such as 0.12.0 or 0.13.0-rc.1");
+      options.version = version;
       continue;
     }
     throw new Error(`unknown option: ${argument}`);
@@ -324,11 +341,12 @@ export function launcherInvocation(artifacts, piPath = null) {
   return { command: artifacts.launcher, arguments: arguments_ };
 }
 
-function runChild(invocation, root, spawnImplementation = spawn) {
+function runChild(invocation, root, spawnImplementation = spawn, environment = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawnImplementation(invocation.command, invocation.arguments, {
       cwd: root,
       stdio: "inherit",
+      env: environment,
       windowsHide: false,
     });
     child.once("error", reject);
@@ -340,11 +358,12 @@ function runChild(invocation, root, spawnImplementation = spawn) {
 // and Host chain are up, then detaches from the terminal to keep supervising.
 // Resolve on that signal so `npm start` returns instead of holding the terminal
 // open, while still propagating a real failure (exit without "ready").
-function runLauncher(invocation, root, spawnImplementation = spawn) {
+function runLauncher(invocation, root, spawnImplementation = spawn, environment = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawnImplementation(invocation.command, invocation.arguments, {
       cwd: root,
       stdio: ["ignore", "pipe", "inherit"],
+      env: environment,
       windowsHide: false,
     });
     let settled = false;
@@ -399,6 +418,15 @@ export async function runDevelopmentDesktop({
     );
   }
 
+  // Keep environment proxy support enabled, but silence its experimental
+  // warning in build/runtime children. Preserve all existing Node options.
+  environment = {
+    ...environment,
+    NODE_OPTIONS: [environment.NODE_OPTIONS, "--disable-warning=UNDICI-EHPA"]
+      .filter(Boolean)
+      .join(" "),
+  };
+
   const startedAt = performance.now();
   const logElapsed = (label, since) => {
     console.log(`codexhost dev: ${label}: ${((performance.now() - since) / 1000).toFixed(2)}s`);
@@ -406,7 +434,7 @@ export async function runDevelopmentDesktop({
   const cleanupInvocation = runningDesktopCleanupInvocation(platform);
   if (cleanupInvocation) {
     console.log("codexhost dev: stopping any running Codex Desktop");
-    const cleanupResult = await runChild(cleanupInvocation, root, spawnImplementation);
+    const cleanupResult = await runChild(cleanupInvocation, root, spawnImplementation, environment);
     if (cleanupResult.code !== 0) {
       const reason = cleanupResult.signal
         ? `signal ${cleanupResult.signal}`
@@ -424,6 +452,7 @@ export async function runDevelopmentDesktop({
       npmBuildInvocation(environment, platform, nodePath),
       root,
       spawnImplementation,
+      environment,
     );
     logElapsed("build elapsed", buildStartedAt);
     if (buildResult.code !== 0) {
@@ -440,11 +469,28 @@ export async function runDevelopmentDesktop({
   if (piPath) console.log(`codexhost dev: using Pi at ${piPath}`);
   else console.warn("codexhost dev: Pi was not found on PATH and will be unavailable");
 
+  const launchEnvironment = { ...environment };
+  // A Harness launched by an npm installation may inherit its update routing. The Shim
+  // prefers that routing over --host-runtime; a source launch must use this worktree instead.
+  for (const name of [
+    "CODEXHOST_NPM_NODE_PATH",
+    "CODEXHOST_NPM_CLI_PATH",
+    "CODEXHOST_NPM_LAUNCHER_PATH",
+    "CODEXHOST_NPM_PACKAGE_ROOT",
+  ]) {
+    delete launchEnvironment[name];
+  }
+  delete launchEnvironment.CODEXHOST_DEV_VERSION;
+  if (options.version) {
+    launchEnvironment.CODEXHOST_DEV_VERSION = options.version;
+    console.log(`codexhost dev: source runtime version is ${options.version}`);
+  }
   const launchStartedAt = performance.now();
   const launchResult = await runLauncher(
     launcherInvocation(artifacts, piPath),
     root,
     spawnImplementation,
+    launchEnvironment,
   );
   logElapsed(
     launchResult.ready ? "Launcher ready" : "Launcher exited before ready",

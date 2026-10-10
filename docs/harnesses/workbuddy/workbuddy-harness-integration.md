@@ -96,6 +96,12 @@ WorkBuddy 插件复用经过验证的 CodeBuddy ACP Session 语义，但保持�
 
 上述“已实现”表示 Adapter 的协议和公共契约路径已接线，不表示本轮完成了认证后的付费在线验收。尤其是 Model 目录、权限名称、历史格式和子 Agent 事件仍须在已登录的目标账号与实际 WorkBuddy 版本上复核；运行时以原生响应为准，不把 2.137.1 的观察结果硬编码为永久产品能力。
 
+### 流式消息身份与显示边界
+
+WorkBuddy 原生 ACP 可以在同一次 Prompt 的多次模型回复间复用顶层 `messageId`；单次模型回复的身份由 `_meta["codebuddy.ai/llmMessageId"]` 提供。共用的 CodeBuddy Adapter 优先使用后者划分回复，旧运行时依次回退到顶层 `messageId` 与 `_meta["codebuddy.ai/messageId"]`。新回复、普通工具、原生 Agent 子任务启动和原生压缩会结束前一段文本与 Reasoning；子任务内部通知、重复工具通知和已有工具的完成通知不会切断父消息。每段分配独立的公共 Item 身份，即使原生 ID 缺失或在工具前后复用，也不会把最终回答追加到已完成的过程消息中。
+
+最终回答仍由公共投影按成功回合的末尾消息识别，不强制展开 Desktop，也不把失败或取消时的部分输出标为最终回答。Reasoning 在这些已确认边界结束，而不是一律计时到整个 Turn 完成。流式与历史投影通过相同的最终回答规则，普通工具与 Agent 子任务路径均有聚焦回归测试；这不替代目标版本的真实 Desktop 在线验收。
+
 ### Fork、跨目录 Fork 与修订边界
 
 WorkBuddy 2.137.1 对标准 ACP `session/fork` 返回 `Method not found`，所以本集成不会虚构一个标准 ACP Fork。派生流程组合该版本公开 CLI 的 `--resume ... --fork-session` 管理模式、原生 `/fork` 和公开 `_codebuddy.ai/session/rollback` 扩展：先生成不调用模型的临时原生副本，再由目标目录中的 WorkBuddy ACP Session 执行原生 Fork，最后回滚到请求的精确 Turn 边界。所有模型工作仍由最终的 WorkBuddy Native Session 承担。

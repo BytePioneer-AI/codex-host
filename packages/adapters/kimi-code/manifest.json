@@ -5,7 +5,30 @@
   "version": "0.1.0",
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"
+      },
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "irm https://code.kimi.com/kimi-code/install.ps1 | iex"
+      }
+    ],
+    "before": {
+      "en": "On Windows, install Git for Windows first.",
+      "zh-CN": "Windows 请先安装 Git for Windows。"
+    },
+    "after": {
+      "en": "After installation, run kimi to complete login or setup.",
+      "zh-CN": "安装后运行 kimi，完成登录或配置。"
+    }
+  },
   "links": {
+    "website": "https://code.kimi.com/",
+    "installation": "https://moonshotai.github.io/kimi-code/en/guides/getting-started.html",
     "documentation": "https://moonshotai.github.io/kimi-code/en/reference/kimi-acp.html"
   }
 }

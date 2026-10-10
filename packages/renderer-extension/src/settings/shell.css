@@ -2486,6 +2486,23 @@
   outline-offset: -1px;
 }
 
+.settings-remote-dialog__package-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.settings-remote-dialog .settings-remote-dialog__package-option input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--settings-focus);
+}
+
 @keyframes settings-remote-spin {
   to {
     transform: rotate(360deg);

@@ -1,5 +1,6 @@
 import {
   catalogModelForRef,
+  harnessPluginIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -10,11 +11,7 @@ import {
   type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
-import {
-  KNOWN_RENDERER_AGENTS,
-  type ExternalRendererAgent,
-  type RendererAgent,
-} from "./agent-selection-state.js";
+import { type ExternalRendererAgent, type RendererAgent } from "./agent-selection-state.js";
 
 export const RENDERER_NEW_THREAD_PREFERENCE_KEY = "codexhost.new-thread-preference.v1";
 
@@ -35,9 +32,18 @@ interface PreferenceStorage {
   setItem(key: string, value: string): void;
 }
 
-function rendererStorage(): PreferenceStorage | null {
+export function rendererNewThreadPreferenceStorage(
+  hostId: string | null = "local",
+): PreferenceStorage | null {
+  if (!hostId) return null;
   try {
-    return window.localStorage;
+    const storage = window.localStorage;
+    if (hostId === "local") return storage; // Retain the v1 local preference keys.
+    const scopedKey = (key: string) => `${key}.host.${encodeURIComponent(hostId)}`;
+    return {
+      getItem: (key) => storage.getItem(scopedKey(key)),
+      setItem: (key, value) => storage.setItem(scopedKey(key), value),
+    };
   } catch {
     return null;
   }
@@ -67,15 +73,16 @@ function readPreference(storage: PreferenceStorage | null): NewThreadPreference 
     if (!raw) return undefined;
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed) || parsed.version !== 1) return undefined;
-    if (!KNOWN_RENDERER_AGENTS.some((agent) => agent === parsed.lastAgent)) return undefined;
+    if (parsed.lastAgent !== "codex" && !harnessPluginIdSchema.safeParse(parsed.lastAgent).success)
+      return undefined;
     const externalByAgent = isRecord(parsed.externalByAgent) ? parsed.externalByAgent : {};
     const parsedExternal = Object.fromEntries(
-      KNOWN_RENDERER_AGENTS.filter(
-        (agent): agent is ExternalRendererAgent => agent !== "codex",
-      ).flatMap((agent) => {
-        const configuration = parseExternalConfiguration(externalByAgent[agent]);
-        return configuration ? [[agent, configuration]] : [];
-      }),
+      Object.keys(externalByAgent)
+        .filter((agent) => harnessPluginIdSchema.safeParse(agent).success)
+        .flatMap((agent) => {
+          const configuration = parseExternalConfiguration(externalByAgent[agent]);
+          return configuration ? [[agent, configuration]] : [];
+        }),
     ) as NewThreadPreference["externalByAgent"];
     return {
       version: 1,
@@ -97,18 +104,18 @@ function writePreference(preference: NewThreadPreference, storage: PreferenceSto
 }
 
 export function readNewThreadAgentPreference(
-  enabledAgents: ReadonlySet<RendererAgent>,
-  storage: PreferenceStorage | null = rendererStorage(),
+  enabledAgents?: ReadonlySet<RendererAgent>,
+  storage: PreferenceStorage | null = rendererNewThreadPreferenceStorage(),
 ): RendererAgent | undefined {
   const agent = readPreference(storage)?.lastAgent;
-  return agent && enabledAgents.has(agent) ? agent : undefined;
+  return agent && (!enabledAgents || enabledAgents.has(agent)) ? agent : undefined;
 }
 
 export function readNewThreadExternalConfigurationPreference(
   agent: ExternalRendererAgent,
   catalog: HarnessModelCatalog,
   permissionModes?: HarnessPermissionModeCatalog,
-  storage: PreferenceStorage | null = rendererStorage(),
+  storage: PreferenceStorage | null = rendererNewThreadPreferenceStorage(),
 ): ExternalConfigurationPreference | undefined {
   const preference = readPreference(storage)?.externalByAgent[agent];
   if (!preference) return undefined;
@@ -133,7 +140,7 @@ export function readNewThreadExternalConfigurationPreference(
 
 export function writeNewThreadAgentPreference(
   agent: RendererAgent,
-  storage: PreferenceStorage | null = rendererStorage(),
+  storage: PreferenceStorage | null = rendererNewThreadPreferenceStorage(),
 ): void {
   const current = readPreference(storage);
   writePreference(
@@ -151,7 +158,7 @@ export function writeNewThreadExternalConfigurationPreference(
   model: HarnessModelRef,
   thinkingOptionId?: HarnessThinkingOptionId,
   permissionModeId?: HarnessPermissionModeId,
-  storage: PreferenceStorage | null = rendererStorage(),
+  storage: PreferenceStorage | null = rendererNewThreadPreferenceStorage(),
 ): void {
   const current = readPreference(storage);
   writePreference(

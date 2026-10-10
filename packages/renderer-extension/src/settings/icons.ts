@@ -11,6 +11,8 @@ import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
 import Copy from "lucide/dist/esm/icons/copy.mjs";
 import Download from "lucide/dist/esm/icons/download.mjs";
 import ExternalLink from "lucide/dist/esm/icons/external-link.mjs";
+import Eye from "lucide/dist/esm/icons/eye.mjs";
+import EyeOff from "lucide/dist/esm/icons/eye-off.mjs";
 import Ellipsis from "lucide/dist/esm/icons/ellipsis.mjs";
 import FolderInput from "lucide/dist/esm/icons/folder-input.mjs";
 import GripVertical from "lucide/dist/esm/icons/grip-vertical.mjs";
@@ -56,6 +58,8 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "info",
   "external-link",
   "refresh",
+  "eye",
+  "eye-off",
   "unavailable",
   "alert",
   "check",
@@ -108,6 +112,8 @@ const iconNodes = {
   info: Info,
   "external-link": ExternalLink,
   refresh: RefreshCw,
+  eye: Eye,
+  "eye-off": EyeOff,
   unavailable: CircleOff,
   alert: TriangleAlert,
   check: Check,

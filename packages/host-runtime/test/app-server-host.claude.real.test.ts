@@ -160,6 +160,7 @@ describe("AppServerHost hermetic Claude projection", () => {
           setIdleLive: () => undefined,
           hasBackgroundTasks: () => false,
           stopBackgroundTask: async () => undefined,
+          stopTasks: async () => undefined,
           start: async () => undefined,
           getContextUsage: async () => ({
             usedTokens: 30,
@@ -191,6 +192,7 @@ describe("AppServerHost hermetic Claude projection", () => {
           },
           respondToInteraction: async () => undefined,
           abort: async () => undefined,
+          abortContinuation: async () => undefined,
           close: async () => undefined,
         };
       },
@@ -205,7 +207,6 @@ describe("AppServerHost hermetic Claude projection", () => {
     const host = new AppServerHost({
       stockCodexPath: "/synthetic/codex",
       arguments: [],
-      defaultAgent: "codex",
       desktopInput,
       desktopOutput,
       diagnosticOutput,
@@ -309,7 +310,6 @@ describe.skipIf(!RUN_REAL)("AppServerHost real Claude projection", () => {
       const host = new AppServerHost({
         stockCodexPath: "/synthetic/codex",
         arguments: [],
-        defaultAgent: "codex",
         desktopInput,
         desktopOutput,
         diagnosticOutput,

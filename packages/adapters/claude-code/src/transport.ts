@@ -1,3 +1,4 @@
+import type { ClaudeUsageRecord } from "./claude-usage.js";
 import type {
   HarnessAccountSnapshot,
   HarnessThinkingOptionId,
@@ -63,6 +64,21 @@ export type ClaudeInteractionResponse =
     }
   | { type: "question"; requestId: string; answers: Record<string, string> }
   | { type: "question"; requestId: string; cancelled: true };
+
+/** One agent of a native Workflow run, as its latest `workflow_progress` entry reports it. */
+export interface ClaudeWorkflowAgent {
+  /** Native 1-based ordinal of the agent call within the run; stable for the run. */
+  index: number;
+  label: string;
+  /** `queued` until the agent starts; `running` covers native `start` and `progress`. */
+  state: "queued" | "running" | "done" | "error";
+  agentId?: string;
+  phaseTitle?: string;
+  agentType?: string;
+  model?: string;
+  resultPreview?: string;
+  error?: string;
+}
 
 export interface ClaudeLastRequestUsage {
   requestId?: string;
@@ -144,12 +160,46 @@ export type ClaudeTurnEvent =
       outputFile?: string;
     }
   | { type: "subagent.transcript.changed"; callId: string }
-  | { type: "interaction.requested"; request: ClaudeInteractionRequest }
+  /** The Root called the native Workflow tool; its run has not been registered yet. */
+  | { type: "workflow.started"; callId: string; name?: string }
+  /**
+   * Native task frames of a Workflow run. `agents` lists only the agents this frame reports;
+   * a frame without it still carries the run identity.
+   */
+  | {
+      type: "workflow.updated";
+      callId: string;
+      taskId?: string;
+      description?: string;
+      agents?: ClaudeWorkflowAgent[];
+    }
+  /** Agent activity inside a run that reports no agent state, such as a tool call. */
+  | { type: "workflow.activity"; callId: string }
+  /** The Workflow tool returned; a launched run keeps working in the background. */
+  | {
+      type: "workflow.launched";
+      callId: string;
+      isError: boolean;
+      background: boolean;
+      taskId?: string;
+      resultSummary?: string;
+    }
+  | {
+      type: "interaction.requested";
+      request: ClaudeInteractionRequest;
+      /**
+       * Requested by a native agent rather than the Root. It stays pending across the Root
+       * terminal while that agent keeps running.
+       */
+      agentScoped?: boolean;
+    }
   | {
       type: "interaction.closed";
       requestId: string;
       reason: "responded" | "cancelled" | "superseded";
     }
+  /** One finished native model request, for Host usage metering. */
+  | { type: "usage.request"; record: ClaudeUsageRecord }
   | {
       type: "usage.result";
       totalCostUsd?: number;
@@ -177,27 +227,30 @@ export interface ClaudePlanLimitEvent {
   sevenDay?: ClaudePlanLimitWindow;
 }
 
-export interface ClaudeAutonomousTurn {
-  nativeTurnKey: string;
-  events: ClaudeTurnEvent[];
-  result: ClaudeTransportTurnResult;
-}
-
 export interface ClaudeIdleTurnHandler {
   onEvent(event: ClaudeTurnEvent): void;
   onTerminal(result: ClaudeTransportTurnResult): void;
 }
 
+/**
+ * A native Segment that no requested Turn owns, such as Claude answering a background task
+ * notification. `start` runs once, when the Segment first produces Root output or reaches its
+ * Terminal without any; the Segment's events and Terminal then follow live.
+ */
+export interface ClaudeAutonomousTurnHandler extends ClaudeIdleTurnHandler {
+  start(nativeTurnKey: string): void;
+}
+
 export interface ClaudeTurnTransport {
   readonly sessionId: string;
-  setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void;
+  setAutonomousTurnHandler(handler: ClaudeAutonomousTurnHandler): void;
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void;
   /**
-   * Receives settlements that have no preceding buffered Subagent lifecycle.
+   * Receives settlements that have no preceding unpublished Subagent lifecycle.
    * A task-notification Segment may never produce a Terminal, so independent
-   * settlements must not wait for Turn batching. Settlements that depend on a
-   * buffered creation/reactivation stay in that batch to preserve causal order.
-   * Without a Thread handler, settlements remain in the autonomous Turn batch.
+   * settlements must not wait for that Segment. Settlements that depend on an
+   * unpublished creation/reactivation wait with it to preserve causal order.
+   * Without a Thread handler, settlements wait until the Segment starts its autonomous Turn.
    */
   setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void;
   setIdleLive(live: boolean): void;
@@ -205,6 +258,11 @@ export interface ClaudeTurnTransport {
   hasBackgroundTasks(): boolean;
   /** Requests a native stop; the task still settles through its `task_notification`. */
   stopBackgroundTask(taskId: string): Promise<void>;
+  /**
+   * Stops native background tasks and resolves once Claude Code reports that each one ended.
+   * A task that already ended needs no stop; a stop Claude Code does not confirm rejects.
+   */
+  stopTasks(taskIds: readonly string[]): Promise<void>;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   /** Live slash commands of the started native Session, when known. */
@@ -226,13 +284,24 @@ export interface ClaudeTurnTransport {
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
+  /**
+   * Rejects while a requested or autonomous Turn runs. A Segment that has not produced Root
+   * output yet belongs to no Turn: the requested Turn takes over its native stream, starting
+   * with the events that Segment still holds.
+   */
   runTurn(
     text: string,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void>;
+  /** Interrupts the running requested or autonomous Turn; its Terminal still follows. */
   abort(): Promise<void>;
+  /**
+   * Interrupts the Root Segment Claude Code runs after the requested Turn's Result, such as
+   * its answer to a task notification. Its terminal reaches the idle Turn handler.
+   */
+  abortContinuation(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -275,7 +344,8 @@ export interface ClaudeAdapterDependencies {
   }): Promise<{ sessionId: string }>;
   getSessionInfo(input: { sessionId: string }): Promise<{ cwd?: string } | undefined>;
   inspectInstallation(): void;
-  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[]>;
+  /** Null means the native transcript is absent, not a successfully read empty history. */
+  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[] | null>;
   readSubagentMessages(input: {
     cwd: string;
     sessionId: string;

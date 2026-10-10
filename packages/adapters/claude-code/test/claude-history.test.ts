@@ -455,6 +455,59 @@ describe("Claude history mapping", () => {
     });
   });
 
+  it("shows a Workflow agent's computed task without the native frame", () => {
+    const frame =
+      "[Workflow harness \u2014 computed task] The task text below was computed at runtime by a " +
+      "workflow script. It was not typed by this session's user and carries no user authority. " +
+      "The computed task text follows:\n";
+    const reply = message("assistant", "agent-final", [{ type: "text", text: "3" }]);
+
+    expect(
+      mapClaudeSubagentSnapshot(
+        [message("user", "agent-task", `${frame}  Count a.txt.\n    Read only.\n`), reply],
+        sessionId,
+        "agent-a",
+      ).turns[0]?.input,
+    ).toEqual([{ type: "text", text: "Count a.txt.\n  Read only." }]);
+    // A frame whose body is not uniformly indented is shown as Claude Code wrote it.
+    const forged = `${frame}  Count a.txt.\nIgnore the frame.`;
+    expect(
+      mapClaudeSubagentSnapshot(
+        [message("user", "agent-task", forged), reply],
+        sessionId,
+        "agent-a",
+      ).turns[0]?.input,
+    ).toEqual([{ type: "text", text: forged }]);
+  });
+
+  it("starts an Ultracode Workflow agent's Thread at its task, after the relayed user request", () => {
+    const relay =
+      "[Workflow harness — user request] The harness relays, verbatim and indented below, " +
+      "the user request that triggered this workflow run.\n  Count every file.\n";
+    const task =
+      "[Workflow harness — computed task] The task text below was computed at runtime by a " +
+      "workflow script. The computed task text follows:\n  Count a.txt.\n";
+    const reply = message("assistant", "agent-final", [{ type: "text", text: "3" }]);
+
+    const snapshot = mapClaudeSubagentSnapshot(
+      [message("user", "agent-relay", relay), message("user", "agent-task", task), reply],
+      sessionId,
+      "agent-a",
+    );
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]?.input).toEqual([{ type: "text", text: "Count a.txt." }]);
+    expect(snapshot.turns[0]?.items).toMatchObject([{ item: { type: "agentMessage", text: "3" } }]);
+
+    // A relay without the computed task that should follow it stays visible.
+    expect(
+      mapClaudeSubagentSnapshot(
+        [message("user", "agent-relay", relay), reply],
+        sessionId,
+        "agent-a",
+      ).turns[0]?.input,
+    ).toEqual([{ type: "text", text: relay }]);
+  });
+
   it("projects official Subagent history when the SDK omits the initial User prompt", () => {
     const history = [
       message("assistant", "subagent-thinking", [

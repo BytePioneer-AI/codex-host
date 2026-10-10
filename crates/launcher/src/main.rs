@@ -69,7 +69,6 @@ const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
 const DATA_DIRECTORY_ENV: &str = "CODEXHOST_DATA_DIR";
 const REMOTE_SSH_MANAGED_ENV: &str = "CODEXHOST_REMOTE_SSH_MANAGED";
 const PI_COMMAND_ENV: &str = "CODEXHOST_PI_COMMAND";
-const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
 const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
 const LAUNCHER_EXECUTABLE_ENV: &str = "CODEXHOST_LAUNCHER_EXECUTABLE";
 const RUNTIME_DESCRIPTOR_PATH_ENV: &str = "CODEXHOST_RUNTIME_DESCRIPTOR_PATH";
@@ -130,7 +129,7 @@ impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
+        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost update\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
     );
 }
 
@@ -503,13 +502,13 @@ fn desktop_controller_command(
 ) -> Command {
     let mut command = Command::new(&options.node);
     command
+        // Keep proxy support without surfacing its experimental API notice.
+        .arg("--disable-warning=UNDICI-EHPA")
         .arg(node_entrypoint_path(&options.desktop_controller))
         .arg("--renderer-cdp-endpoint")
         .arg(&control.renderer_cdp_endpoint)
         .arg("--renderer")
         .arg(&options.renderer_extension)
-        .arg("--default-agent")
-        .arg("codex")
         .arg("--attachment-port")
         .arg(control.attachment_port.to_string())
         .arg("--attachment-nonce")
@@ -914,7 +913,6 @@ fn desktop_environment(
             OsString::from(HOST_RUNTIME_PATH_ENV),
             options.host_runtime.as_os_str().to_owned(),
         ),
-        (OsString::from(DEFAULT_AGENT_ENV), OsString::from("codex")),
         (
             OsString::from(LAUNCHER_PID_ENV),
             OsString::from(std::process::id().to_string()),
@@ -947,6 +945,11 @@ fn desktop_environment(
     }
     if env::var_os(STARTUP_TRACE_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
         environment.push((OsString::from(STARTUP_TRACE_ENV), OsString::from("1")));
+    }
+    // LaunchServices and AppX do not inherit the source launch version.
+    // Runtime metadata readers validate it and use it only for source launches.
+    if let Some(version) = env::var_os("CODEXHOST_DEV_VERSION") {
+        environment.push((OsString::from("CODEXHOST_DEV_VERSION"), version));
     }
     environment.extend(npm_update_runtime_environment(env::vars_os()));
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
@@ -1254,7 +1257,7 @@ fn start_launch_console(options: &LaunchOptions) {
     }
 }
 
-fn open_console() -> Result<(), Box<dyn Error>> {
+fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
     let installed = InstalledResources::from_current_executable()?;
     if !installed.console_server.is_file() {
         return Err(format!(
@@ -1267,10 +1270,10 @@ fn open_console() -> Result<(), Box<dyn Error>> {
         node: installed.node,
         console_server: installed.console_server,
     };
-    if console::open(&command)? {
+    if console::run(&command, action)? {
         Ok(())
     } else {
-        Err("codexhost console could not be opened".into())
+        Err(format!("codexhost {action} failed").into())
     }
 }
 
@@ -1309,7 +1312,9 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 .transpose()?;
             inspect(custom_install_root.as_deref(), options.json)
         }
-        Some("console") if arguments.len() == 1 => open_console(),
+        Some("console") if arguments.len() == 1 => run_console_command("open"),
+        Some("update") if arguments.len() == 1 => run_console_command("update"),
+        Some("update") => Err("update accepts no arguments".into()),
         Some("console") => Err("console accepts no arguments".into()),
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
         Some("open-loopback-url") if arguments.len() == 1 => {
@@ -1399,14 +1404,14 @@ mod tests {
     #[cfg(target_os = "windows")]
     use super::wait_for_desktop_exit;
     use super::{
-        CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
-        LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, NPM_CLI_PATH_ENV, NPM_LAUNCHER_PATH_ENV,
-        NPM_NODE_PATH_ENV, NPM_PACKAGE_ROOT_ENV, RUNTIME_DESCRIPTOR_PATH_ENV,
-        ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, absolute_directory,
-        allocate_runtime_control, delegation_node, desktop_controller_command, desktop_environment,
-        emit_ready_line, managed_desktop_data_directory, npm_update_runtime_environment,
-        parse_inspect_options, parse_launch_options, read_bounded_controller_line,
-        read_bounded_loopback_url, validate_loopback_root_url,
+        CONTROL_NONCE_ENV, CONTROL_PORT_ENV, HOST_NODE_PATH_ENV, LAUNCHER_EXECUTABLE_ENV,
+        LAUNCHER_PID_ENV, NPM_CLI_PATH_ENV, NPM_LAUNCHER_PATH_ENV, NPM_NODE_PATH_ENV,
+        NPM_PACKAGE_ROOT_ENV, RUNTIME_DESCRIPTOR_PATH_ENV, ResolvedLaunchOptions, RuntimeControl,
+        STARTUP_TRACE_ENV, absolute_directory, allocate_runtime_control, delegation_node,
+        desktop_controller_command, desktop_environment, emit_ready_line,
+        managed_desktop_data_directory, npm_update_runtime_environment, parse_inspect_options,
+        parse_launch_options, read_bounded_controller_line, read_bounded_loopback_url,
+        validate_loopback_root_url,
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{DESKTOP_TREE_REFRESH_INTERVAL, desktop_tree_refresh_due};
@@ -1651,13 +1656,12 @@ mod tests {
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             [
+                "--disable-warning=UNDICI-EHPA",
                 "/opt/desktop-controller.mjs",
                 "--renderer-cdp-endpoint",
                 "http://127.0.0.1:43123",
                 "--renderer",
                 "/opt/renderer-extension.js",
-                "--default-agent",
-                "codex",
                 "--attachment-port",
                 "43124",
                 "--attachment-nonce",
@@ -1700,7 +1704,6 @@ mod tests {
                 .find(|(candidate, _)| candidate == name)
                 .map(|(_, value)| value)
         };
-        assert_eq!(value(DEFAULT_AGENT_ENV), Some(&OsString::from("codex")));
         assert_eq!(
             value(LAUNCHER_PID_ENV),
             Some(&OsString::from(std::process::id().to_string()))
@@ -1828,6 +1831,7 @@ mod tests {
                 .env("ZDOTDIR", root.join("shell"))
                 .env("CODEX_HOME", root.join("codex"))
                 .env("CODEX_ELECTRON_USER_DATA_PATH", root.join("electron"))
+                .env("CODEXHOST_DEV_VERSION", "0.12.0")
                 .env("OPENAI_API_KEY", "synthetic-not-forwarded")
                 .env_remove(super::REMOTE_SSH_MANAGED_ENV)
                 .output()
@@ -1852,6 +1856,7 @@ mod tests {
             "ZDOTDIR",
             "CODEX_HOME",
             "CODEX_ELECTRON_USER_DATA_PATH",
+            "CODEXHOST_DEV_VERSION",
         ] {
             assert!(
                 environment.contains(&(
@@ -1983,7 +1988,7 @@ mod tests {
         let command = desktop_controller_command(&options, &runtime_control(), &[]);
 
         assert_eq!(
-            command.get_args().next(),
+            command.get_args().nth(1),
             Some(OsStr::new(r"C:\Program Files\codexhost\controller.mjs")),
         );
     }

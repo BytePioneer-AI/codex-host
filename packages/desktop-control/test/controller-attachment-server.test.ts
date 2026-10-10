@@ -52,6 +52,34 @@ describe("Controller attachment server", () => {
     }
   });
 
+  it("validates remote settings commands at the socket boundary", async () => {
+    const port = await availablePort();
+    const remoteConnections = vi.fn(async () => ({ result: [] }));
+    const server = await startControllerAttachmentServer({
+      port,
+      nonce,
+      attach: async () => {},
+      remoteConnections,
+    });
+    try {
+      for (const suffix of [
+        '{"action":"eval","expression":"code"}',
+        '{"action":"list","extra":true}',
+        "invalid",
+        '{"action":"list"}\nATTACH ' + nonce,
+      ]) {
+        expect(await request(port, `REMOTE ${nonce} ${suffix}\n`)).toBe("rejected\n");
+      }
+      expect(remoteConnections).not.toHaveBeenCalled();
+      expect(JSON.parse(await request(port, `REMOTE ${nonce} {"action":"list"}\n`))).toEqual({
+        result: [],
+      });
+      expect(remoteConnections).toHaveBeenCalledExactlyOnceWith({ action: "list" });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("stops accepting connections before waiting for open pages to close", async () => {
     const port = await availablePort();
     const released = Promise.withResolvers<undefined>();

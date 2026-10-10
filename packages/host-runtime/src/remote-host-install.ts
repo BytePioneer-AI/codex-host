@@ -241,7 +241,6 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
     `export CODEXHOST_HOST_NODE_PATH=${shellQuote(manifest.nodePath)}`,
     `export CODEXHOST_HOST_RUNTIME_PATH=${shellQuote(manifest.hostRuntimePath)}`,
     `export CODEXHOST_DATA_DIR=${shellQuote(manifest.dataDirectory)}`,
-    "export CODEXHOST_DEFAULT_AGENT='codex'",
     "export CODEXHOST_REMOTE_SSH_MANAGED='1'",
   ];
   const block = [

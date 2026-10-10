@@ -97,6 +97,11 @@ A supporting Harness SHALL emit an autonomous Turn start when native work resume
 - **WHEN** the native Harness reports an autonomous continuation while another Host Turn is still executing a requested Root Segment
 - **THEN** the Session SHALL fail closed rather than merge both executions into one Turn
 
+#### Scenario: Turn request arrives while an autonomous continuation runs
+
+- **WHEN** a desktop Turn request arrives after the native Harness reported an autonomous continuation and before that continuation completes
+- **THEN** the Session SHALL reject the request rather than start a requested Turn that absorbs the continuation's output
+
 #### Scenario: Autonomous continuation continues a held user Turn
 
 - **WHEN** the native Harness reports an autonomous continuation while the requested Host Turn is held for running background Subagents

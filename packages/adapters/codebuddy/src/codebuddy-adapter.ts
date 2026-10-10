@@ -1,3 +1,4 @@
+import { createCodeBuddyUsageStatistics } from "./usage-statistics.js";
 import { stat } from "node:fs/promises";
 import type {
   HarnessAdapter,
@@ -46,6 +47,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
   readonly commandCatalog?: HarnessCommandCatalog;
   readonly liveCommandCatalog = true;
   readonly sessionImport: CodeBuddySessionImport;
+  readonly usageStatistics: ReturnType<typeof createCodeBuddyUsageStatistics>;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async ({ parent, nativeSubagentId, cwd }) => {
       try {
@@ -90,6 +92,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
     }
     this.#environment = { ...(options.environment ?? process.env) };
     this.sessionImport = new CodeBuddySessionImport(this.#environment, this.#profile);
+    this.usageStatistics = createCodeBuddyUsageStatistics(this.#environment, this.#profile);
     this.#invocation = options.invocationFactory ?? codeBuddyInvocation;
     this.#factory =
       options.clientFactory ??

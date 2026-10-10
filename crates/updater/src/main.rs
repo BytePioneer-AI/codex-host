@@ -59,6 +59,9 @@ fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>>
         )
         .into());
     }
+    // This is the handoff acknowledgement: the owner must remain alive until
+    // its identity has been checked, not merely until this process was spawned.
+    write_status(request, "waiting-for-exit", None)?;
     let started = Instant::now();
     while process_exists(request.wait_pid) {
         if started.elapsed() >= WAIT_TIMEOUT {
@@ -118,7 +121,6 @@ fn wait_for_relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
 
 fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
     let request = UpdateRequest::parse(request_path)?;
-    write_status(&request, "waiting-for-exit", None)?;
     let result = (|| -> Result<(), Box<dyn Error>> {
         wait_for_launcher_exit(&request)?;
         write_status(&request, "installing", None)?;
@@ -167,7 +169,36 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::relaunched_launcher_is_ready;
+    use super::{relaunched_launcher_is_ready, wait_for_launcher_exit};
+    use crate::request::{Installation, NpmInstallation, UpdateRequest};
+
+    #[test]
+    fn does_not_acknowledge_handoff_before_owner_identity_is_validated() {
+        let directory =
+            std::env::temp_dir().join(format!("codexhost-handoff-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let wrong_executable = directory.join("not-the-owner");
+        std::fs::write(&wrong_executable, "fixture").unwrap();
+        let status_path = directory.join("status.json");
+        std::fs::write(&status_path, "prepared").unwrap();
+        let request = UpdateRequest {
+            schema_version: 1,
+            version: "1.0.0".into(),
+            wait_pid: std::process::id(),
+            wait_executable: wrong_executable.clone(),
+            runtime_descriptor_path: directory.join("runtime.json"),
+            status_path: status_path.clone(),
+            installation: Installation::Npm(NpmInstallation {
+                node_path: wrong_executable.clone(),
+                npm_cli_path: wrong_executable.clone(),
+                npm_launcher_path: wrong_executable,
+            }),
+        };
+        let error = wait_for_launcher_exit(&request).unwrap_err();
+        assert!(error.to_string().contains("not the expected Launcher"));
+        assert_eq!(std::fs::read_to_string(status_path).unwrap(), "prepared");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn accepts_a_live_relaunched_launcher_without_executable_path_matching() {

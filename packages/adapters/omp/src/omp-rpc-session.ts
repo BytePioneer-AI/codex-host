@@ -22,6 +22,7 @@ import {
   optionalOmpStateContextUsage,
   parseOmpSessionUsage,
   parseOmpStateContextUsage,
+  type OmpUsageObservation,
 } from "./omp-usage.js";
 import type { OmpNativeModel, OmpNativeModelRef } from "./omp-model-catalog.js";
 import type { OmpPermissionMode } from "./omp-permission-modes.js";
@@ -129,10 +130,10 @@ export type OmpTurnEvent =
     }
   | { type: "subagent.transcript.changed"; callId: string; nativeSubagentId: string };
 
-export interface OmpTurnResult {
+export type OmpTurnResult = {
   text: string;
   cancelled: boolean;
-}
+} & ({ agentInvoked: true } | { agentInvoked: false; error?: string });
 
 export interface OmpCompactResult {
   outcome: "succeeded" | "cancelled" | "failed";
@@ -183,6 +184,8 @@ export interface OmpRpcSessionOptions {
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   onSubagentEvent?: (event: OmpTurnEvent) => void;
+  /** Finished assistant messages, for Host usage metering. */
+  onUsage?: (observation: OmpUsageObservation) => void;
   /**
    * Subscribe to native subagent frames during startup (default true). Short-lived
    * transports that never run Turns, such as inspection or transcript reads, opt out.
@@ -219,6 +222,8 @@ interface ManualCompaction {
 }
 
 interface ActiveTurn {
+  promptId: string;
+  localResult: { cancelled: boolean; error?: string } | null;
   text: string;
   assistantMessageId: string | null;
   sawStreamedMessageText: boolean;
@@ -234,8 +239,12 @@ interface ActiveTurn {
   tools: Map<string, string>;
   interactions: Map<string, { request: OmpInteractionRequest; timeout: NodeJS.Timeout | null }>;
   settlement: "pending" | "confirming" | "confirmed";
+  terminalEnd: boolean;
   cancellation: "none" | "requesting" | "accepted";
   cancellationTimeout: NodeJS.Timeout | null;
+  cancellationRecheck: NodeJS.Timeout | null;
+  cancellationChecking: boolean;
+  cancellationReloaded: boolean;
   abortPromise: Promise<void> | null;
 }
 
@@ -306,6 +315,17 @@ function parseSessionStreaming(response: Record<string, unknown>): boolean {
     throw new OmpRpcFaultError("protocolError", "Omp RPC state has no Streaming status");
   }
   return isStreaming;
+}
+
+function cancellationSettled(response: Record<string, unknown>, terminalEnd: boolean): boolean {
+  const data = sessionStateData(response);
+  return (
+    !parseSessionStreaming(response) &&
+    (data.isSettled === true || (data.isSettled === undefined && terminalEnd)) &&
+    data.isCompacting !== true &&
+    data.hasPendingAsyncWork !== true &&
+    !(typeof data.queuedMessageCount === "number" && data.queuedMessageCount > 0)
+  );
 }
 
 function parseAvailableModels(response: Record<string, unknown>): OmpNativeModel[] {
@@ -523,6 +543,7 @@ export class OmpRpcSession {
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
+  #closePromise: Promise<void> | null = null;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
   #compactionTimeout: NodeJS.Timeout | null = null;
@@ -532,6 +553,7 @@ export class OmpRpcSession {
   #availableCommands: OmpAvailableCommand[] | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
   #manualCompaction: ManualCompaction | null = null;
+  #usageRequestStartedAtMs: number | null = null;
   #stderrTail = "";
   #frameDecoder = new OmpFrameDecoder();
   #startupFaultResolve: ((error: OmpRpcFaultError) => void) | null = null;
@@ -556,7 +578,9 @@ export class OmpRpcSession {
     this.#options = {
       commandTimeoutMs: 30_000,
       compactionTimeoutMs: 300_000,
-      cancelTimeoutMs: 2_000,
+      // Native Abort waits for tools, persistence and deferred work to unwind.
+      // Stable cancellation must outlast the Host's 20s steering wait.
+      cancelTimeoutMs: 30_000,
       closeTimeoutMs: 2_000,
       ...options,
     };
@@ -668,7 +692,24 @@ export class OmpRpcSession {
   async getEntries(): Promise<OmpSessionHistory> {
     try {
       if (this.state.sessionFile) {
-        return await readOmpSessionHistory(this.state.sessionFile);
+        try {
+          return await readOmpSessionHistory(this.state.sessionFile);
+        } catch (error) {
+          if (
+            !isRecord(error) ||
+            error.code !== "ENOENT" ||
+            this.#options.sessionFile ||
+            this.#options.forkSessionFile
+          )
+            throw error;
+          // New OMP Sessions allocate the path before the first Agent Turn writes it.
+          const response = await this.#send("get_messages", {});
+          const data = isRecord(response.data) ? response.data : null;
+          if (data && Array.isArray(data.messages) && data.messages.length === 0) {
+            return { entries: [], leafId: null };
+          }
+          throw error;
+        }
       }
       const response = await this.#send("get_messages", {});
       const data = isRecord(response.data) ? response.data : null;
@@ -869,9 +910,12 @@ export class OmpRpcSession {
     }
     if (this.#activeTurn) throw new Error("Omp RPC Session already has an active Turn");
     if (text.length === 0) throw new Error("Omp text Turn must not be empty");
+    const promptId = `codexhost-${randomUUID()}`;
 
     const settled = new Promise<OmpTurnResult>((resolve, reject) => {
       this.#activeTurn = {
+        promptId,
+        localResult: null,
         text: "",
         assistantMessageId: null,
         sawStreamedMessageText: false,
@@ -887,13 +931,17 @@ export class OmpRpcSession {
         tools: new Map(),
         interactions: new Map(),
         settlement: "pending",
+        terminalEnd: false,
         cancellation: "none",
         cancellationTimeout: null,
+        cancellationRecheck: null,
+        cancellationChecking: false,
+        cancellationReloaded: false,
         abortPromise: null,
       };
     });
     try {
-      await this.#send("prompt", { message: text });
+      await this.#send("prompt", { message: text }, promptId);
     } catch (error) {
       this.#rejectActiveTurn(error instanceof Error ? error : new Error(message(error)));
     }
@@ -964,10 +1012,12 @@ export class OmpRpcSession {
       );
     }, this.#options.cancelTimeoutMs);
     const aborting = this.#send("abort", {})
-      .then(() => {
+      .then(async () => {
         if (this.#activeTurn !== active) return;
         active.cancellation = "accepted";
-        this.#finishSettledTurn(active);
+        // Aborting an idle/yielded run need not publish another agent_end.
+        // The acknowledgement alone is not proof that background work drained.
+        await this.#confirmCancelledTurn(active);
       })
       .catch((error: unknown) => {
         if (this.#activeTurn !== active) throw error;
@@ -990,11 +1040,15 @@ export class OmpRpcSession {
     void this.close().catch(() => undefined);
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#rejectAll(new Error("Omp RPC Session closed"));
-    await this.#stopProcess();
+  close(): Promise<void> {
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#rejectAll(new Error("Omp RPC Session closed"));
+    }
+    // Closing admission is not process exit; cancellation and recovery callers
+    // must await the same cleanup, including after a timed-out Prompt.
+    this.#closePromise ??= this.#stopProcess();
+    return this.#closePromise;
   }
 
   async #stopProcess(): Promise<void> {
@@ -1016,8 +1070,21 @@ export class OmpRpcSession {
     while (newline >= 0) {
       const frame = this.#buffer.subarray(0, newline);
       this.#buffer = this.#buffer.subarray(newline + 1);
+      let parsed: unknown;
       try {
-        const decoded = this.#frameDecoder.push(JSON.parse(textDecoder.decode(frame)));
+        parsed = JSON.parse(textDecoder.decode(frame));
+      } catch (error) {
+        this.#fail(
+          new OmpRpcFaultError(
+            "protocolError",
+            `Omp RPC returned invalid JSONL: ${message(error)}`,
+          ),
+        );
+        newline = this.#buffer.indexOf(0x0a);
+        continue;
+      }
+      try {
+        const decoded = this.#frameDecoder.push(parsed);
         if (decoded === null) {
           newline = this.#buffer.indexOf(0x0a);
           continue;
@@ -1033,7 +1100,7 @@ export class OmpRpcSession {
             ? error
             : new OmpRpcFaultError(
                 "protocolError",
-                `Omp RPC returned invalid JSONL: ${message(error)}`,
+                `Omp RPC frame handling failed: ${message(error)}`,
               ),
         );
       }
@@ -1114,6 +1181,15 @@ export class OmpRpcSession {
     }
     const active = this.#activeTurn;
     if (this.#handleSubagentFrame(active, value)) return;
+    this.#observeUsage(value);
+    if (value.type === "agent_start" && active) active.terminalEnd = false;
+    if (
+      (value.type === "session_settled" || value.type === "agent_start") &&
+      active?.cancellation === "accepted"
+    ) {
+      void this.#confirmCancelledTurn(active);
+      return;
+    }
     if (!active) {
       if (value.type === "extension_ui_request" && this.#isBlockingInteraction(value)) {
         this.#fail(
@@ -1121,6 +1197,35 @@ export class OmpRpcSession {
             "protocolError",
             "Omp RPC requested blocking Extension UI outside an active Turn",
           ),
+        );
+      }
+      return;
+    }
+    if (value.type === "command_output") {
+      if (active.settlement !== "pending") return;
+      if (typeof value.text !== "string") {
+        throw new OmpRpcFaultError("protocolError", "Omp RPC returned invalid command output");
+      }
+      active.text += value.text;
+      // The side channel has no native message identity. The request ID groups
+      // its display text only; it is never used as a native history reference.
+      active.onEvent({ type: "text.delta", messageId: active.promptId, delta: value.text });
+      return;
+    }
+    if (value.type === "prompt_result") {
+      if (value.id !== active.promptId || value.agentInvoked !== false) return;
+      if (value.status === "completed" || value.status === "aborted") {
+        this.#settleLocalTurn(active, { cancelled: value.status === "aborted" });
+      } else if (
+        value.status === "error" &&
+        isRecord(value.error) &&
+        typeof value.error.message === "string"
+      ) {
+        this.#settleLocalTurn(active, { cancelled: false, error: value.error.message });
+      } else {
+        throw new OmpRpcFaultError(
+          "protocolError",
+          "Omp RPC returned an invalid local prompt result",
         );
       }
       return;
@@ -1208,9 +1313,46 @@ export class OmpRpcSession {
       }
     }
     if (value.type === "agent_end" && value.isTerminal !== false) {
+      active.terminalEnd = true;
+      if (active.cancellation !== "none") {
+        if (active.cancellation === "accepted") void this.#confirmCancelledTurn(active);
+        return;
+      }
       if (active.settlement !== "pending") return;
       active.settlement = "confirming";
       void this.#confirmSettledTurn(active);
+    }
+  }
+
+  /** Every finished assistant message is one model request, with or without an active Turn. */
+  #observeUsage(value: Record<string, unknown>): void {
+    if (value.type === "message_start") {
+      this.#usageRequestStartedAtMs = null;
+      return;
+    }
+    // Generation starts at the first output token: the first thinking, text or tool-call block
+    // or delta. Prefill before it is excluded, as in DeepSeek dsh's decode time.
+    if (value.type === "message_update") {
+      const event = value.assistantMessageEvent;
+      if (
+        this.#usageRequestStartedAtMs === null &&
+        isRecord(event) &&
+        typeof event.type === "string" &&
+        /^(text|thinking|reasoning|thought|toolcall)_(start|delta)$/u.test(event.type)
+      ) {
+        this.#usageRequestStartedAtMs = Date.now();
+      }
+      return;
+    }
+    if (value.type === "message_end" && isRecord(value.message)) {
+      if (value.message.role !== "assistant") return;
+      const startedAtMs = this.#usageRequestStartedAtMs;
+      this.#usageRequestStartedAtMs = null;
+      this.#options.onUsage?.({
+        message: value.message,
+        startedAtMs,
+        completedAtMs: Date.now(),
+      });
     }
   }
 
@@ -1232,9 +1374,9 @@ export class OmpRpcSession {
       throw new OmpRpcFaultError("protocolError", "Omp RPC Subagent frame has no stable ID");
     }
     const nativeSubagentId = nativeIdValue;
-    const callId = nonBlankString(payload.parentToolCallId)
-      ? payload.parentToolCallId
-      : nativeSubagentId;
+    // A task batch shares one parentToolCallId across all of its children.
+    // Delegate lifecycle identity must follow the stable native child ID.
+    const callId = nativeSubagentId;
     const emit = active?.onEvent ?? this.#options.onSubagentEvent;
     if (value.type === "subagent_event") {
       emit?.({ type: "subagent.transcript.changed", callId, nativeSubagentId });
@@ -1423,14 +1565,32 @@ export class OmpRpcSession {
       return;
     }
     const pending = this.#pending.get(id);
+    const active = this.#activeTurn;
     if (!pending) {
+      // OMP reports asynchronous pre-agent failures twice: a legacy prompt
+      // error response after its admission ACK, then the correlated result.
+      if (active?.promptId === id && value.command === "prompt" && value.success === false) {
+        active.failure = new Error(
+          typeof value.error === "string" ? value.error : "Omp RPC command failed",
+        );
+        return;
+      }
       this.#fail(new OmpRpcFaultError("protocolError", "Omp RPC response id is not pending"));
       return;
     }
     if (pending.timeout) clearTimeout(pending.timeout);
     this.#pending.delete(id);
-    if (value.success === true) pending.resolve(value);
-    else {
+    if (value.success === true) {
+      if (
+        pending.command === "prompt" &&
+        active?.promptId === id &&
+        isRecord(value.data) &&
+        value.data.agentInvoked === false
+      ) {
+        this.#settleLocalTurn(active, { cancelled: false });
+      }
+      pending.resolve(value);
+    } else {
       const error = typeof value.error === "string" ? value.error : "Omp RPC command failed";
       if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
         pending.reject(new OmpRpcUnsupportedCommandError(pending.command));
@@ -1508,14 +1668,146 @@ export class OmpRpcSession {
     });
   }
 
+  async #confirmCancelledTurn(active: ActiveTurn): Promise<void> {
+    if (
+      this.#activeTurn !== active ||
+      active.cancellation !== "accepted" ||
+      active.settlement === "confirming" ||
+      active.cancellationChecking
+    )
+      return;
+    active.cancellationChecking = true;
+    if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
+    active.cancellationRecheck = null;
+    try {
+      let response = await this.#send("get_state", {});
+      if (this.#activeTurn !== active) return;
+      if (parseSessionStreaming(response)) {
+        // Native Abort stops the current run, but a background delivery can
+        // start a follow-up afterwards. Keep the user's cancellation in force.
+        await this.#send("abort", {});
+        if (this.#activeTurn !== active) return;
+        response = await this.#send("get_state", {});
+      }
+      let state = parseSessionState(response);
+      if (this.#activeTurn !== active || active.cancellation !== "accepted") return;
+      const data = sessionStateData(response);
+      if (
+        !active.cancellationReloaded &&
+        state.sessionFile &&
+        state.sessionId === this.state.sessionId &&
+        state.sessionFile === this.state.sessionFile &&
+        data.isStreaming === false &&
+        data.isCompacting === false &&
+        data.queuedMessageCount === 0 &&
+        data.hasPendingAsyncWork === true &&
+        active.tools.size === 0
+      ) {
+        await this.verifySessionCwd(this.#options.cwd);
+        if (this.#activeTurn !== active) return;
+        active.cancellationReloaded = true;
+        // Native Abort leaves owned async jobs alive. A native lifecycle reset
+        // cancels them, after which the saved conversation is resumed in-place.
+        const reset = await this.#send("new_session", {});
+        if (this.#activeTurn !== active) return;
+        if (!isRecord(reset.data) || reset.data.cancelled !== false) {
+          throw new OmpRpcFaultError("unavailable", "Omp cancelled Session reset was refused");
+        }
+        const reloaded = await this.#send("switch_session", { sessionPath: state.sessionFile });
+        if (this.#activeTurn !== active) return;
+        if (!isRecord(reloaded.data) || reloaded.data.cancelled !== false) {
+          throw new OmpRpcFaultError("unavailable", "Omp cancelled Session reload was refused");
+        }
+        const previous = state;
+        response = await this.#send("get_state", {});
+        state = parseSessionState(response);
+        if (state.sessionId !== previous.sessionId || state.sessionFile !== previous.sessionFile) {
+          throw new OmpRpcFaultError(
+            "protocolError",
+            "Omp cancelled Session reload changed its identity",
+          );
+        }
+        if (state.provider !== previous.provider || state.modelId !== previous.modelId) {
+          if (!previous.provider || !previous.modelId) {
+            throw new OmpRpcFaultError(
+              "protocolError",
+              "Omp cancelled Session has no restorable Model",
+            );
+          }
+          await this.#send("set_model", { provider: previous.provider, modelId: previous.modelId });
+        }
+        if (previous.thinkingLevel && state.thinkingLevel !== previous.thinkingLevel) {
+          await this.#send("set_thinking_level", { level: previous.thinkingLevel });
+        }
+        response = await this.#send("get_state", {});
+        state = parseSessionState(response);
+        if (
+          state.sessionId !== previous.sessionId ||
+          state.sessionFile !== previous.sessionFile ||
+          state.provider !== previous.provider ||
+          state.modelId !== previous.modelId ||
+          (previous.thinkingLevel !== null && state.thinkingLevel !== previous.thinkingLevel)
+        ) {
+          throw new OmpRpcFaultError(
+            "protocolError",
+            "Omp cancelled Session reload changed its identity or configuration",
+          );
+        }
+      }
+      // isStreaming:false alone also describes a session waiting for background
+      // jobs. Modern OMP supplies isSettled; older versions still need agent_end.
+      if (!cancellationSettled(response, active.terminalEnd)) {
+        active.settlement = "pending";
+        // A settle notification can precede an in-flight busy state response,
+        // or no further terminal frame may arrive after cleanup. Reconfirm
+        // serially within the original deadline; never infer native quiescence.
+        active.cancellationRecheck = setTimeout(() => {
+          active.cancellationRecheck = null;
+          void this.#confirmCancelledTurn(active);
+        }, 250);
+        return;
+      }
+      this.#state = state;
+      active.settlement = "confirmed";
+      this.#finishSettledTurn(active);
+    } catch (error) {
+      if (this.#activeTurn !== active) return;
+      const fault =
+        error instanceof OmpRpcFaultError
+          ? error
+          : new OmpRpcFaultError(
+              "protocolError",
+              `Omp RPC cancelled Turn state could not be confirmed: ${message(error)}`,
+            );
+      this.#terminateFailedCancellation(active, fault);
+    } finally {
+      active.cancellationChecking = false;
+    }
+  }
+
+  #settleLocalTurn(active: ActiveTurn, result: NonNullable<ActiveTurn["localResult"]>): void {
+    if (this.#activeTurn !== active || active.settlement !== "pending") return;
+    active.localResult = result;
+    active.settlement = "confirming";
+    void this.#confirmSettledTurn(active);
+  }
+
   async #confirmSettledTurn(active: ActiveTurn): Promise<void> {
     try {
       const response = await this.#send("get_state", {});
       const state = parseSessionState(response);
-      if (parseSessionStreaming(response)) {
-        throw new OmpRpcFaultError("protocolError", "Omp RPC agent_end state is still Streaming");
-      }
       if (this.#activeTurn !== active) return;
+      if (active.cancellation !== "none") {
+        active.settlement = "pending";
+        if (active.cancellation === "accepted") void this.#confirmCancelledTurn(active);
+        return;
+      }
+      if (parseSessionStreaming(response)) {
+        throw new OmpRpcFaultError(
+          "protocolError",
+          "Omp RPC completed Turn state is still Streaming",
+        );
+      }
       this.#state = state;
       active.settlement = "confirmed";
       this.#finishSettledTurn(active);
@@ -1542,6 +1834,8 @@ export class OmpRpcSession {
     }
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     active.cancellationTimeout = null;
+    if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
+    active.cancellationRecheck = null;
     this.#closeInteractions(
       active,
       active.cancellation === "accepted" ? "cancelled" : "superseded",
@@ -1553,14 +1847,21 @@ export class OmpRpcSession {
       return;
     }
     this.#activeTurn = null;
-    if (active.cancellation === "accepted") {
-      active.resolve({ text: active.text, cancelled: true });
+    if (active.localResult) {
+      active.resolve({
+        text: active.text,
+        agentInvoked: false,
+        ...active.localResult,
+        cancelled: active.localResult.cancelled || active.cancellation === "accepted",
+      });
+    } else if (active.cancellation === "accepted") {
+      active.resolve({ text: active.text, cancelled: true, agentInvoked: true });
     } else if (active.failure) {
       active.reject(active.failure);
     } else if (active.text.trim().length === 0 && !active.sawTool) {
       active.reject(new Error("Omp RPC settled without displayable output"));
     } else {
-      active.resolve({ text: active.text, cancelled: false });
+      active.resolve({ text: active.text, cancelled: false, agentInvoked: true });
     }
   }
 
@@ -1632,12 +1933,15 @@ export class OmpRpcSession {
     });
   }
 
-  #send(type: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  #send(
+    type: string,
+    payload: Record<string, unknown>,
+    id = `codexhost-${randomUUID()}`,
+  ): Promise<Record<string, unknown>> {
     const child = this.#child;
     if (!child?.stdin.writable || this.#closed || this.#failed) {
       return Promise.reject(new Error("Omp RPC stdin is unavailable"));
     }
-    const id = `codexhost-${randomUUID()}`;
     return new Promise((resolve, reject) => {
       const pending: PendingCommand = {
         command: type,
@@ -1690,7 +1994,7 @@ export class OmpRpcSession {
     }
     let finalFault = fault;
     try {
-      await this.#stopProcess();
+      await this.close();
     } catch (error) {
       finalFault = new OmpRpcFaultError(
         "processExited",
@@ -1713,6 +2017,7 @@ export class OmpRpcSession {
     const active = this.#activeTurn;
     if (!active) return;
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
+    if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
     this.#closeInteractions(active, "cancelled");
     this.#activeTurn = null;
     active.reject(error);

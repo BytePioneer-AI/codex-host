@@ -8,6 +8,7 @@ import type { JsonObject } from "@codexhost/protocol-core";
 import type { OfficialAppServerExit } from "../src/official-app-server-connection.js";
 import { createOwnedLoopbackBackend } from "../src/codex-runtime/owned-official-backends.js";
 import { prepareLocalCodex, type PreparedLocalCodex } from "../src/native-account-host.js";
+import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
 
 vi.mock("../src/codex-runtime/owned-official-backends.js", () => ({
   createOwnedLoopbackBackend: vi.fn(),
@@ -53,9 +54,16 @@ function nativeFixture() {
           initialized = true;
           result = { userAgent: "synthetic" };
         } else {
-          if (!initialized || request.method !== "account/read")
-            throw new Error("Unexpected or uninitialized native request");
-          result = { account, requiresOpenaiAuth: true };
+          if (!initialized) throw new Error("Unexpected or uninitialized native request");
+          if (request.method === "account/read") {
+            result = { account, requiresOpenaiAuth: true };
+          } else if (request.method === "thread/start" || request.method === "thread/resume") {
+            result = { thread: { id: "voice-thread" } };
+          } else if (request.method === "thread/realtime/start") {
+            result = {};
+          } else {
+            throw new Error("Unexpected native request");
+          }
         }
         stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
       }
@@ -83,6 +91,7 @@ function nativeFixture() {
     requests,
     connect,
     stop,
+    crash: () => exit.resolve({ code: 1, signal: null }),
     signOut: () => {
       account = null;
     },
@@ -103,6 +112,51 @@ async function startLocal() {
 }
 
 describe("local Codex read-only identity startup", () => {
+  it("recovers the local backend so an existing client can explicitly retry voice startup", async () => {
+    const first = nativeFixture();
+    const local = await startLocal();
+    await local.accountControl.refresh?.();
+    const desktop = new OfficialRuntimeClient({
+      scope: local.officialRuntimeScope,
+      output: async () => {},
+    });
+    try {
+      await desktop.initializeProtocol({
+        clientInfo: { name: "codex_desktop", version: "synthetic" },
+      });
+      await desktop.request("thread/start", { cwd: "/synthetic" });
+      const replacement = nativeFixture();
+      first.crash();
+      await vi.waitFor(() => expect(local.officialRuntimeScope.gate.phase).toBe("unavailable"));
+      await expect(
+        desktop.request("thread/realtime/start", { threadId: "voice-thread" }),
+      ).rejects.toThrow("unavailable");
+      await vi.waitFor(() => expect(local.officialRuntimeScope.gate.phase).toBe("ready"), {
+        timeout: 3000,
+      });
+      expect(first.stop).toHaveBeenCalledOnce();
+      expect(local.officialRuntimeScope.owner.generation).toBe(2);
+      expect(
+        replacement.requests.some((request) => request.method === "thread/realtime/start"),
+      ).toBe(false);
+
+      await expect(
+        desktop.request("thread/realtime/start", { threadId: "voice-thread" }),
+      ).resolves.toMatchObject({ result: {} });
+      expect(replacement.requests.map((request) => request.method)).toEqual([
+        "initialize",
+        "initialized",
+        "initialize",
+        "initialized",
+        "thread/resume",
+        "thread/realtime/start",
+      ]);
+      expect(await local.accountControl.refresh?.()).toMatchObject({ phase: "ready" });
+    } finally {
+      await desktop.close();
+    }
+  });
+
   it("closes the owned backend when identity connection initialization fails", async () => {
     const f = nativeFixture();
     f.connect.mockRejectedValueOnce(new Error("Synthetic connection failure"));

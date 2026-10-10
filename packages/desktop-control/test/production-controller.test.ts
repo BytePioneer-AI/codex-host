@@ -16,7 +16,6 @@ function controllerOptions() {
   return {
     rendererCdpEndpoint: "http://127.0.0.1:43123",
     rendererPath: "/renderer.js",
-    defaultAgent: "pi" as const,
     attachmentPort: 43124,
     attachmentNonce,
   };
@@ -39,8 +38,6 @@ describe("production Desktop Controller", () => {
         "http://127.0.0.1:43123",
         "--renderer",
         rendererPath,
-        "--default-agent",
-        "pi",
         "--attachment-port",
         "43124",
         "--attachment-nonce",
@@ -49,7 +46,6 @@ describe("production Desktop Controller", () => {
     ).toEqual({
       rendererCdpEndpoint: "http://127.0.0.1:43123",
       rendererPath,
-      defaultAgent: "pi",
       attachmentPort: 43124,
       attachmentNonce,
     });
@@ -75,8 +71,6 @@ describe("production Desktop Controller", () => {
         "http://127.0.0.1:43123",
         "--renderer",
         rendererPath,
-        "--default-agent",
-        "pi",
         "--attachment-port",
         "43124",
         "--attachment-nonce",
@@ -140,26 +134,7 @@ describe("production Desktop Controller", () => {
     expect(install).toHaveBeenCalledWith({
       rendererCdpEndpoint: "http://127.0.0.1:43123",
       rendererSource:
-        'globalThis.__zod_globalConfig ??= {}; globalThis.__zod_globalConfig.jitless = true;\nObject.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: "pi" } });\nproduction renderer',
-      enabledAgents: [
-        "codex",
-        "pi",
-        "claude-code",
-        "deepseek-harness",
-        "opencode",
-        "grok",
-        "omp",
-        "antigravity",
-        "kiro-cli",
-        "codebuddy",
-        "workbuddy",
-        "cursor-cli",
-        "hermes",
-        "qoder",
-        "qoder-cn",
-        "kimi-code",
-        "zcode",
-      ],
+        "globalThis.__zod_globalConfig ??= {}; globalThis.__zod_globalConfig.jitless = true;\nproduction renderer",
       timeoutMs: 90_000,
       signal: abort.signal,
     });
@@ -168,6 +143,7 @@ describe("production Desktop Controller", () => {
       nonce: attachmentNonce,
       attach: expect.any(Function),
       openLocalPage: expect.any(Function),
+      remoteConnections: expect.any(Function),
     });
     expect(ready).toHaveBeenCalledWith({
       schemaVersion: 2,

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { RuntimeStatus } from "@codexhost/shared-contracts";
+import { remoteSshSetupParamsSchema, type RuntimeStatus } from "@codexhost/shared-contracts";
 import {
   createRemoteConnectionsControl,
   remoteUpdateTarget,
@@ -47,3 +47,41 @@ it("never starts installation or updates in the background", () => {
   expect(ownerWindow.setInterval).not.toHaveBeenCalled();
   expect(ownerWindow.setTimeout).not.toHaveBeenCalled();
 });
+
+it.each([false, true])(
+  "uninstalls through the local SSH helper with explicit package removal: %s",
+  async (uninstallPackage) => {
+    const setupSsh = vi.fn(async (input) => {
+      expect(remoteSshSetupParamsSchema.parse(input)).toEqual(input);
+      return { state: "not-installed" as const };
+    });
+    const getClient = vi.fn(() => ({ setupSsh }));
+    const control = createRemoteConnectionsControl({} as Window, getClient);
+    await expect(
+      control.setup(
+        {
+          hostId: "office",
+          displayName: "Office",
+          source: "codex-managed",
+          sshHost: "user@office",
+          sshAlias: null,
+          sshPort: 22,
+          identity: null,
+          autoConnect: false,
+        },
+        "uninstall",
+        undefined,
+        uninstallPackage,
+      ),
+    ).resolves.toEqual({ state: "not-installed" });
+    expect(getClient).toHaveBeenCalledWith("local");
+    expect(setupSsh).toHaveBeenCalledWith({
+      hostname: "user@office",
+      port: 22,
+      identity: null,
+      action: "uninstall",
+      version: null,
+      uninstallPackage,
+    });
+  },
+);

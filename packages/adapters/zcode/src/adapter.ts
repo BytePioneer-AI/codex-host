@@ -1,3 +1,4 @@
+import { createZcodeUsageStatistics } from "./usage-statistics.js";
 import path from "node:path";
 import type { HarnessLocalPage } from "@codexhost/harness-adapter/plugin";
 import { stat } from "node:fs/promises";
@@ -58,7 +59,10 @@ export class ZcodeAdapter implements HarnessAdapter {
   // One verification page and SDK instance for the whole Host, as in ZCode Desktop.
   #verifier: ZcodeVerifier | undefined;
   #prewarmed = false;
-  constructor(readonly options: ZcodeAdapterOptions = {}) {}
+  readonly usageStatistics: ReturnType<typeof createZcodeUsageStatistics>;
+  constructor(readonly options: ZcodeAdapterOptions = {}) {
+    this.usageStatistics = createZcodeUsageStatistics(options.environment ?? process.env);
+  }
   #sharedVerifier = (appVersion: string) =>
     (this.#verifier ??= (this.options.createVerifier ?? createZcodeVerifier)({
       appVersion,
@@ -100,7 +104,7 @@ export class ZcodeAdapter implements HarnessAdapter {
           error: {
             code: "authenticationRequired",
             message:
-              "ZCode has no available models. Sign in to ZCode Desktop with a Start Plan account or add a personal provider in ZCode.",
+              "ZCode has no available models. Connect Start Plan or Personal Coding Plan in ZCode Desktop, or add a personal provider, then re-detect ZCode. Team Coding Plan is not supported.",
             retryable: true,
           },
         };

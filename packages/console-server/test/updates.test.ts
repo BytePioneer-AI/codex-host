@@ -74,12 +74,83 @@ describe("console updates", () => {
     });
   });
 
-  it("makes the Updater wait for the console process, then hands off", async () => {
+  it.each(["failed", "succeeded", "prepared"])(
+    "does not display historical %s state",
+    async (phase) => {
+      const { target, environment } = await npmLayout();
+      const stateDirectory = path.join(root, "state");
+      const directory = path.join(stateDirectory, "update-old");
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        path.join(directory, "status-v1.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "1.1.0",
+          installation: "npm",
+          phase,
+          updatedAt: Math.floor(Date.now() / 1000),
+          error: "old failure",
+        }),
+      );
+      const updates = createConsoleUpdates({
+        onHandedOff: vi.fn(),
+        environment,
+        stateDirectory,
+        fetchLatest: async () => release,
+      });
+      await expect(updates.check(target)).resolves.toMatchObject({ status: null });
+      await expect(updates.status()).resolves.toEqual({ status: null });
+    },
+  );
+
+  it("recovers the locked task and keeps its result after completion", async () => {
+    const { environment } = await npmLayout();
+    const stateDirectory = path.join(root, "state");
+    const directory = path.join(stateDirectory, "update-active");
+    const statusPath = path.join(directory, "status-v1.json");
+    await mkdir(directory, { recursive: true });
+    const status = {
+      schemaVersion: 1,
+      version: "1.1.0",
+      installation: "npm",
+      phase: "prepared",
+      updatedAt: Math.floor(Date.now() / 1000),
+    };
+    await writeFile(statusPath, JSON.stringify(status));
+    await writeFile(
+      path.join(stateDirectory, "active-update-v1.lock"),
+      JSON.stringify({
+        ownerPid: process.pid,
+        statusPath,
+      }),
+    );
+    const options = {
+      onHandedOff: vi.fn(),
+      environment,
+      stateDirectory,
+      fetchLatest: async () => release,
+    };
+    const updates = createConsoleUpdates(options);
+    await expect(updates.status()).resolves.toMatchObject({ status: { phase: "prepared" } });
+    await writeFile(
+      statusPath,
+      JSON.stringify({ ...status, phase: "failed", error: "current failure" }),
+    );
+    await expect(updates.status()).resolves.toMatchObject({
+      status: { phase: "failed", error: "current failure" },
+    });
+    await expect(createConsoleUpdates(options).status()).resolves.toEqual({ status: null });
+  });
+
+  it("hands off to the Updater before returning", async () => {
     const { target, environment } = await npmLayout("linux");
-    const spawnUpdater = vi.fn(() => Object.assign(new EventEmitter(), { pid: 4321 }) as never);
+    const spawnUpdater = vi.fn<(executable: string, requestPath: string) => never>(
+      () => Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never,
+    );
     const onHandedOff = vi.fn();
     const updates = createConsoleUpdates({
       onHandedOff,
+      waitForHandoff: true,
       environment,
       platform: "linux",
       processId: 777,
@@ -90,10 +161,22 @@ describe("console updates", () => {
     });
 
     await updates.check(target);
-    const result = await updates.start(target);
+    const starting = updates.start(target);
+    await vi.waitFor(() => expect(spawnUpdater).toHaveBeenCalledOnce());
+    expect(onHandedOff).not.toHaveBeenCalled();
+    const call = spawnUpdater.mock.calls[0];
+    if (!call) throw new Error("Updater was not spawned");
+    const spawnedRequest = JSON.parse(await readFile(call[1], "utf8"));
+    const status = JSON.parse(await readFile(spawnedRequest.status_path, "utf8"));
+    await writeFile(
+      spawnedRequest.status_path,
+      JSON.stringify({ ...status, phase: "waiting-for-exit" }),
+    );
+    const result = await starting;
 
+    expect(result.status.phase).toBe("waiting-for-exit");
     expect(result.status).toMatchObject({ version: "1.1.0", installation: "npm" });
-    await vi.waitFor(() => expect(onHandedOff).toHaveBeenCalledOnce());
+    expect(onHandedOff).toHaveBeenCalledOnce();
     const requestPath = (spawnUpdater.mock.calls[0] as unknown as [string, string])[1];
     const request = JSON.parse(await readFile(requestPath, "utf8")) as Record<string, unknown>;
     expect(request).toMatchObject({
@@ -101,6 +184,67 @@ describe("console updates", () => {
       wait_executable: process.execPath,
       runtime_descriptor_path: target.runtimeDescriptorPath,
     });
+  });
+
+  it("shows the current preparation failure and replaces it when retrying", async () => {
+    const { target, environment } = await npmLayout("linux");
+    await rm(environment.CODEXHOST_NPM_CLI_PATH);
+    const onHandedOff = vi.fn();
+    const spawnUpdater = vi.fn<(executable: string, requestPath: string) => never>(
+      () => Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never,
+    );
+    const updates = createConsoleUpdates({
+      onHandedOff,
+      waitForHandoff: true,
+      environment,
+      platform: "linux",
+      stateDirectory: path.join(root, "state"),
+      fetchLatest: async () => release,
+      manager: createBackgroundUpdateManager({
+        platform: "linux",
+        spawnUpdater,
+      }),
+    });
+    await expect(updates.start(target)).rejects.toThrow();
+    expect(onHandedOff).not.toHaveBeenCalled();
+    await expect(updates.status()).resolves.toMatchObject({ status: { phase: "failed" } });
+    await writeFile(environment.CODEXHOST_NPM_CLI_PATH, "");
+    const retry = updates.start(target);
+    await vi.waitFor(() => expect(spawnUpdater).toHaveBeenCalledOnce());
+    const call = spawnUpdater.mock.calls[0];
+    if (!call) throw new Error("Updater was not spawned");
+    const request = JSON.parse(await readFile(call[1], "utf8"));
+    const status = JSON.parse(await readFile(request.status_path, "utf8"));
+    await writeFile(request.status_path, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
+    await expect(retry).resolves.toMatchObject({ status: { phase: "waiting-for-exit" } });
+    await expect(updates.status()).resolves.toMatchObject({
+      status: { phase: "waiting-for-exit", error: null },
+    });
+  });
+
+  it.each(["error", "exit"])("does not hand off after an Updater %s", async (event) => {
+    const { target, environment } = await npmLayout("linux");
+    const onHandedOff = vi.fn();
+    const child = Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() });
+    const updates = createConsoleUpdates({
+      onHandedOff,
+      waitForHandoff: true,
+      environment,
+      platform: "linux",
+      stateDirectory: path.join(root, "state"),
+      fetchLatest: async () => release,
+      manager: createBackgroundUpdateManager({
+        platform: "linux",
+        spawnUpdater: () => {
+          queueMicrotask(() => child.emit(event, new Error("spawn failed")));
+          return child as never;
+        },
+      }),
+    });
+    await expect(updates.start(target)).rejects.toThrow();
+    expect(onHandedOff).not.toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledOnce();
+    await expect(updates.status()).resolves.toMatchObject({ status: { phase: "failed" } });
   });
 
   it("refuses to update while codexhost is running", async () => {
@@ -128,6 +272,28 @@ describe("console updates", () => {
     });
     await expect(updates.check({ ...target, distribution: null })).resolves.toMatchObject({
       updateAvailable: false,
+    });
+  });
+  it("reports the source launch version without enabling packaged updates", async () => {
+    await writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "codexhost", version: "0.12.0" }),
+    );
+    const updates = createConsoleUpdates({
+      environment: { CODEXHOST_DEV_VERSION: "0.11.0" },
+      onHandedOff: vi.fn(),
+    });
+    await expect(
+      updates.check({
+        distribution: null,
+        appDirectory: path.join(root, "packages/console-server/dist"),
+        runtimeDescriptorPath: null,
+        codexhostRunning: false,
+      }),
+    ).resolves.toMatchObject({
+      currentVersion: "0.11.0",
+      installation: null,
+      installationAvailable: false,
     });
   });
 });

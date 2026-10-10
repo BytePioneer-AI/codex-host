@@ -14,6 +14,8 @@ const { outputFiles } = await build({
       const initial = { hostId:"remote-ssh-codex-managed:office", displayName:"公司", source:"codex-managed", sshHost:"user@office", sshAlias:null, sshPort:22, identity:null, autoConnect:true };
       const scenario=new URLSearchParams(location.search).get("scenario");
       let connections = scenario === "empty" ? [] : [initial];
+      let uninstalled = false;
+      window.operations = [];
       window.electronBridge = { sendMessageFromView(message) {
         const params = JSON.parse(message.body);
         let body = {};
@@ -21,23 +23,36 @@ const { outputFiles } = await build({
         if (message.url.endsWith("app-server-connection-state")) body = { state: connections.find(c => c.hostId === params.hostId)?.autoConnect ? "connected" : "disconnected" };
         if (message.url.endsWith("app-server-connection-state") && scenario === "failed") body = { state: "error", error: "Connection refused" };
         if (message.url.endsWith("save-codex-managed-remote-ssh-connections")) connections = params.remoteConnections.map(c => ({...c, sshHost:c.hostname, sshAlias:c.alias, autoConnect:connections.find(p => p.hostId === c.hostId)?.autoConnect ?? false}));
-        if (message.url.endsWith("set-remote-connection-auto-connect")) (window.connectCalls ??= []).push(params.autoConnect);
+        if (message.url.endsWith("set-remote-connection-auto-connect")) { (window.connectCalls ??= []).push(params.autoConnect); window.operations.push(params.autoConnect ? "connect" : "disconnect"); }
         if (message.url.endsWith("set-remote-connection-auto-connect")) connections = connections.map(c => c.hostId === params.hostId ? {...c, autoConnect:params.autoConnect} : c);
         queueMicrotask(() => window.dispatchEvent(new MessageEvent("message", {data:{type:"fetch-response", requestId:message.requestId, responseType:"success", status:200, bodyJsonString:JSON.stringify(body)}})));
       } };
       const status = { runningVersion:"0.11.0", installedVersion:"0.11.0", restartRequired:false, remote:false, updateSupported:false, update:{phase:"idle", targetVersion:null,error:null} };
+      const launchVersion=new URLSearchParams(location.search).get("version");
+      if(launchVersion) {status.runningVersion=launchVersion; status.installedVersion=launchVersion;}
       let remote = {...status, installedVersion:"0.10.0", runningVersion:"0.10.0", remote:true, updateSupported:true, restartRequired:false};
       if(scenario === "newer") remote={...remote,installedVersion:"0.12.0",runningVersion:"0.12.0",restartRequired:false};
       if(scenario === "restart") remote={...remote,installedVersion:"0.11.0",restartRequired:true};
       if(scenario === "matched") remote={...remote,installedVersion:"0.11.0",runningVersion:"0.11.0",restartRequired:false};
       const control = createRemoteConnectionsControl(window, hostId => ({
         setupSsh: async input => {
+          if(input.action === "uninstall") {
+            window.operations.push(input.uninstallPackage ? "uninstall-package" : "uninstall-service");
+            window.uninstallRequest = input;
+            await new Promise(resolve => setTimeout(resolve, 350));
+            if(scenario === "uninstall-failed" && !window.uninstallFailedOnce) { window.uninstallFailedOnce = true; throw new Error("Remote service could not stop. Check the remote service before retrying"); }
+            uninstalled = true;
+            if(scenario === "uninstall-package-failed" && !window.uninstallFailedOnce) { window.uninstallFailedOnce = true; throw new Error("The remote service was uninstalled, but removing the codexhost package failed. Check npm permissions on the remote computer and retry"); }
+            return {state:"not-installed"};
+          }
+          if(uninstalled && input.action === "inspect") return {state:"not-installed"};
+          if(scenario === "uninstall-failed" && input.action === "inspect") return {state:"installed"};
           if(scenario === "unknown" && input.action === "inspect") throw new Error("SSH unavailable"); if(scenario === "failed") return {state:"installed"}; if(scenario === "outdated") { if(input.action === "update") { window.setupVersion = input.version; remote = {...remote, installedVersion:input.version, runningVersion:input.version}; } return {state:"installed"}; }
           if(input.action === "repair") { window.setupInstalled = true; remote = {...remote,update:{phase:"idle",targetVersion:null,error:null}}; }
           if(input.action === "install") { window.setupInstalled = true; window.setupVersion = input.version; }
           return {state:window.setupInstalled ? "installed" : "not-installed"};
         },
-        runtimeStatus: async () => {if(scenario === "unknown" && hostId !== "local") throw new Error("Remote unavailable"); if((scenario === "outdated" || scenario === "missing") && hostId !== "local" && !window.setupVersion) throw Object.assign(new Error("unsupported"), {code:-32601}); return hostId === "local" ? status : remote;},
+        runtimeStatus: async () => {if(uninstalled && hostId !== "local") throw Object.assign(new Error("unsupported"), {code:-32601}); if(scenario === "unknown" && hostId !== "local") throw new Error("Remote unavailable"); if((scenario === "outdated" || scenario === "missing") && hostId !== "local" && !window.setupVersion) throw Object.assign(new Error("unsupported"), {code:-32601}); return hostId === "local" ? status : remote;},
         updateRemote: async version => remote = {...remote,update:{phase:"installing",targetVersion:version,error:null}}
       }));
       // Mirror the settings shell: its tokens live on :host, so the page mounts in a shadow root.
@@ -247,3 +262,139 @@ test("repair runs immediately on a connected computer", async ({ page }) => {
   await expect(page.getByText("远程服务已修复，正在连接", { exact: true })).toBeVisible();
   await expect(page.getByText("等待当前任务结束后更新", { exact: true })).toHaveCount(0);
 });
+
+for (const [version, scenario] of [
+  ["0.12.0", "missing"],
+  ["0.12.0", "outdated"],
+  ["0.12.0-dev", "missing"],
+] as const) {
+  test(`source launch version ${version}: ${scenario}`, async ({ page }) => {
+    await page.route("http://localhost/remote-settings*", (route) =>
+      route.fulfill({ contentType: "text/html", body: pageHtml }),
+    );
+    await page.goto(`http://localhost/remote-settings?scenario=${scenario}&version=${version}`);
+    await page.addScriptTag({ content: outputFiles[0]?.text ?? "" });
+    // Fixture preparation ends here; the normal runtime version drives all UI policy.
+    await expect(page.getByText(`本机 codexhost ${version}`, { exact: true })).toBeVisible();
+    const action = page.getByRole("button", {
+      name: scenario === "missing" ? "安装并连接" : "更新远程服务",
+      exact: true,
+    });
+    await mkdir(shots, { recursive: true });
+    if (version.endsWith("-dev")) {
+      await expect(action).toBeDisabled();
+    } else {
+      await expect(action).toBeEnabled();
+    }
+    await page.screenshot({
+      path: path.join(shots, `version-${version}-${scenario}-before.png`),
+      fullPage: true,
+    });
+    if (!version.endsWith("-dev")) {
+      await action.click();
+      await expect(
+        page.getByText(
+          scenario === "missing" ? "远程服务已安装，正在连接" : "远程服务已更新，正在连接",
+          { exact: true },
+        ),
+      ).toBeVisible();
+      expect(await page.evaluate(() => (window as { setupVersion?: string }).setupVersion)).toBe(
+        version,
+      );
+      await page.screenshot({
+        path: path.join(shots, `version-${version}-${scenario}-after.png`),
+        fullPage: true,
+      });
+    }
+  });
+}
+
+for (const removePackage of [false, true]) {
+  test(`uninstalls the remote service with package removal ${removePackage}`, async ({ page }) => {
+    await page.setViewportSize({ width: 980, height: 800 });
+    await page.route("http://localhost/remote-settings*", (route) =>
+      route.fulfill({ contentType: "text/html", body: pageHtml }),
+    );
+    await page.goto("http://localhost/remote-settings?scenario=matched&version=0.12.0-dev");
+    await page.addScriptTag({ content: outputFiles[0]?.text ?? "" });
+    // Fixture preparation ends here; version policy must not prevent uninstallation.
+    const uninstall = page.getByRole("button", { name: "卸载远程服务", exact: true });
+    await expect(uninstall).toBeEnabled();
+    await uninstall.click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByLabel("同时卸载 codexhost 软件包")).not.toBeChecked();
+    await mkdir(shots, { recursive: true });
+    await page.screenshot({
+      path: path.join(shots, `uninstall-${removePackage}-dialog.png`),
+      fullPage: true,
+    });
+    await dialog.getByRole("button", { name: "取消", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(
+      await page.evaluate(() => (window as unknown as { operations: string[] }).operations),
+    ).toEqual([]);
+    await uninstall.click();
+    if (removePackage) {
+      await dialog.getByLabel("同时卸载 codexhost 软件包").check();
+      await page.screenshot({
+        path: path.join(shots, "uninstall-package-selected.png"),
+        fullPage: true,
+      });
+    }
+    await dialog.getByRole("button", { name: "卸载", exact: true }).click();
+    await expect(dialog.getByRole("button", { name: "卸载中…", exact: true })).toBeDisabled();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText("需要安装远程服务", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "公司", exact: true })).toBeVisible();
+    await expect(page.getByText("未连接", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText(
+        removePackage
+          ? "远程服务和 codexhost 软件包已卸载"
+          : "远程服务已卸载，codexhost 软件包已保留",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(uninstall).toHaveCount(0);
+    expect(
+      await page.evaluate(() => (window as unknown as { operations: string[] }).operations),
+    ).toEqual(["disconnect", removePackage ? "uninstall-package" : "uninstall-service"]);
+    await page.getByRole("button", { name: "刷新", exact: true }).click();
+    await expect(page.getByText("需要安装远程服务", { exact: true })).toBeVisible();
+    await page.screenshot({
+      path: path.join(shots, `uninstall-${removePackage}-done.png`),
+      fullPage: true,
+    });
+  });
+}
+
+for (const [scenario, message] of [
+  ["uninstall-failed", "远程服务无法停止，请检查远程服务后重试"],
+  [
+    "uninstall-package-failed",
+    "远程服务已卸载，但 codexhost 软件包卸载失败。请检查远程电脑上的 npm 权限后重试",
+  ],
+] as const) {
+  test(`${scenario} remains visible and can be retried`, async ({ page }) => {
+    await page.setViewportSize({ width: 980, height: 800 });
+    await page.route("http://localhost/remote-settings*", (route) =>
+      route.fulfill({ contentType: "text/html", body: pageHtml }),
+    );
+    await page.goto(`http://localhost/remote-settings?scenario=${scenario}`);
+    await page.addScriptTag({ content: outputFiles[0]?.text ?? "" });
+    // Fixture preparation ends here.
+    await page.getByRole("button", { name: "卸载远程服务", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    if (scenario === "uninstall-package-failed")
+      await dialog.getByLabel("同时卸载 codexhost 软件包").check();
+    await dialog.getByRole("button", { name: "卸载", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toHaveText(message);
+    await mkdir(shots, { recursive: true });
+    await page.screenshot({ path: path.join(shots, `${scenario}.png`), fullPage: true });
+    await dialog.getByRole("button", { name: "卸载", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText("需要安装远程服务", { exact: true })).toBeVisible();
+    await page.screenshot({ path: path.join(shots, `${scenario}-retried.png`), fullPage: true });
+  });
+}

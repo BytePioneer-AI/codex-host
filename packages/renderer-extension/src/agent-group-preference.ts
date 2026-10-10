@@ -1,5 +1,5 @@
 import type { HarnessDisplayEntries } from "@codexhost/shared-contracts";
-import { KNOWN_RENDERER_AGENTS, type ExternalRendererAgent } from "./agent-selection-state.js";
+import type { ExternalRendererAgent, RendererAgent } from "./agent-selection-state.js";
 
 /** Display-only grouping; never affects installation or availability. */
 export type AgentGroupSection = "main" | "more";
@@ -8,13 +8,18 @@ export interface AgentGroupEntry {
   readonly section: AgentGroupSection;
 }
 export type AgentGroupSyncStatus = "loading" | "ready" | "saving" | "error";
+type AgentDisplayCatalog = readonly { readonly id: RendererAgent; readonly name: string }[];
 export interface AgentGroupPreferenceStore {
-  list(notInstalled?: ReadonlySet<ExternalRendererAgent>): readonly AgentGroupEntry[];
+  list(
+    notInstalled?: ReadonlySet<ExternalRendererAgent>,
+    catalog?: AgentDisplayCatalog,
+  ): readonly AgentGroupEntry[];
   sectionOf(agent: ExternalRendererAgent, notInstalled?: boolean): AgentGroupSection;
   moveAgent(
     agent: ExternalRendererAgent,
     section: AgentGroupSection,
     beforeAgent?: ExternalRendererAgent | null,
+    catalog?: AgentDisplayCatalog,
   ): void;
   resetToDefault(): void;
   subscribe(listener: () => void): () => void;
@@ -25,9 +30,27 @@ export interface AgentGroupPreferenceStore {
   setWriter(writer: ((entries: HarnessDisplayEntries) => void) | null): void;
 }
 export const AGENT_GROUP_PREFERENCE_STORAGE_KEY = "codexhost.agentGroupPreference.v1";
-const EXTERNAL_AGENTS = KNOWN_RENDERER_AGENTS.filter(
-  (agent): agent is ExternalRendererAgent => agent !== "codex",
-);
+
+// Display preference only: this list never registers or synthesizes plugins.
+const DEFAULT_AGENT_ORDER = [
+  "pi",
+  "claude-code",
+  "deepseek-harness",
+  "opencode",
+  "grok",
+  "omp",
+  "antigravity",
+  "kiro-cli",
+  "codebuddy",
+  "workbuddy",
+  "cursor-cli",
+  "hermes",
+  "qoder",
+  "qoder-cn",
+  "kimi-code",
+  "zcode",
+];
+const defaultRank = new Map(DEFAULT_AGENT_ORDER.map((id, index) => [id, index]));
 function safeLocalStorage(): Storage | null {
   try {
     return typeof window !== "undefined" ? window.localStorage : null;
@@ -48,10 +71,22 @@ export function createAgentGroupPreferenceStore(
       seen.add(entry.agent);
       return true;
     });
-    for (const agent of EXTERNAL_AGENTS) {
-      if (!seen.has(agent)) result.push({ agent, section: "auto" });
-    }
     return result;
+  };
+  const withDefaults = (catalog: AgentDisplayCatalog = []): HarnessDisplayEntries => {
+    const recorded = new Set(entries.map(({ agent }) => agent));
+    const missing = catalog
+      .filter(({ id }) => id !== "codex" && !recorded.has(id))
+      .slice()
+      .sort((left, right) => {
+        const rank =
+          (defaultRank.get(left.id) ?? Infinity) - (defaultRank.get(right.id) ?? Infinity);
+        return rank || left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
+      });
+    return normalize([
+      ...entries,
+      ...missing.map(({ id }) => ({ agent: id, section: "auto" as const })),
+    ]);
   };
   const legacyEntries = (): HarnessDisplayEntries => {
     try {
@@ -103,9 +138,10 @@ export function createAgentGroupPreferenceStore(
     setWriter(next) {
       writer = next;
     },
-    list(notInstalled) {
-      return entries
-        .filter((entry) => (EXTERNAL_AGENTS as readonly string[]).includes(entry.agent))
+    list(notInstalled, catalog) {
+      const available = catalog && new Set(catalog.map(({ id }) => id));
+      return withDefaults(catalog)
+        .filter((entry) => entry.agent !== "codex" && (!available || available.has(entry.agent)))
         .map((entry) => ({
           agent: entry.agent as ExternalRendererAgent,
           section:
@@ -120,9 +156,9 @@ export function createAgentGroupPreferenceStore(
       const section = entries.find((entry) => entry.agent === agent)?.section;
       return section && section !== "auto" ? section : notInstalled ? "more" : "main";
     },
-    moveAgent(agent, section, beforeAgent = null) {
-      if (!EXTERNAL_AGENTS.includes(agent)) return;
-      const next = entries.filter((entry) => entry.agent !== agent);
+    moveAgent(agent, section, beforeAgent = null, catalog) {
+      if (agent === "codex") return;
+      const next = withDefaults(catalog).filter((entry) => entry.agent !== agent);
       const index =
         beforeAgent && beforeAgent !== agent
           ? next.findIndex((entry) => entry.agent === beforeAgent)

@@ -12,12 +12,12 @@ import {
   compareSemanticVersions,
   createBackgroundUpdateManager,
   defaultUpdateStateDirectory,
-  discoverLatestUpdateStatus,
+  discoverActiveUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
-  isUpdateOperationActive,
   recoverUpdateOperationLock,
   selectInstallerReleaseArtifact,
+  readRuntimeMetadata,
   type BackgroundUpdateManager,
   type BackgroundUpdateStatus,
   type CodexhostLatestRelease,
@@ -57,6 +57,8 @@ export interface ConsoleUpdates {
 export interface CreateConsoleUpdatesOptions {
   /** Called once the Updater owns the update; the console must then exit. */
   onHandedOff(): void;
+  /** Terminal commands must stay alive until the Updater confirms handoff. */
+  waitForHandoff?: boolean;
   environment?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   /** Process the Updater waits on before installing: this console. */
@@ -125,18 +127,16 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   let candidate: CodexhostLatestRelease | null = null;
   let handedOff = false;
 
+  let currentStatusPath: string | null = null;
+
   async function latestStatus(): Promise<UpdateStatus | null> {
-    const directory = stateDirectory();
-    const discovered = await discoverLatestUpdateStatus(directory);
-    if (!discovered) return null;
-    if (
-      discovered.status.phase !== "succeeded" &&
-      discovered.status.phase !== "failed" &&
-      !(await isUpdateOperationActive(directory))
-    ) {
-      return null;
+    if (!currentStatusPath) {
+      const active = await discoverActiveUpdateStatus(stateDirectory());
+      if (!active) return null;
+      currentStatusPath = active.statusPath;
     }
-    return publicStatus(discovered.status);
+    const status = await manager.readStatus(currentStatusPath);
+    return status ? publicStatus(status) : null;
   }
 
   function installable(metadata: DistributionMetadata, release: CodexhostLatestRelease): boolean {
@@ -206,8 +206,13 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   return Object.freeze({
     async check(target: ConsoleUpdateTarget, signal?: AbortSignal): Promise<UpdateCheckResult> {
       const metadata = target.distribution;
+      const runtime = metadata
+        ? null
+        : await readRuntimeMetadata(path.join(target.appDirectory, "main.js"), environment).catch(
+            () => null,
+          );
       const empty: UpdateCheckResult = {
-        currentVersion: metadata?.version ?? "0.0.0",
+        currentVersion: metadata?.version ?? runtime?.version ?? "0.0.0",
         installation: metadata ? installationKind(metadata) : null,
         latestVersion: null,
         updateAvailable: false,
@@ -273,6 +278,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         if (existing) return { status: existing };
         throw new ConsoleUpdateError("busy", "Another update operation is already active");
       }
+      currentStatusPath = null;
       try {
         const release = await fetchLatest();
         if (
@@ -294,21 +300,24 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
           try {
             const prepared = await prepare(metadata, target, release, async (info) => {
               await lock.setStatusPath(info.statusPath);
+              currentStatusPath = info.statusPath;
               resolvePrepared(info.statusPath);
             });
             // The console runs outside the Codex Desktop process tree on every
             // platform, so it starts the Updater itself and then exits so the
             // Updater's wait on this process completes.
-            manager.start(prepared);
+            await manager.start(prepared);
             handedOff = true;
             options.onHandedOff();
           } catch (error) {
             await lock.release();
-            rejectPrepared(error);
+            throw error;
           }
         };
-        void run();
+        const completion = run();
+        void completion.catch(rejectPrepared);
         const statusPath = await preparedReady;
+        if (options.waitForHandoff) await completion;
         const status = await manager.readStatus(statusPath);
         if (!status) throw new Error("Background update did not create status");
         return { status: publicStatus(status) };

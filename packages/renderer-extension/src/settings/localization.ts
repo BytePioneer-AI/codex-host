@@ -127,6 +127,8 @@ export interface RendererSettingsMessages {
   readonly accountCreditsFailed: string;
   readonly accountCreditsRetry: string;
   readonly accountCreditsRefresh: string;
+  readonly accountEmailsHide: string;
+  readonly accountEmailsShow: string;
   readonly accountLoadFailed: string;
   readonly accountCreditsUsed: string;
   readonly accountCreditsResetAt: string;
@@ -397,6 +399,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "Could not load limits",
   accountCreditsRetry: "Retry",
   accountCreditsRefresh: "Refresh limits",
+  accountEmailsHide: "Hide emails",
+  accountEmailsShow: "Show emails",
   accountLoadFailed: "Could not load Codex Accounts.",
   accountCreditsUsed: "Used",
   accountCreditsResetAt: "Quota resets: {time}",
@@ -576,6 +580,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     appearance: "General",
     accounts: "Accounts",
     "session-import": "Session Import",
+    "usage-statistics": "Usage statistics",
     updates: "Updates",
     about: "About",
   }),
@@ -695,6 +700,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "额度读取失败",
   accountCreditsRetry: "重试",
   accountCreditsRefresh: "刷新额度",
+  accountEmailsHide: "隐藏邮箱",
+  accountEmailsShow: "显示邮箱",
   accountLoadFailed: "无法加载 Codex 账号。",
   accountCreditsUsed: "已用",
   accountCreditsResetAt: "额度重置时间：{time}",
@@ -863,6 +870,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     appearance: "通用",
     accounts: "账号",
     "session-import": "会话导入",
+    "usage-statistics": "用量统计",
     updates: "更新",
     about: "关于",
   }),

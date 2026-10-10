@@ -215,3 +215,64 @@ export function openRemoteConnectionRemoval(
   });
   dialog.show(t("移除", "Remove"), t("移除中…", "Removing…"), true);
 }
+
+export function openRemoteServiceUninstall(
+  options: RemoteDialogOptions & {
+    connection: CodexSshConnection;
+    uninstall(removePackage: boolean): Promise<void>;
+  },
+): void {
+  const { t, connection } = options;
+  const dialog = createRemoteDialog(
+    options,
+    t(
+      `卸载“${connection.displayName}”的远程服务？`,
+      `Uninstall remote service on "${connection.displayName}"?`,
+    ),
+  );
+  if (!dialog) return;
+  const document = options.container.ownerDocument;
+  dialog.body.append(
+    remoteElement(
+      document,
+      "p",
+      "",
+      t(
+        "卸载会中断 codexhost 启动的会话。如需在该电脑继续使用，请手动通过 codexhost 重新启动。",
+        "Uninstalling interrupts sessions started through codexhost. To keep using it on that computer, manually relaunch through codexhost.",
+      ),
+    ),
+  );
+  const label = remoteElement(document, "label", "settings-remote-dialog__package-option");
+  const removePackage = remoteElement(document, "input");
+  removePackage.type = "checkbox";
+  label.append(
+    removePackage,
+    t("同时卸载 codexhost 软件包", "Also uninstall the codexhost package"),
+  );
+  dialog.body.append(
+    label,
+    remoteElement(
+      document,
+      "p",
+      "",
+      t(
+        "勾选后，再次使用前需重新安装 codexhost。",
+        "If selected, reinstall codexhost before using it again.",
+      ),
+    ),
+  );
+  dialog.form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const selected = removePackage.checked;
+    dialog.submit(async () => {
+      removePackage.disabled = true;
+      try {
+        await options.uninstall(selected);
+      } finally {
+        removePackage.disabled = false;
+      }
+    });
+  });
+  dialog.show(t("卸载", "Uninstall"), t("卸载中…", "Uninstalling…"), true);
+}

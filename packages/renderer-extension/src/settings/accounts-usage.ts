@@ -318,39 +318,37 @@ export function renderAccountUsage(
     return { cells: [cell], continuationCells: [] };
   }
   const { rows, additional } = splitUsageWindows(state.credits, messages, filter);
-  // Non-comparison quotas use the same two physical columns, without inventing periods.
-  const onlyRow = rows.length === 1 ? rows[0] : undefined;
-  if (additional.length && onlyRow && !Object.keys(onlyRow.columns).length) rows.pop();
-  for (let index = 0; index < additional.length; index += 2) {
-    const first = additional[index];
-    const second = additional[index + 1];
-    rows.push({
-      columns: {
-        ...(first ? { five_hour: first } : {}),
-        ...(second ? { seven_day: second } : {}),
-      },
-    });
+  // Pack actual windows, rather than reserving empty slots for a period or scope.
+  // This keeps Kimi's weekly and scoped 5-hour windows in the same Account row.
+  const windows = [
+    ...rows.flatMap((row) =>
+      (["five_hour", "seven_day"] as const).flatMap((period) =>
+        row.columns[period] ? [row.columns[period]] : [],
+      ),
+    ),
+    ...additional,
+  ];
+  const packed: HTMLTableCellElement[][] = [];
+  for (let index = 0; index < windows.length; index += 2) {
+    const pair = windows.slice(index, index + 2);
+    packed.push(
+      pair.map((window) => {
+        const cell = document.createElement("td");
+        cell.className = "settings-account-usage-cell";
+        if (pair.length === 1) cell.colSpan = 2;
+        cell.append(renderUsageWindow(document, window, messages, display));
+        return cell;
+      }),
+    );
   }
-  const renderCells = (row: AccountUsageRow): HTMLTableCellElement[] =>
-    (["five_hour", "seven_day"] as const).map((period) => {
-      const cell = document.createElement("td");
-      cell.className = "settings-account-usage-cell";
-      const window = row.columns[period];
-      if (window) cell.append(renderUsageWindow(document, window, messages, display));
-      else {
-        const missing = document.createElement("div");
-        missing.className = "settings-account-usage__missing";
-        const dash = document.createElement("span");
-        dash.textContent = "—";
-        dash.setAttribute("aria-hidden", "true");
-        missing.append(dash);
-        cell.append(missing);
-      }
-      return cell;
-    });
-  const [firstRow = { columns: {} }, ...continuations] = rows;
-  const cells = renderCells(firstRow);
-  const continuationCells = continuations.map(renderCells);
+  if (packed.length === 0) {
+    const cell = document.createElement("td");
+    cell.colSpan = 2;
+    cell.className = "settings-account-usage-cell settings-account-usage-cell--message";
+    cell.textContent = messages.accountCreditsEmpty;
+    packed.push([cell]);
+  }
+  const [cells = [], ...continuationCells] = packed;
   return { cells, continuationCells };
 }
 

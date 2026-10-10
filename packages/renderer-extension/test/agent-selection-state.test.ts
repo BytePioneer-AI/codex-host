@@ -11,10 +11,88 @@ import { scopedComposerTarget } from "../src/renderer-binding-probe.js";
 function controller(): DraftAgentController<object> {
   return new DraftAgentController<object>({
     idFactory: (sequence) => `composer-${sequence}`,
+    enabledAgents: [
+      "codex",
+      "pi",
+      "claude-code",
+      "grok",
+      "opencode",
+      "antigravity",
+      "qoder",
+      "kimi-code",
+    ],
   });
 }
 
 describe("Renderer draft Agent controller", () => {
+  it("discovers unknown IDs and keeps persisted ownership after removal", async () => {
+    const agents = new DraftAgentController();
+    const composer = {};
+    const operations = { applyAgent: vi.fn(() => true), clearPrewarm: vi.fn(async () => {}) };
+    agents.mount(composer, ["default"], "third-party");
+    expect(agents.get(composer).agent).toBe("third-party");
+    expect(await agents.switchAgent(composer, "another-plugin", operations)).toBe(false);
+    agents.setEnabledAgents(["another-plugin"]);
+    expect(await agents.switchAgent(composer, "another-plugin", operations)).toBe(true);
+    const model = harnessModelRefSchema.parse({ id: "native-model" });
+    agents.setExternalModel(composer, "another-plugin", model);
+    agents.clearConfiguration(composer);
+    expect(agents.modelForAgent(composer, "another-plugin")).toBeUndefined();
+    agents.restore(composer, "another-plugin", model);
+    agents.setEnabledAgents([]);
+    expect(agents.get(composer)).toMatchObject({ agent: "another-plugin", phase: "locked" });
+    expect(agents.modelForAgent(composer, "another-plugin")).toEqual(model);
+  });
+  it("preserves pending submission when detaching a successfully transferred draft", () => {
+    const agents = controller();
+    const original = {};
+    const replacement = {};
+    agents.mount(original, ["default"], "pi");
+    agents.markSubmissionPending(original);
+    const identity = agents.get(original).composerId;
+    expect(agents.transfer(original, replacement, ["default"])).toBe(true);
+    agents.detach(original, true);
+    expect(agents.isSubmissionPending(replacement)).toBe(true);
+    expect(agents.transfer(replacement, replacement, ["conversation", "pi-thread"])).toBe(true);
+    expect(agents.get(replacement)).toMatchObject({
+      composerId: identity,
+      agent: "pi",
+      phase: "locked",
+    });
+    expect(agents.isSubmissionPending(replacement)).toBe(false);
+    expect(agents.mount(original, ["default"], "codex").composerId).not.toBe(identity);
+  });
+  it.each([false, true])(
+    "detaches reused roots without leaking external state (locked=%s)",
+    (locked) => {
+      const agents = controller();
+      const root = {};
+      const target = locked ? ["conversation", "pi-thread"] : ["default", "client-new-thread:old"];
+      agents.mount(root, target, "pi");
+      const model = harnessModelRefSchema.parse({ id: "old-pi-model" });
+      if (locked) agents.restore(root, "pi", model);
+      else agents.setExternalModel(root, "pi", model);
+      agents.markSubmissionPending(root);
+      const old = agents.get(root);
+      const request = agents.beginModelRequest(root);
+      const ownership = agents.beginOwnershipRequest(root);
+      agents.detach(root);
+      const fresh = agents.mount(root, ["default", "client-new-thread:new"], "codex");
+      expect(fresh).toMatchObject({ agent: "codex", phase: "draft" });
+      expect(fresh.composerId).not.toBe(old.composerId);
+      expect(agents.modelForAgent(root, "pi")).toBeUndefined();
+      expect(agents.isSubmissionPending(root)).toBe(false);
+      expect(agents.isCurrentModelRequest(root, request)).toBe(false);
+      expect(agents.isCurrentOwnershipRequest(root, ownership)).toBe(false);
+      const revisit = {};
+      expect(agents.mount(revisit, target)).toMatchObject({
+        agent: "pi",
+        phase: locked ? "locked" : "draft",
+      });
+      expect(agents.modelForAgent(revisit, "pi")).toEqual(model);
+      expect(agents.isSubmissionPending(revisit)).toBe(false);
+    },
+  );
   it("keeps Codex locked across Composer replacement", () => {
     const agents = controller();
     const draft = {};
@@ -83,7 +161,7 @@ describe("Renderer draft Agent controller", () => {
 
     agents.mount(submittedPi, ["default"]);
     await agents.switchAgent(submittedPi, "pi", operations);
-    agents.setPiModel(submittedPi, model);
+    agents.setExternalModel(submittedPi, "pi", model);
     agents.lock(submittedPi);
     agents.recordSubmission(submittedPi);
 
@@ -105,7 +183,7 @@ describe("Renderer draft Agent controller", () => {
       agent: "pi",
       phase: "draft",
     });
-    expect(agents.get(afterPassiveWork).piModel).toBeUndefined();
+    expect(agents.modelForAgent(afterPassiveWork, "pi")).toBeUndefined();
 
     agents.recordSubmission(openedCodex);
     agents.mount(afterCodexSubmission, ["default"]);
@@ -128,16 +206,13 @@ describe("Renderer draft Agent controller", () => {
       agent: "pi",
       phase: "draft",
     });
+    // Defaults may precede asynchronous plugin discovery; switching still requires discovery.
     expect(
-      () =>
-        new DraftAgentController<object>({
-          enabledAgents: ["codex", "pi"],
-          defaultAgent: "claude-code",
-        }),
-    ).toThrow("default Agent must be enabled");
+      new DraftAgentController({ defaultAgent: "unknown-plugin" }).mount({}, ["default"]).agent,
+    ).toBe("unknown-plugin");
   });
 
-  it("enables Claude Code in the default production Agent list", async () => {
+  it("enables Claude Code from the supplied plugin directory", async () => {
     const composer = {};
     const agents = controller();
     const applyAgent = vi.fn(() => true);
@@ -169,8 +244,7 @@ describe("Renderer draft Agent controller", () => {
 
     expect(agents.get(composer)).toMatchObject({
       agent: "opencode",
-      openCodeModel: model,
-      openCodeThinkingOptionId: thinkingOptionId,
+      configurationByAgent: { opencode: { model, thinkingOptionId } },
     });
     expect(agents.modelForAgent(composer, "opencode")).toEqual(model);
     expect(agents.thinkingOptionForAgent(composer, "opencode")).toBe(thinkingOptionId);
@@ -342,18 +416,21 @@ describe("Renderer draft Agent controller", () => {
 
     agents.mount(composer, localTarget);
     agents.restore(composer, "pi", model);
-    expect(agents.get(composer)).toMatchObject({ agent: "pi", piModel: model });
+    expect(agents.get(composer)).toMatchObject({
+      agent: "pi",
+      configurationByAgent: { pi: { model } },
+    });
 
     expect(agents.rebindConversation(composer, remoteTarget)).toMatchObject({
       agent: "codex",
       phase: "draft",
     });
-    expect(agents.get(composer)).not.toHaveProperty("piModel");
+    expect(agents.modelForAgent(composer, "pi")).toBeUndefined();
 
     expect(agents.rebindConversation(composer, localTarget)).toMatchObject({
       agent: "pi",
       phase: "locked",
-      piModel: model,
+      configurationByAgent: { pi: { model } },
     });
   });
 
@@ -374,8 +451,8 @@ describe("Renderer draft Agent controller", () => {
       agent: "codex",
       phase: "draft",
     });
-    expect(agents.get(composer)).not.toHaveProperty("piModel");
-    expect(agents.get(composer)).not.toHaveProperty("piThinkingOptionId");
+    expect(agents.modelForAgent(composer, "pi")).toBeUndefined();
+    expect(agents.thinkingOptionForAgent(composer, "pi")).toBeUndefined();
     expect(agents.isCurrentModelRequest(composer, staleModelRequest)).toBe(false);
     expect(agents.isCurrentOwnershipRequest(composer, staleOwnershipRequest)).toBe(false);
 
@@ -403,16 +480,14 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.restore(forkComposer, "pi", model, thinkingOptionId)).toMatchObject({
       agent: "pi",
       phase: "locked",
-      piModel: model,
-      piThinkingOptionId: thinkingOptionId,
+      configurationByAgent: { pi: { model, thinkingOptionId } },
     });
 
     agents.mount(replacement, ["conversation", "fork-thread"]);
     expect(agents.get(replacement)).toMatchObject({
       agent: "pi",
       phase: "locked",
-      piModel: model,
-      piThinkingOptionId: thinkingOptionId,
+      configurationByAgent: { pi: { model, thinkingOptionId } },
     });
     expect(agents.restore(replacement, "claude-code")).toMatchObject({
       agent: "claude-code",
@@ -428,25 +503,32 @@ describe("Renderer draft Agent controller", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.fast" });
     const target = ["default", "client-new-thread:first"];
     agents.mount(original, target, "pi");
-    agents.setPiModel(original, model);
+    agents.setExternalModel(original, "pi", model);
     agents.markSubmissionPending(original);
     agents.mount(replacement, [...target], "codex");
     expect(agents.get(replacement)).toEqual(agents.get(original));
     expect(agents.isSubmissionPending(replacement)).toBe(true);
     expect(agents.transfer(replacement, replacement, ["conversation", "sent-thread"])).toBe(true);
-    expect(agents.get(replacement)).toMatchObject({ phase: "locked", piModel: model });
+    expect(agents.get(replacement)).toMatchObject({
+      phase: "locked",
+      configurationByAgent: { pi: { model } },
+    });
     const newDraft = {};
     agents.mount(newDraft, ["default", "client-new-thread:second"], "pi");
     expect(agents.get(newDraft)).toMatchObject({ phase: "draft", agent: "pi" });
-    expect(agents.get(newDraft)).not.toHaveProperty("piModel");
+    expect(agents.modelForAgent(newDraft, "pi")).toBeUndefined();
   });
 
   it("does not share selection between drafts without a stable identity", () => {
     const agents = controller();
     const original = {};
     agents.mount(original, ["default"], "pi");
-    agents.setPiModel(original, harnessModelRefSchema.parse({ id: "pi-model-v1.fast" }));
-    expect(agents.mount({}, ["default"], "pi")).not.toHaveProperty("piModel");
+    agents.setExternalModel(
+      original,
+      "pi",
+      harnessModelRefSchema.parse({ id: "pi-model-v1.fast" }),
+    );
+    expect(agents.mount({}, ["default"], "pi").configurationByAgent).toBeUndefined();
   });
 
   it("transfers Pi Model state and request generations with logical Composer identity", () => {
@@ -461,12 +543,12 @@ describe("Renderer draft Agent controller", () => {
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("xhigh");
 
     agents.mount(draft, ["default"]);
-    agents.setPiConfiguration(draft, model, thinkingOptionId);
+    agents.setExternalModel(draft, "pi", model);
+    agents.setExternalThinkingOption(draft, "pi", thinkingOptionId);
     const firstGeneration = agents.beginModelRequest(draft);
     expect(agents.transfer(draft, conversation, target)).toBe(true);
     expect(agents.get(conversation)).toMatchObject({
-      piModel: model,
-      piThinkingOptionId: thinkingOptionId,
+      configurationByAgent: { pi: { model, thinkingOptionId } },
     });
     expect(agents.isCurrentModelRequest(conversation, firstGeneration)).toBe(true);
 
@@ -475,13 +557,12 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.isCurrentModelRequest(draft, secondGeneration)).toBe(true);
     agents.mount(revisit, ["conversation", targetMember]);
     expect(agents.get(revisit)).toMatchObject({
-      piModel: model,
-      piThinkingOptionId: thinkingOptionId,
+      configurationByAgent: { pi: { model, thinkingOptionId } },
     });
 
     agents.mount(newDefault, ["default"]);
-    expect(agents.get(newDefault).piModel).toBeUndefined();
-    expect(agents.get(newDefault).piThinkingOptionId).toBeUndefined();
+    expect(agents.modelForAgent(newDefault, "pi")).toBeUndefined();
+    expect(agents.thinkingOptionForAgent(newDefault, "pi")).toBeUndefined();
   });
 
   it("isolates Claude and Pi Model state across one logical Composer lifecycle", async () => {
@@ -513,13 +594,13 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.transfer(draft, conversation, ["conversation", "claude-thread"])).toBe(true);
     agents.mount(revisit, ["conversation", "claude-thread"]);
     expect(agents.get(revisit)).toMatchObject({
-      piModel,
-      piThinkingOptionId: piThinking,
-      claudeModel,
-      claudeThinkingOptionId: claudeThinking,
-      permissionModeByAgent: {
-        pi: piPermissionMode,
-        "claude-code": claudePermissionMode,
+      configurationByAgent: {
+        pi: { model: piModel, thinkingOptionId: piThinking, permissionModeId: piPermissionMode },
+        "claude-code": {
+          model: claudeModel,
+          thinkingOptionId: claudeThinking,
+          permissionModeId: claudePermissionMode,
+        },
       },
     });
 
@@ -545,8 +626,7 @@ describe("Renderer draft Agent controller", () => {
     // Turn runs without --effort.
     expect(agents.thinkingOptionForAgent(draft, "antigravity")).toBe(effort);
     expect(agents.get(draft)).toMatchObject({
-      antigravityModel: model,
-      antigravityThinkingOptionId: effort,
+      configurationByAgent: { antigravity: { model, thinkingOptionId: effort } },
     });
 
     agents.setExternalThinkingOption(draft, "antigravity", undefined);
@@ -675,10 +755,12 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.get(restored)).toMatchObject({
       agent: "qoder",
       phase: "locked",
-      qoderModel,
-      qoderThinkingOptionId: qoderThinking,
-      permissionModeByAgent: {
-        qoder: permissionMode,
+      configurationByAgent: {
+        qoder: {
+          model: qoderModel,
+          thinkingOptionId: qoderThinking,
+          permissionModeId: permissionMode,
+        },
       },
     });
     expect(agents.modelForAgent(restored, "qoder")).toEqual(qoderModel);
@@ -742,10 +824,12 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.get(restored)).toMatchObject({
       agent: "kimi-code",
       phase: "locked",
-      kimiCodeModel: kimiModel,
-      kimiCodeThinkingOptionId: kimiThinking,
-      permissionModeByAgent: {
-        "kimi-code": permissionMode,
+      configurationByAgent: {
+        "kimi-code": {
+          model: kimiModel,
+          thinkingOptionId: kimiThinking,
+          permissionModeId: permissionMode,
+        },
       },
     });
     expect(agents.modelForAgent(restored, "kimi-code")).toEqual(kimiModel);

@@ -45,12 +45,17 @@ export async function consoleGet<T>(path: string, signal?: AbortSignal): Promise
   return payload as T;
 }
 
-export async function consolePost<T>(path: string, body: unknown = {}): Promise<T> {
+export async function consolePost<T>(
+  path: string,
+  body: unknown = {},
+  signal?: AbortSignal,
+): Promise<T> {
   const response = await fetch(path, {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json", [CONSOLE_REQUEST_HEADER]: "1" },
     body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
   });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
@@ -66,14 +71,15 @@ export async function consolePost<T>(path: string, body: unknown = {}): Promise<
  * settings pages classify them as they do inside Codex.
  */
 export function hostRequestManager(): {
-  sendRequest(method: string, params: unknown): Promise<unknown>;
+  sendRequest(method: string, params: unknown, options?: unknown): Promise<unknown>;
 } {
   return {
-    async sendRequest(method, params) {
+    async sendRequest(method, params, options) {
+      const signal = options instanceof AbortSignal ? options : undefined;
       const reply = await consolePost<{
         result?: unknown;
         error?: { code: number; message: string };
-      }>("/api/host/request", { method, params });
+      }>("/api/host/request", { method, params }, signal);
       if (reply.error) {
         throw Object.assign(new Error(reply.error.message), { code: reply.error.code });
       }

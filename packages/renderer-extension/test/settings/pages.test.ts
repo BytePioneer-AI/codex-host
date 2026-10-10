@@ -19,6 +19,8 @@ vi.mock("../../src/settings/icons.js", () => ({
 }));
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
+import type { CodexSshConnection } from "../../src/codex-ssh-adapter.js";
+import type { RemoteConnectionsControl } from "../../src/remote-connections-control.js";
 import {
   RENDERER_UPDATE_REQUEST_TIMEOUT_MS,
   RendererUpdateRequestTimeoutError,
@@ -44,6 +46,7 @@ import type {
   RendererConnectionSnapshot,
 } from "../../src/settings/pages.js";
 
+import { pluginDescriptor } from "../../../../tests/fixtures/harness-plugin-descriptors.js";
 import { createHarnessInstallationPanel } from "../../src/settings/harness-installation-panel.js";
 
 class FakeElement {
@@ -869,7 +872,7 @@ describe("Harness installation actions", () => {
       const run = vi.fn();
       const panel = createHarnessInstallationPanel(
         document as unknown as Document,
-        agent,
+        pluginDescriptor(agent),
         "local",
         rendererSettingsMessages("zh-CN"),
         vi.fn(),
@@ -905,7 +908,7 @@ describe("Harness installation actions", () => {
       const run = vi.fn();
       const panel = createHarnessInstallationPanel(
         document as unknown as Document,
-        "codebuddy",
+        pluginDescriptor("codebuddy"),
         "local",
         rendererSettingsMessages("en"),
         vi.fn(),
@@ -1012,7 +1015,14 @@ describe("Renderer Connections page", () => {
             {
               hostId: "remote-test",
               active: true,
-              agents: [{ agent, availability: "notInstalled", error: null }],
+              agents: [
+                {
+                  agent,
+                  plugin: pluginDescriptor(agent),
+                  availability: "notInstalled",
+                  error: null,
+                },
+              ],
             },
           ],
         }),
@@ -1082,7 +1092,7 @@ describe("Renderer Connections page", () => {
       if (agent === "zcode") expect(visibleText(panel)).toContain("请安装 ZCode Desktop");
       expect(
         visibleText(content).includes(
-          "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。",
+          pluginDescriptor("deepseek-harness").notice?.["zh-CN"] ?? "missing plugin notice",
         ),
       ).toBe(agent === "deepseek-harness");
       expect(visibleText(panel)).toContain("请在远程 Host 上安装。");
@@ -1350,7 +1360,9 @@ describe("Renderer Connections page", () => {
           hosts: ["local", "remote-test"].map((hostId) => ({
             hostId,
             active: hostId === "local",
-            agents: [{ agent, availability: "notInstalled", error: null }],
+            agents: [
+              { agent, plugin: pluginDescriptor(agent), availability: "notInstalled", error: null },
+            ],
           })),
         }),
         refresh: vi.fn(async () => undefined),
@@ -1384,9 +1396,7 @@ describe("Renderer Connections page", () => {
       const panel = elementWithClass(content, "settings-connection-inspector__body");
       const input = descendants(panel).find(({ tagName }) => tagName === "input");
       if (!input) throw new Error("Expected launch path input");
-      expect(visibleText(panel)).toContain(
-        agent === "zcode" ? messages.launchPathZcodeHelp : messages.launchPathWorkbuddyHelp,
-      );
+      expect(visibleText(panel)).toContain("安装目录");
       await vi.waitFor(() => expect(input.disabled).toBe(false));
       expect(diagnostics.getLaunchSettings).toHaveBeenCalledWith("local", agent);
       const save = descendants(panel).find(
@@ -1444,6 +1454,7 @@ describe("Renderer Connections page", () => {
             active: true,
             agents: (["kiro-cli", "workbuddy", "zcode"] as const).map((agent) => ({
               agent,
+              plugin: pluginDescriptor(agent),
               availability: "notInstalled" as const,
               error: null,
             })),
@@ -1494,6 +1505,7 @@ describe("Renderer Connections page", () => {
             agents: [
               {
                 agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
                 availability: "ready",
                 error: null,
                 webUiAvailable: true,
@@ -1506,6 +1518,7 @@ describe("Renderer Connections page", () => {
             agents: [
               {
                 agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
                 availability: "ready",
                 error: null,
                 webUiAvailable: true,
@@ -1540,7 +1553,7 @@ describe("Renderer Connections page", () => {
     dshRow.dispatch("click", { target: null });
     expect(visibleText(content)).toContain("0.2.0-rc.2");
     expect(visibleText(content)).toContain(
-      "高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
+      pluginDescriptor("deepseek-harness").notice?.["zh-CN"] ?? "missing plugin notice",
     );
     const open = descendants(content).find(
       ({ dataset }) => dataset.connectionAction === "open-web-ui",
@@ -1570,6 +1583,91 @@ describe("Renderer Connections page", () => {
     scope.dispose();
   });
 
+  it.each(["loaded", "failed", "unmounted"] as const)(
+    "uses configured remote Host names without changing IDs (%s)",
+    async (result) => {
+      const hostId = "remote-ssh-codex-managed:8185b421-eeec-4f3b-bca7-21ea95341381";
+      const request = Promise.withResolvers<CodexSshConnection[]>();
+      const control: RemoteConnectionsControl = {
+        ssh: {
+          list: vi.fn(() => request.promise),
+          save: vi.fn(),
+          remove: vi.fn(),
+          connect: vi.fn(),
+          state: vi.fn(),
+        },
+        setup: vi.fn(),
+        runtime: vi.fn(),
+        update: vi.fn(),
+      };
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: ["local", hostId, "remote-ssh-discovered:legacy"].map((id) => ({
+            hostId: id,
+            active: id === hostId,
+            agents: [],
+          })),
+        }),
+        refresh: vi.fn(),
+        subscribe: () => () => undefined,
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        undefined,
+        () => diagnostics,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => control,
+      ).find(({ id }) => id === "connections");
+      assert(page);
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      expect(control.ssh.list).toHaveBeenCalledWith(scope.signal);
+      if (result === "unmounted") {
+        scope.dispose();
+        cleanup?.();
+      }
+      if (result === "failed") request.reject(new Error("Native connection list unavailable"));
+      else
+        request.resolve([
+          {
+            hostId,
+            displayName: "公司电脑",
+            source: "codex-managed",
+            sshHost: "user@office",
+            sshAlias: null,
+            sshPort: null,
+            identity: null,
+            autoConnect: true,
+          },
+        ]);
+      await request.promise.catch(() => undefined);
+      const tabs = descendants(content).filter(({ dataset }) => dataset.connectionHostTab);
+      expect(tabs.map(({ textContent }) => textContent)).toEqual([
+        "本地",
+        result === "loaded" ? "公司电脑" : hostId.split(":")[1],
+        "legacy",
+      ]);
+      const remoteTab = tabs.find(({ dataset }) => dataset.connectionHostTab === hostId);
+      assert(remoteTab);
+      expect(remoteTab.getAttribute("aria-selected")).toBe("true");
+      expect(remoteTab.title).toContain(remoteTab.textContent);
+      if (result !== "unmounted") {
+        cleanup?.();
+        scope.dispose();
+      }
+    },
+  );
+
   it("renders Host tabs, install actions, and error details", async () => {
     const refreshRequest = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {
@@ -1587,6 +1685,7 @@ describe("Renderer Connections page", () => {
             agents: [
               {
                 agent: "pi",
+                plugin: pluginDescriptor("pi"),
                 availability: "error",
                 error: {
                   code: "processExited",
@@ -1600,6 +1699,7 @@ describe("Renderer Connections page", () => {
               },
               {
                 agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
                 availability: "notInstalled",
                 error: {
                   code: "notInstalled",
@@ -2246,8 +2346,8 @@ describe("Renderer Updates page", () => {
   it("offers the codexhost console on the About page when the Host can open it", async () => {
     const openConsole = vi
       .fn()
-      .mockRejectedValueOnce(new Error("port 26339 is used by another program"))
-      .mockResolvedValueOnce({ url: "http://127.0.0.1:26339/" });
+      .mockRejectedValueOnce(new Error("port 4399 is used by another program"))
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:4399/" });
     const client = {
       checkUpdate: vi.fn(),
       startUpdate: vi.fn(),
@@ -2276,7 +2376,7 @@ describe("Renderer Updates page", () => {
     if (!button) throw new Error("console button is missing");
     button.dispatch("click");
     await vi.waitFor(() =>
-      expect(visibleText(content)).toContain("port 26339 is used by another program"),
+      expect(visibleText(content)).toContain("port 4399 is used by another program"),
     );
     button.dispatch("click");
     await vi.waitFor(() => expect(openConsole).toHaveBeenCalledTimes(2));

@@ -4,7 +4,15 @@ import { createConsoleConnectionDiagnostics } from "../../src/console/connection
 import type { RendererModelClient } from "../../src/renderer-model-client.js";
 
 function client(overrides: Partial<RendererModelClient>): RendererModelClient {
-  return overrides as RendererModelClient;
+  return {
+    listHarnessPlugins: async () => ({
+      plugins: [
+        ...["pi", "grok", "hermes"].map((id) => ({ id, name: id, version: "1" })),
+        { id: "codex-usage", name: "Codex usage", version: "1", kind: "usage" as const },
+      ],
+    }),
+    ...overrides,
+  } as RendererModelClient;
 }
 
 describe("console connection diagnostics", () => {
@@ -28,6 +36,7 @@ describe("console connection diagnostics", () => {
     const initial = diagnostics.snapshot();
     expect(initial.hosts).toHaveLength(1);
     expect(initial.hosts[0]?.agents.every((agent) => agent.availability === "checking")).toBe(true);
+    await vi.waitFor(() => expect(diagnostics.snapshot().hosts[0]?.agents).toHaveLength(3));
     await vi.waitFor(() =>
       expect(
         diagnostics.snapshot().hosts[0]?.agents.some((agent) => agent.availability === "checking"),

@@ -40,6 +40,7 @@ export async function readOmpSessionHistory(
 ): Promise<OmpSessionHistory> {
   const entries: JsonObject[] = [];
   let leafId: string | null = null;
+  let incomplete = false;
   const lines = readline.createInterface({
     input: createReadStream(sessionFile, {
       encoding: "utf8",
@@ -54,17 +55,23 @@ export async function readOmpSessionHistory(
       try {
         parsed = JSON.parse(line);
       } catch {
+        incomplete = true;
         continue;
       }
       const entry = historyEntry(parsed);
-      if (!entry) continue;
+      if (!entry) {
+        if (!isRecord(parsed) || (parsed.type !== "title" && parsed.type !== "session")) {
+          incomplete = true;
+        }
+        continue;
+      }
       entries.push(entry);
       leafId = entry.id as string;
     }
   } finally {
     lines.close();
   }
-  return { entries, leafId };
+  return { entries, leafId, ...(incomplete ? { incomplete: true } : {}) };
 }
 
 async function readOmpSessionHeader(sessionFile: string): Promise<OmpSessionHeader> {

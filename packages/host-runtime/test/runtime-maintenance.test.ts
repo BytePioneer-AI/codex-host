@@ -77,6 +77,30 @@ describe("runtime maintenance", () => {
       restartRequired: false,
       updateSupported: false,
     });
+    for (const [version, remote, expected] of [
+      ["0.12.0", false, "0.12.0"],
+      ["0.12.0", true, "0.12.0"],
+      ["0.13.0-rc.1+test", false, "0.13.0-rc.1+test"],
+      ["latest", false, null],
+    ] as const) {
+      const configured = new RuntimeMaintenance({
+        runtimePath,
+        remote,
+        environment: {
+          CODEXHOST_DATA_DIR: path.join(root, "data"),
+          CODEXHOST_DEV_VERSION: version,
+        },
+      });
+      const status = await configured.status();
+      expect(status.runningVersion).toBe(expected);
+      expect(status.installedVersion).toBe(expected);
+      expect(status.updateSupported).toBe(false);
+    }
+  });
+  it("ignores source version overrides in packaged installations", async () => {
+    const f = await fixture();
+    f.control.options.environment.CODEXHOST_DEV_VERSION = "0.12.0";
+    expect((await f.control.status()).runningVersion).toBe("0.11.0");
   });
   it("drops a recorded update failure once the target version is the one running", async () => {
     const failed = (targetVersion: string) => ({

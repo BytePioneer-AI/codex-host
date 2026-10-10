@@ -51,7 +51,7 @@
 
 ## Repository Skills
 
-Use the applicable repository-local skills below when their task occurs; all ten support contextual invocation. Read the selected `SKILL.md` before using its workflow. Select by task rather than loading or executing every skill on every change. These guides supplement the ownership, scope, and validation rules in this file; copied examples do not establish installed tools or product capabilities.
+Use the applicable repository-local skills below when their task occurs; they support contextual invocation. Read the selected `SKILL.md` before using its workflow. Select by task rather than loading or executing every skill on every change. These guides supplement the ownership, scope, and validation rules in this file; copied examples do not establish installed tools or product capabilities.
 
 | Task | Skill |
 | --- | --- |
@@ -65,6 +65,7 @@ Use the applicable repository-local skills below when their task occurs; all ten
 | Electron application interaction and testing | [electron](.agents/skills/electron/SKILL.md) |
 | Exploratory application testing and issue reports | [dogfood](.agents/skills/dogfood/SKILL.md) |
 | GUI behavior and visual verification | [web-gui-tester](.agents/skills/web-gui-tester/SKILL.md) |
+| Version releases, Release Notes, preview channels, and release recovery | [codexhost-release](.agents/skills/codexhost-release/SKILL.md) |
 
 Existing Harness integration and Desktop update audit skills remain applicable to their specialized tasks. Imported skill provenance and license information is in [.agents/skills/NOTICE.md](.agents/skills/NOTICE.md).
 

@@ -1016,6 +1016,20 @@ export function installRendererBindingProbe(
   const composerAdapterState = (mounted: MountedComposer): RendererAdapterStatus["state"] =>
     composerClient(mounted) ? "ready" : "installing";
 
+  /**
+   * Workspace of each Host's current draft, published by the draft prewarm
+   * (the only place Desktop names it). A draft asks the Host for that
+   * workspace's live commands and skills.
+   */
+  const draftWorkspaces = new Map<string, string>();
+  {
+    const published: unknown = Reflect.get(window, "__codexhostDraftWorkspacesV1");
+    if (typeof published === "object" && published !== null) {
+      for (const [hostId, cwd] of Object.entries(published)) {
+        if (typeof cwd === "string" && cwd.length > 0) draftWorkspaces.set(hostId, cwd);
+      }
+    }
+  }
   const renderMounted = (mounted: MountedComposer): void => {
     if (!isMountedComposer(mounted.composer)) return;
     const hostId = mounted.hostId;
@@ -1051,10 +1065,13 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus !== "loading" &&
       mounted.ownershipStatus !== "error" &&
       !controller.isSwitching(mounted.composer);
+    const nativeThreadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    const draftHostId = nativeThreadId ? null : activeModelHostId(mounted.composer);
     const nativeSubmissionReady = mounted.nativeInferenceRoute.update(
       composerClient(mounted),
-      threadIdFromComposerModelTarget(mounted.modelTarget),
+      nativeThreadId,
       nativeEligible && !mounted.nativeProviderControl.blocked,
+      draftHostId ? (draftWorkspaces.get(draftHostId) ?? null) : null,
     );
     showCodexUsageGateStatus(
       mounted,
@@ -1077,20 +1094,6 @@ export function installRendererBindingProbe(
   };
 
   let delegationMention: RendererDelegationMentionControl | null = null;
-  /**
-   * Workspace of each Host's current draft, published by the draft prewarm
-   * (the only place Desktop names it). A draft asks the Host for that
-   * workspace's live commands and skills.
-   */
-  const draftWorkspaces = new Map<string, string>();
-  {
-    const published: unknown = Reflect.get(window, "__codexhostDraftWorkspacesV1");
-    if (typeof published === "object" && published !== null) {
-      for (const [hostId, cwd] of Object.entries(published)) {
-        if (typeof cwd === "string" && cwd.length > 0) draftWorkspaces.set(hostId, cwd);
-      }
-    }
-  }
   /**
    * `keepCurrent` refreshes in place (the `#` menu reopening) instead of
    * clearing first, so an open menu never flickers empty.
@@ -3181,6 +3184,12 @@ export function installRendererBindingProbe(
         controller.get(mounted.composer).agent !== "codex"
       ) {
         void refreshCommands(mounted, { keepCurrent: true });
+      } else if (
+        !threadIdFromComposerModelTarget(mounted.modelTarget) &&
+        activeModelHostId(mounted.composer) === hostId
+      ) {
+        // A Codex draft re-checks its inference route against the new workspace.
+        renderMounted(mounted);
       }
     }
   };

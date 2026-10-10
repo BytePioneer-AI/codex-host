@@ -19,9 +19,10 @@ function fixture() {
   let eligible = true;
   let targetClient: RendererModelClient | null = client;
   let threadId: HostThreadId | null = hostThreadIdSchema.parse("native-thread");
+  let draftCwd: string | null = null;
   const values: boolean[] = [];
   const render = vi.fn(() => {
-    values.push(route.update(targetClient, threadId, eligible));
+    values.push(route.update(targetClient, threadId, eligible, draftCwd));
   });
   const route = createRendererNativeInferenceRoute(render);
   return {
@@ -36,6 +37,10 @@ function fixture() {
     },
     setClient(value: RendererModelClient | null) {
       targetClient = value;
+      render();
+    },
+    setDraftCwd(value: string | null) {
+      draftCwd = value;
       render();
     },
     setThread(value: string | null) {
@@ -170,5 +175,24 @@ describe("Native inference route revalidation lifecycle", () => {
     await vi.advanceTimersByTimeAsync(15000);
     expect(f.render).toHaveBeenCalledTimes(1);
     expect(f.route.update(f.client, null, true)).toBe(false);
+  });
+  it("re-verifies a new draft against its workspace and ignores it for existing Threads", async () => {
+    const f = fixture();
+    f.setThread(null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.verify).toHaveBeenLastCalledWith(undefined);
+    f.verify.mockResolvedValueOnce(false);
+    f.setDraftCwd("/work/draft");
+    expect(f.values.at(-1)).toBe(false);
+    expect(f.verify).toHaveBeenLastCalledWith({ cwd: "/work/draft" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.values.at(-1)).toBe(false);
+    f.setThread("native-thread");
+    expect(f.verify).toHaveBeenLastCalledWith({ threadId: "native-thread" });
+    const calls = f.verify.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(0);
+    f.setDraftCwd("/work/other");
+    expect(f.verify).toHaveBeenCalledTimes(calls);
+    f.route.dispose();
   });
 });

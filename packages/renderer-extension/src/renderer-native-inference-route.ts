@@ -7,6 +7,7 @@ const CHECK_TIMEOUT_MS = 5000;
 interface Route {
   client: RendererModelClient;
   threadId: HostThreadId | null;
+  draftCwd: string | null;
   independent: boolean;
   pending: boolean;
   checkedAt: number;
@@ -17,6 +18,8 @@ export interface RendererNativeInferenceRoute {
     client: RendererModelClient | null,
     threadId: HostThreadId | null,
     eligible: boolean,
+    /** Workspace of a new draft; ignored when `threadId` names an existing Thread. */
+    draftCwd?: string | null,
   ): boolean;
   dispose(): void;
 }
@@ -67,7 +70,11 @@ export function createRendererNativeInferenceRoute(
       try {
         const independent =
           (await current.client.usesIndependentNativeInference?.(
-            current.threadId ? { threadId: current.threadId } : undefined,
+            current.threadId
+              ? { threadId: current.threadId }
+              : current.draftCwd
+                ? { cwd: current.draftCwd }
+                : undefined,
           )) === true;
         finish(independent);
       } catch (error) {
@@ -82,14 +89,22 @@ export function createRendererNativeInferenceRoute(
     })();
   };
   return {
-    update(client, threadId, eligible) {
+    update(client, threadId, eligible, draftCwd = null) {
       if (disposed || !eligible || !client) {
         invalidate();
         return false;
       }
-      if (route?.client !== client || route.threadId !== threadId) {
+      const cwd = threadId ? null : draftCwd || null;
+      if (route?.client !== client || route.threadId !== threadId || route.draftCwd !== cwd) {
         invalidate();
-        route = { client, threadId, independent: false, pending: false, checkedAt: 0 };
+        route = {
+          client,
+          threadId,
+          draftCwd: cwd,
+          independent: false,
+          pending: false,
+          checkedAt: 0,
+        };
         check(route);
       } else if (!route.pending && Date.now() - route.checkedAt >= REFRESH_MS) {
         check(route);

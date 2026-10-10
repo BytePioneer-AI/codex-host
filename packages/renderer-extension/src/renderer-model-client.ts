@@ -210,6 +210,9 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
   return nested && typeof nested.addNotificationCallback === "function" ? nested : null;
 }
 
+/** Target of a native inference route check: an existing Thread or a new draft's workspace. */
+export type NativeInferenceTarget = ThreadInspectionParams | { cwd: string };
+
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
   installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
   getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
@@ -229,7 +232,12 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   ): Promise<HarnessInspection>;
   openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
-  usesIndependentNativeInference?(input?: ThreadInspectionParams): Promise<boolean>;
+  /**
+   * Checks whether native Codex inference bypasses the Codex quota. An existing
+   * Thread uses its own provider and workspace; a new draft passes the
+   * workspace Desktop picked for it so project `.codex/config.toml` applies.
+   */
+  usesIndependentNativeInference?(input?: NativeInferenceTarget): Promise<boolean>;
   inspectNativeProviderContinuation?(input: ThreadInspectionParams): Promise<string | null>;
   continueNativeWithConfiguredProvider?(
     input: ThreadInspectionParams,
@@ -406,17 +414,23 @@ export function createRendererModelClient(
         providerId,
       );
     },
-    async usesIndependentNativeInference(input?: ThreadInspectionParams): Promise<boolean> {
-      const thread = input
-        ? await readNativeCodexThread(
-            manager.sendRequest,
-            threadInspectionParamsSchema.parse(input).threadId,
-          )
-        : undefined;
+    async usesIndependentNativeInference(input?: NativeInferenceTarget): Promise<boolean> {
+      const thread =
+        input && "threadId" in input
+          ? await readNativeCodexThread(
+              manager.sendRequest,
+              threadInspectionParamsSchema.parse(input).threadId,
+            )
+          : undefined;
+      const draftCwd =
+        input && !("threadId" in input) && typeof input.cwd === "string" && input.cwd.length > 0
+          ? input.cwd
+          : undefined;
+      const cwd = input && "threadId" in input ? thread?.cwd : draftCwd;
       return usesIndependentNativeInference(
         await manager.sendRequest("config/read", {
           includeLayers: false,
-          ...(thread?.cwd ? { cwd: thread.cwd } : {}),
+          ...(cwd ? { cwd } : {}),
         }),
         thread?.modelProvider,
       );

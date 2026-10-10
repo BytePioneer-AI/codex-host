@@ -38,6 +38,7 @@ import { installRendererForkControl } from "./renderer-fork-control.js";
 import {
   createThreadUsageSubscriptionRelay,
   type RendererModelClient,
+  type NativeInferenceTarget,
 } from "./renderer-model-client.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
@@ -963,7 +964,7 @@ export function installCurrentRendererAdapter(): {
     inspectHarness: (...args: Parameters<RendererModelClient["inspectHarness"]>) =>
       currentModelClient().inspectHarness(...args),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
-    usesIndependentNativeInference: async (input?: ThreadInspectionParams) => {
+    usesIndependentNativeInference: async (input?: NativeInferenceTarget) => {
       const client = currentModelClient();
       return client.usesIndependentNativeInference
         ? client.usesIndependentNativeInference(input)

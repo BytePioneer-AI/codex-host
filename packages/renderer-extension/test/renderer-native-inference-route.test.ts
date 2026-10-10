@@ -88,6 +88,16 @@ describe("native custom inference has a separate Billing Source", () => {
     },
   );
 
+  it("reads a new draft's workspace config so a project-level provider is honored", async () => {
+    const sendRequest = vi.fn().mockResolvedValue({ config });
+    const client = createRendererModelClient([{ sendRequest }]);
+    expect(await client?.usesIndependentNativeInference?.({ cwd: "/work/draft" })).toBe(true);
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("config/read", {
+      includeLayers: false,
+      cwd: "/work/draft",
+    });
+  });
+
   it("rejects an unverified Thread instead of reusing the default custom route", async () => {
     const threadId = hostThreadIdSchema.parse("synthetic-native-route-thread");
     const sendRequest = vi.fn().mockResolvedValue({

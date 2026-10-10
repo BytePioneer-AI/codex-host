@@ -85,6 +85,9 @@ export function defaultProjections(): Record<string, unknown> {
     plan: { active: false, pending: false },
     modelSelection: { lastUsed: null, next: null },
     sessionListMetadata: { blank: true, lastPromptAt: null },
+    // Both Web session sources currently submit text only; do not advertise
+    // the migrated file picker as an available upload path.
+    attachmentInput: { enabled: false },
     imageLimits: {
       maxImageBytes: 20971520,
       maxImagesPerMessage: 20,

@@ -659,9 +659,15 @@ export class ChSessions {
       defaultOptions: [],
       defaultPreset: "",
     }));
+    // /model is a client-owned contribution backed by the model-selection API,
+    // not an executable Host command. Advertising it here breaks the menu roster.
     rpc.register("commands/list", () => [
-      { name: "permission", description: "Select a native permission mode" },
-      { name: "model", description: "Select a native model" },
+      {
+        definitionId: "@deepseek-ai/dsh-permission-presets",
+        name: "permission",
+        description: "Select a native permission mode",
+        input: { hint: "<mode>" },
+      },
     ]);
     rpc.register("commands/execute", async (args) => {
       const id = String(args.agentId ?? "");

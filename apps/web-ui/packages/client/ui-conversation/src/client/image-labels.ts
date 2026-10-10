@@ -29,6 +29,7 @@ export function attachmentErrorText(
   t: Translate<ConversationKey>,
   reason: string,
   limits?: ImageAttachmentLimits,
+  fileLimits?: { maxFileBytes: number; maxFilesPerMessage: number; maxMessageFileBytes: number },
 ): string {
   switch (reason) {
     case "MODEL_DOES_NOT_SUPPORT_IMAGES":
@@ -37,6 +38,18 @@ export function attachmentErrorText(
     // process, foreign id): solvable by re-adding the file.
     case "FILE_NOT_STAGED":
       return t("file.notStaged");
+    case "FILE_UNAVAILABLE":
+      return t("file.unavailable");
+    case "FILE_TOO_LARGE":
+      return t("file.tooLarge", {
+        size: imageSizeText(fileLimits?.maxFileBytes ?? 64 * 1024 * 1024),
+      });
+    case "TOO_MANY_FILES":
+      return t("file.tooMany", { count: fileLimits?.maxFilesPerMessage ?? 20 });
+    case "FILES_TOO_LARGE":
+      return t("file.totalTooLarge", {
+        size: imageSizeText(fileLimits?.maxMessageFileBytes ?? 128 * 1024 * 1024),
+      });
     case "IMAGE_TOO_MANY_PIXELS":
       return t("image.tooManyPixels");
     case "IMAGE_DIMENSION_TOO_LARGE":

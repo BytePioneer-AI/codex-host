@@ -15,6 +15,7 @@ import {
   type WebImageRef,
 } from "./web-images.ts";
 import type { ChThreadView } from "./ch-thread-view.ts";
+import type { WebFiles } from "./web-files.ts";
 import type { WireEvent } from "./session-log.ts";
 import { RpcError } from "./transport.ts";
 
@@ -32,7 +33,10 @@ function unavailable(): never {
 }
 
 export class ChAttachments {
-  constructor(private readonly images: WebImages) {}
+  constructor(
+    private readonly images: WebImages,
+    private readonly files?: WebFiles,
+  ) {}
 
   private id(threadId: string, source: NativeImageSource): string {
     const path = imagePath(source);
@@ -71,6 +75,8 @@ export class ChAttachments {
       if (part.type === "other") return part.value;
       if (part.type === "text") return part;
       if (part.type === "nativeFile") {
+        const owned = this.files?.reference(part.path);
+        if (owned) return { type: "file", attachment: owned };
         return {
           type: "file",
           attachment: {

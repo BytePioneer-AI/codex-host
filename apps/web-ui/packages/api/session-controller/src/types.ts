@@ -32,7 +32,15 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
     /** Image-intake limits enforced by the Session prompt endpoint. */
     imageLimits: ImageAttachmentLimits;
     /** Whether this transport accepts attachments, not the native Harness's capabilities. */
-    attachmentInput: { readonly enabled: boolean; readonly imagesOnly?: boolean };
+    attachmentInput: {
+      readonly enabled: boolean;
+      readonly imagesOnly?: boolean;
+      readonly fileLimits?: {
+        readonly maxFileBytes: number;
+        readonly maxFilesPerMessage: number;
+        readonly maxMessageFileBytes: number;
+      };
+    };
     /** Durable model selection already used and selected for the next request. */
     modelSelection: ModelSelectionProjection;
   }

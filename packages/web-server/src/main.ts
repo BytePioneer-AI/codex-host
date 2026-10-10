@@ -31,6 +31,8 @@ import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
 import { WebAssets, contentTypeOf, type AssetResponse } from "./web-assets.ts";
 import { Workspaces } from "./workspaces.ts";
 import { WebImages } from "./web-images.ts";
+import { WebFiles } from "./web-files.ts";
+import { serveFileUpload } from "./ch-file-upload-http.ts";
 
 /** Packed distribution: `server.mjs` sits next to `web/plugins.json`. */
 const PACKED_WEB = resolve(import.meta.dirname, "web");
@@ -97,7 +99,7 @@ const chHost =
       })
     : undefined;
 const sessions = chHost
-  ? new ChSessions(chHost, workspaces, events, new WebImages(data))
+  ? new ChSessions(chHost, workspaces, events, new WebImages(data), new WebFiles(data))
   : new Sessions(data, harnesses, workspaces, events);
 const settings = new Settings(data, events);
 const push = new PushNotifier(data);
@@ -235,6 +237,14 @@ const server = createServer((request, response) => {
         response
           .writeHead(403, { "content-type": "text/plain" })
           .end("cross-origin request rejected");
+        return;
+      }
+      if (pathname === "/api/session/uploadFileBinary") {
+        await serveFileUpload(
+          sessions instanceof ChSessions ? sessions : undefined,
+          request,
+          response,
+        );
         return;
       }
       const body = await readBody(request, response);

@@ -16,6 +16,8 @@ import { ChThreadHistory } from "./ch-thread-history.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { ChAttachments } from "./ch-attachments.ts";
+import { ChFileInputs } from "./ch-file-inputs.ts";
+import { type WebFiles, WEB_FILE_INPUT } from "./web-files.ts";
 import { ChRealtime } from "./ch-realtime.ts";
 import { ChInteractions } from "./ch-interactions.ts";
 import { requestOf } from "./store.ts";
@@ -43,6 +45,7 @@ export class ChSessions {
   readonly catalog: ChHarnessCatalog;
   private readonly pins: ChPinnedThreads;
   private readonly attachments: ChAttachments | undefined;
+  private readonly fileInputs: ChFileInputs | undefined;
   private rows = new Map<string, ChThread>();
   private publishedCatalog: Map<string, string> | undefined;
   private views = new Map<string, ChThreadHistory>();
@@ -66,9 +69,28 @@ export class ChSessions {
     private readonly workspaces: Workspaces,
     private readonly events: EventHub,
     private readonly images?: WebImages,
+    private readonly files?: WebFiles,
   ) {
     this.catalog = new ChHarnessCatalog(host);
-    this.attachments = images ? new ChAttachments(images) : undefined;
+    this.attachments = images ? new ChAttachments(images, files) : undefined;
+    this.fileInputs =
+      files && images
+        ? new ChFileInputs(files, images, async (id) => {
+            id = this.id(id);
+            if (this.closed) throw new RpcError("host/offline", "The Web connection is closed.");
+            if (this.drafts.has(id)) return id;
+            await this.owner(id);
+            if (!this.rows.has(id)) await this.refresh();
+            if (!this.ownership.has(id))
+              throw new RpcError("session/not-found", "CH Thread not found.");
+            if (this.rows.get(id)?.parentThreadId)
+              throw new RpcError(
+                "subagent/attachment-invalid",
+                "Subagent file uploads are unavailable.",
+              );
+            return id;
+          })
+        : undefined;
     this.pins = new ChPinnedThreads(host, workspaces, (id) => this.ownership.has(id));
     this.interactions = host.realtime
       ? new ChInteractions(host.realtime, events, (id, message) => {
@@ -277,7 +299,7 @@ export class ChSessions {
           : undefined,
       );
       if (this.images) {
-        view.log.setProjection("attachmentInput", WEB_IMAGE_INPUT);
+        view.log.setProjection("attachmentInput", this.files ? WEB_FILE_INPUT : WEB_IMAGE_INPUT);
         view.log.setProjection("imageLimits", WEB_IMAGE_LIMITS);
       }
       this.views.set(id, view);
@@ -351,7 +373,12 @@ export class ChSessions {
     const values = {
       ...defaultProjections(),
       ...this.views.get(row.id)?.log.projections,
-      ...(this.images ? { attachmentInput: WEB_IMAGE_INPUT, imageLimits: WEB_IMAGE_LIMITS } : {}),
+      ...(this.images
+        ? {
+            attachmentInput: this.files ? WEB_FILE_INPUT : WEB_IMAGE_INPUT,
+            imageLimits: WEB_IMAGE_LIMITS,
+          }
+        : {}),
       title: row.name ?? row.preview ?? null,
       harnessIdentity: { id: harnessId, name: await this.catalog.name(harnessId) },
       sessionListMetadata: { blank: false, lastPromptAt: row.updatedAt * 1000 },
@@ -382,7 +409,10 @@ export class ChSessions {
         values: {
           ...defaultProjections(),
           ...(this.images
-            ? { attachmentInput: WEB_IMAGE_INPUT, imageLimits: WEB_IMAGE_LIMITS }
+            ? {
+                attachmentInput: this.files ? WEB_FILE_INPUT : WEB_IMAGE_INPUT,
+                imageLimits: WEB_IMAGE_LIMITS,
+              }
             : {}),
           modelSelection: { lastUsed: null, next: draft.selection },
           harnessIdentity: {
@@ -437,6 +467,7 @@ export class ChSessions {
         ),
       });
       draft.canonicalId = result.thread.id;
+      this.files?.bind(draft.id, result.thread.id);
       this.rows.set(result.thread.id, result.thread);
       this.ownership.set(result.thread.id, (await this.owner(result.thread.id)).harnessId);
       this.workspaces.selectReferenceWorkspace(draft.cwd);
@@ -451,7 +482,14 @@ export class ChSessions {
     return draft.creating;
   }
 
+  uploadFile(id: string, chunks: AsyncIterable<Uint8Array>, name?: string) {
+    if (!this.fileInputs)
+      throw new RpcError("session/attachment-invalid", "File uploads are unavailable.");
+    return this.fileInputs.upload(id, chunks, name);
+  }
+
   register(rpc: RpcRegistry, streams: StreamRegistry): void {
+    this.fileInputs?.register(rpc);
     for (const [method, pinned] of [
       ["workspace/pinSession", true],
       ["workspace/unpinSession", false],
@@ -539,7 +577,9 @@ export class ChSessions {
       const draft = this.drafts.get(request.sessionId);
       if (!draft || draft.canonicalId) await this.owner(request.sessionId);
       // Validate/save before creating a native Thread. Only native path context crosses the Host channel.
-      const input = this.images?.prepare(request.content) ?? request.content;
+      const input = this.fileInputs
+        ? await this.fileInputs.prepare(this.id(request.sessionId), request.content)
+        : (this.images?.prepare(request.content) ?? request.content);
       const threadId = draft ? await this.commit(draft) : this.id(request.sessionId);
       await this.owner(threadId);
       await this.host.request("turn/start", {
@@ -547,6 +587,7 @@ export class ChSessions {
         input,
         ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
       });
+      this.fileInputs?.accepted(threadId, request.content);
       try {
         const view = await this.view(threadId);
         this.events.emit("api-session/status", threadId, view.thread.status.type === "active");

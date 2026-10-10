@@ -48,7 +48,7 @@ for (const source of ["codexhost", "standalone"])
       await page.goto(url);
       await page.waitForLoadState("networkidle");
       const plus = page.getByRole("button", {
-        name: source === "codexhost" ? "Add images or run commands" : "Run commands",
+        name: source === "codexhost" ? "Add files or run commands" : "Run commands",
         exact: true,
       });
       const menu = page.getByRole("listbox", { name: "Trigger suggestions", exact: true });
@@ -70,9 +70,10 @@ for (const source of ["codexhost", "standalone"])
       );
       assert.equal(await page.locator('input[type="file"]').isDisabled(), source !== "codexhost");
       if (source === "codexhost")
-        assert.match(
-          (await page.locator('input[type="file"]').getAttribute("accept")) ?? "",
-          /image\/png/u,
+        assert.equal(
+          await page.locator('input[type="file"]').getAttribute("accept"),
+          null,
+          "shared picker accepts arbitrary file types",
         );
       await plus.click();
       await menu.waitFor({ state: "hidden" });

@@ -95,7 +95,7 @@ for (const mobile of [false, true]) {
       const add = async () => {
         if (mobile) {
           await page
-            .getByRole("button", { name: "Add images or run commands", exact: true })
+            .getByRole("button", { name: "Add files or run commands", exact: true })
             .click();
           const chooser = page.waitForEvent("filechooser");
           await page.getByRole("option", { name: /^File\b/u }).click();

@@ -10,6 +10,7 @@ import { build } from "esbuild";
 import { HostClientChannel, discoverHostClientChannel } from "@codexhost/desktop-control";
 import { encodeHarnessPluginRoute, harnessIdSchema } from "@codexhost/shared-contracts";
 import { connectLocalSharedHost } from "../../src/local-shared-host.js";
+import { watchWindowsProcess } from "./windows-process-watcher.js";
 
 const exec = promisify(execFile);
 const repository = path.resolve(import.meta.dirname, "../../../..");
@@ -90,7 +91,9 @@ for (const first of ["Web", "Desktop"])
         process.execPath,
       ];
       const clients: HostClientChannel[] = [];
+      let childInstance: Awaited<ReturnType<typeof watchWindowsProcess>> | undefined;
       t.after(async () => {
+        await childInstance?.close();
         for (const client of clients) client.close();
         await exec(launcher, ["host", "stop", ...args], { env, timeout: 15_000 });
         await until(
@@ -180,6 +183,14 @@ for (const first of ["Web", "Desktop"])
         await readFile(path.join(data, "fixture-native/descendant.json"), "utf8"),
       ) as { pid: number };
       process.kill(descendant.pid, 0);
+      if (process.platform === "win32") {
+        childInstance = await watchWindowsProcess({
+          pid: descendant.pid,
+          root,
+          repository,
+          environment: env,
+        });
+      }
       const commandLog = await readFile(path.join(data, "fixture-native/commands.jsonl"), "utf8");
       assert.equal(commandLog.trim().split("\n").length, 1);
       // Native metadata is available even though no Desktop process has ever existed.
@@ -207,10 +218,17 @@ for (const first of ["Web", "Desktop"])
       );
       process.kill(endpoint.pid, "SIGKILL");
       await exec(launcher, ["host", "ensure", ...args], { env, timeout: 45_000 });
-      assert.throws(
-        () => process.kill(descendant.pid, 0),
-        "old Harness child must exit before the new owner is admitted",
-      );
+      if (childInstance) {
+        assert.ok(
+          await childInstance.hasExited(),
+          "old Harness process instance must exit before the new owner is admitted",
+        );
+      } else {
+        assert.throws(
+          () => process.kill(descendant.pid, 0),
+          "old Harness child must exit before the new owner is admitted",
+        );
+      }
       const recovered = await connect();
       const newOwner = await discoverHostClientChannel(path.join(data, "client-hosts"));
       assert.ok(newOwner);

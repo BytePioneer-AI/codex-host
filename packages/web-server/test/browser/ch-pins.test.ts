@@ -72,6 +72,13 @@ for (const mobile of [false, true]) {
         "no duplicated project row",
       );
       assert.equal(await pins.locator('[data-harness-id="fake"]').count(), 2);
+      // Pinning changes row order: measure after the existing 200ms row glide,
+      // not while the project header is still translating from its old position.
+      await page.waitForFunction(() =>
+        [...document.querySelectorAll("[data-row-key]")].every((element) =>
+          element.getAnimations().every((animation) => animation.playState !== "running"),
+        ),
+      );
       const pinBox = await pins.boundingBox(),
         folderBox = await folder.boundingBox();
       assert.ok(pinBox && folderBox && pinBox.y + pinBox.height <= folderBox.y);

@@ -14,6 +14,8 @@ import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { ImportIcon } from "./ImportIcon.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
+import { HostConnectionStatus } from "./HostConnectionStatus.tsx";
+import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ensureServiceWorker } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
@@ -91,6 +93,18 @@ export function apply(ctx: ClientContext): void {
         inject: () => ({ list: ctx.sessions.list }),
       },
       SessionHarnessIcon,
+    ),
+  );
+
+  ctx.slots.inject("conversation.session.header.utilities", () =>
+    ctx.slots.register(
+      {
+        name: "conversation.session.header.utilities",
+        id: "codexhost.connection",
+        locale: NS,
+        inject: () => ({ list: ctx.sessions.list }),
+      },
+      HostConnectionStatus,
     ),
   );
 

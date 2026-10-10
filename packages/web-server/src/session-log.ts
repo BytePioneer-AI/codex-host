@@ -85,6 +85,9 @@ export function defaultProjections(): Record<string, unknown> {
     plan: { active: false, pending: false },
     modelSelection: { lastUsed: null, next: null },
     sessionListMetadata: { blank: true, lastPromptAt: null },
+    // Both Web session sources currently submit text only; do not advertise
+    // the migrated file picker as an available upload path.
+    attachmentInput: { enabled: false },
     imageLimits: {
       maxImageBytes: 20971520,
       maxImagesPerMessage: 20,
@@ -285,6 +288,16 @@ export class SessionLog {
 
   private pushStream(frame: unknown): void {
     for (const sink of this.followers) sink.push({ type: "assistant-stream", frame });
+  }
+
+  /** End the carrier so clients reopen a fresh generation, retaining visible content until then. */
+  reconnectFollowers(): void {
+    for (const sink of [...this.followers]) sink.end();
+  }
+
+  /** Retire a disposable history generation; existing clients must reopen it. */
+  invalidate(code: string, message: string): void {
+    for (const sink of [...this.followers]) sink.fail(code, message);
   }
 
   // ---- followers ---------------------------------------------------------------------------

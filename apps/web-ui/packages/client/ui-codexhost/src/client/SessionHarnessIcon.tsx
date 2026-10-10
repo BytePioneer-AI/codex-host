@@ -1,9 +1,9 @@
 /** Sidebar branding reads durable per-session metadata without retaining/opening history. */
-import { useState, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { HostObservable } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
-import { IconDataOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
+import { IconDataOutlineRegular, RemotePluginIcon } from "@deepseek-ai/dsh-client-ui-primitives";
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
@@ -23,7 +23,6 @@ export function SessionHarnessIcon({
     (fn) => list.subscribe(fn),
     () => list.getSnapshot().byId[sessionId]?.projectionValues?.harnessIdentity,
   );
-  const [failedId, setFailedId] = useState<string | null>(null);
   if (!identity) return null;
   return (
     <span
@@ -33,19 +32,13 @@ export function SessionHarnessIcon({
       aria-label={identity.name}
       style={{ display: "inline-flex", width: 16, height: 16, flexShrink: 0 }}
     >
-      {failedId === identity.id ? (
-        <IconDataOutlineRegular size={16} />
-      ) : (
-        <img
-          src={`/harness-icons/${encodeURIComponent(identity.id)}`}
-          width={16}
-          height={16}
-          alt=""
-          aria-hidden="true"
-          style={{ objectFit: "contain" }}
-          onError={() => setFailedId(identity.id)}
-        />
-      )}
+      <RemotePluginIcon
+        id={identity.id}
+        src={`/harness-icons/${encodeURIComponent(identity.id)}`}
+        presentationUrl="/harness-icons/presentation.json"
+        size={16}
+        fallback={<IconDataOutlineRegular size={16} />}
+      />
     </span>
   );
 }

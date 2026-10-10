@@ -140,15 +140,19 @@ export class InputTriggerController {
   track(draft: string, caret: number, guard: TriggerGuard, draftRev: number): void {
     if (this.disposed) return;
     const launched = this.launcher.getSnapshot() !== null;
+    // Focus restoration can track the same selection more than once. Keep the
+    // launcher identity (including aria-expanded and toggle-to-close) until
+    // the draft/caret changes or the input phase suppresses this trigger.
+    if (
+      launched &&
+      (guard.tier === "plain" || (guard.tier === "claimed" && this.hit?.trigger === "@")) &&
+      this.hit?.span.draftRev === draftRev &&
+      this.hit.span.end === caret
+    )
+      return;
     this.clearLauncher();
     const raw = detectTrigger(draft, caret, guard);
     if (raw === null) {
-      // A launcher-opened menu is opened by a gesture, not by a typed token:
-      // the focus it takes to drive it with the keyboard re-tracks an empty
-      // draft right away, and that track must not close what the gesture
-      // opened. The launcher flag is cleared here, so this holds for that one
-      // follow-up track only; typing or picking takes over from there.
-      if (launched) return;
       this.hit = null;
       // A frozen-tier track is the submit gesture's own bookkeeping, not a new
       // intent from the user: a command submitted after a dismissal must not

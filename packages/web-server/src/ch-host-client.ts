@@ -3,7 +3,20 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { CdpClient, listCdpTargets } from "@codexhost/desktop-control";
+import {
+  CdpClient,
+  listCdpTargets,
+  HostClientChannel,
+  discoverHostClientChannel,
+  type HostClientUpdate,
+} from "@codexhost/desktop-control";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type {
+  ClientThreadSnapshot,
+  ClientChannelResponse,
+  ClientChannelCursor,
+} from "@codexhost/shared-contracts";
 import { RpcError } from "./transport.ts";
 
 export interface ChHostClient {
@@ -12,6 +25,12 @@ export interface ChHostClient {
   /** Native Desktop pin service; a change returns the confirmed complete local pin order. */
   pins(change?: ChPinChange): Promise<string[]>;
   close(): void;
+  readonly realtime?: {
+    subscribe(listener: (event: HostClientUpdate) => void, after?: ClientChannelCursor): () => void;
+    request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T>;
+    snapshot(threadId: string): Promise<ClientThreadSnapshot>;
+    respond(input: ClientChannelResponse): Promise<{ resolved: boolean }>;
+  };
 }
 
 export interface ChPinChange {
@@ -210,4 +229,49 @@ export class DesktopChHostClient implements ChHostClient {
     this.client?.close();
     this.client = undefined;
   }
+}
+
+/** Prefer the stable owner channel; explicit CDP remains the legacy/test route.
+ * Once selected, an event connection never silently falls back after a failure.
+ */
+export async function createChHostClient(
+  options: { cdp?: string; directory?: string } = {},
+): Promise<ChHostClient> {
+  const desktop = new DesktopChHostClient(options.cdp);
+  const directory = options.directory ?? join(homedir(), ".codexhost", "client-hosts");
+  const endpoint =
+    options.cdp && !options.directory ? null : await discoverHostClientChannel(directory);
+  if (!endpoint && options.directory !== undefined)
+    throw new RpcError(
+      "host/unavailable",
+      "CH client channel not found; start an updated local Host or check --ch-control-directory.",
+    );
+  if (!endpoint) return desktop;
+  const channel = new HostClientChannel(directory, endpoint);
+  try {
+    await channel.start();
+  } catch (error) {
+    channel.close();
+    throw error;
+  }
+  return {
+    realtime: channel,
+    async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
+      try {
+        return await channel.request<T>(method, params);
+      } catch (error) {
+        throw new RpcError(
+          "host/rejected",
+          error instanceof Error ? error.message : "Host request failed",
+        );
+      }
+    },
+    projects: (ids) => desktop.projects(ids),
+    // GUI metadata still belongs to Desktop, not the Thread execution channel.
+    pins: (change) => desktop.pins(change),
+    close() {
+      channel.close();
+      desktop.close();
+    },
+  };
 }

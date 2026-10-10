@@ -1,6 +1,10 @@
 /** Copy for the CodexHost import panel. */
 export const en = {
   panel: "Import sessions",
+  "connection.live": "Live",
+  "connection.liveHint": "Connected to the shared CH owner",
+  "connection.reconnecting": "Reconnecting…",
+  "connection.reconnectingHint": "CH is unavailable. Commands are not retried automatically.",
   title: "Import sessions",
   subtitle:
     "Continue a session you started in a Harness on this computer. Its history is loaded when you open it.",
@@ -31,6 +35,10 @@ export type ImportLocaleKey = keyof typeof en;
 
 export const zh: Record<ImportLocaleKey, string> = {
   panel: "导入会话",
+  "connection.live": "实时同步",
+  "connection.liveHint": "已连接同一个 CH 会话所有者",
+  "connection.reconnecting": "正在重连…",
+  "connection.reconnectingHint": "CH 暂不可用，操作不会自动重试。",
   title: "导入会话",
   subtitle: "继续你在这台电脑上用 Harness 开过的会话，打开时会加载完整历史。",
   search: "按标题或文件夹搜索",

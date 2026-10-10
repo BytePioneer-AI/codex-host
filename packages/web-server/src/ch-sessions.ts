@@ -14,6 +14,8 @@ import { nativePermissionView } from "./session-presentation.ts";
 import { projectGroupRoot } from "./ch-project-groups.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
+import { ChRealtime } from "./ch-realtime.ts";
+import { ChInteractions } from "./ch-interactions.ts";
 import { requestOf } from "./store.ts";
 import {
   type EventHub,
@@ -50,6 +52,11 @@ export class ChSessions {
   private refreshing: Promise<void> | undefined;
   private timer?: NodeJS.Timeout;
   private closed = false;
+  private readonly realtime: ChRealtime | undefined;
+  private readonly interactions: ChInteractions | undefined;
+  private hostOnline = true;
+  private hostEpoch: string | undefined;
+  private readonly viewOrigins = new Map<string, number>();
   notifier: ((notification: SessionNotification) => void) | undefined;
   constructor(
     private readonly host: ChHostClient,
@@ -58,6 +65,48 @@ export class ChSessions {
   ) {
     this.catalog = new ChHarnessCatalog(host);
     this.pins = new ChPinnedThreads(host, workspaces, (id) => this.ownership.has(id));
+    this.interactions = host.realtime
+      ? new ChInteractions(host.realtime, events, (id, message) => {
+          this.views.get(id)?.log.setProjection("nativeInteractionError", message);
+        })
+      : undefined;
+    this.realtime = host.realtime
+      ? new ChRealtime(host.realtime, {
+          thread: (id) => this.view(id),
+          catalog: () => this.refresh(),
+          connection: (online) => {
+            this.hostOnline = online;
+            if (!online) this.interactions?.clear();
+            for (const view of this.views.values())
+              view.log.setProjection("nativeConnection", {
+                state: online ? "connected" : "reconnecting",
+              });
+          },
+          reset: (epoch) => {
+            if (this.hostEpoch && this.hostEpoch !== epoch) {
+              const old = [...this.views.values()];
+              this.views.clear();
+              this.readingViews.clear();
+              this.loadingControls.clear();
+              this.historyReadAt.clear();
+              this.interactions?.clear();
+              for (const view of old) {
+                view.retire();
+                this.viewOrigins.set(view.thread.id, view.log.lastSeq + 2);
+                view.log.reconnectFollowers();
+              }
+            }
+            this.hostEpoch = epoch;
+          },
+          error: (id, error) => {
+            if (error instanceof RpcError && error.code === "host/resync") return;
+            this.views.get(id)?.log.setProjection("nativeConnection", {
+              state: "reconnecting",
+              message: error instanceof Error ? error.message : "CH state is unavailable",
+            });
+          },
+        })
+      : undefined;
   }
 
   private id(id: string): string {
@@ -172,6 +221,7 @@ export class ChSessions {
     const row = this.rows.get(id);
     if (
       reuseIdle &&
+      !this.realtime &&
       cached &&
       row &&
       row.status.type !== "active" &&
@@ -180,7 +230,22 @@ export class ChSessions {
       Date.now() - (this.historyReadAt.get(id) ?? 0) < 30_000
     )
       return Promise.resolve(cached);
-    const reading = this.readView(id, !reuseIdle).finally(() => this.readingViews.delete(id));
+    const reading = this.readView(id, !reuseIdle)
+      .catch((error: unknown) => {
+        if (
+          !this.closed &&
+          error instanceof Error &&
+          "code" in error &&
+          (error.code === "host/resync" || error.code === -32094)
+        ) {
+          if (this.readingViews.get(id) === reading) this.readingViews.delete(id);
+          return this.view(id, reuseIdle);
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (this.readingViews.get(id) === reading) this.readingViews.delete(id);
+      });
     this.readingViews.set(id, reading);
     return reading;
   }
@@ -193,18 +258,43 @@ export class ChSessions {
       throw new RpcError("session/not-external", "CH did not confirm external Thread ownership.");
     let view = this.views.get(id);
     if (!view) {
-      view = new ChThreadHistory(this.host, row, harnessId, (sessionId, key, value, seq) => {
-        for (const sink of this.controls)
-          sink.push({ type: "projection", sessionId, key, value, seq });
-      });
+      view = new ChThreadHistory(
+        this.host,
+        row,
+        harnessId,
+        (sessionId, key, value, seq) => {
+          for (const sink of this.controls)
+            sink.push({ type: "projection", sessionId, key, value, seq });
+        },
+        this.viewOrigins.get(id),
+      );
       this.views.set(id, view);
     }
-    await view.refresh(force);
+    try {
+      await view.refresh(force);
+    } catch (error) {
+      if (error instanceof RpcError && error.code === "host/history-changed") {
+        view.retire();
+        this.views.delete(id);
+        this.historyReadAt.delete(id);
+        this.loadingControls.delete(id);
+        view.log.invalidate(error.code, error.message);
+      }
+      throw error;
+    }
+    if (this.views.get(id) !== view)
+      throw new RpcError("host/resync", "Host snapshot was superseded by a new generation");
+    if (view.ownerSnapshot && this.hostOnline && !this.closed)
+      this.interactions?.update(view.ownerSnapshot);
+    if (this.realtime)
+      view.log.setProjection("nativeConnection", {
+        state: this.hostOnline ? "connected" : "reconnecting",
+      });
     this.historyReadAt.set(id, Date.now());
-    view.log.setProjection("harnessIdentity", {
-      id: harnessId,
-      name: await this.catalog.name(harnessId),
-    });
+    const name = await this.catalog.name(harnessId);
+    if (this.views.get(id) !== view)
+      throw new RpcError("host/resync", "Host snapshot was superseded by a new generation");
+    view.log.setProjection("harnessIdentity", { id: harnessId, name });
     this.loadControls(view, harnessId, force);
     return view;
   }
@@ -212,9 +302,13 @@ export class ChSessions {
     const id = view.thread.id;
     if (!force && this.loadingControls.has(id)) return;
     // Runtime inspection/config discovery must not gate the history snapshot.
-    const loading = Promise.all([this.owner(id), this.catalog.inspect(harnessId, view.thread.cwd)])
+    const loading = Promise.all([
+      view.ownerSnapshot ? Promise.resolve(view.ownerSnapshot.configuration) : this.owner(id),
+      this.catalog.inspect(harnessId, view.thread.cwd),
+    ])
       .then(([owner, inspection]) => {
-        if (this.closed || this.loadingControls.get(id) !== loading) return;
+        if (this.closed || this.views.get(id) !== view || this.loadingControls.get(id) !== loading)
+          return;
         view.log.setProjection(
           "nativePermissions",
           nativePermissionView(harnessId, inspection as Inspection, true),
@@ -434,8 +528,19 @@ export class ChSessions {
         input: request.content,
         ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
       });
-      this.events.emit("api-session/status", threadId, true);
-      await this.view(threadId);
+      try {
+        const view = await this.view(threadId);
+        this.events.emit("api-session/status", threadId, view.thread.status.type === "active");
+      } catch {
+        // A failed read cannot turn an acknowledged write into a rejected send.
+        if (this.realtime) {
+          this.views.get(threadId)?.log.setProjection("nativeConnection", {
+            state: "reconnecting",
+            message: "CH accepted your message; waiting to synchronize its state.",
+          });
+          this.realtime.invalidate(threadId);
+        }
+      }
       return { accepted: true };
     });
     rpc.register("session/cancel", async (args) => {
@@ -543,6 +648,8 @@ export class ChSessions {
         });
         return;
       }
+      const unfollow = this.realtime?.follow(this.id(request.address.sessionId));
+      sink.onClose(() => unfollow?.());
       const view = await this.view(request.address.sessionId, true);
       view.log.follow(sink, request);
       // Publish first; prefetch just one older page, never drain all history.
@@ -550,6 +657,7 @@ export class ChSessions {
         if (!sink.closed && !this.closed) void view.prefetchOlder().catch(() => {});
       });
       sink.onClose(() => clearImmediate(prefetch));
+      if (this.realtime) return;
       let busy = false;
       const poll = setInterval(() => {
         if (busy || sink.closed) return;
@@ -576,9 +684,15 @@ export class ChSessions {
       defaultOptions: [],
       defaultPreset: "",
     }));
+    // /model is a client-owned contribution backed by the model-selection API,
+    // not an executable Host command. Advertising it here breaks the menu roster.
     rpc.register("commands/list", () => [
-      { name: "permission", description: "Select a native permission mode" },
-      { name: "model", description: "Select a native model" },
+      {
+        definitionId: "@deepseek-ai/dsh-permission-presets",
+        name: "permission",
+        description: "Select a native permission mode",
+        input: { hint: "<mode>" },
+      },
     ]);
     rpc.register("commands/execute", async (args) => {
       const id = String(args.agentId ?? "");
@@ -646,6 +760,8 @@ export class ChSessions {
   }
   async close(): Promise<void> {
     this.closed = true;
+    this.realtime?.close();
+    this.interactions?.clear();
     clearInterval(this.timer);
     this.host.close();
     for (const sink of this.controls) sink.end();

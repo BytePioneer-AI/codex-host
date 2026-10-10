@@ -2,6 +2,7 @@
 import { useRef, useState, useSyncExternalStore } from "react";
 import {
   IconDataOutlineRegular,
+  RemotePluginIcon,
   IconWarningOutlineRegular,
   Menu,
   type MenuEntry,
@@ -14,16 +15,14 @@ import css from "./HarnessSelect.module.css";
 
 /** Show the plugin's own brand asset, with a generic glyph when it has no icon. */
 function HarnessIcon({ id }: { id: string }) {
-  const [failed, setFailed] = useState(false);
-  return failed ? (
-    <IconDataOutlineRegular size={20} />
-  ) : (
-    <img
-      className={css.icon}
+  return (
+    <RemotePluginIcon
+      id={id}
       src={`/harness-icons/${encodeURIComponent(id)}`}
-      alt=""
-      aria-hidden="true"
-      onError={() => setFailed(true)}
+      presentationUrl="/harness-icons/presentation.json"
+      size={20}
+      className={css.icon}
+      fallback={<IconDataOutlineRegular size={20} />}
     />
   );
 }

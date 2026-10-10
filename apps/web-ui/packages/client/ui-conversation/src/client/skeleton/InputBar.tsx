@@ -134,6 +134,7 @@ export const InputBar = memo(function InputBar({
   // The deployment's image-intake limits (absent while no attachment service
   // is composed — the pre-check below then defers entirely to the host).
   const imageLimits = useProjection("imageLimits");
+  const attachmentsEnabled = useProjection("attachmentInput")?.enabled !== false;
   // Prompt failures are ordinary failures (no create/attach transaction exists
   // anymore): the toast announces promptError, the draft stays in the machine,
   // and the user resubmits. A remount over a session whose machine still holds
@@ -256,6 +257,10 @@ export const InputBar = memo(function InputBar({
   const intakeFiles = useCallback(
     (files: readonly File[], directories?: ReadonlySet<File>): void => {
       if (subagent !== null || addFiles === undefined || files.length === 0) return;
+      if (!attachmentsEnabled) {
+        showToast(t("attachment.unavailable"));
+        return;
+      }
       const rejected = ((): string | null => {
         if (imageLimits !== undefined) {
           const mediaTypes = imageLimits.mediaTypes as readonly string[];
@@ -280,10 +285,12 @@ export const InputBar = memo(function InputBar({
       })();
       if (rejected !== null) showToast(rejected);
     },
-    [subagent, addFiles, attachments, imageLimits, showToast, t],
+    [subagent, addFiles, attachmentsEnabled, attachments, imageLimits, showToast, t],
   );
 
-  const canAcceptDrop = subagent === null && !locked && !machineBusy && addFiles !== undefined;
+  const canAcceptDrop =
+    attachmentsEnabled && subagent === null && !locked && !machineBusy && addFiles !== undefined;
+  const commandMenuLabel = t(attachmentsEnabled ? "input.commands" : "input.commandsOnly");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const onPickFiles = (e: ChangeEvent<HTMLInputElement>): void => {
@@ -511,11 +518,11 @@ export const InputBar = memo(function InputBar({
         />
         <div ref={rowRef} className={css.row}>
           <div className={css.tools} hidden={activity}>
-            <Tooltip label={t("input.commands")} side="top" delayMs={500}>
+            <Tooltip label={commandMenuLabel} side="top" delayMs={500}>
               <button
                 type="button"
                 className={css.add}
-                aria-label={t("input.commands")}
+                aria-label={commandMenuLabel}
                 aria-haspopup="listbox"
                 aria-expanded={commandMenuOpen}
                 disabled={locked || toggleCommandMenu === undefined}
@@ -529,7 +536,7 @@ export const InputBar = memo(function InputBar({
               ref={fileInputRef}
               type="file"
               multiple
-              disabled={subagent !== null}
+              disabled={!attachmentsEnabled || subagent !== null}
               hidden
               onChange={onPickFiles}
             />

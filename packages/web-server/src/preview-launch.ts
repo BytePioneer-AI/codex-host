@@ -13,6 +13,7 @@ export interface PreviewOptions {
   harness?: string;
   "session-source"?: string;
   "ch-cdp"?: string;
+  "ch-control-directory"?: string;
 }
 
 /**
@@ -51,6 +52,9 @@ export function previewLaunch(
       "--session-source",
       options["session-source"] ?? "codexhost",
       ...(options["ch-cdp"] ? ["--ch-cdp", options["ch-cdp"]] : []),
+      ...(options["ch-control-directory"]
+        ? ["--ch-control-directory", options["ch-control-directory"]]
+        : []),
       "--host",
       "127.0.0.1",
       "--port",

@@ -3,13 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
-import { DesktopChHostClient } from "../src/ch-host-client.ts";
+import { createChHostClient, DesktopChHostClient } from "../src/ch-host-client.ts";
 import { ChPinnedThreads } from "../src/ch-pinned-threads.ts";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DataDir } from "../src/store.ts";
 import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../src/transport.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
+import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
 
 it("uses Desktop's local native pin service, preserves read source and does not repeat no-op writes", async (t) => {
   const host = new FakeChHost();
@@ -191,6 +192,27 @@ it("serializes polling with pin changes so a slow old snapshot cannot undo a con
   host.pinError = undefined;
   await pins.sync({ threadId: "new", pinned: false });
   assert.deepEqual(observed.at(-1), []);
+});
+
+it("keeps native Desktop pins available beside the selected realtime Host channel", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-channel-pins-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChChannel();
+  host.add("shared", root);
+  const channel = await startFakeChChannel(host, root);
+  const debuggerServer = await startFakeChDebugger(host);
+  const client = await createChHostClient({ directory: root, cdp: debuggerServer.endpoint });
+  t.after(async () => {
+    client.close();
+    await channel.close();
+    await debuggerServer.close();
+  });
+  assert.ok(client.realtime, "Thread traffic must retain the realtime owner");
+  assert.deepEqual(await client.pins({ threadId: "shared", pinned: true }), ["shared"]);
+  assert.deepEqual(await client.pins(), ["shared"]);
+  assert.equal((await client.realtime.snapshot("shared")).thread.id, "shared");
+  assert.equal(host.pinWrites.length, 1);
+  assert.deepEqual(await client.pins({ threadId: "shared", pinned: false }), []);
 });
 
 it("standalone mode retains local pin persistence", async (t) => {

@@ -19,6 +19,7 @@ export async function startServer(
   cwd: string,
   entry: string[],
   args: string[],
+  options: { authenticated?: boolean } = {},
 ): Promise<string> {
   const data = mkdtempSync(join(tmpdir(), "codexhost-web-test-"));
   // UI-only checks may target an already packaged server, without compiling
@@ -39,7 +40,7 @@ export async function startServer(
       data,
       "--workspace",
       join(data, "workspace"),
-      "--no-auth",
+      ...(options.authenticated ? [] : ["--no-auth"]),
       ...(!args.includes("--session-source") ? ["--session-source", "standalone"] : []),
       ...args,
     ],

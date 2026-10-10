@@ -25,6 +25,7 @@ import {
 } from "./delegation-types.js";
 import { createProductionExternalThreadStore } from "./external-thread-repository.js";
 import { SharedThreadOwner } from "./shared-thread-owner.js";
+import { startClientChannelServer } from "./client-channel-server.js";
 import {
   SharedThreadBridge,
   connectSharedThreads,
@@ -179,9 +180,18 @@ async function runWithConsoleControl(
         return undefined;
       })
     : undefined;
+  const clients = enabled
+    ? await startClientChannelServer({ target: host, environment }).catch((error: unknown) => {
+        process.stderr.write(
+          `codexhost Host Runtime: client channel unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        return undefined;
+      })
+    : undefined;
   try {
     return await host.run();
   } finally {
+    await clients?.close().catch(() => undefined);
     await control?.close().catch(() => undefined);
   }
 }

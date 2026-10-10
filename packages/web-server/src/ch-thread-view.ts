@@ -1,6 +1,12 @@
 /** In-memory projection of the CH protocol onto the existing Web UI wire format. */
 import { SessionLog, type ProjectionListener } from "./session-log.ts";
-import { TurnProjector, type HostItem, type TurnOutcomeShape } from "./projector.ts";
+import { RpcError } from "./transport.ts";
+import {
+  TurnProjector,
+  type HostItem,
+  type HostItemOutcome,
+  type TurnOutcomeShape,
+} from "./projector.ts";
 
 export interface ChItem {
   id: string;
@@ -11,14 +17,14 @@ export interface ChTurn {
   id: string;
   status: string;
   items: ChItem[];
-  error?: { message?: string };
+  error?: { message?: string | undefined } | null | undefined;
 }
 export interface ChThread {
   id: string;
   cwd: string;
   modelProvider: string;
-  name?: string | null;
-  preview?: string;
+  name?: string | null | undefined;
+  preview?: string | undefined;
   createdAt: number;
   updatedAt: number;
   status: { type: string };
@@ -100,8 +106,22 @@ export class ChThreadView {
   readonly log: SessionLog;
   private turns = new Map<
     string,
-    { projector: TurnProjector; items: Map<string, HostItem>; done: boolean }
+    {
+      projector: TurnProjector;
+      items: Map<string, HostItem>;
+      completed: Set<string>;
+      done: boolean;
+    }
   >();
+  private readonly liveOutput = new Map<string, string>();
+  private retired = false;
+  retire(): void {
+    this.retired = true;
+  }
+  protected ensureCurrent(): void {
+    if (this.retired)
+      throw new RpcError("host/resync", "Host snapshot was superseded by a new generation");
+  }
   constructor(
     readonly thread: ChThread,
     private readonly harnessId: string,
@@ -110,6 +130,7 @@ export class ChThreadView {
     sequenceStart = 0,
     hasEarlier: () => boolean = () => false,
   ) {
+    const published = new Map<string, string>();
     this.log = new SessionLog(
       {
         version: 4,
@@ -126,7 +147,12 @@ export class ChThreadView {
         writeJson: () => {},
         appendLine: () => {},
       },
-      onProjection,
+      (id, key, value, seq) => {
+        const fingerprint = JSON.stringify(value) ?? "undefined";
+        if (published.get(key) === fingerprint) return;
+        published.set(key, fingerprint);
+        onProjection(id, key, value, seq);
+      },
       sequenceStart,
       hasEarlier,
     );
@@ -134,6 +160,7 @@ export class ChThreadView {
 
   /** Older native pages are projected separately, without changing the visible tail. */
   prepend(turns: ChTurn[]): void {
+    this.ensureCurrent();
     if (!turns.length) return;
     if (turns.some((turn) => this.turns.has(turn.id) || !finished(turn.status)))
       throw new Error("Older CH history overlaps the loaded window or contains an active Turn");
@@ -148,6 +175,7 @@ export class ChThreadView {
   }
 
   update(thread: ChThread): void {
+    this.ensureCurrent();
     Object.assign(this.thread, thread);
     this.log.setProjection("title", thread.name ?? thread.preview ?? null);
     this.log.setProjection("sessionListMetadata", {
@@ -162,21 +190,30 @@ export class ChThreadView {
           turn: this.turnStart + this.turns.size + 1,
           cwd: thread.cwd,
           model: { provider: this.harnessId, model: "harness" },
+          onToolOutput: (id, output) => {
+            if (output === undefined) this.liveOutput.delete(id);
+            else this.liveOutput.set(id, output.slice(-8000));
+          },
         });
         const input = turn.items
           .filter((item) => item.type === "userMessage")
           .flatMap((item) => (Array.isArray(item.content) ? item.content : []));
-        projector.begin(input, undefined);
-        view = { projector, items: new Map(), done: false };
+        const clientId = turn.items.find(
+          (item) => item.type === "userMessage" && typeof item.clientId === "string",
+        )?.clientId;
+        projector.begin(input, typeof clientId === "string" ? clientId : undefined);
+        view = { projector, items: new Map(), completed: new Set(), done: false };
         this.turns.set(turn.id, view);
       }
       if (view.done) continue;
       for (const item of turn.items) {
         const projected = itemOf(item);
-        if (!projected) continue;
+        if (!projected || view.completed.has(item.id)) continue;
         const old = view.items.get(item.id);
         if (!old) {
           view.projector.itemStarted(projected);
+          if (projected.type === "commandExecution" && projected.output)
+            view.projector.itemUpdated(item.id, { type: "output.append", text: projected.output });
         } else if (
           (projected.type === "agentMessage" || projected.type === "reasoning") &&
           (old.type === "agentMessage" || old.type === "reasoning") &&
@@ -184,18 +221,50 @@ export class ChThreadView {
         ) {
           const text = projected.text.slice(old.text.length);
           if (text) view.projector.itemUpdated(item.id, { type: "text.append", text });
+        } else if (
+          (projected.type === "agentMessage" || projected.type === "reasoning") &&
+          (old.type === "agentMessage" || old.type === "reasoning")
+        ) {
+          throw new RpcError(
+            "host/history-changed",
+            "CH changed already displayed text. Reload this page to reopen its current history.",
+          );
         } else if (projected.type === "commandExecution" && old.type === "commandExecution") {
-          const text = (projected.output ?? "").slice((old.output ?? "").length);
-          if (text) view.projector.itemUpdated(item.id, { type: "output.append", text });
+          const output = projected.output ?? "";
+          if (output.startsWith(old.output ?? "")) {
+            const text = output.slice((old.output ?? "").length);
+            if (text) view.projector.itemUpdated(item.id, { type: "output.append", text });
+          } else
+            view.projector.itemUpdated(item.id, {
+              type: "output.replace",
+              output: { content: [{ type: "text", text: output }] },
+            });
         }
         view.items.set(item.id, projected);
+        const itemOutcome: HostItemOutcome | undefined =
+          item.status === "completed"
+            ? { status: "succeeded" }
+            : item.status === "failed"
+              ? {
+                  status: "failed",
+                  error: { code: "nativeFailed", message: "Native tool execution failed" },
+                }
+              : item.status === "declined" || item.status === "interrupted"
+                ? { status: "cancelled" }
+                : undefined;
+        if (itemOutcome) {
+          view.projector.itemCompleted(projected, itemOutcome);
+          view.completed.add(item.id);
+        }
       }
       if (finished(turn.status)) {
         for (const item of view.items.values())
-          view.projector.itemCompleted(item, { status: "succeeded" });
+          if (!view.completed.has(item.itemId))
+            view.projector.itemCompleted(item, { status: "succeeded" });
         view.projector.finish(outcome(turn));
         view.done = true;
       }
     }
+    this.log.setProjection("codexhostToolOutput", Object.fromEntries(this.liveOutput));
   }
 }

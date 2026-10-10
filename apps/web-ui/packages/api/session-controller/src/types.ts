@@ -21,6 +21,8 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
     sessionListMetadata: SessionListMetadata;
     /** Host state for the boot-constant image-limit view. */
     imageLimits: null;
+    /** Transport-owned attachment intake availability. */
+    attachmentInput: null;
     /** Durable model selection already used by a request and still pending for a later request. */
     modelSelection: ModelSelectionProjectionState;
   }
@@ -29,6 +31,8 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
     sessionListMetadata: SessionListMetadata;
     /** Image-intake limits enforced by the Session prompt endpoint. */
     imageLimits: ImageAttachmentLimits;
+    /** Whether this transport accepts attachments, not the native Harness's capabilities. */
+    attachmentInput: { readonly enabled: boolean };
     /** Durable model selection already used and selected for the next request. */
     modelSelection: ModelSelectionProjection;
   }

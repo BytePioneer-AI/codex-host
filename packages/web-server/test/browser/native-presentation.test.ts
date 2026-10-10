@@ -76,6 +76,9 @@ for (const width of [390, 1280])
         .getByRole("button", { name: "New session", exact: true })
         .filter({ hasText: "New Session" })
         .click();
+      // The old bound session has the same Harness trigger label. Wait for
+      // navigation before opening the new draft's picker, especially in parallel runs.
+      await page.getByText("What should we build today?", { exact: true }).waitFor();
       await page
         .getByRole("button", { name: "Select Harness, current Fake Harness", exact: true })
         .click();

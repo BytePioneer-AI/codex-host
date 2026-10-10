@@ -35,9 +35,14 @@ export default defineConfig({
   test: {
     environment: "node",
     include,
-    ...(platformOnly
-      ? { exclude: [...configDefaults.exclude, ...platformIndependentFiles()] }
-      : {}),
+    // The Web Host owns Node test-runner suites, invoked by npm run test:web.
+    exclude: [
+      ...configDefaults.exclude,
+      "packages/web-server/test/**",
+      // Native service tests use Node's runner after building the Rust Launcher.
+      "packages/host-runtime/test/native/**",
+      ...(platformOnly ? platformIndependentFiles() : []),
+    ],
     maxWorkers: 4,
     passWithNoTests: false,
     // Hosted Windows runners have highly variable disk latency (fsync + rename

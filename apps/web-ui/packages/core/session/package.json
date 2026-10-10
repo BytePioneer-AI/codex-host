@@ -1,0 +1,30 @@
+{
+  "name": "@deepseek-ai/dsh-session",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./types": {
+      "types": "./src/types.ts",
+      "default": "./src/types.ts"
+    },
+    "./fork": {
+      "types": "./src/fork.ts",
+      "default": "./src/fork.ts"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./surface": {
+      "types": "./src/surface.ts",
+      "default": "./src/surface.ts"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-brand": "*"
+  }
+}

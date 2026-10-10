@@ -3,7 +3,12 @@ import path from "node:path";
 import { homedir } from "node:os";
 import type { JsonObject, JsonRpcRequest } from "@codexhost/protocol-core";
 import { classifyCreateRequestRoute } from "./app-server-host.js";
-import { threadOwnershipListResultSchema } from "@codexhost/shared-contracts";
+import {
+  threadOwnershipListResultSchema,
+  LOADED_SESSIONS_METHOD,
+  IDLE_RELEASE_SETTINGS_METHOD,
+  USAGE_STATISTICS_METHOD,
+} from "@codexhost/shared-contracts";
 import {
   storedSectionPlacementV1Schema,
   type StoredSectionPlacementV1,
@@ -135,10 +140,22 @@ export class SharedThreadBridge {
     return owners;
   }
 
+  handlesControl(method: string): boolean {
+    return (
+      this.options.delegateCreates &&
+      [LOADED_SESSIONS_METHOD, IDLE_RELEASE_SETTINGS_METHOD, USAGE_STATISTICS_METHOD].some(
+        (value) => value === method,
+      )
+    );
+  }
+
   async route(request: JsonRpcRequest): Promise<JsonObject | null> {
     const params = object(request.params) ? request.params : {};
     const create = this.options.delegateCreates ? classifyCreateRequestRoute(request) : null;
-    let shared = create !== null && create.selectedHarness !== "codex";
+    let shared =
+      (create !== null && create.selectedHarness !== "codex") ||
+      (this.options.delegateCreates && request.method.startsWith("codexhost/harness/")) ||
+      this.handlesControl(request.method);
     if (!shared && typeof params.threadId === "string") {
       shared =
         this.#known.has(params.threadId) ||

@@ -1,0 +1,59 @@
+{
+  "name": "@deepseek-ai/dsh-api-session-controller",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./types": {
+      "types": "./src/types.ts",
+      "default": "./src/types.ts"
+    },
+    "./remote-events": {
+      "types": "./src/remote-events.ts",
+      "default": "./src/remote-events.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./lib/client.js"
+    },
+    "./typert": {
+      "types": "./src/typert.host.ts",
+      "default": "./src/typert.host.ts"
+    },
+    "./remote": {
+      "types": "./generated/remote.d.ts",
+      "default": "./generated/remote.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/dsh-client-store": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-util-workspace-path": "*",
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-api-gateway": "*",
+    "@deepseek-ai/dsh-util-values": "*",
+    "@deepseek-ai/dsh-util-crypto": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "zod": "^4.4.3"
+  },
+  "dsh": {
+    "client": {
+      "external": [
+        "@deepseek-ai/dsh-api-gateway/client"
+      ],
+      "inject": [
+        "@deepseek-ai/dsh-api-gateway",
+        "@deepseek-ai/dsh-client-file-upload"
+      ],
+      "platform": "web"
+    }
+  }
+}

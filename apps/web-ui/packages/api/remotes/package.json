@@ -1,0 +1,59 @@
+{
+  "name": "@deepseek-ai/dsh-api-remotes",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./lib/client.js"
+    },
+    "./types": {
+      "types": "./src/types.ts",
+      "default": "./src/types.ts"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-client-product-analytics": "*",
+    "@deepseek-ai/dsh-agent-preset-registry": "*",
+    "@deepseek-ai/dsh-user-questions": "*",
+    "@deepseek-ai/dsh-commands": "*",
+    "@deepseek-ai/dsh-api-account-controller": "*",
+    "@deepseek-ai/dsh-api-settings-controller": "*",
+    "@deepseek-ai/dsh-office-to-pdf": "*",
+    "@deepseek-ai/dsh-goal": "*",
+    "@deepseek-ai/dsh-schedule": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-cordis-host-runner": "*",
+    "@deepseek-ai/dsh-plugin-manager": "*",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "*",
+    "@deepseek-ai/dsh-host-plugin-inventory": "*",
+    "@deepseek-ai/dsh-message-feedback": "*",
+    "@deepseek-ai/dsh-permission-presets": "*",
+    "@deepseek-ai/dsh-command-feedback": "*",
+    "@deepseek-ai/dsh-client-file-upload": "*",
+    "@deepseek-ai/dsh-session-reference": "*",
+    "@deepseek-ai/dsh-subagent": "*",
+    "@deepseek-ai/dsh-api-session-controller": "*",
+    "@deepseek-ai/dsh-api-job-controller": "*",
+    "@deepseek-ai/dsh-api-workspace-controller": "*",
+    "@deepseek-ai/dsh-api-terminal-controller": "*",
+    "@deepseek-ai/dsh-api-workspace-files": "*"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-gateway"
+      ],
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

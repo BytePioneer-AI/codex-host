@@ -25,6 +25,7 @@ import {
 } from "./delegation-types.js";
 import { createProductionExternalThreadStore } from "./external-thread-repository.js";
 import { SharedThreadOwner } from "./shared-thread-owner.js";
+import { startClientChannelServer } from "./client-channel-server.js";
 import {
   SharedThreadBridge,
   connectSharedThreads,
@@ -49,6 +50,7 @@ import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js"
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
 import { UsageStatistics } from "./usage-statistics.js";
+import { runLocalDesktopBridge } from "./local-shared-host.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
@@ -118,7 +120,7 @@ export function delegationCliEnvironment(environment: NodeJS.ProcessEnv): Record
   };
 }
 
-async function prepareDelegationRuntime(input: {
+export async function prepareDelegationRuntime(input: {
   environment: NodeJS.ProcessEnv;
   createHost(
     environment: NodeJS.ProcessEnv,
@@ -179,9 +181,18 @@ async function runWithConsoleControl(
         return undefined;
       })
     : undefined;
+  const clients = enabled
+    ? await startClientChannelServer({ target: host, environment }).catch((error: unknown) => {
+        process.stderr.write(
+          `codexhost Host Runtime: client channel unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        return undefined;
+      })
+    : undefined;
   try {
     return await host.run();
   } finally {
+    await clients?.close().catch(() => undefined);
     await control?.close().catch(() => undefined);
   }
 }
@@ -195,6 +206,19 @@ export async function runHostRuntime(input: {
   const { stockCodexPath } = requiredRuntimeConfiguration(input.environment);
   const { packaged: hostRuntimePath, maintenance: maintenanceRuntimePath } =
     resolveHostRuntimePaths(input);
+  if (
+    maintenanceRuntimePath &&
+    input.environment.CODEXHOST_LAUNCHER_EXECUTABLE &&
+    input.environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1" &&
+    !isRemoteUnixListenerInvocation(input.arguments)
+  ) {
+    return runLocalDesktopBridge(
+      input.environment,
+      maintenanceRuntimePath,
+      stockCodexPath,
+      input.arguments,
+    );
+  }
   const runtimeMaintenance = maintenanceRuntimePath
     ? new RuntimeMaintenance({
         runtimePath: maintenanceRuntimePath,

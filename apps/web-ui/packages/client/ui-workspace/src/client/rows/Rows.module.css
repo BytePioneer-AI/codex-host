@@ -1,0 +1,471 @@
+.projectRow,
+.sessionRow {
+  --dsh-row-surface: var(--dsw-specific-sidebar-fill);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--dsw-radius-md);
+  padding: 0 8px;
+  padding-inline-start: calc(8px + var(--dsh-workspace-indent, 0px));
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  color: var(--dsw-alias-label-primary);
+}
+
+.projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen),
+.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+  --dsh-row-surface: color-mix(
+    in srgb,
+    var(--dsw-alias-label-primary) 4%,
+    var(--dsw-specific-sidebar-fill)
+  );
+  background: var(--dsh-row-surface);
+}
+
+.sessionRow.selected {
+  --dsh-row-surface: color-mix(
+    in srgb,
+    var(--dsw-alias-label-primary) 6%,
+    var(--dsw-specific-sidebar-fill)
+  );
+  background: var(--dsh-row-surface);
+}
+
+.sessionRow.selected:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+  --dsh-row-surface: color-mix(
+    in srgb,
+    var(--dsw-alias-label-primary) 8%,
+    var(--dsw-specific-sidebar-fill)
+  );
+}
+
+.projectRow:focus-visible,
+.sessionRow:focus-visible,
+.iconButton:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.searchResultRow {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  min-height: 48px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: var(--dsw-radius-lg);
+  padding: 4px 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: var(--dsw-alias-label-primary);
+}
+
+.searchResultRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.searchResultRow.selected {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.searchResultHeading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.searchResultTitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.searchResultMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: 20px;
+}
+
+.searchResultWorkspace,
+.searchResultSnippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.searchResultWorkspace {
+  flex: none;
+  max-width: 40%;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The 40% share only protects a snippet; a snippetless match keeps the row. */
+.searchResultWorkspace:only-child {
+  max-width: 100%;
+}
+
+.searchResultSnippet {
+  flex: 1;
+  min-width: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* Compact one-line Workspace row after removing the session-count subtitle. */
+.projectRow {
+  height: 34px;
+  align-items: center;
+  box-sizing: border-box;
+}
+
+/* Session cell (figma): pad 8, a 16px status slot, then a 4px title gap. */
+.sessionRow {
+  height: 32px;
+  gap: 0;
+}
+
+.sessionRow .title {
+  margin: 0 6px 0 4px;
+}
+
+.slot {
+  position: relative;
+  flex: none;
+  width: 16px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.statusOverlay {
+  display: contents;
+}
+
+/* Keep the actual Harness visible while activity overlays a small status badge. */
+.slot:has([data-harness-id]) .statusOverlay {
+  display: inline-flex;
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  transform: scale(0.65);
+  transform-origin: bottom right;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Expansion is visible immediately after clicking, not only after pointer leave. */
+.folderExpanded {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.projectText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.renameInput {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 20px;
+  padding: 0 2px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-button-elevated-fill);
+  color: inherit;
+  outline: none;
+}
+
+/* Keep titles still; the existing hover card supplies the full text. */
+.sessionRow .title {
+  flex: 1;
+}
+
+.meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Only metadata reserves space. Desktop actions float above the trailing
+   edge rather than taking three button widths from every title. */
+.trailing {
+  flex: none;
+  display: grid;
+  align-items: center;
+  justify-items: end;
+}
+
+.trailing:empty {
+  display: none;
+}
+
+.trailing > * {
+  grid-area: 1 / 1;
+}
+
+.time {
+  flex: none;
+  font-size: 10px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.trailing:has(.pinIndicator) .time {
+  padding-inline-end: 22px;
+}
+
+.pinIndicator {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  color: var(--dsw-alias-label-caption);
+}
+
+/* Archived rows stay in place but read as inactive: titles drop to
+   the caption label step (one step above dimmed, which reads as too faint
+   over the sidebar fill). Archived search rows drop their meta line to the
+   same step so both lines read as one unit. */
+.sessionRow.archived .title,
+.searchResultRow.archived .searchResultTitle,
+.searchResultRow.archived .searchResultWorkspace,
+.searchResultRow.archived .searchResultSnippet {
+  color: var(--dsw-alias-label-caption);
+}
+
+.dot {
+  flex: none;
+}
+
+.quickActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* On touch these remain in flow with a 44px menu target. Fine-pointer
+   actions are overlaid below, so hiding them also frees the title width. */
+.rowActions {
+  flex: none;
+  display: inline-flex;
+  visibility: hidden;
+  pointer-events: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .rowActions,
+.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .rowActions,
+.searchResultRow:is(:hover, :focus-visible, :has(:focus-visible)) .rowActions {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* The search heading has no trailing time cell, so the unarchive action
+   right-aligns itself. */
+.searchResultHeading .rowActions {
+  margin-left: auto;
+}
+
+.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .time,
+.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .pinIndicator {
+  visibility: hidden;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .projectRow > .rowActions,
+  .sessionRow .rowActions {
+    position: absolute;
+    inset-inline-end: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 1;
+    background: var(--dsh-row-surface);
+    border-radius: var(--dsw-radius-sm);
+  }
+
+  .projectRow > .rowActions::before,
+  .sessionRow .rowActions::before {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: 100%;
+    width: 12px;
+    background: linear-gradient(to right, transparent, var(--dsh-row-surface));
+    pointer-events: none;
+  }
+}
+
+/* Session drag insert marker: a leading chevron and 2px rule between rows,
+   absolutely positioned so it neither resembles a row border nor changes layout. */
+.sessionRow.dropBefore,
+.sessionRow.dropAfter {
+  position: relative;
+}
+
+.sessionRow.dropBefore::before,
+.sessionRow.dropAfter::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  right: 4px;
+  height: 12px;
+  background:
+    linear-gradient(
+        55deg,
+        transparent calc(50% - 1px),
+        var(--dsw-alias-state-business-primary) calc(50% - 1px) calc(50% + 1px),
+        transparent calc(50% + 1px)
+      )
+      0 0 / 5px 7px no-repeat,
+    linear-gradient(
+        125deg,
+        transparent calc(50% - 1px),
+        var(--dsw-alias-state-business-primary) calc(50% - 1px) calc(50% + 1px),
+        transparent calc(50% + 1px)
+      )
+      0 5px / 5px 7px no-repeat,
+    linear-gradient(var(--dsw-alias-state-business-primary) 0 0) 4px 5px / calc(100% - 4px) 2px
+      no-repeat;
+  pointer-events: none;
+}
+
+.sessionRow.dropBefore::before {
+  top: -7px;
+}
+
+.sessionRow.dropAfter::after {
+  bottom: -7px;
+}
+
+/* Hover-card body (figma 169:16903): dark surface, fixed colors both themes. */
+.hoverContent {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hoverTitle {
+  font-size: 14px;
+  line-height: 20px;
+  color: #ffffff;
+  overflow-wrap: break-word;
+}
+
+.hoverPath {
+  font-size: 12px;
+  line-height: 16px;
+  color: #cfd3d6;
+  word-break: break-all;
+}
+
+.hoverTime {
+  font-size: 12px;
+  line-height: 16px;
+  color: #cfd3d6;
+}
+
+.hoverStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 20px;
+  color: #adb2b8;
+}
+
+/* Archive glyph rides the status row's text color; slight inset aligns it with the 6px status dots. */
+.hoverArchived svg {
+  flex-shrink: 0;
+  margin: 0 -4px;
+}
+
+.iconButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.iconButton:hover {
+  color: var(--dsw-alias-label-primary);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);
+}
+
+/* Touch has no hover. Keep one large explicit menu trigger; all actions
+   remain in that menu instead of exposing small accidental archive targets. */
+@media (hover: none), (pointer: coarse) {
+  .projectRow,
+  .sessionRow {
+    min-height: 44px;
+  }
+
+  .rowActions {
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .sessionRow .quickActions {
+    display: none;
+  }
+
+  .sessionRow .time,
+  .sessionRow .pinIndicator {
+    display: none;
+  }
+
+  .iconButton {
+    width: 44px;
+    height: 44px;
+  }
+}

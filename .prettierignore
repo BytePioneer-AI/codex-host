@@ -15,3 +15,8 @@ package-lock.json
 Cargo.lock
 # Generated models.dev price snapshot.
 packages/host-runtime/src/model-prices.generated.ts
+# Pinned upstream browser protocol codecs.
+apps/web-ui/**/generated/
+# Imported browser build outputs and local diagnostics.
+apps/web-ui/**/lib/
+.work/

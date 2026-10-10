@@ -28,7 +28,9 @@
     { "path": "./packages/adapters/kimi-code/tsconfig.json" },
     { "path": "./packages/adapters/zcode/tsconfig.json" },
     { "path": "./packages/adapters/codex-usage/tsconfig.json" },
+    { "path": "./packages/adapters/codex/tsconfig.json" },
     { "path": "./packages/host-runtime/tsconfig.json" },
+    { "path": "./packages/web-server/tsconfig.json" },
     { "path": "./packages/renderer-extension/tsconfig.json" }
   ]
 }

@@ -1,0 +1,34 @@
+{
+  "name": "@codexhost/web-server",
+  "version": "0.0.0",
+  "description": "Independent Web Host using the repository's Harness plugins",
+  "private": true,
+  "type": "module",
+  "license": "LGPL-3.0-only",
+  "scripts": {
+    "start": "node --import tsx src/main.ts",
+    "preview": "node --import tsx scripts/preview.ts",
+    "pretest": "npm --prefix ../.. run build:web:ui",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:browser": "node --import tsx --test test/browser/*.test.ts",
+    "test:distribution": "node --import tsx --test test/distribution/*.test.ts",
+    "pack": "node --import tsx scripts/pack.ts"
+  },
+  "dependencies": {
+    "@codexhost/desktop-control": "0.0.0",
+    "@codexhost/harness-adapter": "0.0.0",
+    "@codexhost/harness-plugin-files": "0.0.0",
+    "@codexhost/shared-contracts": "0.0.0",
+    "image-size": "2.0.2",
+    "qrcode-terminal": "0.12.0",
+    "web-push": "3.6.7",
+    "ws": "8.21.0"
+  },
+  "devDependencies": {
+    "@codexhost/adapter-codex": "0.0.0",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.28.1",
+    "playwright": "^1.49.0",
+    "tsx": "4.22.4"
+  }
+}

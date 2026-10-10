@@ -15,6 +15,9 @@
 
 # Dependencies and tool caches
 node_modules/
+.work/
+.dsh-build/
+/apps/web-ui/**/lib/
 .npm/
 .cache/
 .wix/

@@ -84,6 +84,10 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
   <img width="90%" src="docs/imgs/codexhost-native-overview.png" alt="Claude Code, Pi, Grok Build, and Oh My Pi sessions running in Codex Desktop, with Diff review, Fork, Worktree, and Agent switching">
 </div>
 
+## Standalone Web development
+
+This checkout also contains a Web/PWA application. Run `npm ci`, `npm run build:web`, then `npm run start:web` for an authenticated Web client that starts or connects to one independent local codexhost background Host. Web and Desktop can each be used alone, share canonical external Threads when both are open, and close without stopping the other or its tasks. Existing saved GUI project metadata remains read-only; no GUI projects are created. This does not launch or restart Desktop. A running older Desktop-owned Host is not taken over; update/restart it separately to transition. `-- --session-source standalone` explicitly selects the independent Harness plugin mode. See [the Web guide](docs/product/standalone-web.md) for connection requirements, plugin distribution and current limitations.
+
 ## Quick Start
 
 **Option 1: npm** (macOS / Windows / Linux)

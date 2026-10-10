@@ -1,0 +1,9 @@
+{
+  "manifestVersion": 1,
+  "id": "fake",
+  "name": "Fake Harness",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./plugin.ts",
+  "icon": "./icon.svg"
+}

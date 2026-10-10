@@ -12,6 +12,7 @@ export interface ChatNavigationInput extends Pick<ChatViewSlotProps, "loadOlder"
   readonly firstSeq: ChatNode["anchorSeq"] | null;
   readonly hasMore: boolean;
   readonly loadingOlder: boolean;
+  readonly olderFailed: boolean;
 }
 
 interface TurnJump {
@@ -26,6 +27,7 @@ interface TurnJump {
 export class ChatNavigation {
   private jump: TurnJump | null = null;
   private settleFrame: number | null = null;
+  private requestedHead: ChatNavigationInput["firstSeq"] | undefined;
 
   constructor(
     private readonly viewport: ChatViewport,
@@ -44,6 +46,7 @@ export class ChatNavigation {
 
   /** Cancel navigation when opening a Chat view. */
   reset(): void {
+    this.requestedHead = undefined;
     this.cancel();
   }
 
@@ -92,8 +95,21 @@ export class ChatNavigation {
     this.request(jump);
   };
 
+  /** User scrolling, never startup/layout restoration, may request one page near
+   * the top. Remember its boundary to prevent no-progress or in-flight loops.
+   */
+  readonly autoLoadEarlier = (): void => {
+    if (this.jump !== null || this.input.olderFailed || this.requestedHead === this.input.firstSeq)
+      return;
+    const scroll = this.viewport.readScroll();
+    if (scroll === null || scroll.metrics.top > 240) return;
+    this.loadEarlier();
+  };
+
   /** Request one older page while retaining the current semantic position. */
   readonly loadEarlier = (): void => {
+    if (!this.input.hasMore || this.input.loadingOlder) return;
+    this.requestedHead = this.input.firstSeq;
     this.cancel();
     this.viewport.beginPaging();
     this.reading.pauseFollowing();

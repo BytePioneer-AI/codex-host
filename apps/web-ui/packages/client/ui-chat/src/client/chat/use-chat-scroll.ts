@@ -52,6 +52,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
     chatScroll,
     hasMore,
     loadingOlder,
+    olderFailed,
     loadOlder,
     loadThrough,
   } = input;
@@ -61,11 +62,12 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
     () => ({
       firstSeq,
       loadingOlder,
+      olderFailed,
       hasMore,
       loadOlder,
       loadThrough,
     }),
-    [firstSeq, loadingOlder, hasMore, loadOlder, loadThrough],
+    [firstSeq, loadingOlder, olderFailed, hasMore, loadOlder, loadThrough],
   );
   const { navigation, busyTurn } = useChatNavigation(viewport, reading, navigationInput);
   const content = useRef<{
@@ -122,8 +124,20 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
   }, [reading, navigation]);
 
   useLayoutEffect(() => {
+    let olderFrame: number | null = null;
+    const queueOlder = (): void => {
+      if (olderFrame !== null || !content.current.opened || !content.current.input.ready) return;
+      olderFrame = requestAnimationFrame(() => {
+        olderFrame = null;
+        if (content.current.opened && content.current.input.ready) navigation.autoLoadEarlier();
+      });
+    };
     const disconnectViewport = viewport.connect({
-      scroll: reading.onScroll,
+      scroll: (scroll) => {
+        reading.onScroll(scroll);
+        if (scroll.movedByReader && scroll.towardStart) queueOlder();
+      },
+      olderIntent: queueOlder,
       scrollEnd: () => {
         reading.onScrollEnd();
         navigation.readerSettled();
@@ -141,6 +155,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
       processContent();
     });
     return () => {
+      if (olderFrame !== null) cancelAnimationFrame(olderFrame);
       disconnectViewport();
       disconnectReading();
       content.current.opened = false;

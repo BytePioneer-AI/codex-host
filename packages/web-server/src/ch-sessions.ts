@@ -37,6 +37,7 @@ interface Draft {
 export class ChSessions {
   readonly catalog: ChHarnessCatalog;
   private rows = new Map<string, ChThread>();
+  private publishedCatalog: Map<string, string> | undefined;
   private views = new Map<string, ChThreadHistory>();
   private readingViews = new Map<string, Promise<ChThreadHistory>>();
   private loadingControls = new Map<string, Promise<void>>();
@@ -111,6 +112,40 @@ export class ChSessions {
     }
     for (const draft of this.drafts.values()) groups.set(draft.id, draft.cwd);
     this.workspaces.setReferenceGroups(groups);
+    await this.publishCatalogChanges();
+  }
+  /** Only fields used by the list summary; history projections have their own
+   * control stream. Re-emitting every row makes each browser rebuild its entire
+   * catalog thousands of times and starves interactive history frames.
+   */
+  private catalogKey(row: ChThread): string {
+    return JSON.stringify([
+      row.name ?? row.preview ?? null,
+      row.cwd,
+      row.updatedAt,
+      row.status.type,
+      row.parentThreadId ?? null,
+      this.ownership.get(row.id),
+    ]);
+  }
+  private async publishCatalogChanges(): Promise<void> {
+    const before = this.publishedCatalog;
+    const next = new Map([...this.rows].map(([id, row]) => [id, this.catalogKey(row)]));
+    // First load is already delivered by session/list. Subsequent refreshes,
+    // including ones requested by a second browser, publish actual deltas only.
+    const changed =
+      before === undefined
+        ? []
+        : await Promise.all(
+            [...this.rows.values()]
+              .filter((row) => before.get(row.id) !== next.get(row.id))
+              .map((row) => this.summary(row)),
+          );
+    this.publishedCatalog = next;
+    for (const row of changed) this.events.emit("api-session/added", row);
+    if (before)
+      for (const id of before.keys())
+        if (!next.has(id)) this.events.emit("api-session/removed", id);
   }
   private async owner(id: string) {
     const inspection = threadInspectionSchema.parse(
@@ -292,6 +327,7 @@ export class ChSessions {
       this.workspaces.detachSession(draft.id);
       this.workspaces.attachReferencedSession(result.thread.id, result.thread.cwd);
       this.events.emit("api-session/added", await this.summary(result.thread));
+      this.publishedCatalog?.set(result.thread.id, this.catalogKey(result.thread));
       this.events.emit("codexhost/session-bound", draft.id, result.thread.id);
       return result.thread.id;
     })();
@@ -504,12 +540,7 @@ export class ChSessions {
     });
     this.timer = setInterval(() => {
       if (this.closed) return;
-      void this.refresh()
-        .then(async () => {
-          for (const row of this.rows.values())
-            this.events.emit("api-session/added", await this.summary(row));
-        })
-        .catch(() => undefined);
+      void this.refresh().catch(() => undefined);
     }, 10000);
     this.timer.unref();
   }

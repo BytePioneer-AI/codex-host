@@ -33,6 +33,9 @@ for (const width of [390, 1280])
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.goto(url);
+      // Wait for initial navigation/settings to settle before opening the mobile
+      // sidebar, which otherwise gets closed by the late default selection.
+      await page.waitForLoadState("networkidle");
       const open = page.getByRole("button", { name: "Open sidebar", exact: true });
       if (await open.first().isVisible()) await open.first().click();
       const projectFolder = page.getByRole("treeitem").filter({ hasText: /^main-project$/ });

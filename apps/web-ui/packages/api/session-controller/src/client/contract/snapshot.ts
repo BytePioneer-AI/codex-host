@@ -80,6 +80,8 @@ export interface SessionSnapshot {
   readonly openError: RemoteFailure | null;
   readonly hasMore: boolean;
   readonly loadingOlder: boolean;
+  /** An older-page failure leaves the current conversation usable and retryable. */
+  readonly olderError: RemoteFailure | null;
   readonly promptError: PromptError | null;
   readonly blank: boolean;
   readonly lastAgentError: string | null;

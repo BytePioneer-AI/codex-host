@@ -116,6 +116,7 @@ export class Session implements SessionFace {
    *  passes drop all writes once the generation moves on. */
   private openGeneration = 0;
   private loadingOlder = false;
+  private olderError: RemoteFailure | null = null;
   /** Shared low-water target of the running jump loop; null when no jump is paging. */
   private jumpTargetSeq: SessionSeq | null = null;
   /** The running jump loop's completion, shared by retargeting callers. */
@@ -449,7 +450,9 @@ export class Session implements SessionFace {
     if (this.openState !== "open" || !this.hasMore || this.loadingOlder) return;
     const events = this.events;
     if (events === undefined) return;
+    const generation = this.openGeneration;
     this.loadingOlder = true;
+    this.olderError = null;
     this.notifier.markDirty();
     try {
       await events.prepend({
@@ -457,12 +460,15 @@ export class Session implements SessionFace {
         ...HISTORY_PAGE_OPTIONS,
       });
     } catch (error) {
-      if (!isRemoteFailure(error)) {
-        console.error("[session-controller] loadOlder failed:", error);
-      }
+      if (generation === this.openGeneration)
+        this.olderError = isRemoteFailure(error)
+          ? error
+          : new RemoteError("gateway/internal", "Could not load earlier history.", {});
     } finally {
-      this.loadingOlder = false;
-      this.notifier.markDirty();
+      if (generation === this.openGeneration) {
+        this.loadingOlder = false;
+        this.notifier.markDirty();
+      }
     }
   }
 
@@ -488,6 +494,7 @@ export class Session implements SessionFace {
     };
     this.pendingHistory = pending;
     this.jumpTargetSeq = seq;
+    this.olderError = null;
     this.loadingOlder = true;
     this.notifier.markDirty();
     // Stale-pass guard (the doOpen pattern): a resync mid-loop replaces the
@@ -664,6 +671,8 @@ export class Session implements SessionFace {
   private async doOpen(generation: number): Promise<void> {
     this.openState = "loading";
     this.openError = null;
+    this.olderError = null;
+    this.loadingOlder = false;
     this.notifier.markDirty();
     const events = new SessionEventStream(this.remote, this.sessionAddress(), {
       publish: (change) => {
@@ -995,6 +1004,7 @@ export class Session implements SessionFace {
       openError: this.openError,
       hasMore: this.hasMore,
       loadingOlder: this.loadingOlder,
+      olderError: this.olderError,
       promptError: this.promptError,
       blank: this.blankBit,
       lastAgentError: this.lastAgentError,

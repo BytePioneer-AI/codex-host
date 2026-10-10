@@ -26,24 +26,27 @@
   --turn-rail-band: calc(
     var(--dsh-conversation-viewport-height, 100dvh) - var(--dsh-composer-height, 152px)
   );
-  --turn-preview-height: 100px;
+  --turn-preview-height: 104px;
 
   position: absolute;
   top: calc(var(--turn-rail-band) / 2);
-  right: 12px;
-  width: 28px;
+  left: 12px;
+  width: 36px;
   /* Fixed-pitch marks never compress: a ladder taller than the band scrolls
      inside this frame instead of pushing marks under the composer or above
      the scrollport. */
-  max-height: min(max(0px, calc(var(--turn-rail-band) - 64px)), 420px);
+  max-height: min(max(0px, calc(var(--turn-rail-band) - 64px)), 70vh, 640px);
   contain: layout;
   cursor: pointer;
   pointer-events: auto;
   transform: translateY(-50%);
 }
 
-/* The frame's inner scroller: no visible scrollbar, no scroll chaining into
-   the transcript, and gradient fades over the ends that can still scroll. */
+.frame[hidden] {
+  display: none;
+}
+
+/* No scroll chaining into the transcript; fades mark overflowing rail ends. */
 .scroller {
   position: relative;
   max-height: inherit;
@@ -57,19 +60,19 @@
 }
 
 .fadeTop {
-  mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 40px, #000 100%);
 }
 
 .fadeBottom {
-  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 40px), transparent 100%);
 }
 
 .fadeTop.fadeBottom {
   mask-image: linear-gradient(
     to bottom,
     transparent 0,
-    #000 24px,
-    #000 calc(100% - 24px),
+    #000 40px,
+    #000 calc(100% - 40px),
     transparent 100%
   );
 }
@@ -94,28 +97,34 @@
 .mark::before {
   position: absolute;
   top: 50%;
-  right: 0;
-  width: 20px;
+  left: 0;
+  width: 26px;
   height: 2px;
-  border-radius: 2px;
-  background: var(--dsw-alias-border-l4);
+  background: var(--dsw-alias-label-tertiary);
+  opacity: 0.4;
   content: "";
-  transform: translateY(-50%) scaleX(0.6);
-  transform-origin: right center;
+  transform: translateY(-50%) scaleX(0.230769);
+  transform-origin: left center;
   transition:
-    transform 140ms ease,
-    background-color 140ms ease;
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 160ms ease,
+    opacity 160ms ease;
 }
 
 /* Ordered before hover/active so those states keep their stronger tick. */
 .markUnloaded::before {
-  transform: translateY(-50%) scaleX(0.4);
-  opacity: 0.6;
+  opacity: 0.25;
 }
 
-.markPreview::before {
-  transform: translateY(-50%) scaleX(0.9);
-  background: var(--dsw-alias-label-tertiary);
+/* A 6px resting tick grows toward the hovered/scrubbed message: 10/14/20/26px. */
+.mark[data-neighbor-distance="3"]::before {
+  transform: translateY(-50%) scaleX(0.384615);
+}
+.mark[data-neighbor-distance="2"]::before {
+  transform: translateY(-50%) scaleX(0.538462);
+}
+.mark[data-neighbor-distance="1"]::before {
+  transform: translateY(-50%) scaleX(0.769231);
 }
 
 .markBusy::before {
@@ -123,8 +132,23 @@
 }
 
 .markActive::before {
+  background: var(--dsw-alias-label-primary);
+  opacity: 0.6;
+}
+
+.frame[data-previewing] .markActive:not(.markPreview):not(:focus-visible)::before {
+  background: var(--dsw-alias-label-tertiary);
+  opacity: 0.4;
+}
+
+.markPreview::before {
   transform: translateY(-50%) scaleX(1);
   background: var(--dsw-alias-label-primary);
+  opacity: 1;
+}
+
+.frame[data-scrubbing] .mark::before {
+  transition: none;
 }
 
 /* Keyboard focus outranks both resting states: the tick takes the brand color
@@ -133,6 +157,7 @@
 .mark:focus-visible::before {
   transform: translateY(-50%) scaleX(1);
   background: var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  opacity: 1;
 }
 
 .mark:focus-visible {
@@ -141,11 +166,11 @@
 
 .mark:focus-visible::after {
   position: absolute;
-  inset: 0 0 0 auto;
-  width: 20px;
+  inset: 0 auto 0 0;
+  width: 28px;
   border-radius: inherit;
   outline: 1px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
-  /* The scroller clips the right edge; keep the marker's ring inside it. */
+  /* Keep the left-aligned marker's ring inside the rail scroller. */
   outline-offset: -1px;
   content: "";
 }
@@ -157,14 +182,14 @@
     calc(var(--turn-preview-center) - var(--turn-preview-height) / 2),
     calc(100% - var(--turn-preview-height))
   );
-  right: calc(100% + 10px);
+  left: 100%;
   box-sizing: border-box;
-  width: min(300px, calc(100cqw - 120px));
+  width: min(320px, calc(100cqw - 48px));
   max-height: var(--turn-preview-height);
   overflow: hidden;
-  padding: 10px 12px;
-  border: 0;
-  border-radius: var(--dsw-radius-lg);
+  padding: 8px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: 12px;
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-layer-1);
   box-shadow: var(--dsw-elevation-panel);
@@ -181,21 +206,24 @@
 }
 
 .previewPrompt {
-  font: var(--dsw-font-xs-strong-13);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
   -webkit-line-clamp: 1;
 }
 
 .previewResponse {
   margin-top: 4px;
   color: var(--dsw-alias-label-caption);
-  font: var(--dsw-font-xxs-12);
+  font-size: 14px;
+  line-height: 20px;
   -webkit-line-clamp: 3;
 }
 
 @keyframes dsh-turn-preview-enter {
   from {
     opacity: 0;
-    transform: translateX(4px);
+    transform: translateX(-4px);
   }
   to {
     opacity: 1;
@@ -210,12 +238,6 @@
   }
   50% {
     opacity: 0.35;
-  }
-}
-
-@container (max-width: 900px) {
-  .frame {
-    display: none;
   }
 }
 

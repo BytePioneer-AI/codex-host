@@ -216,6 +216,7 @@ export function ChatView({
   const openError = useSession((s) => s.openError);
   const hasMore = useSession((s) => s.hasMore);
   const loadingOlder = useSession((s) => s.loadingOlder);
+  const olderError = useSession((s) => s.olderError);
   const [fileOpenError, setFileOpenError] = useState<{ path: string; message: string } | null>(
     null,
   );
@@ -312,6 +313,7 @@ export function ChatView({
     lastKey,
     running,
     loadingOlder,
+    olderFailed: olderError != null,
     hasMore,
     chatScroll,
     loadOlder,
@@ -344,9 +346,20 @@ export function ChatView({
             )}
             {hasMore && (
               <div className={css.older}>
-                <button type="button" disabled={loadingOlder} onClick={scroll.loadEarlier}>
-                  {loadingOlder ? t("loading") : t("chat.loadOlder")}
-                </button>
+                {olderError != null ? (
+                  <>
+                    <span role="alert">
+                      {t("chat.loadOlderError", { message: olderError.message })}
+                    </span>
+                    <button type="button" disabled={loadingOlder} onClick={scroll.loadEarlier}>
+                      {t("chat.retryOlder")}
+                    </button>
+                  </>
+                ) : (
+                  <span role={loadingOlder ? "status" : undefined}>
+                    {loadingOlder ? t("chat.loadingOlder") : t("chat.scrollOlder")}
+                  </span>
+                )}
               </div>
             )}
             <MarkdownDelegateProvider

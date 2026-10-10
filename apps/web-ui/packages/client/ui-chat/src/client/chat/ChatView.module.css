@@ -218,6 +218,12 @@
 .older {
   display: flex;
   justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 28px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
 }
 
 .older button {

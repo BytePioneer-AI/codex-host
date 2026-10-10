@@ -9,6 +9,7 @@ export type { ViewportMetrics } from "./use-scroll-follow.ts";
 export interface ViewportScroll {
   readonly metrics: ViewportMetrics;
   readonly movedByReader: boolean;
+  readonly towardStart: boolean;
 }
 
 /** Actual clamped scroll result, including any known semantic anchor and turn. */
@@ -23,6 +24,7 @@ interface ViewportEvents {
   scrollEnd: () => void;
   resize: () => void;
   interact: () => void;
+  olderIntent: () => void;
 }
 
 interface ViewportElements {
@@ -42,7 +44,16 @@ interface PagingPosition {
   } | null;
 }
 
-const READING_INTENTS = ["wheel", "touchstart", "pointerdown", "keydown", "beforematch"] as const;
+const READING_INTENTS = [
+  "wheel",
+  "touchstart",
+  "touchmove",
+  "touchend",
+  "touchcancel",
+  "pointerdown",
+  "keydown",
+  "beforematch",
+] as const;
 const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
 
 /** Owns one Chat scrollport's DOM operations, event listeners, and size observer. */
@@ -53,6 +64,7 @@ export class ChatViewport {
   private turns: ReturnType<ChatSnapshot["navigation"]["items"]> = [];
   private observation: { top: number; landing: ViewportLanding | null } = { top: 0, landing: null };
   private paging: PagingPosition | null = null;
+  private touchY: number | null = null;
 
   /**
    * Bind to the containing scrollport and observe content and viewport sizes.
@@ -93,6 +105,7 @@ export class ChatViewport {
     this.elements = null;
     this.events = null;
     this.turns = [];
+    this.touchY = null;
     this.observation = { top: 0, landing: null };
   }
 
@@ -147,6 +160,7 @@ export class ChatViewport {
     return {
       metrics,
       movedByReader: Math.abs(metrics.top - Math.min(this.observation.top, metrics.floor)) > 0.5,
+      towardStart: metrics.top < Math.min(this.observation.top, metrics.floor) - 0.5,
     };
   }
 
@@ -497,18 +511,67 @@ export class ChatViewport {
   };
 
   private readonly onIntent = (event: Event): void => {
-    if (event.type === "keydown" || event.type === "pointerdown") {
-      if (event.target instanceof Element && event.target.closest("[data-composer-seat]") !== null)
-        return;
-      if (
-        event.type === "keydown" &&
-        (!(event instanceof KeyboardEvent) || !SCROLL_KEYS.has(event.key))
-      )
-        return;
+    if (event.type === "touchend" || event.type === "touchcancel") {
+      this.touchY = null;
+      return;
     }
-    if (this.paging === null) return;
-    this.stopPreserving();
-    this.events?.interact();
+    if (
+      event.target instanceof Element &&
+      event.target.closest(
+        '[data-composer-seat], [data-turn-navigation], input, textarea, [contenteditable="true"]',
+      )
+    )
+      return;
+    if (
+      event.type === "keydown" &&
+      (!(event instanceof KeyboardEvent) || !SCROLL_KEYS.has(event.key))
+    )
+      return;
+    let older =
+      event instanceof WheelEvent
+        ? event.deltaY < 0
+        : event instanceof KeyboardEvent &&
+          (["ArrowUp", "PageUp", "Home"].includes(event.key) ||
+            (event.key === " " && event.shiftKey));
+    if (typeof TouchEvent !== "undefined" && event instanceof TouchEvent) {
+      const y = event.touches[0]?.clientY;
+      older =
+        event.type === "touchmove" && y !== undefined && this.touchY !== null && y > this.touchY;
+      this.touchY = y ?? null;
+      // Direction is unknown at touchstart. Wait for touchmove before releasing
+      // an in-flight paging anchor (touch pointerdown arrives even earlier).
+      if (event.type === "touchstart") return;
+    }
+    if (event instanceof PointerEvent && event.pointerType === "touch") return;
+    // Inner tool/code scrollports own their own upward gestures until their top.
+    if (older && event.target instanceof Element) {
+      for (
+        let node: Element | null = event.target;
+        node && node !== this.elements?.scroller;
+        node = node.parentElement
+      ) {
+        if (
+          node instanceof HTMLElement &&
+          node.scrollTop > 0 &&
+          node.scrollHeight > node.clientHeight &&
+          /auto|scroll/.test(getComputedStyle(node).overflowY)
+        ) {
+          older = false;
+          break;
+        }
+      }
+    }
+    // At the outer top repeated wheel/touch gestures cannot move the reader;
+    // keep the paging anchor while an older request is still in flight. Use the
+    // acknowledged position too: passive input may arrive after compositor scroll.
+    if (
+      this.paging !== null &&
+      !(older && this.observation.top <= 0 && (this.elements?.scroller.scrollTop ?? 0) <= 0)
+    ) {
+      this.stopPreserving();
+      this.events?.interact();
+    }
+    if (older) this.events?.olderIntent();
   };
 }
 

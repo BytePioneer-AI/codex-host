@@ -126,7 +126,7 @@ export interface ISession {
    * Extend history by at least 50 messages and two Turn starts, including a
    * partial Turn at the window's beginning. Stop at 500 messages or history
    * exhaustion even when those minima cannot be met. Publish one prepend.
-   * @returns completion; failures land in snapshot.openState/loadingOlder.
+   * @returns completion; failures land in snapshot.olderError without discarding the open history.
    */
   loadOlder(): Promise<void>;
   /**

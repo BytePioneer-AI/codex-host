@@ -50,12 +50,18 @@ it(
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(url);
+    await page.waitForLoadState("networkidle");
     const folder = page.getByRole("treeitem").filter({ hasText: /^project$/ });
     await folder.waitFor();
     if ((await folder.getAttribute("aria-expanded")) === "false") await folder.click();
     await page.getByRole("treeitem").filter({ hasText: "Long paged history" }).click();
     await page.getByText("Question 19", { exact: true }).waitFor();
     assert.equal(await page.getByText("Question 14", { exact: true }).count(), 0);
+    assert.equal(
+      await page.getByRole("button", { name: "Load earlier", exact: true }).count(),
+      0,
+      "older history should load from scrolling, not a manual paging button",
+    );
     const head = host.requests.filter((r) => r.method === "thread/turns/list");
     assert.equal(head.length, 1, "tail is visible while older native reads remain blocked");
     assert.equal(head[0]?.params.limit, 5);
@@ -64,9 +70,14 @@ it(
       mkdirSync(screenshots, { recursive: true });
       await page.screenshot({ path: join(screenshots, "paged-tail-before-older.png") });
     }
-    release();
-    const earlier = page.getByRole("button", { name: "Load earlier", exact: true });
-    await earlier.scrollIntoViewIfNeeded();
+    await page.mouse.move(700, 300);
+    await page.mouse.wheel(0, -20_000);
+    await page.getByRole("status").filter({ hasText: "Loading earlier messages…" }).waitFor();
+    // More upward input while the same page is pending must neither duplicate
+    // the request nor discard the visible anchor at the top boundary.
+    await page.mouse.wheel(0, -300);
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(150);
     const anchor = page.getByText("Question 15", { exact: true });
     await anchor.waitFor();
     const before = await anchor.boundingBox();
@@ -74,7 +85,7 @@ it(
     const key = await anchor
       .locator("xpath=ancestor::*[@data-chat-node-key][1]")
       .getAttribute("data-chat-node-key");
-    await earlier.click();
+    release();
     await page.getByText("Question 10", { exact: true }).waitFor();
     // Layout settlement only; the assertion measures the original visible message,
     // not a new synthetic offset or an injected scroll position.
@@ -90,11 +101,15 @@ it(
     );
     if (screenshots)
       await page.screenshot({ path: join(screenshots, "paged-anchor-after-prepend.png") });
-    await earlier.click();
+    await page.mouse.wheel(0, -20_000);
     await page.getByText("Question 5", { exact: true }).waitFor();
-    await earlier.click();
+    await page.waitForTimeout(150);
+    await page.mouse.wheel(0, -20_000);
     await page.getByText("Question 0", { exact: true }).waitFor();
-    assert.equal(await earlier.count(), 0);
+    assert.equal(
+      await page.getByText("Scroll up for earlier messages", { exact: true }).count(),
+      0,
+    );
     assert.equal(host.requests.filter((r) => r.method === "thread/turns/list").length, 4);
     assert.deepEqual(errors, []);
     await page.reload();

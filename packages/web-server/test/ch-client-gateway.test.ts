@@ -27,7 +27,8 @@ it(
     t.after(() => control.close());
     const cdp = await startFakeChDebugger(host);
     t.after(() => cdp.close());
-    const token = randomBytes(24).toString("base64url");
+    // A valid URL-safe token may start with a dash; use the unambiguous CLI form.
+    const token = `-${randomBytes(24).toString("base64url")}`;
     const url = await startServer(
       t,
       resolve(import.meta.dirname, ".."),
@@ -39,8 +40,7 @@ it(
         cdp.endpoint,
         "--ch-control-directory",
         directory,
-        "--token",
-        token,
+        `--token=${token}`,
       ],
       { authenticated: true },
     );

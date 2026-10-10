@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node --import tsx src/main.ts",
     "preview": "node --import tsx scripts/preview.ts",
+    "pretest": "npm --prefix ../.. run build:web:ui",
     "test": "node --import tsx --test test/*.test.ts",
     "test:browser": "node --import tsx --test test/browser/*.test.ts",
     "test:distribution": "node --import tsx --test test/distribution/*.test.ts",

@@ -48,7 +48,9 @@ export class WebFiles {
     mkdirSync(path, { recursive: true, mode: 0o700 });
     if (lstatSync(path).isSymbolicLink())
       throw new Error("Web file directory must not be a symlink");
-    this.directory = realpathSync(path);
+    // Match fs/promises.realpath's native Windows representation (drive case,
+    // junction resolution and expanded 8.3 names), not the JS fallback spelling.
+    this.directory = realpathSync.native(path);
     if (/[\u0000-\u001f\u007f]/u.test(this.directory))
       throw new Error("Invalid Web file directory");
   }
@@ -138,7 +140,7 @@ export class WebFiles {
     )
       return undefined;
     try {
-      if (realpathSync(path) !== join(folder, name) || lstatSync(path).isSymbolicLink())
+      if (realpathSync.native(path) !== join(folder, name) || lstatSync(path).isSymbolicLink())
         return undefined;
       const stat = lstatSync(path);
       if (!stat.isFile() || !Number.isSafeInteger(stat.size)) return undefined;

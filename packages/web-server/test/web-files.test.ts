@@ -15,7 +15,7 @@ import { WebFiles, WEB_FILE_LIMITS } from "../src/web-files.ts";
 import { ChFileInputs } from "../src/ch-file-inputs.ts";
 import { ChAttachments } from "../src/ch-attachments.ts";
 import { WebImages } from "../src/web-images.ts";
-import { PNG } from "./support/image.ts";
+import { nativeImageInput, PNG } from "./support/image.ts";
 async function* chunks(bytes: Uint8Array) {
   yield bytes.subarray(0, 2);
   yield bytes.subarray(2);
@@ -129,6 +129,17 @@ it("combines files/images into native path context, checks receipts before image
   assert.equal(projected[0]?.attachment?.bytes, bytes.length);
   assert.equal(projected[1]?.type, "image");
   assert.equal(projected[2]?.text, "Review both");
+  const literal = nativeImageInput("/old/desktop.png", "Keep the whole literal example")[0]?.text;
+  assert.ok(literal);
+  const withLiteral = await input.prepare("draft", [
+    { type: "file", receiptId: upload.receiptId },
+    { type: "text", text: literal },
+  ]);
+  assert.equal(
+    withLiteral[0]?.text.endsWith(literal),
+    true,
+    "presentation parsing must not strip execution text",
+  );
   await assert.rejects(
     files.resolve("draft", Array(WEB_FILE_LIMITS.maxFilesPerMessage + 1).fill(upload.receiptId)),
     /20 files/u,

@@ -67,14 +67,16 @@ export class ChFileInputs {
     const ids = this.ids(content);
     // Resolve/validate all receipts before saving images or allocating a native Thread.
     const files = await this.files.resolve(id, ids);
-    const parts = content as Array<{ type: string }>;
+    const parts = content as Array<{ type: string; text?: string }>;
     const input = this.images.prepare(parts.filter((part) => part.type !== "file"));
     if (!files.length) return input;
     const projected = nativeUserInput(input);
     const images = projected.filter((part) => part.type === "nativeImage");
-    const request = projected
+    // Display parsing must never rewrite the user's execution body, including
+    // a literal example that itself looks like serialized native attachment context.
+    const request = parts
       .filter((part) => part.type === "text")
-      .map((part) => part.text)
+      .map((part) => part.text ?? "")
       .join("\n");
     let fileIndex = 0,
       imageIndex = 0;

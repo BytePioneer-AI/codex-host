@@ -86,7 +86,7 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ## Standalone Web development
 
-This checkout also contains an independent Web/PWA application using the same Harness Adapter sources. Run `npm ci`, `npm run build:web`, then `npm run start:web` for the isolated Claude Code preview. This does not launch or restart Codex Desktop. See [the Web guide](docs/product/standalone-web.md) for plugin distribution, storage isolation and current limitations.
+This checkout also contains a Web/PWA application. Run `npm ci`, `npm run build:web`, then `npm run start:web` for an authenticated Web client of the already-running local codexhost Host. It reuses canonical CH Threads and groups them by their existing GUI project membership without creating GUI projects. This does not launch or restart Desktop. `-- --session-source standalone` explicitly selects the independent Harness plugin mode. See [the Web guide](docs/product/standalone-web.md) for connection requirements, plugin distribution and current limitations.
 
 ## Quick Start
 

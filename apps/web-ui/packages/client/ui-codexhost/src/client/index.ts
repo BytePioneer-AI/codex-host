@@ -14,6 +14,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { ImportIcon } from "./ImportIcon.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
+import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ensureServiceWorker } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
@@ -33,7 +34,7 @@ export const NS = "codexhostImport";
 export const PANEL_ID = "codexhost-import" as MainPanelId;
 
 /** Services used by the panel. */
-export const inject = ["slots", "locale", "layout", "uiWorkspace", "sessions"];
+export const inject = ["slots", "locale", "layout", "uiWorkspace", "sessions", "remote"];
 
 /**
  * Contribute the sidebar entry and its main-column page.
@@ -91,6 +92,17 @@ export function apply(ctx: ClientContext): void {
       },
       SessionHarnessIcon,
     ),
+  );
+
+  ctx.effect(
+    () =>
+      ctx.remote.$on("codexhost/session-bound", (draftId, threadId) => {
+        if (
+          (ctx.sessions.list.getSnapshot().byId[draftId as SessionId]?.retainedBy.mainView ?? 0) > 0
+        )
+          ctx.uiWorkspace.openSession(threadId as SessionId);
+      }),
+    "ui-codexhost: canonical CH identity",
   );
 
   // Deep links (`?session=<id>`, used by notification clicks) and service-worker messages.

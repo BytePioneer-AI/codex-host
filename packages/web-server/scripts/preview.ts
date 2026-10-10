@@ -8,6 +8,8 @@ import { PREVIEW_EXCLUDED_HARNESSES, previewLaunch } from "../src/preview-launch
 
 const { values } = parseArgs({
   options: {
+    "session-source": { type: "string" },
+    "ch-cdp": { type: "string" },
     port: { type: "string" },
     data: { type: "string" },
     workspace: { type: "string" },

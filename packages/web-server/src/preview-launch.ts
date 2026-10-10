@@ -11,6 +11,8 @@ export interface PreviewOptions {
   data?: string;
   workspace?: string;
   harness?: string;
+  "session-source"?: string;
+  "ch-cdp"?: string;
 }
 
 /**
@@ -46,6 +48,9 @@ export function previewLaunch(
     env,
     args: [
       resolve(distribution, "server.mjs"),
+      "--session-source",
+      options["session-source"] ?? "codexhost",
+      ...(options["ch-cdp"] ? ["--ch-cdp", options["ch-cdp"]] : []),
       "--host",
       "127.0.0.1",
       "--port",

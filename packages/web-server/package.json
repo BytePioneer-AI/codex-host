@@ -14,6 +14,7 @@
     "pack": "node --import tsx scripts/pack.ts"
   },
   "dependencies": {
+    "@codexhost/desktop-control": "0.0.0",
     "@codexhost/harness-adapter": "0.0.0",
     "@codexhost/harness-plugin-files": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",

@@ -108,8 +108,13 @@ export class SessionLog {
 
   constructor(
     readonly header: SessionHeader,
-    private readonly data: DataDir,
+    private readonly data: Pick<
+      DataDir,
+      "readLines" | "readJson" | "writeLines" | "writeJson" | "appendLine"
+    >,
     private readonly onProjection: ProjectionListener,
+    private sequenceStart = 0,
+    private readonly hasEarlier: () => boolean = () => false,
   ) {
     this.events = data.readLines<WireEvent>(this.file);
     this.projections = {
@@ -158,7 +163,30 @@ export class SessionLog {
   }
 
   get lastSeq(): number {
-    return this.events.length - 1;
+    return this.sequenceStart + this.events.length - 1;
+  }
+
+  get firstSeq(): number {
+    return this.sequenceStart;
+  }
+
+  /** Prepend an already projected, completed page in a disposable journal only.
+   * Existing event/message identities and live cursors must never be renumbered.
+   */
+  prepend(events: readonly WireEvent[]): void {
+    if (!events.length) return;
+    const start = this.sequenceStart - events.length;
+    if (start < 0) throw new Error("History rendering sequence range exhausted");
+    const shift = start - (events[0]?.seq ?? 0);
+    const mapped = events.map((event) => ({
+      ...event,
+      seq: event.seq + shift,
+      ...(event.sourceEventSeqs
+        ? { sourceEventSeqs: event.sourceEventSeqs.map((seq) => seq + shift) }
+        : {}),
+    }));
+    this.events.unshift(...mapped);
+    this.sequenceStart = start;
   }
 
   /** Append one durable event and deliver it to followers. */
@@ -170,7 +198,7 @@ export class SessionLog {
   ): WireEvent {
     const event: WireEvent = {
       type,
-      seq: this.events.length,
+      seq: this.sequenceStart + this.events.length,
       time: time ?? this.clock?.() ?? Date.now(),
       data,
       ...extra,
@@ -273,7 +301,7 @@ export class SessionLog {
       records: this.events
         .slice(window.start, this.events.length)
         .map((event) => ({ type: "event", event })),
-      hasMore: window.start > 0,
+      hasMore: window.start > 0 || this.hasEarlier(),
       projections: this.projectionBaseline(),
       ...(request.assistantStream === true
         ? {
@@ -338,12 +366,16 @@ export class SessionLog {
   ): { records: unknown[]; hasMore: boolean } {
     const end = Math.max(
       0,
-      Math.min(beforeSeq ?? throughSeq + 1, throughSeq + 1, this.events.length),
+      Math.min(
+        (beforeSeq ?? throughSeq + 1) - this.sequenceStart,
+        throughSeq + 1 - this.sequenceStart,
+        this.events.length,
+      ),
     );
     const { start } = this.window(end, request);
     return {
       records: this.events.slice(start, end).map((event) => ({ type: "event", event })),
-      hasMore: start > 0,
+      hasMore: start > 0 || this.hasEarlier(),
     };
   }
 }

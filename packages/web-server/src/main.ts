@@ -21,6 +21,8 @@ import { registerMisc } from "./misc.ts";
 import { PushNotifier } from "./push.ts";
 import { CLIENT_GLOBALS, CLIENT_PLUGINS } from "./plugins.ts";
 import { Sessions } from "./sessions.ts";
+import { ChSessions } from "./ch-sessions.ts";
+import { DesktopChHostClient } from "./ch-host-client.ts";
 import { Settings } from "./settings.ts";
 import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
@@ -39,6 +41,8 @@ function defaultAdapterRoots(): string {
 
 const { values } = parseArgs({
   options: {
+    "session-source": { type: "string", default: "codexhost" },
+    "ch-cdp": { type: "string" },
     port: { type: "string", default: process.env.CODEXHOST_WEB_PORT ?? "3180" },
     host: { type: "string", default: process.env.CODEXHOST_WEB_HOST ?? "127.0.0.1" },
     data: {
@@ -74,8 +78,17 @@ const harnesses = new HarnessRegistry(
   (values.adapters as string).split(",").map((path) => resolve(path)),
   values.harness === undefined ? undefined : new Set(values.harness.split(",")),
 );
-const workspaces = new Workspaces(data, resolve(values.workspace as string));
-const sessions = new Sessions(data, harnesses, workspaces, events);
+const workspaces = new Workspaces(
+  data,
+  resolve(values.workspace as string),
+  values["session-source"] === "codexhost",
+);
+if (!["codexhost", "standalone"].includes(values["session-source"] as string))
+  throw new Error("Unknown --session-source");
+const sessions =
+  values["session-source"] === "standalone"
+    ? new Sessions(data, harnesses, workspaces, events)
+    : new ChSessions(new DesktopChHostClient(values["ch-cdp"]), workspaces, events);
 const settings = new Settings(data, events);
 const push = new PushNotifier(data);
 sessions.notifier = (notification) => {
@@ -109,7 +122,7 @@ sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
 settings.register(rpc);
 push.register(rpc);
-registerMisc(rpc, { harnesses, sessions, events });
+registerMisc(rpc, { events });
 
 function send(response: ServerResponse, asset: AssetResponse | undefined, cache = false): void {
   if (asset === undefined) {
@@ -200,7 +213,12 @@ const server = createServer((request, response) => {
       return;
     }
     if (pathname.startsWith("/harness-icons/")) {
-      const icon = harnesses.iconPath(decodeURIComponent(pathname.slice("/harness-icons/".length)));
+      const id = decodeURIComponent(pathname.slice("/harness-icons/".length));
+      if (sessions instanceof ChSessions) {
+        send(response, await sessions.catalog.icon(id));
+        return;
+      }
+      const icon = harnesses.iconPath(id);
       send(
         response,
         icon === undefined || !existsSync(icon)

@@ -17,7 +17,15 @@ import type { TypertForwardableEventEntry } from "@deepseek-ai/dsh-typert-protoc
  * Host events this application forwards without renaming. The explicit mode is
  * both the Host dispatch strategy and the legal key set of `ctx.remote.$on`.
  */
+declare module "@deepseek-ai/cordis" {
+  interface Events {
+    /** Replace a browser-only draft with the canonical Thread returned by the existing CH Host. */
+    "codexhost/session-bound"(draftId: string, threadId: string): void;
+  }
+}
+
 export const API_REMOTE_FORWARDED_EVENTS = [
+  { event: "codexhost/session-bound", mode: "emit" },
   { event: "agent-preset/selected", mode: "emit" },
   { event: "approval/request", mode: "waterfall" },
   { event: "api-session/activity", mode: "emit" },

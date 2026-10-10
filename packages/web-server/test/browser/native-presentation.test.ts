@@ -17,7 +17,7 @@ async function shot(page: Page, name: string) {
   });
 }
 async function sidebar(page: Page) {
-  const open = page.getByRole("button", { name: "Open sidebar", exact: true });
+  const open = page.getByRole("button", { name: "Open sidebar", exact: true }).last();
   if (await open.isVisible()) await open.click();
 }
 for (const width of [390, 1280])

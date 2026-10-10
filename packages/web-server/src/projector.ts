@@ -371,6 +371,8 @@ function toolResultText(
 }
 
 export interface TurnProjectorOptions {
+  /** Stable rendering ordinal for a paged, in-memory CH history window. */
+  turn?: number;
   /** Emit assistant-stream presentation frames (false while importing history). */
   live: boolean;
   /** Running tool output (accumulated text) for live terminal cards; `undefined` once the tool settles. */
@@ -399,7 +401,8 @@ export class TurnProjector {
     private readonly log: SessionLog,
     private readonly options: TurnProjectorOptions,
   ) {
-    this.turn = log.events.filter((event) => event.type === "turn/start").length + 1;
+    this.turn =
+      options.turn ?? log.events.filter((event) => event.type === "turn/start").length + 1;
   }
 
   /** Open the Turn with the user's prompt. */

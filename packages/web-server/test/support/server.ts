@@ -34,6 +34,7 @@ export async function startServer(
       "--workspace",
       join(data, "workspace"),
       "--no-auth",
+      ...(!args.includes("--session-source") ? ["--session-source", "standalone"] : []),
       ...args,
     ],
     {

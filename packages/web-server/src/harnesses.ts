@@ -301,7 +301,7 @@ export class HarnessRegistry {
   }
 }
 
-function groupOf(
+export function groupOf(
   id: string,
   name: string,
   inspection: Extract<Inspection, { status: "ready" }>,

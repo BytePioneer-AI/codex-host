@@ -11,6 +11,7 @@
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
   "references": [
+    { "path": "../desktop-control/tsconfig.json" },
     { "path": "../harness-adapter/tsconfig.json" },
     { "path": "../harness-plugin-files/tsconfig.json" },
     { "path": "../shared-contracts/tsconfig.json" }

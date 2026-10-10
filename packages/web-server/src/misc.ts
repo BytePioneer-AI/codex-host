@@ -4,15 +4,10 @@ import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 
-import type { HarnessRegistry } from "./harnesses.ts";
-import type { Sessions } from "./sessions.ts";
 import { requestOf } from "./store.ts";
 import { type EventHub, RpcError, type RpcRegistry } from "./transport.ts";
 
-export function registerMisc(
-  rpc: RpcRegistry,
-  deps: { harnesses: HarnessRegistry; sessions: Sessions; events: EventHub },
-): void {
+export function registerMisc(rpc: RpcRegistry, deps: { events: EventHub }): void {
   rpc.register("$events/result", (args) => deps.events.settle(requestOf(args)));
   rpc.register("credentials/describe", (args) => {
     const refs = (args.refs as string[] | undefined) ?? [];

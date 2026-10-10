@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { request as httpRequest } from "node:http";
+import { once } from "node:events";
 import { it } from "node:test";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { startServer } from "./support/server.ts";
 
-it("raw file uploads retain auth/origin/size gates, stay draft-only and pass only Session-owned paths to CH", async (t) => {
+it("raw file uploads retain auth/origin checks without file quotas, stay draft-only and pass only Session-owned paths to CH", async (t) => {
   const host = new FakeChHost();
   host.add("other", "/workspace");
   host.add("official", "/workspace").modelProvider = "openai";
@@ -76,19 +77,48 @@ it("raw file uploads retain auth/origin/size gates, stay draft-only and pass onl
     ).status,
     415,
   );
-  const oversized = await new Promise<number>((done, reject) => {
-    const request = httpRequest(
-      endpoint,
-      { method: "POST", headers: { ...headers, "content-length": 65 * 1024 * 1024 } },
-      (response) => {
-        response.resume();
-        response.on("end", () => done(response.statusCode ?? 0));
+  // Both declared-length and chunked uploads exceed the old 64 MiB limit and
+  // bypass the unrelated 48 MiB JSON RPC body gate without aggregating bytes.
+  for (const declared of [true, false]) {
+    const largeEndpoint = new URL(endpoint);
+    largeEndpoint.searchParams.set("name", "large.bin");
+    const result = await new Promise<{ status: number; ok: boolean; bytes: number }>(
+      (done, reject) => {
+        const request = httpRequest(
+          largeEndpoint,
+          {
+            method: "POST",
+            headers: { ...headers, ...(declared ? { "content-length": 65 * 1024 * 1024 } : {}) },
+          },
+          (response) => {
+            let body = "";
+            response.setEncoding("utf8");
+            response.on("data", (chunk) => {
+              body += String(chunk);
+            });
+            response.on("end", () => {
+              const parsed = JSON.parse(body) as {
+                ok: boolean;
+                value?: { file?: { bytes?: number } };
+              };
+              done({
+                status: response.statusCode ?? 0,
+                ok: parsed.ok,
+                bytes: parsed.value?.file?.bytes ?? -1,
+              });
+            });
+          },
+        );
+        request.on("error", reject);
+        void (async () => {
+          const block = Buffer.alloc(1024 * 1024, 42);
+          for (let i = 0; i < 65; i++) if (!request.write(block)) await once(request, "drain");
+          request.end();
+        })().catch(reject);
       },
     );
-    request.on("error", reject);
-    request.end("small");
-  });
-  assert.equal(oversized, 413);
+    assert.deepEqual(result, { status: 200, ok: true, bytes: 65 * 1024 * 1024 });
+  }
   const upload = await fetch(endpoint, { method: "POST", headers, body: bytes });
   const stored = (await upload.json()) as {
     ok: boolean;

@@ -137,7 +137,6 @@ export const InputBar = memo(function InputBar({
   const attachmentInput = useProjection("attachmentInput");
   const attachmentsEnabled = attachmentInput?.enabled !== false;
   const imagesOnly = attachmentInput?.imagesOnly === true;
-  const fileLimits = attachmentInput?.fileLimits;
   // Prompt failures are ordinary failures (no create/attach transaction exists
   // anymore): the toast announces promptError, the draft stays in the machine,
   // and the user resubmits. A remount over a session whose machine still holds
@@ -155,10 +154,10 @@ export const InputBar = memo(function InputBar({
     }
     showToast(
       error.code === "session/attachment-invalid" || error.code === "subagent/attachment-invalid"
-        ? attachmentErrorText(t, error.details.reason, imageLimits, fileLimits)
+        ? attachmentErrorText(t, error.details.reason, imageLimits)
         : `${error.message} (${error.code})`,
     );
-  }, [promptError, showToast, t, imageLimits, fileLimits]);
+  }, [promptError, showToast, t, imageLimits]);
   useEffect(() => {
     if (notice?.level === "error") showToast(notice.text);
   }, [notice, showToast]);
@@ -253,9 +252,8 @@ export const InputBar = memo(function InputBar({
 
   // Intake pre-check: an addition that would break a projected image limit is
   // refused as a whole batch, announced immediately, and never enters the
-  // rail. Images and generic files use their respective projected limits;
-  // generic files upload as soon as they are picked. The Host also checks
-  // stream sizes and prompt totals for callers that bypass this composer.
+  // rail. Only images have projected size/count limits. Ordinary files upload
+  // verbatim as soon as they are picked, without size/count/total quotas.
   const intakeFiles = useCallback(
     (files: readonly File[], directories?: ReadonlySet<File>): void => {
       if (subagent !== null || addFiles === undefined || files.length === 0) return;
@@ -291,36 +289,11 @@ export const InputBar = memo(function InputBar({
             });
           }
         }
-        if (fileLimits !== undefined) {
-          const mediaTypes = imageLimits?.mediaTypes as readonly string[] | undefined;
-          const added = files.filter((file) => !mediaTypes?.includes(file.type));
-          const existing = attachments.filter((attachment) => attachment.kind === "file");
-          if (existing.length + added.length > fileLimits.maxFilesPerMessage)
-            return t("file.tooMany", { count: fileLimits.maxFilesPerMessage });
-          if (added.some((file) => file.size > fileLimits.maxFileBytes))
-            return t("file.tooLarge", { size: imageSizeText(fileLimits.maxFileBytes) });
-          if (
-            existing.reduce((sum, part) => sum + part.file.size, 0) +
-              added.reduce((sum, file) => sum + file.size, 0) >
-            fileLimits.maxMessageFileBytes
-          )
-            return t("file.totalTooLarge", { size: imageSizeText(fileLimits.maxMessageFileBytes) });
-        }
         return addFiles(files, directories);
       })();
       if (rejected !== null) showToast(rejected);
     },
-    [
-      subagent,
-      addFiles,
-      attachmentsEnabled,
-      imagesOnly,
-      attachments,
-      imageLimits,
-      fileLimits,
-      showToast,
-      t,
-    ],
+    [subagent, addFiles, attachmentsEnabled, imagesOnly, attachments, imageLimits, showToast, t],
   );
 
   const canAcceptDrop =

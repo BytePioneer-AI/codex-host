@@ -7,12 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { DataDir } from "./store.ts";
 import { RpcError } from "./transport.ts";
 
-export const WEB_FILE_LIMITS = {
-  maxFileBytes: 64 * 1024 * 1024,
-  maxFilesPerMessage: 20,
-  maxMessageFileBytes: 128 * 1024 * 1024,
-};
-export const WEB_FILE_INPUT = { enabled: true, fileLimits: WEB_FILE_LIMITS };
+export const WEB_FILE_INPUT = { enabled: true };
 export interface WebFileRef {
   attachmentId: string;
   name: string;
@@ -63,11 +58,6 @@ export class WebFiles {
   }
   async upload(sessionId: string, chunks: AsyncIterable<Uint8Array>, name?: string) {
     this.prune();
-    if (this.receipts.size >= 1024)
-      invalid(
-        "FILE_NOT_STAGED",
-        "Too many pending uploads; send pending files or retry after receipts expire.",
-      );
     // UUID directories isolate incomplete streams; only completed objects receive a receipt.
     const pending = join(this.directory, randomUUID());
     await mkdir(pending, { mode: 0o700 });
@@ -78,7 +68,7 @@ export class WebFiles {
     try {
       for await (const chunk of chunks) {
         bytes += chunk.byteLength;
-        if (bytes > WEB_FILE_LIMITS.maxFileBytes) invalid("FILE_TOO_LARGE", "File exceeds 64 MiB.");
+        if (!Number.isSafeInteger(bytes)) throw new Error("File size cannot be represented safely");
         digest.update(chunk);
         let offset = 0;
         while (offset < chunk.byteLength) {
@@ -104,8 +94,6 @@ export class WebFiles {
       const file = this.reference(path);
       if (!file) throw new Error("Stored file unavailable");
       const receiptId = randomUUID();
-      if (this.receipts.size >= 1024)
-        invalid("FILE_NOT_STAGED", "Too many pending uploads; retry later.");
       this.receipts.set(receiptId, {
         sessionId,
         hash,
@@ -125,17 +113,11 @@ export class WebFiles {
   }
   async resolve(sessionId: string, ids: readonly string[]): Promise<SavedFile[]> {
     this.prune();
-    if (ids.length > WEB_FILE_LIMITS.maxFilesPerMessage)
-      invalid("TOO_MANY_FILES", "At most 20 files can be attached.");
-    let total = 0;
     const files: SavedFile[] = [];
     for (const id of ids) {
       const receipt = this.receipts.get(id);
       if (!receipt || receipt.sessionId !== sessionId)
         invalid("FILE_NOT_STAGED", "File was not uploaded for this session; select it again.");
-      total += receipt.file.bytes;
-      if (total > WEB_FILE_LIMITS.maxMessageFileBytes)
-        invalid("FILES_TOO_LARGE", "Files exceed 128 MiB in one message.");
       await this.verify(receipt.path, receipt.hash, receipt.file.bytes);
       files.push(receipt);
     }
@@ -159,7 +141,7 @@ export class WebFiles {
       if (realpathSync(path) !== join(folder, name) || lstatSync(path).isSymbolicLink())
         return undefined;
       const stat = lstatSync(path);
-      if (!stat.isFile() || stat.size > WEB_FILE_LIMITS.maxFileBytes) return undefined;
+      if (!stat.isFile() || !Number.isSafeInteger(stat.size)) return undefined;
       return {
         attachmentId: `web-file:${basename(folder)}/${encodeURIComponent(name)}`,
         name,
@@ -176,14 +158,13 @@ export class WebFiles {
         throw new Error("File symlink refused");
       fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const before = await fd.stat();
-      if (!before.isFile() || before.size !== bytes || bytes > WEB_FILE_LIMITS.maxFileBytes)
+      if (!before.isFile() || before.size !== bytes || !Number.isSafeInteger(bytes))
         throw new Error("File size changed");
       const digest = createHash("sha256");
       let length = 0;
       for await (const chunk of createReadStream(path, { fd: fd.fd, autoClose: false })) {
         length += (chunk as Buffer).length;
-        if (length > WEB_FILE_LIMITS.maxFileBytes || length > bytes)
-          throw new Error("File grew while reading");
+        if (length > bytes) throw new Error("File grew while reading");
         digest.update(chunk as Buffer);
       }
       const after = await fd.stat();

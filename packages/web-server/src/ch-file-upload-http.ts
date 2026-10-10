@@ -2,7 +2,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ChSessions } from "./ch-sessions.ts";
 import { RpcError } from "./transport.ts";
-import { WEB_FILE_LIMITS } from "./web-files.ts";
 
 export async function serveFileUpload(
   sessions: ChSessions | undefined,
@@ -22,10 +21,6 @@ export async function serveFileUpload(
       "application/octet-stream"
     ) {
       send(415, { error: "content type must be application/octet-stream" });
-      return;
-    }
-    if (Number(request.headers["content-length"]) > WEB_FILE_LIMITS.maxFileBytes) {
-      send(413, { error: "File exceeds 64 MiB." });
       return;
     }
     const url = new URL(request.url ?? "", "http://localhost");

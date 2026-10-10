@@ -35,11 +35,6 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
     attachmentInput: {
       readonly enabled: boolean;
       readonly imagesOnly?: boolean;
-      readonly fileLimits?: {
-        readonly maxFileBytes: number;
-        readonly maxFilesPerMessage: number;
-        readonly maxMessageFileBytes: number;
-      };
     };
     /** Durable model selection already used and selected for the next request. */
     modelSelection: ModelSelectionProjection;

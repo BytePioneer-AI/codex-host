@@ -1,17 +1,11 @@
 /** Background browser upload implementation for Blob and byte-stream bodies. */
 
 import { Service, type Context } from "@deepseek-ai/cordis";
-import { bytesToBase64 } from "@deepseek-ai/dsh-util-crypto";
 import { RemoteError } from "@deepseek-ai/dsh-typert-protocol";
 import type { RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import { FILE_UPLOAD_ROUTE } from "../protocol.ts";
-import type {
-  ClientFileUploadHooks,
-  EncodedFileUploadRequest,
-  FileUploadFetch,
-  FileUploadValue,
-} from "../types.ts";
+import type { ClientFileUploadHooks, FileUploadFetch, FileUploadValue } from "../types.ts";
 import type { FileUploadBody, FileUploadService } from "./contract.ts";
 
 interface FileUploadRequest {
@@ -26,18 +20,6 @@ interface FileUploadRequest {
 interface FileUploadResponse {
   readonly status: number;
   readonly body: string;
-}
-
-interface FileUploadRemoteContext extends Context {
-  readonly remote: {
-    readonly fileUploads: {
-      upload(
-        sessionId: SessionId,
-        request: EncodedFileUploadRequest,
-        signal?: AbortSignal,
-      ): Promise<RemoteResult<FileUploadValue>>;
-    };
-  };
 }
 
 interface UploadWorkerStart {
@@ -209,29 +191,21 @@ export class FileUploadRuntime extends Service implements FileUploadService {
     signal?: AbortSignal,
     onProgress?: (progress: { readonly loaded: number; readonly total?: number }) => void,
   ): Promise<RemoteResult<FileUploadValue>> {
-    if (!(data instanceof Uint8Array)) {
-      const query = new URLSearchParams({ sessionId });
-      if (name !== undefined) query.set("name", name);
-      const response = await this.post({
-        path: `${FILE_UPLOAD_ROUTE}?${query.toString()}`,
-        body: data,
-        headers: { "content-type": "application/octet-stream" },
-        ...(signal === undefined ? {} : { signal }),
-        ...(onProgress === undefined ? {} : { onProgress }),
-      });
-      if (response.status !== 200) {
-        throw new Error(`file upload transport failed with HTTP ${String(response.status)}`);
-      }
-      return parseFileUploadResult(response.body);
+    const query = new URLSearchParams({ sessionId });
+    if (name !== undefined) query.set("name", name);
+    // All browser carriers use raw-byte intake, never the bounded JSON RPC route.
+    const body = data instanceof Uint8Array ? new Blob([Uint8Array.from(data).buffer]) : data;
+    const response = await this.post({
+      path: `${FILE_UPLOAD_ROUTE}?${query.toString()}`,
+      body,
+      headers: { "content-type": "application/octet-stream" },
+      ...(signal === undefined ? {} : { signal }),
+      ...(onProgress === undefined ? {} : { onProgress }),
+    });
+    if (response.status !== 200) {
+      throw new Error(`file upload transport failed with HTTP ${String(response.status)}`);
     }
-    return (this.ctx as FileUploadRemoteContext).remote.fileUploads.upload(
-      sessionId,
-      {
-        data: bytesToBase64(data),
-        ...(name === undefined ? {} : { name }),
-      },
-      signal,
-    );
+    return parseFileUploadResult(response.body);
   }
 }
 

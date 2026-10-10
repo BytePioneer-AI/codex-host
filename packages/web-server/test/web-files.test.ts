@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { DataDir } from "../src/store.ts";
-import { WebFiles, WEB_FILE_LIMITS } from "../src/web-files.ts";
+import { WebFiles } from "../src/web-files.ts";
 import { ChFileInputs } from "../src/ch-file-inputs.ts";
 import { ChAttachments } from "../src/ch-attachments.ts";
 import { WebImages } from "../src/web-images.ts";
@@ -56,7 +56,7 @@ it("streams arbitrary bytes, preserves names/extensions safely and scopes receip
   assert.equal(readdirSync(root).includes("sessions"), false);
 });
 
-it("cleans failed/oversized streams and rejects tampered or symlink stored objects", async (t) => {
+it("cleans failed streams and rejects tampered or symlink stored objects", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "web-files-invalid-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const files = new WebFiles(new DataDir(root));
@@ -69,15 +69,6 @@ it("cleans failed/oversized streams and rejects tampered or symlink stored objec
       })(),
     ),
     /cancelled/u,
-  );
-  await assert.rejects(
-    files.upload(
-      "draft",
-      (async function* () {
-        for (let i = 0; i < 65; i++) yield Buffer.alloc(1024 * 1024);
-      })(),
-    ),
-    /64 MiB/u,
   );
   assert.deepEqual(readdirSync(files.directory), []);
   const result = await files.upload("draft", chunks(Buffer.from("original")), "notes.txt");
@@ -140,8 +131,29 @@ it("combines files/images into native path context, checks receipts before image
     true,
     "presentation parsing must not strip execution text",
   );
-  await assert.rejects(
-    files.resolve("draft", Array(WEB_FILE_LIMITS.maxFilesPerMessage + 1).fill(upload.receiptId)),
-    /20 files/u,
+  assert.equal((await files.resolve("draft", Array(21).fill(upload.receiptId))).length, 21);
+});
+
+it("streams above 64 MiB, admits totals above 128 MiB, and does not cap pending file count", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-files-unlimited-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = new WebFiles(new DataDir(root));
+  const block = Buffer.alloc(1024 * 1024, 42);
+  const large = await files.upload(
+    "draft",
+    (async function* () {
+      for (let i = 0; i < 65; i++) yield block;
+    })(),
+    "large.bin",
   );
+  assert.equal(large.file.bytes, 65 * 1024 * 1024);
+  const twice = await files.resolve("draft", [large.receiptId, large.receiptId]);
+  assert.equal(
+    twice.reduce((sum, file) => sum + file.file.bytes, 0),
+    130 * 1024 * 1024,
+  );
+  const ids: string[] = [];
+  for (let i = 0; i < 1025; i++)
+    ids.push((await files.upload("draft", chunks(Buffer.alloc(0)), "empty.txt")).receiptId);
+  assert.equal((await files.resolve("draft", ids)).length, 1025);
 });

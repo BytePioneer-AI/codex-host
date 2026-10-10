@@ -14,7 +14,7 @@ declare module "@deepseek-ai/cordis" {
   }
 }
 
-/** The upload service uses the generated Remote fallback. */
+/** Keep existing Remote plugin wiring; browser file bodies use raw-byte intake. */
 export const inject = ["remote"];
 
 /**

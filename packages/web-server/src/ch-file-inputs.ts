@@ -1,6 +1,6 @@
 /** File upload/admission facade. Native Threads remain owned by the existing CH Host. */
 import type { WebImages } from "./web-images.ts";
-import { type WebFiles, WEB_FILE_LIMITS } from "./web-files.ts";
+import type { WebFiles } from "./web-files.ts";
 import { nativeUserInput } from "./native-user-input.ts";
 import { RpcError, type RpcRegistry } from "./transport.ts";
 
@@ -27,10 +27,6 @@ export class ChFileInputs {
       )
         throw new RpcError("session/attachment-invalid", "Invalid file upload.", {
           reason: "FILE_NOT_STAGED",
-        });
-      if (request.data.length > Math.ceil(WEB_FILE_LIMITS.maxFileBytes / 3) * 4)
-        throw new RpcError("session/attachment-invalid", "File exceeds 64 MiB.", {
-          reason: "FILE_TOO_LARGE",
         });
       const bytes = Buffer.from(request.data, "base64");
       if (bytes.toString("base64") !== request.data)

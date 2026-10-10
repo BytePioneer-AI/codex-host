@@ -15,8 +15,8 @@ import type {} from "@deepseek-ai/dsh-schedule/client";
 import type {} from "@deepseek-ai/dsh-subagent/client";
 import {
   Button,
-  OpenAIArchiveIcon as IconArchiveOutlineRegular,
-  OpenAIUnarchiveIcon as IconUnarchiveOutlineRegular,
+  IconArchiveOutlineRegular,
+  IconUnarchiveOutlineRegular,
   MenuItemButton,
   Modal,
   Tooltip,

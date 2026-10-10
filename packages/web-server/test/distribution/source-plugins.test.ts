@@ -48,10 +48,6 @@ it(
       readFileSync(join(output, "licenses/DSH-MIT.txt")),
       readFileSync(join(repoRoot, "apps/web-ui/LICENSE")),
     );
-    assert.deepEqual(
-      readFileSync(join(output, "licenses/OPENAI-ICONS-MIT.txt")),
-      readFileSync(join(repoRoot, "apps/web-ui/OPENAI_ICONS_LICENSE.txt")),
-    );
     assert.ok(readFileSync(join(output, "licenses/THIRD_PARTY_NOTICES.md")).length > 0);
   },
 );

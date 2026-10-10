@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { TestContext } from "node:test";
 
@@ -21,10 +21,16 @@ export async function startServer(
   args: string[],
 ): Promise<string> {
   const data = mkdtempSync(join(tmpdir(), "codexhost-web-test-"));
+  // UI-only checks may target an already packaged server, without compiling
+  // unrelated runtime work in progress. Distribution tests keep their own entry.
+  const bundle = process.env.CODEXHOST_TEST_WEB_BUNDLE;
+  const serverEntry = bundle
+    ? entry.map((part) => (part === "src/main.ts" ? resolve(bundle) : part))
+    : entry;
   const child = spawn(
     process.execPath,
     [
-      ...entry,
+      ...serverEntry,
       "--host",
       "127.0.0.1",
       "--port",

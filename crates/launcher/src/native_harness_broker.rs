@@ -141,8 +141,8 @@ pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn
         NativeHarnessBrokerCliCommand::Install => {
             let outcome = install_native_harness_broker(paths, &proxy_environment)?;
             let state = match outcome {
-                NativeHarnessBrokerInstallOutcome::AlreadyRunning => "already-running",
-                NativeHarnessBrokerInstallOutcome::Started => "restarted",
+                NativeHarnessBrokerInstallOutcome::AlreadyRegistered => "already-registered",
+                NativeHarnessBrokerInstallOutcome::Stopped => "stopped-for-update",
                 NativeHarnessBrokerInstallOutcome::Installed => "installed",
                 NativeHarnessBrokerInstallOutcome::Reinstalled => "reinstalled",
             };

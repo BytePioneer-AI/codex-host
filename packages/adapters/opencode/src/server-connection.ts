@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
+import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
@@ -44,11 +45,29 @@ export interface OpenCodeServerDependencies {
   spawn(command: string, args: string[], options: SpawnOptions): ChildProcessWithoutNullStreams;
   sleep(milliseconds: number): Promise<void>;
   resolveServerCwd?(environment: NodeJS.ProcessEnv): string | undefined;
+  assignPort?(): Promise<number>;
 }
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 20_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
+const STARTUP_ATTEMPTS = 3;
 const SERVER_USERNAME = "codexhost";
+
+function freeLoopbackPort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const probe = createServer();
+    probe.unref();
+    probe.once("error", reject);
+    probe.listen({ host: "127.0.0.1", port: 0 }, () => {
+      const address = probe.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      probe.close(() => {
+        if (port) resolve(port);
+        else reject(new Error("Failed to assign an OpenCode Server loopback port"));
+      });
+    });
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -206,6 +225,7 @@ export class OpenCodeServerConnection implements OpenCodeServerConnectionLike {
           windowsVerbatimArguments: spawnOptions.windowsVerbatimArguments,
         }),
       sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      assignPort: freeLoopbackPort,
     },
   ) {
     this.#options = options;
@@ -268,7 +288,6 @@ export class OpenCodeServerConnection implements OpenCodeServerConnectionLike {
       OPENCODE_SERVER_USERNAME: SERVER_USERNAME,
       OPENCODE_SERVER_PASSWORD: password,
     };
-    const invocation = openCodeServerInvocation(executable, environment);
     const serverCwd = (this.#dependencies.resolveServerCwd ?? safeOpenCodeServerCwd)(environment);
     if (!serverCwd) {
       throw new OpenCodeTransportError(
@@ -276,6 +295,34 @@ export class OpenCodeServerConnection implements OpenCodeServerConnectionLike {
         "OpenCode Server requires a writable startup directory",
       );
     }
+    // opencode v1 resolves `--port=0` to its fixed default port instead of an
+    // ephemeral one. Every managed Session must own a distinct loopback origin:
+    // the shared global fetch pool otherwise reuses a keep-alive socket that the
+    // previous Server left behind, and the next request fails with `fetch failed`.
+    let lastError: unknown;
+    for (let attempt = 0; attempt < STARTUP_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.#startAttempt(executable, environment, serverCwd, password);
+      } catch (error) {
+        lastError = error;
+        // The assigned loopback port can be claimed before the native Server
+        // binds it; that surfaces as an early exit and is safe to retry.
+        if (!(error instanceof OpenCodeTransportError) || error.code !== "processExited") {
+          throw classifySdkError(error, "Server startup");
+        }
+      }
+    }
+    throw classifySdkError(lastError, "Server startup");
+  }
+
+  async #startAttempt(
+    executable: string,
+    environment: NodeJS.ProcessEnv,
+    serverCwd: string,
+    password: string,
+  ): Promise<{ baseUrl: string; authorization: string }> {
+    const port = await (this.#dependencies.assignPort ?? freeLoopbackPort)();
+    const invocation = openCodeServerInvocation(executable, environment, process.platform, port);
     let child: ChildProcessWithoutNullStreams;
     try {
       child = this.#dependencies.spawn(invocation.command, invocation.arguments, {
@@ -368,7 +415,7 @@ export class OpenCodeServerConnection implements OpenCodeServerConnectionLike {
       return { baseUrl, authorization };
     } catch (error) {
       await this.#stopChild(child).catch(() => undefined);
-      throw classifySdkError(error, "Server startup");
+      throw error;
     }
   }
 

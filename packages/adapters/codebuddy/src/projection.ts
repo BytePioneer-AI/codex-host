@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   HarnessError,
   HostEvent,
@@ -70,12 +71,16 @@ export function toolOutcome(
   };
 }
 
+type TextItem = Extract<HostItem, { type: "agentMessage" | "reasoning" }>;
+
 /** Native call IDs identify one Tool even when CodeBuddy sends tool_call twice. */
 export class CodeBuddyTurnOutput {
   readonly #items = new Map<string, HostItemSnapshot>();
   readonly #finished = new Set<string>();
   readonly #tools = new Map<string, Record<string, unknown>>();
   readonly #diffs = new Set<string>();
+  readonly #textItems = new Map<TextItem["type"], TextItem>();
+  #messageId: string | undefined;
   #compactionOutcome: HostItemOutcome | undefined;
   constructor(
     readonly turnId: HostTurnId,
@@ -116,7 +121,17 @@ export class CodeBuddyTurnOutput {
 
   compact() {
     const itemId = hostItemIdSchema.parse(`compact-${this.turnId}`);
-    if (!this.#items.has(itemId)) this.#start({ type: "contextCompaction", itemId });
+    if (!this.#items.has(itemId)) {
+      this.completeMessage();
+      this.#start({ type: "contextCompaction", itemId });
+    }
+  }
+
+  /** A new model reply or an executing Tool ends the preceding text segment. */
+  completeMessage() {
+    for (const item of this.#textItems.values()) this.#finish(item, { status: "succeeded" });
+    this.#textItems.clear();
+    this.#messageId = undefined;
   }
 
   update(value: unknown) {
@@ -132,17 +147,30 @@ export class CodeBuddyTurnOutput {
     if (kind === "agent_message_chunk" || kind === "agent_thought_chunk") {
       const delta = contentText(update.content);
       if (!delta) return;
+      // WorkBuddy can reuse messageId for the entire Prompt, including all Tool
+      // rounds. Its per-model identity is carried separately in native metadata.
+      const messageId =
+        text(meta["codebuddy.ai/llmMessageId"]) ||
+        text(update.messageId) ||
+        text(meta["codebuddy.ai/messageId"]);
+      if (this.#messageId !== messageId) {
+        this.completeMessage();
+        this.#messageId = messageId;
+      }
       const type = kind === "agent_message_chunk" ? "agentMessage" : "reasoning";
-      const id = hostItemIdSchema.parse(`${type}-${text(update.messageId) || type}`);
-      let item = this.#items.get(id)?.item;
+      let item = this.#textItems.get(type);
       if (!item) {
+        // A reused/absent native ID after a Tool must not reopen a completed Item.
+        const itemId = hostItemIdSchema.parse(randomUUID());
         item =
           type === "agentMessage"
-            ? { type: "agentMessage", itemId: id, text: "" }
-            : { type: "reasoning", itemId: id, text: "" };
+            ? { type: "agentMessage", itemId, text: "" }
+            : { type: "reasoning", itemId, text: "" };
+        this.#textItems.set(type, item);
         this.#start(item);
       }
-      if ((item.type !== "agentMessage" && item.type !== "reasoning") || this.#finished.has(id))
+      const id = item.itemId;
+      if (this.#finished.has(id))
         throw new CodeBuddyError("protocolError", "Text arrived after Item completion");
       if (item.text.length + delta.length > 2_000_000)
         throw new CodeBuddyError("protocolError", "Agent output exceeded the supported Item size");
@@ -175,6 +203,7 @@ export class CodeBuddyTurnOutput {
     const id = `tool-${callId}`;
     let item = this.#items.get(id)?.item;
     if (!item) {
+      this.completeMessage();
       item = toolItem(callId, name, merged.rawInput, this.cwd);
       this.#start(item);
     }

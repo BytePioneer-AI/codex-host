@@ -73,7 +73,7 @@ async function readSnapshot(
 ): Promise<HarnessResult<HostThreadSnapshot>> {
   let messages: unknown[];
   try {
-    messages = await dependencies.readSessionMessages({ cwd, sessionId });
+    messages = (await dependencies.readSessionMessages({ cwd, sessionId })) ?? [];
   } catch {
     return {
       ok: false,

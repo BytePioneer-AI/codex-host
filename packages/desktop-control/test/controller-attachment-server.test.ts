@@ -52,6 +52,61 @@ describe("Controller attachment server", () => {
     }
   });
 
+  it("validates remote settings commands at the socket boundary", async () => {
+    const port = await availablePort();
+    const remoteConnections = vi.fn(async () => ({ result: [] }));
+    const server = await startControllerAttachmentServer({
+      port,
+      nonce,
+      attach: async () => {},
+      remoteConnections,
+    });
+    try {
+      for (const suffix of [
+        '{"action":"eval","expression":"code"}',
+        '{"action":"list","extra":true}',
+        "invalid",
+        '{"action":"list"}\nATTACH ' + nonce,
+      ]) {
+        expect(await request(port, `REMOTE ${nonce} ${suffix}\n`)).toBe("rejected\n");
+      }
+      expect(remoteConnections).not.toHaveBeenCalled();
+      expect(JSON.parse(await request(port, `REMOTE ${nonce} {"action":"list"}\n`))).toEqual({
+        result: [],
+      });
+      expect(remoteConnections).toHaveBeenCalledExactlyOnceWith({ action: "list" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("stops accepting connections before waiting for open pages to close", async () => {
+    const port = await availablePort();
+    const released = Promise.withResolvers<undefined>();
+    const close = vi.fn(async () => released.promise);
+    const openLocalPage = vi.fn(async () => ({ show: async () => {}, close }));
+    const server = await startControllerAttachmentServer({
+      port,
+      nonce,
+      attach: vi.fn(),
+      openLocalPage,
+    });
+    const page = createConnection({ host: "127.0.0.1", port });
+    page.on("error", () => {});
+    page.write(`PAGE ${nonce} http://127.0.0.1:12345/\n`);
+    await vi.waitFor(() => expect(openLocalPage).toHaveBeenCalledOnce());
+    const closing = server.close();
+    try {
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      await expect(request(port, `ATTACH ${nonce}\n`)).rejects.toMatchObject({
+        code: "ECONNREFUSED",
+      });
+    } finally {
+      released.resolve(undefined);
+      await closing;
+    }
+  });
+
   it("keeps attachment recovery single-flight while duplicate launchers retry", async () => {
     const port = await availablePort();
     const recovery = Promise.withResolvers<undefined>();

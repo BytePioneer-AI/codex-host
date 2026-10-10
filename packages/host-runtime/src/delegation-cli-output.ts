@@ -7,12 +7,28 @@ import {
   type HarnessInspectResult,
   type ThreadCancelResult,
   type ThreadSendResult,
+  type ThreadWatchListResult,
+  type ThreadWatchResult,
 } from "./delegation-types.js";
 
 export type DelegationCliFormat = "json" | "compact";
 
 function threadLink(threadId: string): string {
   return `codex://threads/${threadId}`;
+}
+
+function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown } {
+  if (!watch) return {};
+  return {
+    watch:
+      watch.state === "notRegistered"
+        ? watch
+        : {
+            state: watch.state,
+            notify: threadLink(watch.notifyThreadId),
+            timeoutMs: watch.timeoutMs,
+          },
+  };
 }
 
 function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown {
@@ -40,7 +56,9 @@ function snapshotOutput(
   view: "result" | "messages",
 ): unknown {
   const common = {
-    thread: threadLink(snapshot.threadId),
+    thread: snapshot.hostId
+      ? `thread://${snapshot.threadId}?hostId=${encodeURIComponent(snapshot.hostId)}`
+      : threadLink(snapshot.threadId),
     harnessId: snapshot.harnessId,
     status: snapshot.status,
     ...(snapshot.timedOut !== undefined ? { timedOut: snapshot.timedOut } : {}),
@@ -97,6 +115,7 @@ export function compactDelegationOutput(
         ...(effective?.effectiveThinkingOptionId
           ? { thinking: effective.effectiveThinkingOptionId }
           : {}),
+        ...watchOutput(result.watch),
       };
     }
     case "thread send": {
@@ -118,6 +137,28 @@ export function compactDelegationOutput(
     case "thread read":
     case "thread wait":
       return snapshotOutput(body as DelegationThreadSnapshot, view);
+    case "thread watch": {
+      const result = body as ThreadWatchResult;
+      return {
+        thread: threadLink(result.threadId),
+        notify: threadLink(result.notifyThreadId),
+        state: result.state,
+        status: result.status,
+        timeoutMs: result.timeoutMs,
+      };
+    }
+    case "thread watches": {
+      const result = body as ThreadWatchListResult;
+      return {
+        watches: result.watches.map(({ threadId, notifyThreadId, state, outcome, reason }) => ({
+          thread: threadLink(threadId),
+          notify: threadLink(notifyThreadId),
+          state,
+          ...(outcome ? { outcome } : {}),
+          ...(reason ? { reason } : {}),
+        })),
+      };
+    }
     case "thread list": {
       const result = body as DelegationThreadListResult;
       return {

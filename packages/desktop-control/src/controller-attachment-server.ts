@@ -1,6 +1,14 @@
 import { createServer, type Server, type Socket } from "node:net";
+import {
+  REMOTE_THREAD_REPLY_MAX_BYTES,
+  REMOTE_THREAD_CONTROL_TIMEOUT_MS,
+  remoteConnectionsRequestSchema,
+  type RemoteConnectionsRequest,
+  type RemoteConnectionsReply,
+} from "@codexhost/shared-contracts";
+import { isLocalPageUrl, serveLocalPage, type LocalPageHandle } from "./local-page-control.js";
 
-const MAX_REQUEST_BYTES = 96;
+const MAX_REQUEST_BYTES = 16 * 1024;
 
 export interface ControllerAttachmentServer {
   close(): Promise<void>;
@@ -10,6 +18,8 @@ export interface StartControllerAttachmentServerOptions {
   port: number;
   nonce: string;
   attach(): Promise<void>;
+  openLocalPage?(url: string): Promise<LocalPageHandle>;
+  remoteConnections?(request: RemoteConnectionsRequest): Promise<RemoteConnectionsReply>;
 }
 
 function validPort(value: number): boolean {
@@ -42,18 +52,20 @@ export async function startControllerAttachmentServer(
   }
 
   const sockets = new Set<Socket>();
+  const pages = new Set<Promise<void>>();
   let attachment: Promise<void> | undefined;
   const server = createServer((socket) => {
     sockets.add(socket);
+    socket.on("error", () => socket.destroy());
     socket.once("close", () => sockets.delete(socket));
     socket.setEncoding("utf8");
     socket.setTimeout(5_000, () => socket.destroy());
     let request = "";
     let handled = false;
-    socket.on("data", (chunk: string) => {
+    const receive = (chunk: string): void => {
       if (handled) return;
       request += chunk;
-      if (request.length > MAX_REQUEST_BYTES) {
+      if (Buffer.byteLength(request) > MAX_REQUEST_BYTES) {
         handled = true;
         respond(socket, "rejected");
         return;
@@ -62,6 +74,74 @@ export async function startControllerAttachmentServer(
       if (newline < 0) return;
       handled = true;
       const line = request.slice(0, newline).replace(/\r$/, "");
+      const remotePrefix = `REMOTE ${options.nonce} `;
+      if (options.remoteConnections && line.startsWith(remotePrefix)) {
+        let input;
+        try {
+          input = remoteConnectionsRequestSchema.parse(JSON.parse(line.slice(remotePrefix.length)));
+        } catch {
+          respond(socket, "rejected");
+          return;
+        }
+        if (request.slice(newline + 1) !== "") {
+          respond(socket, "rejected");
+          return;
+        }
+        socket.setTimeout(
+          input.action === "read-thread" ? REMOTE_THREAD_CONTROL_TIMEOUT_MS : 30_000,
+          () => socket.destroy(),
+        );
+        // The operation is not retried on connection loss: mutations may already have applied.
+        const operation = options.remoteConnections;
+        void Promise.resolve()
+          .then(() => operation(input))
+          .then(
+            (reply) => {
+              const serialized = JSON.stringify(reply) + "\n";
+              if (
+                input.action === "read-thread" &&
+                Buffer.byteLength(serialized) > REMOTE_THREAD_REPLY_MAX_BYTES
+              ) {
+                socket.end(
+                  JSON.stringify({
+                    error: {
+                      code: -32094,
+                      message:
+                        "Thread snapshot exceeds the 16 MiB response limit; reduce the message page size. Oversized individual results are not supported.",
+                    },
+                  }) + "\n",
+                );
+              } else socket.end(serialized);
+            },
+            () =>
+              socket.end(
+                JSON.stringify({
+                  error: {
+                    code: -32090,
+                    message:
+                      "Remote connection management is unavailable. Restart Codex through codexhost",
+                  },
+                }) + "\n",
+              ),
+          );
+        return;
+      }
+      const prefix = `PAGE ${options.nonce} `;
+      if (options.openLocalPage && line.startsWith(prefix)) {
+        const url = line.slice(prefix.length);
+        if (!isLocalPageUrl(url) || request.slice(newline + 1) !== "") {
+          respond(socket, "rejected");
+          return;
+        }
+        socket.off("data", receive);
+        const page = serveLocalPage(socket, url, options.openLocalPage).catch(() =>
+          socket.destroy(),
+        );
+        const completion = page.then(() => undefined);
+        pages.add(completion);
+        void completion.finally(() => pages.delete(completion));
+        return;
+      }
       if (line === `ATTACH ${options.nonce}`) {
         if (attachment) {
           respond(socket, "busy");
@@ -84,7 +164,8 @@ export async function startControllerAttachmentServer(
         return;
       }
       respond(socket, "rejected");
-    });
+    };
+    socket.on("data", receive);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -101,8 +182,11 @@ export async function startControllerAttachmentServer(
     async close() {
       if (closed) return;
       closed = true;
+      // Stop accepting first, so no page can start after the current ones are collected.
+      const serverClosed = closeServer(server);
       for (const socket of sockets) socket.destroy();
-      await closeServer(server);
+      await Promise.all(pages);
+      await serverClosed;
     },
   };
 }

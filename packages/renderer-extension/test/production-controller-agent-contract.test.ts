@@ -4,7 +4,6 @@ import {
   runDesktopController,
   type DesktopControllerDependencies,
 } from "@codexhost/desktop-control";
-import { DEFAULT_RENDERER_AGENTS } from "../src/agent-selection-state.js";
 
 describe("production Controller / Renderer Agent contract", () => {
   afterEach(() => vi.useRealTimers());
@@ -19,7 +18,7 @@ describe("production Controller / Renderer Agent contract", () => {
       async evaluate<T>(): Promise<T> {
         return {
           version: 2,
-          enabledAgents: [...DEFAULT_RENDERER_AGENTS],
+          enabledAgents: ticks === 0 ? ["codex", "unknown-plugin"] : ["codex", "remote-plugin"],
           adapter: { state: "ready", reason: "ready" },
         } as T;
       },
@@ -52,7 +51,6 @@ describe("production Controller / Renderer Agent contract", () => {
       {
         rendererCdpEndpoint: "http://127.0.0.1:43123",
         rendererPath: "/synthetic/renderer.js",
-        defaultAgent: "codex",
         attachmentPort: 43124,
         attachmentNonce: "0123456789abcdef0123456789abcdef",
       },
@@ -73,7 +71,7 @@ describe("production Controller / Renderer Agent contract", () => {
     await vi.runAllTimersAsync();
     await run;
     expect(install).toHaveBeenCalledOnce();
-    expect(install.mock.calls[0]?.[0].enabledAgents).toEqual(DEFAULT_RENDERER_AGENTS);
+    expect(install.mock.calls[0]?.[0].enabledAgents).toBeUndefined();
     expect(
       client.command.mock.calls.filter(([method]) => method === "Runtime.evaluate"),
     ).toHaveLength(1);

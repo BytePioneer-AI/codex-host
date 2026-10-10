@@ -104,6 +104,13 @@ export class ClaudeBackgroundOccupancy {
     }
   }
 
+  /** Native task IDs of Subagents Claude Code still runs. */
+  runningTaskIds(): string[] {
+    return [...this.#tasks.values()].flatMap((task) =>
+      task.state === "running" && task.nativeSubagentId ? [task.nativeSubagentId] : [],
+    );
+  }
+
   interruptAll(): string[] {
     const ids = [...this.#tasks.values()].flatMap((task) =>
       task.nativeSubagentId ? [task.nativeSubagentId] : [],

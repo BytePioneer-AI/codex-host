@@ -437,7 +437,11 @@ function normalizedProcessError(
   return {
     code: "nativeFailure",
     message: exposeDetail && nativeDetail ? `${fallback}: ${nativeDetail}` : fallback,
-    retryable: true,
+    // These native rejections need a changed precondition or a quota reset;
+    // immediately replaying a Turn (and its tools) cannot resolve them.
+    retryable: !/User location is not supported for the API use|Individual quota reached/iu.test(
+      nativeDetail,
+    ),
     ...(diagnostic ? { stderrTail: diagnostic.slice(-4_000) } : {}),
   };
 }
@@ -901,6 +905,22 @@ class AntigravitySession implements HarnessSession {
 
   async #handleResult(active: ActiveTurn, event: AntigravityResultEvent): Promise<void> {
     if (this.#active !== active) return;
+    const resultConversationId = event.result.conversation_id.trim();
+    if (
+      resultConversationId &&
+      this.#nativeRef &&
+      resultConversationId !== this.#nativeRef.nativeSessionId
+    ) {
+      this.#completeTurn(active, {
+        status: "failed",
+        error: {
+          code: "protocolError",
+          message: "Antigravity returned a result for a different Conversation",
+          retryable: false,
+        },
+      });
+      return;
+    }
     const usage = hostUsage(event.result.usage, active.model?.id);
     if (usage) this.#publishUsage(active, usage);
     this.#ensureContextUsage(active, event.result.conversation_id);
@@ -910,10 +930,7 @@ class AntigravitySession implements HarnessSession {
     }
     await active.subagents.refresh();
     if (this.#active !== active) return;
-    const convId =
-      event.result.conversation_id && event.result.conversation_id.trim().length > 0
-        ? event.result.conversation_id.trim()
-        : (this.#nativeRef?.nativeSessionId ?? "");
+    const convId = resultConversationId || this.#nativeRef?.nativeSessionId || "";
 
     if (!this.#nativeRef && convId) {
       this.#nativeRef = nativeSessionRefSchema.parse({

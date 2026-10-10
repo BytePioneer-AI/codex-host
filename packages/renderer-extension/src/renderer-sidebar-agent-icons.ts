@@ -5,7 +5,8 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type { RendererAgent } from "./agent-selection-state.js";
-import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "./renderer-agent-icon.js";
+import type { HarnessPluginDescriptor } from "@codexhost/shared-contracts";
+import { createRendererAgentIcon, rendererAgentLabel } from "./renderer-agent-icon.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
 import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
 
@@ -113,13 +114,14 @@ export interface SidebarAgentIconRow {
   hostId(): string | null;
   threadId(): string | null;
   draftId(): string | null;
-  render(agent: Exclude<RendererAgent, "codex">): void;
+  render(agent: Exclude<RendererAgent, "codex">, plugin?: HarnessPluginDescriptor): void;
   clear(): void;
 }
 
 export interface SidebarAgentIconDom {
   rows(): readonly SidebarAgentIconRow[];
-  observe(onChange: () => void): () => void;
+  /** Report stable row handles for changed subtrees/identities, including removals. */
+  observe(onChange: (rows: readonly SidebarAgentIconRow[]) => void): () => void;
   clear(): void;
 }
 
@@ -132,22 +134,7 @@ export function rendererAgentForThreadOwnership(
   ownership: ThreadOwnership,
 ): Exclude<RendererAgent, "codex"> | null {
   if (ownership.owner === "codex") return null;
-  if (ownership.harnessId === "pi") return "pi";
-  if (ownership.harnessId === "claude-code") return "claude-code";
-  if (ownership.harnessId === "deepseek-harness") return "deepseek-harness";
-  if (ownership.harnessId === "opencode") return "opencode";
-  if (ownership.harnessId === "grok") return "grok";
-  if (ownership.harnessId === "omp") return "omp";
-  if (ownership.harnessId === "antigravity") return "antigravity";
-  if (ownership.harnessId === "kiro-cli") return "kiro-cli";
-  if (ownership.harnessId === "codebuddy") return "codebuddy";
-  if (ownership.harnessId === "workbuddy") return "workbuddy";
-  if (ownership.harnessId === "cursor-cli") return "cursor-cli";
-  if (ownership.harnessId === "hermes") return "hermes";
-  if (ownership.harnessId === "qoder") return "qoder";
-  if (ownership.harnessId === "qoder-cn") return "qoder-cn";
-  if (ownership.harnessId === "kimi-code") return "kimi-code";
-  return null;
+  return ownership.harnessId;
 }
 
 // Desktop wraps some titles (hover label, secondary line), so the title is not always a direct
@@ -183,7 +170,8 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
     return draftIdFromSidebarRowElement(this.element);
   }
 
-  render(agent: Exclude<RendererAgent, "codex">): void {
+  render(agent: Exclude<RendererAgent, "codex">, plugin?: HarnessPluginDescriptor): void {
+    const presentation = JSON.stringify([agent, plugin?.name, plugin?.icon, plugin?.iconStyle]);
     const titleTrigger = this.element.querySelector<HTMLElement>("[data-thread-title-trigger]");
     const title = titleTrigger?.querySelector<HTMLElement>("[data-thread-title]");
     if (!titleTrigger || !title) {
@@ -197,15 +185,17 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
     if (
       icons.length === 1 &&
       icons[0]?.nextElementSibling === anchor &&
-      icons[0].getAttribute(SIDEBAR_AGENT_ICON_ATTRIBUTE) === agent
+      icons[0].getAttribute(SIDEBAR_AGENT_ICON_ATTRIBUTE) === agent &&
+      icons[0].dataset.presentation === presentation
     ) {
       return;
     }
     this.clear();
 
-    const label = `${RENDERER_AGENT_LABELS[agent]} Agent`;
+    const label = `${rendererAgentLabel(agent, plugin)} Agent`;
     const marker = this.element.ownerDocument.createElement("span");
     marker.setAttribute(SIDEBAR_AGENT_ICON_ATTRIBUTE, agent);
+    marker.dataset.presentation = presentation;
     marker.setAttribute("role", "img");
     marker.setAttribute("aria-label", label);
     marker.title = label;
@@ -216,7 +206,7 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
     marker.style.height = "14px";
     marker.style.flex = "none";
     marker.style.pointerEvents = "none";
-    marker.append(createRendererAgentIcon(agent, 14, this.element.ownerDocument));
+    marker.append(createRendererAgentIcon(agent, 14, this.element.ownerDocument, plugin));
     anchor.before(marker);
   }
 
@@ -233,28 +223,56 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
 
   constructor(private readonly root: ParentNode & Node) {}
 
+  #row(element: HTMLElement): BrowserSidebarAgentIconRow {
+    let row = this.#rowsByElement.get(element);
+    if (!row) {
+      row = new BrowserSidebarAgentIconRow(element);
+      this.#rowsByElement.set(element, row);
+    }
+    if (element.isConnected && element.matches(SIDEBAR_THREAD_ROW_SELECTOR))
+      this.#trackedRows.add(row);
+    else this.#trackedRows.delete(row);
+    return row;
+  }
+
   rows(): readonly SidebarAgentIconRow[] {
     for (const row of this.#trackedRows) {
       if (!row.isConnected()) this.#trackedRows.delete(row);
     }
     return [...this.root.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR)].map(
-      (element) => {
-        let row = this.#rowsByElement.get(element);
-        if (!row) {
-          row = new BrowserSidebarAgentIconRow(element);
-          this.#rowsByElement.set(element, row);
-          this.#trackedRows.add(row);
-        }
-        return row;
-      },
+      (element) => this.#row(element),
     );
   }
 
-  observe(onChange: () => void): () => void {
-    const observer = new MutationObserver(onChange);
+  observe(onChange: (rows: readonly SidebarAgentIconRow[]) => void): () => void {
+    const observer = new MutationObserver((mutations) => {
+      const changed = new Set<SidebarAgentIconRow>();
+      const collect = (node: Node): void => {
+        if (!(node instanceof Element)) return;
+        if (node.matches(SIDEBAR_THREAD_ROW_SELECTOR)) changed.add(this.#row(node as HTMLElement));
+        for (const element of node.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR))
+          changed.add(this.#row(element));
+      };
+      for (const mutation of mutations) {
+        const target =
+          mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+        const row = target?.closest<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR);
+        if (row) changed.add(this.#row(row));
+        // Removing the row marker must also clear its old decoration and identity.
+        else if (target && this.#rowsByElement.has(target as HTMLElement))
+          changed.add(this.#row(target as HTMLElement));
+        for (const node of mutation.addedNodes) collect(node);
+        for (const node of mutation.removedNodes) collect(node);
+      }
+      if (changed.size) onChange([...changed]);
+    });
     observer.observe(this.root, {
       attributes: true,
-      attributeFilter: [SIDEBAR_THREAD_ID_ATTRIBUTE, SIDEBAR_THREAD_HOST_ID_ATTRIBUTE],
+      attributeFilter: [
+        SIDEBAR_THREAD_ROW_ATTRIBUTE,
+        SIDEBAR_THREAD_ID_ATTRIBUTE,
+        SIDEBAR_THREAD_HOST_ID_ATTRIBUTE,
+      ],
       childList: true,
       subtree: true,
     });
@@ -269,6 +287,7 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
 
 export function installRendererSidebarAgentIcons(options: {
   getClient(hostId: string): RendererModelClient | null;
+  getPlugins?(hostId: string): readonly HarnessPluginDescriptor[] | undefined;
   getLocalAgent?(input: {
     hostId: string;
     threadId: string | null;
@@ -283,16 +302,40 @@ export function installRendererSidebarAgentIcons(options: {
   const provisionalCodex = new Set<string>();
   const ownershipRetryAttempts = new Map<string, number>();
   const ownershipRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const dirtyRows = new Set<SidebarAgentIconRow>();
+  // Index mounted row identities so replies/retries update only the affected
+  // Thread, including duplicate rows, without retaining stale recycled identities.
+  const rowsByThread = new Map<string, Set<SidebarAgentIconRow>>();
+  const threadByRow = new WeakMap<SidebarAgentIconRow, string>();
   let disposed = false;
   let scanScheduled = false;
 
   const ownershipKey = (hostId: string, threadId: string): string =>
     JSON.stringify([hostId, threadId]);
 
-  const scheduleScan = (): void => {
-    if (disposed || scanScheduled) return;
+  const scheduleScan = (rows: Iterable<SidebarAgentIconRow>): void => {
+    if (disposed) return;
+    for (const row of rows) dirtyRows.add(row);
+    if (scanScheduled || dirtyRows.size === 0) return;
     scanScheduled = true;
-    queueMicrotask(scan);
+    requestAnimationFrame(scan);
+  };
+
+  const trackRowThread = (row: SidebarAgentIconRow, key?: string): void => {
+    const previous = threadByRow.get(row);
+    if (previous === key) return;
+    if (previous !== undefined) {
+      const rows = rowsByThread.get(previous);
+      rows?.delete(row);
+      if (rows?.size === 0) rowsByThread.delete(previous);
+      threadByRow.delete(row);
+    }
+    if (key !== undefined) {
+      let rows = rowsByThread.get(key);
+      if (!rows) rowsByThread.set(key, (rows = new Set()));
+      rows.add(row);
+      threadByRow.set(row, key);
+    }
   };
 
   const clearOwnershipRetry = (key: string): void => {
@@ -323,7 +366,7 @@ export function installRendererSidebarAgentIcons(options: {
       if (disposed) return;
       failed.delete(key);
       ownershipByThread.delete(key);
-      scheduleScan();
+      scheduleScan(rowsByThread.get(key) ?? []);
     }, delay);
     ownershipRetryTimers.set(key, timer);
   };
@@ -363,25 +406,40 @@ export function installRendererSidebarAgentIcons(options: {
         if (retryable) {
           for (const threadId of threadIds) scheduleOwnershipRetry(hostId, threadId);
         }
-        if (succeeded) scheduleScan();
+        if (succeeded) {
+          for (const threadId of threadIds)
+            scheduleScan(rowsByThread.get(ownershipKey(hostId, threadId)) ?? []);
+        }
       });
   };
 
   const scan = (): void => {
     scanScheduled = false;
     if (disposed) return;
+    const rows = [...dirtyRows];
+    dirtyRows.clear();
     const unresolvedByHost = new Map<string, Set<ReturnType<typeof hostThreadIdSchema.parse>>>();
-    for (const row of dom.rows()) {
+    // Host discovery walks the native React tree. Read artwork once per Host in
+    // this synchronous scan, never retain it across frames or connection changes.
+    const pluginsByHost = new Map<string, readonly HarnessPluginDescriptor[] | undefined>();
+    const getPlugin = (hostId: string, agent: string): HarnessPluginDescriptor | undefined => {
+      if (!pluginsByHost.has(hostId)) pluginsByHost.set(hostId, options.getPlugins?.(hostId));
+      return pluginsByHost.get(hostId)?.find(({ id }) => id === agent);
+    };
+    for (const row of rows) {
       if (!row.isConnected()) {
+        trackRowThread(row);
         row.clear();
         continue;
       }
       const hostId = row.hostId();
       if (!hostId) {
+        trackRowThread(row);
         row.clear();
         continue;
       }
       const threadId = hostThreadIdSchema.safeParse(row.threadId());
+      trackRowThread(row, threadId.success ? ownershipKey(hostId, threadId.data) : undefined);
       const localAgent = options.getLocalAgent?.({
         hostId,
         threadId: threadId.success ? threadId.data : null,
@@ -394,7 +452,7 @@ export function installRendererSidebarAgentIcons(options: {
           clearOwnershipRetry(key);
         }
         if (localAgent === "codex") row.clear();
-        else row.render(localAgent);
+        else row.render(localAgent, getPlugin(hostId, localAgent));
         continue;
       }
       if (!threadId.success) {
@@ -404,7 +462,7 @@ export function installRendererSidebarAgentIcons(options: {
       const key = ownershipKey(hostId, threadId.data);
       if (ownershipByThread.has(key)) {
         const agent = ownershipByThread.get(key);
-        if (agent) row.render(agent);
+        if (agent) row.render(agent, getPlugin(hostId, agent));
         else row.clear();
         continue;
       }
@@ -440,22 +498,27 @@ export function installRendererSidebarAgentIcons(options: {
   };
 
   const stopObserving = dom.observe(scheduleScan);
+  for (const row of dom.rows()) dirtyRows.add(row);
   scan();
 
   return {
     refresh() {
+      if (disposed) return;
       failed.clear();
       for (const timer of ownershipRetryTimers.values()) clearTimeout(timer);
       ownershipRetryTimers.clear();
       ownershipRetryAttempts.clear();
       for (const key of provisionalCodex) ownershipByThread.delete(key);
       provisionalCodex.clear();
-      scheduleScan();
+      scheduleScan(dom.rows());
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       stopObserving();
+      for (const row of dirtyRows) row.clear();
+      dirtyRows.clear();
+      rowsByThread.clear();
       dom.clear();
       ownershipByThread.clear();
       pending.clear();

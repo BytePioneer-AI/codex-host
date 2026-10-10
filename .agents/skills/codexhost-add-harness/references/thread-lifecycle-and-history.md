@@ -71,7 +71,7 @@ Fork 分叉会话上下文，不回滚文件、不自动创建 Worktree，也不
 
 ## 导入：可选发现，不转移事务所有权
 
-需要导入已有原生 Session 时，读取 `packages/shared-contracts/src/harness-session-import.ts` 和 Adapter 的 `sessionImport` 接口。候选身份必须能真实 resume；原生发现、版本和 locator 由插件拥有，Host 拥有映射创建、去重、并发与失败恢复。
+需要导入已有原生 Session 时，读取 `packages/shared-contracts/src/harness-session-import.ts` 和 Adapter 的 `sessionImport` 接口。候选身份必须能真实 resume；原生发现、版本和 locator 由插件拥有，Host 拥有映射创建、去重、并发与失败恢复。候选构造、标题归一化、读取生命周期和文件指纹比对使用 `@codexhost/harness-adapter/session-import`，不在插件内重写。
 
 当前 DeepSeek 的上层导入入口仍是专用路径。提供候选接口不代表新 Harness 已有通用导入 UI；不要复制新的 Harness 专用导入方法来绕过缺口。
 

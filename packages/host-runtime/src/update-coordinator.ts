@@ -9,12 +9,12 @@ import {
   cleanupTerminalUpdateState,
   compareSemanticVersions,
   createBackgroundUpdateManager,
-  discoverLatestUpdateStatus,
+  discoverActiveUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
-  isUpdateOperationActive,
   recoverUpdateOperationLock,
   resolveInstalledUpdateContext,
+  readRuntimeMetadata,
   selectInstallerReleaseArtifact,
   type BackgroundUpdateManager,
   type BackgroundUpdateStatus,
@@ -85,17 +85,16 @@ export function createHostUpdateCoordinator(
     });
   let candidate: CodexhostLatestRelease | null = null;
 
+  let currentStatusPath: string | null = null;
+
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {
-    const discovered = await discoverLatestUpdateStatus(context.common.stateDirectory);
-    if (!discovered) return null;
-    if (
-      discovered.status.phase !== "succeeded" &&
-      discovered.status.phase !== "failed" &&
-      !(await isUpdateOperationActive(context.common.stateDirectory))
-    ) {
-      return null;
+    if (!currentStatusPath) {
+      const active = await discoverActiveUpdateStatus(context.common.stateDirectory);
+      if (!active) return null;
+      currentStatusPath = active.statusPath;
     }
-    return publicStatus(discovered.status);
+    const status = await manager.readStatus(currentStatusPath);
+    return status ? publicStatus(status) : null;
   }
 
   async function installable(
@@ -121,8 +120,12 @@ export function createHostUpdateCoordinator(
         await recoverUpdateOperationLock(context.common.stateDirectory);
         await cleanupTerminalUpdateState(context.common.stateDirectory);
       } catch (error) {
+        const runtime = await readRuntimeMetadata(
+          options.hostRuntimePath,
+          options.environment,
+        ).catch(() => null);
         return {
-          currentVersion: "0.0.0",
+          currentVersion: runtime?.distribution === "development" ? runtime.version : "0.0.0",
           installation: null,
           latestVersion: null,
           updateAvailable: false,
@@ -183,6 +186,7 @@ export function createHostUpdateCoordinator(
         throw new Error("Another update operation is already active");
       }
 
+      currentStatusPath = null;
       let resolvePrepared!: (info: {
         version: string;
         installation: BackgroundUpdateStatus["installation"];
@@ -212,6 +216,7 @@ export function createHostUpdateCoordinator(
           statusPath: string;
         }): Promise<void> => {
           await lock.setStatusPath(info.statusPath);
+          currentStatusPath = info.statusPath;
           resolvePrepared(info);
         };
         const prepareAndStart = async (): Promise<void> => {
@@ -244,7 +249,7 @@ export function createHostUpdateCoordinator(
                       onPrepared,
                     });
             }
-            if (platform !== "darwin") manager.start(prepared);
+            if (platform !== "darwin") await manager.start(prepared);
           } catch (error) {
             await lock.release();
             rejectPrepared(error);

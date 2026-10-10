@@ -1,26 +1,28 @@
-import { readdir, realpath } from "node:fs/promises";
-import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { HarnessAdapter, HarnessError } from "@codexhost/harness-adapter";
-import type { HarnessPluginContext, HarnessPluginModule } from "@codexhost/harness-adapter/plugin";
+import type {
+  HarnessPluginContext,
+  HarnessPluginModule,
+  HarnessUsageStatisticsAdapter,
+  HarnessUsageStatisticsPluginModule,
+} from "@codexhost/harness-adapter/plugin";
+
 import {
   HARNESS_PLUGIN_API_VERSION,
   HARNESS_PLUGIN_LIMIT,
-  HARNESS_PLUGIN_MANIFEST_MAX_BYTES,
   harnessPluginDescriptorSchema,
-  harnessPluginManifestSchema,
   type HarnessPluginDescriptor,
-  type HarnessPluginManifest,
 } from "@codexhost/shared-contracts";
 
-import { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 import {
+  discoverHarnessPlugins,
   pluginResourcePath,
-  readPluginConfiguration,
-  readPluginFile,
   readPluginIcon,
-} from "./plugin-files.js";
+  type InstalledHarnessPlugin,
+} from "@codexhost/harness-plugin-files";
+
+import { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 
 export type HarnessPluginDiagnosticCode =
   | "invalidRoot"
@@ -55,22 +57,53 @@ export interface LoadHarnessPluginsOptions {
   warmup?: boolean;
   /** Dedicated runtime owners (e.g. a Broker) may instantiate only their requested plugin. */
   onlyIds?: ReadonlySet<string>;
+  /** Load statistics-only plugins first and publish their settled registry before Session
+   * plugins start. Ownership/cleanup remains with the returned registry.
+   */
+  onUsageAdaptersLoaded?: (adapters: ReadonlyMap<string, HarnessUsageStatisticsAdapter>) => void;
   diagnose?: (diagnostic: HarnessPluginDiagnostic) => void;
 }
 
-interface Candidate {
-  root: string;
-  manifest: HarnessPluginManifest;
-  enabled: boolean;
-}
+type Candidate = InstalledHarnessPlugin;
+type PluginAdapter = HarnessAdapter | HarnessUsageStatisticsAdapter;
 
-function missingFile(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
+function hasValidSessionUsage(value: object): boolean {
+  const capability: unknown = Reflect.get(value, "sessionUsage");
+  return (
+    capability === undefined ||
+    (capability !== null &&
+      typeof capability === "object" &&
+      ["observe", "read"].every((key) => typeof Reflect.get(capability, key) === "function") &&
+      ["requestOptions", "shouldForwardNotification", "reset"].every(
+        (key) =>
+          Reflect.get(capability, key) === undefined ||
+          typeof Reflect.get(capability, key) === "function",
+      ))
+  );
 }
 
 function isAdapter(value: unknown): value is HarnessAdapter {
   if (!value || typeof value !== "object") return false;
-  return ["inspect", "open", "close"].every((key) => typeof Reflect.get(value, key) === "function");
+  return (
+    hasValidSessionUsage(value) &&
+    ["inspect", "open", "close"].every((key) => typeof Reflect.get(value, key) === "function")
+  );
+}
+
+function isUsageAdapter(value: unknown): value is HarnessUsageStatisticsAdapter {
+  if (!value || typeof value !== "object" || typeof Reflect.get(value, "close") !== "function")
+    return false;
+  const capability: unknown = Reflect.get(value, "usageStatistics");
+  return (
+    hasValidSessionUsage(value) &&
+    !!capability &&
+    typeof capability === "object" &&
+    ["listSources", "readSource"].every(
+      (key) => typeof Reflect.get(capability, key) === "function",
+    ) &&
+    !("open" in value) &&
+    !("inspect" in value)
+  );
 }
 
 async function closeCandidate(value: unknown): Promise<void> {
@@ -83,13 +116,26 @@ async function closeCandidate(value: unknown): Promise<void> {
 function unavailableAdapter(
   descriptor: HarnessPluginDescriptor,
   code: HarnessPluginDiagnosticCode,
-): HarnessAdapter {
+): PluginAdapter {
   const error: HarnessError = {
     code: "unavailable",
     message: `Harness plugin is unavailable (${code})`,
     retryable: false,
     stage: "pluginLoad",
   };
+  if (descriptor.kind === "usage")
+    return {
+      harnessId: descriptor.id,
+      usageStatistics: {
+        listSources: async () => {
+          throw new Error(error.message);
+        },
+        readSource: async () => {
+          throw new Error(error.message);
+        },
+      },
+      close: async () => undefined,
+    };
   return {
     harnessId: descriptor.id,
     inspect: async () => ({ status: "unavailable", error }),
@@ -106,7 +152,7 @@ async function loadAdapter(
   diagnose: (diagnostic: HarnessPluginDiagnostic) => void,
   warmup: boolean,
   signal?: AbortSignal,
-): Promise<HarnessAdapter> {
+): Promise<PluginAdapter> {
   const { manifest } = candidate;
   let expired = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -117,22 +163,26 @@ async function loadAdapter(
       throw new Error("Plugin entry must be an ESM JavaScript module");
     const module: unknown = await import(pathToFileURL(entry).href);
     if (expired) return undefined;
+    const factory =
+      manifest.kind === "usage" ? "createUsageStatisticsAdapter" : "createHarnessAdapter";
     if (
       !module ||
       typeof module !== "object" ||
-      typeof Reflect.get(module, "createHarnessAdapter") !== "function"
+      typeof Reflect.get(module, factory) !== "function"
     ) {
       throw new Error("Plugin entry has no Adapter factory");
     }
-    const value: unknown = await (module as HarnessPluginModule).createHarnessAdapter({
-      ...context,
-      environment: Object.freeze({ ...context.environment }),
-    });
-    if (expired || !isAdapter(value) || value.harnessId !== manifest.id) {
+    const input = { ...context, environment: Object.freeze({ ...context.environment }) };
+    const value =
+      manifest.kind === "usage"
+        ? await (module as HarnessUsageStatisticsPluginModule).createUsageStatisticsAdapter(input)
+        : await (module as HarnessPluginModule).createHarnessAdapter(input);
+    const valid = manifest.kind === "usage" ? isUsageAdapter(value) : isAdapter(value);
+    if (expired || !valid || value.harnessId !== manifest.id) {
       await closeCandidate(value).catch(() => diagnose({ id: manifest.id, code: "cleanupFailed" }));
       throw new Error("Plugin Adapter is invalid or expired");
     }
-    if (warmup) {
+    if (warmup && isAdapter(value)) {
       void Promise.resolve()
         .then(async () => {
           await (module as HarnessPluginModule).warmup?.(value);
@@ -142,7 +192,7 @@ async function loadAdapter(
     return value;
   })();
   try {
-    const races: Array<Promise<HarnessAdapter | undefined>> = [
+    const races: Array<Promise<PluginAdapter | undefined>> = [
       operation,
       new Promise((_, reject) => {
         timer = setTimeout(() => {
@@ -194,59 +244,9 @@ export async function loadHarnessPlugins(
       /* Diagnostics cannot change loading. */
     }
   };
-  const candidates: Candidate[] = [];
-  const enabledIds = new Set<string>();
-  const roots = new Set<string>();
-  for (const configuredRoot of options.roots) {
-    if (!path.isAbsolute(configuredRoot)) {
-      diagnose({ code: "invalidRoot" });
-      continue;
-    }
-    let root: string;
-    try {
-      root = await realpath(configuredRoot);
-      if (roots.has(root)) continue;
-      roots.add(root);
-    } catch (error) {
-      if (!missingFile(error)) diagnose({ code: "invalidRoot" });
-      continue;
-    }
-    let enabled: Set<string>;
-    try {
-      enabled = new Set((await readPluginConfiguration(root)).enabled);
-    } catch (error) {
-      if (!missingFile(error)) diagnose({ code: "invalidConfiguration" });
-      continue;
-    }
-    for (const id of enabled) enabledIds.add(id);
-    try {
-      const directories = (await readdir(root, { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
-        .sort((a, b) => a.name.localeCompare(b.name));
-      if (directories.length > HARNESS_PLUGIN_LIMIT) {
-        diagnose({ code: "invalidRoot" });
-        continue;
-      }
-      for (const directory of directories) {
-        try {
-          const file = await pluginResourcePath(root, `${directory.name}/manifest.json`);
-          const pluginRoot = await realpath(path.join(root, directory.name));
-          // A manifest symlink into another plugin is not the owning plugin's manifest.
-          await pluginResourcePath(pluginRoot, "manifest.json");
-          const manifest = harnessPluginManifestSchema.parse(
-            JSON.parse(
-              (await readPluginFile(file, HARNESS_PLUGIN_MANIFEST_MAX_BYTES)).toString("utf8"),
-            ),
-          );
-          candidates.push({ root: pluginRoot, manifest, enabled: enabled.has(manifest.id) });
-        } catch {
-          diagnose({ code: "invalidManifest" });
-        }
-      }
-    } catch {
-      diagnose({ code: "invalidRoot" });
-    }
-  }
+  const { plugins: candidates, enabledIds } = await discoverHarnessPlugins(options.roots, (code) =>
+    diagnose({ code }),
+  );
   const counts = new Map<string, number>();
   for (const { manifest } of candidates)
     counts.set(manifest.id, (counts.get(manifest.id) ?? 0) + 1);
@@ -274,14 +274,15 @@ export async function loadHarnessPlugins(
   // Filesystem discovery and synchronous plugin execution are not preemptible.
   if (options.signal?.aborted) return registry;
   let next = 0;
+  let batch = pending;
   const loaded = new Map<
     Candidate,
-    { descriptor: HarnessPluginDescriptor; adapter: HarnessAdapter }
+    { descriptor: HarnessPluginDescriptor; adapter: PluginAdapter }
   >();
   const worker = async (): Promise<void> => {
     for (;;) {
       if (options.signal?.aborted) return;
-      const candidate = pending[next++];
+      const candidate = batch[next++];
       if (!candidate) return;
       if (options.signal?.aborted) return;
       const { manifest } = candidate;
@@ -289,12 +290,16 @@ export async function loadHarnessPlugins(
         id: manifest.id,
         name: manifest.name,
         version: manifest.version,
+        ...(manifest.kind ? { kind: manifest.kind } : {}),
         ...(manifest.launchCommand && !options.context.managedRemoteHost
           ? { launchCommand: true }
           : {}),
+        ...(manifest.iconStyle ? { iconStyle: manifest.iconStyle } : {}),
         ...(manifest.links ? { links: manifest.links } : {}),
+        ...(manifest.installation ? { installation: manifest.installation } : {}),
+        ...(manifest.notice ? { notice: manifest.notice } : {}),
       });
-      let adapter: HarnessAdapter;
+      let adapter: PluginAdapter;
       let failure: HarnessPluginDiagnosticCode | undefined;
       if (manifest.adapterApiVersion !== HARNESS_PLUGIN_API_VERSION) {
         failure = "incompatibleVersion";
@@ -327,10 +332,21 @@ export async function loadHarnessPlugins(
       loaded.set(candidate, { descriptor, adapter });
     }
   };
-  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, () => worker()));
-  for (const candidate of pending) {
-    const entry = loaded.get(candidate);
-    if (entry) registry.register(entry.descriptor, entry.adapter);
+  const batches = options.onUsageAdaptersLoaded
+    ? [
+        pending.filter((c) => c.manifest.kind === "usage"),
+        pending.filter((c) => c.manifest.kind !== "usage"),
+      ]
+    : [pending];
+  for (const [index, candidates] of batches.entries()) {
+    batch = candidates;
+    next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, batch.length) }, () => worker()));
+    for (const candidate of batch) {
+      const entry = loaded.get(candidate);
+      if (entry) await registry.register(entry.descriptor, entry.adapter);
+    }
+    if (index === 0) options.onUsageAdaptersLoaded?.(registry.usageAdapters);
   }
   return registry;
 }

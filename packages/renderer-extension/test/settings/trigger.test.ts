@@ -96,6 +96,9 @@ class FakeElement {
   removeEventListener(name: string): void {
     this.listeners.delete(name);
   }
+  removeAttribute(name: string): void {
+    this.attributes.delete(name);
+  }
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
   }
@@ -110,9 +113,12 @@ interface FakeRail {
   destinations: FakeElement;
   home: FakeElement;
   more: FakeElement;
+  divider: FakeElement;
+  plugins: FakeElement;
 }
 
-// Mirrors Codex Desktop 26.924: nav > [border, destinations (Home … More), footer].
+// Live Desktop structure: nav > [border, scrolling destinations, footer].
+// The scrolling column contains Home … More, then a divider and pinned plugins.
 function createFakeRail(options: { visible?: boolean; destinations?: boolean } = {}): FakeRail {
   const rail = new FakeElement("NAV", options.visible === false ? 0 : 837);
   rail.setAttribute("data-app-navigation-rail", "true");
@@ -123,9 +129,16 @@ function createFakeRail(options: { visible?: boolean; destinations?: boolean } =
   }
   const more = new FakeElement("BUTTON");
   more.setAttribute("aria-haspopup", "dialog");
-  destinations.append(home, more);
+  const divider = new FakeElement();
+  const plugins = new FakeElement();
+  if (options.destinations !== false) {
+    const plugin = new FakeElement("BUTTON");
+    plugin.setAttribute("data-sidebar-destination", "builtin:pull-requests");
+    plugins.append(plugin);
+  }
+  destinations.append(home, more, divider, plugins);
   rail.append(new FakeElement(), destinations, new FakeElement());
-  return { rail, destinations, home, more };
+  return { rail, destinations, home, more, divider, plugins };
 }
 
 function stubRailDocument(current: () => FakeElement): Document {
@@ -178,7 +191,7 @@ describe("Renderer settings navigation rail trigger", () => {
     }
   });
 
-  it("mounts directly above the rail's More button", () => {
+  it("mounts after pinned plugins, outside their native drag container", () => {
     const shell = createFakeRail();
     const document = stubRailDocument(() => shell.rail);
     try {
@@ -188,9 +201,21 @@ describe("Renderer settings navigation rail trigger", () => {
         ownerDocument: document,
       });
 
-      expect(shell.destinations.children).toEqual([shell.home, control.root, shell.more]);
+      expect(shell.destinations.children).toEqual([
+        shell.home,
+        shell.more,
+        shell.divider,
+        shell.plugins,
+        control.root,
+      ]);
+      expect(shell.plugins.children).toHaveLength(1);
       control.dispose();
-      expect(shell.destinations.children).toEqual([shell.home, shell.more]);
+      expect(shell.destinations.children).toEqual([
+        shell.home,
+        shell.more,
+        shell.divider,
+        shell.plugins,
+      ]);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -210,12 +235,51 @@ describe("Renderer settings navigation rail trigger", () => {
       current = replacement.rail;
 
       expect(control.refresh()).toBe(true);
-      expect(shell.destinations.children).toEqual([shell.home, shell.more]);
+      expect(shell.destinations.children).toEqual([
+        shell.home,
+        shell.more,
+        shell.divider,
+        shell.plugins,
+      ]);
       expect(replacement.destinations.children).toEqual([
         replacement.home,
-        control.root,
         replacement.more,
+        replacement.divider,
+        replacement.plugins,
+        control.root,
       ]);
+      control.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows the native selected treatment while the settings page is open", () => {
+    const shell = createFakeRail();
+    let current = shell.rail;
+    const document = stubRailDocument(() => current);
+    try {
+      const control = installRendererSettingsRailTrigger({
+        available: true,
+        onOpen: vi.fn(),
+        ownerDocument: document,
+      });
+      const button = () => control.root?.children[0] as unknown as FakeElement;
+
+      control.setSelected(true);
+      expect(button().attributes.get("aria-current")).toBe("page");
+      expect(button().style.background).toContain("--color-background-secondary-ghost-hover");
+      button().dispatch("pointerleave");
+      expect(button().style.background).toContain("--color-background-secondary-ghost-hover");
+
+      // A rail remount keeps the selection.
+      current = createFakeRail().rail;
+      expect(control.refresh()).toBe(true);
+      expect(button().attributes.get("aria-current")).toBe("page");
+
+      control.setSelected(false);
+      expect(button().attributes.has("aria-current")).toBe(false);
+      expect(button().style.background).toBe("transparent");
       control.dispose();
     } finally {
       vi.unstubAllGlobals();
@@ -225,6 +289,8 @@ describe("Renderer settings navigation rail trigger", () => {
   it("mounts last when the rail has no More button", () => {
     const shell = createFakeRail();
     shell.more.remove();
+    shell.divider.remove();
+    shell.plugins.remove();
     const document = stubRailDocument(() => shell.rail);
     try {
       const control = installRendererSettingsRailTrigger({
@@ -235,6 +301,43 @@ describe("Renderer settings navigation rail trigger", () => {
       expect(shell.destinations.children).toEqual([shell.home, control.root]);
       expect(control.refresh()).toBe(true);
       expect(shell.destinations.children).toEqual([shell.home, control.root]);
+      control.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("stays below More when there are no pinned plugins", () => {
+    const shell = createFakeRail();
+    shell.divider.remove();
+    shell.plugins.remove();
+    const document = stubRailDocument(() => shell.rail);
+    try {
+      const control = installRendererSettingsRailTrigger({
+        available: true,
+        onOpen: vi.fn(),
+        ownerDocument: document,
+      });
+      expect(shell.destinations.children).toEqual([shell.home, shell.more, control.root]);
+
+      // Native plugins can appear after our initial mount.
+      shell.destinations.append(shell.divider, shell.plugins);
+      expect(control.refresh()).toBe(true);
+      expect(shell.destinations.children).toEqual([
+        shell.home,
+        shell.more,
+        shell.divider,
+        shell.plugins,
+        control.root,
+      ]);
+      const insert = vi.spyOn(shell.destinations, "insertBefore");
+      expect(control.refresh()).toBe(true);
+      expect(insert).not.toHaveBeenCalled();
+
+      shell.divider.remove();
+      shell.plugins.remove();
+      expect(control.refresh()).toBe(true);
+      expect(shell.destinations.children).toEqual([shell.home, shell.more, control.root]);
       control.dispose();
     } finally {
       vi.unstubAllGlobals();
@@ -254,7 +357,14 @@ describe("Renderer settings navigation rail trigger", () => {
       shell.destinations.insertBefore(foreign, control.root as unknown as FakeElement);
 
       expect(control.refresh()).toBe(true);
-      expect(shell.destinations.children).toEqual([shell.home, foreign, control.root, shell.more]);
+      expect(shell.destinations.children).toEqual([
+        shell.home,
+        shell.more,
+        shell.divider,
+        shell.plugins,
+        foreign,
+        control.root,
+      ]);
       control.dispose();
     } finally {
       vi.unstubAllGlobals();
@@ -273,7 +383,12 @@ describe("Renderer settings navigation rail trigger", () => {
         });
         expect(control.refresh()).toBe(false);
         expect(control.root?.isConnected ?? false).toBe(false);
-        expect(shell.destinations.children).toEqual([shell.home, shell.more]);
+        expect(shell.destinations.children).toEqual([
+          shell.home,
+          shell.more,
+          shell.divider,
+          shell.plugins,
+        ]);
         control.dispose();
       } finally {
         vi.unstubAllGlobals();

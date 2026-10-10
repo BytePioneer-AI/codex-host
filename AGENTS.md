@@ -21,11 +21,13 @@
   - `mapping-store/`: external Thread metadata persistence
   - `harness-adapter/`: public Harness session and plugin contracts
   - `harness-discovery/`: Harness executable discovery and invocation helpers
+  - `harness-plugin-files/`: installed Harness plugin manifests and per-plugin launch settings, read without importing plugin code
   - `harness-broker/`: native Broker communication; currently retains Claude Code-specific semantics
   - `adapters/`: Harness-specific implementations and plugin entry points
   - `desktop-control/`: CDP / Electron Inspector-driven Desktop interaction
   - `host-runtime/`: Host composition and installed plugin loading
   - `update-manager/`: background update preparation
+  - `console-server/`: local codexhost console that works without Codex Desktop (diagnostics, updates, Harness launch settings)
   - `shared-contracts/`: browser-safe types and runtime schemas
   - `renderer-extension/`: browser JavaScript extension
 
@@ -49,7 +51,7 @@
 
 ## Repository Skills
 
-Use the applicable repository-local skills below when their task occurs; all ten support contextual invocation. Read the selected `SKILL.md` before using its workflow. Select by task rather than loading or executing every skill on every change. These guides supplement the ownership, scope, and validation rules in this file; copied examples do not establish installed tools or product capabilities.
+Use the applicable repository-local skills below when their task occurs; they support contextual invocation. Read the selected `SKILL.md` before using its workflow. Select by task rather than loading or executing every skill on every change. These guides supplement the ownership, scope, and validation rules in this file; copied examples do not establish installed tools or product capabilities.
 
 | Task | Skill |
 | --- | --- |
@@ -63,6 +65,7 @@ Use the applicable repository-local skills below when their task occurs; all ten
 | Electron application interaction and testing | [electron](.agents/skills/electron/SKILL.md) |
 | Exploratory application testing and issue reports | [dogfood](.agents/skills/dogfood/SKILL.md) |
 | GUI behavior and visual verification | [web-gui-tester](.agents/skills/web-gui-tester/SKILL.md) |
+| Version releases, Release Notes, preview channels, and release recovery | [codexhost-release](.agents/skills/codexhost-release/SKILL.md) |
 
 Existing Harness integration and Desktop update audit skills remain applicable to their specialized tasks. Imported skill provenance and license information is in [.agents/skills/NOTICE.md](.agents/skills/NOTICE.md).
 

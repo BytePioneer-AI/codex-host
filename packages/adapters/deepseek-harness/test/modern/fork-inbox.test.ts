@@ -33,7 +33,14 @@ function journal(
   extra: Partial<ModernJournal> = {},
 ): ModernJournal {
   return {
-    header: { version: 3, id: "child", parentSession: "source", createdAt: 0, isSeeded: true },
+    header: {
+      version: 4,
+      id: "child",
+      parentSession: "source",
+      createdAt: 0,
+      isSeeded: true,
+      delegationDepth: 0,
+    },
     inheritedEventCount: 1,
     cursor: 1,
     events: [
@@ -72,7 +79,7 @@ class Remote implements ModernJournalRemote {
   }
 }
 
-describe("native V3 inherited fork inbox", () => {
+describe("native inherited fork inbox", () => {
   it("removes only verified inherited pending IDs from the child through durable queue RPCs", async () => {
     const first = message("held");
     const second = message("context");

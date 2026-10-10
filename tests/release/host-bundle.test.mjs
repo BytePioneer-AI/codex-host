@@ -69,7 +69,6 @@ async function runPackagedHost(host, directory, requests) {
     CODEXHOST_DATA_DIR: path.join(directory, "data"),
     CODEXHOST_PLUGIN_DIRECTORY: path.join(directory, "user-plugins"),
     CODEXHOST_STOCK_CODEX_PATH: process.execPath,
-    CODEXHOST_DEFAULT_AGENT: "codex",
     CODEXHOST_CLAUDE_COMMAND: path.join(directory, "missing-claude"),
     CODEXHOST_ANTIGRAVITY_COMMAND: path.join(directory, "missing-antigravity"),
   });
@@ -137,6 +136,7 @@ describe("release Host and independent plugin Bundles", () => {
     "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
     "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/sdk.mjs",
     "node_modules/@opencode-ai/sdk/index.js",
+    "node_modules/@deepseek-ai/dsh-session/index.js",
   ])("rejects a concrete Adapter or Harness SDK leaking into Host: %s", (input) => {
     expect(() => auditHostBundleMetafile(validMetafile({ [input]: {} }))).toThrow(
       "forbidden inputs",
@@ -162,7 +162,7 @@ describe("release Host and independent plugin Bundles", () => {
     }
   });
 
-  it("runs relocated release artifacts with seven plugins, an unknown plugin, and no plugins", async () => {
+  it("runs relocated release artifacts with the preinstalled set, an unknown plugin, and no plugins", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-plugin-release-"));
     const app = path.join(directory, "build", "app");
     const relocated = path.join(directory, "relocated runtime", "app");
@@ -172,7 +172,13 @@ describe("release Host and independent plugin Bundles", () => {
         repositoryRoot,
         outputPath: path.join(app, "host-runtime.mjs"),
       });
-      expect(hostAudit.runtimePackages).toEqual(["diff", "ws", "zod"]);
+      expect(hostAudit.runtimePackages).toEqual([
+        "@deepseek-ai/cordis",
+        "@deepseek-ai/cosmokit",
+        "diff",
+        "ws",
+        "zod",
+      ]);
       const pluginAudits = await buildPreinstalledHarnessPlugins({
         repositoryRoot,
         outputDirectory: path.join(app, "plugins"),
@@ -185,12 +191,14 @@ describe("release Host and independent plugin Bundles", () => {
       expect(pluginAudits.find(({ id }) => id === "grok").runtimePackages).toContain(
         "@agentclientprotocol/sdk",
       );
-      expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toContain(
-        "@opencode-ai/sdk",
+      expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toEqual(
+        expect.arrayContaining(["@opencode-ai/sdk", "@opencode/client"]),
       );
-      expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toContain(
-        "@deepseek-ai/schemastery",
-      );
+      expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toEqual([
+        "diff",
+        "ws",
+        "zod",
+      ]);
       const source = await readFile(path.join(app, "host-runtime.mjs"), "utf8");
       expect(source).not.toContain("class ClaudeCodeAdapter");
       expect(source).not.toContain("Claude Code is not installed");

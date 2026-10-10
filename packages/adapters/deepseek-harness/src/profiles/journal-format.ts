@@ -29,7 +29,7 @@ export class ModernJournalError extends Error {
   }
 }
 
-export function parseEvent(value: unknown, format: 0 | 3 | 4 = 0): ModernJournalEvent {
+export function parseEvent(value: unknown): ModernJournalEvent {
   if (
     !isRecord(value) ||
     !hasRequiredOptionalKeys(
@@ -50,7 +50,7 @@ export function parseEvent(value: unknown, format: 0 | 3 | 4 = 0): ModernJournal
     throw protocolError("journal event has invalid scalar fields");
   }
   assertJsonValue(value.data, "journal event data");
-  if (format >= 3 && value.ignorable === true) {
+  if (value.ignorable === true) {
     // Vocabulary-aware validation decides whether these fields have surface semantics.
     if (Object.hasOwn(value, "sourceEventSeqs"))
       assertJsonValue(value.sourceEventSeqs, "journal event sourceEventSeqs");
@@ -67,20 +67,18 @@ export function parseEvent(value: unknown, format: 0 | 3 | 4 = 0): ModernJournal
       throw protocolError("journal event has invalid sourceEventSeqs");
     }
   }
-  if (Object.hasOwn(value, "surfaceOp")) parseSurfaceOp(value.surfaceOp, format);
+  if (Object.hasOwn(value, "surfaceOp")) parseSurfaceOp(value.surfaceOp);
   return value as unknown as ModernJournalEvent;
 }
 
-function parseSurfaceOp(value: unknown, format: 0 | 3 | 4): ModernJournalSurfaceOp {
+function parseSurfaceOp(value: unknown): ModernJournalSurfaceOp {
   if (value === "append") return value;
-  const start = format >= 3 ? "startSeq" : "start";
-  const end = format >= 3 ? "endSeq" : "end";
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["op", start, end]) ||
+    !hasExactKeys(value, ["op", "startSeq", "endSeq"]) ||
     value.op !== "replace" ||
-    !isSeq(value[start]) ||
-    !isSeq(value[end])
+    !isSeq(value.startSeq) ||
+    !isSeq(value.endSeq)
   ) {
     throw protocolError("journal event has an invalid surfaceOp");
   }
@@ -145,11 +143,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-export function isNonNegativeSafeInteger(value: unknown): value is number {
+function isNonNegativeSafeInteger(value: unknown): value is number {
   return (
     typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
   );

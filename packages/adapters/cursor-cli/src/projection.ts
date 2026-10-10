@@ -19,6 +19,10 @@ import {
 import type { CursorNativeTurn } from "./native-history.js";
 import { CursorSubagents, cursorTaskAddress } from "./subagents.js";
 import { cursorForkAvailable, cursorCheckpoint } from "./fork-support.js";
+import {
+  holdCursorWritableIterablePrefix,
+  takeCursorWritableIterableClosed,
+} from "./stream-error.js";
 
 const TOOL_OUTPUT_LIMIT = 100_000;
 
@@ -62,14 +66,64 @@ export class CursorTurnOutput {
     { item: Extract<HostItem, { type: "toolExecution" }>; changes: HostFileChange[] }
   >();
   readonly #finishedTools = new Set<string>();
+  #hold = "";
+  #writableIterableClosed = false;
+  #visibleAssistantText = false;
   constructor(
     readonly turnId: HostTurnId,
     readonly emit: (event: HostEvent) => void,
     nativeTurnIndex = 0,
   ) {
-    this.subagents = new CursorSubagents(turnId, emit, nativeTurnIndex);
+    this.subagents = new CursorSubagents(
+      turnId,
+      (event) => {
+        if (event.type === "item.started") {
+          this.#flushHold();
+          this.#finishText();
+        }
+        emit(event);
+      },
+      nativeTurnIndex,
+    );
   }
 
+  sawWritableIterableClosed(): boolean {
+    return this.#writableIterableClosed || takeCursorWritableIterableClosed(this.#hold).closed;
+  }
+  hasVisibleAssistantText(): boolean {
+    return (
+      this.#visibleAssistantText ||
+      takeCursorWritableIterableClosed(this.#hold).visible.trim().length > 0
+    );
+  }
+  #flushHold(): void {
+    if (!this.#hold) return;
+    const held = this.#hold;
+    this.#hold = "";
+    this.#appendText("agentMessage", held);
+  }
+  #appendText(type: "agentMessage" | "reasoning", text: string): void {
+    if (!text) return;
+    if (type === "agentMessage" && text.trim()) this.#visibleAssistantText = true;
+    if (this.#text?.type !== type) {
+      this.#finishText();
+      const item: Extract<HostItem, { type: "agentMessage" | "reasoning" }> = {
+        type,
+        itemId: hostItemIdSchema.parse(`cursor-${this.turnId}-${++this.#index}`),
+        text: "",
+      };
+      this.#text = item;
+      this.emit({ type: "item.started", turnId: this.turnId, item: { ...item } });
+    }
+    if (!this.#text) return;
+    this.#text.text += text;
+    this.emit({
+      type: "item.updated",
+      turnId: this.turnId,
+      itemId: this.#text.itemId,
+      update: { type: "text.append", text },
+    });
+  }
   #finishText(outcome: HostItemOutcome = { status: "succeeded" }) {
     if (this.#text)
       this.emit({
@@ -80,10 +134,7 @@ export class CursorTurnOutput {
     this.#text = undefined;
   }
   update(notification: SessionNotification) {
-    if (this.subagents.update(notification)) {
-      this.#finishText();
-      return;
-    }
+    if (this.subagents.update(notification)) return;
     const { update } = notification;
     if (
       update.sessionUpdate === "agent_message_chunk" ||
@@ -91,32 +142,28 @@ export class CursorTurnOutput {
     ) {
       if (update.content.type !== "text") return;
       const type = update.sessionUpdate === "agent_message_chunk" ? "agentMessage" : "reasoning";
-      if (this.#text?.type !== type) {
-        this.#finishText();
-        const item: Extract<HostItem, { type: "agentMessage" | "reasoning" }> = {
-          type,
-          itemId: hostItemIdSchema.parse(`cursor-${this.turnId}-${++this.#index}`),
-          text: "",
-        };
-        this.#text = item;
-        this.emit({ type: "item.started", turnId: this.turnId, item: { ...item } });
+      if (type === "reasoning") {
+        this.#flushHold();
+        this.#appendText(type, update.content.text);
+        return;
       }
-      if (!this.#text) return;
-      this.#text.text += update.content.text;
-      this.emit({
-        type: "item.updated",
-        turnId: this.turnId,
-        itemId: this.#text.itemId,
-        update: { type: "text.append", text: update.content.text },
-      });
+      const combined = `${this.#hold}${update.content.text}`;
+      const { emit, hold } = holdCursorWritableIterablePrefix(
+        combined,
+        this.#text?.type !== "agentMessage" || this.#text.text.length === 0,
+      );
+      this.#hold = hold;
+      this.#appendText(type, emit);
     } else if (
       update.sessionUpdate === "tool_call" ||
       update.sessionUpdate === "tool_call_update"
     ) {
-      this.#finishText();
       if (this.#finishedTools.has(update.toolCallId)) return;
       let tool = this.#tools.get(update.toolCallId);
       if (!tool) {
+        // Only the first observation of a tool starts a new reply boundary.
+        this.#flushHold();
+        this.#finishText();
         const args = jsonValueSchema.safeParse(update.rawInput ?? {});
         const item: Extract<HostItem, { type: "toolExecution" }> = {
           type: "toolExecution",
@@ -191,6 +238,11 @@ export class CursorTurnOutput {
   }
   finish(outcome: HostItemOutcome) {
     this.subagents.finish(outcome);
+    if (takeCursorWritableIterableClosed(this.#hold).closed) {
+      this.#writableIterableClosed = true;
+      this.#hold = "";
+    }
+    this.#flushHold();
     this.#finishText(outcome);
     for (const { item } of this.#tools.values())
       this.emit({

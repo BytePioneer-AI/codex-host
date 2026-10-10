@@ -13,7 +13,6 @@ export type { CodexThreadUsageProjectionInput } from "./codex-usage.js";
 export {
   observeCodexRateLimitResetCredits,
   observeCodexRateLimits,
-  observeCodexTokenUsage,
   projectCodexRateLimitsToCredits,
 } from "./codex-native-usage.js";
 export type { CodexRateLimitResetCredits } from "./codex-native-usage.js";
@@ -41,17 +40,22 @@ export type {
   ExternalThreadRpcError,
 } from "./thread-fork.js";
 export {
+  carriesHostThreadListCursor,
   decodeHostThreadListCursor,
   decodeOfficialThreadListPage,
   decodeThreadArchiveRequest,
   decodeThreadListRequest,
   decodeThreadMetadataUpdateRequest,
+  observeDeletedProject,
+  decodeThreadSectionMoveRequest,
   encodeHostThreadListCursor,
+  encodeSectionThreadListCursor,
 } from "./thread-management.js";
 export type {
   DecodedThreadListRequest,
   DecodedThreadManagementRequest,
   DecodedThreadMetadataUpdateRequest,
+  DecodedThreadSectionMoveRequest,
   HostThreadListCursor,
   OfficialThreadListSortKey,
   OfficialThreadListPage,

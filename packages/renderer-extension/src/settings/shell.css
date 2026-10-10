@@ -71,30 +71,28 @@
   border: 0;
 }
 
-.codexhost-settings-dialog {
-  /* Native window controls sit above the DOM top layer. Center below them. */
-  inset: var(--settings-titlebar-height) 0 0;
-  width: min(1120px, calc(100vw - 32px));
-  height: min(780px, calc(100vh - var(--settings-titlebar-height) - 32px));
+.codexhost-settings-page {
+  /*
+   * Covers the native content area beside the navigation rail. The rail's
+   * geometry arrives as custom properties; window controls keep the title bar.
+   * The layer sits above native content but below native popovers (z-50).
+   */
+  position: fixed;
+  z-index: 40;
+  top: max(var(--settings-titlebar-height), var(--codexhost-settings-rail-top, 0px));
+  right: 0;
+  bottom: 0;
+  left: var(--codexhost-settings-rail-right, 0px);
+  display: flex;
+  flex-direction: column;
   -webkit-app-region: no-drag;
-  max-width: none;
-  max-height: none;
-  margin: auto;
+  margin: 0;
   padding: 0;
   overflow: hidden;
   color: var(--settings-text);
   background: var(--settings-bg);
-  border: 1px solid var(--settings-border);
-  border-radius: 14px;
-  box-shadow: light-dark(0 16px 42px rgb(0 0 0 / 16%), 0 20px 54px rgb(0 0 0 / 42%));
-}
-
-.codexhost-settings-dialog::backdrop {
-  /* Backdrops do not inherit the shell's custom properties. */
-  top: env(titlebar-area-height, 0px);
-  -webkit-app-region: no-drag;
-  background: light-dark(rgb(0 0 0 / 24%), rgb(0 0 0 / 56%));
-  backdrop-filter: blur(1px);
+  border-left: 1px solid var(--settings-border);
+  container: codexhost-settings-page / inline-size;
 }
 
 .settings-frame,
@@ -107,7 +105,9 @@
 
 .settings-frame {
   display: flex;
+  flex: 1;
   flex-direction: column;
+  min-height: 0;
 }
 
 .settings-layout {
@@ -423,31 +423,90 @@
 
 .settings-session-import-harness {
   display: flex;
-  align-items: center;
+  /* The label lines up with the options whether or not the scroll indicator is shown. */
+  align-items: flex-start;
   min-width: 0;
   gap: 12px;
-  margin: -12px 0 16px;
+  margin: -12px 0 10px;
   color: var(--settings-muted);
   font-size: 13px;
 }
 
 .settings-session-import-harness > span {
   flex: none;
+  line-height: 32px;
+}
+
+.settings-session-import-harness__scroller {
+  min-width: 0;
+  flex: 1;
 }
 
 .settings-session-import-harness__options {
   display: flex;
   align-items: center;
-  min-width: 0;
-  flex: 1;
   gap: 6px;
   overflow-x: auto;
   overflow-y: hidden;
+  /* Replaced by the hairline below: a native overlay scrollbar covers the options. */
   scrollbar-width: none;
 }
 
 .settings-session-import-harness__options::-webkit-scrollbar {
   display: none;
+}
+
+/*
+ * Always occupies 6px so the page does not shift; drawn only while the options overflow. The box
+ * is taller than the 2px line it draws so the line can be grabbed with a mouse.
+ */
+.settings-session-import-harness__indicator {
+  position: relative;
+  height: 12px;
+  margin-bottom: -6px;
+  cursor: grab;
+  touch-action: none;
+  visibility: hidden;
+}
+
+.settings-session-import-harness__indicator[data-overflowing="true"] {
+  visibility: visible;
+}
+
+.settings-session-import-harness__indicator[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.settings-session-import-harness__indicator::before,
+.settings-session-import-harness__indicator > span {
+  position: absolute;
+  top: 4px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.settings-session-import-harness__indicator::before {
+  right: 0;
+  left: 0;
+  background: var(--settings-divider);
+  content: "";
+}
+
+.settings-session-import-harness__indicator > span {
+  /* Quieter than text: a hint that there is more, not a control competing with the options. */
+  background: light-dark(rgb(13 13 13 / 24%), rgb(255 255 255 / 26%));
+}
+
+/* The thumb takes the press across the whole grab area, not only on its 2px line. */
+.settings-session-import-harness__indicator > span::before {
+  position: absolute;
+  inset: -4px 0 -6px;
+  content: "";
+}
+
+.settings-session-import-harness__indicator:hover > span,
+.settings-session-import-harness__indicator[data-dragging="true"] > span {
+  background: light-dark(rgb(13 13 13 / 42%), rgb(255 255 255 / 46%));
 }
 
 .settings-session-import-harness__option {
@@ -1086,11 +1145,38 @@
   border-radius: 10px;
 }
 
+.settings-harness-installation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .settings-harness-installation-command pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
   font-size: 12px;
+}
+
+.settings-connection-website {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  color: var(--settings-muted);
+  border-radius: 4px;
+}
+
+.settings-connection-website:hover {
+  color: var(--settings-focus);
+  background: var(--settings-hover);
+}
+
+.settings-connection-website:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 1px;
 }
 
 .settings-connection-install-link {
@@ -1104,13 +1190,11 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
-  opacity: 0;
-  transition: opacity 120ms ease;
 }
 
-.settings-connection-row:hover .settings-connection-install-link,
-.settings-connection-install-link:focus-visible {
-  opacity: 1;
+.settings-connection-install-link:disabled {
+  opacity: 0.45;
+  cursor: wait;
 }
 
 .settings-connection-install-link:hover {
@@ -1157,6 +1241,31 @@
   min-width: 0;
   gap: 12px;
   padding: 12px;
+}
+
+.settings-connection-inspector__body:empty {
+  display: none;
+}
+
+.settings-harness-version {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border-top: 1px solid var(--settings-divider);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-harness-version__values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: var(--settings-muted);
+}
+
+.settings-harness-version p {
+  margin: 0;
 }
 
 .settings-harness-launch {
@@ -1260,33 +1369,6 @@
   background: var(--settings-danger-bg);
   border: 1px solid var(--settings-danger-border);
   border-radius: 10px;
-}
-
-.settings-connection-error-metadata {
-  display: grid;
-  gap: 7px;
-  padding: 12px;
-  background: var(--settings-inset);
-  border: 1px solid var(--settings-border);
-  border-radius: 9px;
-}
-
-.settings-connection-detail-line {
-  display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  gap: 10px;
-  min-width: 0;
-  color: var(--settings-muted);
-  font-size: 10px;
-  line-height: 16px;
-}
-
-.settings-connection-detail-line code {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--settings-text);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  white-space: pre-wrap;
 }
 
 .settings-connection-error-log-header {
@@ -1965,13 +2047,8 @@
   stroke: currentColor;
 }
 
-@media (max-width: 720px) {
-  .codexhost-settings-dialog {
-    width: calc(100vw - 16px);
-    height: calc(100vh - var(--settings-titlebar-height) - 16px);
-    border-radius: 10px;
-  }
-
+/* The page is narrower than the window, so compact layout follows its own width. */
+@container codexhost-settings-page (max-width: 720px) {
   .settings-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -2108,5 +2185,352 @@
   *::after {
     scroll-behavior: auto !important;
     transition-duration: 0s !important;
+  }
+}
+
+.settings-remote {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.settings-remote__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 4px;
+}
+
+.settings-remote__header .settings-section-label {
+  padding-bottom: 0;
+}
+
+.settings-remote__header .settings-page-description {
+  margin: 5px 0 0;
+}
+
+.settings-remote__meta {
+  margin: 2px 0 0;
+  color: var(--settings-subtle);
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-remote__meta:empty {
+  display: none;
+}
+
+.settings-remote__toolbar,
+.settings-remote-card__actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 6px;
+}
+
+.settings-remote__toolbar {
+  gap: 8px;
+}
+
+.settings-remote__banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 8px 8px 12px;
+  color: var(--settings-danger);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+  background: var(--settings-danger-bg);
+  border: 1px solid var(--settings-danger-border);
+  border-radius: 10px;
+}
+
+.settings-remote__loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 16px 2px;
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+
+.settings-remote__empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  background: var(--settings-panel);
+  border: 1px dashed var(--settings-border);
+  border-radius: 10px;
+}
+
+.settings-remote__empty > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.settings-remote__empty strong {
+  color: var(--settings-text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 19px;
+}
+
+.settings-remote__empty span {
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.settings-remote__list {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-remote__placeholder:empty,
+.settings-remote__list:empty {
+  display: none;
+}
+
+.settings-remote-card {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
+}
+
+.settings-remote-card__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 10px 12px 14px;
+}
+
+.settings-remote-card__identity {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.settings-remote-card__title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+
+.settings-remote-card h3 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--settings-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-remote-card__state {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 6px;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.settings-remote-card__state::before {
+  width: 7px;
+  height: 7px;
+  content: "";
+  background: var(--settings-subtle);
+  border-radius: 50%;
+}
+
+.settings-remote-card__state[data-tone="success"]::before {
+  background: var(--settings-success);
+}
+
+.settings-remote-card__state[data-tone="danger"]::before {
+  background: var(--settings-danger);
+}
+
+.settings-remote-card__state[data-tone="progress"]::before {
+  animation: settings-remote-pulse 1.2s ease-in-out infinite;
+}
+
+.settings-remote-card__address {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  overflow: hidden;
+  color: var(--settings-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-remote-card__address .settings-status-badge {
+  padding: 0 6px;
+  font-family: system-ui, sans-serif;
+}
+
+.settings-remote-card__actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.settings-remote-card__remove:hover:not(:disabled) {
+  color: var(--settings-danger);
+  background: var(--settings-danger-bg);
+}
+
+.settings-remote .settings-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.settings-remote-card__detail {
+  margin: -4px 14px 12px;
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.settings-remote-card__service {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 10px 10px 14px;
+  background: var(--settings-surface);
+  border-top: 1px solid var(--settings-divider);
+}
+
+.settings-remote-card__service-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.settings-remote-card__service-title {
+  color: var(--settings-text);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-remote-card__hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--settings-muted);
+  overflow-wrap: anywhere;
+}
+
+.settings-remote [data-tone="success"] {
+  color: var(--settings-success);
+}
+
+.settings-remote [data-tone="warning"] {
+  color: var(--settings-warning);
+}
+
+.settings-remote [data-tone="danger"] {
+  color: var(--settings-danger);
+}
+
+.settings-remote-spinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 1.5px solid var(--settings-border);
+  border-top-color: var(--settings-muted);
+  border-radius: 50%;
+  animation: settings-remote-spin 0.8s linear infinite;
+}
+
+.settings-remote__refresh[aria-busy="true"] svg {
+  animation: settings-remote-spin 0.8s linear infinite;
+}
+
+.settings-remote-dialog .settings-credential-dialog__field small {
+  color: var(--settings-subtle);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.settings-remote-dialog input:disabled {
+  color: var(--settings-muted);
+  cursor: not-allowed;
+}
+
+.settings-remote-dialog input:focus-visible {
+  border-color: var(--settings-focus);
+  outline-offset: -1px;
+}
+
+.settings-remote-dialog__package-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.settings-remote-dialog .settings-remote-dialog__package-option input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--settings-focus);
+}
+
+@keyframes settings-remote-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes settings-remote-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@container (max-width: 620px) {
+  .settings-remote-card__head,
+  .settings-remote-card__service {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-remote-card__actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-remote-spinner,
+  .settings-remote__refresh svg,
+  .settings-remote-card__state::before {
+    animation: none !important;
   }
 }

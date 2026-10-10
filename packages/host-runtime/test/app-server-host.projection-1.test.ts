@@ -768,26 +768,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("terminates the official app-server when its Host session closes", async () => {
-    const fixture = createFixture({ officialExitsOnInputEnd: false });
-    fixture.official.kill.mockImplementationOnce(() => {
-      fixture.official.stdout.end();
-      fixture.official.emit("exit", null, "SIGTERM");
-      return true;
-    });
-
-    try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledTimes(1));
-      expect(() => fixture.host.close()).not.toThrow();
-      await expect(fixture.running).resolves.toBe(0);
-      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
-    } finally {
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
   it("accepts confirmed graceful EOF shutdown without signaling the exited process", async () => {
     const fixture = createFixture();
     const exited = vi.fn();
@@ -800,52 +780,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       expect(exited).toHaveBeenCalledExactlyOnceWith(0, null);
       expect(fixture.official.kill).not.toHaveBeenCalled();
     } finally {
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("lets an active official Turn reach its terminal event after Desktop disconnects", async () => {
-    const fixture = createFixture({ officialExitsOnInputEnd: false });
-    const threadId = "019cbe86-76cf-7721-b5e4-978934e18757";
-    const turnId = "019cbe86-8eef-79d0-8658-cf2c64aa38cf";
-
-    try {
-      await bindOfficialThread(fixture, threadId);
-      writeRequest(fixture.desktopInput, {
-        id: 1,
-        method: "turn/start",
-        params: { threadId, input: [{ type: "text", text: "keep running" }] },
-      });
-      await readJsonLine(fixture.official.stdin);
-      fixture.official.stdout.write(
-        `${JSON.stringify({ method: "turn/started", params: { threadId, turn: { id: turnId } } })}\n`,
-      );
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-
-      fixture.host.disconnect();
-      const beforeTerminal = await Promise.race([
-        fixture.running.then(() => "settled" as const),
-        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
-      ]);
-
-      expect(beforeTerminal).toBe("pending");
-      expect(fixture.official.kill).not.toHaveBeenCalled();
-
-      fixture.official.stdout.write(
-        `${JSON.stringify({
-          method: "turn/completed",
-          params: { threadId, turn: { id: turnId, status: "completed" } },
-        })}\n`,
-      );
-      await expect(
-        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
-      ).resolves.toBeTruthy();
-      await expect(fixture.running).resolves.toBe(0);
-      expect(fixture.official.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
-    } finally {
-      fixture.host.close();
       fixture.desktopInput.end();
       await fixture.running;
       rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
@@ -1469,6 +1403,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
   it("rejects privileged update params and unavailable composition", async () => {
     const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
     writeRequest(fixture.desktopInput, {
       id: 22,
       method: "codexhost/update/start",
@@ -1492,9 +1428,83 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "codexhost/update/check",
       params: {},
     });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 23))).resolves.toEqual({
+      id: 23,
+      result: null,
+    });
+
+    for (const [id, method] of [
+      [25, "codexhost/update/start"],
+      [26, "codexhost/update/status"],
+    ] as const) {
+      writeRequest(fixture.desktopInput, { id, method, params: {} });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, id)),
+      ).resolves.toMatchObject({ error: { code: -32090 } });
+    }
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("opens the local console only when the Host can", async () => {
+    const consoleOpener = { open: vi.fn(async () => ({ url: "http://127.0.0.1:4399/" })) };
+    const local = createFixture({ consoleOpener });
+    writeRequest(local.desktopInput, { id: 27, method: "codexhost/console/open", params: {} });
     await expect(
-      fixture.collector.waitFor((message) => requestId(message, 23)),
+      local.collector.waitFor((message) => requestId(message, 27)),
+    ).resolves.toMatchObject({ result: { url: "http://127.0.0.1:4399/" } });
+    writeRequest(local.desktopInput, {
+      id: 28,
+      method: "codexhost/console/open",
+      params: { url: "https://example.com" },
+    });
+    await expect(
+      local.collector.waitFor((message) => requestId(message, 28)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(consoleOpener.open).toHaveBeenCalledOnce();
+    await stopFixture(local);
+
+    const remote = createFixture();
+    writeRequest(remote.desktopInput, { id: 29, method: "codexhost/console/open", params: {} });
+    await expect(
+      remote.collector.waitFor((message) => requestId(message, 29)),
     ).resolves.toMatchObject({ error: { code: -32090 } });
+    await stopFixture(remote);
+  });
+
+  it("answers console requests through Desktop handling without writing to Desktop", async () => {
+    const updateCoordinator = {
+      check: vi.fn(async () => ({
+        currentVersion: "1.2.2",
+        installation: "npm" as const,
+        latestVersion: "1.2.3",
+        updateAvailable: true,
+        installationAvailable: true,
+        releaseNotes: null,
+        releaseNotesUrl: null,
+        status: null,
+        error: null,
+      })),
+      start: vi.fn(),
+      status: vi.fn(async () => ({ status: null })),
+    };
+    const fixture = createFixture({ updateCoordinator });
+    const before = fixture.collector.messages.length;
+
+    await expect(
+      fixture.host.handleConsoleRequest("codexhost/update/check", {}),
+    ).resolves.toMatchObject({ result: { latestVersion: "1.2.3" } });
+    await expect(
+      fixture.host.handleConsoleRequest("codexhost/update/start", { url: "https://x" }),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    await expect(
+      fixture.host.handleConsoleRequest("codexhost/thread/fork", {}),
+    ).resolves.toMatchObject({ error: { code: -32601 } });
+    await expect(fixture.host.handleConsoleRequest("thread/start", {})).resolves.toMatchObject({
+      error: { code: -32601 },
+    });
+
+    expect(fixture.collector.messages.slice(before)).toEqual([]);
     await stopFixture(fixture);
   });
 

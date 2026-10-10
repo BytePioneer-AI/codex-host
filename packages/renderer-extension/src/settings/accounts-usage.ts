@@ -33,7 +33,10 @@ export function creditsPeriodLabel(
 
 export function creditsProductLabel(product: string, messages: RendererSettingsMessages): string {
   if (product === "GrokBuild" || product === "Build") return messages.accountCreditsBuild;
+  if (product === "5-hour window") return messages.accountCreditsPeriodFiveHour;
   if (product === "7-day window") return messages.accountCreditsPeriodSevenDay;
+  if (product.endsWith(" · monthly"))
+    return `${product.slice(0, -" · monthly".length)} · ${messages.accountCreditsPeriodMonthly}`;
   if (product === "GrokChat") return "Chat";
   if (product === "GrokImagine") return "Imagine";
   if (product === "GrokVoice") return "Voice";
@@ -76,11 +79,18 @@ export function resetCreditDetailLine(
 
 type AccountUsagePeriod = "five_hour" | "seven_day";
 
+interface AccountUsageAmount {
+  readonly used?: number | undefined;
+  readonly limit?: number | undefined;
+  readonly unit?: string | undefined;
+}
+
 interface AccountUsageWindow {
   readonly label: string;
   readonly usedPercent: number;
   readonly resetsAt: string | undefined;
   readonly scoped: boolean;
+  readonly amount?: AccountUsageAmount;
 }
 
 interface AccountUsageRow {
@@ -89,13 +99,12 @@ interface AccountUsageRow {
 }
 
 export function accountUsageColumnLabel(
-  period: AccountUsagePeriod,
   display: AccountUsageDisplay,
   messages: RendererSettingsMessages,
 ): string {
-  const mode =
-    display === "remaining" ? messages.accountCreditsRemaining : messages.accountCreditsUsed;
-  return `${creditsPeriodLabel(period, messages)}${messages.locale === "zh-CN" ? "" : " "}${mode}`;
+  return display === "remaining"
+    ? messages.accountCreditsRemainingQuota
+    : messages.accountCreditsUsedQuota;
 }
 
 function comparisonPeriod(
@@ -146,7 +155,11 @@ function splitUsageWindows(
       rows.push(row);
       scopedRows.set(scope, rows);
     }
-    row.columns[period] = { ...window, label: scope, scoped: true };
+    row.columns[period] = {
+      ...window,
+      label: `${scope} · ${creditsPeriodLabel(period, messages)}`,
+      scoped: true,
+    };
   };
   const addWindow = (
     window: AccountUsageWindow,
@@ -159,8 +172,11 @@ function splitUsageWindows(
   };
 
   const primary: AccountUsageWindow = {
-    label: credits.label ?? creditsPeriodLabel(credits.periodType, messages),
+    label: credits.label
+      ? creditsProductLabel(credits.label, messages)
+      : creditsPeriodLabel(credits.periodType, messages),
     usedPercent: credits.usedPercent,
+    amount: credits,
     resetsAt: credits.resetsAt,
     scoped: Boolean(credits.label && scopedUsageProduct(credits.label)),
   };
@@ -176,6 +192,7 @@ function splitUsageWindows(
     const window: AccountUsageWindow = {
       label: creditsProductLabel(product.product, messages),
       usedPercent: product.usagePercent,
+      amount: product,
       resetsAt: product.resetsAt,
       scoped: Boolean(scoped),
     };
@@ -218,14 +235,19 @@ function renderUsageWindow(
   label.className = "settings-account-usage__title";
   label.textContent = window.label;
   label.title = window.label;
-  const value = display === "remaining" ? 100 - window.usedPercent : window.usedPercent;
+  const emptyCap = window.amount?.limit === 0;
+  const value = emptyCap
+    ? 0
+    : display === "remaining"
+      ? 100 - window.usedPercent
+      : window.usedPercent;
   const valueLabel =
     display === "remaining" ? messages.accountCreditsRemaining : messages.accountCreditsUsed;
   const tone = rendererCreditsTone(window.usedPercent);
   const percent = document.createElement("div");
   percent.className = `settings-account-usage__percent settings-account-usage__percent--${tone}`;
   const number = document.createElement("span");
-  number.textContent = formatRendererCreditsPercent(value);
+  number.textContent = emptyCap ? "—" : formatRendererCreditsPercent(value);
   const reset = window.resetsAt
     ? renderAccountResetTime(document, window.resetsAt, messages)
     : null;
@@ -242,6 +264,15 @@ function renderUsageWindow(
   fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
   bar.append(fill);
   meter.append(label, percent, bar);
+  const credits = window.amount;
+  if (credits && credits.used !== undefined && credits.limit !== undefined && credits.unit) {
+    const amount = document.createElement("div");
+    amount.className = "settings-account-usage__sub";
+    const quantity =
+      display === "remaining" ? Math.max(0, credits.limit - credits.used) : credits.used;
+    amount.textContent = `${quantity.toLocaleString(messages.locale)} / ${credits.limit.toLocaleString(messages.locale)} ${credits.unit}`;
+    meter.append(amount);
+  }
   if (reset) meter.append(reset.timestamp);
   return meter;
 }
@@ -256,7 +287,6 @@ export function renderAccountUsage(
 ): {
   cells: HTMLTableCellElement[];
   continuationCells: HTMLTableCellElement[][];
-  additional: HTMLElement | null;
 } {
   if (state?.status !== "ready") {
     const cell = document.createElement("td");
@@ -285,38 +315,41 @@ export function renderAccountUsage(
       usage.append(retry);
     }
     cell.append(usage);
-    return { cells: [cell], continuationCells: [], additional: null };
+    return { cells: [cell], continuationCells: [] };
   }
   const { rows, additional } = splitUsageWindows(state.credits, messages, filter);
-  const renderCells = (row: AccountUsageRow): HTMLTableCellElement[] =>
-    (["five_hour", "seven_day"] as const).map((period) => {
-      const cell = document.createElement("td");
-      cell.className = "settings-account-usage-cell";
-      const window = row.columns[period];
-      if (window) cell.append(renderUsageWindow(document, window, messages, display));
-      else {
-        const missing = document.createElement("div");
-        missing.className = "settings-account-usage__missing";
-        const label = document.createElement("span");
-        label.className = "settings-account-usage__title";
-        label.textContent = row.scope ?? creditsPeriodLabel(period, messages);
-        const dash = document.createElement("span");
-        dash.textContent = "—";
-        dash.setAttribute("aria-hidden", "true");
-        missing.append(label, dash);
-        cell.append(missing);
-      }
-      return cell;
-    });
-  const [firstRow = { columns: {} }, ...continuations] = rows;
-  const cells = renderCells(firstRow);
-  const continuationCells = continuations.map(renderCells);
-  if (!additional.length) return { cells, continuationCells, additional: null };
-  const extra = document.createElement("div");
-  extra.className = "settings-account-extra-usage";
-  for (const window of additional)
-    extra.append(renderUsageWindow(document, window, messages, display));
-  return { cells, continuationCells, additional: extra };
+  // Pack actual windows, rather than reserving empty slots for a period or scope.
+  // This keeps Kimi's weekly and scoped 5-hour windows in the same Account row.
+  const windows = [
+    ...rows.flatMap((row) =>
+      (["five_hour", "seven_day"] as const).flatMap((period) =>
+        row.columns[period] ? [row.columns[period]] : [],
+      ),
+    ),
+    ...additional,
+  ];
+  const packed: HTMLTableCellElement[][] = [];
+  for (let index = 0; index < windows.length; index += 2) {
+    const pair = windows.slice(index, index + 2);
+    packed.push(
+      pair.map((window) => {
+        const cell = document.createElement("td");
+        cell.className = "settings-account-usage-cell";
+        if (pair.length === 1) cell.colSpan = 2;
+        cell.append(renderUsageWindow(document, window, messages, display));
+        return cell;
+      }),
+    );
+  }
+  if (packed.length === 0) {
+    const cell = document.createElement("td");
+    cell.colSpan = 2;
+    cell.className = "settings-account-usage-cell settings-account-usage-cell--message";
+    cell.textContent = messages.accountCreditsEmpty;
+    packed.push([cell]);
+  }
+  const [cells = [], ...continuationCells] = packed;
+  return { cells, continuationCells };
 }
 
 export function renderAccountResetCredits(

@@ -6,5 +6,24 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.png",
-  "links": { "installation": "https://opencode.ai/docs/" }
+  "links": {
+    "website": "https://opencode.ai/",
+    "installation": "https://opencode.ai/docs/#install"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux / Windows · Terminal / PowerShell",
+        "command": "npm install -g opencode-ai"
+      }
+    ],
+    "before": {
+      "en": "Requires Node.js (including npm).",
+      "zh-CN": "需先安装 Node.js（包含 npm）。"
+    },
+    "after": {
+      "en": "After installation, run opencode to complete login or setup.",
+      "zh-CN": "安装后运行 opencode，完成登录或配置。"
+    }
+  }
 }

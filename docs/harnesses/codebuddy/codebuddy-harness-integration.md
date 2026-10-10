@@ -34,7 +34,7 @@ CodeBuddy 2.148.0 can retain cancellation state after returning a cancelled prom
 | Capability | Current behavior |
 | --- | --- |
 | Create, multiple Turns and writable resume | Implemented; source identity and cwd are validated. |
-| Streaming text and public reasoning | Separate public Items, with immutable starts and exactly one completion. |
+| Streaming text and public reasoning | Separate per-response public Items, with immutable starts and exactly one completion. Prefer native `codebuddy.ai/llmMessageId` over Prompt-scoped `messageId`; fall back to top-level or metadata `messageId` on older runtimes. New replies, Tool/Agent starts and native compaction close preceding text; repeated Tool notifications and child progress do not split the parent. Reused or absent native IDs never reopen completed text Items. |
 | Tools and approvals | Native calls/results are projected. Repeated `tool_call` frames share one Item; incomplete argument chunks are not rendered as command output. Permission action IDs retain their native allow/reject scope. |
 | Questions | Native `AskUserQuestion` is mapped to a Host Question. Its answers are submitted through the native `_codebuddy.ai/resolveInterruption` extension before retiring the pending ACP permission request. This extension is version-specific and covered by a real 2.148.0 probe. The older `_codebuddy.ai/question` callback is also understood. |
 | Model, Thinking, Permission Mode | Live configuration, from the native catalog. At verification ACP exposed `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`, `fullAccess`, and `delegate`. This list is not hardcoded as a catalog. |

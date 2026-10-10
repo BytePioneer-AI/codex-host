@@ -1,6 +1,7 @@
+import type { RuntimeMaintenance } from "../src/runtime-maintenance.js";
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -15,11 +16,13 @@ import { MappingStore } from "@codexhost/mapping-store";
 import { type ExternalHarnessId, type JsonObject } from "@codexhost/protocol-core";
 import { harnessIdSchema, type DeepSeekModernSessionCandidate } from "@codexhost/shared-contracts";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
-import { AppServerHost } from "../src/app-server-host.js";
+import { AppServerHost, type AppServerHostOptions } from "../src/app-server-host.js";
+import type { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import type { CodexAccountControl } from "../src/account/codex-account-control.js";
 import type { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
 import type { OfficialAppServerConnection } from "../src/official-app-server-connection.js";
 import type { HostUpdateCoordinator } from "../src/update-coordinator.js";
+import type { HostConsoleOpener } from "../src/console-opener.js";
 
 export class FakeOfficialProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -98,6 +101,9 @@ export class JsonLineCollector {
   waitFor(predicate: (message: JsonObject) => boolean): Promise<JsonObject> {
     const existing = this.messages.find(predicate);
     if (existing) return Promise.resolve(existing);
+    // Host responses can require Mapping Store fsync/rename operations.
+    // Allow for Windows disk latency, as in tests/vitest.config.js.
+    const timeoutMs = process.platform === "win32" ? 10_000 : 2_000;
     return new Promise<JsonObject>((resolve, reject) => {
       const waiter = {
         predicate,
@@ -106,7 +112,7 @@ export class JsonLineCollector {
           const index = this.#waiters.indexOf(waiter);
           if (index >= 0) this.#waiters.splice(index, 1);
           reject(new Error("Timed out waiting for Host output"));
-        }, 2_000),
+        }, timeoutMs),
       };
       this.#waiters.push(waiter);
     });
@@ -153,14 +159,17 @@ export function writeRequest(stream: PassThrough, value: JsonObject): void {
 
 export const jsonLineBuffers = new WeakMap<PassThrough, string>();
 
-export async function readJsonLine(stream: PassThrough): Promise<JsonObject> {
+export async function readJsonLine(stream: PassThrough, timeoutMs = 1000): Promise<JsonObject> {
   let buffer = jsonLineBuffers.get(stream) ?? "";
   if (!buffer.includes("\n")) {
-    await vi.waitFor(() => {
-      const chunk = stream.read() as Buffer | string | null;
-      if (chunk !== null) buffer += String(chunk);
-      expect(buffer).toContain("\n");
-    });
+    await vi.waitFor(
+      () => {
+        const chunk = stream.read() as Buffer | string | null;
+        if (chunk !== null) buffer += String(chunk);
+        expect(buffer).toContain("\n");
+      },
+      { timeout: timeoutMs },
+    );
   }
   const newline = buffer.indexOf("\n");
   const line = buffer.slice(0, newline);
@@ -259,8 +268,10 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 
 export function createFixture(
   options: {
+    sharedThreads?: SharedThreadBridge;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
+    codexUsage?: boolean;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
@@ -270,15 +281,34 @@ export function createFixture(
     createOfficialConnection?: () =>
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
+    runtimeMaintenance?: RuntimeMaintenance;
+    consoleOpener?: HostConsoleOpener;
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+    onCreateRequestRoute?: AppServerHostOptions["onCreateRequestRoute"];
+    modelPrices?: AppServerHostOptions["modelPrices"];
+    usageStatistics?: AppServerHostOptions["usageStatistics"];
   } = {},
 ) {
   const adapter =
     options.externalAdapters?.get("pi") ?? new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const mappingStoreDirectory =
     options.mappingStoreDirectory ?? mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
+  let pluginDirectory = options.pluginDirectory;
+  if (options.codexUsage) {
+    pluginDirectory = path.join(mappingStoreDirectory, "plugins");
+    mkdirSync(pluginDirectory, { recursive: true });
+    cpSync(
+      path.resolve("packages/host-runtime/dist/plugins/codex-usage"),
+      path.join(pluginDirectory, "codex-usage"),
+      { recursive: true },
+    );
+    writeFileSync(
+      path.join(pluginDirectory, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["codex-usage"] }),
+    );
+  }
   const mappingStore =
     options.mappingStore ?? new MappingStore({ directory: mappingStoreDirectory });
   const desktopInput = new PassThrough();
@@ -295,9 +325,9 @@ export function createFixture(
   const createOfficialConnection = options.createOfficialConnection;
   if (options.officialRuntimeScope) startup.resolve(undefined);
   const host = new AppServerHost({
+    ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
-    defaultAgent: "codex",
     desktopInput,
     desktopOutput,
     diagnosticOutput,
@@ -309,7 +339,7 @@ export function createFixture(
       CODEXHOST_DATA_DIR: mappingStoreDirectory,
       ...(options.environment ?? {}),
     },
-    ...(options.pluginDirectory ? { pluginRoots: [options.pluginDirectory] } : {}),
+    ...(pluginDirectory ? { pluginRoots: [pluginDirectory] } : {}),
     externalAdapters:
       options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
@@ -324,9 +354,14 @@ export function createFixture(
         }
       : {}),
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
+    ...(options.runtimeMaintenance ? { runtimeMaintenance: options.runtimeMaintenance } : {}),
+    ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
+    ...(options.modelPrices ? { modelPrices: options.modelPrices } : {}),
+    ...(options.usageStatistics ? { usageStatistics: options.usageStatistics } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),
+    ...(options.onCreateRequestRoute ? { onCreateRequestRoute: options.onCreateRequestRoute } : {}),
   });
   const running = host.run();
   void running.then(

@@ -7,7 +7,20 @@
   "launchCommand": true,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
+  "installation": {
+    "commands": [],
+    "before": {
+      "en": "Download and install the WorkBuddy desktop app.",
+      "zh-CN": "请下载并安装 WorkBuddy 桌面应用。"
+    },
+    "downloads": [{ "label": "WorkBuddy", "url": "https://www.workbuddy.ai/" }],
+    "after": {
+      "en": "The bundled CLI may require separate login. Restart codexhost after changing the installation path.",
+      "zh-CN": "内置 CLI 可能需要单独登录。修改安装路径后需重启 codexhost。"
+    }
+  },
   "links": {
+    "website": "https://www.workbuddy.ai/",
     "installation": "https://www.workbuddy.ai/docs/workbuddy/Quickstart",
     "documentation": "https://www.workbuddy.ai/docs/zh/cli/acp"
   }

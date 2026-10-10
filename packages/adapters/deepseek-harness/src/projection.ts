@@ -43,48 +43,23 @@ export interface DeepSeekToolResult {
   output?: HostToolOutput;
 }
 
+/** Project one V4 `tool` role result message correlated by its call identity. */
 export function projectToolResult(value: unknown, limit: number): DeepSeekToolResult | null {
   if (!isRecord(value) || !isRecord(value.source) || value.source.kind !== "tool") return null;
   const callId = value.source.callId;
-  if (!nonBlankString(callId) || !Array.isArray(value.content)) return null;
-  if (value.role === "tool") {
-    if (
-      value.toolCallId !== callId ||
-      (value.isError !== undefined && typeof value.isError !== "boolean")
-    )
-      return null;
-    const text = contentText(value);
-    const truncated = text.length > limit;
-    return {
-      callId,
-      failed: value.isError === true,
-      ...(text
-        ? {
-            output: {
-              content: [{ type: "text", text: truncated ? text.slice(0, limit) : text }],
-              ...(truncated ? { truncated: true } : {}),
-            },
-          }
-        : {}),
-    };
-  }
-  const resultBlocks = value.content.filter(
-    (block) =>
-      isRecord(block) &&
-      block.type === "tool-result" &&
-      block.toolCallId === callId &&
-      Array.isArray(block.content),
-  );
-  if (resultBlocks.length === 0) return null;
-  const text = resultBlocks
-    .flatMap((block) => (block as { content: unknown[] }).content)
-    .filter((block) => isRecord(block) && block.type === "text" && typeof block.text === "string")
-    .map((block) => (block as { text: string }).text)
-    .join("");
+  if (
+    !nonBlankString(callId) ||
+    !Array.isArray(value.content) ||
+    value.role !== "tool" ||
+    value.toolCallId !== callId ||
+    (value.isError !== undefined && typeof value.isError !== "boolean")
+  )
+    return null;
+  const text = contentText(value);
   const truncated = text.length > limit;
   return {
     callId,
-    failed: resultBlocks.some((block) => block.isError === true),
+    failed: value.isError === true,
     ...(text
       ? {
           output: {
@@ -143,12 +118,6 @@ export function parseDeepSeekContextWindow(value: unknown): number | undefined {
 
 function nonNegativeSafeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
-
-export function deepSeekUsageKey(data: Record<string, unknown>, fallback: string): string {
-  return Number.isSafeInteger(data.turn) && Number.isSafeInteger(data.step)
-    ? `turn:${data.turn}:step:${data.step}`
-    : fallback;
 }
 
 export function parseDeepSeekOutputTokensPerSecond(value: unknown): number | undefined {

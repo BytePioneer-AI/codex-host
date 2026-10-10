@@ -1,16 +1,5 @@
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
-import {
-  hostThreadIdSchema,
-  hostTurnIdSchema,
-  type AccountCreditsSnapshot,
-  type HostTurnId,
-} from "@codexhost/shared-contracts";
-
-interface CodexTokenUsageObservation {
-  threadId: string;
-  turnId: HostTurnId;
-  usage: HostUsage;
-}
+import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -28,68 +17,6 @@ function finitePercent(value: unknown): number | undefined {
 
 function optionalReset(value: unknown): number | undefined {
   return nonNegativeSafeInteger(value);
-}
-
-function addBreakdown(
-  target: Partial<HostUsage>,
-  source: Record<string, unknown> | undefined,
-): void {
-  if (!source) return;
-  const fields = [
-    ["totalTokens", "totalTokens"],
-    ["inputTokens", "inputTokens"],
-    ["cachedInputTokens", "cachedInputTokens"],
-    ["cacheWriteInputTokens", "cacheWriteInputTokens"],
-    ["outputTokens", "outputTokens"],
-    ["reasoningOutputTokens", "reasoningOutputTokens"],
-  ] as const;
-  for (const [sourceField, targetField] of fields) {
-    const value = nonNegativeSafeInteger(source[sourceField]);
-    if (value !== undefined) target[targetField] = value;
-  }
-}
-
-export function observeCodexTokenUsage(value: unknown): CodexTokenUsageObservation | null {
-  if (!isRecord(value) || value.method !== "thread/tokenUsage/updated") return null;
-  const params = value.params;
-  if (!isRecord(params)) return null;
-  const threadId = hostThreadIdSchema.safeParse(params.threadId);
-  const turnId = hostTurnIdSchema.safeParse(params.turnId);
-  if (!threadId.success || !turnId.success) return null;
-  const tokenUsage = params.tokenUsage;
-  if (!isRecord(tokenUsage)) return null;
-
-  const total = isRecord(tokenUsage.total) ? tokenUsage.total : undefined;
-  const last = isRecord(tokenUsage.last) ? tokenUsage.last : undefined;
-  const usage: Partial<HostUsage> = {};
-  addBreakdown(usage, total);
-
-  const contextUsedTokens = nonNegativeSafeInteger(last?.totalTokens);
-  const contextWindowTokens = nonNegativeSafeInteger(tokenUsage.modelContextWindow);
-  if (
-    contextUsedTokens !== undefined &&
-    contextWindowTokens !== undefined &&
-    contextWindowTokens > 0
-  ) {
-    usage.contextUsedTokens = contextUsedTokens;
-    usage.contextWindowTokens = contextWindowTokens;
-  }
-
-  const inputTokens = nonNegativeSafeInteger(last?.inputTokens);
-  const cachedInputTokens = nonNegativeSafeInteger(last?.cachedInputTokens);
-  if (inputTokens !== undefined && cachedInputTokens !== undefined && inputTokens > 0) {
-    usage.cacheHitRatePercent = Math.min(100, (cachedInputTokens / inputTokens) * 100);
-  }
-
-  try {
-    return {
-      threadId: threadId.data,
-      turnId: turnId.data,
-      usage: parseHostUsage(usage),
-    };
-  } catch {
-    return null;
-  }
 }
 
 interface RateLimitWindow {

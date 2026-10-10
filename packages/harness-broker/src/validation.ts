@@ -20,6 +20,7 @@ const cwdSchema = z.string().min(1).max(16_384);
 export const brokerEnvironmentSchema = z
   .object({
     CODEXHOST_CLI_PATH: z.string().max(16_384).optional(),
+    CODEXHOST_CLI_NODE_PATH: z.string().max(16_384).optional(),
     CODEXHOST_RUNTIME_ENDPOINT: z.string().max(16_384).optional(),
     CODEXHOST_RUNTIME_TOKEN: z.string().max(16_384).optional(),
     CODEXHOST_THREAD_ID: z.string().max(256).optional(),
@@ -216,6 +217,8 @@ export const harnessSessionStateSchema = z.custom<HarnessSessionState>((value) =
 const eventKeys = new Map<string, ReadonlySet<string>>([
   ["session.state.changed", new Set(["type", "state"])],
   ["session.usage.changed", new Set(["type", "usage", "observedForTurnId"])],
+  ["usage.request", new Set(["type", "request"])],
+  ["usage.history", new Set(["type", "complete"])],
   ["subagent.state.changed", new Set(["type", "nativeSubagentId", "status", "resultSummary"])],
   ["subagent.transcript.changed", new Set(["type", "nativeSubagentId"])],
   ["turn.started", new Set(["type", "turnId"])],
@@ -223,6 +226,7 @@ const eventKeys = new Map<string, ReadonlySet<string>>([
   ["item.started", new Set(["type", "turnId", "item"])],
   ["item.updated", new Set(["type", "turnId", "itemId", "update"])],
   ["item.completed", new Set(["type", "turnId", "snapshot"])],
+  ["item.detached", new Set(["type", "turnId", "itemId"])],
   ["interaction.closed", new Set(["type", "interactionId", "turnId", "reason"])],
   ["turn.completed", new Set(["type", "turnId", "nativeTurnRef", "outcome"])],
   ["session.faulted", new Set(["type", "error"])],
@@ -270,6 +274,7 @@ export const harnessOutputSchema = z.custom<HarnessOutput>((value) => {
     if (event.type === "session.state.changed")
       return harnessSessionStateSchema.safeParse(event.state).success;
     if (event.type === "session.faulted") return harnessErrorSchema.safeParse(event.error).success;
+    if (event.type === "usage.history") return typeof event.complete === "boolean";
     return true;
   }
   if (output.kind === "interaction") {

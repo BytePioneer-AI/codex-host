@@ -50,6 +50,7 @@ export function createDraftPrewarmPolicyBridge(
   // already in flight. Reject its late result so the previous Harness cannot
   // repopulate the next draft's prewarm cache after a selection change.
   let prewarmGeneration = 0;
+  const externalPrewarms = new Set<string>();
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
   const isUnsupportedPosixBridgeSpawn = (value: unknown): boolean => {
@@ -499,6 +500,14 @@ export function createDraftPrewarmPolicyBridge(
     };
   };
   const routedSend = (method: string, parameters: unknown, options?: unknown): unknown => {
+    if (
+      method === "turn/start" ||
+      method === "thread/resume" ||
+      method === "codexhost/thread/command/execute"
+    ) {
+      const threadId = threadIdFromParameters(parameters);
+      if (threadId) externalPrewarms.delete(threadId);
+    }
     const routedParameters = method === "thread/start" ? routeThreadStart(parameters) : parameters;
     const sendBridged = (): Promise<unknown> =>
       initializeBridge().then(
@@ -557,8 +566,29 @@ export function createDraftPrewarmPolicyBridge(
       );
     }
   };
+  const discardExternalPrewarm = (threadId: string): void => {
+    externalPrewarms.delete(threadId);
+    // Host atomically refuses cleanup after a user operation has adopted the Thread.
+    // Cleanup failure must not turn a configuration change into a failed submission.
+    try {
+      void Promise.resolve(routedSend("codexhost/thread/prewarm/discard", { threadId })).catch(
+        () => undefined,
+      );
+    } catch {
+      // A retired/disconnected transport cannot clean up; never replay user work to recover it.
+    }
+  };
+  const discardExternalPrewarms = (): void => {
+    for (const threadId of externalPrewarms) discardExternalPrewarm(threadId);
+  };
   const routedPrewarm = (parameters: unknown, options?: unknown): unknown => {
-    const routedParameters = routeThreadStart(parameters);
+    const routed = routeThreadStart(parameters);
+    const external =
+      isRecord(routed) &&
+      routed.ephemeral !== true &&
+      typeof routed.model === "string" &&
+      routed.model.startsWith("codexhost/");
+    const routedParameters = external ? { ...routed, codexhostPrewarm: true } : routed;
     const generation = prewarmGeneration;
     publishDraftWorkspace(routedParameters);
     const pending = shouldUseBridge("thread/start", routedParameters)
@@ -575,9 +605,18 @@ export function createDraftPrewarmPolicyBridge(
       return pending;
     }
     return Promise.resolve(pending).then((result) => {
+      const threadId =
+        external &&
+        isRecord(result) &&
+        isRecord(result.thread) &&
+        typeof result.thread.id === "string"
+          ? result.thread.id
+          : null;
       if (disposed || generation !== prewarmGeneration) {
+        if (threadId) discardExternalPrewarm(threadId);
         throw new Error("Renderer draft prewarm was invalidated by a configuration change");
       }
+      if (threadId) externalPrewarms.add(threadId);
       publishDraftWorkspace(routedParameters);
       return result;
     });
@@ -659,17 +698,20 @@ export function createDraftPrewarmPolicyBridge(
       if (selectedModel === model) return false;
       selectedModel = model;
       prewarmGeneration += 1;
+      discardExternalPrewarms();
       return true;
     },
     clear(): Promise<void> {
       if (disposed || (isCurrentManager && !isCurrentManager()))
         return Promise.reject(new Error("Renderer request manager is retired"));
       prewarmGeneration += 1;
+      discardExternalPrewarms();
       prewarmedThreadManager.discardAllPrewarmedThreads();
       return Promise.resolve();
     },
     dispose(): void {
       if (disposed) return;
+      discardExternalPrewarms();
       disposed = true;
       prewarmGeneration += 1;
       retireResponses();

@@ -12,12 +12,15 @@ import {
   type HarnessId,
 } from "@codexhost/shared-contracts";
 
+import { CLAUDE_SUBAGENT_TOOLS } from "./native-message.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 
 interface ClaudeHistoryMessage {
   type: "user" | "assistant";
   uuid: string;
   message: Record<string, unknown>;
+  /** A Subagent transcript record; live, its tools never reach the Tool lifecycle. */
+  nested: boolean;
   syntheticUser: boolean;
   interrupted: boolean;
 }
@@ -74,6 +77,27 @@ function displayedUserText(text: string): string {
   if (isNamedCommandEnvelope(text, initCommandNamePattern)) return "/init";
   if (isNamedCommandEnvelope(text, recapCommandNamePattern)) return "/recap";
   return text;
+}
+
+const WORKFLOW_TASK_FRAME = "[Workflow harness \u2014 computed task]";
+const WORKFLOW_TASK_MARKER = "The computed task text follows:\n";
+const WORKFLOW_REQUEST_FRAME = "[Workflow harness \u2014 user request]";
+
+/**
+ * A Workflow agent receives its computed task inside a native frame that indents every
+ * line. Show the task itself; keep the native text when the frame is not recognized.
+ */
+function workflowTaskText(text: string): string {
+  if (!text.startsWith(WORKFLOW_TASK_FRAME)) return text;
+  const marker = text.indexOf(WORKFLOW_TASK_MARKER);
+  if (marker < 0) return text;
+  const lines = text.slice(marker + WORKFLOW_TASK_MARKER.length).split("\n");
+  if (!lines.every((line) => line.trim().length === 0 || line.startsWith("  "))) return text;
+  const task = lines
+    .map((line) => line.slice(2))
+    .join("\n")
+    .trim();
+  return task.length > 0 ? task : text;
 }
 
 function localCommandStdoutText(text: string): string | null {
@@ -139,6 +163,7 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
       type: value.type,
       uuid: value.uuid,
       message: value.message,
+      nested: typeof value.parent_tool_use_id === "string" && value.parent_tool_use_id.length > 0,
       interrupted,
       syntheticUser:
         value.type === "user" &&
@@ -159,6 +184,24 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
 
 function isHumanUser(message: ClaudeHistoryMessage): boolean {
   return visibleUserTextParts(message).length > 0;
+}
+
+/**
+ * Ultracode relays the user request that triggered a Workflow ahead of the agent's computed
+ * task. The parent Thread already shows that request, so the agent's Thread starts at the task.
+ */
+function isWorkflowRequestRelay(
+  message: ClaudeHistoryMessage,
+  next: ClaudeHistoryMessage | undefined,
+): boolean {
+  const parts = visibleUserTextParts(message);
+  if (parts.length === 0 || !parts.every((part) => part.startsWith(WORKFLOW_REQUEST_FRAME))) {
+    return false;
+  }
+  return (
+    next !== undefined &&
+    visibleUserTextParts(next).some((part) => part.startsWith(WORKFLOW_TASK_FRAME))
+  );
 }
 
 function turnOutcome(messages: ClaudeHistoryMessage[]): HistoricalTurnOutcome {
@@ -214,6 +257,9 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     );
     let agentMessageOrdinal = 0;
     let reasoningOrdinal = 0;
+    // Tool Items count only what live reaches the Tool lifecycle: root, non-Subagent
+    // blocks. Every such block consumes an ordinal so identities stay aligned.
+    let toolOrdinal = 0;
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: claudeCodeHarnessId,
@@ -322,6 +368,8 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
           ) {
             continue;
           }
+          const toolItem =
+            !message.nested && !CLAUDE_SUBAGENT_TOOLS.has(block.name) ? (toolOrdinal += 1) : null;
           const result = results.get(block.id);
           if (!result) continue;
           const output = toolResultOutput(result);
@@ -336,9 +384,10 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                 },
               }
             : { status: "succeeded" };
-          const itemId = hostItemIdSchema.parse(
-            `claude-item-v1-${message.uuid}-tool-${blockIndex}`,
-          );
+          const itemId =
+            toolItem !== null
+              ? claudeTranscriptItemId(user.uuid, "tool", toolItem)
+              : hostItemIdSchema.parse(`claude-item-v1-${message.uuid}-tool-${blockIndex}`);
           if (
             block.name === "Bash" &&
             isRecord(block.input) &&
@@ -459,6 +508,10 @@ export function mapClaudeSubagentSnapshot(
       index += 1;
       continue;
     }
+    if (user && turns.length === 0 && isWorkflowRequestRelay(user, messages[index + 1])) {
+      index += 1;
+      continue;
+    }
     let end = index + 1;
     while (end < messages.length && !isHumanUser(messages[end] as ClaudeHistoryMessage)) end += 1;
     const turnMessages = messages.slice(index, end);
@@ -570,7 +623,10 @@ export function mapClaudeSubagentSnapshot(
           }
         : {}),
       input: user
-        ? visibleUserTextParts(user).map((text) => ({ type: "text", text }))
+        ? visibleUserTextParts(user).map((text) => ({
+            type: "text",
+            text: turns.length === 0 ? workflowTaskText(text) : text,
+          }))
         : turns.length === 0
           ? [subagentPrompt(parentValues, nativeSubagentId)]
               .filter((text): text is string => text !== undefined)

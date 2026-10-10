@@ -6,6 +6,7 @@ vi.mock("../../src/settings/icons.js", () => ({
 }));
 
 import {
+  accountUsageColumnLabel,
   renderAccountResetCredits,
   renderAccountUsage as renderUsage,
   resetCreditDetailLine,
@@ -24,6 +25,7 @@ class FakeElement {
   title = "";
   type = "";
   disabled = false;
+  colSpan = 1;
   constructor(readonly tagName: string) {}
   addEventListener(name: string, listener: () => void): void {
     this.listeners.set(name, listener);
@@ -46,10 +48,11 @@ function descendants(root: FakeElement): FakeElement[] {
     ...root.children.flatMap((child) => (child instanceof FakeElement ? descendants(child) : [])),
   ];
 }
-function elements(root: HTMLElement): FakeElement[] {
+function elements(root: HTMLElement | undefined): FakeElement[] {
+  if (!root) throw new Error("Expected rendered element");
   return descendants(root as unknown as FakeElement);
 }
-function text(root: HTMLElement): string {
+function text(root: HTMLElement | undefined): string {
   return elements(root)
     .map((el) => el.textContent)
     .join(" ");
@@ -70,7 +73,7 @@ function renderAccountUsage(
   const result = renderUsage(document, state, messages, display, onRetry);
   const root = document.createElement("div");
   root.append(...result.cells);
-  if (result.additional) root.append(result.additional);
+  for (const cells of result.continuationCells) root.append(...cells);
   return root;
 }
 
@@ -102,11 +105,11 @@ describe("Account limit windows", () => {
     );
     if (!result) throw new Error("Expected limits");
     expect(text(result)).toContain("7 天");
-    expect(text(result)).toContain("—");
+    expect(text(result)).not.toContain("—");
     expect(text(result)).not.toContain("未提供此窗口");
     expect(
       elements(result).filter((el) => el.className === "settings-account-usage__missing"),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(elements(result).filter((el) => el.attributes.get("role") === "meter")).toHaveLength(1);
   });
 
@@ -163,6 +166,23 @@ describe("Account limit windows", () => {
     }
   });
 
+  it("shows native quantities and keeps a zero cap empty", () => {
+    const remaining = usage({ ...credits, used: 20, limit: 100, unit: "credits" }, "remaining");
+    expect(text(remaining)).toContain("80 / 100 credits");
+
+    const empty = usage(
+      { ...credits, usedPercent: 0, used: 0, limit: 0, unit: "credits" },
+      "remaining",
+    );
+    expect(text(empty)).toContain("0 / 0 credits");
+    expect(text(empty)).toContain("—");
+    expect(
+      elements(empty)
+        .find((element) => element.attributes.get("role") === "meter")
+        ?.attributes.get("aria-valuenow"),
+    ).toBe("0");
+  });
+
   it("keeps unavailable, loading, empty, and failed states distinct from zero usage", () => {
     expect(
       elements(renderAccountUsage(document, undefined, messages, "used", vi.fn())).some(
@@ -187,6 +207,63 @@ describe("Account limit windows", () => {
 });
 
 describe("Quota comparison columns", () => {
+  it("uses period-independent headers in both display modes and locales", () => {
+    expect(accountUsageColumnLabel("remaining", messages)).toBe("剩余额度");
+    expect(accountUsageColumnLabel("used", messages)).toBe("已用额度");
+    const english = rendererSettingsMessages("en");
+    expect(accountUsageColumnLabel("remaining", english)).toBe("Remaining quota");
+    expect(accountUsageColumnLabel("used", english)).toBe("Used quota");
+  });
+
+  it("places monthly quotas side by side and wraps further products within the quota area", () => {
+    const result = columns({
+      usedPercent: 0,
+      periodType: "monthly",
+      label: "Auto · monthly",
+      resetsAt: credits.resetsAt,
+      productUsage: [
+        { product: "API · monthly", usagePercent: 2, resetsAt: credits.resetsAt },
+        { product: "Extra", usagePercent: 30 },
+      ],
+    });
+    expect(text(result.cells[0])).toContain("Auto · 月额度");
+    expect(text(result.cells[0])).toContain("100%");
+    expect(text(result.cells[1])).toContain("API · 月额度");
+    expect(text(result.cells[1])).toContain("98%");
+    expect(text(result.cells[0])).not.toContain("5 小时");
+    expect(text(result.cells[1])).not.toContain("7 天");
+    expect(result.continuationCells).toHaveLength(1);
+    const [first] = result.continuationCells[0] ?? [];
+    if (!first) throw new Error("Expected continuation quota cell");
+    expect(text(first)).toContain("Extra");
+    expect(first.colSpan).toBe(2);
+    expect(result.continuationCells[0]).toHaveLength(1);
+  });
+
+  it("packs Kimi's weekly and scoped five-hour limits into one row", () => {
+    const result = columns({
+      usedPercent: 0,
+      periodType: "weekly",
+      productUsage: [{ product: "Kimi Code · 5-hour", usagePercent: 12 }],
+    });
+    expect(result.cells).toHaveLength(2);
+    expect(result.continuationCells).toHaveLength(0);
+    expect(text(result.cells[0])).toContain("周额度");
+    expect(text(result.cells[1])).toContain("Kimi Code · 5 小时");
+    expect(text(result.cells[1])).toContain("88%");
+  });
+
+  it("retains the period on each scoped quota", () => {
+    const result = columns({
+      usedPercent: 10,
+      periodType: "five_hour",
+      label: "Model group · 5-hour",
+      productUsage: [{ product: "Model group · 7-day", usagePercent: 20 }],
+    });
+    expect(text(result.cells[0])).toContain("Model group · 5 小时");
+    expect(text(result.cells[1])).toContain("Model group · 7 天");
+  });
+
   function columns(credits: AccountCreditsSnapshot) {
     const result = renderUsage(
       document,
@@ -195,22 +272,19 @@ describe("Quota comparison columns", () => {
       "remaining",
       vi.fn(),
     );
-    const [fiveHour, sevenDay] = result.cells;
-    if (!fiveHour || !sevenDay) throw new Error("Expected two comparison columns");
-    return { ...result, cells: [fiveHour, sevenDay] as const };
+    return result;
   }
 
-  it("places weekly zero usage only in the 7-day column", () => {
+  it("spans both quota columns for a single weekly allowance", () => {
     const result = columns({ usedPercent: 0, periodType: "weekly" });
-    expect(elements(result.cells[0]).some((el) => el.attributes.get("role") === "meter")).toBe(
-      false,
-    );
+    expect(result.cells).toHaveLength(1);
+    expect(result.cells[0]?.colSpan).toBe(2);
     expect(
-      elements(result.cells[1])
+      elements(result.cells[0])
         .find((el) => el.attributes.get("role") === "meter")
         ?.attributes.get("aria-valuenow"),
     ).toBe("100");
-    expect(result.additional).toBeNull();
+    expect(result.continuationCells).toHaveLength(0);
   });
 
   it("places the exact secondary window in its column without merging duplicate reports", () => {
@@ -223,7 +297,10 @@ describe("Quota comparison columns", () => {
     });
     expect(text(result.cells[0])).toContain("9%");
     expect(text(result.cells[1])).toContain("80%");
-    expect(result.additional && text(result.additional)).toContain("65%");
+    expect(result.continuationCells).toHaveLength(1);
+    const duplicate = result.continuationCells[0]?.[0];
+    if (!duplicate) throw new Error("Expected duplicate quota cell");
+    expect(text(duplicate)).toContain("65%");
   });
 });
 

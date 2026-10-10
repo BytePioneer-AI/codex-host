@@ -6,9 +6,11 @@ import { compactDelegationOutput } from "./delegation-cli-output.js";
 export { DELEGATION_HELP } from "./delegation-cli-help.js";
 
 import {
+  DEFAULT_WATCH_TIMEOUT_MS,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
+  NATIVE_CODEX_THREAD_ID_ENV,
   DelegationControlError,
   type DelegationControlErrorCode,
 } from "./delegation-types.js";
@@ -24,6 +26,17 @@ function normalizeThreadId(value: string): string {
     throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is invalid");
   }
   return normalized;
+}
+
+function readThreadReference(value: string): { threadId: string; hostId?: string } {
+  if (!value.startsWith("thread://")) return { threadId: normalizeThreadId(value) };
+  const match = /^thread:\/\/([^/?#]+)(?:\?hostId=([^&#]+))?$/u.exec(value);
+  if (!match?.[1])
+    throw new DelegationControlError("INVALID_ARGUMENT", "Thread reference is invalid");
+  return {
+    threadId: normalizeThreadId(match[1]),
+    ...(match[2] ? { hostId: decodeURIComponent(match[2]) } : {}),
+  };
 }
 
 function positiveInteger(value: string | undefined, name: string, maximum?: number): number {
@@ -136,6 +149,13 @@ function writeJson(output: Writable, value: unknown): void {
   output.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/** The calling Thread: Host-provided for External Harnesses, Codex-provided for native Codex. */
+function callerThreadId(environment: NodeJS.ProcessEnv): string | undefined {
+  return (
+    environment[DELEGATION_THREAD_ID_ENV] || environment[NATIVE_CODEX_THREAD_ID_ENV] || undefined
+  );
+}
+
 export async function runDelegationCli(input: {
   arguments: string[];
   environment?: NodeJS.ProcessEnv;
@@ -223,6 +243,8 @@ export async function runDelegationCli(input: {
         "--thinking",
         "--parent-thread",
         "--request-id",
+        "--watch",
+        "--watch-timeout-ms",
       ]);
       if (parsed.positionals.length > 0)
         throw new DelegationControlError(
@@ -233,8 +255,15 @@ export async function runDelegationCli(input: {
       const task = value(parsed, "--task");
       if (!harnessId || !task)
         throw new DelegationControlError("INVALID_ARGUMENT", "--harness and --task are required");
-      const parentThread =
-        value(parsed, "--parent-thread") ?? environment[DELEGATION_THREAD_ID_ENV];
+      const parentThread = value(parsed, "--parent-thread") ?? callerThreadId(environment);
+      const watch = value(parsed, "--watch");
+      if (watch !== undefined && watch !== "true" && watch !== "false")
+        throw new DelegationControlError("INVALID_ARGUMENT", "--watch must be true or false");
+      if (watch !== "true" && value(parsed, "--watch-timeout-ms"))
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--watch-timeout-ms requires --watch true",
+        );
       writeResult(
         "delegate start",
         await requestRuntime({
@@ -250,6 +279,13 @@ export async function runDelegationCli(input: {
               : {}),
             ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
             ...(value(parsed, "--request-id") ? { requestId: value(parsed, "--request-id") } : {}),
+            ...(watch === "true"
+              ? {
+                  watchTimeoutMs: value(parsed, "--watch-timeout-ms")
+                    ? positiveInteger(value(parsed, "--watch-timeout-ms"), "--watch-timeout-ms")
+                    : DEFAULT_WATCH_TIMEOUT_MS,
+                }
+              : {}),
           },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),
@@ -307,7 +343,13 @@ export async function runDelegationCli(input: {
       return 0;
     }
     if (group === "thread" && (command === "read" || command === "wait")) {
-      rejectUnknown(parsed, ["--view", "--cursor", "--limit", "--timeout-ms"]);
+      rejectUnknown(parsed, [
+        "--view",
+        "--cursor",
+        "--limit",
+        "--timeout-ms",
+        ...(command === "read" ? ["--host"] : []),
+      ]);
       if (parsed.positionals.length !== 1)
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
@@ -329,8 +371,19 @@ export async function runDelegationCli(input: {
       const threadId = parsed.positionals[0];
       if (!threadId)
         throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
+      const reference =
+        command === "read"
+          ? readThreadReference(threadId)
+          : { threadId: normalizeThreadId(threadId) };
+      const hostId = value(parsed, "--host");
+      if (hostId && reference.hostId && hostId !== reference.hostId)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--host conflicts with the Thread reference",
+        );
       const body = {
-        threadId: normalizeThreadId(threadId),
+        ...reference,
+        ...(hostId ? { hostId } : {}),
         view,
         ...(value(parsed, "--cursor") ? { cursor: value(parsed, "--cursor") } : {}),
         ...(value(parsed, "--limit")
@@ -353,6 +406,57 @@ export async function runDelegationCli(input: {
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),
         view,
+      );
+      return 0;
+    }
+    if (group === "thread" && command === "watch") {
+      rejectUnknown(parsed, ["--notify", "--timeout-ms"]);
+      if (parsed.positionals.length !== 1)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread watch requires one Thread identifier",
+        );
+      const threadId = parsed.positionals[0];
+      if (!threadId)
+        throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
+      const notifyThread = value(parsed, "--notify") ?? callerThreadId(environment);
+      if (!notifyThread)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--notify <thread> is required when the caller Thread is unknown; delegate start reports it as parent",
+        );
+      writeResult(
+        "thread watch",
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/watch",
+          body: {
+            threadId: normalizeThreadId(threadId),
+            notifyThreadId: normalizeThreadId(notifyThread),
+            timeoutMs: value(parsed, "--timeout-ms")
+              ? positiveInteger(value(parsed, "--timeout-ms"), "--timeout-ms")
+              : DEFAULT_WATCH_TIMEOUT_MS,
+          },
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
+    if (group === "thread" && command === "watches") {
+      rejectUnknown(parsed, []);
+      if (parsed.positionals.length > 0)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread watches accepts no positional arguments",
+        );
+      writeResult(
+        "thread watches",
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/watches",
+          body: {},
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
       );
       return 0;
     }

@@ -20,10 +20,12 @@
     "@codexhost/desktop-control": "0.0.0",
     "@codexhost/harness-adapter": "0.0.0",
     "@codexhost/harness-broker": "0.0.0",
+    "@codexhost/harness-plugin-files": "0.0.0",
     "@codexhost/mapping-store": "0.0.0",
     "@codexhost/protocol-core": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
     "@codexhost/update-manager": "0.0.0",
+    "@deepseek-ai/cordis": "4.0.4",
     "ws": "8.21.3"
   }
 }

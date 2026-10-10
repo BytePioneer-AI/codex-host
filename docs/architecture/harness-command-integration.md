@@ -41,6 +41,8 @@ For commands with visible progress, decide explicitly whether they need:
 - existing UI projection;
 - ordinary history persistence.
 
+If a native prompt completes without invoking the Agent or creating a history Turn, the Adapter marks `turn.completed` with `ephemeral: true`. The Host then uses the same non-persistent terminal path as an admitted catalog command: project output and completion, release the active Turn, and omit it from native identity mappings and history. This also covers a cold live-catalog command admitted as an ordinary prompt. Missing `nativeTurnRef` alone never implies an ephemeral Turn; ordinary successful Turns still require native identity.
+
 ## 4. Reuse Host and Renderer routing
 
 Catalog reads never open or resume a Session:
@@ -87,10 +89,11 @@ Live commands are filtered by a blocklist, never an allowlist. `COMMON_EXCLUDED_
 | Pi | RPC `get_commands` on each listing | `source: "skill"` | pi-subagents run management and profile rewriting, Host-internal `subagents-inspect-rpc` |
 | Grok | ACP `available_commands_update` | `_meta.path` is a `SKILL.md`, or `_meta.qualifiedName` | — |
 | Kiro CLI | ACP `available_commands_update` | `_meta.kiro.type: "skill"` | — |
-| OMP | RPC `available_commands_update` event | `source: "skill"` | every `source: "builtin"` entry (terminal UI commands) |
+| OMP | RPC `available_commands_update` event | `source: "skill"` | `source: "builtin"` entries except the local `/context` text report; `/compact` uses dedicated handling |
 | CodeBuddy | ACP `available_commands_update` | `_meta.type: "skill"` | its own reviewed list |
 | Cursor CLI | ACP push | none (common list applies to every entry) | `update-cli-config` |
-| Qoder, Hermes | SDK or ACP push | none (common list applies to every entry) | — |
+| Qoder | SDK or ACP push | none (common list applies to every entry) | — |
+| Hermes | Gateway `slash.exec` / `session.compress` verified command set | none (common list applies to every entry) | — |
 
 WorkBuddy, DeepSeek Harness and OpenCode deliberately keep static catalogs. Antigravity CLI has no native listing interface.
 
@@ -146,6 +149,8 @@ Adapter static commandCatalog (no native request or Session)
 
 Pi manual `/compact` and automatic compaction have no Host wall-clock deadline: native `compaction_end` determines their outcome. Pending Prompt and Compact response timeouts pause while compaction is active and resume afterward. Startup, other RPC responses, cancellation, and process cleanup retain their existing bounds.
 
+For an explicit `/compact` command (identified by its catalog invocation), right before it projects a `contextCompaction` `item/started`, the Host sends `codexhost/thread/manual-compaction/started`. Automatic compaction inside other commands or ordinary Turns does not send this notification. Desktop's Renderer drops `codexhost/*` notifications before its Manager sees them, so the Renderer reads this one from the window `mcp-notification` message and registers it through Desktop's manual compaction binding, which lets Desktop's follow-up queue continue after the compaction as it does for native manual compaction. See [external Thread steering](external-thread-steering.md#手动压缩后的自动执行).
+
 Grok maps optional trailing text to native `userContext`. Claude `/compact`
 maps it to custom summarization instructions. `/init` and `/recap` take no
 arguments. These commands invoke Harness-native operations and must not be
@@ -153,7 +158,7 @@ submitted as Host text Turns.
 
 DeepSeek declares exactly `/compact`, `/dsh-goal`, and `/plan` in its static Adapter catalog, for both new and existing Threads. Neither catalog display nor command admission queries native `commands/list`. Execution retains ID, argument, busy-state, cancellation, and native-result validation; an unsupported native deployment reports its execution error rather than being probed beforehand. Native `feedback`, `permission`, `export`, the Client-side `/model`, and unknown commands are not exposed through this surface.
 
-DeepSeek has been tested with `0.1.2-rc.1`, `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.5-rc.3` and `0.1.7-rc.1`. Other SemVer versions may attempt native protocol validation. The Adapter sends `images: []` with `commands/execute` for the `0.1.2` family's V0 profile, or `submittedAttachments: []` for the V3/V4 profiles; this version-specific translation does not add attachment input or native descriptor discovery to the public command surface.
+DeepSeek has been tested with `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1` and `0.2.0-rc.2`; versions below `0.1.7-rc.1` are rejected as `unsupported` before the managed Web starts, and other SemVer versions from `0.1.7-rc.1` on may attempt native protocol validation. The Adapter sends `submittedAttachments: []` with `commands/execute`; this native argument does not add attachment input or native descriptor discovery to the public command surface.
 
 OpenCode exposes only the fixed `/compact` command, implemented through native Session summarization. Dynamic native command discovery and execution are not part of its Host integration.
 

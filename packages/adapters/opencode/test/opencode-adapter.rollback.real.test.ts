@@ -20,7 +20,10 @@ interface ModelRequest {
   messages?: Array<{ role?: string }>;
   model?: string;
   stream?: boolean;
-  tools?: Array<{ function?: { name?: string }; type?: string }>;
+  tools?: Array<{
+    function?: { name?: string; parameters?: { required?: string[] } };
+    type?: string;
+  }>;
 }
 
 interface TestModelServer {
@@ -81,7 +84,7 @@ function streamCompletion(
   response.end("data: [DONE]\n\n");
 }
 
-async function startModelServer(filePath: string): Promise<TestModelServer> {
+async function startModelServer(filePath: string, withQuestion = false): Promise<TestModelServer> {
   const server = http.createServer((request, response) => {
     void (async () => {
       if (request.method === "GET" && request.url === "/v1/models") {
@@ -97,15 +100,34 @@ async function startModelServer(filePath: string): Promise<TestModelServer> {
       }
       const input = await readJson(request);
       const editTool = input.tools?.find(({ function: candidate }) => candidate?.name === "edit");
+      const toolCount = input.messages?.filter(({ role }) => role === "tool").length ?? 0;
+      const shouldQuestion =
+        withQuestion &&
+        toolCount === 0 &&
+        input.tools?.some(({ function: candidate }) => candidate?.name === "question");
       const shouldEdit =
         Boolean(editTool) &&
-        !input.messages?.some(({ role }) => role === "tool") &&
+        toolCount === (withQuestion ? 1 : 0) &&
         (await fs.readFile(filePath, "utf8")) === "before\n";
-      const toolArguments = JSON.stringify({
-        filePath,
-        oldString: "before\n",
-        newString: "after\n",
-      });
+      const toolName = shouldQuestion ? "question" : "edit";
+      const toolArguments = JSON.stringify(
+        shouldQuestion
+          ? {
+              questions: [
+                {
+                  header: "Edit",
+                  question: "Apply the test edit?",
+                  options: [{ label: "Yes", description: "Apply it" }],
+                },
+              ],
+            }
+          : {
+              [editTool?.function?.parameters?.required?.includes("path") ? "path" : "filePath"]:
+                filePath,
+              oldString: "before\n",
+              newString: "after\n",
+            },
+      );
       if (input.stream === false) {
         writeJson(response, {
           id: "chatcmpl-codexhost",
@@ -115,27 +137,28 @@ async function startModelServer(filePath: string): Promise<TestModelServer> {
           choices: [
             {
               index: 0,
-              finish_reason: shouldEdit ? "tool_calls" : "stop",
-              message: shouldEdit
-                ? {
-                    role: "assistant",
-                    content: null,
-                    tool_calls: [
-                      {
-                        id: "call_edit",
-                        type: "function",
-                        function: { name: "edit", arguments: toolArguments },
-                      },
-                    ],
-                  }
-                : { role: "assistant", content: "done" },
+              finish_reason: shouldEdit || shouldQuestion ? "tool_calls" : "stop",
+              message:
+                shouldEdit || shouldQuestion
+                  ? {
+                      role: "assistant",
+                      content: null,
+                      tool_calls: [
+                        {
+                          id: "call_edit",
+                          type: "function",
+                          function: { name: toolName, arguments: toolArguments },
+                        },
+                      ],
+                    }
+                  : { role: "assistant", content: "done" },
             },
           ],
           usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
         });
         return;
       }
-      if (shouldEdit) {
+      if (shouldEdit || shouldQuestion) {
         streamCompletion(response, [
           completionChunk({
             delta: {
@@ -145,7 +168,7 @@ async function startModelServer(filePath: string): Promise<TestModelServer> {
                   index: 0,
                   id: "call_edit",
                   type: "function",
-                  function: { name: "edit", arguments: toolArguments },
+                  function: { name: toolName, arguments: toolArguments },
                 },
               ],
             },
@@ -218,18 +241,54 @@ async function nextOutput(
   return result.value;
 }
 
-async function waitForTurn(session: HarnessSession, turnId: string): Promise<HarnessOutput[]> {
+async function waitForTurn(
+  session: HarnessSession,
+  turnId: string,
+  compact = false,
+): Promise<HarnessOutput[]> {
   const outputs: HarnessOutput[] = [];
   const iterator = session.outputs[Symbol.asyncIterator]();
-  const started = await session.execute({
-    type: "turn.start",
-    turnId: hostTurnIdSchema.parse(turnId),
-    input: [{ type: "text", text: "Edit the fixture exactly once, then finish." }],
-  });
+  if (compact && !session.commands) throw new Error("Missing compact command");
+  const started = compact
+    ? await session.commands?.execute({
+        turnId: hostTurnIdSchema.parse(turnId),
+        commandId: "opencode.compact",
+      })
+    : await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse(turnId),
+        input: [{ type: "text", text: "Edit the fixture exactly once, then finish." }],
+      });
+  if (!started) throw new Error("Missing command response");
   if (!started.ok) throw new Error(started.error.message);
   for (let index = 0; index < 100; index += 1) {
     const output = await nextOutput(iterator);
     outputs.push(output);
+    if (output.kind === "interaction") {
+      const interaction = output.interaction;
+      const response =
+        interaction.type === "approval"
+          ? {
+              type: "approval" as const,
+              actionId:
+                interaction.actions.find((action) => action.effect === "allowOnce")?.id ?? "once",
+            }
+          : {
+              type: "question" as const,
+              answers: Object.fromEntries(
+                interaction.questions.map((question) => [
+                  question.id,
+                  [question.type === "choice" ? (question.options[0]?.value ?? "Yes") : "Yes"],
+                ]),
+              ),
+            };
+      const replied = await session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response,
+      });
+      if (!replied.ok) throw new Error(replied.error.message);
+    }
     if (
       output.kind === "event" &&
       output.event.type === "turn.completed" &&
@@ -242,179 +301,221 @@ async function waitForTurn(session: HarnessSession, turnId: string): Promise<Har
 }
 
 describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
-  it("preserves current files and source history across rollback and restart", async () => {
-    if (!command) throw new Error("CODEXHOST_OPENCODE_REAL_COMMAND is required");
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codexhost-opencode-rollback-"));
-    const workspace = path.join(root, "workspace");
-    const fixture = path.join(workspace, "fixture.txt");
-    await fs.mkdir(workspace, { recursive: true });
-    await fs.writeFile(fixture, "before\n", "utf8");
-    await execFileAsync("git", ["init", "--quiet"], { cwd: workspace });
-    await execFileAsync("git", ["add", "fixture.txt"], { cwd: workspace });
-    await execFileAsync(
-      "git",
-      [
-        "-c",
-        "user.name=codexhost Test",
-        "-c",
-        "user.email=codexhost-test@example.invalid",
-        "commit",
-        "--quiet",
-        "-m",
-        "test: establish rollback baseline",
-      ],
-      { cwd: workspace },
-    );
-    const modelServer = await startModelServer(fixture);
-    const configuration = {
-      $schema: "https://opencode.ai/config.json",
-      enabled_providers: [PROVIDER_ID],
-      model: `${PROVIDER_ID}/${MODEL_ID}`,
-      small_model: `${PROVIDER_ID}/${MODEL_ID}`,
-      permission: "ask",
-      provider: {
-        [PROVIDER_ID]: {
-          npm: "@ai-sdk/openai-compatible",
-          name: "codexhost Test Provider",
-          options: { apiKey: "test-only", baseURL: modelServer.baseUrl },
-          models: {
-            [MODEL_ID]: {
-              name: "Rollback Model",
-              tool_call: true,
-              limit: { context: 32_000, output: 4_000 },
+  it.each([false, true])(
+    "preserves files and history across rollback and restart (interactive=%s)",
+    async (interactive) => {
+      if (!command) throw new Error("CODEXHOST_OPENCODE_REAL_COMMAND is required");
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "codexhost-opencode-rollback-"));
+      const workspace = path.join(root, "workspace");
+      const fixture = path.join(workspace, "fixture.txt");
+      await fs.mkdir(workspace, { recursive: true });
+      await fs.writeFile(fixture, "before\n", "utf8");
+      await execFileAsync("git", ["init", "--quiet"], { cwd: workspace });
+      await execFileAsync("git", ["add", "fixture.txt"], { cwd: workspace });
+      await execFileAsync(
+        "git",
+        [
+          "-c",
+          "user.name=codexhost Test",
+          "-c",
+          "user.email=codexhost-test@example.invalid",
+          "commit",
+          "--quiet",
+          "-m",
+          "test: establish rollback baseline",
+        ],
+        { cwd: workspace },
+      );
+      const modelServer = await startModelServer(fixture, interactive);
+      const configuration = {
+        $schema: "https://opencode.ai/config.json",
+        enabled_providers: [PROVIDER_ID],
+        model: `${PROVIDER_ID}/${MODEL_ID}`,
+        small_model: `${PROVIDER_ID}/${MODEL_ID}`,
+        permission: "ask",
+        provider: {
+          [PROVIDER_ID]: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "codexhost Test Provider",
+            options: { apiKey: "test-only", baseURL: modelServer.baseUrl },
+            models: {
+              [MODEL_ID]: {
+                name: "Rollback Model",
+                tool_call: true,
+                limit: { context: 32_000, output: 4_000 },
+              },
             },
           },
         },
-      },
-    };
-    const adapterOptions = {
-      command,
-      startupTimeoutMs: 20_000,
-      commandTimeoutMs: 30_000,
-      environment: {
-        ...process.env,
-        OPENCODE_CONFIG_CONTENT: JSON.stringify(configuration),
-        OPENCODE_CONFIG_DIR: path.join(root, "config"),
-        OPENCODE_DISABLE_PROJECT_CONFIG: "true",
-        OPENCODE_TEST_HOME: path.join(root, "home"),
-        XDG_CONFIG_HOME: path.join(root, "xdg-config"),
-        CODEWIZ_AUTO_UPDATE: "0",
-        XDG_DATA_HOME: path.join(root, "data"),
-        XDG_CACHE_HOME: path.join(root, "cache"),
-        XDG_STATE_HOME: path.join(root, "state"),
-      },
-    };
-    let adapter = new OpenCodeAdapter(adapterOptions);
-    try {
-      const inspection = await adapter.inspect({ cwd: workspace, refresh: true });
-      if (inspection.status !== "ready") {
-        throw new Error(`OpenCode inspection failed: ${JSON.stringify(inspection)}`);
-      }
-      const opened = await adapter.open({
-        kind: "create",
-        cwd: workspace,
-        executionPolicy: "unattended-full-access",
-      });
-      if (!opened.ok) throw new Error(opened.error.message);
-      const sourceRef = opened.value.initialState.nativeRef;
-      if (!sourceRef) throw new Error("OpenCode Session did not expose a Native Ref");
-      expect(sourceRef.locator).toMatchObject({ executionPolicy: "unattended-full-access" });
-      const outputs = await waitForTurn(opened.value, "real-edit");
-      expect(outputs).toContainEqual(
-        expect.objectContaining({
-          kind: "event",
-          event: expect.objectContaining({
-            type: "turn.completed",
-            outcome: expect.objectContaining({ status: "succeeded" }),
+      };
+      const adapterOptions = {
+        command,
+        startupTimeoutMs: 20_000,
+        commandTimeoutMs: 30_000,
+        environment: {
+          ...process.env,
+          OPENCODE_CONFIG_CONTENT: JSON.stringify(configuration),
+          OPENCODE_CONFIG_DIR: path.join(root, "config"),
+          OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+          OPENCODE_TEST_HOME: path.join(root, "home"),
+          XDG_CONFIG_HOME: path.join(root, "xdg-config"),
+          CODEWIZ_AUTO_UPDATE: "0",
+          XDG_DATA_HOME: path.join(root, "data"),
+          XDG_CACHE_HOME: path.join(root, "cache"),
+          XDG_STATE_HOME: path.join(root, "state"),
+        },
+      };
+      let adapter = new OpenCodeAdapter(adapterOptions);
+      try {
+        const inspection = await adapter.inspect({ cwd: workspace, refresh: true });
+        if (inspection.status !== "ready") {
+          throw new Error(`OpenCode inspection failed: ${JSON.stringify(inspection)}`);
+        }
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: workspace,
+          executionPolicy: interactive ? "default" : "unattended-full-access",
+          ...(interactive ? { permissionModeId: "ask" as never } : {}),
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const sourceRef = opened.value.initialState.nativeRef;
+        if (!sourceRef) throw new Error("OpenCode Session did not expose a Native Ref");
+        expect(sourceRef.locator).toMatchObject({
+          executionPolicy: interactive ? "default" : "unattended-full-access",
+        });
+        const outputs = await waitForTurn(opened.value, "real-edit");
+        if (interactive) {
+          expect(
+            outputs.some(
+              (output) => output.kind === "interaction" && output.interaction.type === "approval",
+            ),
+          ).toBe(true);
+          expect(
+            outputs.some(
+              (output) => output.kind === "interaction" && output.interaction.type === "question",
+            ),
+          ).toBe(true);
+        }
+        expect(outputs).toContainEqual(
+          expect.objectContaining({
+            kind: "event",
+            event: expect.objectContaining({
+              type: "turn.completed",
+              outcome: expect.objectContaining({ status: "succeeded" }),
+            }),
           }),
-        }),
-      );
-      expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
-      const snapshot = await opened.value.readSnapshot();
-      if (!snapshot.ok) throw new Error(snapshot.error.message);
-      expect(snapshot.value.turns).toHaveLength(1);
-      expect(snapshot.value.turns[0]?.items).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ item: expect.objectContaining({ type: "toolExecution" }) }),
-          expect.objectContaining({ item: expect.objectContaining({ type: "fileChange" }) }),
-        ]),
-      );
-      const checkpoint = snapshot.value.turns[0]?.checkpoint;
-      if (!checkpoint) throw new Error("OpenCode Edit Turn did not expose a Checkpoint");
-      await opened.value.close();
+        );
+        expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
+        const snapshot = await opened.value.readSnapshot();
+        if (!snapshot.ok) throw new Error(snapshot.error.message);
+        expect(snapshot.value.turns).toHaveLength(1);
+        expect(snapshot.value.turns[0]?.items).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ item: expect.objectContaining({ type: "toolExecution" }) }),
+            expect.objectContaining({ item: expect.objectContaining({ type: "fileChange" }) }),
+          ]),
+        );
+        const checkpoint = snapshot.value.turns[0]?.checkpoint;
+        if (!checkpoint) throw new Error("OpenCode Edit Turn did not expose a Checkpoint");
+        await opened.value.close();
 
-      const forked = await adapter.open({ kind: "fork", sourceRef, checkpoint, cwd: workspace });
-      if (!forked.ok) throw new Error(forked.error.message);
-      await expect(forked.value.readSnapshot()).resolves.toMatchObject({
-        ok: true,
-        value: { turns: [{ outcome: { status: "succeeded" } }] },
-      });
-      await forked.value.close();
+        const forked = await adapter.open({ kind: "fork", sourceRef, checkpoint, cwd: workspace });
+        if (!forked.ok) throw new Error(forked.error.message);
+        await expect(forked.value.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { turns: [{ outcome: { status: "succeeded" } }] },
+        });
+        const compacted = await waitForTurn(forked.value, "compact-fork", true);
+        expect(compacted).toContainEqual(
+          expect.objectContaining({
+            event: expect.objectContaining({
+              type: "turn.completed",
+              outcome: expect.objectContaining({ status: "succeeded" }),
+            }),
+          }),
+        );
+        expect(compacted).toContainEqual(
+          expect.objectContaining({
+            event: expect.objectContaining({
+              type: "item.completed",
+              snapshot: expect.objectContaining({
+                item: expect.objectContaining({ type: "contextCompaction" }),
+              }),
+            }),
+          }),
+        );
+        await forked.value.close();
 
-      const rolledBack = await adapter.open({
-        kind: "rollbackLastTurn",
-        sourceRef,
-        cwd: workspace,
-      });
-      if (!rolledBack.ok) throw new Error(rolledBack.error.message);
-      const candidateRef = rolledBack.value.initialState.nativeRef;
-      if (!candidateRef) throw new Error("Rollback returned no Native Ref");
-      expect(candidateRef.nativeSessionId).not.toBe(sourceRef.nativeSessionId);
-      expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
-      await expect(rolledBack.value.readSnapshot()).resolves.toMatchObject({
-        ok: true,
-        value: { turns: [] },
-      });
-      await rolledBack.value.close();
+        const rolledBack = await adapter.open({
+          kind: "rollbackLastTurn",
+          sourceRef,
+          cwd: workspace,
+        });
+        if (!rolledBack.ok) throw new Error(rolledBack.error.message);
+        const candidateRef = rolledBack.value.initialState.nativeRef;
+        if (!candidateRef) throw new Error("Rollback returned no Native Ref");
+        expect(candidateRef.nativeSessionId).not.toBe(sourceRef.nativeSessionId);
+        expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
+        await expect(rolledBack.value.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { turns: [] },
+        });
+        await rolledBack.value.close();
 
-      await adapter.close();
-      adapter = new OpenCodeAdapter(adapterOptions);
-      const original = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: workspace });
-      if (!original.ok) throw new Error(original.error.message);
-      const originalSnapshot = await original.value.readSnapshot();
-      expect(originalSnapshot).toEqual(snapshot);
-      await original.value.close();
-      const resumed = await adapter.open({
-        kind: "resume",
-        nativeRef: candidateRef,
-        cwd: workspace,
-      });
-      if (!resumed.ok) throw new Error(resumed.error.message);
-      expect(resumed.value.initialState.nativeRef?.locator).toMatchObject({
-        executionPolicy: "unattended-full-access",
-      });
-      await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
-        ok: true,
-        value: { turns: [] },
-      });
-      await waitForTurn(resumed.value, "after-restart");
-      expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
-      await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
-        ok: true,
-        value: { turns: [{ outcome: { status: "succeeded" } }] },
-      });
-      await resumed.value.close();
+        await adapter.close();
+        adapter = new OpenCodeAdapter(adapterOptions);
+        const original = await adapter.open({
+          kind: "resume",
+          nativeRef: sourceRef,
+          cwd: workspace,
+        });
+        if (!original.ok) throw new Error(original.error.message);
+        const originalSnapshot = await original.value.readSnapshot();
+        expect(originalSnapshot).toEqual(snapshot);
+        await original.value.close();
+        const resumed = await adapter.open({
+          kind: "resume",
+          nativeRef: candidateRef,
+          cwd: workspace,
+        });
+        if (!resumed.ok) throw new Error(resumed.error.message);
+        expect(resumed.value.initialState.nativeRef?.locator).toMatchObject({
+          executionPolicy: interactive ? "default" : "unattended-full-access",
+        });
+        await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { turns: [] },
+        });
+        await waitForTurn(resumed.value, "after-restart");
+        expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
+        await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { turns: [{ outcome: { status: "succeeded" } }] },
+        });
+        await resumed.value.close();
 
-      const rolledBackAgain = await adapter.open({
-        kind: "rollbackLastTurn",
-        sourceRef: candidateRef,
-        cwd: workspace,
-      });
-      if (!rolledBackAgain.ok) throw new Error(rolledBackAgain.error.message);
-      expect(rolledBackAgain.value.initialState.nativeRef?.nativeSessionId).not.toBe(
-        candidateRef.nativeSessionId,
-      );
-      expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
-      await expect(rolledBackAgain.value.readSnapshot()).resolves.toMatchObject({
-        ok: true,
-        value: { turns: [] },
-      });
-      await rolledBackAgain.value.close();
-    } finally {
-      await adapter.close();
-      await modelServer.close();
-      openServers.delete(modelServer);
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  }, 120_000);
+        const rolledBackAgain = await adapter.open({
+          kind: "rollbackLastTurn",
+          sourceRef: candidateRef,
+          cwd: workspace,
+        });
+        if (!rolledBackAgain.ok) throw new Error(rolledBackAgain.error.message);
+        expect(rolledBackAgain.value.initialState.nativeRef?.nativeSessionId).not.toBe(
+          candidateRef.nativeSessionId,
+        );
+        expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
+        await expect(rolledBackAgain.value.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { turns: [] },
+        });
+        await rolledBackAgain.value.close();
+      } finally {
+        await adapter.close();
+        await modelServer.close();
+        openServers.delete(modelServer);
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
 });

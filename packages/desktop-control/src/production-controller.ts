@@ -1,11 +1,20 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { openRendererLocalPage } from "./renderer-local-page.js";
+import { listCdpTargets } from "./cdp-client.js";
+import { remoteConnectionsExpression } from "./remote-connections-control.js";
+import { remoteConnectionsReplySchema } from "@codexhost/shared-contracts";
 
 import {
   startControllerAttachmentServer,
   type ControllerAttachmentServer,
   type StartControllerAttachmentServerOptions,
 } from "./controller-attachment-server.js";
+import {
+  createControllerStatusPublisher,
+  createRendererStatusReporter,
+  type DesktopControllerStatusDocument,
+} from "./controller-status.js";
 import {
   installRendererCdpControlSession,
   type RendererCdpControlSession,
@@ -14,7 +23,6 @@ import {
 export interface DesktopControllerOptions {
   rendererCdpEndpoint: string;
   rendererPath: string;
-  defaultAgent: "codex" | "pi";
   attachmentPort: number;
   attachmentNonce: string;
 }
@@ -30,13 +38,16 @@ export interface DesktopControllerDependencies {
   install(options: {
     rendererCdpEndpoint: string;
     rendererSource: string;
-    enabledAgents: readonly string[];
+    enabledAgents?: readonly string[];
     timeoutMs: number;
+    signal?: AbortSignal;
   }): Promise<RendererCdpControlSession>;
   startAttachmentServer(
     options: StartControllerAttachmentServerOptions,
   ): Promise<ControllerAttachmentServer>;
   ready(readiness: DesktopControllerReadiness): void;
+  /** Publishes Renderer integration state for the codexhost console. */
+  publishStatus?(document: DesktopControllerStatusDocument): void;
   sleep(milliseconds: number): Promise<void>;
   now?(): number;
   monitorIntervalMs: number;
@@ -85,6 +96,7 @@ const defaultDependencies: DesktopControllerDependencies = {
   ready: (readiness) => {
     process.stdout.write(`${serializeDesktopControllerReadiness(readiness)}\n`);
   },
+  publishStatus: createControllerStatusPublisher(),
   sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   monitorIntervalMs: 500,
 };
@@ -111,7 +123,6 @@ export function parseDesktopControllerArguments(
 ): DesktopControllerOptions {
   let endpoint: string | undefined;
   let rendererPath: string | undefined;
-  let defaultAgent: "codex" | "pi" | undefined;
   let attachmentPort: number | undefined;
   let attachmentNonce: string | undefined;
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -131,15 +142,6 @@ export function parseDesktopControllerArguments(
       if (!value) throw new Error("--renderer requires a value");
       if (!path.isAbsolute(value)) throw new Error("--renderer must be an absolute path");
       rendererPath = path.normalize(value);
-      index += 1;
-      continue;
-    }
-    if (argument === "--default-agent") {
-      if (defaultAgent !== undefined) throw new Error("--default-agent may only be provided once");
-      if (value !== "codex" && value !== "pi") {
-        throw new Error("--default-agent must be 'codex' or 'pi'");
-      }
-      defaultAgent = value;
       index += 1;
       continue;
     }
@@ -170,13 +172,11 @@ export function parseDesktopControllerArguments(
   }
   if (endpoint === undefined) throw new Error("--renderer-cdp-endpoint is required");
   if (rendererPath === undefined) throw new Error("--renderer is required");
-  if (defaultAgent === undefined) throw new Error("--default-agent is required");
   if (attachmentPort === undefined) throw new Error("--attachment-port is required");
   if (attachmentNonce === undefined) throw new Error("--attachment-nonce is required");
   return {
     rendererCdpEndpoint: endpoint,
     rendererPath,
-    defaultAgent,
     attachmentPort,
     attachmentNonce,
   };
@@ -220,20 +220,26 @@ export async function runDesktopController(
   signal: AbortSignal,
   dependencies: DesktopControllerDependencies = defaultDependencies,
 ): Promise<void> {
-  const configuration = `Object.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: ${JSON.stringify(options.defaultAgent)} } });`;
   const now = dependencies.now ?? Date.now;
   let session: RendererCdpControlSession | undefined;
   let nextRecoveryAt = 0;
   let recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
-  const recordRecoveryFailure = (): void => {
+  const status = createRendererStatusReporter(
+    (document) => dependencies.publishStatus?.(document),
+    now,
+  );
+  const recordRecoveryFailure = (error: unknown): void => {
     nextRecoveryAt = now() + recoveryDelayMs;
     recoveryDelayMs = Math.min(recoveryDelayMs * 2, RECOVERY_RETRY_MAX_MS);
+    status.failed(error);
   };
   const recordRecoverySuccess = (): void => {
     nextRecoveryAt = 0;
     recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
+    status.installed();
   };
   const createSession = async (): Promise<RendererCdpControlSession> => {
+    status.installing();
     startupTrace("reading Renderer bundle");
     const rendererSource = await dependencies.readRenderer(options.rendererPath);
     if (rendererSource.trim().length === 0) throw new Error("production Renderer Bundle is empty");
@@ -241,26 +247,10 @@ export async function runDesktopController(
     const installed = await installProductionSession(
       {
         rendererCdpEndpoint: options.rendererCdpEndpoint,
-        rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${configuration}\n${rendererSource}`,
-        enabledAgents: [
-          "codex",
-          "pi",
-          "claude-code",
-          "deepseek-harness",
-          "opencode",
-          "grok",
-          "omp",
-          "antigravity",
-          "kiro-cli",
-          "codebuddy",
-          "workbuddy",
-          "cursor-cli",
-          "hermes",
-          "qoder",
-          "qoder-cn",
-          "kimi-code",
-        ],
+        rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${rendererSource}`,
+        // External Agents are discovered from each target Host after installation.
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
+        signal,
       },
       dependencies,
     );
@@ -268,14 +258,6 @@ export async function runDesktopController(
     return installed;
   };
   startupTrace("initialization started");
-  try {
-    session = await createSession();
-    recordRecoverySuccess();
-  } catch (error) {
-    startupTrace("initial Renderer Session unavailable", error);
-    session = undefined;
-    recordRecoveryFailure();
-  }
 
   let operation = Promise.resolve<unknown>(undefined);
   const useSession = <T>(callback: () => Promise<T>): Promise<T> => {
@@ -302,7 +284,7 @@ export async function runDesktopController(
       return current;
     } catch (error) {
       resetSession();
-      recordRecoveryFailure();
+      recordRecoveryFailure(error);
       throw error;
     }
   };
@@ -313,6 +295,21 @@ export async function runDesktopController(
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
+      remoteConnections: async (request) => {
+        // Serialize session recovery, not the native request: the renderer can await Host
+        // responses while other settings reads run. Never retry a submitted mutation.
+        const current = await useSession(() => recoverSession());
+        return remoteConnectionsReplySchema.parse(
+          await current.executeRenderer(remoteConnectionsExpression(request)),
+        );
+      },
+      openLocalPage: (url) =>
+        openRendererLocalPage(
+          (expression) =>
+            useSession(async () => (await recoverSession()).executeRenderer(expression)),
+          url,
+          () => listCdpTargets(options.rendererCdpEndpoint),
+        ),
       attach: () =>
         useSession(async () => {
           const current = await recoverSession();
@@ -325,6 +322,17 @@ export async function runDesktopController(
       schemaVersion: 2,
       state: "compatible",
       issues: [],
+    });
+    await useSession(async () => {
+      if (session) return;
+      try {
+        session = await createSession();
+        recordRecoverySuccess();
+      } catch (error) {
+        startupTrace("initial Renderer Session unavailable", error);
+        session = undefined;
+        recordRecoveryFailure(error);
+      }
     });
     while (!signal.aborted) {
       await dependencies.sleep(dependencies.monitorIntervalMs);

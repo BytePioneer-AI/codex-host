@@ -30,13 +30,21 @@ interface RendererUsageMessages {
   readonly context: string;
   readonly recordedCredits: string;
   readonly latestCacheHit: string;
+  readonly sessionCacheHit: string;
   readonly outputSpeed: string;
+  readonly apiOutputSpeed: string;
+  readonly apiOutputSpeedDescription: string;
+  readonly timeToFirstOutput: string;
   readonly cacheRead: string;
-  readonly cacheWrite: string;
-  readonly reasoning: string;
+  readonly cacheReadWrite: string;
+  readonly cacheHitSummary: string;
+  readonly sessionGroup: string;
+  readonly turnGroup: string;
+  readonly tokensGroup: string;
   readonly totalTokens: string;
   readonly inputOutput: string;
   readonly sessionCostEstimate: string;
+  readonly unpricedModels: string;
   readonly threadUsage: string;
   readonly threadUsageDetails: string;
   readonly tokensSummary: string;
@@ -48,14 +56,23 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   account: "Account",
   context: "Context",
   recordedCredits: "Recorded usage",
-  latestCacheHit: "Latest cache hit",
-  outputSpeed: "Output speed",
+  latestCacheHit: "Latest cache hit (CH)",
+  sessionCacheHit: "Average cache hit",
+  outputSpeed: "Output speed (TPS)",
+  apiOutputSpeed: "API average speed",
+  apiOutputSpeedDescription:
+    "Output tokens / native API time, including first-token wait; not generation TPS.",
+  timeToFirstOutput: "Time to first token (TTFT)",
   cacheRead: "Cache read",
-  cacheWrite: "Cache write",
-  reasoning: "Reasoning",
-  totalTokens: "Total tokens",
+  cacheReadWrite: "Cache read / write",
+  cacheHitSummary: "CH",
+  sessionGroup: "Session",
+  turnGroup: "Latest turn",
+  tokensGroup: "Tokens",
+  totalTokens: "Total",
   inputOutput: "Input / output",
-  sessionCostEstimate: "Session cost estimate",
+  sessionCostEstimate: "Cost estimate",
+  unpricedModels: "Not priced: ",
   threadUsage: "Thread Usage",
   threadUsageDetails: "Thread Usage details",
   tokensSummary: "tokens",
@@ -67,18 +84,26 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   account: "账号",
   context: "上下文",
   recordedCredits: "已记录消耗",
-  latestCacheHit: "最近缓存命中率",
-  outputSpeed: "输出速度",
+  latestCacheHit: "最近缓存命中（CH）",
+  sessionCacheHit: "平均缓存命中",
+  outputSpeed: "输出速度（TPS）",
+  apiOutputSpeed: "API 平均速度",
+  apiOutputSpeedDescription: "输出 Token ÷ 原生 API 耗时，含首字等待；不是生成 TPS。",
+  timeToFirstOutput: "首 token（TTFT）",
   cacheRead: "缓存读取",
-  cacheWrite: "缓存写入",
-  reasoning: "推理",
-  totalTokens: "Token 总数",
+  cacheReadWrite: "缓存读取 / 写入",
+  cacheHitSummary: "CH",
+  sessionGroup: "会话",
+  turnGroup: "本轮",
+  tokensGroup: "Token",
+  totalTokens: "总数",
   inputOutput: "输入 / 输出",
-  sessionCostEstimate: "会话费用估算",
+  sessionCostEstimate: "费用估算",
+  unpricedModels: "未计价：",
   threadUsage: "对话用量",
   threadUsageDetails: "对话用量详情",
   tokensSummary: "Token",
-  tokensPerSecond: "Token/秒",
+  tokensPerSecond: "tok/s",
 });
 
 export function rendererUsageMessages(locale: RendererSettingsLocale): RendererUsageMessages {
@@ -90,11 +115,18 @@ function decimal(value: number, fractionDigits: number): string {
 }
 
 export function formatRendererCacheHitRate(value: number): string {
-  return `CH ${decimal(value, 1)}%`;
+  return `${decimal(value, 1)}%`;
 }
 
+/** Cents from one dollar up; below that a third digit keeps small costs from reading $0.00. */
 export function formatRendererCost(value: number): string {
-  return `$${value.toFixed(3)}`;
+  return `$${value.toFixed(Math.abs(value) >= 1 ? 2 : 3)}`;
+}
+
+/** A cost that leaves unpriced Models out is a lower bound. */
+function formatUsageCost(usage: ThreadUsageSnapshot & { totalCostUsd: number }): string {
+  const cost = formatRendererCost(usage.totalCostUsd);
+  return usage.unpricedModels?.length ? `≥${cost}` : cost;
 }
 
 export function formatRendererCredits(value: number): string {
@@ -105,14 +137,25 @@ export function formatRendererTokenRate(
   value: number,
   locale: RendererSettingsLocale = "en",
 ): string {
-  return `${decimal(value, 1)} ${rendererUsageMessages(locale).tokensPerSecond}`;
+  const rate = value >= 100 ? String(Math.round(value)) : decimal(value, 1);
+  return `${rate} ${rendererUsageMessages(locale).tokensPerSecond}`;
+}
+
+export function formatRendererLatency(
+  milliseconds: number,
+  locale: RendererSettingsLocale = "en",
+): string {
+  const chinese = locale === "zh-CN";
+  return milliseconds < 1_000
+    ? `${Math.round(milliseconds)}${chinese ? " 毫秒" : "ms"}`
+    : `${decimal(milliseconds / 1_000, 1)}${chinese ? " 秒" : "s"}`;
 }
 
 export function formatRendererTokenCount(value: number): string {
   const sign = value < 0 ? "-" : "";
   const absolute = Math.abs(value);
   if (absolute < 1_000) return `${sign}${Math.round(absolute)}`;
-  if (absolute < 1_000_000) return `${sign}${decimal(absolute / 1_000, 1)}k`;
+  if (absolute < 1_000_000) return `${sign}${decimal(absolute / 1_000, 1)}K`;
   if (absolute < 1_000_000_000) return `${sign}${decimal(absolute / 1_000_000, 1)}M`;
   return `${sign}${decimal(absolute / 1_000_000_000, 1)}B`;
 }
@@ -208,7 +251,10 @@ export function formatRendererPlanWindow(
 export function rendererUsageHasDisplayData(usage: ThreadUsageSnapshot | null): boolean {
   return (
     usage?.cacheHitRatePercent !== undefined ||
+    usage?.sessionCacheHitRatePercent !== undefined ||
     usage?.outputTokensPerSecond !== undefined ||
+    usage?.apiOutputTokensPerSecond !== undefined ||
+    usage?.timeToFirstOutputMs !== undefined ||
     usage?.totalCostUsd !== undefined ||
     usage?.totalCredits !== undefined ||
     usage?.contextUsagePercent !== undefined ||
@@ -217,8 +263,7 @@ export function rendererUsageHasDisplayData(usage: ThreadUsageSnapshot | null): 
     usage?.inputTokens !== undefined ||
     usage?.cachedInputTokens !== undefined ||
     usage?.cacheWriteInputTokens !== undefined ||
-    usage?.outputTokens !== undefined ||
-    usage?.reasoningOutputTokens !== undefined
+    usage?.outputTokens !== undefined
   );
 }
 
@@ -268,6 +313,67 @@ function addDetailRow(parent: HTMLElement, label: string, value: string, wrap = 
   parent.append(row);
 }
 
+function addGroupHeading(parent: HTMLElement, label: string): void {
+  const heading = document.createElement("div");
+  heading.textContent = label;
+  heading.dataset.codexhostUsageGroup = "";
+  heading.style.fontSize = "11px";
+  heading.style.fontWeight = "600";
+  heading.style.letterSpacing = "0.02em";
+  heading.style.color = "color-mix(in srgb, currentColor 52%, transparent)";
+  heading.style.margin = "10px 0 2px";
+  parent.append(heading);
+}
+
+function addContextRow(
+  parent: HTMLElement,
+  label: string,
+  percent: number | null,
+  value: string,
+): void {
+  addDetailRow(parent, label, value);
+  if (percent === null) return;
+  const track = document.createElement("div");
+  track.setAttribute("aria-hidden", "true");
+  track.style.height = "4px";
+  track.style.borderRadius = "2px";
+  track.style.margin = "2px 0 4px";
+  track.style.backgroundColor = "color-mix(in srgb, currentColor 14%, transparent)";
+  track.style.overflow = "hidden";
+  const fill = document.createElement("div");
+  fill.style.height = "100%";
+  fill.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+  fill.style.borderRadius = "2px";
+  fill.style.backgroundColor =
+    percent >= 90
+      ? "light-dark(#c2410c, #fb923c)"
+      : "color-mix(in srgb, currentColor 62%, transparent)";
+  track.append(fill);
+  parent.append(track);
+}
+
+type DetailRow = readonly [label: string, value: string, note?: string | undefined];
+
+function addNote(parent: HTMLElement, text: string): void {
+  const note = document.createElement("div");
+  note.textContent = text;
+  note.style.fontSize = "11px";
+  note.style.color = "color-mix(in srgb, currentColor 52%, transparent)";
+  note.style.textAlign = "right";
+  note.style.overflowWrap = "anywhere";
+  note.style.marginTop = "-2px";
+  parent.append(note);
+}
+
+function addGroup(parent: HTMLElement, label: string, rows: readonly DetailRow[]): void {
+  if (rows.length === 0) return;
+  addGroupHeading(parent, label);
+  for (const [rowLabel, value, note] of rows) {
+    addDetailRow(parent, rowLabel, value);
+    if (note) addNote(parent, note);
+  }
+}
+
 function renderDetails(
   popover: HTMLDivElement,
   usage: ThreadUsageSnapshot | null,
@@ -285,67 +391,93 @@ function renderDetails(
   if (accountName) addDetailRow(popover, messages.account, accountName, true);
 
   if (usage?.contextUsagePercent !== undefined) {
-    addDetailRow(popover, messages.context, `${decimal(usage.contextUsagePercent, 1)}%`);
+    addContextRow(
+      popover,
+      messages.context,
+      usage.contextUsagePercent,
+      `${decimal(usage.contextUsagePercent, 1)}%`,
+    );
   } else if (usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined) {
     const contextPercent =
       usage.contextWindowTokens > 0
         ? (usage.contextUsedTokens / usage.contextWindowTokens) * 100
         : null;
-    addDetailRow(
+    addContextRow(
       popover,
       messages.context,
+      contextPercent,
       contextPercent === null
         ? `/${formatRendererTokenCount(usage.contextWindowTokens)}`
         : `${decimal(contextPercent, 1)}% / ${formatRendererTokenCount(usage.contextWindowTokens)}`,
     );
   }
-  if (usage?.cacheHitRatePercent !== undefined) {
-    addDetailRow(
-      popover,
-      messages.latestCacheHit,
-      formatRendererCacheHitRate(usage.cacheHitRatePercent),
-    );
-  }
-  if (usage?.outputTokensPerSecond !== undefined) {
-    addDetailRow(
-      popover,
-      messages.outputSpeed,
-      formatRendererTokenRate(usage.outputTokensPerSecond, locale),
-    );
-  }
-  if (usage?.cachedInputTokens !== undefined) {
-    addDetailRow(popover, messages.cacheRead, formatRendererTokenCount(usage.cachedInputTokens));
-  }
-  if (usage?.cacheWriteInputTokens !== undefined) {
-    addDetailRow(
-      popover,
-      messages.cacheWrite,
-      formatRendererTokenCount(usage.cacheWriteInputTokens),
-    );
-  }
-  if (usage?.reasoningOutputTokens !== undefined) {
-    addDetailRow(
-      popover,
-      messages.reasoning,
-      formatRendererTokenCount(usage.reasoningOutputTokens),
-    );
-  }
-  if (usage?.totalTokens !== undefined) {
-    addDetailRow(popover, messages.totalTokens, formatRendererTokenCount(usage.totalTokens));
-  }
-  if (usage?.inputTokens !== undefined || usage?.outputTokens !== undefined) {
-    addDetailRow(
-      popover,
-      messages.inputOutput,
-      `${usage.inputTokens === undefined ? "-" : formatRendererTokenCount(usage.inputTokens)} / ${usage.outputTokens === undefined ? "-" : formatRendererTokenCount(usage.outputTokens)}`,
-    );
-  }
+
+  const session: DetailRow[] = [];
   if (usage?.totalCostUsd !== undefined) {
-    addDetailRow(popover, messages.sessionCostEstimate, formatRendererCost(usage.totalCostUsd));
+    const unpriced = usage.unpricedModels?.length
+      ? `${messages.unpricedModels}${usage.unpricedModels.join(", ")}`
+      : undefined;
+    session.push([
+      messages.sessionCostEstimate,
+      formatUsageCost({ ...usage, totalCostUsd: usage.totalCostUsd }),
+      unpriced,
+    ]);
   }
   if (usage?.totalCredits !== undefined) {
-    addDetailRow(popover, messages.recordedCredits, formatRendererCredits(usage.totalCredits));
+    session.push([messages.recordedCredits, formatRendererCredits(usage.totalCredits)]);
   }
+  if (usage?.sessionCacheHitRatePercent !== undefined) {
+    session.push([
+      messages.sessionCacheHit,
+      formatRendererCacheHitRate(usage.sessionCacheHitRatePercent),
+    ]);
+  }
+  if (usage?.cacheHitRatePercent !== undefined) {
+    session.push([messages.latestCacheHit, formatRendererCacheHitRate(usage.cacheHitRatePercent)]);
+  }
+  addGroup(popover, messages.sessionGroup, session);
+
+  const turn: DetailRow[] = [];
+  if (usage?.outputTokensPerSecond !== undefined) {
+    turn.push([messages.outputSpeed, formatRendererTokenRate(usage.outputTokensPerSecond, locale)]);
+  }
+  if (usage?.apiOutputTokensPerSecond !== undefined) {
+    turn.push([
+      messages.apiOutputSpeed,
+      formatRendererTokenRate(usage.apiOutputTokensPerSecond, locale),
+      messages.apiOutputSpeedDescription,
+    ]);
+  }
+  if (usage?.timeToFirstOutputMs !== undefined) {
+    turn.push([
+      messages.timeToFirstOutput,
+      formatRendererLatency(usage.timeToFirstOutputMs, locale),
+    ]);
+  }
+  addGroup(popover, messages.turnGroup, turn);
+
+  const tokens: DetailRow[] = [];
+  const count = (value: number | undefined) =>
+    value === undefined ? "-" : formatRendererTokenCount(value);
+  if (usage?.inputTokens !== undefined || usage?.outputTokens !== undefined) {
+    tokens.push([
+      messages.inputOutput,
+      `${count(usage.inputTokens)} / ${count(usage.outputTokens)}`,
+    ]);
+  }
+  // Cache writes appear only when a Harness reports some; many never do.
+  if (usage?.cacheWriteInputTokens !== undefined && usage.cacheWriteInputTokens > 0) {
+    tokens.push([
+      messages.cacheReadWrite,
+      `${count(usage.cachedInputTokens)} / ${count(usage.cacheWriteInputTokens)}`,
+    ]);
+  } else if (usage?.cachedInputTokens !== undefined) {
+    tokens.push([messages.cacheRead, count(usage.cachedInputTokens)]);
+  }
+  if (usage?.totalTokens !== undefined) {
+    tokens.push([messages.totalTokens, formatRendererTokenCount(usage.totalTokens)]);
+  }
+  addGroup(popover, messages.tokensGroup, tokens);
 }
 
 function popoverIsOpen(popover: HTMLDivElement): boolean {
@@ -552,8 +684,7 @@ export function renderRendererUsageControl(
     usage?.inputTokens !== undefined ||
     usage?.cachedInputTokens !== undefined ||
     usage?.cacheWriteInputTokens !== undefined ||
-    usage?.outputTokens !== undefined ||
-    usage?.reasoningOutputTokens !== undefined;
+    usage?.outputTokens !== undefined;
   const visible = rendererUsageHasDisplayData(usage) || Boolean(accountName);
   control.root.style.display = visible ? "inline-flex" : "none";
   if (!visible) {
@@ -563,11 +694,15 @@ export function renderRendererUsageControl(
 
   const summary = [
     usage?.totalCredits !== undefined ? formatRendererCredits(usage.totalCredits) : null,
-    cacheHitRatePercent !== undefined ? formatRendererCacheHitRate(cacheHitRatePercent) : null,
+    cacheHitRatePercent !== undefined
+      ? `${messages.cacheHitSummary} ${formatRendererCacheHitRate(cacheHitRatePercent)}`
+      : null,
     outputTokensPerSecond !== undefined
       ? formatRendererTokenRate(outputTokensPerSecond, locale)
-      : null,
-    totalCostUsd !== undefined ? formatRendererCost(totalCostUsd) : null,
+      : usage?.apiOutputTokensPerSecond !== undefined
+        ? `API ${formatRendererTokenRate(usage.apiOutputTokensPerSecond, locale)}`
+        : null,
+    usage && totalCostUsd !== undefined ? formatUsageCost({ ...usage, totalCostUsd }) : null,
   ].filter((value): value is string => value !== null);
   const contextPercent = usage?.contextUsagePercent;
   if (contextPercent !== undefined && summary.length === 0) summary.push(messages.usage);

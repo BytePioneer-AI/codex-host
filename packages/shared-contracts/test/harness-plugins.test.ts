@@ -53,6 +53,74 @@ describe("Harness plugin public contracts", () => {
     ).toBe(false);
   });
 
+  it("validates plugin-owned localized presentation as display-only data", () => {
+    const presentation = {
+      ...manifest,
+      links: { website: "https://example.com", installation: "https://example.com/install" },
+      notice: { en: "Requires native protocol validation", "zh-CN": "需校验原生协议" },
+      installation: {
+        commands: [{ terminal: "Terminal", command: "native-installer" }],
+        before: { en: "Install prerequisites" },
+      },
+    };
+    expect(harnessPluginManifestSchema.parse(presentation)).toEqual(presentation);
+    expect(
+      harnessPluginManifestSchema.safeParse({
+        ...presentation,
+        notice: { "zh-CN": "缺少回退文本" },
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessPluginManifestSchema.safeParse({
+        ...presentation,
+        installation: { ...presentation.installation, execute: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessPluginManifestSchema.safeParse({
+        ...presentation,
+        installation: {
+          commands: [],
+          downloads: [{ label: "installer", url: "javascript:alert(1)" }],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts bounded icon presentation without allowing arbitrary CSS", () => {
+    const iconStyle = {
+      vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "M0 0h4v4z" }] },
+      background: "#d8d8e8",
+      borderRadius: 22.37,
+      paddingRatio: 0.0625,
+    };
+    expect(harnessPluginManifestSchema.parse({ ...manifest, iconStyle }).iconStyle).toEqual(
+      iconStyle,
+    );
+    for (const invalid of [
+      { background: "url(https://example.com/image)" },
+      { borderRadius: 51 },
+      { paddingRatio: -1 },
+      { paddingRatio: 1 },
+      { css: "position:fixed" },
+      {
+        vector: { viewBox: "0 0 24 24", color: "url(https://example.com)", paths: [{ d: "M0 0" }] },
+      },
+      { vector: { viewBox: "0 0 24 24", color: "currentColor", paths: [{ d: "<script/>" }] } },
+      {
+        vector: {
+          viewBox: "0 0 24 24",
+          color: "currentColor",
+          paths: [{ d: "M0 0", onclick: "run()" }],
+        },
+      },
+    ]) {
+      expect(
+        harnessPluginManifestSchema.safeParse({ ...manifest, iconStyle: invalid }).success,
+      ).toBe(false);
+    }
+  });
+
   it("rejects duplicate enablement and backend data in the public manifest", () => {
     expect(
       harnessPluginConfigurationSchema.safeParse({

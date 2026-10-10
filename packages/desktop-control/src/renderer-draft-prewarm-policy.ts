@@ -39,7 +39,12 @@ function directRendererInstaller(): string {
         manager, bridge, hostId, target, prewarmed, isCurrent, retainRendererHostResponses,
       ),
     );
-    if (!routing.forComposer()) throw new Error('Renderer request manager is ambiguous');
+    // Publish a default draft policy only when its Host is unambiguous. Host
+    // connections can be ready even when multiple Composers coexist.
+    const composerRoute = routing.forComposer();
+    const connected = composerRoute !== null ||
+      ['local', ...(routing.knownHostIds?.() ?? [])].some((hostId) => routing.forHost(hostId) !== null);
+    if (!connected) throw new Error('Renderer Host request manager is unavailable');
     return { state: 'ready', reason: 'owned-request-bridge' };
   })()`;
 }
@@ -82,7 +87,8 @@ async function waitForDraftPrewarmPolicy(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const remaining = deadline - Date.now();
-      if (!message.includes("Renderer request manager is ambiguous") || remaining <= 0) throw error;
+      if (!message.includes("Renderer Host request manager is unavailable") || remaining <= 0)
+        throw error;
       await new Promise<void>((resolve) =>
         setTimeout(resolve, Math.min(REQUEST_MANAGER_POLL_INTERVAL_MS, remaining)),
       );

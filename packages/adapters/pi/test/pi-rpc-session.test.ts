@@ -14,9 +14,14 @@ import {
   type PiRpcProcessOptions,
   type PiTurnEvent,
 } from "../src/pi-rpc-session.js";
+import type { PiUsageObservation } from "../src/pi-usage.js";
 
 type Scenario =
   | "final-only"
+  | "fast"
+  | "fast-no-ack"
+  | "fast-command-error"
+  | "fast-no-off-ack"
   | "reasoning"
   | "reasoning-multiple-blocks"
   | "settled-streaming"
@@ -58,6 +63,7 @@ class FakePiRpcProcess extends EventEmitter {
   readonly pid = 42_000;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
+  fastEnabled = false;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #promptCount = 0;
   #sessionId = "synthetic-session";
@@ -69,6 +75,11 @@ class FakePiRpcProcess extends EventEmitter {
   #thinkingLevel = "high";
   readonly #scenario: Scenario;
   readonly #compactionDelayMs: number | undefined;
+
+  setNativeModel(provider: string, modelId: string): void {
+    this.#provider = provider;
+    this.#modelId = modelId;
+  }
 
   constructor(scenario: Scenario, compactionDelayMs?: number) {
     super();
@@ -142,6 +153,11 @@ class FakePiRpcProcess extends EventEmitter {
     this.#output({ type: "agent_settled" });
   }
 
+  /** Writes one raw RPC frame, for timing tests that interleave real waits. */
+  emitFrame(value: unknown): void {
+    this.#output(value);
+  }
+
   emitAutonomousStart(responseId = "autonomous-pending"): void {
     this.#isStreaming = true;
     const message = {
@@ -198,6 +214,40 @@ class FakePiRpcProcess extends EventEmitter {
       ) {
         this.#completeInteractionTurn();
       }
+      return;
+    }
+    if (command.type === "get_commands" && this.#scenario.startsWith("fast")) {
+      this.#respond(command, {
+        commands: [{ name: "codexhost-fast-mode", description: "Host Fast", source: "extension" }],
+      });
+      return;
+    }
+    if (
+      command.type === "prompt" &&
+      typeof command.message === "string" &&
+      command.message.startsWith("/codexhost-fast-mode ")
+    ) {
+      const [, mode, nonce] = command.message.split(" ");
+      this.fastEnabled = mode === "on";
+      if (this.#scenario === "fast-command-error") {
+        this.#output({
+          type: "response",
+          id: command.id,
+          command: "prompt",
+          success: false,
+          error: "Extension failed after activation",
+        });
+        return;
+      }
+      if (this.#scenario === "fast" || (this.#scenario === "fast-no-off-ack" && mode === "on"))
+        this.#output({
+          type: "extension_ui_request",
+          id: "fast-ack",
+          method: "notify",
+          message: `codexhost-fast-mode:${nonce}:${mode}`,
+          notifyType: "info",
+        });
+      this.#respond(command, { disposition: "handled" });
       return;
     }
     if (command.type === "get_state") {
@@ -767,6 +817,73 @@ function session(
   );
 }
 
+describe("Pi Fast command acknowledgement", () => {
+  it("changes only Fast and keeps the confirmed state through Thinking refresh", async () => {
+    const rpc = session("fast");
+    await rpc.start();
+    try {
+      expect(await rpc.supportsFastMode()).toBe(true);
+      expect(await rpc.selectFastMode(true)).toMatchObject({ fast: true, thinkingLevel: "high" });
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("low")),
+      ).toMatchObject({ fast: true, thinkingLevel: "low" });
+      expect(await rpc.selectFastMode(false)).not.toHaveProperty("fast");
+      expect(rpc.state.thinkingLevel).toBe("low");
+    } finally {
+      await rpc.close();
+    }
+  });
+  it("clears the confirmed Fast state when a native extension switches Model", async () => {
+    const process = new FakePiRpcProcess("fast");
+    const rpc = new PiRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    try {
+      await rpc.selectFastMode(true);
+      process.setNativeModel("another-provider", "unsupported");
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("low")),
+      ).not.toHaveProperty("fast");
+      process.setNativeModel("synthetic-provider", "synthetic-model");
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("high")),
+      ).not.toHaveProperty("fast");
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it.each<Scenario>(["fast-no-ack", "fast-command-error", "fast-no-off-ack"])(
+    "faults and closes when request policy cannot be confirmed: %s",
+    async (scenario) => {
+      const process = new FakePiRpcProcess(scenario);
+      const onFault = vi.fn();
+      const rpc = new PiRpcSession(
+        { cwd: "/synthetic", commandTimeoutMs: 2_000, closeTimeoutMs: 500, onFault },
+        { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+      );
+      await rpc.start();
+      try {
+        if (scenario === "fast-no-off-ack") await rpc.selectFastMode(true);
+        await expect(rpc.selectFastMode(scenario !== "fast-no-off-ack")).rejects.toThrow(
+          "Fast selection could not be confirmed",
+        );
+        expect(onFault).toHaveBeenCalledOnce();
+        expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+        // The native side can already have enabled priority despite the Host-side failure.
+        expect(process.fastEnabled).toBe(scenario !== "fast-no-off-ack");
+        expect(process.exitCode).toBe(0);
+        await expect(rpc.runTurn("must not be sent", vi.fn())).rejects.toThrow("unavailable");
+        await expect(rpc.getAvailableModels()).rejects.toThrow("unavailable");
+      } finally {
+        await rpc.close();
+      }
+    },
+  );
+});
+
 function autonomousSession(onFault = vi.fn()): {
   rpc: PiRpcSession;
   process(): FakePiRpcProcess;
@@ -855,6 +972,58 @@ describe("Pi RPC Turn aggregation", () => {
       child.stderr.end();
       child.emit("exit", 0, null);
       await Promise.all([first, second]);
+    }
+  });
+
+  it("reports each finished assistant message with its request timing for usage metering", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const observations: PiUsageObservation[] = [];
+    rpc.setUsageHandler((observation) => observations.push(observation));
+    rpc.setAutonomousTurnHandler(() => undefined);
+    await rpc.start();
+    try {
+      fakeProcess().emitAutonomousTurn({ includeTool: true });
+      await waitFor(() => observations.length === 1);
+      expect(observations[0]).toMatchObject({
+        message: { role: "assistant", responseId: "autonomous-response" },
+        startedAtMs: expect.any(Number),
+        completedAtMs: expect.any(Number),
+      });
+      const [observation] = observations;
+      expect(observation?.completedAtMs).toBeGreaterThanOrEqual(
+        observation?.startedAtMs ?? Infinity,
+      );
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("times a request from its first output token, excluding prefill", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const observations: PiUsageObservation[] = [];
+    rpc.setUsageHandler((observation) => observations.push(observation));
+    rpc.setAutonomousTurnHandler(() => undefined);
+    await rpc.start();
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    try {
+      const message = { role: "assistant", responseId: "tool-only", content: [] };
+      fakeProcess().emitFrame({ type: "message_start", message });
+      await sleep(120);
+      // A tool-call-only reply still starts generating at its tool-call block.
+      fakeProcess().emitFrame({
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+        message,
+      });
+      await sleep(20);
+      fakeProcess().emitFrame({ type: "message_end", message });
+      fakeProcess().emitAgentSettled();
+      await waitFor(() => observations.length === 1);
+      const [observation] = observations;
+      if (!observation?.startedAtMs) throw new Error("Request timing is missing");
+      expect(observation.completedAtMs - observation.startedAtMs).toBeLessThan(100);
+    } finally {
+      await rpc.close();
     }
   });
 

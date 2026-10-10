@@ -68,6 +68,38 @@ afterEach(async () => {
 });
 
 describe("ExternalThreadRepository", () => {
+  it("does not reconcile uncommitted or mismatched native history", async () => {
+    const store = new MappingStore({ directory: await temporaryStoreDirectory() });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    try {
+      const draft = await repository.createProvisional({
+        hostThreadId,
+        createRequestId: "unsent",
+        harnessId,
+        cwd: "/synthetic",
+        transportModelId: "codexhost/claude-code-native",
+        ephemeral: false,
+        historyMode: "paginated",
+      });
+      await expect(
+        repository.alignSnapshot(draft, { turns: [snapshotTurn("turn")] }),
+      ).rejects.toThrow("no committed Native Session identity");
+      expect((await repository.find(hostThreadId))?.turnMappings).toEqual([]);
+      const ready = await repository.commitNative(hostThreadId, nativeSessionRef);
+      await expect(
+        repository.alignSnapshot(ready, {
+          turns: [
+            snapshotTurnForSession({ ...nativeSessionRef, nativeSessionId: "other" }, "turn"),
+          ],
+        }),
+      ).rejects.toThrow("does not belong");
+      expect((await repository.find(hostThreadId))?.turnMappings).toEqual([]);
+    } finally {
+      await repository.close();
+    }
+  });
+
   it("reuses legacy child identities and deduplicates overlapping native child materialization", async () => {
     const directory = await temporaryStoreDirectory();
     const store = new MappingStore({ directory });

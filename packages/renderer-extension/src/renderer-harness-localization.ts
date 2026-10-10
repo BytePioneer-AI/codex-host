@@ -16,6 +16,10 @@ export interface RendererHarnessMessages {
   readonly permissionsUnavailable: string;
   readonly permissionModeFixedAtCreate: string;
   readonly codexUsageGateUnavailable: string;
+  readonly nativeProviderContinue: string;
+  readonly nativeProviderContinuing: string;
+  readonly nativeProviderContinueHint: string;
+  readonly nativeProviderContinueFailed: string;
   readonly modelSelectionRejected: string;
   readonly thinkingSelectionRejected: string;
 }
@@ -36,6 +40,12 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
     "Grok fixes its Permission Mode when the Session is created. Start a new Thread to change it.",
   codexUsageGateUnavailable:
     "Could not separate this Harness from the Codex usage limit in this Desktop version. Codex usage limits still apply to sending.",
+  nativeProviderContinue: "Continue with configured Provider",
+  nativeProviderContinuing: "Changing Provider...",
+  nativeProviderContinueHint:
+    "Keep this Thread, history and draft. Apply the configured Provider and Model. Official routing uses the native login and Account quota; do not send the draft.",
+  nativeProviderContinueFailed:
+    "Could not change this Thread's Provider. Refocus to retry; sending remains blocked until verified.",
   modelSelectionRejected: "Couldn't switch Model",
   thinkingSelectionRejected: "Couldn't switch Thinking option",
 });
@@ -55,6 +65,11 @@ const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   permissionModeFixedAtCreate: "Grok 的权限模式在会话创建时确定，如需更改请新建会话",
   codexUsageGateUnavailable:
     "当前 Desktop 版本无法将此 Harness 与 Codex 额度限制分离，发送仍受 Codex 额度限制",
+  nativeProviderContinue: "使用已配置的 Provider 继续",
+  nativeProviderContinuing: "正在切换 Provider...",
+  nativeProviderContinueHint:
+    "保留此会话、历史与草稿，采用当前配置的 Provider 与 Model。官方路由使用原生登录与账号额度，不发送草稿。",
+  nativeProviderContinueFailed: "未能切换此会话的 Provider。重新聚焦后可重试；验证通过前暂停发送。",
   modelSelectionRejected: "无法切换模型",
   thinkingSelectionRejected: "无法切换思考选项",
 });

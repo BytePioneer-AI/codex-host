@@ -14,6 +14,7 @@ import { nativePermissionView } from "./session-presentation.ts";
 import { projectGroupRoot } from "./ch-project-groups.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
+import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { ChRealtime } from "./ch-realtime.ts";
 import { ChInteractions } from "./ch-interactions.ts";
 import { requestOf } from "./store.ts";
@@ -62,6 +63,7 @@ export class ChSessions {
     private readonly host: ChHostClient,
     private readonly workspaces: Workspaces,
     private readonly events: EventHub,
+    private readonly images?: WebImages,
   ) {
     this.catalog = new ChHarnessCatalog(host);
     this.pins = new ChPinnedThreads(host, workspaces, (id) => this.ownership.has(id));
@@ -267,7 +269,12 @@ export class ChSessions {
             sink.push({ type: "projection", sessionId, key, value, seq });
         },
         this.viewOrigins.get(id),
+        this.images ? (content) => this.images?.project(content) ?? content : undefined,
       );
+      if (this.images) {
+        view.log.setProjection("attachmentInput", WEB_IMAGE_INPUT);
+        view.log.setProjection("imageLimits", WEB_IMAGE_LIMITS);
+      }
       this.views.set(id, view);
     }
     try {
@@ -339,6 +346,7 @@ export class ChSessions {
     const values = {
       ...defaultProjections(),
       ...this.views.get(row.id)?.log.projections,
+      ...(this.images ? { attachmentInput: WEB_IMAGE_INPUT, imageLimits: WEB_IMAGE_LIMITS } : {}),
       title: row.name ?? row.preview ?? null,
       harnessIdentity: { id: harnessId, name: await this.catalog.name(harnessId) },
       sessionListMetadata: { blank: false, lastPromptAt: row.updatedAt * 1000 },
@@ -368,6 +376,9 @@ export class ChSessions {
         asOfSeq: 0,
         values: {
           ...defaultProjections(),
+          ...(this.images
+            ? { attachmentInput: WEB_IMAGE_INPUT, imageLimits: WEB_IMAGE_LIMITS }
+            : {}),
           modelSelection: { lastUsed: null, next: draft.selection },
           harnessIdentity: {
             id: draft.selection.provider,
@@ -510,7 +521,7 @@ export class ChSessions {
         content: Array<{ type: string; text?: string }>;
         mode?: string;
       }>(args);
-      if (request.content.some((part) => part.type !== "text"))
+      if (!this.images && request.content.some((part) => part.type !== "text"))
         throw new RpcError(
           "session/attachment-invalid",
           "Shared CH input currently accepts text only.",
@@ -521,11 +532,14 @@ export class ChSessions {
           "Use the existing CH controls to steer; Web will not cancel and resend implicitly.",
         );
       const draft = this.drafts.get(request.sessionId);
+      if (!draft || draft.canonicalId) await this.owner(request.sessionId);
+      // Validate/save before creating a native Thread. Only native path context crosses the Host channel.
+      const input = this.images?.prepare(request.content) ?? request.content;
       const threadId = draft ? await this.commit(draft) : this.id(request.sessionId);
       await this.owner(threadId);
       await this.host.request("turn/start", {
         threadId,
-        input: request.content,
+        input,
         ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
       });
       try {
@@ -542,6 +556,18 @@ export class ChSessions {
         }
       }
       return { accepted: true };
+    });
+    rpc.register("session/attachment", async (args) => {
+      const { sessionId, attachmentId } = requestOf<{ sessionId: string; attachmentId: string }>(
+        args,
+      );
+      const view = await this.view(sessionId, true);
+      if (!this.images?.referenced(view.log.events, attachmentId))
+        throw new RpcError(
+          "session/attachment-not-found",
+          "This image is not referenced by the loaded Thread history.",
+        );
+      return this.images.read(attachmentId);
     });
     rpc.register("session/cancel", async (args) => {
       const { sessionId } = requestOf<{ sessionId: string }>(args);

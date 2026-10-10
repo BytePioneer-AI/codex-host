@@ -129,6 +129,7 @@ export class ChThreadView {
     private turnStart = 0,
     sequenceStart = 0,
     hasEarlier: () => boolean = () => false,
+    private readonly projectInput: (content: unknown[]) => unknown[] = (content) => content,
   ) {
     const published = new Map<string, string>();
     this.log = new SessionLog(
@@ -166,7 +167,15 @@ export class ChThreadView {
       throw new Error("Older CH history overlaps the loaded window or contains an active Turn");
     const start = this.turnStart - turns.length;
     if (start < 0) throw new Error("History rendering Turn range exhausted");
-    const page = new ChThreadView({ ...this.thread, turns: [] }, this.harnessId, () => {}, start);
+    const page = new ChThreadView(
+      { ...this.thread, turns: [] },
+      this.harnessId,
+      () => {},
+      start,
+      0,
+      () => false,
+      this.projectInput,
+    );
     page.update({ ...this.thread, turns });
     this.log.prepend(page.log.events);
     for (const [id, view] of page.turns) this.turns.set(id, view);
@@ -201,7 +210,10 @@ export class ChThreadView {
         const clientId = turn.items.find(
           (item) => item.type === "userMessage" && typeof item.clientId === "string",
         )?.clientId;
-        projector.begin(input, typeof clientId === "string" ? clientId : undefined);
+        projector.begin(
+          this.projectInput(input),
+          typeof clientId === "string" ? clientId : undefined,
+        );
         view = { projector, items: new Map(), completed: new Set(), done: false };
         this.turns.set(turn.id, view);
       }

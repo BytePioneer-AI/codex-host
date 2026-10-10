@@ -47,7 +47,10 @@ for (const source of ["codexhost", "standalone"])
       });
       await page.goto(url);
       await page.waitForLoadState("networkidle");
-      const plus = page.getByRole("button", { name: "Run commands", exact: true });
+      const plus = page.getByRole("button", {
+        name: source === "codexhost" ? "Add images or run commands" : "Run commands",
+        exact: true,
+      });
       const menu = page.getByRole("listbox", { name: "Trigger suggestions", exact: true });
       const composer = page.getByRole("textbox", {
         name: "Describe what you want to build, / commands, @ files or sessions",
@@ -61,8 +64,16 @@ for (const source of ["codexhost", "standalone"])
       assert.equal(await plus.getAttribute("aria-expanded"), "true");
       assert.equal(await menu.getByRole("option", { name: /^Model\b/u }).count(), 1);
       assert.equal(await menu.getByRole("option", { name: /^Permission\b/u }).count(), 1);
-      assert.equal(await menu.getByRole("option", { name: /^File\b/u }).count(), 0);
-      assert.equal(await page.locator('input[type="file"]').isDisabled(), true);
+      assert.equal(
+        await menu.getByRole("option", { name: /^File\b/u }).count(),
+        source === "codexhost" ? 1 : 0,
+      );
+      assert.equal(await page.locator('input[type="file"]').isDisabled(), source !== "codexhost");
+      if (source === "codexhost")
+        assert.match(
+          (await page.locator('input[type="file"]').getAttribute("accept")) ?? "",
+          /image\/png/u,
+        );
       await plus.click();
       await menu.waitFor({ state: "hidden" });
       assert.equal(await plus.getAttribute("aria-expanded"), "false");

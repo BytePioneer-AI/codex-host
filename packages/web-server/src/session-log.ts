@@ -85,8 +85,8 @@ export function defaultProjections(): Record<string, unknown> {
     plan: { active: false, pending: false },
     modelSelection: { lastUsed: null, next: null },
     sessionListMetadata: { blank: true, lastPromptAt: null },
-    // Both Web session sources currently submit text only; do not advertise
-    // the migrated file picker as an available upload path.
+    // Disabled by default. A session source with an image store explicitly
+    // publishes its supported intake; standalone still submits text only.
     attachmentInput: { enabled: false },
     imageLimits: {
       maxImageBytes: 20971520,

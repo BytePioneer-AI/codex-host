@@ -30,6 +30,7 @@ import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
 import { WebAssets, contentTypeOf, type AssetResponse } from "./web-assets.ts";
 import { Workspaces } from "./workspaces.ts";
+import { WebImages } from "./web-images.ts";
 
 /** Packed distribution: `server.mjs` sits next to `web/plugins.json`. */
 const PACKED_WEB = resolve(import.meta.dirname, "web");
@@ -96,7 +97,7 @@ const chHost =
       })
     : undefined;
 const sessions = chHost
-  ? new ChSessions(chHost, workspaces, events)
+  ? new ChSessions(chHost, workspaces, events, new WebImages(data))
   : new Sessions(data, harnesses, workspaces, events);
 const settings = new Settings(data, events);
 const push = new PushNotifier(data);
@@ -146,9 +147,32 @@ function send(response: ServerResponse, asset: AssetResponse | undefined, cache 
     .end(asset.body);
 }
 
-async function readBody(request: IncomingMessage): Promise<string> {
+async function readBody(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<string | undefined> {
+  // 32 MiB of image bytes plus base64/JSON overhead. Reject before parsing or saving.
+  const limit = 48 * 1024 * 1024;
+  const reject = () => {
+    response
+      .writeHead(413, { "content-type": "text/plain", "cache-control": "no-store" })
+      .end("request too large");
+    request.resume();
+  };
+  if (Number(request.headers["content-length"]) > limit) {
+    reject();
+    return;
+  }
   const chunks: Buffer[] = [];
-  for await (const chunk of request) chunks.push(chunk as Buffer);
+  let size = 0;
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+    size += (chunk as Buffer).length;
+    if (size > limit) {
+      reject();
+      return;
+    }
+    chunks.push(chunk as Buffer);
+  }
   return Buffer.concat(chunks).toString("utf8");
 }
 
@@ -213,7 +237,8 @@ const server = createServer((request, response) => {
           .end("cross-origin request rejected");
         return;
       }
-      const body = await readBody(request);
+      const body = await readBody(request, response);
+      if (body === undefined) return;
       const reply = await rpc.handleHttp(body);
       response
         .writeHead(200, {

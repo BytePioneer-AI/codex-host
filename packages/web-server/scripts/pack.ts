@@ -13,7 +13,8 @@
  */
 
 import { cpSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { build } from "esbuild";
@@ -135,6 +136,10 @@ for (const plugin of extraAdapters) {
 cpSync(join(repoRoot, "LICENSE"), join(out, "LICENSE"));
 mkdirSync(join(out, "licenses"), { recursive: true });
 cpSync(join(frontendRoot, "LICENSE"), join(out, "licenses/DSH-MIT.txt"));
+cpSync(
+  resolve(dirname(fileURLToPath(import.meta.resolve("image-size"))), "../LICENSE"),
+  join(out, "licenses/image-size-MIT.txt"),
+);
 cpSync(join(frontendRoot, "THIRD_PARTY_NOTICES.md"), join(out, "licenses/THIRD_PARTY_NOTICES.md"));
 writeFileSync(
   join(out, "package.json"),

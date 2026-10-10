@@ -49,5 +49,9 @@ it(
       readFileSync(join(repoRoot, "apps/web-ui/LICENSE")),
     );
     assert.ok(readFileSync(join(output, "licenses/THIRD_PARTY_NOTICES.md")).length > 0);
+    assert.match(
+      readFileSync(join(output, "licenses/image-size-MIT.txt"), "utf8"),
+      /Aditya Yadav/u,
+    );
   },
 );

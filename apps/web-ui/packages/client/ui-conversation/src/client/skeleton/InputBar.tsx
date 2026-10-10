@@ -134,7 +134,9 @@ export const InputBar = memo(function InputBar({
   // The deployment's image-intake limits (absent while no attachment service
   // is composed — the pre-check below then defers entirely to the host).
   const imageLimits = useProjection("imageLimits");
-  const attachmentsEnabled = useProjection("attachmentInput")?.enabled !== false;
+  const attachmentInput = useProjection("attachmentInput");
+  const attachmentsEnabled = attachmentInput?.enabled !== false;
+  const imagesOnly = attachmentInput?.imagesOnly === true;
   // Prompt failures are ordinary failures (no create/attach transaction exists
   // anymore): the toast announces promptError, the draft stays in the machine,
   // and the user resubmits. A remount over a session whose machine still holds
@@ -262,6 +264,14 @@ export const InputBar = memo(function InputBar({
         return;
       }
       const rejected = ((): string | null => {
+        if (
+          imagesOnly &&
+          files.some(
+            (file) =>
+              !(imageLimits?.mediaTypes as readonly string[] | undefined)?.includes(file.type),
+          )
+        )
+          return t("image.unsupportedType");
         if (imageLimits !== undefined) {
           const mediaTypes = imageLimits.mediaTypes as readonly string[];
           const images = files.filter((file) => mediaTypes.includes(file.type));
@@ -285,12 +295,18 @@ export const InputBar = memo(function InputBar({
       })();
       if (rejected !== null) showToast(rejected);
     },
-    [subagent, addFiles, attachmentsEnabled, attachments, imageLimits, showToast, t],
+    [subagent, addFiles, attachmentsEnabled, imagesOnly, attachments, imageLimits, showToast, t],
   );
 
   const canAcceptDrop =
     attachmentsEnabled && subagent === null && !locked && !machineBusy && addFiles !== undefined;
-  const commandMenuLabel = t(attachmentsEnabled ? "input.commands" : "input.commandsOnly");
+  const commandMenuLabel = t(
+    !attachmentsEnabled
+      ? "input.commandsOnly"
+      : imagesOnly
+        ? "input.imagesAndCommands"
+        : "input.commands",
+  );
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const onPickFiles = (e: ChangeEvent<HTMLInputElement>): void => {
@@ -535,6 +551,7 @@ export const InputBar = memo(function InputBar({
             <input
               ref={fileInputRef}
               type="file"
+              accept={imagesOnly ? imageLimits?.mediaTypes.join(",") : undefined}
               multiple
               disabled={!attachmentsEnabled || subagent !== null}
               hidden

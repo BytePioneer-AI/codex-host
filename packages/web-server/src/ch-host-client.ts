@@ -1,5 +1,5 @@
-/** Reach the already-running local CH Host through its installed, versioned Desktop routing.
- * Never install Renderer code, launch Desktop, own a Mapping Store, or spawn a Harness.
+/** Connect to one shared Host; native Launcher starts it on demand without Desktop.
+ * This gateway never owns a Mapping Store or spawns a Harness. Explicit CDP is legacy-only.
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -8,12 +8,16 @@ import {
   listCdpTargets,
   HostClientChannel,
   discoverHostClientChannel,
+  ensureHostService,
+  isHostClientChannelOnline,
+  type HostServiceLaunch,
   type HostClientUpdate,
 } from "@codexhost/desktop-control";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type {
   ClientThreadSnapshot,
+  ClientWorkspaceSnapshot,
   ClientChannelResponse,
   ClientChannelCursor,
 } from "@codexhost/shared-contracts";
@@ -235,19 +239,35 @@ export class DesktopChHostClient implements ChHostClient {
  * Once selected, an event connection never silently falls back after a failure.
  */
 export async function createChHostClient(
-  options: { cdp?: string; directory?: string } = {},
+  options: { cdp?: string; directory?: string; launch?: HostServiceLaunch } = {},
 ): Promise<ChHostClient> {
   const desktop = new DesktopChHostClient(options.cdp);
-  const directory = options.directory ?? join(homedir(), ".codexhost", "client-hosts");
-  const endpoint =
-    options.cdp && !options.directory ? null : await discoverHostClientChannel(directory);
-  if (!endpoint && options.directory !== undefined)
+  const directory =
+    options.directory ??
+    join(options.launch?.dataDirectory ?? join(homedir(), ".codexhost"), "client-hosts");
+  const legacy = options.cdp && !options.directory;
+  let endpoint = legacy ? null : await discoverHostClientChannel(directory);
+  if (!legacy && options.launch && (!endpoint || !(await isHostClientChannelOnline(endpoint)))) {
+    if (resolve(directory) !== join(options.launch.dataDirectory, "client-hosts"))
+      throw new RpcError(
+        "host/unavailable",
+        "Independent Host control directory must be <ch-data>/client-hosts; specify --ch-data for startup.",
+      );
+    await ensureHostService(options.launch);
+    endpoint = await discoverHostClientChannel(directory);
+  }
+  if (!endpoint && (options.directory !== undefined || (!legacy && options.launch)))
     throw new RpcError(
       "host/unavailable",
       "CH client channel not found; start an updated local Host or check --ch-control-directory.",
     );
   if (!endpoint) return desktop;
-  const channel = new HostClientChannel(directory, endpoint);
+  const launch = endpoint.owner === "service" ? options.launch : undefined;
+  const channel = new HostClientChannel(
+    directory,
+    endpoint,
+    launch ? () => ensureHostService(launch) : undefined,
+  );
   try {
     await channel.start();
   } catch (error) {
@@ -266,9 +286,20 @@ export async function createChHostClient(
         );
       }
     },
-    projects: (ids) => desktop.projects(ids),
-    // GUI metadata still belongs to Desktop, not the Thread execution channel.
-    pins: (change) => desktop.pins(change),
+    projects: (ids) =>
+      endpoint?.owner === "service"
+        ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", { threadIds: ids })
+        : desktop.projects(ids),
+    // Pin mutation still uses Desktop's native service; never write its global-state file.
+    pins: async (change) => {
+      try {
+        return await desktop.pins(change);
+      } catch (error) {
+        if (endpoint?.owner !== "service" || change) throw error;
+        return (await channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", {}))
+          .pinned;
+      }
+    },
     close() {
       channel.close();
       desktop.close();

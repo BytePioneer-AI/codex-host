@@ -1,5 +1,6 @@
 import { runDelegationCli } from "./delegation-cli.js";
 import { runHostRuntime } from "./run-host-runtime.js";
+import { runSharedHostService } from "./shared-host-service.js";
 import { runRemoteControlAppServerBridge } from "./remote-control-app-server.js";
 import { runRemoteHostCli } from "./remote-host-cli.js";
 import { runClaudeAquaHarnessBroker } from "./aqua-harness-broker.js";
@@ -14,7 +15,9 @@ function runLoggedHostRuntime(): Promise<number> {
     stream: process.stderr,
     process,
   });
-  return runHostRuntime({ arguments: arguments_, environment: process.env });
+  return arguments_[0] === "--codexhost-shared-host"
+    ? runSharedHostService(arguments_.slice(1), process.env, import.meta.url)
+    : runHostRuntime({ arguments: arguments_, environment: process.env });
 }
 
 process.exitCode =

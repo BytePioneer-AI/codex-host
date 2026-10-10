@@ -14,6 +14,11 @@ export interface PreviewOptions {
   "session-source"?: string;
   "ch-cdp"?: string;
   "ch-control-directory"?: string;
+  "ch-launcher"?: string;
+  "ch-host-runtime"?: string;
+  "ch-data"?: string;
+  "ch-codex-home"?: string;
+  "ch-plugins"?: string;
 }
 
 /**
@@ -55,6 +60,9 @@ export function previewLaunch(
       ...(options["ch-control-directory"]
         ? ["--ch-control-directory", options["ch-control-directory"]]
         : []),
+      ...(
+        ["ch-launcher", "ch-host-runtime", "ch-data", "ch-codex-home", "ch-plugins"] as const
+      ).flatMap((key) => (options[key] ? [`--${key}`, options[key] as string] : [])),
       "--host",
       "127.0.0.1",
       "--port",

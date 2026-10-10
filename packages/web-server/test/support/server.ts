@@ -19,7 +19,7 @@ export async function startServer(
   cwd: string,
   entry: string[],
   args: string[],
-  options: { authenticated?: boolean } = {},
+  options: { authenticated?: boolean; environment?: NodeJS.ProcessEnv } = {},
 ): Promise<string> {
   const data = mkdtempSync(join(tmpdir(), "codexhost-web-test-"));
   // UI-only checks may target an already packaged server, without compiling
@@ -46,6 +46,7 @@ export async function startServer(
     ],
     {
       cwd,
+      ...(options.environment ? { env: options.environment } : {}),
       stdio: ["ignore", "pipe", "pipe"],
     },
   );

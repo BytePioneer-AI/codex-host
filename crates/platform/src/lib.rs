@@ -11,6 +11,7 @@ mod background;
 #[cfg(not(target_os = "windows"))]
 mod background;
 mod desktop_launch;
+mod independent_service;
 mod installation;
 #[cfg(target_os = "linux")]
 mod linux_installation;
@@ -18,6 +19,7 @@ mod macos_native_harness_broker;
 #[cfg(target_os = "macos")]
 mod macos_process_observation;
 mod process;
+pub use independent_service::{IndependentServiceRegistration, register_independent_service};
 mod process_supervision;
 mod process_termination;
 mod proxy_environment;
@@ -36,7 +38,7 @@ mod windows_proxy;
 #[allow(unsafe_code)]
 mod windows_ui;
 
-pub use background::detach_from_terminal;
+pub use background::{configure_detached_service_command, detach_from_terminal};
 pub use desktop_launch::{
     DesktopProcess, launch_desktop, launch_stock_desktop, open_external_url,
     open_latest_codexhost_release,

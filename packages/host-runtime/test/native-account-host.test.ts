@@ -98,7 +98,7 @@ function nativeFixture() {
   };
 }
 
-async function startLocal() {
+async function startLocal(deferStart = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-native-account-host-"));
   temporaryDirectories.add(directory);
   const local = await prepareLocalCodex({
@@ -106,12 +106,44 @@ async function startLocal() {
     arguments: ["app-server"],
     environment: { CODEX_HOME: path.join(directory, "missing-codex-home") },
     diagnosticOutput: new PassThrough(),
+    deferStart,
   });
   prepared.add(local);
   return local;
 }
 
 describe("local Codex read-only identity startup", () => {
+  it("defers Web-only native startup and preserves the first Desktop invocation on one backend", async () => {
+    const f = nativeFixture();
+    const local = await startLocal(true);
+    expect(createOwnedLoopbackBackend).not.toHaveBeenCalled();
+    expect(f.connect).not.toHaveBeenCalled();
+    const home = local.officialRuntimeScope.permanentHome;
+    const arguments_ = [
+      "-c",
+      "features.synthetic=true",
+      "app-server",
+      "--analytics-default-enabled",
+    ];
+    local.configureStartup({
+      stockCodexPath: "/synthetic/desktop-codex",
+      arguments: arguments_,
+      environment: { CODEX_HOME: "/must-not-change-home", PATH: "/synthetic/path" },
+    });
+    arguments_.push("--must-not-leak");
+    local.configureStartup({ stockCodexPath: "/synthetic/other", arguments: [], environment: {} });
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledWith({
+      stockCodexPath: "/synthetic/desktop-codex",
+      cwd: home,
+      arguments: ["-c", "features.synthetic=true", "app-server", "--analytics-default-enabled"],
+      environment: { CODEX_HOME: home, PATH: "/synthetic/path" },
+    });
+    await local.accountControl.refresh?.();
+    expect(f.connect).toHaveBeenCalledOnce();
+  });
+
   it("recovers the local backend so an existing client can explicitly retry voice startup", async () => {
     const first = nativeFixture();
     const local = await startLocal();

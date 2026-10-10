@@ -72,6 +72,16 @@ for (const mobile of [false, true]) {
         "no duplicated project row",
       );
       assert.equal(await pins.locator('[data-harness-id="fake"]').count(), 2);
+      // Pinning moves the project row over 200ms. Measure final layout, not a
+      // FLIP transform's intermediate position; do not cancel real animations.
+      const folderElement = await folder.elementHandle();
+      assert.ok(folderElement);
+      await page.waitForFunction(
+        (element) =>
+          element.getAnimations().every((animation) => animation.playState !== "running"),
+        folderElement,
+      );
+      await folderElement.dispose();
       const pinBox = await pins.boundingBox(),
         folderBox = await folder.boundingBox();
       assert.ok(pinBox && folderBox && pinBox.y + pinBox.height <= folderBox.y);

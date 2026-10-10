@@ -59,7 +59,7 @@ pub fn detach_from_terminal() -> Result<(), PlatformError> {
 /// an interactive shell spawned inside it (for example to resolve the login
 /// environment) opens `/dev/tty` and stops its whole group with SIGTTIN or
 /// SIGTTOU. Without a controlling terminal, job control cannot suspend it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[allow(unsafe_code)]
 pub(crate) fn start_in_new_session(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
@@ -98,6 +98,23 @@ pub fn detach_from_terminal() -> Result<(), PlatformError> {
     Err(PlatformError::Unsupported(
         "background detachment currently supports Windows, macOS, and Linux only",
     ))
+}
+
+/// A shared service outlives the calling Desktop/Web process and its native job.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn configure_detached_service_command(command: &mut std::process::Command) {
+    start_in_new_session(command);
+}
+
+#[cfg(target_os = "windows")]
+pub fn configure_detached_service_command(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    use windows::Win32::System::Threading::{
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+    };
+    command.creation_flags(
+        (CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS).0,
+    );
 }
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]

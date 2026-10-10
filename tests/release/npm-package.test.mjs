@@ -525,6 +525,33 @@ describe("npm package release", () => {
     expect(source).not.toContain("runtime/node");
   });
 
+  it.each(["ensure", "stop"])(
+    "supplies native resources for independent host %s without launching Desktop",
+    async (command) => {
+      const data = path.resolve("isolated-host-data");
+      const { result, calls } = await runGeneratedWrapperLifecycle(
+        "darwin",
+        ["host", command, "--data", data],
+        [0],
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args).toEqual([
+        "host",
+        command,
+        "--node",
+        process.execPath,
+        "--host-runtime",
+        expect.stringMatching(/host-runtime\.mjs$/u),
+        "--data",
+        expect.any(String),
+        "--data",
+        data,
+      ]);
+      expect(calls[0].args).not.toContain("launch");
+    },
+  );
+
   const brokerTail = [
     "--node",
     process.execPath,

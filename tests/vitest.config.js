@@ -39,6 +39,8 @@ export default defineConfig({
     exclude: [
       ...configDefaults.exclude,
       "packages/web-server/test/**",
+      // Native service tests use Node's runner after building the Rust Launcher.
+      "packages/host-runtime/test/native/**",
       ...(platformOnly ? platformIndependentFiles() : []),
     ],
     maxWorkers: 4,

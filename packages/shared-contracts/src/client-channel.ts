@@ -17,6 +17,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "turn/start",
   "turn/interrupt",
   "turn/steer",
+  "codexhost/workspace/read",
   "codexhost/harness/plugins/list",
   "codexhost/harness/inspect",
   "codexhost/thread/inspect",
@@ -31,6 +32,13 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/session-import/list",
   "codexhost/harness/session-import/import",
 ] as const;
+export const clientWorkspaceSnapshotSchema = z.object({
+  projects: z.array(z.object({ id: z.string(), name: z.string(), rootPaths: z.array(z.string()) })),
+  assignments: z.record(z.string(), z.string()),
+  projectless: z.array(z.string()),
+  pinned: z.array(z.string()),
+});
+export type ClientWorkspaceSnapshot = z.infer<typeof clientWorkspaceSnapshotSchema>;
 const record = z.record(z.string(), z.unknown());
 export const clientChannelCursorSchema = z.object({
   epoch: z.string().uuid(),
@@ -131,6 +139,7 @@ export const clientThreadSnapshotSchema = z.object({
 export type ClientThreadSnapshot = z.infer<typeof clientThreadSnapshotSchema>;
 export const clientChannelDescriptorSchema = z.object({
   version: z.literal(CLIENT_CHANNEL_VERSION),
+  owner: z.literal("service").optional(),
   pid: z.number().int().positive(),
   port: z.number().int().min(1).max(65535),
   token: z.string().regex(/^[0-9a-f]{64}$/u),

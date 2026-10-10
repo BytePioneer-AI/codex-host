@@ -24,8 +24,37 @@ it(
       ["--import", "tsx", "scripts/pack.ts", output, "--harness", "claude-code,pi"],
       { cwd: serverRoot },
     );
-    assert.deepEqual(readdirSync(join(output, "adapters")).sort(), ["claude-code", "codex", "pi"]);
-    for (const id of ["claude-code", "pi"]) {
+    const sourceRoot = join(repoRoot, "packages/host-runtime/dist/plugins");
+    const usageIds = readdirSync(sourceRoot).filter((id) => {
+      try {
+        return (
+          JSON.parse(readFileSync(join(sourceRoot, id, "manifest.json"), "utf8")).kind === "usage"
+        );
+      } catch {
+        return false;
+      }
+    });
+    assert.deepEqual(
+      readdirSync(join(output, "adapters")).sort(),
+      ["claude-code", "codex", "pi", "enabled.json", ...usageIds].sort(),
+    );
+    assert.deepEqual(JSON.parse(readFileSync(join(output, "adapters/enabled.json"), "utf8")), {
+      version: 1,
+      enabled: ["claude-code", "pi", ...usageIds],
+    });
+    assert.match(
+      readFileSync(join(output, "host-runtime.mjs"), "utf8"),
+      /--codexhost-shared-host/u,
+    );
+    const executable = process.platform === "win32" ? "codexhost.exe" : "codexhost";
+    assert.deepEqual(
+      readFileSync(join(output, "native", executable)),
+      readFileSync(join(repoRoot, "target/debug", executable)),
+    );
+    const metadata = JSON.parse(readFileSync(join(output, "package.json"), "utf8"));
+    assert.deepEqual(metadata.os, [process.platform]);
+    assert.deepEqual(metadata.cpu, [process.arch]);
+    for (const id of ["claude-code", "pi", ...usageIds]) {
       const source = join(repoRoot, "packages/host-runtime/dist/plugins", id);
       const copied = join(output, "adapters", id);
       assert.deepEqual(

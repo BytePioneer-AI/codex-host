@@ -15,6 +15,7 @@ import { projectGroupRoot } from "./ch-project-groups.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
+import { ChAttachments } from "./ch-attachments.ts";
 import { ChRealtime } from "./ch-realtime.ts";
 import { ChInteractions } from "./ch-interactions.ts";
 import { requestOf } from "./store.ts";
@@ -41,6 +42,7 @@ interface Draft {
 export class ChSessions {
   readonly catalog: ChHarnessCatalog;
   private readonly pins: ChPinnedThreads;
+  private readonly attachments: ChAttachments | undefined;
   private rows = new Map<string, ChThread>();
   private publishedCatalog: Map<string, string> | undefined;
   private views = new Map<string, ChThreadHistory>();
@@ -66,6 +68,7 @@ export class ChSessions {
     private readonly images?: WebImages,
   ) {
     this.catalog = new ChHarnessCatalog(host);
+    this.attachments = images ? new ChAttachments(images) : undefined;
     this.pins = new ChPinnedThreads(host, workspaces, (id) => this.ownership.has(id));
     this.interactions = host.realtime
       ? new ChInteractions(host.realtime, events, (id, message) => {
@@ -269,7 +272,9 @@ export class ChSessions {
             sink.push({ type: "projection", sessionId, key, value, seq });
         },
         this.viewOrigins.get(id),
-        this.images ? (content) => this.images?.project(content) ?? content : undefined,
+        this.attachments
+          ? (content) => this.attachments?.project(id, content) ?? content
+          : undefined,
       );
       if (this.images) {
         view.log.setProjection("attachmentInput", WEB_IMAGE_INPUT);
@@ -562,12 +567,9 @@ export class ChSessions {
         args,
       );
       const view = await this.view(sessionId, true);
-      if (!this.images?.referenced(view.log.events, attachmentId))
-        throw new RpcError(
-          "session/attachment-not-found",
-          "This image is not referenced by the loaded Thread history.",
-        );
-      return this.images.read(attachmentId);
+      if (!this.attachments)
+        throw new RpcError("session/attachment-not-found", "Image previews are unavailable.");
+      return this.attachments.read(view, attachmentId);
     });
     rpc.register("session/cancel", async (args) => {
       const { sessionId } = requestOf<{ sessionId: string }>(args);

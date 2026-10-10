@@ -8,6 +8,7 @@ import { ChThreadHistory } from "../src/ch-thread-history.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { WebImages } from "../src/web-images.ts";
+import { ChAttachments } from "../src/ch-attachments.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { FakeChHost } from "./support/ch-host.ts";
 import { FakeChChannel } from "./support/ch-channel.ts";
@@ -65,9 +66,12 @@ it("shared image sends use paths, reject invalid drafts before native creation a
   assert.ok(path);
   assert.deepEqual(readFileSync(path), Buffer.from(PNG, "base64"));
   assert.equal(JSON.stringify(sent.params).includes(PNG), false);
-  const id = (images.project(input)[0] as { attachment: { attachmentId: string } }).attachment
-    .attachmentId;
   const threadId = String(sent.params.threadId);
+  const id = (
+    new ChAttachments(images).project(threadId, input)[0] as {
+      attachment: { attachmentId: string };
+    }
+  ).attachment.attachmentId;
   assert.notEqual(threadId, draft.sessionId);
   const read = await call<{ data: string }>("session/attachment", {
     sessionId: threadId,
@@ -109,20 +113,19 @@ it("cold history and older-page projection reconstruct image references without 
       },
     ],
   }));
-  const restored = new WebImages(data);
+  const restored = new ChAttachments(new WebImages(data));
   const view = new ChThreadHistory(
     host,
     row,
     "fake",
     () => {},
     undefined,
-    (parts) => restored.project(parts),
+    (parts) => restored.project(row.id, parts),
   );
   await view.refresh();
   await view.loadOlder();
-  const image = restored.project(content)[0] as { attachment: { attachmentId: string } };
-  assert.equal(restored.referenced(view.log.events, image.attachment.attachmentId), true);
-  assert.equal(restored.read(image.attachment.attachmentId).data, PNG);
+  const image = restored.project(row.id, content)[0] as { attachment: { attachmentId: string } };
+  assert.equal(restored.read(view, image.attachment.attachmentId).data, PNG);
   assert.deepEqual(
     readdirSync(root),
     ["attachments"],

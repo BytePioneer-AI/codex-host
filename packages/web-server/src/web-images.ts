@@ -7,14 +7,14 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   realpathSync,
+  readSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { imageSize } from "image-size";
 import type { DataDir } from "./store.ts";
-import type { WireEvent } from "./session-log.ts";
 import { RpcError } from "./transport.ts";
 
 export const WEB_IMAGE_LIMITS = {
@@ -60,7 +60,7 @@ function invalid(reason: string, message: string): never {
 function digest(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
-function inspect(bytes: Buffer, mediaType?: string): PreparedImage {
+export function inspectImage(bytes: Buffer, mediaType?: string): PreparedImage {
   if (!bytes.length) return invalid("INVALID_IMAGE", "Image is empty.");
   if (bytes.length > WEB_IMAGE_LIMITS.maxImageBytes)
     return invalid("IMAGE_TOO_LARGE", "Image exceeds 20 MiB.");
@@ -102,6 +102,56 @@ function inspect(bytes: Buffer, mediaType?: string): PreparedImage {
       height,
     },
   };
+}
+
+/** Bounded, read-only local raster access. Only call after validating a native Thread reference. */
+export function readImageFile(path: string): Buffer {
+  let fd: number | undefined;
+  try {
+    if (
+      !isAbsolute(path) ||
+      path.startsWith("\\\\") ||
+      path.startsWith("//") ||
+      /[\u0000-\u001f\u007f]/u.test(path) ||
+      path.split(/[\\/]/u).includes("..")
+    )
+      throw new Error("Invalid local image path");
+    let expected = resolve(path);
+    // macOS's system temp directory uses /var -> /private/var. Permit that known
+    // OS alias, not a symlink introduced within an attachment/workspace path.
+    for (const root of [tmpdir(), homedir()]) {
+      const suffix = relative(resolve(root), expected);
+      if (suffix && suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix)) {
+        expected = join(realpathSync(root), suffix);
+        break;
+      }
+    }
+    if (realpathSync(path) !== expected || lstatSync(path).isSymbolicLink())
+      throw new Error("Image symlink refused");
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.size > WEB_IMAGE_LIMITS.maxImageBytes)
+      throw new Error("Invalid image file");
+    // A growing file cannot make readFileSync allocate an unbounded buffer.
+    const buffer = Buffer.alloc(before.size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(fd, buffer, length, buffer.length - length, null);
+      if (!count) break;
+      length += count;
+    }
+    const after = fstatSync(fd);
+    if (length !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs)
+      throw new Error("Image changed while reading");
+    return buffer.subarray(0, length);
+  } catch {
+    throw new RpcError(
+      "session/attachment-not-found",
+      "The referenced local image is unavailable.",
+    );
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 export class WebImages {
@@ -153,7 +203,7 @@ export class WebImages {
       total += bytes.length;
       if (total > WEB_IMAGE_LIMITS.maxMessageImageBytes)
         return invalid("IMAGES_TOO_LARGE", "Images exceed 32 MiB in one message.");
-      images.push(inspect(bytes, part.mediaType));
+      images.push(inspectImage(bytes, part.mediaType));
     }
     if (!images.length) return texts;
     // Do not use supplied names or paths for any filesystem operation.
@@ -163,7 +213,7 @@ export class WebImages {
         writeFileSync(path, image.bytes, { flag: "wx", mode: 0o600 });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        this.stored(image.ref.attachmentId); // existing content must be the same immutable image, not a symlink
+        this.readBytes(image.ref.attachmentId); // existing content must be the same immutable image, not a symlink
       }
     }
     const references = images
@@ -182,91 +232,29 @@ export class WebImages {
 
   /** Read only an owned immutable object; never a browser-supplied filesystem path. */
   read(id: string): { attachment: WebImageRef; data: string } {
-    const image = this.stored(id);
+    const image = this.readBytes(id);
     return { attachment: image.ref, data: image.bytes.toString("base64") };
   }
 
-  private stored(id: string): PreparedImage {
+  /** Identify an owned object without requiring its bytes to still be present. */
+  idForPath(path: string): string | undefined {
+    return isAbsolute(path) &&
+      !path.split(/[\\/]/u).includes("..") &&
+      dirname(resolve(path)) === this.directory &&
+      LEAF.test(basename(path))
+      ? `web-image:${basename(path)}`
+      : undefined;
+  }
+
+  readBytes(id: string): PreparedImage {
     const leaf = id.startsWith("web-image:") ? id.slice("web-image:".length) : "";
     if (!LEAF.test(leaf)) return invalid("INVALID_IMAGE", "Invalid Web image reference.");
-    const path = join(this.directory, leaf);
-    let fd: number | undefined;
     try {
-      if (lstatSync(path).isSymbolicLink()) throw new Error("Image symlink refused");
-      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-      const stat = fstatSync(fd);
-      if (!stat.isFile() || stat.size > WEB_IMAGE_LIMITS.maxImageBytes)
-        throw new Error("Invalid image file");
-      const bytes = readFileSync(fd);
-      const image = inspect(bytes);
+      const image = inspectImage(readImageFile(join(this.directory, leaf)));
       if (image.leaf !== leaf) throw new Error("Image content changed");
       return image;
     } catch {
       throw new RpcError("session/attachment-not-found", "The saved Web image is unavailable.");
-    } finally {
-      if (fd !== undefined) closeSync(fd);
     }
-  }
-
-  /** Convert only our own native path context back to image blocks for history/echo.
-   * Other Desktop paths and ordinary user text stay text; no arbitrary-file preview API.
-   */
-  project(content: unknown[]): unknown[] {
-    return content.flatMap((part) => {
-      if (
-        !part ||
-        typeof part !== "object" ||
-        !("type" in part) ||
-        part.type !== "text" ||
-        !("text" in part) ||
-        typeof part.text !== "string"
-      )
-        return [part];
-      // Native CLIs may trim the prompt's outer whitespace when persisting history.
-      const text = part.text.startsWith(HEADER.slice(1)) ? "\n" + part.text : part.text;
-      if (!text.startsWith(HEADER)) return [part];
-      const marker = REQUEST.slice(0, -1);
-      const end = text.indexOf(marker, HEADER.length);
-      if (end < 0) return [part];
-      const context = text.slice(HEADER.length, end);
-      const pattern =
-        /\n## image-\d+\.(?:png|jpg|webp|gif): ([^\r\n]+)\nImage attachment: true\n/gu;
-      const matches = [...context.matchAll(pattern)];
-      if (
-        !matches.length ||
-        matches.length > WEB_IMAGE_LIMITS.maxImagesPerMessage ||
-        matches.map((match) => match[0]).join("") !== context
-      )
-        return [part];
-      try {
-        const images = matches.map((match) => {
-          const path = match[1] ?? "";
-          if (
-            !isAbsolute(path) ||
-            dirname(resolve(path)) !== this.directory ||
-            !LEAF.test(basename(path))
-          )
-            throw new Error("Foreign image path");
-          return { type: "image", attachment: this.stored(`web-image:${basename(path)}`).ref };
-        });
-        const request = text.slice(end + marker.length).replace(/^\n/u, "");
-        return [...images, ...(request ? [{ type: "text", text: request }] : [])];
-      } catch {
-        return [part];
-      } // A missing file must not make native history unreadable.
-    });
-  }
-
-  /** Authorization comes from the currently loaded native history, not a Web session index. */
-  referenced(events: readonly WireEvent[], id: string): boolean {
-    return events.some((event) => {
-      const data = event.data as
-        { content?: Array<{ type?: string; attachment?: { attachmentId?: string } }> } | undefined;
-      return (
-        event.type === "user/message" &&
-        Array.isArray(data?.content) &&
-        data.content.some((part) => part.type === "image" && part.attachment?.attachmentId === id)
-      );
-    });
   }
 }

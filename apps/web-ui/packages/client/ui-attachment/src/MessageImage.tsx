@@ -107,6 +107,7 @@ export function MessageImage({
     attachment === undefined ? null : (load.peek?.(attachment) ?? null),
   );
   const [error, setError] = useState(false);
+  const [natural, setNatural] = useState<{ width: number; height: number }>();
   const [open, setOpen] = useState(false);
   // Retry re-arms the one load effect below, so every attempt — first load or
   // retry — runs under the same liveness guard and the same reset.
@@ -122,15 +123,17 @@ export function MessageImage({
     if (variant !== "single") return undefined;
     // A preview whose intake probe has not resolved sizes as a square crop;
     // the durable replacement restores the exact fit.
-    return dimensions === undefined
+    const size = natural ?? dimensions;
+    return size === undefined
       ? { width: 240, height: 240, objectPosition: "center" }
-      : singleFit(dimensions);
-  }, [dimensions, variant]);
+      : singleFit(size);
+  }, [dimensions, natural, variant]);
 
   useEffect(() => {
     if (attachment === undefined) return;
     let live = true;
     setError(false);
+    setNatural(undefined);
     setLoaded(load.peek?.(attachment) ?? null);
     void load(attachment)
       .then((url) => {
@@ -196,6 +199,16 @@ export function MessageImage({
           <img
             src={src}
             alt={label}
+            onLoad={(event) => {
+              const { naturalWidth: width, naturalHeight: height } = event.currentTarget;
+              if (width > 0 && height > 0)
+                setNatural((previous) =>
+                  previous?.width === width && previous.height === height
+                    ? previous
+                    : { width, height },
+                );
+            }}
+            onError={() => setError(true)}
             style={fit === undefined ? undefined : { objectPosition: fit.objectPosition }}
           />
         )}

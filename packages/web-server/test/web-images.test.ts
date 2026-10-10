@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { DataDir } from "../src/store.ts";
 import { WebImages, WEB_IMAGE_LIMITS } from "../src/web-images.ts";
+import { ChAttachments } from "../src/ch-attachments.ts";
 
 import { PNG } from "./support/image.ts";
 const image = {
@@ -42,7 +43,8 @@ it("saves exact bytes and uses native path context, with restart-safe history pr
     "the Host channel only carries file paths, not image bytes",
   );
   if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
-  const projected = new WebImages(data).project(input) as Array<{
+  const restored = new ChAttachments(new WebImages(data));
+  const projected = restored.project("thread", input) as Array<{
     type: string;
     text?: string;
     attachment?: { attachmentId: string };
@@ -58,13 +60,16 @@ it("saves exact bytes and uses native path context, with restart-safe history pr
     "identical bytes reuse their object without a session index",
   );
   assert.equal(
-    images.project(images.prepare([image])).length,
+    restored.project("thread", images.prepare([image])).length,
     1,
     "image-only input still has native text path context",
   );
   assert.deepEqual(
-    images.project(images.prepare([image]).map((part) => ({ ...part, text: part.text.trim() }))),
-    images.project(images.prepare([image])),
+    restored.project(
+      "thread",
+      images.prepare([image]).map((part) => ({ ...part, text: part.text.trim() })),
+    ),
+    restored.project("thread", images.prepare([image])),
     "native whitespace normalization retains image-only history",
   );
 });
@@ -101,21 +106,24 @@ it("does not expose foreign paths, traversal, symlinks or changed object bytes",
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const images = new WebImages(new DataDir(root));
   const input = images.prepare([image]);
-  const projected = images.project(input) as Array<{ attachment: { attachmentId: string } }>;
+  const attachments = new ChAttachments(images);
+  const projected = attachments.project("thread", input) as Array<{
+    attachment: { attachmentId: string };
+  }>;
   const id = projected[0]?.attachment.attachmentId;
   assert.ok(id);
   assert.throws(() => images.read("web-image:../../auth.json"));
-  const original = input[0]?.text ?? "";
-  const foreign = [{ type: "text", text: original.replace(images.directory, "/outside") }];
-  assert.deepEqual(
-    images.project(foreign),
-    foreign,
-    "ordinary/native Desktop paths are not an arbitrary-file API",
-  );
+  assert.equal(images.idForPath("/outside/image.png"), undefined);
+  assert.equal(images.idForPath(join(images.directory, "not-a-hash.png")), undefined);
   const path = join(images.directory, id.slice("web-image:".length));
   writeFileSync(path, "changed bytes");
   assert.throws(() => images.read(id), /unavailable/u);
-  assert.deepEqual(images.project(input), input, "missing previews retain readable native history");
+  const missing = attachments.project("thread", input) as Array<{ attachment: { bytes: number } }>;
+  assert.equal(
+    missing[0]?.attachment.bytes,
+    0,
+    "missing previews are placeholders, not execution text",
+  );
   if (process.platform !== "win32") {
     rmSync(path);
     const target = join(root, "outside.png");

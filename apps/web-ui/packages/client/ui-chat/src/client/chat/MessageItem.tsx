@@ -24,6 +24,11 @@ import css from "./MessageItem.module.css";
 
 type UserImage = Extract<UserMessageNode["content"][number], { type: "image" }>;
 type UserFile = Extract<UserMessageNode["content"][number], { type: "file" }>;
+/** Native files are history references, not uploaded objects with a known byte size. */
+function nativeFilePath(file: UserFile["attachment"]): string | undefined {
+  return "nativePath" in file && typeof file.nativePath === "string" ? file.nativePath : undefined;
+}
+
 type PresentedAttachment =
   | { readonly type: "image"; readonly image: MessageImageSource }
   | { readonly type: "file"; readonly file: UserFile["attachment"] };
@@ -222,14 +227,20 @@ function UserStyleBubble({
                   })}
                 </Fragment>
               ) : (
-                <span key={`file:${index}`} className={css.fileCard} title={attachment.file.name}>
+                <span
+                  key={`file:${index}`}
+                  className={css.fileCard}
+                  title={nativeFilePath(attachment.file) ?? attachment.file.name}
+                >
                   <FileTypeIcon path={attachment.file.name} className={css.fileIcon} />
                   <span className={css.fileContent}>
                     <span className={css.fileName}>{attachment.file.name}</span>
                     <span className={css.fileMeta}>
                       {[
                         fileExtension(attachment.file.name).toUpperCase().slice(0, 8),
-                        fileSizeText(attachment.file.bytes),
+                        nativeFilePath(attachment.file) === undefined
+                          ? fileSizeText(attachment.file.bytes)
+                          : undefined,
                       ]
                         .filter(Boolean)
                         .join(" ")}

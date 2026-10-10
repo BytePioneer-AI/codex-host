@@ -36,7 +36,7 @@ export function createRendererHostClients(
   const retire = (hostId: string): void => {
     const entry = entries.get(hostId);
     entries.delete(hostId);
-    for (const cleanup of (entry?.cleanups ?? []).slice().reverse()) {
+    for (const cleanup of [...(entry?.cleanups ?? [])].reverse()) {
       try {
         cleanup();
       } catch {

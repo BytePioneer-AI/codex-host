@@ -52,7 +52,7 @@ export interface SessionNode {
   runningSubagentCount: number;
   /** Finished running while not selected and not yet opened (the green "done" reminder dot). */
   completed: boolean;
-  /** In the registry-global pin set: leads its section, reorderable only among pinned rows. */
+  /** In the registry-global pin set; displayed once in the sidebar's Pinned section. */
   pinned: boolean;
   /** In the registry-global archive set: shown grayed in place and not openable. */
   archived: boolean;
@@ -107,6 +107,8 @@ export interface SearchResultSet {
 /** Viewing state consumed by the derivation. */
 export interface TreeView {
   expandedGroups: readonly string[];
+  /** Omit active pins when a separate Pinned section renders them. Membership is unchanged. */
+  excludePinned?: boolean;
   /** Browser-local order for Sessions without a backing Workspace account. */
   ungroupedOrder?: readonly string[];
 }
@@ -485,17 +487,20 @@ export function deriveGroups(
     view.ungroupedOrder,
   )) {
     const expanded = expandedGroups.has(g.key);
+    const members = view.excludePinned
+      ? g.sessions.filter((session) => !pinned.has(session.id) || archived.has(session.id))
+      : g.sessions;
     groups.push({
       key: g.key,
       workspaceId: g.workspaceId,
       cwd: g.cwd,
       createdAt: g.createdAt,
       label: g.label,
-      sessionCount: g.sessions.length,
+      sessionCount: members.length,
       expanded,
       containsCurrent: g.key === currentGroup,
       sessions: expanded
-        ? sectionMembers(g.sessions, pinned, archived).map((session) =>
+        ? sectionMembers(members, pinned, archived).map((session) =>
             sessionNode(session, list, statuses, pinned, archived),
           )
         : [],

@@ -13,6 +13,7 @@ import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
 import { projectGroupRoot } from "./ch-project-groups.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
+import { ChPinnedThreads } from "./ch-pinned-threads.ts";
 import { requestOf } from "./store.ts";
 import {
   type EventHub,
@@ -36,6 +37,7 @@ interface Draft {
 
 export class ChSessions {
   readonly catalog: ChHarnessCatalog;
+  private readonly pins: ChPinnedThreads;
   private rows = new Map<string, ChThread>();
   private publishedCatalog: Map<string, string> | undefined;
   private views = new Map<string, ChThreadHistory>();
@@ -55,6 +57,7 @@ export class ChSessions {
     private readonly events: EventHub,
   ) {
     this.catalog = new ChHarnessCatalog(host);
+    this.pins = new ChPinnedThreads(host, workspaces, (id) => this.ownership.has(id));
   }
 
   private id(id: string): string {
@@ -113,6 +116,9 @@ export class ChSessions {
     for (const draft of this.drafts.values()) groups.set(draft.id, draft.cwd);
     this.workspaces.setReferenceGroups(groups);
     await this.publishCatalogChanges();
+    // A missing Desktop pin service must not hide readable Threads. Retain the
+    // last confirmed pins; a user command still reports its failure explicitly.
+    await this.pins.sync().catch(() => undefined);
   }
   /** Only fields used by the list summary; history projections have their own
    * control stream. Re-emitting every row makes each browser rebuild its entire
@@ -336,6 +342,25 @@ export class ChSessions {
   }
 
   register(rpc: RpcRegistry, streams: StreamRegistry): void {
+    for (const [method, pinned] of [
+      ["workspace/pinSession", true],
+      ["workspace/unpinSession", false],
+    ] as const) {
+      rpc.register(method, async (args) => {
+        const { sessionId } = requestOf<{ sessionId: string }>(args);
+        const id = this.id(sessionId);
+        if (this.drafts.has(id))
+          throw new RpcError(
+            "host/pin-draft",
+            "Send the first message before pinning this Thread.",
+          );
+        if (!this.ownership.has(id)) await this.refresh();
+        await this.owner(id);
+        if (!this.ownership.has(id))
+          throw new RpcError("session/not-found", "This Thread is not in the shared catalog.");
+        return { pinnedSessionIds: await this.pins.sync({ threadId: id, pinned }) };
+      });
+    }
     rpc.register("session/list", async () => {
       await this.refresh();
       return {

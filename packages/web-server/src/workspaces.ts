@@ -30,6 +30,7 @@ export class Workspaces {
   private state: WorkspaceState;
   private readonly followers = new Set<StreamSink>();
   private referenceGroups: Map<string, string | undefined> | undefined;
+  private referencePins: string[] | undefined;
 
   constructor(
     private readonly data: DataDir,
@@ -107,6 +108,14 @@ export class Workspaces {
       if (JSON.stringify(old) !== JSON.stringify(workspace))
         this.broadcast({ type: "upsert", workspace });
     }
+  }
+
+  /** Ephemeral view of the native owner's pins. Never overwrite standalone pin records. */
+  setReferencePins(ids: readonly string[]): void {
+    const next = [...new Set(ids)];
+    if (JSON.stringify(next) === JSON.stringify(this.referencePins)) return;
+    this.referencePins = next;
+    this.broadcast({ type: "pinned", pinnedSessionIds: next });
   }
 
   get(workspaceId: string): WorkspaceView | undefined {
@@ -305,7 +314,14 @@ export class Workspaces {
     streams.register("workspace/follow", (_args, sink) => {
       this.followers.add(sink);
       sink.onClose(() => this.followers.delete(sink));
-      sink.push({ type: "baseline", value: { ...this.state, items: this.list() } });
+      sink.push({
+        type: "baseline",
+        value: {
+          ...this.state,
+          items: this.list(),
+          pinnedSessionIds: this.referencePins ?? this.state.pinnedSessionIds,
+        },
+      });
     });
   }
 

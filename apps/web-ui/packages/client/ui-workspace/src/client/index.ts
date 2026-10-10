@@ -216,13 +216,19 @@ export function apply(ctx: Context): void {
     // Pin failures surface as a notice: nothing else on the surface moves, so
     // a silent failure would read as a dead action.
     pinSession: (sessionId) => {
-      uiWorkspace.pinSession(sessionId).catch(() => {
-        notify({ kind: "pinFailed" });
+      uiWorkspace.pinSession(sessionId).catch((error: unknown) => {
+        notify({
+          kind: "pinFailed",
+          message: error instanceof Error ? error.message : String(error),
+        });
       });
     },
     unpinSession: (sessionId) => {
-      uiWorkspace.unpinSession(sessionId).catch(() => {
-        notify({ kind: "unpinFailed" });
+      uiWorkspace.unpinSession(sessionId).catch((error: unknown) => {
+        notify({
+          kind: "unpinFailed",
+          message: error instanceof Error ? error.message : String(error),
+        });
       });
     },
   });

@@ -9,7 +9,14 @@ import { RpcError } from "./transport.ts";
 export interface ChHostClient {
   request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T>;
   projects(threadIds: string[]): Promise<ChProjectSnapshot>;
+  /** Native Desktop pin service; a change returns the confirmed complete local pin order. */
+  pins(change?: ChPinChange): Promise<string[]>;
   close(): void;
+}
+
+export interface ChPinChange {
+  threadId: string;
+  pinned: boolean;
 }
 
 export interface ChProjectSnapshot {
@@ -151,6 +158,49 @@ export class DesktopChHostClient implements ChHostClient {
       throw new RpcError(
         "host/projects-unavailable",
         "Native project metadata is unavailable; execution cwd will not be guessed as a project.",
+      );
+    }
+  }
+
+  /** Use the same service as Desktop so its section move, legacy metadata and
+   * GUI invalidation stay together. Never write global-state files or UI stores.
+   * Read-only calls preserve Desktop's selected pin source.
+   */
+  async pins(change?: ChPinChange): Promise<string[]> {
+    const client = await this.connect();
+    const expression = `(async () => {
+      const manager = window.__codexhostHostRoutingV1?.forHost('local')?.manager;
+      const service = await manager?.runtime?.pinnedThreads?.();
+      if (!service?.list || !service?.set) return {ok:false,error:'Native Desktop pin service unavailable'};
+      try {
+        const options = {hostId:'local',useAppServerPins:true,preservePinSource:true};
+        const change = ${JSON.stringify(change ?? null)};
+        let value = await service.list(options);
+        if (change && value.threadIds.includes(change.threadId) !== change.pinned) {
+          const result = await service.set({...change,hostId:'local',useAppServerPins:true});
+          if (result?.success !== true) throw new Error('Desktop did not confirm the pin change');
+          value = await service.list(options);
+          if (value.threadIds.includes(change.threadId) !== change.pinned) throw new Error('Desktop pin state changed; refresh before retrying');
+        }
+        return {ok:true,value:value.threadIds};
+      } catch(error) { return {ok:false,error:String(error?.message ?? error)}; }
+    })()`;
+    try {
+      const reply = await client.evaluate<{ ok: boolean; value?: unknown; error?: string }>(
+        expression,
+      );
+      if (!reply.ok)
+        throw new RpcError("host/pins-unavailable", reply.error ?? "Desktop pins unavailable.");
+      if (!Array.isArray(reply.value) || !reply.value.every((id) => typeof id === "string"))
+        throw new RpcError("host/pins-invalid", "Desktop returned an invalid pin snapshot.");
+      return [...new Set(reply.value as string[])];
+    } catch (error) {
+      if (error instanceof RpcError) throw error;
+      this.client = undefined;
+      client.close();
+      throw new RpcError(
+        "host/disconnected",
+        "Desktop pin connection lost; the outcome may be unknown. Refresh before retrying.",
       );
     }
   }

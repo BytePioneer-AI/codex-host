@@ -66,6 +66,7 @@ import {
 } from "../tree.ts";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
+import { PinnedSection } from "./PinnedSection.tsx";
 import { GROUP_INITIAL_ROWS, SIDEBAR_PAGE_ROWS, sidebarWindow } from "./sidebar-window.ts";
 import { FLAT_SESSION_ORDER_KEY, type SessionGroupBy } from "../stores.ts";
 import { WorkspacePickFlow } from "../WorkspacePicker.tsx";
@@ -417,6 +418,7 @@ function SessionTree({
     () =>
       deriveGroups(list, workspaces, rowState, statuses, {
         expandedGroups,
+        excludePinned: true,
         ungroupedOrder: ungroupedSessionIds,
       }),
     [list, workspaces, rowState, statuses, expandedGroups, ungroupedSessionIds],
@@ -497,7 +499,11 @@ function SessionTree({
     workspaceDrag?.over?.id === rootGroups[0].workspaceId &&
     workspaceDrag.over.half === "before";
 
-  const rowKeys: string[] = groups.length === 0 ? ["empty"] : [];
+  const pinnedRows = deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses).filter(
+    (node) => node.pinned,
+  );
+  const rowKeys = pinnedRows.map((node) => `session:${node.id}`);
+  if (groups.length === 0 && pinnedRows.length === 0) rowKeys.push("empty");
   const renderGroup = (group: GroupNode, depth: number): ReactNode => {
     const workspaceId = group.workspaceId;
     const children = childrenByParent.get(group.key) ?? [];
@@ -731,7 +737,18 @@ function SessionTree({
         ready={list.phase === "ready" && workspaceReady && !nativeDragActive}
         resetKey={JSON.stringify([animationResetKey, sessionLimits])}
       >
-        {groups.length === 0 && (
+        <PinnedSection
+          rows={pinnedRows}
+          currentId={current}
+          onOpen={open}
+          onRenameRequest={onSessionRenameRequest}
+          renderSlot={renderSlot}
+          revealSessionId={revealSessionId}
+          onSessionRevealed={onSessionRevealed}
+          followingLabel={t("section.workspaces")}
+          t={t}
+        />
+        {groups.length === 0 && pinnedRows.length === 0 && (
           <EmptySessions rowState={rowState} onLeaveArchivedOnly={onLeaveArchivedOnly} t={t} />
         )}
         {groupRows}
@@ -780,8 +797,11 @@ function FlatList({
   const panelActive = usePanelInfo((info) => info.activePanelId !== null);
   const statuses = useSessionStatus((s) => s);
   const rows = useMemo(
-    () => deriveFlat(list, sessionIds, rowState, statuses),
+    () => deriveFlat(list, sessionIds, rowState, statuses).filter((node) => !node.pinned),
     [list, sessionIds, rowState, statuses],
+  );
+  const pinnedRows = deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses).filter(
+    (node) => node.pinned,
   );
   const [drag, setDrag] = useState<DragState | null>(null);
   const dropCommitted = useRef(false);
@@ -806,18 +826,27 @@ function FlatList({
       <AnimatedRows
         className={clsx(css.list, css.flatList)}
         label={t("section.sessions")}
-        rowKeys={
-          rows.length === 0
-            ? ["empty"]
-            : [
-                ...visible.rows.map((row) => `session:${row.id}`),
-                ...(hasOverflow ? ["overflow:flat"] : []),
-              ]
-        }
+        rowKeys={[
+          ...pinnedRows.map((row) => `session:${row.id}`),
+          ...(rows.length === 0 && pinnedRows.length === 0 ? ["empty"] : []),
+          ...visible.rows.map((row) => `session:${row.id}`),
+          ...(hasOverflow ? ["overflow:flat"] : []),
+        ]}
         ready={list.phase === "ready" && workspaceReady && drag === null}
         resetKey={`${animationResetKey}/${limit}`}
       >
-        {rows.length === 0 && (
+        <PinnedSection
+          rows={pinnedRows}
+          currentId={currentId}
+          onOpen={open}
+          onRenameRequest={onSessionRenameRequest}
+          renderSlot={renderSlot}
+          revealSessionId={revealSessionId}
+          onSessionRevealed={onSessionRevealed}
+          followingLabel={t("section.sessions")}
+          t={t}
+        />
+        {rows.length === 0 && pinnedRows.length === 0 && (
           <EmptySessions rowState={rowState} onLeaveArchivedOnly={onLeaveArchivedOnly} t={t} />
         )}
         {visible.rows.map((node) => {
@@ -1467,7 +1496,9 @@ export function WorkspaceBrowser({
           <span
             className={clsx(css.sectionLabel, css.wide, searchExpanded && css.sectionLabelHidden)}
           >
-            {groupBy === "flat" ? t("section.sessions") : t("section.workspaces")}
+            {groupBy === "flat" || pinnedSessionIds.length > 0
+              ? t("section.sessions")
+              : t("section.workspaces")}
           </span>
         )}
         {wide && (

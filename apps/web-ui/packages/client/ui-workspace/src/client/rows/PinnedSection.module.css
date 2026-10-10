@@ -1,0 +1,18 @@
+.section {
+  margin-bottom: 8px;
+}
+
+.section > [data-row-key] + [data-row-key] {
+  margin-top: 2px;
+}
+
+.heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 8px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+}

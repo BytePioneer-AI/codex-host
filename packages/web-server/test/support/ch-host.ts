@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { basename } from "node:path";
 import { runInNewContext } from "node:vm";
 import { WebSocketServer } from "ws";
-import type { ChHostClient, ChProjectSnapshot } from "../../src/ch-host-client.ts";
+import type { ChHostClient, ChPinChange, ChProjectSnapshot } from "../../src/ch-host-client.ts";
 import type { ChThread } from "../../src/ch-thread-view.ts";
 import { decodeHarnessPluginRoute } from "@codexhost/shared-contracts";
 
@@ -14,6 +14,19 @@ export class FakeChHost implements ChHostClient {
   readonly projectSnapshot: ChProjectSnapshot = { projects: [], assignments: {}, projectless: [] };
   async projects(): Promise<ChProjectSnapshot> {
     return structuredClone(this.projectSnapshot);
+  }
+  pinnedIds: string[] = [];
+  pinError: string | undefined;
+  readonly pinWrites: ChPinChange[] = [];
+  readonly pinServiceCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  async pins(change?: ChPinChange): Promise<string[]> {
+    if (this.closed || this.pinError) throw new Error(this.pinError ?? "Host offline");
+    if (change) {
+      this.pinWrites.push(change);
+      this.pinnedIds = this.pinnedIds.filter((id) => id !== change.threadId);
+      if (change.pinned) this.pinnedIds.push(change.threadId);
+    }
+    return [...this.pinnedIds];
   }
   closed = false;
   historyError: string | undefined;
@@ -235,6 +248,22 @@ export async function startFakeChDebugger(host: FakeChHost) {
           knownHostIds: () => ["local"],
           forHost: () => ({
             manager: {
+              runtime: {
+                pinnedThreads: async () => ({
+                  list: async (params: Record<string, unknown>) => {
+                    host.pinServiceCalls.push({ method: "list", params });
+                    return { threadIds: await host.pins() };
+                  },
+                  set: async (params: Record<string, unknown>) => {
+                    host.pinServiceCalls.push({ method: "set", params });
+                    await host.pins({
+                      threadId: String(params.threadId),
+                      pinned: params.pinned === true,
+                    });
+                    return { success: true };
+                  },
+                }),
+              },
               threadWorkspaceStorage: {
                 storage: {
                   readGlobalState: async (key: string) => {

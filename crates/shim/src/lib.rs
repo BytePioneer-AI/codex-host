@@ -750,121 +750,6 @@ fn discover_bundled_host_paths(
     Ok(Some((discovered_node, discovered_runtime)))
 }
 
-/// `npm start` / cargo layout: `target/{debug,release}/codexhost-shim` with
-/// `packages/host-runtime/dist/main.js` at the workspace root. Used when Desktop
-/// re-launches the Windows Shim without `CODEXHOST_*` (e.g. Agent environment = WSL).
-fn discover_workspace_host_paths(
-    current_executable: &Path,
-    need_node: bool,
-    need_runtime: bool,
-) -> Result<DiscoveredBundledHostPaths, String> {
-    discover_workspace_host_paths_with(current_executable, need_node, need_runtime, find_path_node)
-}
-
-fn discover_workspace_host_paths_with(
-    current_executable: &Path,
-    need_node: bool,
-    need_runtime: bool,
-    node_lookup: impl FnOnce() -> Option<OsString>,
-) -> Result<DiscoveredBundledHostPaths, String> {
-    if !need_node && !need_runtime {
-        return Ok(None);
-    }
-    let Some(profile_dir) = current_executable.parent() else {
-        return Ok(None);
-    };
-    let profile = profile_dir.file_name().and_then(|name| name.to_str());
-    if profile != Some("debug") && profile != Some("release") {
-        return Ok(None);
-    }
-    let Some(target_dir) = profile_dir.parent() else {
-        return Ok(None);
-    };
-    if target_dir.file_name() != Some(OsStr::new("target")) {
-        return Ok(None);
-    }
-    let Some(root) = target_dir.parent() else {
-        return Ok(None);
-    };
-    let host_runtime = root
-        .join("packages")
-        .join("host-runtime")
-        .join("dist")
-        .join("main.js");
-    let mut missing = Vec::new();
-    let discovered_runtime = if need_runtime {
-        if host_runtime.is_file() {
-            Some(host_runtime.into_os_string())
-        } else {
-            missing.push(host_runtime.display().to_string());
-            None
-        }
-    } else {
-        None
-    };
-    let discovered_node = if need_node {
-        match node_lookup() {
-            Some(node) => Some(node),
-            None => {
-                missing.push(format!(
-                    "node{} on PATH (workspace Shim has no bundled runtime/node)",
-                    env::consts::EXE_SUFFIX
-                ));
-                None
-            }
-        }
-    } else {
-        None
-    };
-    if !missing.is_empty() {
-        return Err(format!(
-            "codexhost workspace under {} is incomplete for Host Runtime; missing: {}",
-            root.display(),
-            missing.join(", ")
-        ));
-    }
-    Ok(Some((discovered_node, discovered_runtime)))
-}
-
-fn find_path_node() -> Option<OsString> {
-    let path_var = env::var_os("PATH")?;
-    let names = {
-        #[cfg(windows)]
-        {
-            vec![
-                OsString::from(format!("node{}", env::consts::EXE_SUFFIX)),
-                OsString::from("node.exe"),
-                OsString::from("node.CMD"),
-                OsString::from("node.cmd"),
-            ]
-        }
-        #[cfg(not(windows))]
-        {
-            vec![OsString::from(format!("node{}", env::consts::EXE_SUFFIX))]
-        }
-    };
-    for directory in env::split_paths(&path_var) {
-        for name in &names {
-            let candidate = directory.join(name);
-            if candidate.is_file() {
-                return Some(candidate.into_os_string());
-            }
-        }
-    }
-    None
-}
-
-fn discover_env_less_host_paths(
-    current_executable: &Path,
-    need_node: bool,
-    need_runtime: bool,
-) -> Result<DiscoveredBundledHostPaths, String> {
-    match discover_bundled_host_paths(current_executable, need_node, need_runtime)? {
-        Some(paths) => Ok(Some(paths)),
-        None => discover_workspace_host_paths(current_executable, need_node, need_runtime),
-    }
-}
-
 fn default_codexhost_data_directory() -> Option<PathBuf> {
     // Match Host Runtime / console fallbacks: `$HOME/.codexhost` (Windows: `%USERPROFILE%`).
     #[cfg(windows)]
@@ -892,18 +777,17 @@ fn resolve_host_runtime_launch(
         env::var_os(NPM_NODE_PATH_ENV),
         env::var_os(NPM_PACKAGE_ROOT_ENV),
     );
-    // Helpers must keep stock CLI routing. Skip env-less discovery when this Shim is a
+    // Helpers must keep stock CLI routing. Skip bundled discovery when this Shim is a
     // nested Desktop helper, including env-less Desktop trees without LAUNCHER_PID.
-    // Tries official libexec layout first, then cargo `target/{debug,release}` (`npm start`).
     if !desktop_helper && (paths.0.is_none() || paths.1.is_none()) {
-        match discover_env_less_host_paths(current_executable, paths.0.is_none(), paths.1.is_none())
+        match discover_bundled_host_paths(current_executable, paths.0.is_none(), paths.1.is_none())
         {
             Ok(Some((node, runtime))) => {
                 paths = (paths.0.or(node), paths.1.or(runtime));
             }
             Ok(None) => {}
-            // Incomplete libexec / workspace installs only fail when this invocation needs
-            // Host Runtime; `--version` and other stock forwards must still work.
+            // Incomplete libexec installs only fail when this invocation needs Host Runtime;
+            // `--version` and other stock forwards must still work.
             Err(error) if require_host_runtime => return Err(error.into()),
             Err(_) => {}
         }
@@ -1209,10 +1093,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        app_server_subcommand_index, discover_bundled_host_paths, discover_env_less_host_paths,
-        discover_workspace_host_paths, discover_workspace_host_paths_with,
-        is_default_remote_unix_listener, select_host_paths, should_start_host_runtime,
-        should_start_host_runtime_for_originator,
+        app_server_subcommand_index, discover_bundled_host_paths, is_default_remote_unix_listener,
+        select_host_paths, should_start_host_runtime, should_start_host_runtime_for_originator,
     };
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
@@ -1437,61 +1319,6 @@ mod tests {
         assert!(
             !only_runtime.contains(&format!("node{}", env::consts::EXE_SUFFIX)),
             "{only_runtime}"
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn discovers_workspace_host_paths_from_cargo_target_layout() {
-        let root = env::temp_dir().join(format!("codexhost-shim-workspace-{}", std::process::id()));
-        let profile = root.join("target").join("debug");
-        let runtime_dir = root.join("packages").join("host-runtime").join("dist");
-        fs::create_dir_all(&profile).unwrap();
-        fs::create_dir_all(&runtime_dir).unwrap();
-        let shim = profile.join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX));
-        let host_runtime = runtime_dir.join("main.js");
-        let node = root.join(format!("node{}", env::consts::EXE_SUFFIX));
-        fs::write(&shim, b"shim").unwrap();
-        fs::write(&host_runtime, b"runtime").unwrap();
-        fs::write(&node, b"node").unwrap();
-
-        let discovered = discover_workspace_host_paths_with(&shim, true, true, || {
-            Some(node.clone().into_os_string())
-        })
-        .expect("workspace ok")
-        .expect("workspace layout");
-        assert_eq!(PathBuf::from(discovered.0.expect("node")), node);
-        assert_eq!(PathBuf::from(discovered.1.expect("runtime")), host_runtime);
-
-        let runtime_only = discover_workspace_host_paths(&shim, false, true)
-            .expect("workspace ok")
-            .expect("runtime only");
-        assert!(runtime_only.0.is_none());
-        assert_eq!(
-            PathBuf::from(runtime_only.1.expect("runtime")),
-            host_runtime
-        );
-
-        let via_env_less = discover_env_less_host_paths(&shim, false, true)
-            .expect("env-less ok")
-            .expect("workspace via env-less");
-        assert_eq!(
-            PathBuf::from(via_env_less.1.expect("runtime")),
-            host_runtime
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn discover_workspace_host_paths_ignores_non_cargo_layouts() {
-        let root = env::temp_dir().join(format!("codexhost-shim-not-cargo-{}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        let shim = root.join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX));
-        fs::write(&shim, b"shim").unwrap();
-        assert_eq!(
-            discover_workspace_host_paths(&shim, true, true).expect("not workspace"),
-            None
         );
         let _ = fs::remove_dir_all(&root);
     }

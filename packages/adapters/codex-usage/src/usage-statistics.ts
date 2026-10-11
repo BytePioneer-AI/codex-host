@@ -26,6 +26,27 @@ interface SourceFile {
   fingerprint: string;
 }
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
+const ROW_KINDS = new Set([
+  "session_meta",
+  "turn_context",
+  "token_usage_record",
+  "compacted",
+  "event_msg",
+  "response_item",
+]);
+const HEAD_TYPE = /"type"\s*:\s*"([^"]+)"/u;
+const TAIL_TYPE = /"type"\s*:\s*"([^"]+)"\s*\}\s*$/u;
+
+/**
+ * Cheap top-level row type guess, confirmed by JSON.parse later. Most rows lead with `type`,
+ * but Codex also writes `session_meta` with sorted keys (`ordinal`, `payload`, `timestamp`,
+ * `type`); its head then holds nested types such as `base_instructions.provenance.type`.
+ */
+function rowKind(line: string): string | undefined {
+  const head = HEAD_TYPE.exec(line.slice(0, 1024))?.[1];
+  if (head && ROW_KINDS.has(head)) return head;
+  return TAIL_TYPE.exec(line.slice(-1024))?.[1] ?? head;
+}
 async function stamp(file: string): Promise<string> {
   const s = await lstat(file, { bigint: true });
   if (!s.isFile()) throw new Error("Codex rollout is not a regular file");
@@ -104,20 +125,9 @@ export async function readCodexRollouts(
     for await (const line of rolloutLines(file, signal)) {
       signal.throwIfAborted();
       if (++seen % 128 === 0) await yieldToEventLoop(undefined, { signal });
-      const kind = /"type"\s*:\s*"([^"]+)"/u.exec(line.slice(0, 1024))?.[1];
+      const kind = rowKind(line);
       if (!kind && line.trim()) options.onIncomplete?.();
-      if (
-        !kind ||
-        ![
-          "session_meta",
-          "turn_context",
-          "token_usage_record",
-          "compacted",
-          "event_msg",
-          "response_item",
-        ].includes(kind)
-      )
-        continue;
+      if (!kind || !ROW_KINDS.has(kind)) continue;
       // Avoid decoding large tool outputs or conversation bodies which cannot contain usage.
       if (kind === "response_item" && !/"role"\s*:\s*"user"/u.test(line.slice(0, 1024))) continue;
       if (

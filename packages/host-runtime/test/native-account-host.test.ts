@@ -29,6 +29,7 @@ function nativeFixture() {
   const exit = Promise.withResolvers<OfficialAppServerExit>();
   const requests: JsonObject[] = [];
   const connections: Array<{ close(): void }> = [];
+  let originator: string | undefined;
   let account: JsonObject | null = {
     type: "chatgpt",
     email: "current@example.com",
@@ -52,7 +53,12 @@ function nativeFixture() {
         let result: JsonObject;
         if (request.method === "initialize") {
           initialized = true;
-          result = { userAgent: "synthetic" };
+          // Codex fixes its HTTP originator from the first originating client.
+          const params = request.params as JsonObject;
+          const clientInfo = params.clientInfo as JsonObject;
+          if (!["codex_app_server_daemon", "codex-backend"].includes(String(clientInfo.name)))
+            originator ??= String(clientInfo.name);
+          result = { userAgent: `${originator ?? "codex_cli_rs"}/synthetic` };
         } else {
           if (!initialized) throw new Error("Unexpected or uninitialized native request");
           if (request.method === "account/read") {
@@ -112,6 +118,28 @@ async function startLocal() {
 }
 
 describe("local Codex read-only identity startup", () => {
+  it("leaves the native HTTP originator for Desktop while identity reads remain available", async () => {
+    nativeFixture();
+    const local = await startLocal();
+    const desktop = new OfficialRuntimeClient({
+      scope: local.officialRuntimeScope,
+      output: async () => {},
+    });
+    try {
+      expect(
+        await desktop.initializeProtocol({
+          clientInfo: { name: "Codex Desktop", version: "synthetic" },
+        }),
+      ).toMatchObject({ result: { userAgent: "Codex Desktop/synthetic" } });
+      expect(await local.accountControl.refresh?.()).toMatchObject({
+        currentAccountId: "current",
+        accounts: [{ email: "current@example.com" }],
+      });
+    } finally {
+      await desktop.close();
+    }
+  });
+
   it("recovers the local backend so an existing client can explicitly retry voice startup", async () => {
     const first = nativeFixture();
     const local = await startLocal();

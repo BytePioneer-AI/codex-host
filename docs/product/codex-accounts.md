@@ -62,6 +62,8 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 ## 官方认证
 
+Host 的只读身份连接使用官方 `codex_app_server_daemon` 客户端类型，不设置后端进程的全局 HTTP originator。该连接可以先于 Desktop 初始化，但原生 Desktop 仍负责建立自己的客户端身份。
+
 Desktop `account/login/*` 和 `account/logout` 原样交给官方后端。Host 不建立凭据收藏库；仅用户确认的导入写入目标 Harness 自己的存储。不替换 loginId，不重建原生结果。官方认证完成后，设置页可更新当前身份与额度展示。
 
 SSH 维持远端原生单账号，不传输本地凭据。

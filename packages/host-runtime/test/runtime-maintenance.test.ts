@@ -254,8 +254,11 @@ describe("runtime maintenance", () => {
         queueMicrotask(() => {
           starter.stdout.emit("data", `${helperPid}\n`);
           queueMicrotask(() => {
-            starter.emit("exit", 0);
-            starter.emit("close", 0);
+            // Exercise startup that outlasts the test's former 15s virtual-clock window.
+            setTimeout(() => {
+              starter.emit("exit", 0);
+              starter.emit("close", 0);
+            }, 16_000);
           });
         });
         return starter;
@@ -271,7 +274,9 @@ describe("runtime maintenance", () => {
           settled = true;
         },
       );
-      for (let i = 0; i < 300 && !settled; i += 1) {
+      // Keep advancing while real filesystem work is pending. A fixed virtual-time
+      // budget can expire before #launch establishes its own timeout deadline.
+      while (!settled) {
         await new Promise<void>((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(50);
       }

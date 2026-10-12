@@ -56,7 +56,13 @@ export async function prepareLocalCodex(input: {
   // This connection only reads native identity; it does not own authentication.
   const identityReader = scope.owner.attachManagement(async () => {});
   identityReader.configure({
-    clientInfo: { name: "codexhost_identity_reader", version: "1" },
+    // Native daemon clients do not claim the process-global HTTP originator.
+    // Desktop must establish that identity even though this reader connects first.
+    clientInfo: {
+      name: "codex_app_server_daemon",
+      title: "codexhost identity reader",
+      version: "1",
+    },
     capabilities: { experimentalApi: true },
   });
   try {

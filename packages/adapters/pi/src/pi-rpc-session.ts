@@ -211,10 +211,9 @@ interface ActiveTurn {
 }
 
 interface TurnCancellationQuarantine {
-  seq: number;
-  since: number;
   deadline: number;
   reason: string;
+  probe: Promise<void> | null;
 }
 
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -517,12 +516,10 @@ export class PiRpcSession {
   // Session is observed idle, or the recovery window expires and the Session is faulted so the
   // Host can rebuild it instead of reusing a possibly still-busy process.
   #quarantine: TurnCancellationQuarantine | null = null;
-  #recoveryTimeoutMs: number;
   // Serializes admission decisions so concurrent runTurn/compact calls cannot both pass the
   // quarantine probe, and lets a stale probe detect that it no longer owns the quarantine.
   #admission: Promise<void> = Promise.resolve();
   #admissionReserved = false;
-  #quarantineSeq = 0;
   #quarantineTimer: NodeJS.Timeout | null = null;
   // Command ids whose pending entry was discarded by an unsettled cancellation: Pi may still
   // answer them afterwards, and a late response must not fault an otherwise healthy Session.
@@ -557,7 +554,6 @@ export class PiRpcSession {
       recoveryTimeoutMs: 60_000,
       ...options,
     };
-    this.#recoveryTimeoutMs = this.#options.recoveryTimeoutMs;
     this.#processAdapter = processAdapter;
     this.#subagents = new PiSubagentRpc(
       (type, payload) => this.#send(type, payload),
@@ -1045,18 +1041,17 @@ export class PiRpcSession {
     this.#closeInteractions(active, "superseded");
     this.#activeTurn = null;
     const quarantine: TurnCancellationQuarantine = {
-      seq: (this.#quarantineSeq += 1),
-      since: Date.now(),
-      deadline: Date.now() + this.#recoveryTimeoutMs,
+      deadline: Date.now() + this.#options.recoveryTimeoutMs,
       reason: active.failure ? message(active.failure) : "cancellation unconfirmed",
+      probe: null,
     };
     this.#quarantine = quarantine;
-    // Schedule the expiry so the Host still observes a fault when no further operation arrives.
+    // Use terminal native events to check for recovery, but still probe at the deadline if no
+    // further event arrives.
     this.#clearQuarantineTimer();
     const timer = setTimeout(() => {
-      if (this.#quarantine?.seq !== quarantine.seq) return;
-      this.#faultExpiredQuarantine(quarantine);
-    }, this.#recoveryTimeoutMs);
+      void this.#checkQuarantine(quarantine, true);
+    }, this.#options.recoveryTimeoutMs);
     timer.unref?.();
     this.#quarantineTimer = timer;
     active.resolve({ text: active.text, cancelled: true });
@@ -1129,66 +1124,92 @@ export class PiRpcSession {
     }
   }
 
-  #faultExpiredQuarantine(quarantine: TurnCancellationQuarantine): PiRpcFaultError {
-    this.#clearQuarantineTimer();
-    this.#quarantine = null;
-    const fault = new PiRpcFaultError(
-      "protocolError",
-      `Pi RPC Session did not return to a confirmed idle state within ${this.#recoveryTimeoutMs}ms after an unconfirmed cancellation (${quarantine.reason})`,
-    );
-    this.#fail(fault);
-    return fault;
+  #checkQuarantine(quarantine: TurnCancellationQuarantine, final: boolean): Promise<void> {
+    if (this.#quarantine !== quarantine) return Promise.resolve();
+    if (quarantine.probe) {
+      const inFlight = quarantine.probe;
+      return final
+        ? inFlight.then(() =>
+            this.#quarantine === quarantine ? this.#checkQuarantine(quarantine, true) : undefined,
+          )
+        : inFlight;
+    }
+
+    const remaining = quarantine.deadline - Date.now();
+    final ||= remaining <= 0;
+    const timeoutMs = final ? this.#options.closeTimeoutMs : Math.max(1, remaining);
+    const checking = (async () => {
+      let state: { streaming: boolean; compacting: boolean } | null = null;
+      let observation = "state unknown";
+      try {
+        state = await this.#probeIdle(timeoutMs);
+        observation = state.compacting
+          ? "still compacting"
+          : state.streaming
+            ? "still streaming"
+            : "idle";
+      } catch (error) {
+        observation = `state probe failed: ${message(error)}`;
+      }
+      if (this.#quarantine !== quarantine) return;
+      if (state && !state.streaming && !state.compacting) {
+        this.#clearQuarantineTimer();
+        this.#quarantine = null;
+        return;
+      }
+      if (!final) return;
+
+      this.#clearQuarantineTimer();
+      this.#quarantine = null;
+      const fault = new PiRpcFaultError(
+        "protocolError",
+        `Pi RPC Session did not return to a confirmed idle state within ${this.#options.recoveryTimeoutMs}ms after an unconfirmed cancellation (${quarantine.reason}; ${observation})`,
+      );
+      await this.#failAndClose(fault, "Pi RPC quarantine cleanup failed");
+    })();
+    quarantine.probe = checking;
+    void checking.finally(() => {
+      if (quarantine.probe === checking) quarantine.probe = null;
+    });
+    return checking;
   }
 
-  async #probeIdle(remainingMs: number): Promise<{ streaming: boolean; compacting: boolean }> {
+  async #probeIdle(timeoutMs: number): Promise<{ streaming: boolean; compacting: boolean }> {
     let timer: NodeJS.Timeout | undefined;
     try {
       const response = await Promise.race([
         this.#send("get_state", {}),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
-            () => reject(new Error(`Pi RPC state probe timed out after ${remainingMs}ms`)),
-            Math.max(1, remainingMs),
+            () => reject(new Error(`Pi RPC state probe timed out after ${timeoutMs}ms`)),
+            Math.max(1, timeoutMs),
           );
         }),
       ]);
-      const data = isRecord(response.data) ? response.data : {};
+      const data = sessionStateData(response);
+      if (data.isCompacting !== false) {
+        throw new PiRpcFaultError(
+          "protocolError",
+          "Pi RPC state has no confirmed idle Compaction status",
+        );
+      }
       return {
         streaming: parseSessionStreaming(response),
-        compacting: data.isCompacting === true,
+        compacting: data.isCompacting,
       };
     } finally {
       if (timer) clearTimeout(timer);
     }
   }
 
-  /**
-   * Refuse new work while the Session may still be busy with an unconfirmed cancellation.
-   * The probe is bounded by the remaining recovery window, and a probe that no longer owns the
-   * current quarantine generation can never clear a newer one.
-   */
+  /** Refuse new work until idle is confirmed; the timer uses the same probe-and-cleanup path. */
   async #awaitQuarantineClearance(): Promise<void> {
     const quarantine = this.#quarantine;
     if (!quarantine) return;
-    const remaining = quarantine.deadline - Date.now();
-    if (remaining <= 0) throw this.#faultExpiredQuarantine(quarantine);
-    let observation = "state unknown";
-    try {
-      const probe = await this.#probeIdle(remaining);
-      if (this.#quarantine !== quarantine) return;
-      if (!probe.streaming && !probe.compacting) {
-        this.#clearQuarantineTimer();
-        this.#quarantine = null;
-        return;
-      }
-      observation = probe.compacting ? "still compacting" : "still streaming";
-    } catch (error) {
-      observation = `state probe failed: ${message(error)}`;
-    }
+    await this.#checkQuarantine(quarantine, Date.now() >= quarantine.deadline);
     if (this.#quarantine !== quarantine) return;
-    if (Date.now() >= quarantine.deadline) throw this.#faultExpiredQuarantine(quarantine);
     throw new Error(
-      `Pi RPC Session is quarantined after an unconfirmed cancellation (${observation}); retry shortly or restart the Session`,
+      `Pi RPC Session is quarantined after an unconfirmed cancellation (${quarantine.reason}); retry shortly or restart the Session`,
     );
   }
 
@@ -1260,10 +1281,17 @@ export class PiRpcSession {
       return;
     }
     if (this.#subagents.handle(value)) return;
-    // Quarantined: the Turn was abandoned while the process may still be finishing it, so late
-    // Turn or interaction frames must not start work or fault the Session. Responses are handled
-    // above so the recovery probe can still complete.
-    if (this.#quarantine) return;
+    if (this.#quarantine) {
+      // Terminal frames prompt a native probe; all quarantined Turn frames stay private.
+      if (
+        ["agent_settled", "message_end", "turn_end", "agent_end", "compaction_end"].includes(
+          String(value.type),
+        )
+      ) {
+        void this.#checkQuarantine(this.#quarantine, Date.now() >= this.#quarantine.deadline);
+      }
+      return;
+    }
     this.#observeUsage(value);
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
@@ -1905,6 +1933,25 @@ export class PiRpcSession {
     this.#manualCompaction = null;
     manual?.reject(error);
     this.#rejectActiveTurn(error);
+  }
+
+  async #failAndClose(error: PiRpcFaultError, cleanupContext: string): Promise<void> {
+    if (this.#closed || this.#failed) return;
+    this.#failed = true;
+    this.#closed = true;
+    this.#clearQuarantineTimer();
+    this.#rejectAll(error);
+    let finalFault = error;
+    try {
+      await this.close();
+    } catch (cleanupError) {
+      finalFault = new PiRpcFaultError(
+        "processExited",
+        `${cleanupContext}: ${message(cleanupError)}`,
+        this.stderrTail,
+      );
+    }
+    this.#options.onFault?.(finalFault);
   }
 
   #fail(error: PiRpcFaultError): void {

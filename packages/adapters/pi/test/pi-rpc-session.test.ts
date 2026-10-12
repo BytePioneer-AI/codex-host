@@ -37,6 +37,7 @@ type Scenario =
   | "long-running"
   | "cancel"
   | "cancel-no-settle"
+  | "cancel-busy-at-expiry"
   | "cancel-late-response"
   | "cancel-slow-settle"
   | "malformed-tool"
@@ -263,6 +264,9 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type === "get_state") {
       this.#stateRequestCount += 1;
+      if (this.#scenario === "cancel-busy-at-expiry" && this.#stateRequestCount > 1) {
+        this.#isStreaming = true;
+      }
       this.#respond(command, {
         ...(this.#scenario === "missing-session-id" ? {} : { sessionId: this.#sessionId }),
         sessionFile: this.#sessionFile,
@@ -274,7 +278,11 @@ class FakePiRpcProcess extends EventEmitter {
               : this.#modelId,
         },
         thinkingLevel: this.#thinkingLevel,
-        isStreaming: this.#isStreaming,
+        isStreaming:
+          this.#scenario === "cancel-busy-at-expiry" && this.#stateRequestCount > 1
+            ? true
+            : this.#isStreaming,
+        isCompacting: false,
         contextUsage: { tokens: 45, contextWindow: 200 },
       });
       return;
@@ -584,6 +592,7 @@ class FakePiRpcProcess extends EventEmitter {
       ((this.#scenario === "cancel" ||
         this.#scenario === "cancel-slow-settle" ||
         this.#scenario === "cancel-no-settle" ||
+        this.#scenario === "cancel-busy-at-expiry" ||
         this.#scenario === "cancel-late-response" ||
         this.#scenario === "long-running") &&
         this.#promptCount > 1)
@@ -592,6 +601,7 @@ class FakePiRpcProcess extends EventEmitter {
         this.#scenario === "cancel" ||
         this.#scenario === "cancel-slow-settle" ||
         this.#scenario === "cancel-no-settle" ||
+        this.#scenario === "cancel-busy-at-expiry" ||
         this.#scenario === "cancel-late-response" ||
         this.#scenario === "long-running"
           ? "continued"
@@ -687,6 +697,7 @@ class FakePiRpcProcess extends EventEmitter {
     if (
       this.#scenario === "cancel" ||
       this.#scenario === "cancel-no-settle" ||
+      this.#scenario === "cancel-busy-at-expiry" ||
       this.#scenario === "cancel-slow-settle"
     ) {
       this.#output({
@@ -1849,6 +1860,7 @@ describe("Pi RPC Turn aggregation", () => {
 
       // Once the Session reports idle, the quarantine clears and the next Turn runs.
       process.emitAgentSettled(false);
+      await vi.advanceTimersByTimeAsync(0);
       await expect(rpc.runTurn("continue", (event) => events.push(event))).resolves.toEqual({
         text: "continued",
         cancelled: false,
@@ -1860,7 +1872,7 @@ describe("Pi RPC Turn aggregation", () => {
     }
   });
 
-  it("faults the Session when a quarantined Session never reports idle", async () => {
+  it("does not fault at quarantine expiry after an idle event without another Turn", async () => {
     vi.useFakeTimers();
     const onFault = vi.fn();
     const process = new FakePiRpcProcess("cancel-no-settle");
@@ -1883,16 +1895,57 @@ describe("Pi RPC Turn aggregation", () => {
       await rpc.abort();
       await vi.advanceTimersByTimeAsync(10);
       await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+
+      process.emitAgentSettled(false);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(onFault).not.toHaveBeenCalled();
+      expect(process.exitCode).toBeNull();
+      await expect(rpc.runTurn("continue", () => undefined)).resolves.toEqual({
+        text: "continued",
+        cancelled: false,
+      });
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("faults and closes the process when a quarantined Session remains busy at expiry", async () => {
+    vi.useFakeTimers();
+    const onFault = vi.fn();
+    const process = new FakePiRpcProcess("cancel-busy-at-expiry");
+    const rpc = new PiRpcSession(
+      {
+        cwd: "/synthetic",
+        commandTimeoutMs: 2_000,
+        cancelTimeoutMs: 10,
+        recoveryTimeoutMs: 50,
+        closeTimeoutMs: 500,
+        onFault,
+      },
+      { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+    );
+
+    try {
+      await rpc.start();
+      const turn = rpc.runTurn("cancel me", () => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      await rpc.abort();
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(turn).resolves.toEqual({ text: "", cancelled: true });
       expect(onFault).not.toHaveBeenCalled();
 
-      // The expiry timer faults the Session even when no further operation arrives.
+      // The expiry timer makes one final state probe, then closes the child before faulting.
       await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(500);
       expect(onFault).toHaveBeenCalledWith(
         expect.objectContaining({
           kind: "protocolError",
           message: expect.stringContaining("did not return to a confirmed idle state within 50ms"),
         }),
       );
+      expect(process.exitCode).toBe(0);
       await expect(rpc.runTurn("too late", () => undefined)).rejects.toThrow("unavailable");
     } finally {
       await rpc.close();
@@ -1918,7 +1971,8 @@ describe("Pi RPC Turn aggregation", () => {
 
     try {
       await rpc.start();
-      const turn = rpc.runTurn("cancel me", () => undefined);
+      const events: PiTurnEvent[] = [];
+      const turn = rpc.runTurn("cancel me", (event) => events.push(event));
       await vi.advanceTimersByTimeAsync(0);
       // This scenario withholds the Abort response, so abort() concludes when the Turn is
       // abandoned rather than when Pi acknowledges it.
@@ -1926,12 +1980,14 @@ describe("Pi RPC Turn aggregation", () => {
       await vi.advanceTimersByTimeAsync(10);
       await expect(turn).resolves.toEqual({ text: "", cancelled: true });
       await expect(aborting).resolves.toBeUndefined();
+      const deliveredEvents = [...events];
 
       // Pi answers the abandoned Prompt and Abort afterwards: neither may fault the Session.
       expect(process.emitLateResponse("prompt")).toBe(true);
       expect(process.emitLateResponse("abort")).toBe(true);
       await vi.advanceTimersByTimeAsync(0);
       expect(onFault).not.toHaveBeenCalled();
+      expect(events).toEqual(deliveredEvents);
 
       // Late responses do not clear the quarantine: the expiry still faults the Session once.
       await vi.advanceTimersByTimeAsync(60_000);
@@ -1966,12 +2022,14 @@ describe("Pi RPC Turn aggregation", () => {
       await rpc.abort();
       await vi.advanceTimersByTimeAsync(10);
       await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+      const deliveredEvents = [...events];
 
       // Late frames from the abandoned Turn must not start work or fault the Session.
       process.emitBlockingInteraction();
       process.emitAutonomousTurn({});
       await vi.advanceTimersByTimeAsync(0);
       expect(onFault).not.toHaveBeenCalled();
+      expect(events).toEqual(deliveredEvents);
       expect(events.some(({ type }) => type === "interaction.requested")).toBe(false);
     } finally {
       await rpc.close();

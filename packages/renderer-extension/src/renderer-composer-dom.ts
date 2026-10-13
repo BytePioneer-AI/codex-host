@@ -251,14 +251,21 @@ export function isNativeModelControlCandidate(element: Element): boolean {
     : null;
   for (let depth = 0; fiber && depth < 60; depth += 1) {
     const props = fiber.memoizedProps;
-    if (
-      isRecord(props) &&
-      typeof props.onSelectModel === "function" &&
-      typeof props.onSelectReasoningEffort === "function" &&
-      "reasoningEffort" in props &&
-      isRecord(props.fallbackPowerSelection)
-    ) {
-      return true;
+    if (isRecord(props)) {
+      if (
+        typeof props.onSelectModel === "function" &&
+        typeof props.onSelectReasoningEffort === "function" &&
+        "reasoningEffort" in props &&
+        isRecord(props.fallbackPowerSelection)
+      ) {
+        return true;
+      }
+      if (
+        isRecord(props.selectedLabelCandidate) &&
+        typeof props.selectedLabelCandidate.model === "string"
+      ) {
+        return true;
+      }
     }
     const parent = fiber.return;
     fiber =
@@ -333,6 +340,47 @@ function nativeModelControlForComposer(composer: Element): HTMLElement | null {
     ...composer.querySelectorAll<HTMLElement>('button[aria-haspopup="menu"]'),
   ].filter((element) => isNativeModelControlCandidate(element));
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
+}
+
+export function nativeModelIdForComposer(composer: Element): string | null {
+  const element = nativeModelControlForComposer(composer);
+  if (!element) return null;
+  const fiberName = Object.getOwnPropertyNames(element).find((name) =>
+    name.startsWith("__reactFiber$"),
+  );
+  let fiber = fiberName
+    ? (Object.getOwnPropertyDescriptor(element, fiberName)?.value as {
+        return?: unknown;
+        memoizedProps?: unknown;
+      } | null)
+    : null;
+  for (let depth = 0; fiber && depth < 60; depth += 1) {
+    const props = fiber.memoizedProps;
+    if (isRecord(props)) {
+      if (
+        typeof props.onSelectModel === "function" &&
+        typeof props.onSelectReasoningEffort === "function" &&
+        isRecord(props.fallbackPowerSelection)
+      ) {
+        const selected = props.fallbackPowerSelection.model;
+        if (typeof selected === "string" && selected.length > 0) return selected;
+      }
+      if (isRecord(props.selectedLabelCandidate)) {
+        const selected = props.selectedLabelCandidate.model;
+        if (typeof selected === "string" && selected.length > 0) return selected;
+      }
+    }
+    const parent = fiber.return;
+    fiber =
+      (typeof parent === "object" || typeof parent === "function") && parent !== null
+        ? (parent as typeof fiber)
+        : null;
+  }
+  return null;
+}
+
+export function shouldBypassCodexUsageGateForNativeModel(modelId: string | null): boolean {
+  return modelId?.startsWith("cliproxy/") === true;
 }
 
 export function isNativeContextUsageControlCandidate(element: Element): boolean {

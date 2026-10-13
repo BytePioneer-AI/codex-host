@@ -499,13 +499,34 @@ export function createDraftPrewarmPolicyBridge(
       ...(selectedModel === null ? {} : { model: selectedModel }),
     };
   };
+  // A controlled POSIX Host has no Windows bridge. Its stock Thread remains Codex-owned.
+  const inspectKnownOfficialThread = (threadId: string): Promise<unknown> =>
+    Promise.resolve(
+      originalSend.call(bridge, "thread/read", { threadId, includeTurns: false }),
+    ).then((value) => {
+      const thread = isRecord(value) ? value.thread : null;
+      if (
+        !isRecord(thread) ||
+        thread.id !== threadId ||
+        typeof thread.modelProvider !== "string" ||
+        !thread.modelProvider ||
+        thread.modelProvider === "codexhost" ||
+        typeof thread.cliVersion !== "string" ||
+        !thread.cliVersion ||
+        thread.cliVersion === "codexhost"
+      ) {
+        knownOfficialThreadIds.delete(threadId);
+        throw transportError("Native Thread response cannot establish Codex ownership");
+      }
+      return { owner: "codex", locked: true };
+    });
   const routedSend = (method: string, parameters: unknown, options?: unknown): unknown => {
+    const threadId = threadIdFromParameters(parameters);
     if (
       method === "turn/start" ||
       method === "thread/resume" ||
       method === "codexhost/thread/command/execute"
     ) {
-      const threadId = threadIdFromParameters(parameters);
       if (threadId) externalPrewarms.delete(threadId);
     }
     const routedParameters = method === "thread/start" ? routeThreadStart(parameters) : parameters;
@@ -517,6 +538,16 @@ export function createDraftPrewarmPolicyBridge(
       options === undefined
         ? originalSend.call(bridge, method, routedParameters)
         : originalSend.call(bridge, method, routedParameters, options);
+    if (isRemoteControlHost && method === "codexhost/thread/inspect" && threadId) {
+      if (knownOfficialThreadIds.has(threadId)) return inspectKnownOfficialThread(threadId);
+      return sendBridged().catch((error) => {
+        if (!isUnsupportedPosixBridgeSpawn(error)) throw error;
+        return inspectKnownOfficialThread(threadId).then((inspection) => {
+          knownOfficialThreadIds.add(threadId);
+          return inspection;
+        });
+      });
+    }
     const unresolvedThreadId = shouldResolveThreadOwnership(method, routedParameters);
     if (unresolvedThreadId) {
       return resolveThreadOwnership(unresolvedThreadId).then(

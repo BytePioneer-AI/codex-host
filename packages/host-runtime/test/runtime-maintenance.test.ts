@@ -260,21 +260,18 @@ describe("runtime maintenance", () => {
         });
         return starter;
       });
+      const realSetTimeout = setTimeout;
       vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date"] });
       const pending = f.control.start("0.12.0");
-      let settled = false;
-      void pending.then(
-        () => {
-          settled = true;
-        },
-        () => {
-          settled = true;
-        },
-      );
-      for (let i = 0; i < 300 && !settled; i += 1) {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        await vi.advanceTimersByTimeAsync(50);
+      // Wait for the first poll before advancing the clock. File I/O on a busy CI
+      // runner can otherwise start the 5-second deadline after the test stops advancing.
+      for (let i = 0; i < 500 && vi.getTimerCount() === 0; i += 1) {
+        await new Promise<void>((resolve) => realSetTimeout(resolve, 10));
       }
+      expect(spawn).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      vi.setSystemTime(Date.now() + 5_000);
+      await vi.advanceTimersByTimeAsync(50);
       await expect(pending).rejects.toThrow("Remote updater did not start");
       expect(kill).toHaveBeenCalledWith(helperPid);
       expect(JSON.parse(await readFile(statusPath, "utf8"))).toMatchObject({

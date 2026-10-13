@@ -668,15 +668,20 @@ describe("Renderer draft prewarm policy", () => {
     },
   );
 
-  it("does not fall back after an unrelated Remote Control bridge failure", async () => {
+  it("inspects a recovered native Remote Control Thread without the Windows bridge", async () => {
     const manager = requestManagerFixture();
     const { bridge, directSend } = remoteRequestBridgeFixture();
-    const unrelatedError = Object.assign(
-      new Error("transport: AbsolutePathBuf deserialized without a base path"),
-      { code: -1 },
+    const threadId = "native-posix-thread";
+    const posixError = Object.assign(
+      new Error("Invalid request: AbsolutePathBuf deserialized without a base path"),
+      { code: -32600 },
     );
     directSend.mockImplementation((method: string) =>
-      method === "process/spawn" ? Promise.reject(unrelatedError) : Promise.resolve({}),
+      method === "process/spawn"
+        ? Promise.reject(posixError)
+        : Promise.resolve({
+            thread: { id: threadId, modelProvider: "openai", cliVersion: "0.162.1" },
+          }),
     );
     installDraftPrewarmPolicyBridge(
       manager,
@@ -688,11 +693,117 @@ describe("Renderer draft prewarm policy", () => {
       },
     );
 
-    await expect(bridge.sendRequest("thread/read", { threadId: "unknown-thread" })).rejects.toThrow(
-      "transport: AbsolutePathBuf deserialized without a base path",
-    );
-    expect(directSend).not.toHaveBeenCalledWith("thread/read", { threadId: "unknown-thread" });
+    await expect(bridge.sendRequest("thread/read", { threadId })).resolves.toMatchObject({
+      thread: { id: threadId },
+    });
+    await expect(bridge.sendRequest("codexhost/thread/inspect", { threadId })).resolves.toEqual({
+      owner: "codex",
+      locked: true,
+    });
+    expect(directSend).toHaveBeenCalledWith("thread/read", {
+      threadId,
+      includeTurns: false,
+    });
+    expect(writtenBridgeFrames(directSend)).toHaveLength(0);
   });
+
+  it("verifies a native Remote Control Thread when inspection precedes history loading", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const threadId = "native-posix-thread";
+    directSend.mockImplementation((method: string) =>
+      method === "process/spawn"
+        ? Promise.reject(
+            Object.assign(
+              new Error("Invalid request: AbsolutePathBuf deserialized without a base path"),
+              { code: -32600 },
+            ),
+          )
+        : Promise.resolve({
+            thread: { id: threadId, modelProvider: "openai", cliVersion: "0.162.1" },
+          }),
+    );
+    installDraftPrewarmPolicyBridge(
+      manager,
+      bridge,
+      "remote-control:fixture-host",
+      {},
+      {
+        discardAllPrewarmedThreads: vi.fn(),
+      },
+    );
+
+    await expect(bridge.sendRequest("codexhost/thread/inspect", { threadId })).resolves.toEqual({
+      owner: "codex",
+      locked: true,
+    });
+    expect(directSend).toHaveBeenCalledWith("thread/read", {
+      threadId,
+      includeTurns: false,
+    });
+    expect(writtenBridgeFrames(directSend)).toHaveLength(0);
+  });
+
+  it("does not identify an external projection as native after Remote Control recovery", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const threadId = "native-posix-thread";
+    directSend.mockImplementation((method: string) =>
+      method === "process/spawn"
+        ? Promise.reject(
+            Object.assign(
+              new Error("Invalid request: AbsolutePathBuf deserialized without a base path"),
+              { code: -32600 },
+            ),
+          )
+        : Promise.resolve({
+            thread: { id: threadId, modelProvider: "codexhost", cliVersion: "codexhost" },
+          }),
+    );
+    installDraftPrewarmPolicyBridge(
+      manager,
+      bridge,
+      "remote-control:fixture-host",
+      {},
+      {
+        discardAllPrewarmedThreads: vi.fn(),
+      },
+    );
+
+    await bridge.sendRequest("thread/read", { threadId });
+    await expect(bridge.sendRequest("codexhost/thread/inspect", { threadId })).rejects.toThrow(
+      "Native Thread response cannot establish Codex ownership",
+    );
+  });
+
+  it.each(["thread/read", "codexhost/thread/inspect"] as const)(
+    "does not fall back after an unrelated Remote Control bridge failure: %s",
+    async (method) => {
+      const manager = requestManagerFixture();
+      const { bridge, directSend } = remoteRequestBridgeFixture();
+      const unrelatedError = Object.assign(
+        new Error("transport: AbsolutePathBuf deserialized without a base path"),
+        { code: -1 },
+      );
+      directSend.mockImplementation((method: string) =>
+        method === "process/spawn" ? Promise.reject(unrelatedError) : Promise.resolve({}),
+      );
+      installDraftPrewarmPolicyBridge(
+        manager,
+        bridge,
+        "remote-control:fixture-host",
+        {},
+        {
+          discardAllPrewarmedThreads: vi.fn(),
+        },
+      );
+
+      await expect(bridge.sendRequest(method, { threadId: "unknown-thread" })).rejects.toThrow(
+        "transport: AbsolutePathBuf deserialized without a base path",
+      );
+      expect(directSend).not.toHaveBeenCalledWith("thread/read", { threadId: "unknown-thread" });
+    },
+  );
 
   it("leaves stock Remote Control requests direct and terminates its bridge on dispose", async () => {
     const manager = requestManagerFixture();

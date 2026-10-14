@@ -46,6 +46,10 @@ ELECTRON_RUN_AS_NODE=1 \
 
 进入 TUI 后输入 `/login`，完成浏览器认证再重试 Harness。这里使用的仍是 App 内置 CLI，不表示需要另装一个 CLI。不要使用 Desktop owner runtime 的凭据，也不要发明 `codebuddy auth login` 命令。
 
+若 `session/new` 成功而首个 Turn 返回 `refusal`，应检查 ACP 终态 `_meta["codebuddy.ai/errorMessage"]`。共享 CodeBuddy Session 会提取其中的 `data.details` 或 `message`，经诊断脱敏后显示；`data.category="auth"` 映射为 `authenticationRequired`，而不是仅显示 `FAILED_MODEL_REQUEST`。JSON-RPC `-32000` 本身不区分认证与其他原生拒绝。缺少可读诊断时保留原有的 stop reason / outcome 提示。
+
+部分新版 WorkBuddy 将桌面登录凭据加密保存，独立启动的内置 CLI 可能记录 `AtRestEncryption ... category=missing-key`，并在恢复登录时显示 `hasSession=true hasAccessToken=false`。此时桌面已登录、模型目录可读取或 Thread 标题已生成，都不能证明当前 ACP 进程可以完成认证。原生 `/login` 提示也不代表 CodexHost 已支持该版本所需的凭据引导。此兼容问题见 [Issue #464](https://github.com/BytePioneer-AI/codex-host/issues/464)；当前集成仍遵守下述私有运行时边界，不会自动复制或解密 Desktop 凭据。
+
 ## 工作目录与原生历史定位
 
 Session 的执行工作目录始终来自 Codex Desktop 传入的 `cwd`，包括 Desktop 选择的 worktree；配置根 `~/.workbuddy-ai` 只是原生状态目录，不替代执行目录。历史文件使用 WorkBuddy 内置 CLI 的 `PathUtils.canonicalizeStorePath` / `compressPath` 规则：先解析工作目录的真实路径，再将 `/`、`\`、`:` 转为连字符、去除首尾连字符并合并连续连字符，保留大小写、点号、空格、下划线及 Unicode 字符。

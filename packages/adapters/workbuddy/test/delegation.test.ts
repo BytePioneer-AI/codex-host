@@ -45,6 +45,8 @@ describe("WorkBuddy cross-Harness delegation", () => {
     });
     const instructions = WORKBUDDY_DELEGATION_INSTRUCTIONS;
     expect(invocation.arguments).toEqual([
+      "--eval",
+      expect.any(String),
       WORKBUDDY_MACOS_CLI,
       "--acp",
       "--append-system-prompt",
@@ -81,7 +83,13 @@ describe("WorkBuddy cross-Harness delegation", () => {
         platform: "darwin",
         isExecutable: () => true,
       }).arguments,
-    ).toEqual([WORKBUDDY_MACOS_CLI, "--acp", "--no-session-persistence"]);
+    ).toEqual([
+      "--eval",
+      expect.any(String),
+      WORKBUDDY_MACOS_CLI,
+      "--acp",
+      "--no-session-persistence",
+    ]);
     expect(
       workBuddyInvocation(
         {
@@ -92,7 +100,7 @@ describe("WorkBuddy cross-Harness delegation", () => {
         false,
         { platform: "darwin", isExecutable: () => true },
       ).arguments,
-    ).toEqual([WORKBUDDY_MACOS_CLI, "--acp"]);
+    ).toEqual(["--eval", expect.any(String), WORKBUDDY_MACOS_CLI, "--acp"]);
   });
 
   it("preserves per-Thread delegation environment across create and resume", async () => {

@@ -193,8 +193,12 @@ export async function readCodexRollouts(
           break;
         }
         case "response_item":
-          counters.boundary();
-          firstPrompt ??= userItemPrompt(p);
+          // Nested content can contain `"role":"user"` without this row being a user message.
+          // Clearing the pending pair on those rows drops the following token count.
+          if (p.type === "message" && p.role === "user") {
+            counters.boundary();
+            firstPrompt ??= userItemPrompt(p);
+          }
           break;
         case "event_msg":
           if (p.type === "task_started") {

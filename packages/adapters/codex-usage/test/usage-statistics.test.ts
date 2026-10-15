@@ -106,6 +106,42 @@ describe("Codex native counters", () => {
     ]);
   });
 
+  it("reads a token count whose payload type sits past the first kibibyte", async () => {
+    const entries = await read([
+      meta(),
+      context(),
+      {
+        timestamp: new Date(BASE + 1000).toISOString(),
+        type: "event_msg",
+        payload: {
+          info: { total_token_usage: tokens(100, 10), last_token_usage: tokens(100, 10) },
+          note: "n".repeat(2048),
+          type: "token_count",
+        },
+      },
+    ]);
+    expect(entries.map((e) => [e.inputTokens, e.outputTokens])).toEqual([[100, 10]]);
+  });
+
+  it("reads a user message title when the role sits past the first kibibyte", async () => {
+    const entries = await read([
+      meta(),
+      context(),
+      count(tokens(100, 10), tokens(100, 10)),
+      {
+        timestamp: new Date(BASE + 2000).toISOString(),
+        type: "response_item",
+        payload: {
+          type: "message",
+          content: [{ type: "input_text", text: "ship the usage fix" }],
+          padding: "p".repeat(2048),
+          role: "user",
+        },
+      },
+    ]);
+    expect(entries[0]).toMatchObject({ sessionTitle: "ship the usage fix" });
+  });
+
   it("uses cumulative deltas, ignores repeated checkpoints, and counts runtime resets", async () => {
     const a = tokens(100, 10, 50),
       total = tokens(250, 30, 100),

@@ -376,8 +376,8 @@ describe("WorkBuddy Adapter identity", () => {
   it("does not authenticate when inspection fails for non-auth reasons", async () => {
     const { factory, authCalls } = unauthenticatedFactory();
     const adapter = new WorkBuddyAdapter({
-      clientFactory: () => ({
-        ...factory(),
+      clientFactory: (options) => ({
+        ...factory(options),
         open: async () => {
           throw new CodeBuddyError("nativeFailure", "boom");
         },

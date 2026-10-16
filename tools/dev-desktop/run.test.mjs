@@ -320,7 +320,7 @@ describe("development Desktop start", () => {
           environment: {},
           spawnImplementation: vi.fn(),
         }),
-      ).rejects.toThrow("npm start requires Node.js 22 or 24; current version is 20.19.0");
+      ).rejects.toThrow("npm start requires Node.js 22 or 24 or 25; current version is 20.19.0");
     } finally {
       Object.defineProperty(process.versions, "node", {
         value: originalNode,
@@ -329,7 +329,7 @@ describe("development Desktop start", () => {
     }
   });
 
-  it("accepts Node.js 22 and 24", async () => {
+  it("accepts Node.js 22, 24 and 25", async () => {
     const root = temporaryDirectory();
     const nodePath = path.join(root, "node.exe");
     materializeArtifacts(root, "win32", nodePath);
@@ -339,7 +339,7 @@ describe("development Desktop start", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     try {
-      for (const version of ["22.19.0", "24.0.0"]) {
+      for (const version of ["22.19.0", "24.0.0", "25.0.0", "25.4.0"]) {
         Object.defineProperty(process.versions, "node", {
           value: version,
           configurable: true,
@@ -363,11 +363,11 @@ describe("development Desktop start", () => {
     }
   });
 
-  it("rejects Node.js 23", async () => {
+  it.each(["22.18.0", "23.0.0", "26.0.0"])("rejects Node.js %s", async (version) => {
     const root = temporaryDirectory();
     const originalNode = process.versions.node;
     Object.defineProperty(process.versions, "node", {
-      value: "23.0.0",
+      value: version,
       configurable: true,
     });
     try {
@@ -379,7 +379,7 @@ describe("development Desktop start", () => {
           environment: {},
           spawnImplementation: vi.fn(),
         }),
-      ).rejects.toThrow("npm start requires Node.js 22 or 24; current version is 23.0.0");
+      ).rejects.toThrow(`npm start requires Node.js 22 or 24 or 25; current version is ${version}`);
     } finally {
       Object.defineProperty(process.versions, "node", {
         value: originalNode,

@@ -385,27 +385,34 @@ describe("Codex usage gate for external Harness Composers", () => {
     expect(f.blocked()).toBe(false);
   });
 
-  it("binds an Account gate a child subscribes after the pair was bound", () => {
-    vi.useFakeTimers();
-    const f = composerFixture(undefined, { childAccount: true });
-    const ownerAccount = required(f.instances[1]);
-    const childAccount = required(f.instances[3]);
-    // The child has not mounted its Account subscription yet.
-    const childHooks = f.child.memoizedState;
-    f.child.memoizedState = null;
-    expect(f.gate.update(true)).toBe("bypassed");
-    expect(ownerAccount.getSnapshot()).toBe(false);
-    // React mounts a new child fiber that subscribes the Account gate.
-    f.editor.__reactFiber$test = { ...f.child, memoizedState: childHooks };
-    expect(childAccount.getSnapshot()).toBe(true);
-    vi.advanceTimersByTime(1000);
-    expect(f.gate.refresh()).toBe("bypassed");
-    expect(childAccount.getSnapshot()).toBe(false);
-    expect(ownerAccount.getSnapshot()).toBe(false);
-    expect(f.gate.update(false)).toBe("native");
-    expect(childAccount.getSnapshot()).toBe(true);
-    expect(ownerAccount.getSnapshot()).toBe(true);
-  });
+  it.each([false, true])(
+    "binds a late child Account gate (snapshotWrapper: %s)",
+    (snapshotWrapper) => {
+      vi.useFakeTimers();
+      const f = composerFixture(undefined, { childAccount: true, snapshotWrapper });
+      const ownerAccount = required(f.instances[1]);
+      const childAccount = required(f.instances[3]);
+      // The child has not mounted its Account subscription yet.
+      const childHooks = f.child.memoizedState;
+      f.child.memoizedState = null;
+      expect(f.gate.update(true)).toBe("bypassed");
+      expect(ownerAccount.getSnapshot()).toBe(false);
+      // React refreshes the owner's lazy snapshot wrapper on its next render.
+      if (snapshotWrapper) {
+        ownerAccount.getSnapshot = () => required(f.subscribers[1]).getSnapshot();
+      }
+      // React mounts a new child fiber that subscribes the Account gate.
+      f.editor.__reactFiber$test = { ...f.child, memoizedState: childHooks };
+      expect(childAccount.getSnapshot()).toBe(true);
+      vi.advanceTimersByTime(1000);
+      expect(f.gate.refresh()).toBe("bypassed");
+      expect(childAccount.getSnapshot()).toBe(false);
+      expect(ownerAccount.getSnapshot()).toBe(false);
+      expect(f.gate.update(false)).toBe("native");
+      expect(childAccount.getSnapshot()).toBe(true);
+      expect(ownerAccount.getSnapshot()).toBe(true);
+    },
+  );
 
   it("restores the original wrapper after React refreshes the instance getter", () => {
     const f = composerFixture(undefined, { snapshotWrapper: true, signalReserve: true });

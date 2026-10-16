@@ -81,7 +81,10 @@ interface GateScope {
  * pass-through component with the same props but no gate hooks, so props alone
  * are ambiguous.
  */
-function submitOwners(composer: Element): GateScope[] {
+function submitOwners(
+  composer: Element,
+  projections?: ReadonlyMap<Instance, Projection>,
+): GateScope[] {
   // The ProseMirror editor is not rendered by React; start at its nearest React host.
   let element: Element | null = composer.querySelector(EDITOR_SELECTOR) ?? composer;
   for (let depth = 0; element && depth < MAX_DOM_DEPTH; depth += 1) {
@@ -105,7 +108,7 @@ function submitOwners(composer: Element): GateScope[] {
       // An outer pass-through wrapper's scope contains the inner owner's, so
       // only the innermost owner whose scope holds the reserve gate counts.
       const valid = scopes.filter((scope) => {
-        const gates = gateSubscriptions(scope);
+        const gates = gateSubscriptions(scope, projections);
         return !gates.invalid && gates.reserve.length > 0;
       });
       return valid.filter(
@@ -117,8 +120,11 @@ function submitOwners(composer: Element): GateScope[] {
   return [];
 }
 
-function findSubmitScope(composer: Element): GateScope | null {
-  const scopes = submitOwners(composer);
+function findSubmitScope(
+  composer: Element,
+  projections: ReadonlyMap<Instance, Projection>,
+): GateScope | null {
+  const scopes = submitOwners(composer, projections);
   return scopes.length === 1 ? (scopes[0] ?? null) : null;
 }
 
@@ -427,7 +433,7 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
   // Re-read the scope while bound, so a component that subscribes another
   // Account gate after the first bind (a child mounted later) is found too.
   const scope = (): GateScope | null => {
-    const found = findSubmitScope(composer);
+    const found = findSubmitScope(composer, projections);
     if (!owner) return found;
     return found?.owner === owner.owner ? found : owner;
   };

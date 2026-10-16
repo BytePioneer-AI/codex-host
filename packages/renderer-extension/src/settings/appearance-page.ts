@@ -1,3 +1,9 @@
+import { readCpaLiveVoiceHookConfig } from "../renderer-cpa-live-voice-hook.js";
+import {
+  CPA_LIVE_VOICE_CHANGE_EVENT,
+  readCpaLiveVoicePreference,
+  writeCpaLiveVoicePreference,
+} from "../renderer-cpa-live-voice-preference.js";
 import {
   REASONING_SOFT_WRAP_CHANGE_EVENT,
   readReasoningTranscriptSoftWrap,
@@ -35,6 +41,32 @@ export function createAppearanceSettingsPage(
       description.textContent = messages.appearanceDescription;
 
       const { group, card } = createPreferenceGroup(document, messages.appearanceGroup);
+      const liveVoiceId = preferenceId("cpa-live-voice");
+      const liveVoiceRow = createPreferenceItem(document, {
+        title: messages.cpaLiveVoiceTitle,
+        description: messages.cpaLiveVoiceDescription,
+        controlId: liveVoiceId,
+        help: { label: messages.cpaLiveVoiceHelpLabel, lines: messages.cpaLiveVoiceHelp },
+      });
+      const liveVoice = createPreferenceSwitch(document, liveVoiceId, liveVoiceRow.description.id);
+      liveVoice.checked = readCpaLiveVoicePreference(ownerWindow);
+      liveVoice.addEventListener("change", () => {
+        writeCpaLiveVoicePreference(ownerWindow, liveVoice.checked);
+      });
+      const syncLiveVoice = (): void => {
+        liveVoice.checked = readCpaLiveVoicePreference(ownerWindow);
+      };
+      ownerWindow.addEventListener(CPA_LIVE_VOICE_CHANGE_EVENT, syncLiveVoice);
+      liveVoiceRow.item.append(liveVoice);
+      if (!readCpaLiveVoiceHookConfig(ownerWindow)) {
+        const warning = document.createElement("div");
+        warning.className = "text-xs leading-[18px] text-settings-warning";
+        warning.setAttribute("role", "status");
+        warning.textContent = messages.cpaLiveVoiceRestartRequired;
+        liveVoiceRow.description.after(warning);
+      }
+      card.append(liveVoiceRow.item);
+
       const softWrapId = preferenceId("reasoning-soft-wrap");
       const row = createPreferenceItem(document, {
         title: messages.reasoningSoftWrapTitle,
@@ -60,6 +92,7 @@ export function createAppearanceSettingsPage(
         getLoadedSessionsClient,
       );
       return () => {
+        ownerWindow.removeEventListener(CPA_LIVE_VOICE_CHANGE_EVENT, syncLiveVoice);
         ownerWindow.removeEventListener(REASONING_SOFT_WRAP_CHANGE_EVENT, sync);
         disposeIdleRelease();
       };

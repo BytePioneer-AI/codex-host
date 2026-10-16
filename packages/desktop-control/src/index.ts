@@ -30,6 +30,7 @@ export { inspectRendererDom, validateRendererDomInspection } from "./renderer-do
 export {
   createRendererCdpControlSession,
   installRendererCdpControlSession,
+  selectAvatarOverlayRendererTargets,
   selectPrimaryRendererTarget,
 } from "./renderer-cdp-control-session.js";
 export type {

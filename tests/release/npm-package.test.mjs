@@ -90,6 +90,12 @@ async function createHomebrewNodeLayout(root) {
     await copyFile(process.execPath, cellarNode);
     await chmod(cellarNode, 0o755);
   }
+  // Homebrew Node can load libnode relative to its executable.
+  await symlink(
+    path.join(path.dirname(path.dirname(process.execPath)), "lib"),
+    path.join(path.dirname(path.dirname(cellarNode)), "lib"),
+    "dir",
+  );
   await writeExecutable(prefixNpm, '#!/usr/bin/env node\nconsole.log("homebrew-prefix-npm");\n');
   await writeExecutable(libexecNpm, '#!/usr/bin/env node\nconsole.log("homebrew-libexec-npm");\n');
   await mkdir(path.join(brewPrefix, "bin"), { recursive: true });
@@ -107,15 +113,14 @@ async function createHomebrewNodeLayout(root) {
 async function createGlobalCodexhostInstall(prefix) {
   const platformPackage =
     process.platform === "win32"
-      ? `@codexhost/cli-win32-${process.arch}`
-      : `@codexhost/cli-darwin-${process.arch}`;
+      ? `@karlorz/codexhost-cli-win32-${process.arch}`
+      : `@karlorz/codexhost-cli-darwin-${process.arch}`;
   const packageRoot = path.join(prefix, "lib", "node_modules", platformPackage);
   const launcherPath = path.join(
     prefix,
     "lib",
     "node_modules",
-    "@codexhost",
-    "cli",
+    ...NPM_PACKAGE_NAME.split("/"),
     "bin",
     "codexhost.js",
   );
@@ -171,8 +176,14 @@ async function createNpmMetaPackageFixture(root) {
 }
 
 async function createLauncherLifecycleFixture(root, platform) {
-  const launcherPath = path.join(root, "node_modules", "@codexhost", "cli", "bin", "codexhost.js");
-  const platformPackage = `@codexhost/cli-${platform}-x64`;
+  const launcherPath = path.join(
+    root,
+    "node_modules",
+    ...NPM_PACKAGE_NAME.split("/"),
+    "bin",
+    "codexhost.js",
+  );
+  const platformPackage = `@karlorz/codexhost-cli-${platform}-x64`;
   const platformRoot = path.join(root, "node_modules", ...platformPackage.split("/"));
   const executableSuffix = platform === "win32" ? ".exe" : "";
   const npmCliPath = path.join(root, "npm-cli.js");
@@ -241,7 +252,7 @@ async function runLauncherLifecycle(
       await createLauncherLifecycleFixture(root, platform);
     await writeFile(
       path.join(platformRoot, "package.json"),
-      JSON.stringify({ name: `@codexhost/cli-${platform}-x64`, version: platformVersion }),
+      JSON.stringify({ name: `@karlorz/codexhost-cli-${platform}-x64`, version: platformVersion }),
     );
     const environment = {
       ...process.env,
@@ -450,7 +461,7 @@ describe("npm package release", () => {
   it("publishes a scoped platform package with platform constraints", () => {
     const target = releaseTarget("macos-arm64");
     const manifest = createNpmPackageManifest({ version: "0.1.0", target });
-    expect(manifest.name).toBe("@codexhost/cli-darwin-arm64");
+    expect(manifest.name).toBe("@karlorz/codexhost-cli-darwin-arm64");
     expect(npmPlatformPackageName(target)).toBe(manifest.name);
     expect(manifest.private).toBeUndefined();
     expect(manifest.bin).toBeUndefined();
@@ -491,9 +502,9 @@ describe("npm package release", () => {
 
   it("injects package resources when the user runs codexhost with no args", () => {
     const source = createNpmBinLauncherSource({ version: "0.1.0" });
-    expect(source).toContain('"darwin-arm64": "@codexhost/cli-darwin-arm64"');
-    expect(source).toContain('"linux-x64": "@codexhost/cli-linux-x64"');
-    expect(source).toContain('"linux-arm64": "@codexhost/cli-linux-arm64"');
+    expect(source).toContain('"darwin-arm64": "@karlorz/codexhost-cli-darwin-arm64"');
+    expect(source).toContain('"linux-x64": "@karlorz/codexhost-cli-linux-x64"');
+    expect(source).toContain('"linux-arm64": "@karlorz/codexhost-cli-linux-arm64"');
     expect(source).toContain("require.resolve");
     expect(source).toContain("--omit=optional");
     expect(source).toContain('launchArguments = ["launch"]');
@@ -631,7 +642,7 @@ describe("npm package release", () => {
     expect(result.stderr).toContain("Launcher exited after ready");
     expect(result.stdout).toContain(
       "⭐ If this project helps you, please give us a Star ⭐\n" +
-        "https://github.com/BytePioneer-AI/codex-host",
+        "https://github.com/karlorz/codex-host",
     );
     expect(readme).toContain("On Windows, the command remains attached until Codex Desktop exits");
     expect(readme).toContain("process trees of completed commands");
@@ -644,10 +655,10 @@ describe("npm package release", () => {
         const result = await runLauncherLifecycle(platform, { platformVersion });
         expect(result.status, result.stderr).toBe(1);
         expect(result.stderr).toContain("platform package version mismatch");
-        expect(result.stderr).toContain(`@codexhost/cli-${platform}-x64`);
+        expect(result.stderr).toContain(`@karlorz/codexhost-cli-${platform}-x64`);
         expect(result.stderr).toContain("expected 0.1.0");
         expect(result.stderr).toContain(
-          `npm install -g @codexhost/cli@0.1.0 @codexhost/cli-${platform}-x64@0.1.0`,
+          `npm install -g @karlorz/codexhost-cli@0.1.0 @karlorz/codexhost-cli-${platform}-x64@0.1.0`,
         );
         expect(result.stderr).not.toContain("received Launcher ready");
         expect(result.stdout).not.toContain("startup:");
@@ -664,7 +675,7 @@ describe("npm package release", () => {
     expect(result.stderr).not.toContain("Launcher exited after ready");
     expect(result.stdout).toBe(
       "⭐ If this project helps you, please give us a Star ⭐\n" +
-        "https://github.com/BytePioneer-AI/codex-host\n",
+        "https://github.com/karlorz/codex-host\n",
     );
   });
 
@@ -674,7 +685,7 @@ describe("npm package release", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toBe(
       "⭐ 如果这个项目对你有帮助，请给我们一个 Star ⭐\n" +
-        "https://github.com/BytePioneer-AI/codex-host\n",
+        "https://github.com/karlorz/codex-host\n",
     );
   });
 
@@ -685,12 +696,12 @@ describe("npm package release", () => {
     expect(colored.status, colored.stderr).toBe(0);
     expect(colored.stdout).toBe(
       "\u001B[33m⭐ If this project helps you, please give us a Star ⭐\u001B[0m\n" +
-        "\u001B[36mhttps://github.com/BytePioneer-AI/codex-host\u001B[0m\n",
+        "\u001B[36mhttps://github.com/karlorz/codex-host\u001B[0m\n",
     );
     expect(plain.status, plain.stderr).toBe(0);
     expect(plain.stdout).toBe(
       "⭐ If this project helps you, please give us a Star ⭐\n" +
-        "https://github.com/BytePioneer-AI/codex-host\n",
+        "https://github.com/karlorz/codex-host\n",
     );
   });
 
@@ -868,14 +879,14 @@ describe("npm package release", () => {
       path.resolve(import.meta.dirname, "../../scripts/release/prepare-npm.mjs"),
       "utf8",
     );
-    expect(source).toContain('NPM_PACKAGE_NAME = "@codexhost/cli"');
+    expect(source).toContain('NPM_PACKAGE_NAME = "@karlorz/codexhost-cli"');
     expect(Object.values(NPM_PLATFORM_PACKAGE_NAMES)).toEqual([
-      "@codexhost/cli-darwin-arm64",
-      "@codexhost/cli-darwin-x64",
-      "@codexhost/cli-win32-x64",
-      "@codexhost/cli-win32-arm64",
-      "@codexhost/cli-linux-x64",
-      "@codexhost/cli-linux-arm64",
+      "@karlorz/codexhost-cli-darwin-arm64",
+      "@karlorz/codexhost-cli-darwin-x64",
+      "@karlorz/codexhost-cli-win32-x64",
+      "@karlorz/codexhost-cli-win32-arm64",
+      "@karlorz/codexhost-cli-linux-x64",
+      "@karlorz/codexhost-cli-linux-arm64",
     ]);
     expect(source).toContain("publishConfig");
     expect(source).toContain('access: "public"');

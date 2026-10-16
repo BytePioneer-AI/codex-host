@@ -33,6 +33,19 @@ describe("Renderer settings localization", () => {
 
     expect(english.title).toBe("Settings");
     expect(chinese.title).toBe("设置");
+    expect(english.cpaLiveVoiceTitle).toBe("Override live voice");
+    expect(chinese.cpaLiveVoiceTitle).toBe("改写实时语音");
+    expect(english.cpaLiveVoiceTitle.toLowerCase()).not.toContain("cpa");
+    expect(chinese.cpaLiveVoiceTitle.toLowerCase()).not.toContain("cpa");
+    expect(english.cpaLiveVoiceDescription).toContain("On by default");
+    expect(chinese.cpaLiveVoiceDescription).toContain("默认开启");
+    expect(english.cpaLiveVoiceHelp.join(" ")).toContain("experimental_realtime_ws_base_url");
+    expect(chinese.cpaLiveVoiceHelp.join(" ")).toContain(
+      "experimental_realtime_webrtc_call_base_url",
+    );
+    expect(english.cpaLiveVoiceHelp.join(" ")).toContain("is not live");
+    expect(english.cpaLiveVoiceRestartRequired).toContain("relaunch Codex");
+    expect(chinese.cpaLiveVoiceRestartRequired).toContain("重新启动 Codex");
     expect(chinese.openSettings).toBe("打开 codexhost 设置");
     expect(chinese.starOnGitHub).toBe("Star 支持");
     expect(english.starOnGitHub).toBe("Star to support");

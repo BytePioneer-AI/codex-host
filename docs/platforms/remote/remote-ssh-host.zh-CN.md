@@ -90,7 +90,7 @@ Web 控制台的「远程连接」（`#remote-connections`）也提供同一套�
 
 ```bash
 codexhost remote stop
-npm install -g @codexhost/cli@latest
+npm install -g @karlorz/codexhost-cli@latest
 codexhost remote install
 codexhost remote start
 ```
@@ -139,7 +139,7 @@ npm start 0.12.0
 
 在连接卡片中点击「卸载远程服务」。确认后，会关闭此连接的自动连接、停止远程服务并移除远程接入配置；Mac 上还会卸载配套的 Harness 后台服务。SSH 连接记录、项目文件和会话数据保留，之后可重新安装服务。卸载会中断正在进行的远程会话。
 
-默认保留 codexhost 软件包。勾选「同时卸载 codexhost 软件包」会在服务卸载成功后，再卸载远程电脑的 npm 全局 `@codexhost/cli`，不会卸载 Codex CLI、Node.js 或其他 Harness。勾选前请确认远程桌面端不再需要通过该软件包启动。安装位置与当前 npm 不匹配时，软件包卸载会在停止服务前被拒绝；可改为仅卸载服务，或在远程电脑上手动卸载软件包。软件包卸载失败时，页面会明确提示远程服务已卸载，并允许重试。
+默认保留 codexhost 软件包。勾选「同时卸载 codexhost 软件包」会在服务卸载成功后，再卸载远程电脑的 npm 全局 `@karlorz/codexhost-cli`，不会卸载 Codex CLI、Node.js 或其他 Harness。勾选前请确认远程桌面端不再需要通过该软件包启动。安装位置与当前 npm 不匹配时，软件包卸载会在停止服务前被拒绝；可改为仅卸载服务，或在远程电脑上手动卸载软件包。软件包卸载失败时，页面会明确提示远程服务已卸载，并允许重试。
 
 不再使用远程端时，在远程电脑的终端执行：
 

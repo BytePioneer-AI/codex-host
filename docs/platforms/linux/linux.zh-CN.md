@@ -3,7 +3,7 @@
 codexhost 通过 npm 包支持 x64 和 ARM64 Linux。请先安装与当前架构匹配的官方 ChatGPT App，再安装 codexhost：
 
 ```bash
-npm install -g @codexhost/cli
+npm install -g @karlorz/codexhost-cli
 codexhost
 ```
 

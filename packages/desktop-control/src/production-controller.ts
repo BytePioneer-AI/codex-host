@@ -15,6 +15,7 @@ import {
   createRendererStatusReporter,
   type DesktopControllerStatusDocument,
 } from "./controller-status.js";
+import { cpaLiveVoiceHookBootstrap } from "./cpa-live-voice-hook.js";
 import {
   installRendererCdpControlSession,
   type RendererCdpControlSession,
@@ -38,6 +39,7 @@ export interface DesktopControllerDependencies {
   install(options: {
     rendererCdpEndpoint: string;
     rendererSource: string;
+    overlayHookSource?: string;
     enabledAgents?: readonly string[];
     timeoutMs: number;
     signal?: AbortSignal;
@@ -241,13 +243,25 @@ export async function runDesktopController(
   const createSession = async (): Promise<RendererCdpControlSession> => {
     status.installing();
     startupTrace("reading Renderer bundle");
-    const rendererSource = await dependencies.readRenderer(options.rendererPath);
+    const rendererRead = dependencies.readRenderer(options.rendererPath);
+    const bootstrap = cpaLiveVoiceHookBootstrap();
+    const overlayPath = bootstrap
+      ? path.join(path.dirname(options.rendererPath), "cpa-live-voice-hook.js")
+      : undefined;
+    const [rendererSource, overlayBundle] = overlayPath
+      ? await Promise.all([rendererRead, dependencies.readRenderer(overlayPath)])
+      : [await rendererRead, undefined];
     if (rendererSource.trim().length === 0) throw new Error("production Renderer Bundle is empty");
+    const overlayHookSource =
+      bootstrap && overlayBundle && overlayBundle.trim().length > 0
+        ? `${bootstrap}${overlayBundle}`
+        : undefined;
     startupTrace("installing Renderer Session");
     const installed = await installProductionSession(
       {
         rendererCdpEndpoint: options.rendererCdpEndpoint,
-        rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${rendererSource}`,
+        rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${bootstrap}${rendererSource}`,
+        ...(overlayHookSource ? { overlayHookSource } : {}),
         // External Agents are discovered from each target Host after installation.
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
         signal,

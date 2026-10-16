@@ -31,6 +31,7 @@ for relative in \
   app/desktop-controller.mjs \
   app/host-runtime.mjs \
   app/renderer-extension.js \
+  app/cpa-live-voice-hook.js \
   licenses/Node.js-LICENSE.txt \
   licenses/Anthropic-SDK-LICENSE.txt \
   licenses/Claude-Agent-SDK-LICENSE.md \

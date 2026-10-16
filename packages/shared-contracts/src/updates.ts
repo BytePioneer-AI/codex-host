@@ -46,7 +46,7 @@ const githubReleaseNotesUrlSchema = z
   .string()
   .max(300)
   .regex(
-    /^https:\/\/github\.com\/BytePioneer-AI\/codex-host\/releases\/tag\/v[0-9A-Za-z.+-]+$/u,
+    /^https:\/\/github\.com\/karlorz\/codex-host\/releases\/tag\/v[0-9A-Za-z.+-]+$/u,
     "release notes URL must identify a codexhost GitHub Release",
   );
 

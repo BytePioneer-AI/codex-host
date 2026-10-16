@@ -1,13 +1,15 @@
 import type { ArtifactSource } from "./artifact.js";
 import { requireSemanticVersion } from "./status.js";
 
-export const CODEXHOST_LATEST_RELEASE_URL =
-  "https://api.github.com/repos/BytePioneer-AI/codex-host/releases/latest";
+export const GITHUB_REPOSITORY = "karlorz/codex-host";
+export const CODEXHOST_LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest`;
 
 const SHA256_DIGEST_PATTERN = /^sha256:([0-9a-f]{64})$/u;
-const RELEASE_NOTES_URL_PATTERN =
-  /^https:\/\/github\.com\/BytePioneer-AI\/codex-host\/releases\/tag\/(v[0-9A-Za-z.+-]+)$/u;
-const DOWNLOAD_URL_PREFIX = "https://github.com/BytePioneer-AI/codex-host/releases/download/";
+const RELEASE_NOTES_URL_PATTERN = new RegExp(
+  `^https://github\\.com/${GITHUB_REPOSITORY.replaceAll("/", "\\/")}/releases/tag/(v[0-9A-Za-z.+-]+)$`,
+  "u",
+);
+const DOWNLOAD_URL_PREFIX = `https://github.com/${GITHUB_REPOSITORY}/releases/download/`;
 
 export type InstallerReleaseTarget = "macos-arm64" | "macos-x64" | "windows-x64" | "windows-arm64";
 export type ReleaseTarget = InstallerReleaseTarget | "linux-x64" | "linux-arm64";

@@ -38,6 +38,11 @@ export interface RendererSettingsMessages {
   readonly otherSection: string;
   readonly appearanceDescription: string;
   readonly appearanceGroup: string;
+  readonly cpaLiveVoiceTitle: string;
+  readonly cpaLiveVoiceDescription: string;
+  readonly cpaLiveVoiceHelpLabel: string;
+  readonly cpaLiveVoiceHelp: readonly string[];
+  readonly cpaLiveVoiceRestartRequired: string;
   readonly loadedSessions: {
     title: string;
     description: string;
@@ -290,6 +295,17 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   otherSection: "Other",
   appearanceDescription: "Conversation display and local resource management.",
   appearanceGroup: "Appearance",
+  cpaLiveVoiceTitle: "Override live voice",
+  cpaLiveVoiceDescription: "On by default. Host creates the realtime call instead of ChatGPT.",
+  cpaLiveVoiceHelpLabel: "About overriding live voice",
+  cpaLiveVoiceHelp: Object.freeze([
+    "Overrides Desktop's existing-call path on audited 26.1007.30912 so a local host can create the WebRTC call.",
+    "This switch applies on the next voice session. No relaunch.",
+    "Also set both keys in ~/.codex/config.toml and relaunch Codex: experimental_realtime_ws_base_url and experimental_realtime_webrtc_call_base_url, each pointing at your realtime host /v1.",
+    "CODEXHOST_CPA_LIVE_VOICE=0 is not live. Relaunch Codex after changing that environment variable.",
+  ]),
+  cpaLiveVoiceRestartRequired:
+    "This override is not injected. Unset CODEXHOST_CPA_LIVE_VOICE=0 and relaunch Codex. The switch cannot take effect until then.",
   loadedSessions: {
     title: "Loaded sessions",
     description:
@@ -597,6 +613,17 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   otherSection: "其他",
   appearanceDescription: "会话显示与本地资源管理。",
   appearanceGroup: "外观",
+  cpaLiveVoiceTitle: "改写实时语音",
+  cpaLiveVoiceDescription: "默认开启。由 Host 创建 realtime 通话，而不是 ChatGPT。",
+  cpaLiveVoiceHelpLabel: "改写实时语音说明",
+  cpaLiveVoiceHelp: Object.freeze([
+    "在已审计的 Desktop 26.1007.30912 上覆盖 existing-call 路径，让本地 Host 创建 WebRTC 通话。",
+    "此开关在下一次语音会话生效，无需重新启动。",
+    "还需要在 ~/.codex/config.toml 设置 experimental_realtime_ws_base_url 与 experimental_realtime_webrtc_call_base_url，都指向你的 realtime 主机 /v1，然后重新启动 Codex。",
+    "CODEXHOST_CPA_LIVE_VOICE=0 不会即时生效。修改该环境变量后必须重新启动 Codex。",
+  ]),
+  cpaLiveVoiceRestartRequired:
+    "当前未注入此改写。请取消 CODEXHOST_CPA_LIVE_VOICE=0 并重新启动 Codex，本开关才会生效。",
   loadedSessions: {
     title: "已加载会话",
     description:

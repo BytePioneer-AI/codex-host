@@ -165,7 +165,7 @@ node(){ case "$2" in *realpathSync*) return "${MATCH_CODE:-0}";; *) return 0;; e
 npm(){
   case "$1" in
     root) printf '%s\n' "$HOME/npm";;
-    uninstall) printf '%s\n' 'npm uninstall' >> "$HOME/calls"; [ "${FAIL:-}" != npm ] || return 1; rm "$HOME/npm/@codexhost/cli/package.json";;
+    uninstall) printf '%s\n' 'npm uninstall' >> "$HOME/calls"; [ "${FAIL:-}" != npm ] || return 1; rm "$HOME/npm/@karlorz/codexhost-cli/package.json";;
     *) return 99;;
   esac
 }
@@ -224,7 +224,7 @@ codexhost(){
     ] {
         let home = root.join(name);
         let remote = home.join(".codexhost/remote");
-        let package = home.join("npm/@codexhost/cli");
+        let package = home.join("npm/@karlorz/codexhost-cli");
         std::fs::create_dir_all(remote.join("data")).unwrap();
         std::fs::create_dir_all(&package).unwrap();
         std::fs::write(remote.join("manifest.json"), "{}").unwrap();
@@ -370,7 +370,7 @@ fn install_refuses_to_replace_existing_remote_services() {
     r.version = Some("1.2.3".into());
     let value = script(&r).unwrap();
     assert!(value.contains("exit 43"));
-    assert!(value.contains("@codexhost/cli@1.2.3"));
+    assert!(value.contains("@karlorz/codexhost-cli@1.2.3"));
     assert!(!value.contains("remote stop"));
 }
 #[cfg(unix)]
@@ -399,7 +399,7 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
     let calls = std::fs::read_to_string(root.join("calls")).unwrap();
     assert_eq!(
         calls,
-        "install -g @codexhost/cli@1.2.3\nremote install\nremote start\n"
+        "install -g @karlorz/codexhost-cli@1.2.3\nremote install\nremote start\n"
     );
     std::fs::create_dir_all(root.join(".codexhost/remote")).unwrap();
     std::fs::write(root.join(".codexhost/remote/manifest.json"), "{}").unwrap();
@@ -421,7 +421,7 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
         .unwrap();
     assert!(updated.status.success());
     let calls = format!(
-        "{calls}view @codexhost/cli@1.2.4 version --fetch-retries=0 --fetch-timeout=30000\nremote stop\ninstall -g @codexhost/cli@1.2.4\nremote install\nremote stop\nremote start\n"
+        "{calls}view @karlorz/codexhost-cli@1.2.4 version --fetch-retries=0 --fetch-timeout=30000\nremote stop\ninstall -g @karlorz/codexhost-cli@1.2.4\nremote install\nremote stop\nremote start\n"
     );
     assert_eq!(std::fs::read_to_string(root.join("calls")).unwrap(), calls);
     assert!(!root.join(".codexhost/ssh-setup.lock").exists());

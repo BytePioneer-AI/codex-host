@@ -31,8 +31,7 @@ pub type DesktopProcess = super::windows_desktop::WindowsDesktopProcess;
 #[cfg(not(target_os = "windows"))]
 pub type DesktopProcess = Child;
 
-const CODEXHOST_RELEASES_LATEST_URL: &str =
-    "https://github.com/BytePioneer-AI/codex-host/releases/latest";
+const CODEXHOST_RELEASES_LATEST_URL: &str = "https://github.com/karlorz/codex-host/releases/latest";
 const REMOTE_SSH_MANAGED_ENV: &str = "CODEXHOST_REMOTE_SSH_MANAGED";
 const REMOTE_PROFILE_ONLY_ENVIRONMENT: [&str; 3] = [
     "CODEX_INSTALL_DIR",

@@ -30,4 +30,4 @@ After stopping CodexHost, you can delete its applicable local data. Native Harne
 
 ## Contact
 
-For non-sensitive privacy questions, open an issue at [BytePioneer-AI/codex-host](https://github.com/BytePioneer-AI/codex-host/issues). Do not include credentials, private code, or unredacted logs in public reports.
+For non-sensitive privacy questions, open an issue at [karlorz/codex-host](https://github.com/karlorz/codex-host/issues). Do not include credentials, private code, or unredacted logs in public reports.

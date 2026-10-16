@@ -23,7 +23,7 @@ use crate::request::{
 #[cfg(target_os = "macos")]
 use crate::status::unix_seconds;
 
-const NPM_PACKAGE_NAME: &str = "@codexhost/cli";
+pub(crate) const NPM_PACKAGE_NAME: &str = "@karlorz/codexhost-cli";
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 const DISTRIBUTION_FILE: &str = "codexhost-distribution.json";
 

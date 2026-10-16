@@ -1,11 +1,14 @@
+import { installCpaLiveVoiceHook } from "./renderer-cpa-live-voice-hook.js";
 import { installRendererBinding } from "./install-renderer-binding.js";
 
-const install = (): void => {
+installCpaLiveVoiceHook();
+
+const installBinding = (): void => {
   installRendererBinding();
 };
 
 if (document.documentElement && document.body) {
-  install();
+  installBinding();
 } else {
-  window.addEventListener("DOMContentLoaded", install, { once: true });
+  window.addEventListener("DOMContentLoaded", installBinding, { once: true });
 }

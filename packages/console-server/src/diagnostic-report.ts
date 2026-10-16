@@ -8,7 +8,7 @@ import type {
 } from "./diagnostics.js";
 import type { InspectDocument } from "./installation.js";
 
-export const ISSUE_REPOSITORY_URL = "https://github.com/BytePioneer-AI/codex-host";
+export const ISSUE_REPOSITORY_URL = "https://github.com/karlorz/codex-host";
 const ISSUE_ERROR_CHARS = 800;
 const ISSUE_URL_MAX_LENGTH = 7_000;
 export const REPORT_LOG_TAIL_BYTES = 32 * 1024;

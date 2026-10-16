@@ -3,7 +3,7 @@
 codexhost supports x64 and ARM64 Linux through the npm package. Install the official ChatGPT App matching the current architecture first, then install codexhost:
 
 ```bash
-npm install -g @codexhost/cli
+npm install -g @karlorz/codexhost-cli
 codexhost
 ```
 

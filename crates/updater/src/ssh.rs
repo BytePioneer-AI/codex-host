@@ -8,6 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::install::NPM_PACKAGE_NAME;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Request {
@@ -66,7 +68,8 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); pr
         "install" => {
             let version = release_version(request)?;
             Ok(format!(
-                "{node}set -e; {lock}[ ! -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 43; case $(uname -s) in Darwin|Linux) ;; *) exit 44;; esac; command -v npm >/dev/null 2>&1 || exit 56; command -v codex >/dev/null 2>&1 || exit 57; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || exit 46; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'"
+                "{node}set -e; {lock}[ ! -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 43; case $(uname -s) in Darwin|Linux) ;; *) exit 44;; esac; command -v npm >/dev/null 2>&1 || exit 56; command -v codex >/dev/null 2>&1 || exit 57; npm install -g {package}@{version} >/dev/null 2>&1 || exit 46; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'",
+                package = NPM_PACKAGE_NAME,
             ))
         }
         // For services too old to update themselves. A newer CLI refuses to stop an installation
@@ -75,7 +78,8 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); pr
         "update" => {
             let version = release_version(request)?;
             Ok(format!(
-                "{node}set -e; {lock}[ -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 52; command -v npm >/dev/null 2>&1 || exit 56; npm view @codexhost/cli@{version} version --fetch-retries=0 --fetch-timeout=30000 >/dev/null 2>&1 || exit 53; if command -v codexhost >/dev/null; then codexhost remote stop >/dev/null 2>&1 || true; fi; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || {{ codexhost remote start >/dev/null 2>&1 || true; exit 46; }}; command -v codexhost >/dev/null || exit 54; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'"
+                "{node}set -e; {lock}[ -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 52; command -v npm >/dev/null 2>&1 || exit 56; npm view {package}@{version} version --fetch-retries=0 --fetch-timeout=30000 >/dev/null 2>&1 || exit 53; if command -v codexhost >/dev/null; then codexhost remote stop >/dev/null 2>&1 || true; fi; npm install -g {package}@{version} >/dev/null 2>&1 || {{ codexhost remote start >/dev/null 2>&1 || true; exit 46; }}; command -v codexhost >/dev/null || exit 54; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'",
+                package = NPM_PACKAGE_NAME,
             ))
         }
         // A damaged installation is exactly what the CLI refuses to stop, so the first stop is
@@ -85,18 +89,24 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); pr
         )),
         "uninstall" => {
             let package_check = if request.uninstall_package {
-                r#"command -v npm >/dev/null 2>&1 || exit 56;
+                format!(
+                    r#"command -v npm >/dev/null 2>&1 || exit 56;
 NPM_ROOT=$(npm root --global 2>/dev/null) || exit 59;
 CLI=$(command -v codexhost) || exit 58;
-node -e 'const fs = require("node:fs"), path = require("node:path"); try { const expected = path.join(process.argv[1], "@codexhost/cli/bin/codexhost.js"); process.exit(fs.realpathSync(expected) === fs.realpathSync(process.argv[2]) ? 0 : 1); } catch { process.exit(1); }' "$NPM_ROOT" "$CLI" >/dev/null 2>&1 || exit 59;
-"#
+node -e 'const fs = require("node:fs"), path = require("node:path"); try {{ const expected = path.join(process.argv[1], "{package}/bin/codexhost.js"); process.exit(fs.realpathSync(expected) === fs.realpathSync(process.argv[2]) ? 0 : 1); }} catch {{ process.exit(1); }}' "$NPM_ROOT" "$CLI" >/dev/null 2>&1 || exit 59;
+"#,
+                    package = NPM_PACKAGE_NAME,
+                )
             } else {
-                ""
+                String::new()
             };
             let package_remove = if request.uninstall_package {
-                "npm uninstall --global @codexhost/cli >/dev/null 2>&1 || exit 60; [ ! -e \"$NPM_ROOT/@codexhost/cli/package.json\" ] || exit 60;"
+                format!(
+                    "npm uninstall --global {package} >/dev/null 2>&1 || exit 60; [ ! -e \"$NPM_ROOT/{package}/package.json\" ] || exit 60;",
+                    package = NPM_PACKAGE_NAME,
+                )
             } else {
-                ""
+                String::new()
             };
             // Keep the npm package until its CLI has stopped the service and removed the
             // managed entrypoint/profile (and the macOS broker). No user data is deleted.

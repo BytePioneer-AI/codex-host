@@ -23,15 +23,40 @@ import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targ
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
-export const NPM_PACKAGE_NAME = "@codexhost/cli";
+export const NPM_GITHUB_REPOSITORY = "karlorz/codex-host";
+export const NPM_PACKAGE_NAME = "@karlorz/codexhost-cli";
 export const NPM_PLATFORM_PACKAGE_NAMES = Object.freeze({
-  "macos-arm64": "@codexhost/cli-darwin-arm64",
-  "macos-x64": "@codexhost/cli-darwin-x64",
-  "windows-x64": "@codexhost/cli-win32-x64",
-  "windows-arm64": "@codexhost/cli-win32-arm64",
-  "linux-x64": "@codexhost/cli-linux-x64",
-  "linux-arm64": "@codexhost/cli-linux-arm64",
+  "macos-arm64": "@karlorz/codexhost-cli-darwin-arm64",
+  "macos-x64": "@karlorz/codexhost-cli-darwin-x64",
+  "windows-x64": "@karlorz/codexhost-cli-win32-x64",
+  "windows-arm64": "@karlorz/codexhost-cli-win32-arm64",
+  "linux-x64": "@karlorz/codexhost-cli-linux-x64",
+  "linux-arm64": "@karlorz/codexhost-cli-linux-arm64",
 });
+
+export function requireForkNpmIdentity(packageName) {
+  if (!packageName.startsWith("@karlorz/")) {
+    throw new Error(
+      `refusing to publish ${packageName}; fork npm packages must use the @karlorz scope`,
+    );
+  }
+}
+
+requireForkNpmIdentity(NPM_PACKAGE_NAME);
+for (const packageName of Object.values(NPM_PLATFORM_PACKAGE_NAMES)) {
+  requireForkNpmIdentity(packageName);
+}
+
+export function npmPackageRepositoryFields() {
+  return {
+    repository: {
+      type: "git",
+      url: `git+https://github.com/${NPM_GITHUB_REPOSITORY}.git`,
+    },
+    bugs: { url: `https://github.com/${NPM_GITHUB_REPOSITORY}/issues` },
+    homepage: `https://github.com/${NPM_GITHUB_REPOSITORY}#readme`,
+  };
+}
 export const NPM_RUNTIME_PLATFORM_PACKAGES = Object.freeze({
   "darwin-arm64": NPM_PLATFORM_PACKAGE_NAMES["macos-arm64"],
   "darwin-x64": NPM_PLATFORM_PACKAGE_NAMES["macos-x64"],
@@ -248,6 +273,7 @@ export function expectedNpmPackagePaths(target) {
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
+    "app/cpa-live-voice-hook.js",
     ...preinstalledHarnessPluginPaths(),
     "licenses/Anthropic-SDK-LICENSE.txt",
     "licenses/Agent-Client-Protocol-SDK-LICENSE.txt",
@@ -288,14 +314,7 @@ export function createNpmPackageManifest({ version, target }) {
     os: npmPackageOs(target),
     cpu: npmPackageCpu(target),
     keywords: ["codex", "codexhost", "pi", "claude-code", "agent", "harness"],
-    repository: {
-      type: "git",
-      url: "git+https://github.com/BytePioneer-AI/codex-host.git",
-    },
-    bugs: {
-      url: "https://github.com/BytePioneer-AI/codex-host/issues",
-    },
-    homepage: "https://github.com/BytePioneer-AI/codex-host#readme",
+    ...npmPackageRepositoryFields(),
     publishConfig: {
       access: "public",
     },
@@ -313,7 +332,7 @@ import { fileURLToPath } from "node:url";
 
 const version = ${JSON.stringify(version)};
 const userArguments = process.argv.slice(2);
-const repositoryUrl = "https://github.com/BytePioneer-AI/codex-host";
+const repositoryUrl = ${JSON.stringify(`https://github.com/${NPM_GITHUB_REPOSITORY}`)};
 const startupTraceStartedAt = Date.now();
 function startupTrace(stage) {
   if (process.env.CODEXHOST_STARTUP_TRACE !== "1") return;
@@ -392,7 +411,7 @@ try {
 }
 if (platformVersion !== version) {
   fail(
-    \`platform package version mismatch: '\${platformPackage}' at '\${packageRoot}' has \${JSON.stringify(platformVersion) ?? "no version"}; expected \${version}. Close Codex Desktop, then run: npm install -g @codexhost/cli@\${version} \${platformPackage}@\${version}\`,
+    \`platform package version mismatch: '\${platformPackage}' at '\${packageRoot}' has \${JSON.stringify(platformVersion) ?? "no version"}; expected \${version}. Close Codex Desktop, then run: npm install -g ${NPM_PACKAGE_NAME}@\${version} \${platformPackage}@\${version}\`,
   );
 }
 startupTrace("platform package resolved");
@@ -943,6 +962,7 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
         "app/console-web.js",
         "app/desktop-controller.mjs",
         "app/renderer-extension.js",
+        "app/cpa-live-voice-hook.js",
       ].includes(file.relative)
     ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
@@ -1138,6 +1158,11 @@ export async function prepareNpmPackage({
     path.join(root, "packages", "renderer-extension", "dist", "production.js"),
     path.join(packageRoot, "app", "renderer-extension.js"),
     "production Renderer Bundle",
+  );
+  await copyReleaseFile(
+    path.join(root, "packages", "renderer-extension", "dist", "cpa-live-voice-hook.js"),
+    path.join(packageRoot, "app", "cpa-live-voice-hook.js"),
+    "CPA live-voice overlay hook Bundle",
   );
   await copyReleaseFile(
     path.join(root, "packages", "renderer-extension", "dist", "console.js"),

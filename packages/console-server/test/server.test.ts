@@ -167,7 +167,7 @@ describe("console server", () => {
     expect(overview.summary.state).toBe("stopped");
     expect(overview.inspect.desktop?.version).toBe("26.924.20706");
     expect(overview.issueUrl).toMatch(
-      /^https:\/\/github\.com\/BytePioneer-AI\/codex-host\/issues\/new\?/u,
+      /^https:\/\/github\.com\/karlorz\/codex-host\/issues\/new\?/u,
     );
     expect(decodeURIComponent(overview.issueUrl)).toContain("26.924.20706");
   });

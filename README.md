@@ -31,7 +31,7 @@ But **Codex** isn't the only great **Agent Harness** — **Claude Code** and **P
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>Download</strong></a> · <a href="#cross-agent-collaboration">Cross-Agent Collaboration</a> · <a href="#remote-harness">Remote</a> · <a href="#join-the-community">微信交流群</a> · <a href="docs/project/README.zh-CN.md">简体中文</a> · <a href="docs/project/README.ko.md">한국어</a></p>
+<p align="center"><a href="https://github.com/karlorz/codex-host/releases"><strong>Download</strong></a> · <a href="#cross-agent-collaboration">Cross-Agent Collaboration</a> · <a href="#remote-harness">Remote</a> · <a href="#join-the-community">微信交流群</a> · <a href="docs/project/README.zh-CN.md">简体中文</a> · <a href="docs/project/README.ko.md">한국어</a></p>
 
 <br />
 
@@ -67,13 +67,13 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 **Option 1: npm** (macOS / Windows / Linux)
 
 ```bash
-npm install -g @codexhost/cli
+npm install -g @karlorz/codexhost-cli
 codexhost
 ```
 
 **Option 2: Installer** (macOS / Windows)
 
-Grab the installer for your platform from [Releases](https://github.com/BytePioneer-AI/codex-host/releases).
+Grab the installer for your platform from [Releases](https://github.com/karlorz/codex-host/releases).
 
 > Linux is supported on x64 and ARM64. See the [Linux guide](docs/platforms/linux/linux.md).
 
@@ -225,7 +225,7 @@ Before you start, add the remote machine in Codex Desktop under **Settings → C
 1. Install and start codexhost on the remote machine:
 
    ```bash
-   npm install -g @codexhost/cli
+   npm install -g @karlorz/codexhost-cli
    codexhost remote install
    codexhost remote start
    codexhost remote status
@@ -290,7 +290,7 @@ Please read the [contributing guide](CONTRIBUTING.md) before opening an issue or
 Requirements: the official Codex Desktop, Node.js 22.19+ or 24, and Rust.
 
 ```bash
-git clone https://github.com/BytePioneer-AI/codex-host
+git clone https://github.com/karlorz/codex-host
 cd codex-host
 npm ci
 npm start
@@ -322,8 +322,8 @@ Tip: point your coding Agent at the in-repo [codexhost-add-harness Skill](.agent
 
 Thanks to everyone who has contributed to CodexHost.
 
-<a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
-  <img alt="CodexHost contributors" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+<a href="https://github.com/karlorz/codex-host/graphs/contributors">
+  <img alt="CodexHost contributors" src="https://contrib.rocks/image?repo=karlorz/codex-host" />
 </a>
 
 ## Star History

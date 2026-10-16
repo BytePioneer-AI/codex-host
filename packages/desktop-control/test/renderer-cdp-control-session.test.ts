@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createRendererCdpControlSession,
+  selectAvatarOverlayRendererTargets,
   selectPrimaryRendererTarget,
 } from "../src/renderer-cdp-control-session.js";
 import type { CdpTarget } from "../src/cdp-client.js";
@@ -62,6 +63,14 @@ describe("Renderer CDP Control Session", () => {
     expect(
       selectPrimaryRendererTarget([target("overlay", "app://-/avatar-overlay.html")]),
     ).toBeNull();
+    expect(
+      selectAvatarOverlayRendererTargets([
+        target("overlay", "app://-/index.html?initialRoute=%2Favatar-overlay"),
+        target("legacy", "app://-/avatar-overlay.html"),
+        first,
+        target("query", "app://-/index.html?window=second"),
+      ]).map((item) => item.id),
+    ).toEqual(["overlay", "legacy"]);
   });
 
   it("registers future-document injection before evaluating the current document", async () => {
@@ -94,6 +103,189 @@ describe("Renderer CDP Control Session", () => {
     expect(session.snapshot.binding).toEqual(readyBinding());
     session.close();
   });
+
+  it("injects the hook-only source into the avatar overlay page", async () => {
+    const primary = rendererClient();
+    const overlay = rendererClient();
+    overlay.evaluateSpy.mockResolvedValue(false);
+    const session = await createRendererCdpControlSession({
+      rendererCdpEndpoint: "http://127.0.0.1:43123",
+      rendererSource: "production renderer",
+      overlayHookSource: "overlay hook only",
+      pollIntervalMs: 1,
+      timeoutMs: 100,
+      operations: {
+        listTargets: vi.fn(async () => [
+          target("page-1"),
+          target("overlay", "app://-/index.html?initialRoute=%2Favatar-overlay"),
+        ]),
+        connect: vi.fn(async (webSocketDebuggerUrl: string) =>
+          webSocketDebuggerUrl.includes("overlay") ? overlay : primary,
+        ),
+        installDraftPrewarmPolicy: vi.fn(async () => ({
+          state: "ready" as const,
+          reason: "owned-request-bridge" as const,
+        })),
+      },
+    });
+
+    expect(primary.commands).toEqual(
+      expect.arrayContaining([
+        {
+          method: "Page.addScriptToEvaluateOnNewDocument",
+          params: { source: "production renderer" },
+        },
+      ]),
+    );
+    expect(overlay.commands).toEqual([
+      { method: "Runtime.enable" },
+      { method: "Page.enable" },
+      { method: "Page.addScriptToEvaluateOnNewDocument", params: { source: "overlay hook only" } },
+      {
+        method: "Runtime.evaluate",
+        params: { expression: "overlay hook only", awaitPromise: true },
+      },
+    ]);
+    session.close();
+  });
+
+  it("keeps the primary session when overlay CDP connect fails", async () => {
+    const primary = rendererClient();
+    const session = await createRendererCdpControlSession({
+      rendererCdpEndpoint: "http://127.0.0.1:43123",
+      rendererSource: "production renderer",
+      overlayHookSource: "overlay hook only",
+      pollIntervalMs: 1,
+      timeoutMs: 100,
+      operations: {
+        listTargets: vi.fn(async () => [
+          target("page-1"),
+          target("overlay", "app://-/index.html?initialRoute=%2Favatar-overlay"),
+        ]),
+        connect: vi.fn(async (webSocketDebuggerUrl: string) => {
+          if (webSocketDebuggerUrl.includes("overlay")) {
+            throw new Error("overlay closed between list and connect");
+          }
+          return primary;
+        }),
+        installDraftPrewarmPolicy: vi.fn(async () => ({
+          state: "ready" as const,
+          reason: "owned-request-bridge" as const,
+        })),
+      },
+    });
+
+    expect(session.snapshot.binding).toEqual(readyBinding());
+    expect(primary.close).not.toHaveBeenCalled();
+    session.close();
+  });
+
+  it("re-injects the hook-only overlay bundle when a reload drops the hook", async () => {
+    const primary = rendererClient();
+    const overlay = rendererClient();
+    overlay.evaluateSpy.mockResolvedValue(false);
+    const session = await createRendererCdpControlSession({
+      rendererCdpEndpoint: "http://127.0.0.1:43123",
+      rendererSource: "production renderer",
+      overlayHookSource: "overlay hook only",
+      pollIntervalMs: 1,
+      timeoutMs: 100,
+      operations: {
+        listTargets: vi.fn(async () => [
+          target("page-1"),
+          target("overlay", "app://-/index.html?initialRoute=%2Favatar-overlay"),
+        ]),
+        connect: vi.fn(async (webSocketDebuggerUrl: string) =>
+          webSocketDebuggerUrl.includes("overlay") ? overlay : primary,
+        ),
+        installDraftPrewarmPolicy: vi.fn(async () => ({
+          state: "ready" as const,
+          reason: "owned-request-bridge" as const,
+        })),
+      },
+    });
+
+    overlay.commands.length = 0;
+    await session.ensureInstalled();
+
+    expect(overlay.commands).toEqual([
+      { method: "Runtime.enable" },
+      { method: "Page.enable" },
+      { method: "Page.addScriptToEvaluateOnNewDocument", params: { source: "overlay hook only" } },
+      {
+        method: "Runtime.evaluate",
+        params: { expression: "overlay hook only", awaitPromise: true },
+      },
+    ]);
+    expect(
+      overlay.commands.some(
+        ({ params }) =>
+          params?.source === "production renderer" || params?.expression === "production renderer",
+      ),
+    ).toBe(false);
+    session.close();
+  });
+
+  it.each(["connect", "command", "evaluate"] as const)(
+    "bounds stalled overlay %s operations without blocking other overlays",
+    async (stage) => {
+      const primary = rendererClient();
+      const stalled = rendererClient();
+      const healthy = rendererClient();
+      healthy.evaluateSpy.mockResolvedValue(false);
+      let finishConnect: ((client: typeof stalled) => void) | undefined;
+      const pendingConnect = new Promise<typeof stalled>((resolve) => {
+        finishConnect = resolve;
+      });
+      if (stage === "command") {
+        stalled.command.mockImplementation(() => new Promise(() => {}));
+      }
+      if (stage === "evaluate") {
+        stalled.evaluateSpy.mockImplementation(() => new Promise(() => {}));
+      }
+      const session = await createRendererCdpControlSession({
+        rendererCdpEndpoint: "http://127.0.0.1:43123",
+        rendererSource: "production renderer",
+        overlayHookSource: "overlay hook only",
+        timeoutMs: 40,
+        operations: {
+          listTargets: async () => [
+            target("page-1"),
+            target("stalled", "app://-/avatar-overlay.html"),
+            target("healthy", "app://-/avatar-overlay.html"),
+          ],
+          connect: async (url) => {
+            if (url.endsWith("/stalled")) return stage === "connect" ? pendingConnect : stalled;
+            return url.endsWith("/healthy") ? healthy : primary;
+          },
+          installDraftPrewarmPolicy: async () => ({
+            state: "ready",
+            reason: "owned-request-bridge",
+          }),
+        },
+      });
+      try {
+        expect(session.snapshot.binding).toEqual(readyBinding());
+        expect(primary.close).not.toHaveBeenCalled();
+        expect(healthy.commands).toContainEqual({
+          method: "Runtime.evaluate",
+          params: { expression: "overlay hook only", awaitPromise: true },
+        });
+        expect(healthy.close).toHaveBeenCalledOnce();
+        if (stage === "connect") {
+          expect(stalled.close).not.toHaveBeenCalled();
+          finishConnect?.(stalled);
+          await vi.waitFor(() => expect(stalled.close).toHaveBeenCalledOnce());
+          expect(stalled.command).not.toHaveBeenCalled();
+        } else {
+          expect(stalled.close).toHaveBeenCalledOnce();
+        }
+        await expect(session.ensureInstalled()).resolves.toMatchObject({ binding: readyBinding() });
+      } finally {
+        session.close();
+      }
+    },
+  );
 
   it("reconciles a changed Host before judging the previous Adapter readiness", async () => {
     const binding = readyBinding();
@@ -214,6 +406,44 @@ describe("Renderer CDP Control Session", () => {
       }),
     ).rejects.toThrow("Primary Codex Renderer CDP target did not become ready");
     expect(client.close).not.toHaveBeenCalled();
+  });
+
+  it("keeps the primary session when overlay CDP discovery hangs past its timeout", async () => {
+    const primary = rendererClient();
+    let calls = 0;
+    const session = await createRendererCdpControlSession({
+      rendererCdpEndpoint: "http://127.0.0.1:43123",
+      rendererSource: "production renderer",
+      overlayHookSource: "overlay hook only",
+      pollIntervalMs: 10,
+      timeoutMs: 40,
+      operations: {
+        listTargets: vi.fn((_endpoint, signal) => {
+          calls += 1;
+          if (calls % 2 === 1) return Promise.resolve([target("page-1")]);
+          return new Promise<CdpTarget[]>((_resolve, reject) => {
+            const fail = (): void => reject(new Error("Overlay CDP target discovery timed out"));
+            if (signal?.aborted) {
+              fail();
+              return;
+            }
+            signal?.addEventListener("abort", fail, { once: true });
+          });
+        }),
+        connect: vi.fn(async () => primary),
+        installDraftPrewarmPolicy: vi.fn(async () => ({
+          state: "ready" as const,
+          reason: "owned-request-bridge" as const,
+        })),
+      },
+    });
+
+    expect(session.snapshot.binding).toEqual(readyBinding());
+    await expect(session.ensureInstalled()).resolves.toMatchObject({
+      binding: readyBinding(),
+    });
+    expect(primary.close).not.toHaveBeenCalled();
+    session.close();
   });
 
   it("fails closed when the injected Adapter is unsupported", async () => {

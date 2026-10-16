@@ -17,6 +17,7 @@ description: 发布 codexhost 正式版、预览版，编写或确认 Release No
 - `.github/workflows/release-packages.yml` 与 `.github/workflows/ci.yml`
 - `packages/repository-automation/src/release.mjs`
 - `docs/operations/repository-maintenance.md`
+- 本仓库若是 fork `karlorz/codex-host`：先读 [fork versioning](../../../docs/operations/fork-versioning.md)（`0.13.2-0` / `0.13.2-1`…，控制台版本同源），再读本 Skill 的上游渠道表
 - 涉及更新提示时：`packages/update-manager/src/github-release.ts`
 
 源码和工作流是执行行为的依据。发现指南与当前实现不一致时，说明差异；不要假装已有不支持的发布能力。
@@ -37,6 +38,8 @@ description: 发布 codexhost 正式版、预览版，编写或确认 Release No
 静默预览发行仍是公开发行，不是私有版，也不阻止用户通过 npm 更新。当前更新提示读取 GitHub 正式 latest Release，而不是 npm latest。
 
 用户意图不清楚时，先问清两个渠道的目标。最终执行前明确报告版本、npm dist-tag、GitHub 状态与是否提示更新。
+
+在 `karlorz/codex-host` 上，上表的 BytePioneer npm `@codexhost/cli` / 正式 GitHub latest **不适用**。Fork 标签跟随当前 upstream 版本加计数器（upstream 仍为 `0.13.2` 时用 `v0.13.2-0`、`v0.13.2-1`，不要写成 `0.13.3-cpa.1`）。不向 `upstream` 推送。Fork **必须**把同一版本发布为 `@karlorz/codexhost-cli@latest`（及对应平台包），并把 `karlorz/codex-host` 上的 GitHub Release 标成 latest，这样 Settings 的 `npm install -g @karlorz/codexhost-cli@latest` 和 in-app Update 才指向 fork。禁止发布 `@codexhost/*`。`Release packages` 在未改成 `@karlorz` Trusted Publisher 前保持 disabled。控制台「codexhost 版本」必须与该准备版本一致。规则全文：[fork versioning](../../../docs/operations/fork-versioning.md)。
 
 ## 2. 检查现场与验证
 

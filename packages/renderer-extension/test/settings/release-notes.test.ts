@@ -76,7 +76,7 @@ describe("Release notes Markdown", () => {
         "### npm",
         "",
         "```bash",
-        "npm install -g @codexhost/cli",
+        "npm install -g @karlorz/codexhost-cli",
         "codexhost",
         "```",
       ].join("\n"),
@@ -94,13 +94,13 @@ describe("Release notes Markdown", () => {
     expect(visibleText(root)).toContain("本次发布");
     expect(visibleText(root)).not.toContain("##");
     expect(visibleText(root)).not.toContain("- 新增");
-    expect(visibleText(root)).toContain("npm install -g @codexhost/cli");
+    expect(visibleText(root)).toContain("npm install -g @karlorz/codexhost-cli");
 
     const list = descendants(root).find((element) => element.tagName === "ul");
     expect(list?.children).toHaveLength(2);
     const code = descendants(root).find((element) => element.tagName === "code");
     expect(code?.className).toBe("language-bash");
-    expect(code?.textContent).toBe("npm install -g @codexhost/cli\ncodexhost");
+    expect(code?.textContent).toBe("npm install -g @karlorz/codexhost-cli\ncodexhost");
   });
 
   it("sets the translation line of a bilingual paragraph apart", () => {
@@ -132,7 +132,7 @@ describe("Release notes Markdown", () => {
         "Use `codexhost` and **restart** after install.",
         "",
         "1. Download the package",
-        "2. Open [Releases](https://github.com/BytePioneer-AI/codex-host/releases)",
+        "2. Open [Releases](https://github.com/karlorz/codex-host/releases)",
       ].join("\n"),
     );
 
@@ -143,9 +143,7 @@ describe("Release notes Markdown", () => {
     expect(strong?.textContent).toBe("restart");
     const link = descendants(root).find((element) => element.tagName === "a");
     expect(link?.textContent).toBe("Releases");
-    expect(link?.attributes.get("href")).toBe(
-      "https://github.com/BytePioneer-AI/codex-host/releases",
-    );
+    expect(link?.attributes.get("href")).toBe("https://github.com/karlorz/codex-host/releases");
     expect(link?.attributes.get("target")).toBe("_blank");
     expect(link?.attributes.get("rel")).toBe("noopener noreferrer");
   });

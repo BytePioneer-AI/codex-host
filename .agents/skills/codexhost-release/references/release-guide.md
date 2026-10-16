@@ -20,7 +20,7 @@
 | 稳定 SemVer，默认发布 | `latest` | 正式 Release、latest |
 | 稳定 SemVer，手动发布且 `github_prerelease=true` | `latest` | Prerelease、非 latest |
 
-静默预览发行用于“小修复让用户自行下载，但不推送更新提示”：npm 正常发布到 `latest`，GitHub 标记为 Prerelease。当前更新检查读取 GitHub 正式 latest Release，不读取 npm dist-tag；预览发行仍公开可下载。SemVer 预发布则在 npm 使用 `next`，用户需显式安装 `@codexhost/cli@next`。
+静默预览发行用于“小修复让用户自行下载，但不推送更新提示”：npm 正常发布到 `latest`，GitHub 标记为 Prerelease。当前更新检查读取 GitHub 正式 latest Release，不读取 npm dist-tag；预览发行仍公开可下载。SemVer 预发布则在 npm 使用 `next`，用户需显式安装 `@karlorz/codexhost-cli@next`。
 
 ## 发布步骤
 
@@ -104,7 +104,7 @@ Composer 增加 Harness 命令按钮和模型搜索。Grok 支持自动或手动
 ### npm
 
 ```bash
-npm install -g @codexhost/cli
+npm install -g @karlorz/codexhost-cli
 codexhost
 ```
 
@@ -178,7 +178,7 @@ Tag 推送后，GitHub Actions 会自动：
 - 校验 Tag、npm 版本和 Cargo Workspace 版本一致。
 - 构建 Windows x64/arm64 EXE。
 - 构建 macOS x64/arm64 DMG。
-- 发布 macOS、Windows、Linux 的 x64/arm64 共六个平台 npm 包和 `@codexhost/cli` 元包。
+- 发布 macOS、Windows、Linux 的 x64/arm64 共六个平台 npm 包和 `@karlorz/codexhost-cli` 元包。
 - 根据版本及手动发布输入创建公开 GitHub Release Prerelease 或正式 Release；`test` 渠道不创建 GitHub Release。
 - GitHub Release 只上传四个安装包，不上传 npm tarball。
 

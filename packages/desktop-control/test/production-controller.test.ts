@@ -113,7 +113,7 @@ describe("production Desktop Controller", () => {
       close,
     };
     const ready = vi.fn();
-    const install = vi.fn(async () => session);
+    const install = vi.fn<DesktopControllerDependencies["install"]>(async () => session);
     const server = attachmentServer();
     let attach: (() => Promise<void>) | undefined;
     const startAttachmentServer = vi.fn(async (options) => {
@@ -131,13 +131,20 @@ describe("production Desktop Controller", () => {
 
     await runDesktopController(controllerOptions(), abort.signal, dependencies);
 
-    expect(install).toHaveBeenCalledWith({
-      rendererCdpEndpoint: "http://127.0.0.1:43123",
-      rendererSource:
-        "globalThis.__zod_globalConfig ??= {}; globalThis.__zod_globalConfig.jitless = true;\nproduction renderer",
-      timeoutMs: 90_000,
-      signal: abort.signal,
-    });
+    expect(install).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rendererCdpEndpoint: "http://127.0.0.1:43123",
+        timeoutMs: 90_000,
+        signal: abort.signal,
+      }),
+    );
+    const source = install.mock.calls[0]?.[0].rendererSource;
+    expect(source).toContain(
+      "globalThis.__zod_globalConfig ??= {}; globalThis.__zod_globalConfig.jitless = true;",
+    );
+    expect(source).toContain("production renderer");
+    expect(source).toContain("__codexhostCpaLiveVoiceHookV1");
+    expect(install.mock.calls[0]?.[0].overlayHookSource).toContain("__codexhostCpaLiveVoiceHookV1");
     expect(startAttachmentServer).toHaveBeenCalledWith({
       port: 43124,
       nonce: attachmentNonce,
@@ -154,6 +161,83 @@ describe("production Desktop Controller", () => {
     expect(server.close).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
     expect(attach).toEqual(expect.any(Function));
+  });
+
+  it("prefixes the CPA live-voice hook by default", async () => {
+    const previous = process.env.CODEXHOST_CPA_LIVE_VOICE;
+    delete process.env.CODEXHOST_CPA_LIVE_VOICE;
+    const abort = new AbortController();
+    const snapshot = controllerSnapshot();
+    const session: RendererCdpControlSession = {
+      snapshot,
+      ensureInstalled: vi.fn(async () => {
+        abort.abort();
+        return snapshot;
+      }),
+      activateDesktop: vi.fn(async () => 1),
+      executeRenderer: vi.fn(),
+      close: vi.fn(),
+    };
+    const install = vi.fn<DesktopControllerDependencies["install"]>(async () => session);
+    try {
+      await runDesktopController(controllerOptions(), abort.signal, {
+        readRenderer: vi.fn(async (filePath: string) =>
+          filePath.endsWith("cpa-live-voice-hook.js") ? "overlay hook" : "production renderer",
+        ),
+        install,
+        startAttachmentServer: vi.fn(async () => attachmentServer()),
+        ready: vi.fn(),
+        sleep: vi.fn(async () => {}),
+        monitorIntervalMs: 1,
+      });
+      const source = install.mock.calls[0]?.[0].rendererSource;
+      expect(source).toContain("globalThis.__codexhostCpaLiveVoiceHookV1 = Object.freeze(");
+      expect(source).toContain("26.1007.30912");
+      expect(source?.endsWith("production renderer")).toBe(true);
+      expect(install.mock.calls[0]?.[0].overlayHookSource).toContain("overlay hook");
+      expect(install.mock.calls[0]?.[0].overlayHookSource).toContain(
+        "globalThis.__codexhostCpaLiveVoiceHookV1 = Object.freeze(",
+      );
+    } finally {
+      if (previous === undefined) delete process.env.CODEXHOST_CPA_LIVE_VOICE;
+      else process.env.CODEXHOST_CPA_LIVE_VOICE = previous;
+    }
+  });
+
+  it("omits the CPA live-voice hook when CODEXHOST_CPA_LIVE_VOICE=0", async () => {
+    const previous = process.env.CODEXHOST_CPA_LIVE_VOICE;
+    process.env.CODEXHOST_CPA_LIVE_VOICE = "0";
+    const abort = new AbortController();
+    const snapshot = controllerSnapshot();
+    const session: RendererCdpControlSession = {
+      snapshot,
+      ensureInstalled: vi.fn(async () => {
+        abort.abort();
+        return snapshot;
+      }),
+      activateDesktop: vi.fn(async () => 1),
+      executeRenderer: vi.fn(),
+      close: vi.fn(),
+    };
+    const install = vi.fn<DesktopControllerDependencies["install"]>(async () => session);
+    try {
+      await runDesktopController(controllerOptions(), abort.signal, {
+        readRenderer: vi.fn(async (filePath: string) =>
+          filePath.endsWith("cpa-live-voice-hook.js") ? "overlay hook" : "production renderer",
+        ),
+        install,
+        startAttachmentServer: vi.fn(async () => attachmentServer()),
+        ready: vi.fn(),
+        sleep: vi.fn(async () => {}),
+        monitorIntervalMs: 1,
+      });
+      const source = install.mock.calls[0]?.[0].rendererSource;
+      expect(source).not.toContain("globalThis.__codexhostCpaLiveVoiceHookV1");
+      expect(install.mock.calls[0]?.[0].overlayHookSource).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.CODEXHOST_CPA_LIVE_VOICE;
+      else process.env.CODEXHOST_CPA_LIVE_VOICE = previous;
+    }
   });
 
   it("publishes readiness before a pending Renderer install finishes", async () => {

@@ -73,7 +73,10 @@ describe("production Renderer release chain", () => {
 
     expect(rendererBuild).toContain("src/production-entry.ts");
     expect(rendererBuild).toContain("dist/production.js");
+    expect(rendererBuild).toContain("src/cpa-live-voice-entry.ts");
+    expect(rendererBuild).toContain("dist/cpa-live-voice-hook.js");
     expect(releaseBuilder).toContain('dist", "production.js');
+    expect(releaseBuilder).toContain('dist", "cpa-live-voice-hook.js');
     expect(releaseBuilder).toContain("desktop-controller.mjs");
     expect(releaseBuilder).toContain('packageName: "lucide"');
     expect(releaseBuilder).toContain("lucide-LICENSE.txt");

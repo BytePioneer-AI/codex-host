@@ -90,7 +90,7 @@ Older remote installations cannot report their version; the page shows **Update 
 
 ```bash
 codexhost remote stop
-npm install -g @codexhost/cli@latest
+npm install -g @karlorz/codexhost-cli@latest
 codexhost remote install
 codexhost remote start
 ```
@@ -139,7 +139,7 @@ This applies to external Harness conversations created in SSH projects. Other lo
 
 Choose **Uninstall remote service** on the connection card. After confirmation, auto-connect is disabled for this connection, the remote service stops and its connection setup is removed. On Mac, the associated Harness background service is also uninstalled. The SSH connection entry, project files and chat data are kept, so the service can be installed again later. Active remote sessions are interrupted.
 
-The codexhost package is kept by default. Select **Also uninstall the codexhost package** to remove the remote computer's global npm `@codexhost/cli` after service removal succeeds. Codex CLI, Node.js and other Harnesses are kept. Only select this if the remote Desktop no longer needs that package to launch. A mismatch between the active CLI and npm's global installation rejects package removal before stopping the service; choose service-only removal or uninstall the package manually on the remote computer. If package removal fails after service removal, the page explains the partial result and allows retrying.
+The codexhost package is kept by default. Select **Also uninstall the codexhost package** to remove the remote computer's global npm `@karlorz/codexhost-cli` after service removal succeeds. Codex CLI, Node.js and other Harnesses are kept. Only select this if the remote Desktop no longer needs that package to launch. A mismatch between the active CLI and npm's global installation rejects package removal before stopping the service; choose service-only removal or uninstall the package manually on the remote computer. If package removal fails after service removal, the page explains the partial result and allows retrying.
 
 When you no longer need the remote installation, run these commands on the remote computer:
 

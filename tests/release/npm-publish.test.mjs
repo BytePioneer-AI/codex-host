@@ -49,13 +49,13 @@ describe("npm registry publishing", () => {
       for (const name of names) await writeFile(path.join(root, "nested", name), name);
       const plan = await createNpmPublishPlan({ artifactsRoot: root, version });
       expect(plan.map((entry) => entry.packageName)).toEqual([
-        "@codexhost/cli-darwin-arm64",
-        "@codexhost/cli-darwin-x64",
-        "@codexhost/cli-win32-x64",
-        "@codexhost/cli-win32-arm64",
-        "@codexhost/cli-linux-x64",
-        "@codexhost/cli-linux-arm64",
-        "@codexhost/cli",
+        "@karlorz/codexhost-cli-darwin-arm64",
+        "@karlorz/codexhost-cli-darwin-x64",
+        "@karlorz/codexhost-cli-win32-x64",
+        "@karlorz/codexhost-cli-win32-arm64",
+        "@karlorz/codexhost-cli-linux-x64",
+        "@karlorz/codexhost-cli-linux-arm64",
+        "@karlorz/codexhost-cli",
       ]);
       expect(plan.at(-1).kind).toBe("meta");
     } finally {

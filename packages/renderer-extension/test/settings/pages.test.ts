@@ -221,7 +221,7 @@ function updateCheck(status: UpdateStatus | null = null): UpdateCheckResult {
     updateAvailable: true,
     installationAvailable: true,
     releaseNotes: "Safer updates",
-    releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+    releaseNotesUrl: "https://github.com/karlorz/codex-host/releases/tag/v1.2.3",
     status,
     error: null,
   };
@@ -1759,7 +1759,7 @@ describe("Renderer Connections page", () => {
     expect(report).toContain("stderr:\ncheck ~/.pi/agent/settings.json");
     const issueLink = descendants(content).find(
       ({ tagName, href }) =>
-        tagName === "a" && href === "https://github.com/BytePioneer-AI/codex-host/issues/new",
+        tagName === "a" && href === "https://github.com/karlorz/codex-host/issues/new",
     );
     expect(issueLink).toBeDefined();
     const copyButton = descendants(
@@ -2188,9 +2188,7 @@ describe("Renderer Updates page", () => {
     expect(releaseLink.rel).toBe("noopener noreferrer");
 
     await vi.waitFor(() => {
-      expect(releaseLink.href).toBe(
-        "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
-      );
+      expect(releaseLink.href).toBe("https://github.com/karlorz/codex-host/releases/tag/v1.2.3");
     });
 
     const panel = elementWithClass(content, "settings-update-panel");
@@ -2202,9 +2200,7 @@ describe("Renderer Updates page", () => {
       expect(panel.dataset.updateState).toBe("failed");
     });
     expect(descendants(content)).toContain(releaseLink);
-    expect(releaseLink.href).toBe(
-      "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
-    );
+    expect(releaseLink.href).toBe("https://github.com/karlorz/codex-host/releases/tag/v1.2.3");
 
     cleanup?.();
     scope.dispose();
@@ -2293,13 +2289,13 @@ describe("Renderer Updates page", () => {
     ).toBeUndefined();
     expect(client.startUpdate).not.toHaveBeenCalled();
     if (installation === "npm") {
-      expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
+      expect(visibleText(content)).toContain("npm install -g @karlorz/codexhost-cli@latest");
     } else {
       const link = descendants(content).find(
         ({ tagName, href }) =>
           tagName === "a" &&
           href ===
-            "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+            "https://github.com/karlorz/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
       );
       expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
     }
@@ -2331,12 +2327,11 @@ describe("Renderer Updates page", () => {
     expect(visibleText(content)).toContain("codexhost 是一个开源项目");
     expect(visibleText(content)).toContain("请给我们一个 Star");
     const repository = descendants(content).find(
-      ({ tagName, href }) =>
-        tagName === "a" && href === "https://github.com/BytePioneer-AI/codex-host",
+      ({ tagName, href }) => tagName === "a" && href === "https://github.com/karlorz/codex-host",
     );
     expect(repository).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
     expect(visibleNotesText(repository as FakeElement)).toContain(
-      "https://github.com/BytePioneer-AI/codex-host",
+      "https://github.com/karlorz/codex-host",
     );
 
     cleanup?.();
@@ -2446,7 +2441,7 @@ describe("Renderer Updates page", () => {
     expect(visibleText(starBanner)).toContain("如果 CodexHost 帮到了你，请在 GitHub 点个 Star");
     const starLink = descendants(starBanner).find(({ tagName }) => tagName === "a");
     expect(starLink).toMatchObject({
-      href: "https://github.com/BytePioneer-AI/codex-host",
+      href: "https://github.com/karlorz/codex-host",
       target: "_blank",
       rel: "noopener noreferrer",
     });

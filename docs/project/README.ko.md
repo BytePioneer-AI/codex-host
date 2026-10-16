@@ -30,7 +30,7 @@
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>다운로드</strong></a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#원격-harness">원격 연결</a> · <a href="#교류-그룹-참여">微信交流群</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="../../README.md">English</a></p>
+<p align="center"><a href="https://github.com/karlorz/codex-host/releases"><strong>다운로드</strong></a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#원격-harness">원격 연결</a> · <a href="#교류-그룹-참여">微信交流群</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="../../README.md">English</a></p>
 
 <br />
 
@@ -66,13 +66,13 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 **방법 1: npm** (macOS / Windows / Linux)
 
 ```bash
-npm install -g @codexhost/cli
+npm install -g @karlorz/codexhost-cli
 codexhost
 ```
 
 **방법 2: 설치 프로그램** (macOS / Windows)
 
-[Releases](https://github.com/BytePioneer-AI/codex-host/releases)에서 플랫폼에 맞는 설치 프로그램을 다운로드하세요.
+[Releases](https://github.com/karlorz/codex-host/releases)에서 플랫폼에 맞는 설치 프로그램을 다운로드하세요.
 
 > Linux는 x64 / ARM64를 지원합니다. 자세한 내용은 [Linux 안내](../platforms/linux/linux.md)를 참고하세요.
 
@@ -222,7 +222,7 @@ CodexHost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 
 1. 제어 대상 컴퓨터에서 설치하고 시작합니다:
 
    ```bash
-   npm install -g @codexhost/cli
+   npm install -g @karlorz/codexhost-cli
    codexhost remote install
    codexhost remote start
    codexhost remote status
@@ -287,7 +287,7 @@ Issue나 PR을 제출하기 전에 [기여 안내](../../CONTRIBUTING.md)를 읽
 환경 요구 사항: 공식 Codex Desktop, Node.js 22.19+ 또는 24, Rust.
 
 ```bash
-git clone https://github.com/BytePioneer-AI/codex-host
+git clone https://github.com/karlorz/codex-host
 cd codex-host
 npm ci
 npm start
@@ -315,8 +315,8 @@ Harness를 추가할 때는 코딩 Agent가 저장소의 [codexhost-add-harness 
 
 CodexHost에 기여해 주신 모든 분께 감사드립니다.
 
-<a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
-  <img alt="CodexHost 기여자" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+<a href="https://github.com/karlorz/codex-host/graphs/contributors">
+  <img alt="CodexHost 기여자" src="https://contrib.rocks/image?repo=karlorz/codex-host" />
 </a>
 
 ## Star History

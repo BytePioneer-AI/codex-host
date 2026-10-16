@@ -23,8 +23,7 @@ import { harnessInstallStore } from "./harness-install-store.js";
 import { createHarnessVersionPanel } from "./harness-version-panel.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
-export const CODEXHOST_GITHUB_ISSUES_NEW_URL =
-  "https://github.com/BytePioneer-AI/codex-host/issues/new";
+export const CODEXHOST_GITHUB_ISSUES_NEW_URL = "https://github.com/karlorz/codex-host/issues/new";
 
 export interface RendererConnectionAgentSnapshot {
   readonly agent: ExternalRendererAgent;

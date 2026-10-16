@@ -7,6 +7,7 @@ import {
   NPM_PACKAGE_NAME,
   NPM_PLATFORM_PACKAGE_NAMES,
   createNpmBinLauncherSource,
+  npmPackageRepositoryFields,
   packNpmPackage,
   resolveNpmPackageVersion,
 } from "./prepare-npm.mjs";
@@ -30,12 +31,7 @@ export function createNpmMetaPackageManifest({ version }) {
       Object.values(NPM_PLATFORM_PACKAGE_NAMES).map((packageName) => [packageName, version]),
     ),
     keywords: ["codex", "codexhost", "pi", "claude-code", "agent", "harness"],
-    repository: {
-      type: "git",
-      url: "git+https://github.com/BytePioneer-AI/codex-host.git",
-    },
-    bugs: { url: "https://github.com/BytePioneer-AI/codex-host/issues" },
-    homepage: "https://github.com/BytePioneer-AI/codex-host#readme",
+    ...npmPackageRepositoryFields(),
     publishConfig: { access: "public" },
   };
 }

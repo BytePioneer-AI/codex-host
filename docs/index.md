@@ -106,6 +106,7 @@
 | [`product/codex-native-account-switching-design.md`](product/codex-native-account-switching-design.md) | 移除 Codex 多账号切换后的只读边界；修改 Codex 认证或账号路由时阅读。 |
 | [`architecture/renderer-settings-styling.md`](architecture/renderer-settings-styling.md) | 设置页 Tailwind CSS 使用边界、构建方式与编写规则；新增或改版设置页界面时阅读。 |
 | [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常，以及输入性能的诊断流程；兼容性与交互性能回归时阅读。 |
+| [`operations/cpa-live-voice-desktop-hook.md`](operations/cpa-live-voice-desktop-hook.md) | Live-voice `clientOwnsCall` override (default on, Desktop 26.1007.30912 only); Settings → General switch, `CODEXHOST_CPA_LIVE_VOICE=0`, and `config.toml` realtime base URLs. |
 
 ## 平台、进程与远程运行
 
@@ -129,6 +130,7 @@
 | [`operations/remote-thread-read.md`](operations/remote-thread-read.md) | 通过现有 Desktop 远程连接跨 Harness 读取会话；包含部署要求、分页、响应大小与超时限制。 |
 | [`operations/host-runtime-log.md`](operations/host-runtime-log.md) | Host Runtime 日志文件的位置、内容与边界；排查 Runtime 崩溃或异常退出时阅读。 |
 | [`operations/codexhost-console.md`](operations/codexhost-console.md) | 本地控制台的打开方式、页面、项目公告、与运行中 Host 的连接、端口、诊断文件、安全与更新边界；排查启动失败或维护 Web 公告时阅读。 |
+| [`operations/fork-versioning.md`](operations/fork-versioning.md) | Fork `karlorz/codex-host` 标签规则：upstream 停在 `0.13.2` 时用 `v0.13.2-0`、`v0.13.2-1`…；npm 发 `@karlorz/codexhost-cli`；in-app Update 读 fork GitHub latest；不向 upstream 推送、不发布 `@codexhost/*`。 |
 | [`NOTICE.md`](NOTICE.md) | Web 控制台打开或刷新时读取的项目公告，含显示开关、标题、类型与正文；默认关闭，发布规则见控制台文档。 |
 | [`operations/repository-maintenance.md`](operations/repository-maintenance.md) | PR 标签、CI 评论和发布前检查自动化；修改仓库自动化时阅读。 |
 

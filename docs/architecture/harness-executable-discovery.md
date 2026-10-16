@@ -28,7 +28,7 @@ packages/harness-discovery/
 }
 ```
 
-该包参与 TypeScript 构建，但不会作为独立 npm 包发布。正式 npm 发布物仍是 `@codexhost/cli` 及对应的平台包；发现代码随 Host Runtime 和 Adapter 的发布产物一起交付。
+该包参与 TypeScript 构建，但不会作为独立 npm 包发布。正式 npm 发布物仍是 `@karlorz/codexhost-cli` 及对应的平台包；发现代码随 Host Runtime 和 Adapter 的发布产物一起交付。
 
 ## 公共能力
 

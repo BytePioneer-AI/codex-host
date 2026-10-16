@@ -21,7 +21,7 @@ afterEach(async () => {
 const release = {
   version: "1.1.0",
   releaseNotes: "Fixes",
-  releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.1.0",
+  releaseNotesUrl: "https://github.com/karlorz/codex-host/releases/tag/v1.1.0",
   assets: [],
 };
 

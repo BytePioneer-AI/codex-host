@@ -201,7 +201,7 @@ fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
                     "npm uses a different global installation; update this remote manually".into(),
                 );
             }
-            let package = format!("@codexhost/cli@{}", request.version);
+            let package = format!("{}@{}", crate::install::NPM_PACKAGE_NAME, request.version);
             // Unpublished local builds fail here, before touching the installation or service.
             run(Command::new(&request.node).arg(&request.npm).args([
                 "view",
@@ -231,16 +231,16 @@ fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
                     .and_then(|name| name.to_str())
                     .ok_or("Invalid platform package path")?;
                 if ![
-                    "cli-darwin-arm64",
-                    "cli-darwin-x64",
-                    "cli-linux-arm64",
-                    "cli-linux-x64",
+                    "codexhost-cli-darwin-arm64",
+                    "codexhost-cli-darwin-x64",
+                    "codexhost-cli-linux-arm64",
+                    "codexhost-cli-linux-x64",
                 ]
                 .contains(&name)
                 {
                     return Err("Unknown remote platform package".into());
                 }
-                command.arg(format!("@codexhost/{name}@{}", request.version));
+                command.arg(format!("@karlorz/{name}@{}", request.version));
             }
             run(&mut command).map_err(|error| format!("npm installation failed; check remote network access and write permissions: {error}"))?;
         }
@@ -285,7 +285,7 @@ mod tests {
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
-        let package_root = root.join("node_modules/@codexhost/cli-darwin-arm64");
+        let package_root = root.join("node_modules/@karlorz/codexhost-cli-darwin-arm64");
         fs::create_dir_all(package_root.join("app")).unwrap();
         fs::write(
             package_root.join("app/codexhost-distribution.json"),

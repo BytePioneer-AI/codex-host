@@ -30,7 +30,7 @@
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>下载</strong></a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
+<p align="center"><a href="https://github.com/karlorz/codex-host/releases"><strong>下载</strong></a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
 
 <br />
 
@@ -66,13 +66,13 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 **方式一：npm**（macOS / Windows / Linux）
 
 ```bash
-npm install -g @codexhost/cli
+npm install -g @karlorz/codexhost-cli
 codexhost
 ```
 
 **方式二：安装包**（macOS / Windows）
 
-从 [Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载对应平台的安装包。
+从 [Releases](https://github.com/karlorz/codex-host/releases) 下载对应平台的安装包。
 
 > Linux 支持 x64 / ARM64，详见 [Linux 说明](../platforms/linux/linux.zh-CN.md)。
 
@@ -225,7 +225,7 @@ CodexHost 会为目标 Harness 创建独立的 Native Session。委派会话将�
 1. 在被控机器上安装并启动：
 
    ```bash
-   npm install -g @codexhost/cli
+   npm install -g @karlorz/codexhost-cli
    codexhost remote install
    codexhost remote start
    codexhost remote status
@@ -290,7 +290,7 @@ CodexHost 的做法不同：
 环境要求：官方 Codex Desktop、Node.js 22.19+ 或 24、Rust。
 
 ```bash
-git clone https://github.com/BytePioneer-AI/codex-host
+git clone https://github.com/karlorz/codex-host
 cd codex-host
 npm ci
 npm start
@@ -321,8 +321,8 @@ npm start
 
 感谢所有为 CodexHost 做出贡献的开发者。
 
-<a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
-  <img alt="CodexHost 贡献者" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+<a href="https://github.com/karlorz/codex-host/graphs/contributors">
+  <img alt="CodexHost 贡献者" src="https://contrib.rocks/image?repo=karlorz/codex-host" />
 </a>
 
 ## Star History

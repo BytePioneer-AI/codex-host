@@ -14,7 +14,7 @@ import {
 function release(overrides: Record<string, unknown> = {}) {
   return {
     tag_name: "v1.2.3",
-    html_url: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+    html_url: "https://github.com/karlorz/codex-host/releases/tag/v1.2.3",
     draft: false,
     prerelease: false,
     body: "## Changes\n\n- Safer updates",
@@ -24,7 +24,7 @@ function release(overrides: Record<string, unknown> = {}) {
         size: 42,
         digest: `sha256:${"ab".repeat(32)}`,
         browser_download_url:
-          "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+          "https://github.com/karlorz/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
         uploader: { login: "github-actions" },
       },
     ],
@@ -41,7 +41,7 @@ describe("GitHub Release update discovery", () => {
     expect(selectInstallerReleaseArtifact(parsed, "windows-x64")).toEqual({
       name: "codexhost-1.2.3-windows-x64.exe",
       source: {
-        url: "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+        url: "https://github.com/karlorz/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
         sha256: "ab".repeat(32),
         size: 42,
       },
@@ -56,7 +56,7 @@ describe("GitHub Release update discovery", () => {
     expect(() =>
       parseLatestGitHubRelease(
         release({
-          html_url: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v9.9.9",
+          html_url: "https://github.com/karlorz/codex-host/releases/tag/v9.9.9",
         }),
       ),
     ).toThrow("does not match");
@@ -67,7 +67,7 @@ describe("GitHub Release update discovery", () => {
             name: "codexhost-1.2.3-windows-x64.exe",
             size: 42,
             browser_download_url:
-              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+              "https://github.com/karlorz/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
           },
         ],
       }),
@@ -135,7 +135,7 @@ describe("GitHub Release update discovery", () => {
         "Accept: application/vnd.github+json",
         "--header",
         "X-GitHub-Api-Version: 2022-11-28",
-        "repos/BytePioneer-AI/codex-host/releases/latest",
+        "repos/karlorz/codex-host/releases/latest",
       ],
       { environment: { PATH: "/usr/bin:/bin" } },
     );

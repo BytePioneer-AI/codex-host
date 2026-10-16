@@ -19,7 +19,7 @@ afterEach(async () => {
 async function fixture(remote = false, updaterStartTimeoutMs?: number) {
   const root = await mkdtemp(path.join(tmpdir(), "codexhost-maintenance-"));
   directories.push(root);
-  const pkg = path.join(root, "node_modules/@codexhost/cli-darwin-arm64");
+  const pkg = path.join(root, "node_modules/@karlorz/codexhost-cli-darwin-arm64");
   const runtimePath = path.join(pkg, "app/host-runtime.mjs");
   await Promise.all(
     ["app", "libexec", "../cli/bin"].map((dir) => mkdir(path.join(pkg, dir), { recursive: true })),

@@ -3,7 +3,12 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { NPM_PACKAGE_NAME, npmPlatformPackageName, npmTarballFileName } from "./prepare-npm.mjs";
+import {
+  NPM_PACKAGE_NAME,
+  npmPlatformPackageName,
+  npmTarballFileName,
+  requireForkNpmIdentity,
+} from "./prepare-npm.mjs";
 import { npmMetaTarballFileName } from "./prepare-npm-meta.mjs";
 import { supportedReleaseTargets, releaseTarget } from "./targets.mjs";
 
@@ -91,6 +96,7 @@ export function npmPublishCommand(entry, { dryRun, provenance, registry, tag }) 
 
 export function publishNpmPlan(plan, options) {
   for (const entry of plan) {
+    requireForkNpmIdentity(entry.packageName);
     const command = npmPublishCommand(entry, options);
     console.log(
       `${options.dryRun ? "checking" : "publishing"} ${entry.packageName}@${entry.version}`,

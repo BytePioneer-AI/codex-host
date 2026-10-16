@@ -410,7 +410,6 @@ export interface RendererCodexUsageGate {
 export function createRendererCodexUsageGate(composer: Element): RendererCodexUsageGate {
   let owner: GateScope | null = null;
   const projections = new Map<Instance, Projection>();
-  const boundKinds = (): Set<GateKind> => new Set([...projections.values()].map((p) => p.kind));
   let retryAt = 0;
   let allowed = false;
   const release = (): void => {
@@ -425,8 +424,15 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
       }
     }
   };
+  // Re-read the scope while bound, so a component that subscribes another
+  // Account gate after the first bind (a child mounted later) is found too.
+  const scope = (): GateScope | null => {
+    const found = findSubmitScope(composer);
+    if (!owner) return found;
+    return found?.owner === owner.owner ? found : owner;
+  };
   const bind = (): RendererCodexUsageGateStatus => {
-    const current = owner ?? findSubmitScope(composer);
+    const current = scope();
     const gates = current && discoverGates(current, projections);
     // The reserve gate always reads its field, so its absence means an unknown contract.
     if (!current || !gates?.some(([kind]) => kind === "reserve")) {
@@ -448,7 +454,6 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
       release();
       retryAt = 0;
     }
-    if (owner && boundKinds().size === 2) return "bypassed";
     if (Date.now() < retryAt) return owner ? "bypassed" : "unsupported";
     retryAt = Date.now() + RETRY_DELAY_MS;
     try {

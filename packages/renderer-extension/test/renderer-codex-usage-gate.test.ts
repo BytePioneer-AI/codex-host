@@ -98,12 +98,13 @@ function composerFixture(
   const hooks: Array<Record<string, unknown>> = [];
   const rerender = vi.fn();
   const childHooks: Array<Record<string, unknown>> = [];
-  const selectors: Array<[Atom, Array<Record<string, unknown>>]> = [
+  type SelectorEntry = [Atom, Array<Record<string, unknown>>];
+  const selectors: SelectorEntry[] = [
     [source.reserveActive, hooks],
     [accountGate, hooks],
-    ...(options.omitReserve ? [] : ([[source.reserveGate, hooks]] as const)),
-    ...(options.duplicateAccount ? ([[accountGate, hooks]] as const) : []),
-    ...(options.childAccount ? ([[accountGate, childHooks]] as const) : []),
+    ...(options.omitReserve ? [] : ([[source.reserveGate, hooks]] satisfies SelectorEntry[])),
+    ...(options.duplicateAccount ? ([[accountGate, hooks]] satisfies SelectorEntry[]) : []),
+    ...(options.childAccount ? ([[accountGate, childHooks]] satisfies SelectorEntry[]) : []),
   ];
   for (const [selector, target] of selectors) {
     // Desktop 26.928 wraps parameterized selectors in a readonly signal atom.

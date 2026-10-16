@@ -1,6 +1,8 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, lstat } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { modelRef } from "@codexhost/adapter-codebuddy";
+import { targetPath } from "@codexhost/harness-discovery";
 import type { HarnessModelCatalog } from "@codexhost/harness-adapter";
 import {
   HARNESS_MODEL_LABEL_MAX_LENGTH,
@@ -66,7 +68,7 @@ export function parseWorkBuddyProductModels(value: unknown): WorkBuddyProductMod
 }
 
 async function readProductJson(file: string): Promise<unknown | undefined> {
-  const metadata = await stat(file);
+  const metadata = await lstat(file);
   if (!metadata.isFile() || metadata.size <= 0 || metadata.size > MAX_PRODUCT_SNAPSHOT_BYTES)
     return;
   return JSON.parse(await readFile(file, "utf8"));
@@ -76,6 +78,45 @@ function bundledFallbackProductPath(invocation: ReturnType<typeof workBuddyInvoc
   const cli = invocation.arguments[0];
   if (!cli || cli.startsWith("-")) return;
   return path.join(path.dirname(path.dirname(cli)), "product.json");
+}
+
+/**
+ * The desktop app caches its server product config (which carries the full
+ * model list including subscription models) under its own config root. When
+ * neither ACC_PRODUCT_CONFIG_PATH nor a bundled product.json exists, read that
+ * cache read-only so the CLI-side catalog matches the native app. Permission
+ * rules mirror command.ts bundledProductConfigPath: user-owned, non-world/group
+ * readable, no symlinks.
+ */
+export async function appCacheProductPath(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): Promise<string | undefined> {
+  if (platform !== "darwin" && platform !== "win32") return;
+  const paths = targetPath(platform);
+  const home = environment.HOME || environment.USERPROFILE || homedir();
+  const root = paths.join(home, ".workbuddy");
+  const candidate = paths.join(root, "cache", "acc-product-config-v3.json");
+  try {
+    const uid = process.getuid?.();
+    for (const directory of [root, paths.dirname(candidate)]) {
+      const metadata = await lstat(directory);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) return;
+      if (platform !== "win32") {
+        if ((metadata.mode & 0o022) !== 0) return;
+        if (uid !== undefined && metadata.uid !== uid) return;
+      }
+    }
+    const metadata = await lstat(candidate);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size <= 0) return;
+    if (platform !== "win32") {
+      if ((metadata.mode & 0o077) !== 0) return;
+      if (uid !== undefined && metadata.uid !== uid) return;
+    }
+    return candidate;
+  } catch {
+    return;
+  }
 }
 
 export async function loadWorkBuddyProductModels(
@@ -101,9 +142,18 @@ export async function loadWorkBuddyProductModels(
     }
   }
   const fallback = bundledFallbackProductPath(invocation);
-  if (!fallback) return [];
+  if (fallback) {
+    try {
+      const parsed = parseWorkBuddyProductModels(await readProductJson(fallback));
+      if (parsed.length > 0) return parsed;
+    } catch {
+      // Fall through to the app-side cache below.
+    }
+  }
+  const appCache = await appCacheProductPath(productEnvironment, process.platform);
+  if (!appCache) return [];
   try {
-    return parseWorkBuddyProductModels(await readProductJson(fallback));
+    return parseWorkBuddyProductModels(await readProductJson(appCache));
   } catch {
     return [];
   }

@@ -59,6 +59,10 @@ import {
 } from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
 import {
+  createRendererCodexUsageBanner,
+  type RendererCodexUsageBanner,
+} from "./renderer-codex-usage-banner.js";
+import {
   createRendererCodexUsageGate,
   type RendererCodexUsageGate,
   type RendererCodexUsageGateStatus,
@@ -742,6 +746,12 @@ export function installRendererBindingProbe(
     ...(options.defaultAgent ? { defaultAgent: options.defaultAgent } : {}),
   });
   const mountedByComposer = new Map<Element, MountedComposer>();
+  /**
+   * Codex usage banners render outside any Composer (transcript area), so the
+   * banner controller is page-global: driven by the same external-submission
+   * signal as the per-Composer usage gates, refreshed from the scan loop.
+   */
+  const codexUsageBanner: RendererCodexUsageBanner = createRendererCodexUsageBanner(document);
   const catalogRequests = new WeakMap<MountedComposer, MountedCatalogRequest>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
@@ -1024,6 +1034,7 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus === "error",
     );
     showCodexUsageGateStatus(mounted, mounted.codexUsageGate.update(externalSubmissionReady));
+    codexUsageBanner.update(externalSubmissionReady);
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
         void refreshThreadUsage(
@@ -2842,6 +2853,9 @@ export function installRendererBindingProbe(
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
       showCodexUsageGateStatus(mounted, mounted.codexUsageGate.refresh());
     }
+    // Usage banners mount/unmount with the conversation; re-apply the current
+    // decision to banner nodes that appeared since the last scan.
+    codexUsageBanner.refresh();
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {
       const composer = composerForEditor(editor);
       if (composer) mount(composer);
@@ -3301,6 +3315,7 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      codexUsageBanner.dispose();
       usageNotificationDispose();
       adapterDispose?.();
       adapterDispose = null;

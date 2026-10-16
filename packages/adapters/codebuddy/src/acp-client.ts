@@ -22,6 +22,8 @@ export interface CodeBuddyClientHandlers {
 export interface CodeBuddyClient {
   initialize(): Promise<Record<string, unknown>>;
   open(cwd: string, sessionId?: string): Promise<Record<string, unknown>>;
+  /** Optional ACP authenticate: some native agents (WorkBuddy) support silent re-login. */
+  authenticate?(params: { methodId: string }): Promise<Record<string, unknown>>;
   configure(sessionId: string, configId: string, value: string): Promise<Record<string, unknown>>;
   prompt(sessionId: string, input: string): Promise<Record<string, unknown>>;
   cancel(sessionId: string): Promise<void>;
@@ -181,6 +183,13 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
         "ACP Session open",
         20_000,
       ),
+    );
+  }
+
+  /** ACP authenticate: resolves once the user completes the native flow (browser/QR). */
+  async authenticate(params: { methodId: string }) {
+    return record(
+      await this.#request(() => this.#connection.authenticate(params), "ACP authenticate", 600_000),
     );
   }
 

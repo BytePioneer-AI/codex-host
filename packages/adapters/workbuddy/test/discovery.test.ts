@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { MacWorkBuddyScanFunctions } from "../src/discovery.js";
 import { workBuddyInvocation } from "../src/command.js";
 
 describe("WorkBuddy app discovery", () => {
@@ -95,19 +96,75 @@ describe("WorkBuddy app discovery", () => {
     });
   });
 
-  it.each([
-    "/Applications/WorkBuddy.app",
-    "/Users/test/Applications/WorkBuddy AI.app",
-    "/Users/test/Applications/WorkBuddy.app",
-  ])("finds the macOS bundle %s", (root) => {
-    const executable = `${root}/Contents/MacOS/Electron`;
-    const cli = `${root}/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy`;
-    const invocation = workBuddyInvocation({ HOME: "/Users/test" }, false, {
-      platform: "darwin",
-      isExecutable: (candidate) => [executable, cli].includes(candidate),
+  it("finds a renamed macOS bundle left behind by an app update migration", async () => {
+    const { macWorkBuddyAppBundleDirectories } = await import("../src/discovery.js");
+    const directories = [
+      "/Applications",
+      "/Applications/WorkBuddy.app",
+      "/Applications/WorkBuddy.app/Contents/MacOS",
+      "/Applications/WorkBuddy-6.0.0.app",
+      "/Applications/WorkBuddy-6.0.0.app/Contents/MacOS",
+    ];
+    const files = [
+      "/Applications/WorkBuddy.app/Contents/Info.plist",
+      "/Applications/WorkBuddy-6.0.0.app/Contents/Info.plist",
+    ];
+    const statSync = ((candidate: string) => {
+      if (files.includes(candidate) || directories.includes(candidate))
+        return { mtimeMs: candidate === "/Applications/WorkBuddy-6.0.0.app" ? 200 : 100 };
+      throw new Error("ENOENT");
+    }) as unknown as MacWorkBuddyScanFunctions["statSync"];
+    const readdirSync = ((root: string) => {
+      if (root !== "/Applications") throw new Error("ENOENT");
+      return ["WorkBuddy.app", "WorkBuddy-6.0.0.app", "Other.app"];
+    }) as unknown as MacWorkBuddyScanFunctions["readdirSync"];
+
+    expect(macWorkBuddyAppBundleDirectories("win32", { readdirSync, statSync })).toEqual([]);
+    // Canonical name wins over the renamed update-migration copy.
+    expect(macWorkBuddyAppBundleDirectories("darwin", { readdirSync, statSync })).toEqual([
+      "/Applications/WorkBuddy.app",
+      "/Applications/WorkBuddy-6.0.0.app",
+    ]);
+    // A missing canonical bundle leaves the renamed copy on top.
+    const onlyRenamed = macWorkBuddyAppBundleDirectories("darwin", {
+      readdirSync: ((root: string) =>
+        root === "/Applications"
+          ? ["WorkBuddy-6.0.0.app"]
+          : (() => {
+              throw new Error("ENOENT");
+            })()) as unknown as MacWorkBuddyScanFunctions["readdirSync"],
+      statSync,
     });
-    expect(invocation.command).toBe(executable);
-    expect(invocation.arguments).toEqual([cli, "--acp"]);
+    expect(onlyRenamed).toEqual(["/Applications/WorkBuddy-6.0.0.app"]);
+  });
+
+  it("resolves a renamed bundle end-to-end when the fixed roots miss it", async () => {
+    const { resolveWorkBuddyBundle } = await import("../src/discovery.js");
+    const renamed = "/Applications/WorkBuddy-6.0.0.app";
+    const executable = `${renamed}/Contents/MacOS/Electron`;
+    const cli = `${renamed}/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy`;
+    const statSync = ((candidate: string) => {
+      if (
+        candidate === renamed ||
+        candidate === `${renamed}/Contents/Info.plist` ||
+        candidate === `${renamed}/Contents/MacOS`
+      )
+        return { mtimeMs: 200 };
+      throw new Error("ENOENT");
+    }) as unknown as MacWorkBuddyScanFunctions["statSync"];
+    const readdirSync = ((root: string) => {
+      if (root !== "/Applications") throw new Error("ENOENT");
+      return ["WorkBuddy-6.0.0.app"];
+    }) as unknown as MacWorkBuddyScanFunctions["readdirSync"];
+
+    const bundle = resolveWorkBuddyBundle(
+      { HOME: "/Users/test" },
+      "darwin",
+      (candidate) => candidate === executable || candidate === cli,
+      undefined,
+      { readdirSync, statSync },
+    );
+    expect(bundle).toEqual({ executable, cli });
   });
 
   it("never combines an app executable with another installation's CLI", () => {

@@ -21,7 +21,7 @@ title: 版本兼容性提醒
 type: warning
 ---
 
-这里填写公告正文，可使用 **粗体**、列表和 [链接](https://github.com/BytePioneer-AI/codex-host)。
+这里填写公告正文，可使用 **粗体**、列表和 [链接](https://github.com/karlorz/codex-host)。
 ```
 
 - `enabled`：仅 `true` 显示，`false` 隐藏；正文为空也隐藏。

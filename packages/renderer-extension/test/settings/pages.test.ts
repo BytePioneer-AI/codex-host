@@ -38,6 +38,8 @@ import { RendererSessionImportUnavailableError } from "../../src/renderer-sessio
 const HARNESS_SESSION_LIST_METHOD = "codexhost/harness/session-import/list";
 const HARNESS_SESSION_IMPORT_METHOD = "codexhost/harness/session-import/import";
 import {
+  CODEXHOST_GITHUB_REPOSITORY_URL,
+  CODEXHOST_NPM_MANUAL_UPDATE_COMMAND,
   CODEXHOST_RELEASES_LATEST_URL,
   createDefaultRendererSettingsPages,
 } from "../../src/settings/pages.js";
@@ -1942,6 +1944,16 @@ describe("Renderer Codex Accounts page", () => {
 });
 
 describe("Renderer Updates page", () => {
+  it("points Settings Updates at karlorz/codex-host and @karlorz/codexhost-cli", () => {
+    expect(CODEXHOST_GITHUB_REPOSITORY_URL).toBe("https://github.com/karlorz/codex-host");
+    expect(CODEXHOST_RELEASES_LATEST_URL).toBe(
+      "https://github.com/karlorz/codex-host/releases/latest",
+    );
+    expect(CODEXHOST_NPM_MANUAL_UPDATE_COMMAND).toBe(
+      "npm install -g @karlorz/codexhost-cli@latest",
+    );
+  });
+
   it.each(["succeeded", "failed"] as const)(
     "keeps polling after start/status timeouts until the Host reports %s",
     async (terminalPhase) => {

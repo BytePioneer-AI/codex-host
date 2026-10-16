@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -18,14 +18,24 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-const release = {
-  version: "1.1.0",
-  releaseNotes: "Fixes",
-  releaseNotesUrl: "https://github.com/karlorz/codex-host/releases/tag/v1.1.0",
-  assets: [],
-};
+function releaseFor(version: string) {
+  return {
+    version,
+    releaseNotes: "Fixes",
+    releaseNotesUrl: `https://github.com/karlorz/codex-host/releases/tag/v${version}`,
+    assets: [],
+  };
+}
 
-async function npmLayout(platform: NodeJS.Platform = process.platform) {
+const release = releaseFor("1.1.0");
+
+async function writeWaitingForExit(statusPath: string): Promise<void> {
+  const status = JSON.parse(await readFile(statusPath, "utf8"));
+  await writeFile(`${statusPath}.tmp`, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
+  await rename(`${statusPath}.tmp`, statusPath);
+}
+
+async function npmLayout(platform: NodeJS.Platform = process.platform, version = "1.0.0") {
   const packageRoot = path.join(root, "package");
   const appDirectory = path.join(packageRoot, "app");
   await mkdir(path.join(packageRoot, "libexec"), { recursive: true });
@@ -41,7 +51,7 @@ async function npmLayout(platform: NodeJS.Platform = process.platform) {
   await writeFile(npmCli, "");
   await writeFile(wrapper, "");
   const target: ConsoleUpdateTarget = {
-    distribution: { schemaVersion: 1, version: "1.0.0", distribution: "npm", target: "linux-x64" },
+    distribution: { schemaVersion: 1, version, distribution: "npm", target: "linux-x64" },
     appDirectory,
     runtimeDescriptorPath: path.join(root, "runtime", "desktop-runtime-v1.json"),
     codexhostRunning: false,
@@ -142,8 +152,29 @@ describe("console updates", () => {
     await expect(createConsoleUpdates(options).status()).resolves.toEqual({ status: null });
   });
 
-  it("hands off to the Updater before returning", async () => {
-    const { target, environment } = await npmLayout("linux");
+  it("reports an equal fork counter as up to date without starting the Updater", async () => {
+    const { target, environment } = await npmLayout("linux", "0.13.2-1");
+    const updates = createConsoleUpdates({
+      onHandedOff: vi.fn(),
+      environment,
+      stateDirectory: path.join(root, "state"),
+      fetchLatest: async () => releaseFor("0.13.2-1"),
+    });
+
+    await expect(updates.check(target)).resolves.toMatchObject({
+      currentVersion: "0.13.2-1",
+      latestVersion: "0.13.2-1",
+      updateAvailable: false,
+      installationAvailable: false,
+      error: null,
+    });
+  });
+
+  it.each([
+    ["1.0.0", "1.1.0"],
+    ["0.13.2-1", "0.13.2-2"],
+  ])("hands off %s → %s to the Updater before returning", async (currentVersion, latestVersion) => {
+    const { target, environment } = await npmLayout("linux", currentVersion);
     const spawnUpdater = vi.fn<(executable: string, requestPath: string) => never>(
       () => Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never,
     );
@@ -156,30 +187,34 @@ describe("console updates", () => {
       processId: 777,
       processExecutable: process.execPath,
       stateDirectory: path.join(root, "state"),
-      fetchLatest: async () => release,
+      fetchLatest: async () => releaseFor(latestVersion),
       manager: createBackgroundUpdateManager({ platform: "linux", spawnUpdater }),
     });
 
-    await updates.check(target);
+    await expect(updates.check(target)).resolves.toMatchObject({
+      currentVersion,
+      latestVersion,
+      updateAvailable: true,
+      installationAvailable: true,
+    });
+    expect(spawnUpdater).not.toHaveBeenCalled();
+    expect(onHandedOff).not.toHaveBeenCalled();
     const starting = updates.start(target);
     await vi.waitFor(() => expect(spawnUpdater).toHaveBeenCalledOnce());
     expect(onHandedOff).not.toHaveBeenCalled();
     const call = spawnUpdater.mock.calls[0];
     if (!call) throw new Error("Updater was not spawned");
     const spawnedRequest = JSON.parse(await readFile(call[1], "utf8"));
-    const status = JSON.parse(await readFile(spawnedRequest.status_path, "utf8"));
-    await writeFile(
-      spawnedRequest.status_path,
-      JSON.stringify({ ...status, phase: "waiting-for-exit" }),
-    );
+    await writeWaitingForExit(spawnedRequest.status_path);
     const result = await starting;
 
     expect(result.status.phase).toBe("waiting-for-exit");
-    expect(result.status).toMatchObject({ version: "1.1.0", installation: "npm" });
+    expect(result.status).toMatchObject({ version: latestVersion, installation: "npm" });
     expect(onHandedOff).toHaveBeenCalledOnce();
     const requestPath = (spawnUpdater.mock.calls[0] as unknown as [string, string])[1];
     const request = JSON.parse(await readFile(requestPath, "utf8")) as Record<string, unknown>;
     expect(request).toMatchObject({
+      version: latestVersion,
       wait_pid: 777,
       wait_executable: process.execPath,
       runtime_descriptor_path: target.runtimeDescriptorPath,
@@ -214,8 +249,7 @@ describe("console updates", () => {
     const call = spawnUpdater.mock.calls[0];
     if (!call) throw new Error("Updater was not spawned");
     const request = JSON.parse(await readFile(call[1], "utf8"));
-    const status = JSON.parse(await readFile(request.status_path, "utf8"));
-    await writeFile(request.status_path, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
+    await writeWaitingForExit(request.status_path);
     await expect(retry).resolves.toMatchObject({ status: { phase: "waiting-for-exit" } });
     await expect(updates.status()).resolves.toMatchObject({
       status: { phase: "waiting-for-exit", error: null },

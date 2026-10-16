@@ -4,7 +4,7 @@
 TBD - created by archiving change implement-github-release-update-flow. Update Purpose after archive.
 ## Requirements
 ### Requirement: Host discovers one stable GitHub Release
-The update capability SHALL discover the latest stable codexhost version only from `https://api.github.com/repos/BytePioneer-AI/codex-host/releases/latest`, SHALL compare its `v`-prefixed tag with the packaged current SemVer, and SHALL keep check failure non-blocking for normal application launch. It MUST NOT require a custom manifest, checksum sidecar, codexhost server, login, or embedded GitHub credential.
+The update capability SHALL discover the latest stable codexhost version only from `https://api.github.com/repos/karlorz/codex-host/releases/latest`, SHALL compare its `v`-prefixed tag with the packaged current SemVer, and SHALL keep check failure non-blocking for normal application launch. It MUST NOT require a custom manifest, checksum sidecar, codexhost server, login, or embedded GitHub credential.
 
 #### Scenario: New stable Release exists
 - **WHEN** GitHub returns a non-draft, non-prerelease Release with a valid newer `v<semver>` tag

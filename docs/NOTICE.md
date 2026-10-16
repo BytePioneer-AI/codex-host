@@ -12,4 +12,4 @@ type: warning
 - 用户需要采取的临时措施。
 - 修复进度或预计恢复时间。
 
-[查看项目发布记录](https://github.com/BytePioneer-AI/codex-host/releases)
+[查看项目发布记录](https://github.com/karlorz/codex-host/releases)

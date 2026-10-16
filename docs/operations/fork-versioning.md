@@ -29,7 +29,7 @@ Fork operators install and update with:
 npm install -g @karlorz/codexhost-cli@latest
 ```
 
-That is the Settings → Updates manual command. **Update and restart** on an npm install runs the same package at the GitHub latest version (via the Updater), not `@codexhost/cli`.
+That is the Settings → Updates manual command. Settings auto-checks `karlorz/codex-host` `/releases/latest` when Updates is opened. A current version that already matches that latest tag is up to date. A higher fork counter is offered only after that version is published as the fork's non-draft, non-prerelease GitHub latest Release. **Update and restart** on an npm install then runs `@karlorz/codexhost-cli` at that GitHub latest version (via the Updater). Installation requires an explicit user action.
 
 | Channel | Fork identity | Do not use |
 | --- | --- | --- |
@@ -41,6 +41,8 @@ A fork tag is not shipped until both of these exist for that version:
 
 1. **npm:** attended `npm publish` of the packed meta package and matching platform tarballs under the `@karlorz` scope, dist-tag `latest` (or `next` only if the tag is an npm prerelease channel). `scripts/release/publish-npm.mjs` fails closed if a plan entry is not `@karlorz/`.
 2. **GitHub:** a **latest** (non-prerelease) Release on `karlorz/codex-host` for the same tag. The updater reads `/releases/latest` and rejects prereleases, so a prerelease-only fork Release leaves Updates empty or in error instead of offering the fork build.
+
+The standard `Release packages` workflow classifies hyphenated SemVer tags as prereleases and publishes them with `--prerelease --latest=false`. An attended fork counter release must explicitly use non-prerelease GitHub Release status and become latest to appear in Updates; the numeric tag alone does not make it discoverable.
 
 Keep GitHub Actions workflow `Release packages` **disabled** until it is wired to publish `@karlorz/*` with a Trusted Publisher on `karlorz/codex-host`. Do not enable it while it would still publish `@codexhost/*`. Do not `npm publish` `@codexhost/cli`. Local `npm run install:local` packs and installs tarballs without the registry.
 

@@ -9,7 +9,24 @@ import {
   parseLatestGitHubRelease,
   selectInstallerReleaseArtifact,
   type GitHubCliRunner,
+  type InstallerReleaseTarget,
 } from "@codexhost/update-manager";
+
+function installerAsset(
+  version: string,
+  target: InstallerReleaseTarget,
+  overrides: Record<string, unknown> = {},
+) {
+  const name = expectedInstallerAssetName(version, target);
+  return {
+    name,
+    size: 42,
+    digest: `sha256:${"ab".repeat(32)}`,
+    browser_download_url: `https://github.com/karlorz/codex-host/releases/download/v${version}/${name}`,
+    uploader: { login: "karlorz" },
+    ...overrides,
+  };
+}
 
 function release(overrides: Record<string, unknown> = {}) {
   return {
@@ -18,16 +35,7 @@ function release(overrides: Record<string, unknown> = {}) {
     draft: false,
     prerelease: false,
     body: "## Changes\n\n- Safer updates",
-    assets: [
-      {
-        name: "codexhost-1.2.3-windows-x64.exe",
-        size: 42,
-        digest: `sha256:${"ab".repeat(32)}`,
-        browser_download_url:
-          "https://github.com/karlorz/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
-        uploader: { login: "github-actions" },
-      },
-    ],
+    assets: [installerAsset("1.2.3", "windows-x64")],
     author: { login: "github-actions" },
     ...overrides,
   };
@@ -49,6 +57,56 @@ describe("GitHub Release update discovery", () => {
     expect(expectedInstallerAssetName("1.2.3", "macos-arm64")).toBe(
       "codexhost-1.2.3-macos-arm64.dmg",
     );
+  });
+
+  it("discovers only karlorz/codex-host latest and rejects BytePioneer assets", () => {
+    expect(CODEXHOST_LATEST_RELEASE_URL).toBe(
+      "https://api.github.com/repos/karlorz/codex-host/releases/latest",
+    );
+    expect(() =>
+      parseLatestGitHubRelease(
+        release({
+          html_url: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+        }),
+      ),
+    ).toThrow("does not match");
+    expect(() =>
+      parseLatestGitHubRelease(
+        release({
+          assets: [
+            installerAsset("1.2.3", "windows-x64", {
+              browser_download_url:
+                "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+            }),
+          ],
+        }),
+      ),
+    ).toThrow("invalid");
+  });
+
+  it("parses a fork hyphen version and selects the matching installer asset", () => {
+    const parsed = parseLatestGitHubRelease(
+      release({
+        tag_name: "v0.13.2-1",
+        html_url: "https://github.com/karlorz/codex-host/releases/tag/v0.13.2-1",
+        assets: [installerAsset("0.13.2-1", "macos-arm64")],
+      }),
+    );
+    expect(parsed.version).toBe("0.13.2-1");
+    expect(parsed.releaseNotesUrl).toBe(
+      "https://github.com/karlorz/codex-host/releases/tag/v0.13.2-1",
+    );
+    expect(expectedInstallerAssetName("0.13.2-1", "macos-arm64")).toBe(
+      "codexhost-0.13.2-1-macos-arm64.dmg",
+    );
+    expect(selectInstallerReleaseArtifact(parsed, "macos-arm64")).toEqual({
+      name: "codexhost-0.13.2-1-macos-arm64.dmg",
+      source: {
+        url: "https://github.com/karlorz/codex-host/releases/download/v0.13.2-1/codexhost-0.13.2-1-macos-arm64.dmg",
+        sha256: "ab".repeat(32),
+        size: 42,
+      },
+    });
   });
 
   it("rejects prereleases, mismatched notes, duplicate assets, and unverified selection", () => {
@@ -95,6 +153,9 @@ describe("GitHub Release update discovery", () => {
     expect(compareSemanticVersions("1.2.3-test.2", "1.2.3")).toBeLessThan(0);
     expect(compareSemanticVersions("1.2.4", "1.2.3")).toBeGreaterThan(0);
     expect(compareSemanticVersions("1.2.3+one", "1.2.3+two")).toBe(0);
+    expect(compareSemanticVersions("0.13.2-0", "0.13.2-1")).toBeLessThan(0);
+    expect(compareSemanticVersions("0.13.2-1", "0.13.2-1")).toBe(0);
+    expect(compareSemanticVersions("0.13.2-1", "0.13.2")).toBeLessThan(0);
   });
 
   it("requests only the fixed GitHub latest endpoint", async () => {

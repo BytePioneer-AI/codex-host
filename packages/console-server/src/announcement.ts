@@ -1,7 +1,6 @@
 import { consoleAnnouncementSchema, type ConsoleAnnouncement } from "@codexhost/shared-contracts";
 
-const ANNOUNCEMENT_URL =
-  "https://raw.githubusercontent.com/BytePioneer-AI/codex-host/main/docs/NOTICE.md";
+const ANNOUNCEMENT_URL = "https://raw.githubusercontent.com/karlorz/codex-host/main/docs/NOTICE.md";
 const MAX_DOCUMENT_BYTES = 16 * 1024;
 const TIMEOUT_MS = 5_000;
 

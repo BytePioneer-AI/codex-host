@@ -109,12 +109,15 @@ describe("release source and metadata", () => {
   });
 
   it.each([
-    ["1.2.3-test.1", "test"],
-    ["1.2.3-beta.1", "next"],
-    ["1.2.3+build.1", "latest"],
-  ])("retains npm routing for %s", async (version, npmTag) => {
+    ["1.2.3", "latest", false],
+    ["0.13.2-1", "latest", false],
+    ["0.13.2-2", "latest", false],
+    ["1.2.3-test.1", "test", true],
+    ["1.2.3-beta.1", "next", true],
+    ["1.2.3+build.1", "latest", false],
+  ])("retains npm routing for %s", async (version, npmTag, prerelease) => {
     const f = await repository({ version });
-    expect((await readReleaseMetadata(f)).npmTag).toBe(npmTag);
+    expect(await readReleaseMetadata(f)).toMatchObject({ npmTag, prerelease });
   });
 
   it("rejects lightweight tags and empty release-note bodies", async () => {

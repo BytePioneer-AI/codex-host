@@ -42,9 +42,7 @@ A fork tag is not shipped until both of these exist for that version:
 1. **npm:** attended `npm publish` of the packed meta package and matching platform tarballs under the `@karlorz` scope, dist-tag `latest` (or `next` only if the tag is an npm prerelease channel). `scripts/release/publish-npm.mjs` fails closed if a plan entry is not `@karlorz/`.
 2. **GitHub:** a **latest** (non-prerelease) Release on `karlorz/codex-host` for the same tag. The updater reads `/releases/latest` and rejects prereleases, so a prerelease-only fork Release leaves Updates empty or in error instead of offering the fork build.
 
-The standard `Release packages` workflow classifies hyphenated SemVer tags as prereleases and publishes them with `--prerelease --latest=false`. An attended fork counter release must explicitly use non-prerelease GitHub Release status and become latest to appear in Updates; the numeric tag alone does not make it discoverable.
-
-Keep GitHub Actions workflow `Release packages` **disabled** until it is wired to publish `@karlorz/*` with a Trusted Publisher on `karlorz/codex-host`. Do not enable it while it would still publish `@codexhost/*`. Do not `npm publish` `@codexhost/cli`. Local `npm run install:local` packs and installs tarballs without the registry.
+Numeric fork counters such as `0.13.2-2` are GitHub latest and npm `latest`. Named SemVer prereleases (`-rc.1`, `-beta.1`, `-test.1`) stay on `next` / `test` and GitHub prerelease. Do not `npm publish` `@codexhost/cli`. Local `npm run install:local` packs and installs tarballs without the registry.
 
 ## GitHub Actions secrets
 

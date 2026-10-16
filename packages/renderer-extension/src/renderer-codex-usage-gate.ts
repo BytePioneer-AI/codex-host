@@ -26,7 +26,36 @@ type Subscriber = {
 type Hook = { memoizedState?: unknown; queue?: unknown; next?: Hook | null };
 type Fiber = { memoizedProps?: unknown; memoizedState?: unknown; alternate?: unknown };
 type Instance = { value: unknown; getSnapshot(): unknown };
-type GateKind = "account" | "reserve";
+/**
+ * `account` and `reserve` are the two separately-verified Desktop gates.
+ * `combined` is Desktop 26.1007's merged selector: it folds the Account
+ * rate-limit gate and the reserve `active` flag into one boolean. It is only
+ * accepted when every field it reads belongs to the known usage-domain
+ * whitelist below; anything else keeps the native restriction.
+ */
+type GateKind = "account" | "reserve" | "combined";
+
+/**
+ * Fields a verified `combined` gate may read. A combined selector touching
+ * anything outside these usage-domain fields is treated as unidentifiable
+ * (native restrictions stay), so unrelated blockers can never be lifted.
+ */
+const COMBINED_GATE_FIELDS: ReadonlySet<string> = new Set([
+  "auth.authMethod",
+  "auth.accountId",
+  "auth.accountLoading",
+  "auth.accountStructure",
+  "auth.authLoading",
+  "auth.authenticatedAccountId",
+  "auth.plan",
+  "auth.userId",
+  "limit.allowed",
+  "limit.primary_window",
+  "limit.secondary_window",
+  "reserve.active",
+  "reserve.hardBlocked",
+  "reserve.eligible",
+]);
 
 /** One Desktop `useSyncExternalStore` subscription: memo, instance and effect hooks. */
 interface Subscription {
@@ -203,9 +232,21 @@ function gateKind({ store, atom }: Subscription): GateKind | "mixed" | null {
   }
   const reserve = read.has("reserve.hardBlocked") && !read.has("reserve.active");
   const account = read.has("auth.authMethod") && read.has("limit.allowed");
-  // A combined selector cannot be separated into the two verified gates.
-  if (account && (read.has("reserve.hardBlocked") || read.has("reserve.active"))) return "mixed";
+  // Desktop 26.1007 folds the Account rate-limit gate and the reserve `active`
+  // flag into one selector. Accept it only when every field it reads is a known
+  // usage-domain field; anything outside the whitelist is unidentifiable.
+  const combined =
+    account &&
+    read.has("reserve.active") &&
+    !read.has("reserve.hardBlocked") &&
+    [...read].every((field) => COMBINED_GATE_FIELDS.has(field));
+  // A selector combining the verified gates with unrecognized fields cannot be
+  // separated safely, so the native restriction stays.
+  if (account && !combined && (read.has("reserve.hardBlocked") || read.has("reserve.active"))) {
+    return "mixed";
+  }
   if (reserve) return "reserve";
+  if (combined) return "combined";
   if (account) return "account";
   return null;
 }
@@ -244,6 +285,7 @@ function gateSubscriptions(
   const found: Record<GateKind, Subscription[]> & { invalid: boolean } = {
     account: [],
     reserve: [],
+    combined: [],
     invalid: false,
   };
   for (const hook of hooksOf(owner)) {
@@ -262,6 +304,8 @@ function gateSubscriptions(
  * Gate subscriptions by kind; `null` when a kind is ambiguous. The account gate
  * returns early without reading usage when it cannot block (for example API-key
  * sign-in), so it may legitimately be absent until it reads `rate_limit`.
+ * On Desktop 26.1007 the account gate is folded into the `combined` selector;
+ * at most one of the two forms may be present, never both.
  */
 function discoverGates(
   owner: Fiber,
@@ -270,11 +314,14 @@ function discoverGates(
   const gates = gateSubscriptions(owner, projections);
   if (gates.invalid) return null;
   const found = new Map<GateKind, Subscription>();
-  for (const kind of ["account", "reserve"] as const) {
+  for (const kind of ["account", "reserve", "combined"] as const) {
     const subscriptions = gates[kind];
     if (subscriptions.length > 1) return null;
     if (subscriptions[0]) found.set(kind, subscriptions[0]);
   }
+  // The separate account selector and the merged combined selector are two
+  // generations of the same gate; both present means an unknown contract.
+  if (found.has("account") && found.has("combined")) return null;
   return found;
 }
 
@@ -282,6 +329,7 @@ export interface RendererCodexUsageGateInspection {
   ownerCount: number;
   reserveGateCount: number;
   accountGateCount: number;
+  combinedGateCount: number;
 }
 
 /** Read-only contract audit: counts only, never patches or subscribes. */
@@ -292,6 +340,7 @@ export function inspectComposerCodexUsageGate(composer: Element): RendererCodexU
     ownerCount: owners.length,
     reserveGateCount: gates?.reserve.length ?? 0,
     accountGateCount: gates?.account.length ?? 0,
+    combinedGateCount: gates?.combined.length ?? 0,
   };
 }
 

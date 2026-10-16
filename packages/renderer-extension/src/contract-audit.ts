@@ -89,12 +89,14 @@ function codexUsageGateCounts(
     ownerCount: 0,
     reserveGateCount: 0,
     accountGateCount: 0,
+    combinedGateCount: 0,
   };
   for (const composer of editable) {
     const inspection = inspectComposerCodexUsageGate(composer);
     counts.ownerCount += inspection.ownerCount;
     counts.reserveGateCount += inspection.reserveGateCount;
     counts.accountGateCount += inspection.accountGateCount;
+    counts.combinedGateCount += inspection.combinedGateCount;
   }
   return counts;
 }

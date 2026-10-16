@@ -16,7 +16,12 @@ function desktopStore() {
   let authMethod = "chatgpt";
   let allowed = false;
   let hardBlocked = false;
-  const auth: Atom = { read: () => ({ authMethod, authenticatedAccountId: "account" }) };
+  const auth: Atom = {
+    read: () => ({
+      authMethod,
+      authenticatedAccountId: "account",
+    }),
+  };
   const usage: Atom = { read: () => ({ data: { rate_limit: { allowed } } }) };
   const reserve: Atom = { read: () => ({ active: false, eligible: true, hardBlocked }) };
   const accountGate: Atom = {
@@ -34,6 +39,21 @@ function desktopStore() {
     read: (get) => (get(reserve) as { hardBlocked: boolean }).hardBlocked,
   };
   const reserveActive: Atom = { read: (get) => (get(reserve) as { active: boolean }).active };
+  // Desktop 26.1007 folds the Account gate and the reserve `active` flag into
+  // one selector over the same usage-domain fields.
+  const combinedGate: Atom = {
+    read: (get) => {
+      const account = accountGate.read(get);
+      const active = (get(reserve) as { active: boolean }).active;
+      const authSnapshot = get(auth) as { authMethod: string };
+      return Boolean(account) || (authSnapshot.authMethod === "chatgpt" && active);
+    },
+  };
+  // Negative-fixture probe: auth-shaped snapshot carrying a field outside the
+  // verified whitelist.
+  const combinedAuthProbe: Atom = {
+    read: () => ({ authMethod: "chatgpt", scopedBeta: false }),
+  };
   const listeners = new Map<Atom, Set<() => void>>();
   const emit = () => {
     // Model Jotai's propagation to derived signal atoms; React's listener
@@ -57,6 +77,8 @@ function desktopStore() {
   return {
     store,
     accountGate,
+    combinedGate,
+    combinedAuthProbe,
     reserveGate,
     reserveActive,
     setAuthMethod(value: string) {
@@ -83,6 +105,7 @@ function composerFixture(
     duplicateAccount?: boolean;
     snapshotWrapper?: boolean;
     signalReserve?: boolean;
+    combinedAccount?: boolean;
   } = {},
 ) {
   const subscribers: Array<{ getSnapshot(): unknown }> = [];
@@ -91,8 +114,9 @@ function composerFixture(
   const rerender = vi.fn();
   for (const selector of [
     source.reserveActive,
-    source.accountGate,
+    ...(options.combinedAccount ? [] : [source.accountGate]),
     ...(options.omitReserve ? [] : [source.reserveGate]),
+    ...(options.combinedAccount ? [source.combinedGate] : []),
     ...(options.duplicateAccount ? [source.accountGate] : []),
   ]) {
     // Desktop 26.928 wraps parameterized selectors in a readonly signal atom.
@@ -211,6 +235,7 @@ describe("Codex usage gate for external Harness Composers", () => {
       ownerCount: 1,
       reserveGateCount: 1,
       accountGateCount: 1,
+      combinedGateCount: 0,
     });
     expect(source.store.sub.mock.calls).toHaveLength(calls);
     expect(external.blocked()).toBe(true);
@@ -226,6 +251,89 @@ describe("Codex usage gate for external Harness Composers", () => {
     expect(external.gate.update(false)).toBe("native");
     expect(external.blocked()).toBe(true);
     expect(external.instances.map((instance) => instance.getSnapshot)).toEqual(nativeSnapshots);
+  });
+
+  it("lifts the 26.1007 combined usage selector for this Composer only", () => {
+    const source = desktopStore();
+    const external = composerFixture(source, {
+      combinedAccount: true,
+      snapshotWrapper: true,
+      signalReserve: true,
+    });
+    const codex = composerFixture(source, {
+      combinedAccount: true,
+      snapshotWrapper: true,
+      signalReserve: true,
+    });
+    const listeners = source.listenerCount();
+    const originalSub = source.store.sub;
+
+    expect(inspectComposerCodexUsageGate(external.composer)).toEqual({
+      ownerCount: 1,
+      reserveGateCount: 1,
+      accountGateCount: 0,
+      combinedGateCount: 1,
+    });
+    expect(external.blocked()).toBe(true);
+    expect(source.store.get(source.combinedGate)).toBe(true);
+    expect(external.gate.update(true)).toBe("bypassed");
+    expect(external.blocked()).toBe(false);
+    expect(codex.blocked()).toBe(true);
+    expect(source.store.get(source.combinedGate)).toBe(true);
+    expect(source.store.set).not.toHaveBeenCalled();
+    expect(source.store.sub).toBe(originalSub);
+    expect(source.listenerCount()).toBe(listeners);
+
+    expect(external.gate.update(false)).toBe("native");
+    expect(external.blocked()).toBe(true);
+  });
+
+  it("keeps a combined selector that reads unknown fields native", () => {
+    const source = desktopStore();
+    // Let the Account part be false so the selector's second operand (reading
+    // an auth-shaped field outside the verified whitelist) is actually
+    // evaluated on the replay path.
+    source.setAllowed(true);
+    const combinedRead = source.combinedGate.read;
+    source.combinedGate.read = (get) => {
+      const result = combinedRead(get);
+      const authSnapshot = get(source.combinedAuthProbe) as { scopedBeta?: boolean };
+      return Boolean(result) || authSnapshot.scopedBeta === true;
+    };
+    const f = composerFixture(source, {
+      combinedAccount: true,
+      snapshotWrapper: true,
+      signalReserve: true,
+    });
+    expect(f.gate.update(true)).toBe("unsupported");
+    expect(f.blocked()).toBe(false);
+  });
+
+  it("rejects a Composer exposing both the account and combined gates", () => {
+    const source = desktopStore();
+    const both = composerFixture(source, {
+      snapshotWrapper: true,
+      signalReserve: true,
+    });
+    // Inject the combined gate's subscription trio alongside the account gate.
+    const combined = composerFixture(source, {
+      combinedAccount: true,
+      snapshotWrapper: true,
+      signalReserve: true,
+    });
+    const memoIndex = combined.hooks.findIndex(
+      (hook) =>
+        Array.isArray(hook.memoizedState) &&
+        (hook.memoizedState as [{ getSnapshot(): unknown }, unknown[]])[0] ===
+          required(combined.subscribers[2]),
+    );
+    expect(memoIndex).toBeGreaterThanOrEqual(0);
+    const trio = combined.hooks.slice(memoIndex, memoIndex + 3);
+    const previousTail = both.hooks[both.hooks.length - 1];
+    if (!previousTail) throw new Error("Missing fixture hook chain");
+    previousTail.next = trio[0] ?? null;
+    expect(both.gate.update(true)).toBe("unsupported");
+    expect(both.blocked()).toBe(true);
   });
 
   it("keeps unrelated or mismatched snapshot wrappers native", () => {
@@ -414,6 +522,7 @@ describe("Codex usage gate for external Harness Composers", () => {
       ownerCount: 1,
       reserveGateCount: 1,
       accountGateCount: 1,
+      combinedGateCount: 0,
     });
     expect(f.blocked()).toBe(true);
     expect(f.source.store.sub).toBe(sub);

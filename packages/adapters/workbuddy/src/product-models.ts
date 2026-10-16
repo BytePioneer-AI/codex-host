@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { modelRef } from "@codexhost/adapter-codebuddy";
@@ -68,7 +68,7 @@ export function parseWorkBuddyProductModels(value: unknown): WorkBuddyProductMod
 }
 
 async function readProductJson(file: string): Promise<unknown | undefined> {
-  const metadata = await stat(file);
+  const metadata = await lstat(file);
   if (!metadata.isFile() || metadata.size <= 0 || metadata.size > MAX_PRODUCT_SNAPSHOT_BYTES)
     return;
   return JSON.parse(await readFile(file, "utf8"));
@@ -88,7 +88,7 @@ function bundledFallbackProductPath(invocation: ReturnType<typeof workBuddyInvoc
  * rules mirror command.ts bundledProductConfigPath: user-owned, non-world/group
  * readable, no symlinks.
  */
-async function appCacheProductPath(
+export async function appCacheProductPath(
   environment: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
 ): Promise<string | undefined> {
@@ -100,14 +100,14 @@ async function appCacheProductPath(
   try {
     const uid = process.getuid?.();
     for (const directory of [root, paths.dirname(candidate)]) {
-      const metadata = await stat(directory);
+      const metadata = await lstat(directory);
       if (!metadata.isDirectory() || metadata.isSymbolicLink()) return;
       if (platform !== "win32") {
         if ((metadata.mode & 0o022) !== 0) return;
         if (uid !== undefined && metadata.uid !== uid) return;
       }
     }
-    const metadata = await stat(candidate);
+    const metadata = await lstat(candidate);
     if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size <= 0) return;
     if (platform !== "win32") {
       if ((metadata.mode & 0o077) !== 0) return;

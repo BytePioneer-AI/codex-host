@@ -50,8 +50,8 @@ describe("WorkBuddy product Model metadata", () => {
   });
 
   it("falls back to the desktop app's cached product config when no env or bundle file exists", async () => {
-    const { loadWorkBuddyProductModels } = await import("../src/product-models.js");
-    const { mkdtemp, mkdir, writeFile, chmod } = await import("node:fs/promises");
+    const { appCacheProductPath } = await import("../src/product-models.js");
+    const { mkdtemp, mkdir, writeFile, chmod, symlink, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const path = await import("node:path");
 
@@ -68,27 +68,25 @@ describe("WorkBuddy product Model metadata", () => {
       { mode: 0o600 },
     );
 
-    const originalHome = process.env.HOME;
-    const originalXdg = process.env.WORKBUDDY_CONFIG_DIR;
-    try {
-      process.env.HOME = home;
-      delete process.env.WORKBUDDY_CONFIG_DIR;
-      // The invocation factory reads real env; no ACC_* variables are set, so
-      // the loader falls through to the app-side cache under $HOME/.workbuddy.
-      // workBuddyInvocation throws notInstalled without an app installed, and
-      // the loader must surface that as "no product models", not a crash.
-      const models = await loadWorkBuddyProductModels(process.env);
-      // On a machine with WorkBuddy installed the loader now reads the fake
-      // cache; without the app it returns []. Both are acceptable: the point
-      // is that it never throws and never reads an unrelated file.
-      expect(Array.isArray(models)).toBe(true);
-      await chmod(snapshot, 0o644); // world-readable: must be rejected by permission checks
-      const rejected = await loadWorkBuddyProductModels(process.env);
-      expect(Array.isArray(rejected)).toBe(true);
-    } finally {
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-      if (originalXdg !== undefined) process.env.WORKBUDDY_CONFIG_DIR = originalXdg;
-    }
+    const environment = { HOME: home };
+    // A tight snapshot in a tight config root resolves.
+    expect(await appCacheProductPath(environment, "darwin")).toBe(snapshot);
+    expect(await appCacheProductPath(environment, "linux")).toBeUndefined();
+
+    // World-readable snapshot: same rejection rule as the invocation-side loader.
+    await chmod(snapshot, 0o644);
+    expect(await appCacheProductPath(environment, "darwin")).toBeUndefined();
+    await chmod(snapshot, 0o600);
+
+    // A symlinked snapshot (or symlinked config root) is never followed.
+    const elsewhere = path.join(home, "elsewhere.json");
+    await writeFile(elsewhere, "clone", { mode: 0o600 });
+    await rm(snapshot);
+    await symlink(elsewhere, snapshot);
+    expect(await appCacheProductPath(environment, "darwin")).toBeUndefined();
+
+    // Missing files are not an error — just no fallback.
+    await rm(snapshot);
+    expect(await appCacheProductPath(environment, "darwin")).toBeUndefined();
   });
 });

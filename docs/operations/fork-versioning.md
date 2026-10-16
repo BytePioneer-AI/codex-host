@@ -39,10 +39,12 @@ That is the Settings → Updates manual command. Settings auto-checks `karlorz/c
 
 A fork tag is not shipped until both of these exist for that version:
 
-1. **npm:** attended `npm publish` of the packed meta package and matching platform tarballs under the `@karlorz` scope, dist-tag `latest` (or `next` only if the tag is an npm prerelease channel). `scripts/release/publish-npm.mjs` fails closed if a plan entry is not `@karlorz/`.
-2. **GitHub:** a **latest** (non-prerelease) Release on `karlorz/codex-host` for the same tag. The updater reads `/releases/latest` and rejects prereleases, so a prerelease-only fork Release leaves Updates empty or in error instead of offering the fork build.
+1. **npm:** `Release packages` publishes the packed meta package and matching platform tarballs under `@karlorz` with dist-tag `latest` (or `next` / `test` only for named SemVer prereleases). `scripts/release/publish-npm.mjs` fails closed if a plan entry is not `@karlorz/`. After CI logs `+ @karlorz/…@<version>`, npm may still 404 for a few minutes while provenance is processed; recurl the version URL before republishing.
+2. **GitHub:** a **latest** (non-draft, non-prerelease) Release on `karlorz/codex-host` for the same tag. The updater reads `/releases/latest` and rejects prereleases, so a prerelease-only fork Release leaves Updates empty or in error instead of offering the fork build.
 
-Numeric fork counters such as `0.13.2-2` are GitHub latest and npm `latest`. Named SemVer prereleases (`-rc.1`, `-beta.1`, `-test.1`) stay on `next` / `test` and GitHub prerelease. Do not `npm publish` `@codexhost/cli`. Local `npm run install:local` packs and installs tarballs without the registry.
+Numeric fork counters such as `0.13.2-2` are GitHub latest and npm `latest`. Named SemVer prereleases (`-rc.1`, `-beta.1`, `-test.1`) stay on `next` / `test` and GitHub prerelease. `packages/repository-automation/src/release.mjs` treats a hyphen plus digits-only (`0.13.2-2`) as latest, not as `next`. Do not `npm publish` `@codexhost/cli`. Local `npm run install:local` packs and installs tarballs without the registry.
+
+Shipped latest on this fork is `v0.13.2-2`: GitHub latest plus `@karlorz/codexhost-cli@0.13.2-2` and all six platform packages on npm `latest`.
 
 ## GitHub Actions secrets
 
@@ -68,14 +70,15 @@ for line in Path.home().joinpath(".npmrc").read_text().splitlines():
 gh secret set FORK_SYNC_TOKEN -R karlorz/codex-host
 ```
 
-Keep `Release packages` disabled until npm Trusted Publisher on `@karlorz/codexhost-cli` (and the six platform packages) is the karlorz GitHub repo.
+`Release packages` is enabled on `karlorz/codex-host`. npm Trusted Publisher for `@karlorz/codexhost-cli` and the six platform packages is this GitHub repo (`id-token: write` + `--provenance`). A tag push of a numeric fork counter on `main` after that SHA's CI is green is the ship path. Do not disable the workflow for a normal latest release.
 
 ## Release channel on this fork
 
 - Never `git push` to `upstream`.
 - Never publish `@codexhost/*` from this checkout.
 - Do not move, delete, or re-push an existing tag unless the operator explicitly requested that rewrite.
-- Create GitHub Releases with `-R karlorz/codex-host`. `gh release create --notes-from-tag` does not work with `--repo`; write the tag annotation to a notes file instead. A `gh` invocation without `-R` may resolve to BytePioneer and must abort.
+- Create GitHub Releases and pull requests with `-R karlorz/codex-host`. Default `gh` in this checkout resolves to BytePioneer-AI/codex-host. `gh pr create` without `-R` opened the wrong-repo PR #547 and must abort. `gh release create --notes-from-tag` does not work with `--repo`; write the tag annotation to a notes file instead.
+- After the lock is on `origin/main`, the next command is `npm run release:prepare -- 0.13.2-<n>` on `main`. Merge of an identity-lock PR is not a release.
 
 ## Next unused counter
 
@@ -86,4 +89,4 @@ git fetch origin --tags --prune
 git ls-remote --tags origin 'refs/tags/v0.13.2-*'
 ```
 
-Pick the smallest `n` that is not already a fork tag. Then `npm run release:prepare -- 0.13.2-<n>` on a branch, with the usual release-skill checks before any tag push.
+Shipped tags include `v0.13.2-0`, `v0.13.2-1`, and `v0.13.2-2`. Pick the smallest `n` that is not already a fork tag (next is `0.13.2-3`). Then `npm run release:prepare -- 0.13.2-<n>` on `main`, push the four version files, wait for that SHA's `main` push CI, then push the annotated tag.

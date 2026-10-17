@@ -5,6 +5,7 @@ export type {
   HarnessCredentialExport,
   HarnessCredentialImports,
 } from "./credential-imports.js";
+export { parseHarnessAccountCredits } from "./account-credits.js";
 export { validateHostApprovalResponse } from "./approval.js";
 export { validateHostInteractionResponse } from "./interaction.js";
 export { HarnessOutputChannel } from "./output-channel.js";

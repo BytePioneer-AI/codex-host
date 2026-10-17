@@ -1,6 +1,6 @@
 {
   "name": "codexhost",
-  "version": "0.13.1",
+  "version": "0.13.3",
   "private": true,
   "license": "LGPL-3.0-only",
   "type": "module",
@@ -36,6 +36,7 @@
     "release:npm:pack": "node scripts/release/prepare-npm.mjs --pack",
     "release:npm:meta": "node scripts/release/prepare-npm-meta.mjs",
     "release:npm:publish": "node scripts/release/publish-npm.mjs",
+    "prepare": "git config core.hooksPath .githooks || true",
     "typecheck": "tsc -b --pretty false && tsc -p tests/tsconfig.json --noEmit --pretty false",
     "lint": "eslint . && node tools/check-boundaries.mjs",
     "format": "prettier --write . && cargo fmt --all",
@@ -45,7 +46,6 @@
     "test:rust": "cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
     "test": "npm run test:typescript && npm run test:rust",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.js",
-    "test:triage": "node --test .agents/skills/codexhost-pr-triage/test/*.test.mjs",
     "gate:a:preflight": "node tools/gate-a/run.mjs preflight",
     "gate:a:probe": "node tools/gate-a/run.mjs probe",
     "gate:a:differential": "node tools/gate-a/run.mjs differential",

@@ -1,130 +1,108 @@
-import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
+/**
+ * Hides Desktop's Codex usage-limit banner in one external Harness Composer
+ * while its usage gate is bypassed. That banner (for example "Codex usage
+ * limit reached ... Upgrade / Reset usage") describes the Codex path only, so
+ * it is misleading once the Composer submits to another Harness.
+ *
+ * The banner is identified by the props of the component Desktop renders it
+ * with (`banner`, `rateLimitStatus`, `sendBlocked`), searched only inside the
+ * submit owner's subtree. Only the inline `display` of its outermost host
+ * elements is changed and restored; React state, atoms and the banner's own
+ * dismissal bookkeeping are untouched, so the Codex Harness keeps the banner.
+ */
+type RecordValue = Record<string, unknown>;
+type Fiber = { memoizedProps?: unknown; child?: unknown; sibling?: unknown; stateNode?: unknown };
 
-const COMPOSER_SELECTOR = "[data-codex-composer-root]";
+const MAX_FIBERS = 20_000;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is RecordValue {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isCodexUsageBanner(element: HTMLElement, composer: Element): boolean {
-  if (element.closest(COMPOSER_SELECTOR) !== composer) return false;
-  const key = Object.getOwnPropertyNames(element).find((name) => name.startsWith("__reactFiber$"));
-  if (!key) return false;
-  for (const { memoizedProps: props } of committedReactAncestors(
-    Object.getOwnPropertyDescriptor(element, key)?.value,
-  )) {
-    if (!isRecord(props) || !isRecord(props.banner)) continue;
-    const type = props.banner.banner_type;
-    return typeof type === "string" && /^(?:[a-z0-9]+_)*rate_limit_reached$/u.test(type);
-  }
-
-  return false;
-}
-
-export function hasCodexUsageBanner(composer: Element): boolean {
-  return [...composer.querySelectorAll<HTMLElement>('aside[role="status"]')].some((element) =>
-    isCodexUsageBanner(element, composer),
+function isUsageBanner(props: unknown): boolean {
+  return (
+    isRecord(props) &&
+    "banner" in props &&
+    "rateLimitStatus" in props &&
+    typeof props.sendBlocked === "boolean"
   );
 }
 
-interface BannerState {
-  hidden: HTMLElement["hidden"];
-  ariaHidden: string | null;
-  display: string;
-  priority: string;
+function isElement(value: unknown): value is HTMLElement {
+  return (
+    isRecord(value) &&
+    typeof (value as { setAttribute?: unknown }).setAttribute === "function" &&
+    isRecord((value as { style?: unknown }).style)
+  );
 }
+
+/** Outermost host elements rendered by `fiber`, without descending past them. */
+function hostElements(fiber: Fiber, budget: { remaining: number }): HTMLElement[] {
+  const result: HTMLElement[] = [];
+  const visit = (node: unknown): void => {
+    for (let current = node; isRecord(current); current = (current as Fiber).sibling) {
+      if (budget.remaining-- <= 0) return;
+      const { stateNode } = current as Fiber;
+      if (isElement(stateNode)) result.push(stateNode);
+      else visit((current as Fiber).child);
+    }
+  };
+  visit(fiber.child);
+  return result;
+}
+
+/** Usage banner host elements inside `owner`'s committed subtree. */
+export function findCodexUsageBannerElements(owner: unknown): HTMLElement[] {
+  if (!isRecord(owner)) return [];
+  const budget = { remaining: MAX_FIBERS };
+  const found: HTMLElement[] = [];
+  const stack: unknown[] = [(owner as Fiber).child];
+  while (stack.length > 0 && budget.remaining > 0) {
+    const node = stack.pop();
+    if (!isRecord(node)) continue;
+    budget.remaining -= 1;
+    const fiber = node as Fiber;
+    stack.push(fiber.sibling);
+    if (isUsageBanner(fiber.memoizedProps)) found.push(...hostElements(fiber, budget));
+    else stack.push(fiber.child);
+  }
+  return budget.remaining > 0 ? found : [];
+}
+
+const HIDDEN_ATTRIBUTE = "data-codexhost-usage-banner-hidden";
 
 export interface RendererCodexUsageBanner {
-  update(bypassed: boolean): void;
-  dispose(): void;
+  /** Hide the banners currently inside `owner`; restore any no longer there. */
+  hide(owner: unknown): void;
+  restore(): void;
 }
 
-/** Hide only the native exhaustion notice belonging to a quota-isolated Composer. */
-export function createRendererCodexUsageBanner(composer: Element): RendererCodexUsageBanner {
-  const hidden = new Map<HTMLElement, BannerState>();
-  let bypassed = false;
-  let disposed = false;
-  const Observer = composer.ownerDocument?.defaultView?.MutationObserver;
-  const observer = Observer
-    ? new Observer(() => {
-        if (!disposed && bypassed) reconcile();
-      })
-    : null;
-  const restore = (element: HTMLElement, state: BannerState): void => {
-    if (element.hidden === true) element.hidden = state.hidden;
-    if (element.getAttribute("aria-hidden") === "true") {
-      if (state.ariaHidden === null) element.removeAttribute("aria-hidden");
-      else element.setAttribute("aria-hidden", state.ariaHidden);
-    }
-    if (
-      element.style.getPropertyValue("display") === "none" &&
-      element.style.getPropertyPriority("display") === "important"
-    ) {
-      if (state.display) element.style.setProperty("display", state.display, state.priority);
-      else element.style.removeProperty("display");
-    }
+export function createRendererCodexUsageBanner(): RendererCodexUsageBanner {
+  const hidden = new Map<HTMLElement, { value: string; priority: string }>();
+  const show = (element: HTMLElement): void => {
+    const previous = hidden.get(element);
     hidden.delete(element);
-  };
-  const release = (): void => {
-    for (const [element, state] of hidden) restore(element, state);
-  };
-  const reconcile = (): void => {
-    if (!bypassed || !composer.isConnected) {
-      release();
-      return;
-    }
-    const banners = new Set(
-      [...composer.querySelectorAll<HTMLElement>('aside[role="status"]')].filter((element) =>
-        isCodexUsageBanner(element, composer),
-      ),
-    );
-    for (const [element, state] of hidden) {
-      if (!banners.has(element)) restore(element, state);
-    }
-    for (const element of banners) {
-      if (!hidden.has(element)) {
-        hidden.set(element, {
-          hidden: element.hidden,
-          ariaHidden: element.getAttribute("aria-hidden"),
-          display: element.style.getPropertyValue("display"),
-          priority: element.style.getPropertyPriority("display"),
-        });
-      }
-      if (element.hidden !== true) element.hidden = true;
-      if (element.getAttribute("aria-hidden") !== "true")
-        element.setAttribute("aria-hidden", "true");
-      if (
-        element.style.getPropertyValue("display") !== "none" ||
-        element.style.getPropertyPriority("display") !== "important"
-      ) {
-        element.style.setProperty("display", "none", "important");
-      }
-    }
+    if (!previous || element.getAttribute(HIDDEN_ATTRIBUTE) === null) return;
+    element.removeAttribute(HIDDEN_ATTRIBUTE);
+    if (previous.value) element.style.setProperty("display", previous.value, previous.priority);
+    else element.style.removeProperty("display");
   };
   return {
-    update(next) {
-      if (disposed) return;
-      if (next !== bypassed) {
-        bypassed = next;
-        observer?.disconnect();
-        if (bypassed) {
-          // Mutation callbacks run before paint; an animation-frame scan is too late.
-          observer?.observe(composer, {
-            subtree: true,
-            childList: true,
-            characterData: true,
-            attributes: true,
-            attributeFilter: ["hidden", "aria-hidden", "style"],
-          });
-        }
+    hide(owner) {
+      const current = new Set(findCodexUsageBannerElements(owner));
+      for (const element of [...hidden.keys()]) if (!current.has(element)) show(element);
+      for (const element of current) {
+        if (hidden.has(element)) continue;
+        hidden.set(element, {
+          value: element.style.getPropertyValue("display"),
+          priority: element.style.getPropertyPriority("display"),
+        });
+        element.setAttribute(HIDDEN_ATTRIBUTE, "");
+        element.style.setProperty("display", "none", "important");
       }
-      reconcile();
     },
-    dispose() {
-      disposed = true;
-      bypassed = false;
-      observer?.disconnect();
-      release();
+    restore() {
+      for (const element of [...hidden.keys()]) show(element);
     },
   };
 }

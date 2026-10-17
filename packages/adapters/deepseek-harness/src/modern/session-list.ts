@@ -201,8 +201,12 @@ function parseSummary(value: unknown): ParsedSessionSummary {
     !exactKeys(
       value,
       ["sessionId", "updatedAt", "agentAvailable", "running", "blank"],
-      ["parentSessionId", "origin", "cwd", "projections"],
+      ["parentSessionId", "origin", "cwd", "projections", "formatStatus"],
     ) ||
+    // DSH 0.2.1 marks rows whose stored log still awaits migration on open.
+    (value.formatStatus !== undefined &&
+      value.formatStatus !== "current" &&
+      value.formatStatus !== "migration-required") ||
     typeof value.running !== "boolean" ||
     typeof value.blank !== "boolean" ||
     typeof value.agentAvailable !== "boolean" ||

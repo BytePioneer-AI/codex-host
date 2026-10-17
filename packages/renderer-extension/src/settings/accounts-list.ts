@@ -314,7 +314,6 @@ export function renderHarnessAccountRows(
         messages,
         display,
         () => undefined,
-        account.harnessId === "grok" ? "weekly-only" : "all",
       )
     : renderAccountBalance(document, messages, account.balance);
   personCell.title = messages.accountNativeManagementHint.replace("{harness}", account.harnessName);

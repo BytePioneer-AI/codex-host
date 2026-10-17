@@ -12,6 +12,7 @@ import {
   type HarnessDiscoverySpec,
 } from "@codexhost/harness-discovery";
 import { workBuddyDelegationArguments } from "./delegation.js";
+import { WORKBUDDY_CREDENTIAL_PRELOAD } from "./credential-bootstrap.js";
 import {
   resolveWorkBuddyBundle,
   resolveWorkBuddyInstallDirectory,
@@ -183,7 +184,9 @@ export function workBuddyInvocation(
     ...commandInvocation(
       executable,
       [
-        ...(bundle ? [bundle.cli] : []),
+        ...(bundle
+          ? ["--eval", `${WORKBUDDY_CREDENTIAL_PRELOAD}\nrequire(process.argv[1]);`, bundle.cli]
+          : []),
         ...(nativeArguments ?? [
           "--acp",
           ...(ephemeral ? ["--no-session-persistence"] : []),

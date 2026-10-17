@@ -12,6 +12,7 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
       ...(context.launchCommand ? { CODEXHOST_WORKBUDDY_COMMAND: context.launchCommand } : {}),
     };
     return new BrokeredHarnessAdapter({
+      accountCredits: false,
       harnessId: "workbuddy",
       commandCatalog: WORKBUDDY_COMMAND_CATALOG,
       forwardDelegationEnvironment: true,

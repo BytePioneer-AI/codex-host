@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { harnessLocalizationsSchema } from "./harness-presentation.js";
 import { hostThreadIdSchema } from "./ids.js";
 
 const nonNegativeSafeIntegerSchema = z.number().int().safe().nonnegative();
@@ -94,9 +95,28 @@ export type ThreadUsageSnapshot = z.infer<typeof threadUsageSnapshotSchema>;
 
 const usagePercentSchema = z.number().finite().min(0).max(100);
 
+export const accountCreditsPeriodSchema = z.enum([
+  "weekly",
+  "monthly",
+  "five_hour",
+  "seven_day",
+  "unknown",
+]);
+const accountCreditsScopeSchema = z
+  .object({
+    id: z.string().min(1).max(256),
+    label: z.string().min(1).max(256),
+    localizations: harnessLocalizationsSchema.optional(),
+  })
+  .strict();
+
 export const accountCreditsProductUsageSchema = z
   .object({
     product: z.string().min(1),
+    /** Native period and scope, never inferred from the display name. */
+    periodType: accountCreditsPeriodSchema.optional(),
+    scope: accountCreditsScopeSchema.optional(),
+    localizations: harnessLocalizationsSchema.optional(),
     used: z.number().finite().nonnegative().optional(),
     // Zero is a real empty cap, not an absent field.
     limit: z.number().finite().nonnegative().optional(),
@@ -122,9 +142,11 @@ export const accountCreditsSnapshotSchema = z
     unit: z.string().min(1).max(32).optional(),
     /** Native label when the primary limit is scoped to a model or product group. */
     label: z.string().min(1).optional(),
+    scope: accountCreditsScopeSchema.optional(),
+    localizations: harnessLocalizationsSchema.optional(),
     usedPercent: usagePercentSchema,
     resetsAt: z.string().min(1).optional(),
-    periodType: z.enum(["weekly", "monthly", "five_hour", "seven_day", "unknown"]),
+    periodType: accountCreditsPeriodSchema,
     productUsage: z.array(accountCreditsProductUsageSchema).min(1).optional(),
     resetCredits: accountResetCreditsSchema.optional(),
   })
@@ -147,6 +169,8 @@ export const threadUsageInspectionSchema = z
     threadId: hostThreadIdSchema,
     usage: threadUsageSnapshotSchema.nullable(),
     accountCredits: accountCreditsSnapshotSchema.optional(),
+    /** Whether this source can provide cached account quota independently of usage. */
+    accountCreditsSupported: z.boolean().optional(),
   })
   .strict();
 

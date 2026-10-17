@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "./ids.js";
+import { harnessLocalizationsSchema } from "./harness-presentation.js";
 import { jsonObjectSchema } from "./json-value.js";
 
 const commandIdSchema = z
@@ -21,6 +22,7 @@ export const harnessCommandDescriptorSchema = z
     invocation: commandInvocationSchema,
     label: commandLabelSchema,
     description: commandDescriptionSchema.optional(),
+    localizations: harnessLocalizationsSchema.optional(),
     argumentMode: z.enum(["none", "text"]),
     /**
      * Native distinction reported by the Harness. Omitted when the Harness does

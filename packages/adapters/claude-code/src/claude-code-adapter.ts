@@ -83,6 +83,7 @@ import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { ClaudePendingSessions, isPendingClaudeSession } from "./pending-session.js";
 import { forkClaudeSession } from "./claude-fork.js";
+import { remapForkedSessionReferences } from "./claude-fork-references.js";
 import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeTranscript } from "./claude-transcript.js";
@@ -203,6 +204,8 @@ interface ActiveTurn {
   /** Native requests raised by agents; they stay open while a held Turn waits for them. */
   agentScopedRequestIds: Set<string>;
   checkpointId: string | null;
+  /** Submitted or observed native User UUID, independent of the opaque Turn identity. */
+  userMessageId: string | null;
   nativeTurnKey: string;
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
@@ -228,6 +231,7 @@ export const claudeCommandCatalog = harnessCommandCatalogSchema.parse({
     {
       id: "claude.compact",
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact context",
       description: "Compact the current conversation context",
       argumentMode: "text",
@@ -545,6 +549,7 @@ export function projectClaudePlanLimitToCredits(
           productUsage: [
             {
               product: "7-day window",
+              periodType: "seven_day",
               usagePercent: other.utilizationPercent,
               ...(other.resetsAtUnix !== undefined
                 ? { resetsAt: isoFromUnix(other.resetsAtUnix) }
@@ -933,6 +938,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interactionByRequestId: new Map(),
       agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId: null,
       nativeTurnKey,
       nativeTurnRef: null,
       cancellationRequested: false,
@@ -964,6 +970,7 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#handleTurnEvent(active, event);
       });
       // Claude preserves caller-assigned User Message UUIDs in native history.
+      active.userMessageId = nativeTurnRef.nativeTurnKey;
       active.nativeTurnRef = nativeTurnRef;
       void running.then(
         (result) => this.#finishResult(active, result),
@@ -1082,6 +1089,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interactionByRequestId: new Map(),
       agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId: null,
       nativeTurnKey,
       nativeTurnRef: null,
       cancellationRequested: false,
@@ -1691,8 +1699,8 @@ class ClaudeHarnessSession implements HarnessSession {
       });
       this.#transport = transport;
       transport.setAutonomousTurnHandler({
-        start: (nativeTurnKey) => {
-          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey);
+        start: (nativeTurnKey, userMessageId) => {
+          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey, userMessageId);
         },
         onEvent: (event) => this.#deliverLiveEvent(this.#autonomousTarget, event),
         onTerminal: (result) => {
@@ -2217,7 +2225,7 @@ class ClaudeHarnessSession implements HarnessSession {
    * it; otherwise it becomes a live autonomous Turn, so the Thread shows it running and a new
    * request waits instead of absorbing it.
    */
-  #startAutonomousTurn(segmentKey: string): ActiveTurn | null {
+  #startAutonomousTurn(segmentKey: string, userMessageId: string | null): ActiveTurn | null {
     if (this.#phase !== "open") return null;
     const current = this.#active;
     if (current?.held) return current;
@@ -2265,6 +2273,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interactionByRequestId: new Map(),
       agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId,
       nativeTurnKey,
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: this.harnessId,
@@ -2746,12 +2755,17 @@ class ClaudeHarnessSession implements HarnessSession {
           formatVersion: 1,
         })
       : null;
-    this.#unpersistedMessageIds = [
-      ...new Set([
-        ...(active.nativeTurnRef ? [active.nativeTurnRef.nativeTurnKey] : []),
-        ...(active.checkpointId ? [active.checkpointId] : []),
-      ]),
-    ];
+    // New Segments cannot confirm that earlier Turns have reached the transcript.
+    // Only readSnapshot clears IDs after observing them all in native history.
+    if (active.userMessageId || active.checkpointId) {
+      this.#unpersistedMessageIds = [
+        ...new Set([
+          ...this.#unpersistedMessageIds,
+          ...(active.userMessageId ? [active.userMessageId] : []),
+          ...(active.checkpointId ? [active.checkpointId] : []),
+        ]),
+      ];
+    }
     this.#event({
       type: "turn.completed",
       turnId: active.command.turnId,
@@ -2904,6 +2918,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
+  readonly #environment: NodeJS.ProcessEnv;
   readonly #importIndex: ClaudeSessionImportIndex;
   readonly #importScope = new SessionImportScope({
     closedMessage: "Claude Code Adapter is closed",
@@ -2924,6 +2939,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     const environment = options.environment ?? process.env;
+    this.#environment = environment;
     this.#importIndex = new ClaudeSessionImportIndex(environment);
     this.usageStatistics = createClaudeUsageStatistics(environment);
     this.#pendingSessions = new ClaudePendingSessions(environment);
@@ -2970,8 +2986,20 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           abortTimeoutMs: this.#cancelTimeoutMs,
         }),
       deleteSession: ({ cwd, sessionId }) => deleteClaudeSession(sessionId, { dir: cwd }),
-      forkSession: ({ checkpointId, cwd, sourceSessionId }) =>
-        forkClaudeNativeSession(sourceSessionId, { dir: cwd, upToMessageId: checkpointId }),
+      forkSession: async ({ checkpointId, cwd, sourceSessionId }) => {
+        const forked = await forkClaudeNativeSession(sourceSessionId, {
+          dir: cwd,
+          upToMessageId: checkpointId,
+        });
+        // An unresolved reference costs only prompt cache, never history, so a failure here
+        // must not fail the Fork.
+        await remapForkedSessionReferences({
+          cwd,
+          environment: options.environment ?? process.env,
+          sessionId: forked.sessionId,
+        }).catch(() => undefined);
+        return forked;
+      },
       getSessionInfo: async ({ sessionId }) => {
         const info = await getClaudeSessionInfo(sessionId);
         if (!info) return undefined;
@@ -3202,9 +3230,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
-    const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(
-      input.environment,
-    );
+    // Permission prerequisites and the native process must observe the same environment.
+    const environment = input.environment
+      ? { ...this.#environment, ...input.environment }
+      : undefined;
+    const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(environment);
     if (!bypassPermissionsAvailable && requestedPermissionModeId === "bypassPermissions") {
       // Claude Code exits at startup for this request. An explicit create fails visibly, while a
       // restored mode falls back to the native default so the existing Thread stays usable.
@@ -3325,7 +3355,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       () => this.#sessions.delete(session),
       (planLimit) => this.#recordPlanLimit(session, planLimit),
       {
-        ...(input.environment ? { environment: input.environment } : {}),
+        ...(environment ? { environment } : {}),
         bypassPermissionsAvailable,
         openMode,
         pendingSessions: this.#pendingSessions,

@@ -1470,7 +1470,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await expect(fixture.collector.waitFor((message) => requestId(message, 42))).resolves.toEqual({
       id: 42,
-      result: { threadId: "official-thread", usage: null },
+      result: { threadId: "official-thread", usage: null, accountCreditsSupported: true },
     });
 
     writeRequest(fixture.desktopInput, {
@@ -1583,6 +1583,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: 44,
       result: {
         threadId: "official-thread",
+        accountCreditsSupported: true,
         accountCredits: {
           usedPercent: 3,
           periodType: "five_hour",
@@ -1590,6 +1591,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
           productUsage: [
             {
               product: "7-day window",
+              periodType: "seven_day",
               usagePercent: 9,
               resetsAt: new Date(2_400 * 1_000).toISOString(),
             },
@@ -1718,6 +1720,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: 45,
       result: {
         threadId: "official-thread",
+        accountCreditsSupported: true,
         usage: {
           totalTokens: 100,
           inputTokens: 80,

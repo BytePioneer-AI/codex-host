@@ -10,6 +10,8 @@ export interface InstallationState {
   canUpdate: boolean;
   message?: string;
   messageCode?: string;
+  /** Adapter-owned display text; Host validates locales and the English fallback. */
+  notice?: Record<string, string>;
   latestVersionKind?: "unknown" | "tracking-branch";
 }
 

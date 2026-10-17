@@ -11,6 +11,7 @@ export function createHarnessAdapter(context: HarnessPluginContext): HarnessAdap
   if (context.platform === "darwin" && context.managedRemoteHost) {
     const environment = { ...context.environment };
     return new BrokeredHarnessAdapter({
+      accountCredits: false,
       harnessId: "cursor-cli",
       forwardDelegationEnvironment: true,
       commandCatalog: CURSOR_COMMAND_CATALOG,

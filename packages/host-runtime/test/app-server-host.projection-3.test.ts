@@ -1088,6 +1088,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: 72,
       result: {
         threadId: claudeThreadId,
+        accountCreditsSupported: false,
         usage: {
           cacheHitRatePercent: 99,
           totalCostUsd: 1.373,
@@ -1202,7 +1203,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await expect(fixture.collector.waitFor((message) => requestId(message, 91))).resolves.toEqual({
       id: 91,
-      result: { threadId, usage: { outputTokens: 7 } },
+      result: { threadId, usage: { outputTokens: 7 }, accountCreditsSupported: false },
     });
     await stopFixture(fixture);
   });

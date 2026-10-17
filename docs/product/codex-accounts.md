@@ -24,9 +24,9 @@
 
 ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两道账号级布尔门禁用 Composer 提交：账号额度门和 reserve `hardBlocked`。API Key 登录不经过这两道门。它们是界面上的订阅额度预检，不是协议限制；外部 Harness 的 `turn/start` 由 Host 路由，不会发到官方后端。
 
-因此在单个 Composer 选中外部 Agent、Adapter 就绪且没有 codexhost 自身的提交阻塞时，`renderer-codex-usage-gate.ts` 只把该 Composer 对这两道门的订阅快照投影为 `false`，继续走原生提交链路。不写账号、atom 或额度查询缓存；其他 Composer、官方 Codex 路径和空输入、附件、运行中等其他原生限制不受影响。外部 Harness 的真实额度与错误由其自身处理。切回官方 Codex、Composer 移除或扩展卸载时恢复实时原生结果。
+因此在单个 Composer 选中外部 Agent、Adapter 就绪且没有 codexhost 自身的提交阻塞时，`renderer-codex-usage-gate.ts` 只把该 Composer 对这两道门的订阅快照投影为 `false`，继续走原生提交链路。不写账号、atom 或额度查询缓存；旁路生效期间只隐藏该 Composer 内的 Codex 额度横幅，恢复原生状态时还原其显示样式。其他 Composer、Codex 路径和空输入、附件、运行中等其他原生限制不受影响。外部 Harness 的真实额度与错误由其自身处理。切回 Codex、Composer 移除或扩展卸载时恢复实时原生结果。
 
-门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
+门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。Desktop 26.1002 的 Account 门可读取 reserve `active` 作为豁免，并同时由 submit owner 和编辑器到 owner 之间的子组件订阅；这些订阅按组件分别投影。每次重试从 React 当前已提交树重新发现作用域，包括 alternate 切换后才挂载的子组件；无法确认当前作用域时恢复原生限制。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
 
 ### 原生 Codex 的独立 Provider
 
@@ -42,7 +42,7 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 CC Switch 切回官方模式后，旧 `custom` 会话仍可能携带 `PROXY_MANAGED` 占位认证，被官方代理以 401 拒绝。这不表示 CC Switch 仍选中 Copilot；其 `cc-switch-official` 路由也可使用同一个本地代理端口，但必须由原生 Codex 加载 ChatGPT 登录。显式续接到该路由会重建客户端认证，不能仅比较端口或改写历史标签。目标必须启用原生登录，不能带独立 bearer 或环境 Key；官方续接始终保留真实官方额度门。独立 Provider 的额度隔离及横幅隐藏仍需成功后的现有核验链确认。
 
-额度隔离成功的 Composer 同时隐藏其原生「Codex 和工作使用额度已用完」横幅。`renderer-codex-usage-banner.ts` 只识别该 Composer 内 `aside[role="status"]` 的已提交 React 祖先中明确的 `banner.banner_type`（`rate_limit_reached` 及套餐前缀），不按翻译文案、模型名或 CSS 压缩类名隐藏。局部 MutationObserver 在绘制前处理原生节点替换及样式重写，不等待下一 animation frame。其他警告与未知横幅保持原样；隔离撤销、Composer 移除或扩展卸载时恢复原来的可见性与样式。账号设置与额度入口继续展示真实官方余额。
+额度隔离成功的 Composer 同时隐藏其原生「Codex 和工作使用额度已用完」横幅。`renderer-native-provider-usage-banner.ts` 只识别该 Composer 内 `aside[role="status"]` 的已提交 React 祖先中明确的 `banner.banner_type`（`rate_limit_reached` 及套餐前缀），不按翻译文案、模型名或 CSS 压缩类名隐藏。局部 MutationObserver 在绘制前处理原生节点替换及样式重写，不等待下一 animation frame。其他警告与未知横幅保持原样；隔离撤销、Composer 移除或扩展卸载时恢复原来的可见性与样式。账号设置与额度入口继续展示真实官方余额。
 
 使用独立代理凭据时可保留 `requires_openai_auth=true` 和官方账号展示，官方已用额度不会因此变成可用。此判定复用已有组件局部额度门适配；Desktop 26.928 的新 selector / outer owner 兼容由独立的 [PR #467](https://github.com/BytePioneer-AI/codex-host/pull/467) 处理，不能仅凭独立 Provider 判定绕过未知门控形态。
 
@@ -94,7 +94,7 @@ SSH 维持远端原生单账号，不传输本地凭据。
 
 用量浮窗不重复展示 5 小时和 7 天额度；额度继续由专属额度入口展示。
 
-选择 Codex 时，用量浮窗只读显示当前 Host 的全局账号身份，而不是 Thread 的历史绑定。切换 Host 后跟随相应 Host 的状态。即使尚无 Token 用量，也可查看当前身份；其他 Harness 不显示 Codex 账号。
+用量浮窗只展示会话用量指标，不显示账号身份；没有可展示的用量数据时隐藏入口。当前 Codex 账号身份可在 Agent 选择入口的悬停提示和设置 → 账号中查看。
 
 ## 实现与验证
 

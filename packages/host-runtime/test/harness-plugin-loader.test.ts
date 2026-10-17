@@ -72,6 +72,28 @@ afterEach(async () => {
 });
 
 describe("Harness plugin discovery and loading", () => {
+  it.each(["credits", "refreshCredits"])(
+    "rejects malformed optional %s capabilities",
+    async (method) => {
+      const directory = await root(["broken-quota"]);
+      await plugin(directory, "broken-quota", {
+        code: `
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      export function createHarnessAdapter() {
+        return Object.assign(new FakeHarnessAdapter("broken-quota"), { ${method}: "not-callable" });
+      }
+    `,
+      });
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect(await [...registry.adapters.values()][0]?.inspect()).toMatchObject({
+          status: "unavailable",
+        });
+      } finally {
+        await registry.close();
+      }
+    },
+  );
   it("loads usage-only plugins without manufacturing session methods and closes them", async () => {
     const directory = await root(["local-usage"]);
     const marker = path.join(directory, "closed");

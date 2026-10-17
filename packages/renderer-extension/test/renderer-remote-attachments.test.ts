@@ -116,7 +116,7 @@ describe("remote external attachments through the native Desktop file store", ()
     try {
       await f.manager.sendRequest("turn/start", params);
       expect(f.createFileAttachment).not.toHaveBeenCalled();
-      expect(f.rpc.mock.calls[0]?.[1]).toBe(params);
+      expect(f.rpc.mock.calls[0]?.[1]).toEqual({ ...params, codexhostSourceHostId: "ssh:remote" });
     } finally {
       f.dispose();
     }
@@ -152,7 +152,8 @@ describe("remote external attachments through the native Desktop file store", ()
     try {
       await f.manager.sendRequest("turn/start", params);
       await f.manager.sendRequest("thread/read", request());
-      expect(f.rpc.mock.calls[0]?.[1]).toBe(params);
+      expect(f.rpc.mock.calls[0]?.[1]).toEqual({ ...params, codexhostSourceHostId: "ssh:remote" });
+      expect(f.rpc.mock.calls[1]?.[1]).not.toHaveProperty("codexhostSourceHostId");
       expect(f.createFileAttachment).not.toHaveBeenCalled();
     } finally {
       f.dispose();

@@ -4,6 +4,7 @@ export const COMMAND_CATALOG = harnessCommandCatalogSchema.parse({
     {
       id: "compact",
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact",
       description: "Compact the native ZCode conversation.",
       argumentMode: "text",

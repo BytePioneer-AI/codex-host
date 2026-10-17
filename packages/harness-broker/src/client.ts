@@ -703,6 +703,8 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog?: HarnessCommandCatalog;
   readonly liveCommandCatalog?: boolean;
   readonly harnessId: HarnessId;
+  readonly credits?: () => AccountCreditsSnapshot | null;
+  readonly refreshCredits?: () => Promise<AccountCreditsSnapshot | null>;
   readonly #descriptorPath: string;
   readonly #forwardEnvironment: boolean;
   readonly #isInstalled: (() => boolean) | undefined;
@@ -730,6 +732,8 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   constructor(
     input: {
       harnessId?: string;
+      /** Plugin-owned capability; defaults to true for existing Broker consumers. */
+      accountCredits?: boolean;
       forwardDelegationEnvironment?: boolean;
       descriptorPath?: string;
       environment?: NodeJS.ProcessEnv;
@@ -746,6 +750,10 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     } = {},
   ) {
     this.harnessId = harnessPluginIdSchema.parse(input.harnessId ?? "claude-code");
+    if (input.accountCredits !== false) {
+      this.credits = () => this.#credits;
+      this.refreshCredits = () => this.#refreshAccountCredits();
+    }
     this.#forwardEnvironment = input.forwardDelegationEnvironment === true;
     if (input.commandCatalog) this.commandCatalog = input.commandCatalog;
     if (input.liveCommandCatalog) this.liveCommandCatalog = true;
@@ -763,11 +771,7 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     this.#startTimeoutMs = input.startTimeoutMs ?? BROKER_START_TIMEOUT_MS;
   }
 
-  credits(): AccountCreditsSnapshot | null {
-    return this.#credits;
-  }
-
-  refreshCredits(): Promise<AccountCreditsSnapshot | null> {
+  #refreshAccountCredits(): Promise<AccountCreditsSnapshot | null> {
     if (this.#closed) return Promise.resolve(null);
     if (this.#creditsRefresh) return this.#creditsRefresh;
     this.#creditsRefresh = this.#readCredits().finally(() => {

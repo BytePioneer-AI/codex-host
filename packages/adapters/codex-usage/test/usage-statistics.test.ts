@@ -83,6 +83,29 @@ describe("Codex native counters", () => {
     expect(entries.reduce((sum, e) => sum + (e.cachedInputTokens ?? 0), 0)).toBe(cached);
   });
 
+  it("reads session metadata written with sorted keys and nested types first", async () => {
+    // Current Codex writes session_meta as ordinal, payload, timestamp, type; the payload
+    // carries base_instructions.provenance.type and enough text to push `type` past 1 KiB.
+    const sorted = {
+      ordinal: 0,
+      payload: {
+        base_instructions: {
+          provenance: { model: "priced-model", type: "model" },
+          text: "x".repeat(4096),
+        },
+        cwd: "/work",
+        id: THREAD,
+        session_id: THREAD,
+      },
+      timestamp: new Date(BASE).toISOString(),
+      type: "session_meta",
+    };
+    const entries = await read([sorted, context(), count(tokens(100, 10), tokens(100, 10))]);
+    expect(entries.map((e) => [e.inputTokens, e.outputTokens, e.cwd])).toEqual([
+      [100, 10, "/work"],
+    ]);
+  });
+
   it("uses cumulative deltas, ignores repeated checkpoints, and counts runtime resets", async () => {
     const a = tokens(100, 10, 50),
       total = tokens(250, 30, 100),

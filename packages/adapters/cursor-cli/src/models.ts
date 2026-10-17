@@ -25,9 +25,30 @@ export const CURSOR_CAPABILITIES: HarnessSessionCapabilities = {
 export const CURSOR_MODES = harnessPermissionModeCatalogSchema.parse({
   defaultModeId: "agent",
   modes: [
-    { id: "agent", label: "Agent", description: "Native agent mode with Cursor tool approvals" },
-    { id: "plan", label: "Plan", description: "Native read-only planning mode" },
-    { id: "ask", label: "Ask", description: "Native read-only question mode" },
+    {
+      id: "agent",
+      label: "Agent",
+      description: "Native agent mode with Cursor tool approvals",
+      localizations: {
+        "zh-CN": { description: "执行任务，可修改文件和运行命令；需要审批的操作仍会请求确认。" },
+      },
+    },
+    {
+      id: "plan",
+      label: "Plan",
+      description: "Native read-only planning mode",
+      localizations: {
+        "zh-CN": { label: "规划模式", description: "只读分析代码并制定实施计划，不修改项目文件。" },
+      },
+    },
+    {
+      id: "ask",
+      label: "Ask",
+      description: "Native read-only question mode",
+      localizations: {
+        "zh-CN": { label: "询问", description: "只读查看代码并回答问题，不修改项目文件。" },
+      },
+    },
   ],
 });
 export const cursorModelRef = (nativeId: string) =>

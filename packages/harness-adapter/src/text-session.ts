@@ -1,6 +1,7 @@
 import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
 import type {
   HarnessAccountSnapshot,
+  AccountCreditsSnapshot,
   HarnessInstallationState,
   HarnessCommandCatalog,
   HarnessId,
@@ -638,6 +639,15 @@ export interface HarnessAdapter {
    * Implementations must bound requests and release inspection resources on close.
    */
   inspectAccount?(): Promise<HarnessAccountSnapshot | null>;
+  /** Optional account-wide telemetry cache, not historical Thread billing attribution.
+   * Read synchronously without I/O; null means no reliable cached quota. Native
+   * authentication, freshness and invalidation remain Adapter-owned.
+   */
+  credits?(): AccountCreditsSnapshot | null;
+  /** Best-effort refresh of the same cache. Must not start a model Turn. Host
+   * observes a later read, does not await this call, and isolates rejection.
+   */
+  refreshCredits?(): Promise<AccountCreditsSnapshot | null>;
   /**
    * The same read when one Harness exposes several Billing Sources. Host prefers
    * this method and retains the first snapshot as the compatibility `account`.

@@ -30,6 +30,17 @@ const MAX_CATALOG_BYTES = 16 * 1024 * 1024;
 const MAX_CATALOG_DEPTH = 64;
 const MAX_CATALOG_NODES = 200_000;
 
+// Native preset names can be customized; unknown wording stays untouched.
+const presetLabels = new Map([
+  ["Auto", { en: "Auto", zh: "自动" }],
+  ["read-only", { en: "Read only", zh: "只读" }],
+  ["workspace-write", { en: "Workspace write", zh: "工作区写入" }],
+  ["danger-full-access", { en: "Full access (dangerous)", zh: "完全访问（危险）" }],
+  ["Read only", { en: "Read only", zh: "只读" }],
+  ["Workspace write", { en: "Workspace write", zh: "工作区写入" }],
+  ["Full access (dangerous)", { en: "Full access (dangerous)", zh: "完全访问（危险）" }],
+]);
+
 export type ModernPermissionModeErrorCode =
   | "authenticationRequired"
   | "cancelled"
@@ -233,9 +244,13 @@ function presetOptions(value: unknown, area: string): HarnessPermissionMode[] {
         "DeepSeek Harness returned an invalid permission option description",
       );
     }
+    const presentation = presetLabels.get(label);
     return {
       id: id.data,
       label,
+      ...(presentation
+        ? { localizations: { en: { label: presentation.en }, "zh-CN": { label: presentation.zh } } }
+        : {}),
       ...(description?.trim() ? { description } : {}),
     };
   });

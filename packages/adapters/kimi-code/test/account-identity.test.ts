@@ -32,6 +32,8 @@ describe("Kimi Code account usage", () => {
         productUsage: [
           {
             product: "Kimi Code · 5-hour window",
+            periodType: "five_hour",
+            scope: { id: "kimi-code", label: "Kimi Code" },
             usagePercent: 20,
             resetsAt: "2026-09-30T05:00:00.000Z",
           },

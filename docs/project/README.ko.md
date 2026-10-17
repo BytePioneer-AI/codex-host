@@ -284,7 +284,7 @@ CodexHost는 다른 방식을 택합니다.
 
 Issue나 PR을 제출하기 전에 [기여 안내](../../CONTRIBUTING.md)를 읽어 주세요. PR 제목 라벨, 간단한 CI 결과, 릴리스 전 검증은 [저장소 유지 관리 자동화](../operations/repository-maintenance.md)를 참고하세요.
 
-환경 요구 사항: 공식 Codex Desktop, Node.js 22.19+ 또는 24, Rust.
+환경 요구 사항: 공식 Codex Desktop, Node.js 22.19+ (22.x), 24 또는 25, Rust.
 
 ```bash
 git clone https://github.com/BytePioneer-AI/codex-host

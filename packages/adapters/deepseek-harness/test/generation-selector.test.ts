@@ -200,6 +200,7 @@ describe("DeepSeek executable generation probe", () => {
     ["0.1.7-rc.2", "modern", "0.1.7-rc.2"],
     ["0.2.0-rc.1", "modern", "0.2.0-rc.1"],
     ["0.2.0-rc.2", "modern", "0.2.0-rc.2"],
+    ["0.2.1-rc.1", "modern", "0.2.1-rc.1"],
     ["0.2.0-rc.2\n", "modern", "0.2.0-rc.2"],
     ["0.2.0-rc.2\r\n", "modern", "0.2.0-rc.2"],
     ["0.1.7-rc.1\n", "modern", "0.1.7-rc.1"],
@@ -258,13 +259,13 @@ describe("DeepSeek executable generation probe", () => {
     expect(failure).toMatchObject({ code: "unsupported", retryable: false, cleanupFailed: false });
     expect((failure as Error).message).toBe(
       `当前 DeepSeek Harness 版本 ${output} 低于最低版本 0.1.7-rc.1，不受支持。` +
-        "codexhost 支持的 DSH 版本为 0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2；" +
-        "高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限。" +
-        "请运行 `npm install -g @deepseek-ai/dsh@0.2.0-rc.2` 升级，然后重新运行连接诊断。\n" +
+        "codexhost 支持的 DSH 版本为 0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1、0.2.0-rc.2 和 0.2.1-rc.1；" +
+        "高于 0.2.1-rc.1 的版本可以尝试连接，但适配度可能有限。" +
+        "请运行 `npm install -g @deepseek-ai/dsh@0.2.1-rc.1` 升级，然后重新运行连接诊断。\n" +
         `DeepSeek Harness ${output} is older than the minimum version 0.1.7-rc.1 and is not supported. ` +
-        "Supported DSH versions are 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1 and 0.2.0-rc.2; " +
-        "versions newer than 0.2.0-rc.2 can be tried, but compatibility may be limited. " +
-        "Run `npm install -g @deepseek-ai/dsh@0.2.0-rc.2` to upgrade, then run connection diagnostics again.",
+        "Supported DSH versions are 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1, 0.2.0-rc.2 and 0.2.1-rc.1; " +
+        "versions newer than 0.2.1-rc.1 can be tried, but compatibility may be limited. " +
+        "Run `npm install -g @deepseek-ai/dsh@0.2.1-rc.1` to upgrade, then run connection diagnostics again.",
     );
   });
 

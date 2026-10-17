@@ -38,7 +38,7 @@
     }
   },
   "notice": {
-    "en": "Requires DSH 0.1.7-rc.1 or later and the V4 protocol. Verified with 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1 and 0.2.0-rc.2; other versions require native protocol validation.",
-    "zh-CN": "需要 DSH 0.1.7-rc.1 或更高版本及 V4 协议。已验证 0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2；其他版本仍需通过原生协议校验。"
+    "en": "Requires DSH 0.1.7-rc.1 or later and the V4 protocol. Verified with 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1, 0.2.0-rc.2 and 0.2.1-rc.1; other versions require native protocol validation.",
+    "zh-CN": "需要 DSH 0.1.7-rc.1 或更高版本及 V4 协议。已验证 0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1、0.2.0-rc.2 和 0.2.1-rc.1；其他版本仍需通过原生协议校验。"
   }
 }

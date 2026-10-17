@@ -121,7 +121,14 @@ function v4History(): ModernJournalEvent[] {
 describe("DSH V4 journal", () => {
   it("binds the single V4 profile to the probed version and parses only V4 headers", () => {
     expect(deepSeekModernProfile("0.1.7-rc.1")).toBe(DEEPSEEK_V4_PROFILE);
-    for (const version of ["0.1.7-rc.2", "0.2.0-rc.1", "0.2.0-rc.2", "0.2.1-rc.1", "1.0.0"]) {
+    for (const version of [
+      "0.1.7-rc.2",
+      "0.2.0-rc.1",
+      "0.2.0-rc.2",
+      "0.2.1-rc.1",
+      "0.2.1-rc.2",
+      "1.0.0",
+    ]) {
       const profile = deepSeekModernProfile(version);
       expect(profile).toEqual({ ...DEEPSEEK_V4_PROFILE, version });
       expect(Object.isFrozen(profile)).toBe(true);

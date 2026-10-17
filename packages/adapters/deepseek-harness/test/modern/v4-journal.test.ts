@@ -622,17 +622,13 @@ describe("DSH V4 durable protocol", () => {
   ];
 
   // 0.2.1-rc.1 adds the bash job's job/registered and job/settled between tool/call and tool/result.
-  it.each([
-    ["0.2.0-rc.2", "dsh-020rc2-tool-call-turn.v4.jsonl", []],
-    ["0.2.1-rc.1", "dsh-021rc1-tool-call-turn.v4.jsonl", ["job/registered", "job/settled"]],
-  ] as const)("replays the tool-call Turn that DSH %s recorded live", (_version, fixture, jobs) => {
+  /** Load a DSH session snapshot the way DSH's own replay does: no seq/time, a substituted tool catalog. */
+  function loadSnapshot(fixture: string, toolName: string) {
     const rows = readFileSync(new URL(`../fixtures/${fixture}`, import.meta.url), "utf8")
       .trim()
       .split(/\r?\n/u)
       .map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(
-      rows.filter(({ type }) => String(type).startsWith("job/")).map(({ type }) => type),
-    ).toEqual(jobs);
+    const types = rows.map(({ type }) => String(type));
     const first = rows.shift();
     assert(first);
     const { type: recordType, ...header } = first;
@@ -643,7 +639,6 @@ describe("DSH V4 durable protocol", () => {
         cwd: header.cwd as string,
       }),
     ).toMatchObject({ version: 4, delegationDepth: 0 });
-    // DSH snapshots elide event seq/time and substitute the environment's tool catalog.
     const events = rows.map((row, seq) => {
       const data = row.data as Record<string, unknown>;
       if (row.type === "request/header") {
@@ -652,7 +647,7 @@ describe("DSH V4 durable protocol", () => {
           ...header,
           tools: [
             {
-              name: "bash",
+              name: toolName,
               description: "fixture",
               parameters: { type: "object", properties: {} },
             },
@@ -661,7 +656,16 @@ describe("DSH V4 durable protocol", () => {
       }
       return { ...row, seq, time: 1_000 + seq } as unknown as ModernJournalEvent;
     });
-    const projected = projectModernHistory({ sessionId: header.id as string, events });
+    return { types, sessionId: header.id as string, events };
+  }
+
+  it.each([
+    ["0.2.0-rc.2", "dsh-020rc2-tool-call-turn.v4.jsonl", []],
+    ["0.2.1-rc.1", "dsh-021rc1-tool-call-turn.v4.jsonl", ["job/registered", "job/settled"]],
+  ] as const)("replays the tool-call Turn that DSH %s recorded live", (_version, fixture, jobs) => {
+    const { types, sessionId, events } = loadSnapshot(fixture, "bash");
+    expect(types.filter((type) => type.startsWith("job/"))).toEqual(jobs);
+    const projected = projectModernHistory({ sessionId, events });
     expect(projected.snapshot.turns).toHaveLength(1);
     const [turn] = projected.snapshot.turns;
     // The runtime-context message is native model input, not something the user typed.
@@ -689,6 +693,31 @@ describe("DSH V4 durable protocol", () => {
       provider: "deepseek-official",
       model: "deepseek-v4-flash",
     });
+  });
+
+  // 0.2.1-rc.2 records `thinking: disabled` on the auxiliary search request.
+  it("replays the web-search Turn that DSH 0.2.1-rc.2 recorded live", () => {
+    const { types, sessionId, events } = loadSnapshot(
+      "dsh-021rc2-web-search-turn.v4.jsonl",
+      "web_search",
+    );
+    expect(types).toContain("web/deepseek-search-llm-request");
+    const request = events.find(({ type }) => type === "web/deepseek-search-llm-request");
+    expect((request?.data as { body: { thinking?: unknown } }).body.thinking).toEqual({
+      type: "disabled",
+    });
+    const projected = projectModernHistory({ sessionId, events });
+    expect(projected.snapshot.turns).toHaveLength(1);
+    const [turn] = projected.snapshot.turns;
+    // The scenario points the search at an unreachable endpoint, so the tool fails.
+    // Step 2 records an empty reasoning block, which has no Item.
+    expect(turn?.items.map(({ item, outcome }) => [item.type, outcome?.status])).toEqual([
+      ["reasoning", "succeeded"],
+      ["toolExecution", "failed"],
+      ["agentMessage", "succeeded"],
+    ]);
+    expect(turn?.items[1]?.item).toMatchObject({ toolName: "web_search" });
+    expect(turn?.checkpoint?.checkpointId).toBe(`v4-turn-end:${events.length - 1}`);
   });
 
   it("folds system head replacements using event seqs without displaying system messages", () => {
@@ -862,6 +891,34 @@ describe("DSH V4 durable protocol", () => {
         system: "Create a concise title.",
         messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
         maxTokens: 64,
+      },
+    ],
+    // DSH 0.2.1-rc.2 adds `thinking` to the auxiliary search request body.
+    [
+      "web/deepseek-search-llm-request",
+      {
+        endpoint: "https://api.deepseek.com/anthropic/v1/messages",
+        apiVersion: "2023-06-01",
+        body: {
+          model: "deepseek-v4-flash",
+          max_tokens: 4096,
+          messages: [{ role: "user", content: [{ type: "text", text: "search" }] }],
+          tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
+          thinking: { type: "disabled" },
+        },
+      },
+    ],
+    [
+      "web/deepseek-search-llm-request",
+      {
+        endpoint: "https://api.deepseek.com/anthropic/v1/messages",
+        apiVersion: "2023-06-01",
+        body: {
+          model: "deepseek-v4-flash",
+          max_tokens: 4096,
+          messages: [{ role: "user", content: [{ type: "text", text: "search" }] }],
+          tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
+        },
       },
     ],
     ["feedback/record", {}],
@@ -1044,6 +1101,44 @@ describe("DSH V4 durable protocol", () => {
         name: "read",
         arguments: {},
         meta: {},
+      },
+    ],
+    ...[
+      { type: "enabled" },
+      { type: "enabled", budget_tokens: 1024 },
+      { type: "disabled", budget_tokens: 1024 },
+      {},
+      "disabled",
+      null,
+    ].map(
+      (thinking) =>
+        [
+          "web/deepseek-search-llm-request",
+          {
+            endpoint: "https://api.deepseek.com/anthropic/v1/messages",
+            apiVersion: "2023-06-01",
+            body: {
+              model: "deepseek-v4-flash",
+              max_tokens: 4096,
+              messages: [],
+              tools: [],
+              thinking,
+            },
+          },
+        ] as [string, Record<string, unknown>],
+    ),
+    [
+      "web/deepseek-search-llm-request",
+      {
+        endpoint: "https://api.deepseek.com/anthropic/v1/messages",
+        apiVersion: "2023-06-01",
+        body: {
+          model: "deepseek-v4-flash",
+          max_tokens: 4096,
+          messages: [],
+          tools: [],
+          stream: true,
+        },
       },
     ],
     ["team/member", { version: 1, teamId: "team", member: {} }],

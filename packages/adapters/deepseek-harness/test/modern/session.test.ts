@@ -1367,6 +1367,55 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
+  it("keeps a live Turn healthy through the DSH 0.2.1-rc.2 search request with disabled thinking", async () => {
+    const test = setup([() => accepted()], [], ["request-1"]);
+    const outputs = lifecycleOutputs(test.session);
+    const id = turnId("host-turn-1");
+    await test.session.execute({
+      type: "turn.start",
+      turnId: id,
+      input: [{ type: "text", text: "search it" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(2, "search it", "request-1"));
+    expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
+    test.feed.push(assistantMessage(3, "done", "think"));
+    test.feed.push(
+      event(4, "tool/call", { turn: 1, step: 1, callId: "call-1", name: "write", arguments: "{}" }),
+    );
+    test.feed.push(
+      event(5, "web/deepseek-search-llm-request", {
+        endpoint: "https://api.deepseek.com/anthropic/v1/messages",
+        apiVersion: "2023-06-01",
+        body: {
+          model: "deepseek-v4-flash",
+          max_tokens: 4096,
+          messages: [{ role: "user", content: [{ type: "text", text: "search" }] }],
+          tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
+          thinking: { type: "disabled" },
+        },
+      }),
+    );
+    test.feed.push(toolResult(6));
+    test.feed.push(event(7, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(8, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+
+    const emitted = await eventsThrough(outputs, "turn.completed");
+    expect(emitted.some((item) => item.type === "session.faulted")).toBe(false);
+    expect(
+      emitted
+        .filter((item) => item.type === "item.completed")
+        .map((item) => (item.type === "item.completed" ? item.snapshot.item.type : "")),
+    ).toEqual(["reasoning", "agentMessage", "toolExecution", "fileChange"]);
+    expect(emitted.at(-1)).toMatchObject({
+      type: "turn.completed",
+      turnId: id,
+      outcome: { status: "succeeded", checkpoint: { checkpointId: "v4-turn-end:8" } },
+    });
+    await test.session.close();
+  });
+
   it("streams V4 PTC sub-calls in place of run_code with native durations", async () => {
     const { test, emitted } = await streamPtcTurn();
     const itemId = `dsh-modern:${SESSION_ID}:event:5:tool`;

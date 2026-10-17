@@ -1913,11 +1913,18 @@ function validateSearchRequest(data: Record<string, unknown>): void {
   requiredString(data.endpoint, "search request endpoint");
   requiredString(data.apiVersion, "search request apiVersion");
   if (!isRecord(data.body)) fail("Modern history search request body is malformed");
-  requiredOptionalKeys(data.body, ["model", "max_tokens", "messages", "tools"], []);
+  requiredOptionalKeys(data.body, ["model", "max_tokens", "messages", "tools"], ["thinking"]);
   requiredString(data.body.model, "search request model");
   positiveInteger(data.body.max_tokens, "search request max_tokens");
   if (!Array.isArray(data.body.messages) || !Array.isArray(data.body.tools)) {
     fail("Modern history search request arrays are malformed");
+  }
+  // DSH 0.2.1-rc.2 always sends `thinking: disabled` on the auxiliary search turn.
+  if (data.body.thinking !== undefined) {
+    const { thinking } = data.body;
+    if (!isRecord(thinking)) fail("Modern history search request thinking is malformed");
+    exactKeys(thinking, ["type"]);
+    if (thinking.type !== "disabled") fail("Modern history search request thinking is invalid");
   }
 }
 

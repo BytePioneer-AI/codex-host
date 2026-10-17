@@ -39,8 +39,8 @@ use codexhost_platform::{
 use codexhost_platform::{
     DesktopIdentity, DesktopInstallation, DesktopLaunchMode, SupervisedChild,
     canonical_existing_file, configure_background_command,
-    desktop_root_process_ids_for_installation, discover_codex_desktop, node_entrypoint_path,
-    spawn_supervised,
+    desktop_root_process_ids_for_installation, discover_codex_desktop,
+    existing_file_preserving_links, node_entrypoint_path, spawn_supervised,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use codexhost_platform::{DesktopSession, launch_desktop_session};
@@ -109,7 +109,14 @@ fn managed_desktop_data_directory(
     if remote_ssh_managed.as_deref() == Some(std::ffi::OsStr::new("1")) {
         None
     } else {
-        data_directory
+        data_directory.or_else(|| {
+            // The shim refuses to start the host-runtime without a data root and
+            // the Start Menu flow has no caller-provided one; match the
+            // host-runtime fallback location.
+            env::var_os("USERPROFILE")
+                .or_else(|| env::var_os("HOME"))
+                .map(|home| OsString::from(PathBuf::from(home).join(".codexhost")))
+        })
     }
 }
 
@@ -130,6 +137,9 @@ impl Error for UnmanagedDesktopConflict {}
 fn usage() {
     eprintln!(
         "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost update\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
+    );
+    eprintln!(
+        "\nnote: --start-menu accepts the same [--shim]/[--node]/[--host-runtime]/\n      [--desktop-controller]/[--renderer] overrides as `launch`, so a split\n      installation can keep the binaries the Desktop stats on one volume."
     );
 }
 
@@ -178,7 +188,11 @@ fn read_bounded_loopback_url(reader: impl Read) -> Result<String, Box<dyn Error>
 }
 
 fn run_delegation_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let executable = env::current_exe()?.canonicalize()?;
+    let executable = env::current_exe()?;
+    // Do not canonicalize: this value is exported as CODEX_CLI_PATH and the
+    // consuming process may be a packaged Desktop that validates it itself.
+    let executable = existing_file_preserving_links(&executable)
+        .map_err(|error| format!("codexhost executable: {error}"))?;
     let resources = InstalledResources::from_executable(&executable)?;
     let node = delegation_node(&resources.node, env::var_os(CODEXHOST_CLI_NODE_PATH_ENV))?;
     let status = Command::new(&node)
@@ -442,6 +456,21 @@ fn absolute_file(path: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
         .map_err(|error| format!("{label} '{}': {error}", path.display()).into())
 }
 
+/// Same contract as [`absolute_file`], but keeps directory links intact.
+///
+/// The resolved resource paths are injected into the Desktop as `CODEX_CLI_PATH`
+/// and friends, and a packaged Desktop validates them itself. Canonicalizing a
+/// directory junction here would rewrite it to its target on another volume, and
+/// hosts that cannot read that volume would reject the value. Keeping the link
+/// visible lets the host resolve it the same way the launcher does.
+fn absolute_file_preserving_links(path: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
+    if !path.is_absolute() {
+        return Err(format!("{label} must be an absolute path").into());
+    }
+    existing_file_preserving_links(path)
+        .map_err(|error| format!("{label} '{}': {error}", path.display()).into())
+}
+
 fn resolve_resource_path(
     explicit: Option<PathBuf>,
     bundled: &Path,
@@ -449,8 +478,8 @@ fn resolve_resource_path(
     bundled_label: &str,
 ) -> Result<PathBuf, Box<dyn Error>> {
     match explicit {
-        Some(path) => absolute_file(&path, option),
-        None => absolute_file(bundled, bundled_label),
+        Some(path) => absolute_file_preserving_links(&path, option),
+        None => absolute_file_preserving_links(bundled, bundled_label),
     }
 }
 
@@ -841,11 +870,28 @@ fn supervise_desktop(
         }
     };
     startup_trace("waiting for Host chain");
+    // Held for the supervise-loop lifetime: dropping it closes the Host
+    // runtime's stdio, which drains and exits the runtime.
+    let mut _managed_host_runtime: Option<SupervisedChild> = None;
     if !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))? {
-        let _ = stop_desktop_controller(&mut controller);
-        let _ = desktop.kill();
-        let _ = desktop.wait();
-        return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
+        // Codex Desktop 26.928 ignores the injected CODEX_CLI_PATH and runs its
+        // stock CLI. The Host runtime only needs its stdio held open and the
+        // CODEXHOST_* environment, so the Launcher starts it directly; the
+        // Controller reaches it through the remote-control bridge descriptor.
+        startup_trace("Desktop did not start the Host chain; starting the Host runtime from the Launcher");
+        match spawn_managed_host_runtime(installation, options, environment) {
+            Ok(child) => _managed_host_runtime = Some(child),
+            Err(error) => {
+                let _ = stop_desktop_controller(&mut controller);
+                let _ = desktop.kill();
+                let _ = desktop.wait();
+                return Err(format!(
+                    "Codex Desktop did not start the codexhost Host chain and the Launcher could not start the Host runtime: {error}"
+                )
+                .into());
+            }
+        }
+        startup_trace("Host runtime started by the Launcher");
     }
     startup_trace("Host chain ready");
     let _runtime = match publish_runtime_descriptor(descriptor_path, control) {
@@ -954,6 +1000,34 @@ fn desktop_environment(
     environment.extend(npm_update_runtime_environment(env::vars_os()));
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
     environment
+}
+
+/// Starts the Host runtime directly when the Desktop did not spawn the shim.
+/// The piped stdio is never written and never dropped: the runtime treats
+/// stdin end-of-stream as shutdown, so the Launcher holds the write end for
+/// the supervise-loop lifetime.
+#[cfg(target_os = "windows")]
+fn spawn_managed_host_runtime(
+    installation: &DesktopInstallation,
+    options: &ResolvedLaunchOptions,
+    environment: &[(OsString, OsString)],
+) -> Result<SupervisedChild, Box<dyn Error>> {
+    let mut command = Command::new(&options.node);
+    command
+        .arg(node_entrypoint_path(&options.host_runtime))
+        .args(["-c", "features.code_mode_host=true", "app-server"]);
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    command.env(
+        OsString::from("CODEXHOST_STOCK_CODEX_PATH"),
+        installation.executable_codex_cli.as_os_str(),
+    );
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    Ok(spawn_supervised(&mut command)?)
 }
 
 /// Forward absolute npm update paths. AppX and LaunchServices do not inherit
@@ -1303,7 +1377,13 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             resume_packaged_application(&arguments[1..]).map_err(Into::into)
         }
         None => launch(default_launch_options(), false),
-        Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),
+        // Accept resource overrides so a split installation can keep the files the
+        // Desktop stats (Shim, node-repl wrapper) on one volume and everything the
+        // Shim spawns on another. The arguments are optional; a bare --start-menu
+        // still resolves everything from the bundled layout.
+        Some(START_MENU_ARGUMENT) => {
+            launch(parse_launch_options(&arguments[1..])?, true)
+        }
         Some("inspect") => {
             let options = parse_inspect_options(&arguments[1..])?;
             let custom_install_root = options
@@ -1334,8 +1414,12 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 
 fn main() -> ExitCode {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
+    // Hide the console and report failures through a dialog for every --start-menu
+    // invocation, including one that carries resource overrides.
     #[cfg(target_os = "windows")]
-    let start_menu_launch = arguments.as_slice() == [START_MENU_ARGUMENT];
+    let start_menu_launch = arguments
+        .first()
+        .is_some_and(|argument| argument == START_MENU_ARGUMENT);
     #[cfg(target_os = "windows")]
     let appx_resume = arguments
         .first()
@@ -1546,6 +1630,59 @@ mod tests {
         assert!(options.host_runtime.is_none());
         assert!(options.desktop_controller.is_none());
         assert!(options.renderer_extension.is_none());
+    }
+
+    /// A packaged Desktop stats the injected Shim path itself and falls back to its
+    /// own bundled CLI when that path is not readable, which happens when the
+    /// installation lives on a volume the package cannot reach. Keeping the Shim and
+    /// the node-repl wrapper on a reachable volume while everything the Shim spawns
+    /// sits elsewhere is therefore the supported shape, and the Start Menu entry has
+    /// to accept the same overrides `launch` already takes.
+    #[test]
+    fn start_menu_accepts_split_installation_overrides() {
+        let arguments = [
+            "--shim".to_string(),
+            r"C:\codexhost\libexec\codexhost-shim.exe".to_string(),
+            "--node".to_string(),
+            r"D:\codexhost\runtime\node.exe".to_string(),
+            "--host-runtime".to_string(),
+            r"D:\codexhost\app\host-runtime.mjs".to_string(),
+            "--desktop-controller".to_string(),
+            r"D:\codexhost\app\desktop-controller.mjs".to_string(),
+            "--renderer".to_string(),
+            r"D:\codexhost\app\renderer-extension.js".to_string(),
+        ];
+
+        let options = parse_launch_options(&arguments).expect("split installation overrides");
+
+        assert_eq!(
+            options.shim.as_deref(),
+            Some(Path::new(r"C:\codexhost\libexec\codexhost-shim.exe"))
+        );
+        assert_eq!(
+            options.node.as_deref(),
+            Some(Path::new(r"D:\codexhost\runtime\node.exe"))
+        );
+        assert_eq!(
+            options.host_runtime.as_deref(),
+            Some(Path::new(r"D:\codexhost\app\host-runtime.mjs"))
+        );
+        assert_eq!(
+            options.desktop_controller.as_deref(),
+            Some(Path::new(r"D:\codexhost\app\desktop-controller.mjs"))
+        );
+        assert_eq!(
+            options.renderer_extension.as_deref(),
+            Some(Path::new(r"D:\codexhost\app\renderer-extension.js"))
+        );
+    }
+
+    /// `--start-menu` with no overrides must keep resolving from the bundled layout.
+    #[test]
+    fn start_menu_without_overrides_uses_the_bundled_layout() {
+        let options = parse_launch_options(&[]).expect("bundled start menu options");
+        assert!(options.shim.is_none());
+        assert!(options.node.is_none());
     }
 
     #[test]

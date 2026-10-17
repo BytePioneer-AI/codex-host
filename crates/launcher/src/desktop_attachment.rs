@@ -5,11 +5,14 @@ use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use codexhost_platform::{
     DesktopInstallation, descendant_executable_exists, desktop_root_process_ids_for_installation,
+    process_snapshot, terminate_process_instance,
 };
 #[cfg(target_os = "windows")]
 use codexhost_platform::{process_executable_path, process_exists, terminate_process_by_id};
@@ -23,6 +26,7 @@ use crate::runtime_instance::{
 
 const ATTACHMENT_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
 const ATTACHMENT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+const ORPHANED_CONTROLLER_STOP_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub(super) struct RuntimeControl {
@@ -74,8 +78,7 @@ pub(super) fn acquire_launcher_ownership(
                 return Ok(LauncherOwnership::Attached);
             }
             if desktop_root_process_ids_for_installation(installation)?.is_empty() {
-                stop_stale_launcher(descriptor)?;
-                let _ = remove_matching_descriptor(&descriptor_path, descriptor)?;
+                recover_stale_controller(descriptor, &descriptor_path)?;
             }
         }
         if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
@@ -231,6 +234,158 @@ pub(super) fn stop_stale_launcher(_descriptor: &RuntimeDescriptor) -> Result<(),
     Ok(())
 }
 
+/// Stop a Desktop Controller that outlived its Launcher and Desktop.
+///
+/// A failed or interrupted `npm start` can kill Desktop while leaving the
+/// Controller listening on the recorded attachment port. The next launch then
+/// owns the Launcher lock with no Desktop. Only a listener whose command line
+/// still carries this descriptor's attachment port and nonce is ours to stop.
+pub(super) fn recover_stale_controller(
+    descriptor: &RuntimeDescriptor,
+    descriptor_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    stop_orphaned_controller(descriptor)?;
+    stop_stale_launcher(descriptor)?;
+    let _ = remove_matching_descriptor(descriptor_path, descriptor)?;
+    Ok(())
+}
+
+pub(super) fn stop_orphaned_controller(
+    descriptor: &RuntimeDescriptor,
+) -> Result<(), Box<dyn Error>> {
+    let matches = matching_controller_process_ids(descriptor)?;
+    if matches.is_empty() {
+        return Ok(());
+    }
+    for process_id in &matches {
+        terminate_controller_process(*process_id, false)?;
+    }
+    if wait_for_endpoint_exit(descriptor.control_port, ORPHANED_CONTROLLER_STOP_GRACE) {
+        return Ok(());
+    }
+    for process_id in matching_controller_process_ids(descriptor)? {
+        terminate_controller_process(process_id, true)?;
+    }
+    if wait_for_endpoint_exit(descriptor.control_port, ORPHANED_CONTROLLER_STOP_GRACE) {
+        return Ok(());
+    }
+    Err(format!(
+        "leftover Desktop Controller on port {} did not exit before timeout",
+        descriptor.control_port
+    )
+    .into())
+}
+
+fn command_line_matches_controller(command: &str, descriptor: &RuntimeDescriptor) -> bool {
+    let port = descriptor.control_port.to_string();
+    let mut saw_port = false;
+    let mut saw_nonce = false;
+    let mut arguments = command.split_whitespace();
+    while let Some(argument) = arguments.next() {
+        match argument {
+            "--attachment-port" => {
+                saw_port |= arguments.next() == Some(port.as_str());
+            }
+            "--attachment-nonce" => {
+                saw_nonce |= arguments.next() == Some(descriptor.nonce.as_str());
+            }
+            _ => {}
+        }
+    }
+    saw_port && saw_nonce
+}
+
+fn matching_controller_process_ids(
+    descriptor: &RuntimeDescriptor,
+) -> Result<Vec<u32>, Box<dyn Error>> {
+    let mut matches = Vec::new();
+    for (process_id, command) in process_command_lines()? {
+        if process_id == std::process::id() {
+            continue;
+        }
+        if command_line_matches_controller(&command, descriptor) {
+            matches.push(process_id);
+        }
+    }
+    Ok(matches)
+}
+
+fn terminate_controller_process(process_id: u32, force: bool) -> Result<(), Box<dyn Error>> {
+    if process_id == std::process::id() {
+        return Ok(());
+    }
+    match process_snapshot(process_id) {
+        Ok(snapshot) => {
+            terminate_process_instance(&snapshot, force)?;
+            Ok(())
+        }
+        Err(_) => Ok(()),
+    }
+}
+
+fn wait_for_endpoint_exit(port: u16, timeout: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        if !endpoint_ready(port, Duration::from_millis(50)) {
+            return true;
+        }
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_command_lines() -> Result<Vec<(u32, String)>, Box<dyn Error>> {
+    let output = Command::new("/bin/ps")
+        .args(["-axww", "-o", "pid=,command="])
+        .output()?;
+    if !output.status.success() {
+        return Err("cannot list process command lines".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (pid, command) = line.split_once(char::is_whitespace)?;
+            Some((pid.parse().ok()?, command.trim().to_owned()))
+        })
+        .collect())
+}
+
+#[cfg(target_os = "linux")]
+fn process_command_lines() -> Result<Vec<(u32, String)>, Box<dyn Error>> {
+    let mut commands = Vec::new();
+    for entry in std::fs::read_dir("/proc")?.filter_map(Result::ok) {
+        let Some(process_id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let command = bytes
+            .split(|byte| *byte == 0)
+            .filter(|argument| !argument.is_empty())
+            .map(|argument| String::from_utf8_lossy(argument).into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !command.is_empty() {
+            commands.push((process_id, command));
+        }
+    }
+    Ok(commands)
+}
+
+#[cfg(target_os = "windows")]
+fn process_command_lines() -> Result<Vec<(u32, String)>, Box<dyn Error>> {
+    Ok(Vec::new())
+}
+
 /// A recorded launcher PID may since have been reused by an unrelated process.
 /// Only an inspected executable matching this launcher proves ownership; a PID
 /// the current user cannot inspect (for example a reused SYSTEM service PID)
@@ -326,5 +481,108 @@ mod tests {
             .expect("timed-out Controller")
         );
         server.join().expect("attachment server");
+    }
+
+    #[test]
+    fn controller_command_matches_exact_attachment_port_and_nonce() {
+        let descriptor = descriptor(60218);
+        assert!(command_line_matches_controller(
+            "node release-main.js --attachment-port 60218 --attachment-nonce 0123456789abcdef0123456789abcdef",
+            &descriptor
+        ));
+        assert!(
+            !command_line_matches_controller(
+                "node release-main.js --attachment-port 602181 --attachment-nonce 0123456789abcdef0123456789abcdef",
+                &descriptor
+            ),
+            "port 60218 must not match 602181"
+        );
+        assert!(!command_line_matches_controller(
+            "node release-main.js --attachment-port 60218 --attachment-nonce ffffffffffffffffffffffffffffffff",
+            &descriptor
+        ));
+        assert!(!command_line_matches_controller(
+            "node console-server.mjs serve",
+            &descriptor
+        ));
+    }
+
+    #[cfg(unix)]
+    fn spawn_matching_listener(port: u16, nonce: &str) -> std::process::Child {
+        let script = format!(
+            "import socket, time\n\
+             server = socket.socket()\n\
+             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
+             server.bind(('127.0.0.1', {port}))\n\
+             server.listen(1)\n\
+             while True:\n\
+             \ttime.sleep(0.2)\n"
+        );
+        let mut command = std::process::Command::new("python3");
+        command
+            .args([
+                "-c",
+                &script,
+                "--attachment-port",
+                &port.to_string(),
+                "--attachment-nonce",
+                nonce,
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        command.spawn().expect("start leftover Controller fixture")
+    }
+
+    #[cfg(unix)]
+    fn wait_until_listening(port: u16) {
+        let started = Instant::now();
+        while !endpoint_ready(port, Duration::from_millis(50)) {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "leftover Controller fixture did not listen"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_orphaned_controller_terminates_a_matching_listener() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
+        let port = listener.local_addr().expect("reserved address").port();
+        drop(listener);
+        let descriptor = descriptor(port);
+        let mut child = spawn_matching_listener(port, &descriptor.nonce);
+        wait_until_listening(port);
+
+        let result = stop_orphaned_controller(&descriptor);
+        let _ = child.kill();
+        let _ = child.wait();
+        result.expect("stop leftover Controller");
+        assert!(
+            !endpoint_ready(port, Duration::from_millis(50)),
+            "matching leftover Controller kept its attachment port"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_orphaned_controller_leaves_an_unrelated_listener() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("unrelated listener");
+        let port = listener.local_addr().expect("unrelated address").port();
+        let descriptor = descriptor(port);
+
+        stop_orphaned_controller(&descriptor).expect("ignore unrelated listener");
+        assert!(
+            endpoint_ready(port, Duration::from_millis(50)),
+            "unrelated listener on the recorded port was terminated"
+        );
+        drop(listener);
     }
 }

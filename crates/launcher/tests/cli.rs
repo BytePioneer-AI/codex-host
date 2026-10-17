@@ -32,8 +32,12 @@ fn production_launcher_uses_the_three_state_running_desktop_flow() {
     assert!(source.contains("StartupState::CleanLaunch"));
     assert!(source.contains("StartupState::Attach"));
     assert!(source.contains("acquire_launcher_ownership"));
+    assert!(source.contains("recover_stale_controller"));
     assert!(source.contains("completely quit it before starting codexhost"));
     assert!(!source.contains("attach_unmanaged_desktop"));
+    assert!(!source.contains(
+        "codexhost control endpoint is still active without a live Desktop; retry after it exits"
+    ));
 }
 
 #[test]

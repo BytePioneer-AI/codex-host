@@ -18,6 +18,7 @@ const STAGE_STEPS: Readonly<Record<string, StepKey>> = {
   "Codex Desktop installation discovered": "findDesktop",
   "acquiring Launcher ownership": "ownership",
   "Launcher ownership acquired": "ownership",
+  "recovering leftover Desktop Controller": "ownership",
   "attached to existing controlled Desktop": "ownership",
   "launching Codex Desktop": "launchDesktop",
   "Codex Desktop launched": "launchDesktop",

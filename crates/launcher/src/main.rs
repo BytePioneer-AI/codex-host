@@ -52,13 +52,14 @@ use codexhost_platform::{
 use compatibility::{MAX_CONTROLLER_READINESS_LINE_BYTES, parse_controller_readiness_line};
 use desktop_attachment::{
     LauncherOwnership, RuntimeControl, acquire_launcher_ownership, allocate_runtime_control,
-    endpoint_ready, publish_runtime_descriptor, stop_stale_launcher, wait_for_host_chain,
+    endpoint_ready, publish_runtime_descriptor, recover_stale_controller, wait_for_host_chain,
 };
 use installation_layout::InstalledResources;
 use native_harness_broker::run_native_harness_broker_cli;
+#[cfg(target_os = "windows")]
+use runtime_instance::remove_matching_descriptor;
 use runtime_instance::{
     StartupObservation, StartupState, classify_startup, default_descriptor_path, read_descriptor,
-    remove_matching_descriptor,
 };
 use startup_record::StartupOutcome;
 #[cfg(target_os = "macos")]
@@ -1068,8 +1069,8 @@ fn launch(
         match state {
             StartupState::RecoverStale => {
                 if let Some(descriptor) = &descriptor {
-                    stop_stale_launcher(descriptor)?;
-                    let _ = remove_matching_descriptor(&descriptor_path, descriptor)?;
+                    startup_trace("recovering leftover Desktop Controller");
+                    recover_stale_controller(descriptor, &descriptor_path)?;
                 } else if descriptor_present {
                     std::fs::remove_file(&descriptor_path)?;
                 }
@@ -1105,14 +1106,7 @@ fn launch(
                     continue;
                 }
             }
-            StartupState::CleanLaunch => {
-                if descriptor_present && control_endpoint_ready {
-                    return Err(
-                        "codexhost control endpoint is still active without a live Desktop; retry after it exits"
-                            .into(),
-                    );
-                }
-            }
+            StartupState::CleanLaunch => {}
         }
 
         let control = allocate_runtime_control()?;
@@ -1205,19 +1199,13 @@ fn launch(
     }) {
         StartupState::RecoverStale => {
             if let Some(descriptor) = &descriptor {
-                stop_stale_launcher(descriptor)?;
-                let _ = remove_matching_descriptor(&descriptor_path, descriptor)?;
+                startup_trace("recovering leftover Desktop Controller");
+                recover_stale_controller(descriptor, &descriptor_path)?;
             } else if descriptor_present {
                 return Err("codexhost runtime descriptor is invalid; remove it after checking its ownership".into());
             }
         }
         StartupState::Attach => unreachable!("no Desktop roots were observed"),
-        StartupState::CleanLaunch if descriptor_present && control_endpoint_ready => {
-            return Err(
-                "codexhost control endpoint is still active without a live Desktop; retry after it exits"
-                    .into(),
-            );
-        }
         StartupState::CleanLaunch => {}
     }
     let control = allocate_runtime_control()?;

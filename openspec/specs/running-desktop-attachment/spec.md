@@ -10,6 +10,11 @@ The production Launcher SHALL distinguish stale-launcher recovery, clean Desktop
 - **WHEN** launcher state exists but its Desktop and control endpoint are both absent
 - **THEN** Launcher MUST remove only the validated stale state and retry startup
 
+#### Scenario: Leftover Controller after a failed launch
+- **WHEN** exclusive Launcher ownership is acquired, no target Desktop is running, and the recorded control endpoint is still listening
+- **THEN** Launcher MUST stop only a Controller whose command line matches the recorded attachment port and nonce, remove the matching descriptor, and continue with clean launch
+- **AND** it MUST NOT terminate an unrelated listener on that port
+
 #### Scenario: No Desktop is running
 - **WHEN** no target Codex Desktop process exists
 - **THEN** Launcher MUST use the existing clean launch with Shim, Host configuration, temporary loopback Chromium Renderer CDP, Renderer, and Controller supervision

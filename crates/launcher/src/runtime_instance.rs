@@ -42,7 +42,7 @@ pub fn classify_startup(observation: StartupObservation) -> StartupState {
     if observation.desktop_running {
         return StartupState::Attach;
     }
-    if observation.descriptor_present && !observation.control_endpoint_ready {
+    if observation.descriptor_present {
         return StartupState::RecoverStale;
     }
     StartupState::CleanLaunch
@@ -359,6 +359,14 @@ mod tests {
                 desktop_running: false,
                 descriptor_present: true,
                 control_endpoint_ready: false,
+            }),
+            StartupState::RecoverStale
+        );
+        assert_eq!(
+            classify_startup(StartupObservation {
+                desktop_running: false,
+                descriptor_present: true,
+                control_endpoint_ready: true,
             }),
             StartupState::RecoverStale
         );

@@ -155,6 +155,7 @@ describe("startup failure step", () => {
   it("names the step of a stage that was still waiting", () => {
     expect(failedStep(stages("waiting for Desktop Controller readiness"))).toBe("connectDesktop");
     expect(failedStep(stages("waiting for Host chain"))).toBe("startHost");
+    expect(failedStep(stages("recovering leftover Desktop Controller"))).toBe("ownership");
   });
 
   it("falls back to preparation for unknown or missing stages", () => {

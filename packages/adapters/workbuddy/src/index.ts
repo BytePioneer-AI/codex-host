@@ -1,5 +1,6 @@
 export { WorkBuddyAdapter, type WorkBuddyAdapterOptions } from "./workbuddy-adapter.js";
 export {
+  CODEXHOST_WORKBUDDY_COMMAND,
   WORKBUDDY_MACOS_CLI,
   WORKBUDDY_MACOS_ELECTRON,
   workBuddyDiscoverySpec,

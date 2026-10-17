@@ -1,6 +1,6 @@
 # DSH 消息修订、恢复与原生停止确认
 
-Adapter 只支持写 Session Format V4 的 DSH，最低版本为 `0.1.7-rc.1`；已在 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2` 和 `0.2.1-rc.1` 上验证，通过 codexhost 托管、认证的 Web Remote 创建、恢复和 Fork 原生 Session。更低版本在启动托管 Web 前以 `unsupported` 拒绝并提示升级；不低于门槛的其他规范 SemVer 版本按 V4 尝试，仍须通过原生协议校验。V0/V3 profile 与 Legacy 协议均已移除，证据与边界见[版本验证记录](dsh-version-validation.md)。
+Adapter 只支持写 Session Format V4 的 DSH，最低版本为 `0.1.7-rc.1`；已在 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1` 和 `0.2.1-rc.2` 上验证，通过 codexhost 托管、认证的 Web Remote 创建、恢复和 Fork 原生 Session。更低版本在启动托管 Web 前以 `unsupported` 拒绝并提示升级；不低于门槛的其他规范 SemVer 版本按 V4 尝试，仍须通过原生协议校验。V0/V3 profile 与 Legacy 协议均已移除，证据与边界见[版本验证记录](dsh-version-validation.md)。
 
 修订上一条消息使用原生历史操作，仅回滚最后一个回合；Fork 根据原生 seed 标记和已验证的历史前缀确认继承关系，不改写源会话。恢复通过公开历史 API 读取，保持 Native Session ID 和原生配置语义。
 

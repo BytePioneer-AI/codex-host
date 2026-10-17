@@ -158,7 +158,7 @@ submitted as Host text Turns.
 
 DeepSeek declares exactly `/compact`, `/dsh-goal`, and `/plan` in its static Adapter catalog, for both new and existing Threads. Neither catalog display nor command admission queries native `commands/list`. Execution retains ID, argument, busy-state, cancellation, and native-result validation; an unsupported native deployment reports its execution error rather than being probed beforehand. Native `feedback`, `permission`, `export`, the Client-side `/model`, and unknown commands are not exposed through this surface.
 
-DeepSeek has been tested with `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2` and `0.2.1-rc.1`; versions below `0.1.7-rc.1` are rejected as `unsupported` before the managed Web starts, and other SemVer versions from `0.1.7-rc.1` on may attempt native protocol validation. The Adapter sends `submittedAttachments: []` with `commands/execute`; this native argument does not add attachment input or native descriptor discovery to the public command surface.
+DeepSeek has been tested with `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-rc.1` and `0.2.1-rc.2`; versions below `0.1.7-rc.1` are rejected as `unsupported` before the managed Web starts, and other SemVer versions from `0.1.7-rc.1` on may attempt native protocol validation. The Adapter sends `submittedAttachments: []` with `commands/execute`; this native argument does not add attachment input or native descriptor discovery to the public command surface.
 
 OpenCode exposes only the fixed `/compact` command, implemented through native Session summarization. Dynamic native command discovery and execution are not part of its Host integration.
 

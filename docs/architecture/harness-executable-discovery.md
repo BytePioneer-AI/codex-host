@@ -102,7 +102,7 @@ Windows 当前覆盖常见的：
 
 ## DeepSeek Harness 的特殊性
 
-DeepSeek Adapter 只对接写 Session Format V4 的 DSH，已在 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2` 和 `0.2.1-rc.1` 验证。低于最低版本 `0.1.7-rc.1` 的 CLI 在启动托管 Web 前被拒绝；不低于门槛的其他 SemVer 版本不会只因版本不同被拒绝，但不代表已验证兼容。Legacy 协议及外部 Host attach/fallback 已移除。默认诊断端点为：
+DeepSeek Adapter 只对接写 Session Format V4 的 DSH，已在 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1` 和 `0.2.1-rc.2` 验证。低于最低版本 `0.1.7-rc.1` 的 CLI 在启动托管 Web 前被拒绝；不低于门槛的其他 SemVer 版本不会只因版本不同被拒绝，但不代表已验证兼容。Legacy 协议及外部 Host attach/fallback 已移除。默认诊断端点为：
 
 ```text
 http://127.0.0.1:3080/

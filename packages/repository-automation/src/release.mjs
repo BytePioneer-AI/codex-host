@@ -80,7 +80,7 @@ export async function readReleaseMetadata({ root, tag, expectedRefSha }) {
   }
   if (!notes.trim()) throw new Error("annotated tag body must contain release notes");
   const prereleaseId = version.split("+")[0].split("-").slice(1).join("-");
-  const numericForkCounter = /^\d+$/u.test(prereleaseId);
+  const numericForkCounter = /^\d+(?:-\d+)*$/u.test(prereleaseId);
   return {
     tag,
     version,

@@ -59,10 +59,6 @@ import {
 } from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
 import {
-  CODEX_USAGE_BANNER_CHANGE_EVENT,
-  CODEX_USAGE_BANNER_STORAGE_KEY,
-} from "./renderer-codex-usage-banner-preference.js";
-import {
   createRendererCodexUsageGate,
   type RendererCodexUsageGate,
   type RendererCodexUsageGateStatus,
@@ -1013,7 +1009,7 @@ export function installRendererBindingProbe(
     const currentCodexAccount = accounts?.accounts.find(
       ({ accountId }) => accountId === accounts.readyAccountId,
     );
-    const usageGateAllowed = renderComposerAgentControl(
+    const externalSubmissionReady = renderComposerAgentControl(
       mounted.control,
       controller.get(mounted.composer),
       composerAdapterState(mounted),
@@ -1027,7 +1023,7 @@ export function installRendererBindingProbe(
       currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
     );
-    showCodexUsageGateStatus(mounted, mounted.codexUsageGate.update(usageGateAllowed));
+    showCodexUsageGateStatus(mounted, mounted.codexUsageGate.update(externalSubmissionReady));
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
         void refreshThreadUsage(
@@ -3126,25 +3122,10 @@ export function installRendererBindingProbe(
       }
     }
   };
-  const onUsageBannerPreference = (): void => {
-    for (const mounted of mountedByComposer.values()) {
-      const hideCodexControls =
-        controller.isSwitching(mounted.composer) ||
-        controller.get(mounted.composer).agent !== "codex";
-      reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
-    }
-  };
-  const onUsageBannerStorage = (event: StorageEvent): void => {
-    if (event.key === CODEX_USAGE_BANNER_STORAGE_KEY || event.key === null) {
-      onUsageBannerPreference();
-    }
-  };
   window.addEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
   window.addEventListener("codexhost:draft-workspace", onDraftWorkspace);
   window.addEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
   window.addEventListener("focus", onWindowFocus);
-  window.addEventListener(CODEX_USAGE_BANNER_CHANGE_EVENT, onUsageBannerPreference);
-  window.addEventListener("storage", onUsageBannerStorage);
   delegationMention = installRendererDelegationMention(document, {
     onOpen: (editor) => {
       const composer = composerForElement(editor);
@@ -3338,8 +3319,6 @@ export function installRendererBindingProbe(
       window.removeEventListener("codexhost:draft-workspace", onDraftWorkspace);
       window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
       window.removeEventListener("focus", onWindowFocus);
-      window.removeEventListener(CODEX_USAGE_BANNER_CHANGE_EVENT, onUsageBannerPreference);
-      window.removeEventListener("storage", onUsageBannerStorage);
       for (const state of harnessAvailabilityByHost.values()) {
         state.requestGeneration += 1;
         state.codexAccounts?.dispose();

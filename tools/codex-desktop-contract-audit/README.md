@@ -38,11 +38,11 @@ The `codex-usage-gate` surface covers `renderer-codex-usage-gate.ts`, which lets
 
 - `ownerCount` — Composer owners exposing `onLocalSubmitStart` and boolean `submitDisabled` that hold the reserve gate (pass-through wrappers with the same props are excluded);
 - `reserveGateCount` — boolean subscriptions whose selector reads reserve `hardBlocked`;
-- `accountGateCount` — boolean subscriptions whose selector reads `authMethod` and `rate_limit.allowed`. One logical gate may appear as several same-atom subscriptions.
+- `accountGateCount` — boolean subscriptions whose selector reads `authMethod` and `rate_limit.allowed`.
 
 Verdicts:
 
-- owner count other than one per Composer, or fewer reserve gates than Composers, is `confirmed-impact`;
+- an owner or reserve count other than one per Composer, or more than one Account gate, is `confirmed-impact`;
 - no Account gate is `unverified` (`codex-usage-account-gate-dormant`): the selector returns early for API-key sign-in or while Account data loads, so inspect again signed in with ChatGPT;
 - no Composer with an editor is `unverified`.
 

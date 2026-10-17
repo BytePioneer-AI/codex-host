@@ -24,9 +24,9 @@
 
 ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两道账号级布尔门禁用 Composer 提交：账号额度门和 reserve `hardBlocked`。API Key 登录不经过这两道门。它们是界面上的订阅额度预检，不是协议限制；外部 Harness 的 `turn/start` 由 Host 路由，不会发到官方后端。
 
-因此在单个 Composer 没有 codexhost 自身的提交阻塞时（Codex，或外部 Agent 且 Adapter 就绪），`renderer-codex-usage-gate.ts` 只把该 Composer 对这两道门的订阅快照投影为 `false`，继续走原生提交链路。不写账号、atom 或额度查询缓存。设置 → 外观中的「隐藏 Codex 额度警告」默认开启：所有 Composer 上的官方额度耗尽横幅（Composer 内唯一带标题与 CTA 按钮的 `aside`，含 Reset usage / Upgrade；部分 Desktop 版本另带 `role="status"` 与 `aria-live="polite"`）都隐藏，包括 Codex 会话；关闭该开关后横幅恢复原生显示。空输入、附件、运行中等其他原生限制不受影响。官方 Codex 后端仍可能因额度拒绝该 Turn；外部 Harness 的真实额度与错误由其自身处理。Composer 移除或扩展卸载时恢复实时原生结果与横幅。
+因此在单个 Composer 选中外部 Agent、Adapter 就绪且没有 codexhost 自身的提交阻塞时，`renderer-codex-usage-gate.ts` 只把该 Composer 对这两道门的订阅快照投影为 `false`，继续走原生提交链路。不写账号、atom 或额度查询缓存，Codex 额度横幅保持显示；其他 Composer、Codex 路径和空输入、附件、运行中等其他原生限制不受影响。外部 Harness 的真实额度与错误由其自身处理。切回 Codex、Composer 移除或扩展卸载时恢复实时原生结果。
 
-门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号；门可能挂在提交组件自身，也可能挂在接收 `submitDisabled` 的下级组件，两处都扫描。同一 store+atom 的多份订阅视为同一道逻辑门并一并投影；不同 atom 或 store 则保留原生限制。账号门可以读取 `reserve.active` 作为本机豁免；同时读取 `hardBlocked` 的混合选择器仍保留原生限制。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
+门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
 
 ## 其他 Harness 的只读账号额度
 

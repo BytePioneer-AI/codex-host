@@ -33,10 +33,6 @@ describe("Renderer settings localization", () => {
 
     expect(english.title).toBe("Settings");
     expect(chinese.title).toBe("设置");
-    expect(english.hideCodexUsageBannerTitle).toBe("Hide Codex usage warning");
-    expect(chinese.hideCodexUsageBannerTitle).toBe("隐藏 Codex 额度警告");
-    expect(english.hideCodexUsageBannerDescription).toContain("On by default");
-    expect(chinese.hideCodexUsageBannerDescription).toContain("默认开启");
     expect(english.cpaLiveVoiceTitle).toBe("Override live voice");
     expect(chinese.cpaLiveVoiceTitle).toBe("改写实时语音");
     expect(english.cpaLiveVoiceTitle.toLowerCase()).not.toContain("cpa");

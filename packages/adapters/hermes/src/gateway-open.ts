@@ -35,11 +35,23 @@ export function gatewayPermissionModes() {
       {
         id: "default",
         label: "原生审批策略",
+        localizations: {
+          en: {
+            label: "Native approval policy",
+            description: "Follow the Hermes global approval policy; disable YOLO for this Session.",
+          },
+        },
         description: "遵循 Hermes 全局审批策略，关闭本会话 YOLO。",
       },
       {
         id: "dont_ask",
         label: "会话 YOLO",
+        localizations: {
+          en: {
+            label: "Session YOLO",
+            description: "Automatically approve Hermes tool actions in this Session.",
+          },
+        },
         description: "本会话自动批准 Hermes 工具操作。",
         dangerous: true,
       },

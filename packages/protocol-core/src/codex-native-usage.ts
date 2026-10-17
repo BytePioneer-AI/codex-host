@@ -197,6 +197,7 @@ export function projectCodexRateLimitsToCredits(
     hasFiveHour && hasSevenDay && usage.planSevenDayUsedPercent !== undefined
       ? {
           product: "7-day window",
+          periodType: "seven_day" as const,
           usagePercent: usage.planSevenDayUsedPercent,
           ...(usage.planSevenDayResetsAtUnix !== undefined
             ? { resetsAt: isoFromUnix(usage.planSevenDayResetsAtUnix) }

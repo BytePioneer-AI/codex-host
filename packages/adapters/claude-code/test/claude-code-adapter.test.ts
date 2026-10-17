@@ -19,7 +19,10 @@ import { projectClaudePlanLimitToCredits } from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { ClaudeUltracodeUnavailableError } from "../src/ultracode.js";
 import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
-import type { ClaudePermissionMode } from "../src/permission-modes.js";
+import {
+  claudeBypassPermissionsAvailable,
+  type ClaudePermissionMode,
+} from "../src/permission-modes.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
@@ -56,7 +59,7 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }): void {
     const handler = this.autonomousTurnHandler;
     if (!handler) throw new Error("No fake Claude autonomous Turn handler");
-    handler.start(turn.nativeTurnKey);
+    handler.start(turn.nativeTurnKey, turn.nativeTurnKey);
     for (const event of turn.events) handler.onEvent(event);
     handler.onTerminal(turn.result);
   }
@@ -527,6 +530,7 @@ describe("projectClaudePlanLimitToCredits", () => {
       productUsage: [
         {
           product: "7-day window",
+          periodType: "seven_day",
           usagePercent: 18,
           resetsAt: new Date(1_756_648_800 * 1000).toISOString(),
         },
@@ -592,6 +596,123 @@ describe("Claude Code HarnessAdapter", () => {
     );
     await adapter.close();
   });
+  it.each(["create", "resume"] as const)(
+    "preserves native environment with scoped delegation on %s",
+    async (kind) => {
+      const nativeEnvironment = {
+        HOME: "/native-user",
+        PATH: "/usr/bin:/bin:/native-tools",
+        HTTPS_PROXY: "http://127.0.0.1:2080",
+        CLAUDE_CONFIG_DIR: "/native-user/claude-config",
+      };
+      const { adapter, dependencies } = fixture({ environment: nativeEnvironment });
+      try {
+        for (const threadId of ["first-thread", "second-thread"]) {
+          const environment = {
+            CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+            CODEXHOST_RUNTIME_TOKEN: `synthetic-${threadId}`,
+            CODEXHOST_THREAD_ID: threadId,
+          };
+          const opened = await adapter.open({
+            cwd: "/synthetic",
+            environment,
+            ...(kind === "resume"
+              ? {
+                  kind,
+                  nativeRef: nativeSessionRefSchema.parse({
+                    harnessId: "claude-code",
+                    nativeSessionId: `native-${threadId}`,
+                    formatVersion: 1,
+                  }),
+                }
+              : { kind }),
+          });
+          if (!opened.ok) throw new Error(opened.error.message);
+          await opened.value.execute(textTurn(`environment-${threadId}`));
+          expect(dependencies.createTransport).toHaveBeenLastCalledWith(
+            expect.objectContaining({ environment: { ...nativeEnvironment, ...environment } }),
+          );
+          expect(environment).not.toHaveProperty("HOME");
+          await opened.value.close();
+        }
+        expect(nativeEnvironment).not.toHaveProperty("CODEXHOST_THREAD_ID");
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
+  it.each(["create", "resume"] as const)(
+    "uses the native sandbox declaration for scoped %s permission checks and transport",
+    async (kind) => {
+      const nativeEnvironment = { HOME: "/native-user", IS_SANDBOX: "1" };
+      const scoped = { CODEXHOST_THREAD_ID: "root-caller" };
+      const expected = { ...nativeEnvironment, ...scoped };
+      const { adapter, dependencies } = fixture({ environment: nativeEnvironment });
+      vi.spyOn(dependencies, "bypassPermissionsAvailable").mockImplementation((environment) =>
+        claudeBypassPermissionsAvailable(environment ?? nativeEnvironment, { getuid: () => 0 }),
+      );
+      try {
+        const opened = await adapter.open({
+          cwd: "/synthetic",
+          environment: scoped,
+          permissionModeId: harnessPermissionModeIdSchema.parse("bypassPermissions"),
+          ...(kind === "resume"
+            ? {
+                kind,
+                nativeRef: nativeSessionRefSchema.parse({
+                  harnessId: "claude-code",
+                  nativeSessionId: "native-root",
+                  formatVersion: 1,
+                }),
+              }
+            : { kind }),
+        });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) throw new Error(opened.error.message);
+        await opened.value.execute(textTurn(`sandbox-${kind}`));
+        expect(dependencies.bypassPermissionsAvailable).toHaveBeenLastCalledWith(expected);
+        expect(dependencies.createTransport).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            environment: expected,
+            permissionMode: "bypassPermissions",
+          }),
+        );
+        await opened.value.close();
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "still rejects root without an effective sandbox (explicit override=%s)",
+    async (override) => {
+      const nativeEnvironment = { HOME: "/native-user", ...(override ? { IS_SANDBOX: "1" } : {}) };
+      const scoped = {
+        CODEXHOST_THREAD_ID: "root-caller",
+        ...(override ? { IS_SANDBOX: "0" } : {}),
+      };
+      const { adapter, dependencies } = fixture({ environment: nativeEnvironment });
+      vi.spyOn(dependencies, "bypassPermissionsAvailable").mockImplementation((environment) =>
+        claudeBypassPermissionsAvailable(environment ?? nativeEnvironment, { getuid: () => 0 }),
+      );
+      try {
+        expect(
+          await adapter.open({
+            kind: "create",
+            cwd: "/synthetic",
+            environment: scoped,
+            permissionModeId: harnessPermissionModeIdSchema.parse("bypassPermissions"),
+          }),
+        ).toMatchObject({ ok: false, error: { code: "unsupported" } });
+        expect(dependencies.createTransport).not.toHaveBeenCalled();
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
   it("opens and closes unused Sessions without creating a Transport", async () => {
     const { adapter, dependencies } = fixture();
     const session = await openSession(adapter);
@@ -3182,7 +3303,7 @@ describe("Claude Code HarnessAdapter", () => {
                 turnId: hostTurnIdSchema.parse("racing-request"),
                 commandId: "claude.compact",
               });
-        handler.start("racing-continuation");
+        handler.start("racing-continuation", "racing-continuation");
         await expect(admission).resolves.toMatchObject({
           ok: false,
           error: { code: "sessionBusy", retryable: true },
@@ -3236,7 +3357,7 @@ describe("Claude Code HarnessAdapter", () => {
       const transport = transports[0];
       const handler = transport?.autonomousTurnHandler;
       if (!transport || !handler) throw new Error("Fake Claude transport was not created");
-      handler.start("stray-segment");
+      handler.start("stray-segment", "stray-segment");
       handler.onEvent({ type: "text.delta", messageId: "stray-assistant", delta: "STRAY" });
       handler.onTerminal({ status: "succeeded" });
       transport.delta("OWN");
@@ -4455,7 +4576,9 @@ describe("Claude Code HarnessAdapter", () => {
     const sandboxed = { IS_SANDBOX: "1" };
     const session = await openSession(available.adapter, sandboxed);
     await session.execute(textTurn("bypass-prerequisite"));
-    expect(available.dependencies.bypassPermissionsAvailable).toHaveBeenCalledWith(sandboxed);
+    expect(available.dependencies.bypassPermissionsAvailable).toHaveBeenCalledWith(
+      expect.objectContaining(sandboxed),
+    );
     expect(available.dependencies.createTransport).toHaveBeenCalledWith(
       expect.objectContaining({ allowDangerouslySkipPermissions: true }),
     );
@@ -5243,6 +5366,7 @@ describe("Claude Code HarnessAdapter", () => {
       productUsage: [
         {
           product: "7-day window",
+          periodType: "seven_day",
           usagePercent: 18,
           resetsAt: new Date(1_756_648_800 * 1000).toISOString(),
         },

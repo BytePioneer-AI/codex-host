@@ -16,6 +16,7 @@ export const QODER_FALLBACK_COMMAND_CATALOG: HarnessCommandCatalog =
       {
         id: "qoder.compact",
         invocation: "/compact",
+        localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
         label: "Compact",
         description: "Compresses the context by replacing it with a summary",
         argumentMode: "text",

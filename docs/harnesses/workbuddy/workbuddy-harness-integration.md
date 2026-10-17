@@ -28,13 +28,15 @@ ELECTRON_RUN_AS_NODE=1 "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron" 
   --acp
 ```
 
-这是 macOS 应用内置入口的实际启动形态；显式原生 CLI 覆盖直接追加公开的 `--acp` 参数；显式 Desktop 入口沿用上述运行时与脚本配对。每个可写 Host Session 拥有一个 stdio ACP 子进程。普通 Prompt 不进入 Shell 参数，Host 只通过 ACP 请求发送内容。
+这是 macOS 应用内置入口的运行时与脚本配对；插件在加载内置脚本前通过 Electron 的 `--eval` 执行下述凭据引导，保持原生 CLI 的 `process.argv` 与参数。显式原生 CLI 覆盖直接追加公开的 `--acp` 参数，不注入应用内置引导；显式 Desktop 入口沿用内置启动路径。每个可写 Host Session 拥有一个 stdio ACP 子进程。普通 Prompt 不进入 Shell 参数，Host 只通过 ACP 请求发送内容。
 
 ## 认证与数据隔离
 
 直接运行内置 CLI 时，其内部默认值可能回退到 `~/.codebuddy`。插件不会沿用这一跨产品默认值：它只把 `WORKBUDDY_CONFIG_DIR` 视为用户选择；没有该值时使用 `~/.workbuddy-ai`，随后强制传给子进程的 `WORKBUDDY_CONFIG_DIR` 与 `CODEBUDDY_CONFIG_DIR` 指向同一 WorkBuddy 根。这样即使普通 CodeBuddy 配置了自己的 `CODEBUDDY_CONFIG_DIR`，WorkBuddy 的历史、认证和设置也不会泄漏到该目录。WorkBuddy CLI 负责认证、原生设置、工具和 MCP 配置；codexhost 不保存、复制或推断其凭据。
 
-只完成 `initialize` 后进行的无 Prompt `session/new` 探测返回了 `Authentication required`。CodexHost 不读取或复制 WorkBuddy Desktop 的私有登录态，因此不能依赖 GUI 登录一定可供独立 ACP 进程使用。若 ACP 要求认证，应在 Host 外启动相同产品配置和数据根的内置 TUI，然后执行官方 [`/login`](https://cloud.tencent.com/document/product/1831/137046)：
+新版内置 CLI 的独立 ACP 启动不会自行初始化加密凭据读取能力。对于应用内置入口，插件先在同一个 WorkBuddy Electron 进程中调用其 `electron_browser_workbuddy_storage` 原生绑定，再通过内置 CLI 的 credential bootstrap 接收器初始化字段加密。密钥按原生 `normalizeAtRestKeyPayload` 规则规范化，只在该进程内存与本次随机管道中传递；不写入参数、环境变量或文件，也不由 Host 解密、复制登录 Token。CLI 随后按自己的认证逻辑读取已有登录文件。完整的受管 bootstrap 环境保持原样；已有 socket、Token 或 Session ID 配置时，要求加密策略与四项通信配置均非空，否则在加载 CLI 前明确报错。仅设置 `WORKBUDDY_AT_REST_ENCRYPTION=fields` 或空策略时仍执行字段加密引导，其他显式策略交给原生 CLI 处理；旧应用没有该原生绑定时继续原有启动流程。
+
+此接入使用 WorkBuddy 自带的实现接口，不属于 ACP 标准：当前已在 Windows WorkBuddy AI 5.7.6 / CLI 2.156.0 的字段加密策略下验证，升级后须复核原生绑定、密钥格式和接收器。失败时停止启动，不关闭加密或写回明文凭据。POSIX 临时 socket 使用独立的 `0700` 目录，Windows 使用随机命名管道；收到原生确认后清理引导资源。若独立 CLI 仍要求认证，应在 Host 外启动相同产品配置和数据根的内置 TUI，然后执行官方 [`/login`](https://cloud.tencent.com/document/product/1831/137046)：
 
 ```sh
 CODEBUDDY_CONFIG_DIR="$HOME/.workbuddy-ai" \
@@ -45,6 +47,10 @@ ELECTRON_RUN_AS_NODE=1 \
 ```
 
 进入 TUI 后输入 `/login`，完成浏览器认证再重试 Harness。这里使用的仍是 App 内置 CLI，不表示需要另装一个 CLI。不要使用 Desktop owner runtime 的凭据，也不要发明 `codebuddy auth login` 命令。
+
+若 `session/new` 成功而首个 Turn 返回 `refusal`，应检查 ACP 终态 `_meta["codebuddy.ai/errorMessage"]`。共享 CodeBuddy Session 会提取其中的 `data.details` 或 `message`，经诊断脱敏后显示；`data.category="auth"` 映射为 `authenticationRequired`，而不是仅显示 `FAILED_MODEL_REQUEST`。JSON-RPC `-32000` 本身不区分认证与其他原生拒绝。缺少可读诊断时保留原有的 stop reason / outcome 提示。
+
+若引导未生效，独立 CLI 可能记录 `AtRestEncryption ... category=missing-key`，并在恢复登录时显示 `hasSession=true hasAccessToken=false`。此时桌面已登录、模型目录可读取或 Thread 标题已生成，都不能证明当前 ACP 进程可以完成认证。此兼容问题见 [Issue #464](https://github.com/BytePioneer-AI/codex-host/issues/464)。引导只初始化 CLI 自己的凭据读取能力，仍遵守下述私有运行时边界，不激活 Desktop owner runtime 或接管已有 Desktop 任务。
 
 ## 工作目录与原生历史定位
 

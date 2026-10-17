@@ -123,7 +123,7 @@ describe("Account limit windows", () => {
         credits: {
           ...credits,
           productUsage: [
-            { product: "7-day window", usagePercent: 0 },
+            { product: "7-day window", periodType: "seven_day", usagePercent: 0 },
             { product: "GPT-5.3-Codex-Spark", usagePercent: 25 },
           ],
         },
@@ -220,9 +220,16 @@ describe("Quota comparison columns", () => {
       usedPercent: 0,
       periodType: "monthly",
       label: "Auto · monthly",
+      scope: { id: "auto", label: "Auto" },
       resetsAt: credits.resetsAt,
       productUsage: [
-        { product: "API · monthly", usagePercent: 2, resetsAt: credits.resetsAt },
+        {
+          product: "API · monthly",
+          periodType: "monthly",
+          scope: { id: "api", label: "API" },
+          usagePercent: 2,
+          resetsAt: credits.resetsAt,
+        },
         { product: "Extra", usagePercent: 30 },
       ],
     });
@@ -244,7 +251,14 @@ describe("Quota comparison columns", () => {
     const result = columns({
       usedPercent: 0,
       periodType: "weekly",
-      productUsage: [{ product: "Kimi Code · 5-hour", usagePercent: 12 }],
+      productUsage: [
+        {
+          product: "Kimi Code · 5-hour",
+          periodType: "five_hour",
+          scope: { id: "kimi-code", label: "Kimi Code" },
+          usagePercent: 12,
+        },
+      ],
     });
     expect(result.cells).toHaveLength(2);
     expect(result.continuationCells).toHaveLength(0);
@@ -258,7 +272,15 @@ describe("Quota comparison columns", () => {
       usedPercent: 10,
       periodType: "five_hour",
       label: "Model group · 5-hour",
-      productUsage: [{ product: "Model group · 7-day", usagePercent: 20 }],
+      scope: { id: "group", label: "Model group" },
+      productUsage: [
+        {
+          product: "Model group · 7-day",
+          periodType: "seven_day",
+          scope: { id: "group", label: "Model group" },
+          usagePercent: 20,
+        },
+      ],
     });
     expect(text(result.cells[0])).toContain("Model group · 5 小时");
     expect(text(result.cells[1])).toContain("Model group · 7 天");
@@ -291,8 +313,8 @@ describe("Quota comparison columns", () => {
     const result = columns({
       ...credits,
       productUsage: [
-        { product: "7-day window", usagePercent: 20 },
-        { product: "7-day window", usagePercent: 35 },
+        { product: "7-day window", periodType: "seven_day", usagePercent: 20 },
+        { product: "7-day window", periodType: "seven_day", usagePercent: 35 },
       ],
     });
     expect(text(result.cells[0])).toContain("9%");

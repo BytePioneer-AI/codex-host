@@ -197,22 +197,13 @@ export function rendererUsageRefreshDelay(attempt: number): number {
   return rendererUsageRefreshDelays[index] ?? rendererUsageRefreshDelays[0];
 }
 
-/**
- * Agents that can produce account-wide Credits independently of a Thread
- * Usage snapshot. These are the only ones where it is worth retrying purely
- * to pick up account limits after Usage has already arrived.
- */
-function externalAgentHasAccountCredits(agent: RendererAgent): boolean {
-  return agent === "codex" || agent === "grok" || agent === "claude-code";
-}
-
+/** Retry quota only when the Host confirms that this source supplies it. */
 export function shouldRetryExternalThreadUsage(
-  agent: RendererAgent,
+  accountCreditsSupported: boolean,
   usage: ThreadUsageSnapshot | null,
   accountCredits: AccountCreditsSnapshot | null = null,
 ): boolean {
-  if (usage === null) return true;
-  return externalAgentHasAccountCredits(agent) && accountCredits === null;
+  return usage === null || (accountCreditsSupported && accountCredits === null);
 }
 
 export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
@@ -588,6 +579,7 @@ interface MountedComposer {
   threadConfiguration: HarnessModelSelectionState | undefined;
   usage: ThreadUsageSnapshot | null;
   accountCredits: AccountCreditsSnapshot | null;
+  accountCreditsSupported: boolean;
   hostId: string | null;
   usageRequestGeneration: number;
   commandRequestGeneration: number;
@@ -1150,6 +1142,8 @@ export function installRendererBindingProbe(
       mounted.usageRequestGeneration += 1;
       mounted.usage = update.usage;
       mounted.accountCredits = update.accountCredits ?? null;
+      if (update.accountCreditsSupported !== undefined)
+        mounted.accountCreditsSupported = update.accountCreditsSupported;
       usageRefreshAttempts.delete(mounted.composer);
       renderMounted(mounted);
     }
@@ -1234,17 +1228,14 @@ export function installRendererBindingProbe(
       }
       mounted.usage = result.usage;
       mounted.accountCredits = result.accountCredits ?? null;
-      const agent = controller.get(mounted.composer).agent;
-      if (
-        result.usage !== null &&
-        (!externalAgentHasAccountCredits(agent) || result.accountCredits)
-      ) {
+      mounted.accountCreditsSupported = result.accountCreditsSupported ?? false;
+      if (result.usage !== null && (!mounted.accountCreditsSupported || result.accountCredits)) {
         usageRefreshAttempts.delete(mounted.composer);
       }
       renderMounted(mounted);
       if (
         shouldRetryExternalThreadUsage(
-          controller.get(mounted.composer).agent,
+          mounted.accountCreditsSupported,
           result.usage,
           result.accountCredits ?? null,
         )
@@ -1259,7 +1250,7 @@ export function installRendererBindingProbe(
         renderMounted(mounted);
         if (
           !(error instanceof RendererMethodUnavailableError) &&
-          shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null, null)
+          shouldRetryExternalThreadUsage(mounted.accountCreditsSupported, null, null)
         ) {
           scheduleThreadUsageRefresh(mounted);
         }
@@ -1404,14 +1395,9 @@ export function installRendererBindingProbe(
         renderMounted(mounted);
         if (mounted.ownershipStatus !== "error") void refreshCommands(mounted);
         sidebarAgentIcons.refresh();
-        if (mounted.ownershipStatus !== "error") {
-          const agent = controller.get(mounted.composer).agent;
-          if (agent === "codex") {
-            void refreshThreadUsage(mounted);
-          } else if (shouldRetryExternalThreadUsage(agent, mounted.usage, mounted.accountCredits)) {
-            scheduleThreadUsageRefresh(mounted);
-          }
-        }
+        // Ownership can already contain Usage, but only usage inspection tells
+        // us whether this (possibly unknown) plugin also supplies account quota.
+        if (mounted.ownershipStatus !== "error") void refreshThreadUsage(mounted);
       } else if (
         isRetainedComposer(mounted) &&
         controller.isCurrentOwnershipRequest(mounted.composer, generation) &&
@@ -1450,7 +1436,7 @@ export function installRendererBindingProbe(
     if (resolution === "transfer") {
       mounted.ownershipStatus = "ready";
       renderMounted(mounted);
-      if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null, null)) {
+      if (shouldRetryExternalThreadUsage(mounted.accountCreditsSupported, null, null)) {
         scheduleThreadUsageRefresh(mounted);
       }
     } else {
@@ -2744,6 +2730,7 @@ export function installRendererBindingProbe(
       threadConfiguration: inherited?.threadConfiguration,
       usage: inherited?.usage ?? null,
       accountCredits: inherited?.accountCredits ?? null,
+      accountCreditsSupported: inherited?.accountCreditsSupported ?? false,
       hostId: inherited?.hostId ?? hostId,
       usageRequestGeneration: 0,
       commandRequestGeneration: 0,
@@ -2759,7 +2746,11 @@ export function installRendererBindingProbe(
     } else if (
       threadIdFromComposerModelTarget(modelTarget) &&
       inherited &&
-      shouldRetryExternalThreadUsage(state.agent, mounted.usage, mounted.accountCredits)
+      shouldRetryExternalThreadUsage(
+        mounted.accountCreditsSupported,
+        mounted.usage,
+        mounted.accountCredits,
+      )
     ) {
       scheduleThreadUsageRefresh(mounted);
     } else if (

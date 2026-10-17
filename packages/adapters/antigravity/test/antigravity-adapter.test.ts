@@ -450,6 +450,7 @@ describe("Antigravity Adapter", () => {
     // the values are consumed percentages.
     expect(snapshot).toEqual({
       label: "Gemini Models · 5-hour window",
+      scope: { id: "Gemini Models", label: "Gemini Models" },
       usedPercent: 0,
       periodType: "five_hour",
       resetsAt: "2026-08-31T19:38:13Z",
@@ -457,11 +458,15 @@ describe("Antigravity Adapter", () => {
       productUsage: [
         {
           product: "Gemini Models · Weekly window",
+          periodType: "weekly",
+          scope: { id: "Gemini Models", label: "Gemini Models" },
           usagePercent: 2.65,
           resetsAt: "2026-09-01T03:17:57Z",
         },
         {
           product: "Claude and GPT models · Weekly window",
+          periodType: "weekly",
+          scope: { id: "Claude and GPT models", label: "Claude and GPT models" },
           usagePercent: 0,
           resetsAt: "2026-09-07T14:38:13Z",
         },
@@ -503,6 +508,8 @@ describe("Antigravity Adapter", () => {
     expect(snapshot?.productUsage).toEqual([
       {
         product: "Gemini Models · Weekly window",
+        periodType: "weekly",
+        scope: { id: "Gemini Models", label: "Gemini Models" },
         usagePercent: 54,
         resetsAt: "2026-09-15T00:56:00Z",
       },

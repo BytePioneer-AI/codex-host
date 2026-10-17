@@ -15,7 +15,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`architecture/harness-plugin-runtime.md`](architecture/harness-plugin-runtime.md) | 当前 Cordis 生命周期、Host 目录驱动的 Renderer、预装发行、契约与安全边界；修改插件系统时首先阅读。 |
+| [`architecture/harness-plugin-runtime.md`](architecture/harness-plugin-runtime.md) | 当前 Cordis 生命周期、动态目录、插件本地化与额度契约、预装发行及安全边界；修改插件系统时首先阅读。 |
 | [`architecture/harness-plugin-architecture.md`](architecture/harness-plugin-architecture.md) | 插件化目标架构与未完成迁移方案；规划后续解耦时阅读，接口示例不代表当前 API。 |
 | [`architecture/harness-command-integration.md`](architecture/harness-command-integration.md) | Harness 原生命令的 Adapter、Host、Renderer 边界；新增命令能力时阅读。 |
 | [`architecture/harness-executable-discovery.md`](architecture/harness-executable-discovery.md) | Harness CLI 的跨平台发现、连接页安装指引和 DSH 特殊连接范围；修改安装指引、发现或启动逻辑时阅读。 |
@@ -60,7 +60,7 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/deepseek/dsh-edit-recovery.md`](harnesses/deepseek/dsh-edit-recovery.md) | DSH 原生停止确认、消息修订、V4 Fork、版本化 checkpoint 和补写工具结果的显示；修改恢复流程时阅读。 |
-| [`harnesses/deepseek/dsh-version-validation.md`](harnesses/deepseek/dsh-version-validation.md) | DSH 支持范围与最低版本、0.2.0 源码审计、真实 CLI Gate 与探测证据、限时提问的迟到回答边界；变更版本范围或 Gate 时阅读。 |
+| [`harnesses/deepseek/dsh-version-validation.md`](harnesses/deepseek/dsh-version-validation.md) | DSH 支持范围与最低版本、0.2.0 与 0.2.1-rc.1、rc.2 源码审计、真实 CLI Gate 与探测证据、限时提问的迟到回答边界；变更版本范围或 Gate 时阅读。 |
 
 ### Hermes
 
@@ -74,6 +74,7 @@
 | --- | --- |
 | [`harnesses/opencode/opencode-harness-integration-analysis.md`](harnesses/opencode/opencode-harness-integration-analysis.md) | OpenCode v1/v2 兼容范围、版本选择、原生接口与验证边界；维护 OpenCode Adapter 时阅读。 |
 | [`harnesses/opencode/opencode-edit-recovery.md`](harnesses/opencode/opencode-edit-recovery.md) | OpenCode 原生 Fork 编辑恢复和取消终态语义；修改编辑或取消时阅读。 |
+| [`opencode-streaming.md`](opencode-streaming.md) | OpenCode 空 Part 身份与文本、推理增量投影；维护流式输出时阅读。 |
 | [`harnesses/pi/pi-edit-recovery.md`](harnesses/pi/pi-edit-recovery.md) | Pi 空历史编辑、原生文件发布和生命周期 Gate；修改 Pi 恢复时阅读。 |
 | [`harnesses/pi/pi-subagents.md`](harnesses/pi/pi-subagents.md) | Pi 的 pi-subagents 异步状态、同步 workflow 子任务、记录读取与适配边界。 |
 | [`harnesses/pi/pi-fast.md`](harnesses/pi/pi-fast.md) | Pi Codex Fast 闪电开关、别名 Provider 能力判定、自动加载和 priority 请求边界。 |

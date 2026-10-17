@@ -1,4 +1,7 @@
-import { threadOwnershipListResultSchema } from "@codexhost/shared-contracts";
+import {
+  threadOwnershipListResultSchema,
+  THREAD_REFERENCE_SOURCE_HOST_PARAM,
+} from "@codexhost/shared-contracts";
 import { verifyNativeCodexThread } from "./renderer-native-thread.js";
 import { isUnsupportedMethod } from "./renderer-request-sender.js";
 
@@ -141,6 +144,7 @@ async function preserveQueuedFollowUps(
 export function installRendererExternalSteering(
   target: unknown,
   sendTurnStart?: (params: unknown, send: (params: unknown) => unknown) => unknown,
+  prepareTurnInput?: (params: unknown) => unknown,
 ): (() => void) | null {
   if (!isManager(target)) return null;
   const manager = target;
@@ -154,6 +158,9 @@ export function installRendererExternalSteering(
   let disposed = false;
 
   const send: RendererMethod = function (method, params, options) {
+    if ((method === "turn/start" || method === "turn/steer") && prepareTurnInput) {
+      params = prepareTurnInput(params);
+    }
     const messageId = isRecord(params) ? params.clientUserMessageId : null;
     const route =
       typeof messageId === "string" && isRecord(params)
@@ -187,6 +194,9 @@ export function installRendererExternalSteering(
           input: params.input,
           additionalContext: params.additionalContext,
           responsesapiClientMetadata: params.responsesapiClientMetadata,
+          ...(params[THREAD_REFERENCE_SOURCE_HOST_PARAM] !== undefined
+            ? { [THREAD_REFERENCE_SOURCE_HOST_PARAM]: params[THREAD_REFERENCE_SOURCE_HOST_PARAM] }
+            : {}),
         },
         options,
       ),

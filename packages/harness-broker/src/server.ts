@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promise
 import net, { type Server, type Socket } from "node:net";
 import path from "node:path";
 
+import { parseHarnessAccountCredits } from "@codexhost/harness-adapter";
 import type {
   HarnessAdapter,
   HarnessError,
@@ -12,7 +13,6 @@ import type {
 } from "@codexhost/harness-adapter";
 
 import {
-  accountCreditsSnapshotSchema,
   harnessAccountListParamsSchema,
   harnessAccountSnapshotSchema,
   harnessPluginIdSchema,
@@ -500,8 +500,10 @@ export async function startHarnessBrokerServer(input: {
       if (request.method === "adapter.open") retireWhenIdle = false;
       if (request.method === "adapter.credits") {
         harnessAccountListParamsSchema.parse(request.params);
-        const adapter = input.adapter as HarnessAdapter & { credits?: () => unknown };
-        return accountCreditsSnapshotSchema.nullable().parse(adapter.credits?.() ?? null);
+        const value = input.adapter.credits?.();
+        const credits = parseHarnessAccountCredits(value);
+        if (value != null && !credits) throw new Error("Invalid account credits snapshot");
+        return credits;
       }
       if (request.method === "adapter.inspectAccount") {
         harnessAccountListParamsSchema.parse(request.params);

@@ -39,6 +39,7 @@ import {
   CodeBuddyError,
   failure,
   nativeError,
+  nativeTurnError,
   record,
   text,
   type CodeBuddyRuntimeProfile,
@@ -578,13 +579,7 @@ export class CodeBuddySession implements HarnessSession {
             ? { status: "succeeded" }
             : {
                 status: "failed",
-                error: nativeError(
-                  new CodeBuddyError(
-                    "nativeFailure",
-                    `Native Turn stopped: ${text(stop) || "unknown"} (${text(meta["codebuddy.ai/outcome"]) || "no native outcome"})`,
-                  ),
-                  this.profile,
-                ),
+                error: nativeTurnError(stop, meta, this.profile),
               };
       const snapshot = await this.#snapshot();
       const added = snapshot.turns.filter(

@@ -5,7 +5,10 @@
 /downloads/
 /.codexhost/
 /pr-triage/
-/.claude/
+/.claude/*
+
+# Shared agent skills for Claude Code
+!/.claude/skills
 
 # Environment and secrets
 .env

@@ -16,26 +16,35 @@ export const QODER_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
       {
         id: "default",
         label: "Default",
+        localizations: { "zh-CN": { label: "默认", description: "执行受保护的工具操作前询问。" } },
         description: "Ask before protected tool actions.",
       },
       {
         id: "acceptEdits",
         label: "Accept Edits",
+        localizations: { "zh-CN": { label: "接受编辑", description: "自动接受文件变更。" } },
         description: "Automatically accept file changes.",
       },
       {
         id: "auto",
         label: "Auto",
+        localizations: { "zh-CN": { label: "自动", description: "自动允许安全的工具操作。" } },
         description: "Automatically allow safe tool actions.",
       },
       {
         id: "plan",
         label: "Plan",
+        localizations: {
+          "zh-CN": { label: "规划模式", description: "仅执行只读操作的规划模式。" },
+        },
         description: "Plan mode with read-only operations.",
       },
       {
         id: "bypassPermissions",
         label: "Bypass Permissions",
+        localizations: {
+          "zh-CN": { label: "绕过权限", description: "无需提示即可批准所有工具操作。" },
+        },
         description: "Approve all tool actions without prompting.",
         dangerous: true,
       },

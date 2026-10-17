@@ -381,9 +381,11 @@ export async function runDelegationCli(input: {
           "INVALID_ARGUMENT",
           "--host conflicts with the Thread reference",
         );
+      const caller = command === "read" ? callerThreadId(environment) : undefined;
       const body = {
         ...reference,
         ...(hostId ? { hostId } : {}),
+        ...(caller ? { callerThreadId: normalizeThreadId(caller) } : {}),
         view,
         ...(value(parsed, "--cursor") ? { cursor: value(parsed, "--cursor") } : {}),
         ...(value(parsed, "--limit")

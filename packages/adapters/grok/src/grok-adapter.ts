@@ -226,6 +226,7 @@ const grokCommandCatalog = harnessCommandCatalogSchema.parse({
     {
       id: "grok.compact",
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact context",
       description: "Compact the current conversation context",
       argumentMode: "text",
@@ -1610,10 +1611,16 @@ export class GrokAdapter implements HarnessAdapter {
 
   async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
     if (this.#closePromise) return null;
-    return (this.#dependencies.fetchAccount ?? fetchGrokAccount)({
+    const account = await (this.#dependencies.fetchAccount ?? fetchGrokAccount)({
       ...(this.#environment ? { environment: this.#environment } : {}),
       signal: this.#accountAbort.signal,
     });
+    // The account overview reports the shared plan cap. Product breakdowns
+    // remain available through credits(), not a Renderer Harness-ID filter.
+    if (!account?.credits) return account;
+    const credits = { ...account.credits };
+    delete credits.productUsage;
+    return { ...account, credits };
   }
 
   credits(): GrokCreditsSnapshot | null {

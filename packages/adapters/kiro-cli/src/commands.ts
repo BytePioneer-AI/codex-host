@@ -8,6 +8,7 @@ export const KIRO_COMMANDS: HarnessCommandDescriptor[] = [
   {
     id: "kiro.compact" as HarnessCommandDescriptor["id"],
     invocation: "/compact",
+    localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
     label: "Compact Conversation",
     description: "Summarize conversation history to free context window",
     argumentMode: "none",

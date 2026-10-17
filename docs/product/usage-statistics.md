@@ -5,8 +5,8 @@
 ## 范围
 
 - 统计本机原生会话，不论是否经 CodexHost 创建或导入；只统计所在 Host 的机器，远程 Host 各自统计。
-- 已接线的读取器：Claude Code（含子代理与 workflows 转录）、Pi、OMP（含子代理会话）、CodeBuddy、WorkBuddy、OpenCode、ZCode、DeepSeek Harness、Grok、Qoder、Qoder CN。Qoder 两个发行版已用本机真实会话核对：请求与原生消息一一对应，但本地记录的 Token 均为 0、只有积分，因此只计请求数，Token 与费用显示为未记录；模型以 Qoder 本地界面文字显示名称（如 `qfmodel` 显示为 Qwen3.8-Flash）。
-- 官方 Codex 通过独立预装统计插件 `codex-usage` 接入，显示名 Codex；不接管原生会话操作。Hermes 尚未接入。Kimi Code、Antigravity、Kiro CLI、Cursor CLI 的本地数据限制见下文。
+- 已接线的读取器：Claude Code（含子代理与 workflows 转录）、Pi、OMP（含子代理会话）、CodeBuddy、WorkBuddy、OpenCode、ZCode、DeepSeek Harness、Grok、Qoder、Qoder CN、Hermes。Qoder 两个发行版已用本机真实会话核对：请求与原生消息一一对应，但本地记录的 Token 均为 0、只有积分，因此只计请求数，Token 与费用显示为未记录；模型以 Qoder 本地界面文字显示名称（如 `qfmodel` 显示为 Qwen3.8-Flash）。
+- 官方 Codex 通过独立预装统计插件 `codex-usage` 接入，显示名 Codex；不接管原生会话操作。Kimi Code、Antigravity、Kiro CLI、Cursor CLI 的本地数据限制见下文。
 - 只统计已启用的 Harness 插件；插件未实现读取能力时不出现，某个 Harness 读取失败只缺这一部分，页面会提示。
 - 页面：今天 / 7 天 / 30 天 / 90 天 / 全部，可按 Harness（分段按钮）、模型、项目（可搜索下拉框）和某一天筛选；Host 按筛选条件聚合，前端只渲染结果。
   - 卡片：费用、总 Token、缓存命中率。总 Token 主数字包含缓存，下方以三个等宽、无边框的小列显示“输入 / 输出 / 缓存”三个互斥分项，每列标签在上、数量在下，不显示斜杠分隔；缓存合并读取与写入。概览卡数量仅作展示，不设置帮助光标或悬停提示。保留三卡布局，不加口径开关、第二个总量、日均或环比。中文 Token 总量显示带千位分隔符的完整数字，达到一万时在数字后以弱化文字补充约数（如 `116,222,990 ≈ 1.16 亿`）；不足一万不附约数。中文分项、表格、Token 图表刻度和悬浮提示采用“万 / 亿”，保留最多两位小数；英文继续使用 K / M / B。分项固定三列，不把缓存项挤到下一行；极窄列中的长数值可折行，避免裁切或重叠。费用、命中率、筛选、排序及 CSV 原始分项不变。
@@ -72,6 +72,14 @@
 - 输入为 `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`，输出包含思考。缺必要 Token 桶、请求 ID 或时间的记录不猜测；模型缺失时保留 Token，交给公共层显示未计价。跳过原生 API 错误占位与 `<synthetic>` 消息。
 - 原生 SDK 的分叉会重建行 UUID，并可能把最后一条复制记录改为分叉时间。读取器跳过带 `forkedFrom` 的复制行，只计原始文件中的请求；如果原始文件已删除，不能从这些副本可靠恢复历史归日。这是当前限制，不以文件修改时间替代请求时间。
 - 用已安装的两套 SDK 在隔离目录实际执行 `forkSession` 验证复制规则，不启动 CLI。当前机器两个默认存储目录都没有会话文件，真实请求总量与原生统计的对账尚未完成。
+
+## Hermes
+
+- 适配器在既有 `createHarnessAdapter` 之外实现可选 `usageStatistics` 能力；Host 不包含 Hermes 专用分支。
+- 只读配置的 `HERMES_HOME`（默认用户主目录下的 `.hermes`）中的 `state.db`，单数据库单源，指纹含 WAL；不启动 Hermes，不写入。SQLite 为只读连接；损坏或无法打开时该 Harness 报告失败，页面提示，不静默隐藏。
+- Hermes 的 `sessions` 表按会话聚合：每个原生会话一行，含 Token 桶（输入不含缓存读写）、API 调用数、最后使用的模型、工作目录与显示标题。读取器每个有记录用量的会话产生一条统计条目，`occurredAtMs` 取最后活跃时间（缺失时回退开始时间），条目 ID 即原生会话 ID，跨刷新与恢复去重。输入按统一口径加上缓存读取与写入；缓存两个桶成对出现，不同时出现时不猜测。
+- 会话标题取 `title`，缺失时回退 `display_name`；都没有时请求照常计入，只是不出现在会话列表。
+- 已知限制：Hermes 不保存逐请求用量，因此"每会话一条"是当前原生存储能支持的最细粒度——请求数显示的是有用量记录的会话数，不是 API 调用次数；整段会话的用量按最后活跃时间归入本地日期，不按逐请求时间拆分。混合 Anthropic 与 OpenAI wire 的会话无法在事后区分，输入归一化对两种记账一致。模型取会话最后使用的值，会话中途切换模型时全部用量记到最后一个。
 
 ## 暂未接入的四个 Harness
 

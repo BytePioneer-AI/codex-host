@@ -87,15 +87,30 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async read(input: ThreadReadInput) {
-    if (input.hostId !== undefined && input.hostId !== "local") {
-      if (!input.hostId || !this.#remoteRead)
+    const { callerThreadId, ...read } = input;
+    if (read.hostId !== undefined && read.hostId !== "local") {
+      if (typeof callerThreadId === "string" && callerThreadId) {
+        const callers = await this.#matching(
+          (registration) =>
+            registration.executionHostId?.(callerThreadId) === read.hostId &&
+            registration.ownsThread(callerThreadId),
+        );
+        if (callers.length > 1)
+          only(callers, "Calling Thread has ambiguous execution Host context");
+        if (callers.length === 1) {
+          const { hostId, ...local } = read;
+          const snapshot = await (await this.#registrationForThread(local.threadId)).read(local);
+          return { ...snapshot, hostId };
+        }
+      }
+      if (!read.hostId || !this.#remoteRead)
         throw new DelegationControlError(
           "RUNTIME_UNREACHABLE",
           "Remote Thread reading is unavailable",
         );
-      return this.#remoteRead(input);
+      return this.#remoteRead(read);
     }
-    return (await this.#registrationForThread(input.threadId)).read(input);
+    return (await this.#registrationForThread(read.threadId)).read(read);
   }
 
   async wait(input: ThreadWaitInput) {

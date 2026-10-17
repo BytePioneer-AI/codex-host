@@ -55,6 +55,8 @@ describe("WorkBuddy command invocation", () => {
 
     expect(invocation.command).toBe(WORKBUDDY_MACOS_ELECTRON);
     expect(invocation.arguments).toEqual([
+      "--eval",
+      expect.any(String),
       WORKBUDDY_MACOS_CLI,
       "--acp",
       "--no-session-persistence",
@@ -264,6 +266,8 @@ describe("WorkBuddy command invocation", () => {
 
     expect(invocation.command).toBe(WORKBUDDY_MACOS_ELECTRON);
     expect(invocation.arguments).toEqual([
+      "--eval",
+      expect.any(String),
       WORKBUDDY_MACOS_CLI,
       "--resume",
       "source",
@@ -375,7 +379,12 @@ describe("WorkBuddy model-free history copy startup", () => {
     const environment = { HOME: "/Users/test" };
     const copy = workBuddyInvocation(environment, false, dependencies, copyArguments);
     expect(copy.environment.DISABLE_TELEMETRY).toBe("1");
-    expect(copy.arguments).toEqual([WORKBUDDY_MACOS_CLI, ...copyArguments]);
+    expect(copy.arguments).toEqual([
+      "--eval",
+      expect.any(String),
+      WORKBUDDY_MACOS_CLI,
+      ...copyArguments,
+    ]);
     expect(environment).not.toHaveProperty("DISABLE_TELEMETRY");
     for (const args of [undefined, ["--acp", "--serve"], ["--print"], ["--fork-session"]]) {
       expect(

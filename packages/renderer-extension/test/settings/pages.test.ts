@@ -999,6 +999,7 @@ describe("Renderer Connections page", () => {
     ["codebuddy", "https://www.codebuddy.ai/"],
     ["workbuddy", "https://www.workbuddy.ai/"],
     ["cursor-cli", "https://cursor.com/"],
+    ["devin", "https://devin.ai/"],
     ["hermes", "https://hermes-agent.nousresearch.com/"],
     ["qoder", "https://qoder.com/"],
     ["qoder-cn", "https://qoder.cn/"],

@@ -16,6 +16,8 @@
  */
 import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
 
+import { createRendererCodexUsageBanner } from "./renderer-codex-usage-banner.js";
+
 type RecordValue = Record<string, unknown>;
 type Atom = { read(get: (atom: Atom) => unknown): unknown };
 type Store = {
@@ -418,7 +420,9 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
   const projections = new Map<Instance, Projection>();
   let retryAt = 0;
   let allowed = false;
+  const banner = createRendererCodexUsageBanner();
   const release = (): void => {
+    banner.restore();
     const previous = [...projections.values()];
     owner = null;
     projections.clear();
@@ -450,7 +454,14 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
     }
     return "bypassed";
   };
+  // The usage banner only describes the Codex path; hide it while bypassed.
   const apply = (): RendererCodexUsageGateStatus => {
+    const status = applyGate();
+    if (status === "bypassed" && owner) banner.hide(owner.owner);
+    else banner.restore();
+    return status;
+  };
+  const applyGate = (): RendererCodexUsageGateStatus => {
     if (!allowed || !composer.isConnected) {
       release();
       retryAt = 0;

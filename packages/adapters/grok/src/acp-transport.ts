@@ -48,7 +48,8 @@ import {
   parseGrokRewindResponse,
   type GrokRewindParams,
 } from "./grok-rewind.js";
-import { decodeGrokPermissionModeId, grokPermissionModeSessionMeta } from "./permission-modes.js";
+import { grokCodexhostSessionMeta } from "./grok-codexhost-session-rules.js";
+import { decodeGrokPermissionModeId } from "./permission-modes.js";
 
 export type GrokTransportFaultKind =
   "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
@@ -642,7 +643,7 @@ export class GrokAcpTransport {
           connection.newSession({
             cwd: this.#options.cwd,
             mcpServers: [],
-            _meta: grokPermissionModeSessionMeta(permissionMode),
+            _meta: grokCodexhostSessionMeta(permissionMode),
           }),
           this.#options.commandTimeoutMs,
           "Grok Session creation",
@@ -664,6 +665,7 @@ export class GrokAcpTransport {
               cwd: this.#options.cwd,
               mcpServers: [],
               sessionId: forked.newSessionId,
+              _meta: grokCodexhostSessionMeta(),
             }),
             this.#options.commandTimeoutMs,
             "Grok Session load",
@@ -684,7 +686,7 @@ export class GrokAcpTransport {
             cwd: this.#options.cwd,
             mcpServers: [],
             sessionId: input.sessionId,
-            ...(permissionMode ? { _meta: grokPermissionModeSessionMeta(permissionMode) } : {}),
+            _meta: grokCodexhostSessionMeta(permissionMode),
           }),
           this.#options.commandTimeoutMs,
           "Grok Session load",

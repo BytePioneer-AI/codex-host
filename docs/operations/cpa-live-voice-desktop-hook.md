@@ -124,23 +124,20 @@ hangup. These are isolated headless-page trials, not installed Desktop button
 acceptance or proof that every plugin is voice-compatible. Continuous conversation,
 speech interruption, task cancellation and approvals need attended acceptance.
 
-## Harness session rules (Grok home rule)
+## Harness session rules (Grok ACP `_meta.rules`)
 
-Host Runtime installs `codexhost-desktop.md` into `~/.grok/rules/` only. It does
-not write `~/.claude/rules/`. A previously managed Claude copy is removed when
-its digest still matches a Host-owned version; a user-edited Claude copy is
-preserved.
+The Grok Adapter passes Desktop session rules through Grok's official ACP
+`session/new` and `session/load` `_meta.rules` field. Grok appends that text in
+a `<human_rules>` block. Host Runtime does not write `~/.grok/rules/` or
+`~/.claude/rules/`. On startup it removes Host-owned copies of
+`codexhost-desktop.md` whose content still matches a previous managed digest;
+a user-edited copy is preserved. TUI and Orca Grok sessions therefore stay
+free of that file unless the user kept an edited copy.
 
-Grok home rules are always scanned. At the first user turn the agent runs a
-secret-free `CODEXHOST_THREAD_ID` set/unset check. `set` means this is a
-CodexHost external Thread, including a Desktop chat whose cwd is a real
-repository. A Playground `realtime-voice-chat*` cwd also activates the rule and
-asks for a new Thread in the real repo. `unset` outside that Playground cwd
-leaves the six Desktop rules inactive. The agent never prints tokens, endpoints,
-or runtime descriptors.
+Grok appends that text to `system_prompt.txt` inside `<human_rules>`. The
+agent never prints tokens, endpoints, or runtime descriptors.
 
 The rule covers composer Model selection (including that `flash-max` is Gemini
 Flash), starting in the real repo, voice versus text tool work, per-Harness MCP
 and skills, Codex Desktop chrome / Markdown View, and official Codex live voice
-versus Host-owned external `thread/realtime/*`. A user-edited Grok copy is
-preserved.
+versus Host-owned external `thread/realtime/*`.

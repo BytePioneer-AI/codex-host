@@ -15,7 +15,7 @@ import { createOwnedUnixBackend } from "./codex-runtime/owned-official-backends.
 import { DelegationControlRegistry } from "./delegation-control-registry.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
-import { installCodexhostDesktopRules } from "./codexhost-desktop-rule.js";
+import { retireCodexhostDesktopRules } from "./codexhost-desktop-rule.js";
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import { readRemoteDelegationThread } from "./remote-delegation-read.js";
@@ -184,7 +184,7 @@ async function prepareDelegationRuntime(input: {
     [DELEGATION_RUNTIME_TOKEN_ENV]: token,
   };
   await installManagedHomeFiles(installDelegationSkills, "delegation Skill");
-  await installManagedHomeFiles(installCodexhostDesktopRules, "Desktop rule");
+  await installManagedHomeFiles(retireCodexhostDesktopRules, "Desktop rule retirement");
   try {
     return await input.createHost(environment, (value) => registry.register(value), registry);
   } finally {

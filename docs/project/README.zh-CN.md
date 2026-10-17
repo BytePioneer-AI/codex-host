@@ -312,6 +312,8 @@ npm start
 主要实现插件的 Manifest、工厂、Adapter、Session 及原生通信与转换逻辑。当前 Renderer 仍有静态接线，完整 Desktop 接入还需单独处理。
 新增 Harness 时，可以让编码 Agent 使用仓库内的 [codexhost-add-harness Skill](../../.agents/skills/codexhost-add-harness/SKILL.md)。它说明了插件结构、公共 Adapter 接口、能力实现与测试要求。
 
+Desktop Grok Thread 通过 Grok 官方 ACP `session/new` 的 `_meta.rules` 接收 CodexHost 会话规则。Host Runtime 会回收仍匹配历史摘要的 `~/.grok/rules/codexhost-desktop.md`，并保留用户改过的副本。新 Harness 插件不要再写 home rule。说明见 [operations/cpa-live-voice-desktop-hook.md](../operations/cpa-live-voice-desktop-hook.md)。
+
 ## 鸣谢
 
 - 感谢 [LINUX DO](https://linux.do/) 社区一直以来的支持。

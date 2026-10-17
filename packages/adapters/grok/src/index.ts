@@ -38,6 +38,10 @@ export {
   decodeGrokPermissionModeId,
   grokPermissionModeSessionMeta,
 } from "./permission-modes.js";
+export {
+  GROK_CODEXHOST_SESSION_RULES,
+  grokCodexhostSessionMeta,
+} from "./grok-codexhost-session-rules.js";
 export type { GrokPermissionMode } from "./permission-modes.js";
 export {
   GROK_REWIND_EXECUTE_METHOD,

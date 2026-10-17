@@ -313,6 +313,8 @@ Most of the work is implementing the plugin's Manifest, factory, Adapter, and Se
 
 Tip: point your coding Agent at the in-repo [codexhost-add-harness Skill](.agents/skills/codexhost-add-harness/SKILL.md). It covers plugin structure, the shared Adapter interface, capability implementation, and testing requirements.
 
+Desktop Grok Threads receive CodexHost session rules through Grok's official ACP `session/new` `_meta.rules` field. Host Runtime retires leftover Host-owned `~/.grok/rules/codexhost-desktop.md` copies and leaves user-edited files in place. New Harness plugins do not add a home-rule copy. Details: [operations/cpa-live-voice-desktop-hook.md](docs/operations/cpa-live-voice-desktop-hook.md).
+
 ## Acknowledgements
 
 - Thanks to the [LINUX DO](https://linux.do/) community for their ongoing support.

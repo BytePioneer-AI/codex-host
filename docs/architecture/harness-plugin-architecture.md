@@ -107,7 +107,7 @@ Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost
 - [`run-host-runtime.ts`](../../packages/host-runtime/src/run-host-runtime.ts) 显式预取 Claude/Antigravity 目录。
 - [`harness-broker`](../../packages/harness-broker/src/protocol.ts) 的描述、客户端与服务端实际限定 Claude Code，不是已经通用的插件进程协议。
 - [`delegation-skill.ts`](../../packages/host-runtime/src/delegation-skill.ts) 包含 `.claude` 安装位置。
-- [`codexhost-desktop-rule.ts`](../../packages/host-runtime/src/codexhost-desktop-rule.ts) 把 Codex Desktop / CodexHost 会话规则安装到 `~/.grok/rules`。
+- [`codexhost-desktop-rule.ts`](../../packages/host-runtime/src/codexhost-desktop-rule.ts) 只回收 Host 曾经写入的 `~/.grok/rules/codexhost-desktop.md`；Grok 会话规则走 Adapter 的 ACP `_meta.rules`。
 - 基线中的 [`remote-host-install.ts`](../../packages/host-runtime/src/remote-host-install.ts) 曾固化 `claudeCommand`；该安装与启动特例现已移除，Harness 可执行文件发现仍由 Adapter 负责。
 - 发布脚本维护各原生 SDK 与许可证。
 

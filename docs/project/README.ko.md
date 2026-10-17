@@ -306,6 +306,8 @@ Pi를 예로 듭니다. 왼쪽에서 오른쪽이 한 번의 요청 호출 체�
 주요 작업은 플러그인의 Manifest, 팩토리, Adapter, Session 및 네이티브 통신과 변환 로직을 구현하는 것입니다. 현재 Renderer에는 여전히 정적 연결이 있어, 완전한 Desktop 연동은 별도로 처리해야 합니다.
 Harness를 추가할 때는 코딩 Agent가 저장소의 [codexhost-add-harness Skill](../../.agents/skills/codexhost-add-harness/SKILL.md)을 사용하도록 할 수 있습니다. 플러그인 구조, 공용 Adapter 인터페이스, 기능 구현과 테스트 요구 사항을 설명합니다.
 
+Desktop Grok Thread는 Grok 공식 ACP `session/new` `_meta.rules`로 CodexHost 세션 규칙을 받습니다. Host Runtime은 이전에 설치한 `~/.grok/rules/codexhost-desktop.md` 중 Host 소유 사본만 회수하고, 사용자가 고친 파일은 남깁니다. 새 Harness 플러그인은 home rule을 추가하지 않습니다. 설명: [operations/cpa-live-voice-desktop-hook.md](../operations/cpa-live-voice-desktop-hook.md).
+
 ## 감사의 글
 
 - 지속적인 지원을 보내 주신 [LINUX DO](https://linux.do/) 커뮤니티에 감사드립니다.

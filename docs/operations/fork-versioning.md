@@ -10,14 +10,14 @@ Fork versions stay on the **upstream version that is currently held**, plus a nu
 
 | Upstream holds | First fork tag | Next fork tags |
 | --- | --- | --- |
-| `0.13.2` | `v0.13.2-0` | `v0.13.2-1`, `v0.13.2-2`, … |
-| later `0.13.3` | `v0.13.3-0` | `v0.13.3-1`, … |
+| `0.13.2` | `v0.13.2-0` | `v0.13.2-1`, `v0.13.2-2`, `v0.13.2-3` |
+| `0.13.3` | `v0.13.3-0` | `v0.13.3-1`, … |
 
 - Read upstream from `upstream/main` `package.json` and the upstream GitHub latest release. If they disagree, stop and report; do not guess.
 - `n` is the next unused non-negative integer for that upstream version on the fork (`0` if none exist).
-- Do **not** invent a newer minor or patch than upstream (for example `0.13.3-cpa.1` while upstream still holds `0.13.2`).
-- `v0.13.2-0` is valid SemVer (prerelease `0` of `0.13.2`). Prepare it with `npm run release:prepare -- 0.13.2-0`.
-- Numeric prerelease `0.13.2-0` compares **below** upstream `0.13.2`. The in-app updater and Settings command must therefore **not** read BytePioneer `releases/latest` or install `@codexhost/cli`. They use `karlorz/codex-host` and `@karlorz/codexhost-cli` instead.
+- Do **not** invent a newer minor or patch than upstream, and do **not** add a named suffix such as `0.13.3-cpa.1`. While upstream holds `0.13.3`, the first fork tag is `v0.13.3-0`.
+- `v0.13.3-0` is valid SemVer (prerelease `0` of `0.13.3`). Prepare it with `npm run release:prepare -- 0.13.3-0`.
+- Numeric prerelease `0.13.3-0` compares **below** upstream `0.13.3`. The in-app updater and Settings command must therefore **not** read BytePioneer `releases/latest` or install `@codexhost/cli`. They use `karlorz/codex-host` and `@karlorz/codexhost-cli` instead.
 
 The four prepared files (`package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`) must equal that version. Packaged `app/codexhost-distribution.json` is written later by `release:package` / `release:npm`, not by `release:prepare`. The Web console overview **codexhost 版本** reads that distribution file (installer/npm) or workspace `package.json` (source). After prepare, rebuild or recopy the installed `codexhost-distribution.json` so the live console matches the tag.
 
@@ -42,9 +42,9 @@ A fork tag is not shipped until both of these exist for that version:
 1. **npm:** `Release packages` publishes the packed meta package and matching platform tarballs under `@karlorz` with dist-tag `latest` (or `next` / `test` only for named SemVer prereleases). `scripts/release/publish-npm.mjs` fails closed if a plan entry is not `@karlorz/`. After CI logs `+ @karlorz/…@<version>`, npm may still 404 for a few minutes while provenance is processed; recurl the version URL before republishing.
 2. **GitHub:** a **latest** (non-draft, non-prerelease) Release on `karlorz/codex-host` for the same tag. The updater reads `/releases/latest` and rejects prereleases, so a prerelease-only fork Release leaves Updates empty or in error instead of offering the fork build.
 
-Numeric fork counters such as `0.13.2-2` are GitHub latest and npm `latest`. Named SemVer prereleases (`-rc.1`, `-beta.1`, `-test.1`) stay on `next` / `test` and GitHub prerelease. `packages/repository-automation/src/release.mjs` treats a hyphen plus digits-only (`0.13.2-2`) as latest, not as `next`. Do not `npm publish` `@codexhost/cli`. Local `npm run install:local` packs and installs tarballs without the registry.
+Numeric fork counters such as `0.13.3-0` are GitHub latest and npm `latest`. Named SemVer prereleases (`-rc.1`, `-beta.1`, `-test.1`) stay on `next` / `test` and GitHub prerelease. `packages/repository-automation/src/release.mjs` treats a hyphen plus digits-only (`0.13.3-0`) as latest, not as `next`. Do not `npm publish` `@codexhost/cli`. Local `npm run install:local` packs and installs tarballs without the registry.
 
-Shipped latest on this fork is `v0.13.2-2`: GitHub latest plus `@karlorz/codexhost-cli@0.13.2-2` and all six platform packages on npm `latest`.
+Shipped latest on this fork is `v0.13.2-3`: GitHub latest plus `@karlorz/codexhost-cli@0.13.2-3` and all six platform packages on npm `latest`. The next unused counter after syncing upstream `0.13.3` is `0.13.3-0`.
 
 ## GitHub Actions secrets
 
@@ -78,15 +78,15 @@ gh secret set FORK_SYNC_TOKEN -R karlorz/codex-host
 - Never publish `@codexhost/*` from this checkout.
 - Do not move, delete, or re-push an existing tag unless the operator explicitly requested that rewrite.
 - Create GitHub Releases and pull requests with `-R karlorz/codex-host`. Default `gh` in this checkout resolves to BytePioneer-AI/codex-host. `gh pr create` without `-R` opened the wrong-repo PR #547 and must abort. `gh release create --notes-from-tag` does not work with `--repo`; write the tag annotation to a notes file instead.
-- After the lock is on `origin/main`, the next command is `npm run release:prepare -- 0.13.2-<n>` on `main`. Merge of an identity-lock PR is not a release.
+- After the lock is on `origin/main`, the next command is `npm run release:prepare -- 0.13.3-0` on `main`. Merge of an identity-lock PR is not a release.
 
 ## Next unused counter
 
 ```bash
 git fetch upstream --tags --prune
 git fetch origin --tags --prune
-# example when upstream holds 0.13.2:
-git ls-remote --tags origin 'refs/tags/v0.13.2-*'
+# example when upstream holds 0.13.3:
+git ls-remote --tags origin 'refs/tags/v0.13.3-*'
 ```
 
-Shipped tags include `v0.13.2-0`, `v0.13.2-1`, and `v0.13.2-2`. Pick the smallest `n` that is not already a fork tag (next is `0.13.2-3`). Then `npm run release:prepare -- 0.13.2-<n>` on `main`, push the four version files, wait for that SHA's `main` push CI, then push the annotated tag.
+Shipped tags include `v0.13.2-0`, `v0.13.2-1`, `v0.13.2-2`, and `v0.13.2-3`. After upstream `0.13.3`, pick the smallest unused `n` for that version (next is `0.13.3-0`). Then `npm run release:prepare -- 0.13.3-0` on `main`, push the four version files, wait for that SHA's `main` push CI, then push the annotated tag.

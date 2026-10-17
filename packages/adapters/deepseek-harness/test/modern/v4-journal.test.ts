@@ -621,14 +621,18 @@ describe("DSH V4 durable protocol", () => {
     system(2),
   ];
 
-  it("replays the tool-call Turn that DSH 0.2.0-rc.2 recorded live", () => {
-    const rows = readFileSync(
-      new URL("../fixtures/dsh-020rc2-tool-call-turn.v4.jsonl", import.meta.url),
-      "utf8",
-    )
+  // 0.2.1-rc.1 adds the bash job's job/registered and job/settled between tool/call and tool/result.
+  it.each([
+    ["0.2.0-rc.2", "dsh-020rc2-tool-call-turn.v4.jsonl", []],
+    ["0.2.1-rc.1", "dsh-021rc1-tool-call-turn.v4.jsonl", ["job/registered", "job/settled"]],
+  ] as const)("replays the tool-call Turn that DSH %s recorded live", (_version, fixture, jobs) => {
+    const rows = readFileSync(new URL(`../fixtures/${fixture}`, import.meta.url), "utf8")
       .trim()
       .split(/\r?\n/u)
       .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(
+      rows.filter(({ type }) => String(type).startsWith("job/")).map(({ type }) => type),
+    ).toEqual(jobs);
     const first = rows.shift();
     assert(first);
     const { type: recordType, ...header } = first;
@@ -782,6 +786,84 @@ describe("DSH V4 durable protocol", () => {
       "subagent/catalog",
       { version: 0, childId: "child", childCreatedAt: 1, mode: "continuable", label: "worker" },
     ],
+    // DSH 0.2.1-rc.1 records an external-agent child as catalog v2.
+    [
+      "subagent/catalog",
+      { version: 2, childId: "child", childCreatedAt: 1, mode: "external", label: "observe" },
+    ],
+    ["subagent/catalog", { version: 2, childId: "child", childCreatedAt: 1, mode: "external" }],
+    // DSH 0.2.1-rc.1 job lifecycle and working-directory records, as written by
+    // packages/jobs/jobs-local and packages/session/working-directory.
+    [
+      "job/registered",
+      {
+        jobId: "bash-1a2b3c4d",
+        owner: SESSION_ID,
+        kind: "bash",
+        label: "echo SNAPSHOT_OK",
+        startedAt: 1,
+        toolCall: { callId: "call", rootCallId: "call" },
+      },
+    ],
+    [
+      "job/registered",
+      { jobId: "workflow-1", owner: SESSION_ID, kind: "workflow", label: "", startedAt: 1 },
+    ],
+    [
+      "job/settled",
+      {
+        jobId: "bash-1a2b3c4d",
+        owner: SESSION_ID,
+        kind: "bash",
+        label: "echo SNAPSHOT_OK",
+        startedAt: 1,
+        toolCall: { callId: "call", rootCallId: "call" },
+        finishedAt: 2,
+        status: "completed",
+        cause: "producer",
+        producerReported: true,
+        detail: "exit code: 0",
+      },
+    ],
+    [
+      "job/settled",
+      {
+        jobId: "bash-2",
+        owner: SESSION_ID,
+        kind: "bash",
+        label: "sleep 30",
+        startedAt: 1,
+        finishedAt: 2,
+        status: "killed",
+        cause: "teardown",
+        producerReported: false,
+      },
+    ],
+    ["working-directory/change", { cwd: CWD }],
+    // DSH 0.2.1-rc.1 records the selected title effort when the route exposes reasoning.
+    [
+      "session/title-llm-request",
+      {
+        titleProvider: "first-prompt-llm",
+        messageSeqs: [0],
+        route: { provider: "deepseek-official", model: "deepseek-v4-flash" },
+        system: "Create a concise title.",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        maxTokens: 64,
+        reasoningEffort: "off",
+      },
+    ],
+    [
+      "session/title-llm-request",
+      {
+        titleProvider: "first-prompt-llm",
+        messageSeqs: [0],
+        route: { provider: "deepseek-official", model: "deepseek-v4-flash" },
+        system: "Create a concise title.",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        maxTokens: 64,
+      },
+    ],
     ["feedback/record", {}],
     ["feedback/record", { text: "done", category: "task-result" }],
     [
@@ -812,6 +894,20 @@ describe("DSH V4 durable protocol", () => {
         arguments: {},
         isError: false,
         content: [{ type: "text", text: "read" }],
+      },
+    ],
+    // DSH 0.2.1-rc.1 keeps the sub-tool's presentation metadata on the settlement.
+    [
+      "tool/ptc-dispatch",
+      {
+        rootCallId: "root",
+        parentCallId: "root",
+        subCallId: "sub",
+        name: "read",
+        arguments: {},
+        isError: false,
+        content: [{ type: "text", text: "read" }],
+        meta: { cwd: CWD, path: "result.txt" },
       },
     ],
     [
@@ -874,6 +970,82 @@ describe("DSH V4 durable protocol", () => {
     ["deliverables/presented", { turn: 0, callId: "call", files: [] }],
     ["subagent/catalog", { version: 0, childId: "child", childCreatedAt: 1, mode: "continuable" }],
     ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "one-shot" }],
+    ["subagent/catalog", { version: 2, childId: "child", childCreatedAt: 1, mode: "one-shot" }],
+    ["subagent/catalog", { version: 0, childId: "child", childCreatedAt: 1, mode: "external" }],
+    ["job/registered", { jobId: "j", owner: SESSION_ID, kind: "bash", label: 1, startedAt: 1 }],
+    ["job/registered", { jobId: " ", owner: SESSION_ID, kind: "bash", label: "x", startedAt: 1 }],
+    [
+      "job/registered",
+      {
+        jobId: "j",
+        owner: SESSION_ID,
+        kind: "bash",
+        label: "x",
+        startedAt: 1,
+        toolCall: { callId: "call" },
+      },
+    ],
+    [
+      "job/registered",
+      { jobId: "j", owner: SESSION_ID, kind: "bash", label: "x", startedAt: 1, finishedAt: 2 },
+    ],
+    [
+      "job/settled",
+      {
+        jobId: "j",
+        owner: SESSION_ID,
+        kind: "bash",
+        label: "x",
+        startedAt: 1,
+        finishedAt: 2,
+        status: "cancelled",
+        cause: "producer",
+        producerReported: true,
+      },
+    ],
+    [
+      "job/settled",
+      {
+        jobId: "j",
+        owner: SESSION_ID,
+        kind: "bash",
+        label: "x",
+        startedAt: 1,
+        finishedAt: 2,
+        status: "failed",
+        cause: "user",
+        producerReported: false,
+      },
+    ],
+    [
+      "job/settled",
+      { jobId: "j", owner: SESSION_ID, kind: "bash", label: "x", startedAt: 1, status: "failed" },
+    ],
+    ["working-directory/change", { cwd: "" }],
+    ["working-directory/change", {}],
+    [
+      "session/title-llm-request",
+      {
+        titleProvider: "first-prompt-llm",
+        messageSeqs: [0],
+        route: { provider: "deepseek-official", model: "deepseek-v4-flash" },
+        system: "Create a concise title.",
+        messages: [],
+        maxTokens: 64,
+        reasoningEffort: " ",
+      },
+    ],
+    [
+      "tool/ptc-dispatch-start",
+      {
+        rootCallId: "root",
+        parentCallId: "root",
+        subCallId: "sub",
+        name: "read",
+        arguments: {},
+        meta: {},
+      },
+    ],
     ["team/member", { version: 1, teamId: "team", member: {} }],
     [
       "tool/code-dispatch-start",

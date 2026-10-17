@@ -97,6 +97,8 @@ const KNOWN_EVENT_TYPES = new Set([
   "hook/invoked",
   "hook/result",
   "image/offload",
+  "job/registered",
+  "job/settled",
   "llm/retry",
   "llm/retry-started",
   "model/selection",
@@ -133,6 +135,7 @@ const KNOWN_EVENT_TYPES = new Set([
   "turn/start",
   "user/message",
   "web/deepseek-search-llm-request",
+  "working-directory/change",
   "workspace/changes",
 ]);
 
@@ -325,6 +328,14 @@ export class ModernEventValidator {
         validateImageOffload(data, trace);
         return;
       case "workspace/changes":
+        return;
+      case "working-directory/change":
+        exactKeys(data, ["cwd"]);
+        requiredString(data.cwd, "working-directory/change cwd");
+        return;
+      case "job/registered":
+      case "job/settled":
+        validateJobLifecycle(event.type, data);
         return;
       case "agent-preset/selected":
         exactKeys(data, ["agentPreset"]);
@@ -1624,7 +1635,11 @@ function validateSessionTitle(data: Record<string, unknown>): void {
 }
 
 function validateSessionTitleRequest(data: Record<string, unknown>): void {
-  exactKeys(data, ["titleProvider", "messageSeqs", "route", "system", "messages", "maxTokens"]);
+  requiredOptionalKeys(
+    data,
+    ["titleProvider", "messageSeqs", "route", "system", "messages", "maxTokens"],
+    ["reasoningEffort"],
+  );
   requiredString(data.titleProvider, "session/title request provider");
   validateSeqArray(data.messageSeqs, "session/title request messageSeqs");
   validateModelRoute(data.route, "session/title request route");
@@ -1638,6 +1653,10 @@ function validateSessionTitleRequest(data: Record<string, unknown>): void {
     }
   }
   positiveInteger(data.maxTokens, "session/title request maxTokens");
+  // DSH 0.2.1 records the effort it selected when the title route exposes reasoning.
+  if (data.reasoningEffort !== undefined && !nonBlankString(data.reasoningEffort)) {
+    fail("Modern history session/title request reasoningEffort is invalid");
+  }
 }
 
 function validateTodoWrite(data: Record<string, unknown>): void {
@@ -1681,6 +1700,48 @@ function validateWorkflow(type: string, data: Record<string, unknown>): void {
   enumValue(data.stopReason, ["completed", "cancelled", "error"], "workflow stopReason");
 }
 
+/**
+ * DSH 0.2.1 logs every owned job (foreground and background shell commands,
+ * workflows) as a registration and a settlement repeating its identity. Both
+ * are log-only: the tool/call and tool/result around them carry the Item.
+ */
+function validateJobLifecycle(type: string, data: Record<string, unknown>): void {
+  const settled = type === "job/settled";
+  requiredOptionalKeys(
+    data,
+    [
+      "jobId",
+      "owner",
+      "kind",
+      "label",
+      "startedAt",
+      ...(settled ? ["finishedAt", "status", "cause", "producerReported"] : []),
+    ],
+    settled ? ["toolCall", "detail"] : ["toolCall"],
+  );
+  requiredString(data.jobId, `${type} jobId`);
+  requiredString(data.owner, `${type} owner`);
+  requiredString(data.kind, `${type} kind`);
+  if (typeof data.label !== "string") fail(`Modern history ${type} label is invalid`);
+  nonNegativeInteger(data.startedAt, `${type} startedAt`);
+  if (data.toolCall !== undefined) {
+    if (!isRecord(data.toolCall)) fail(`Modern history ${type} toolCall is malformed`);
+    exactKeys(data.toolCall, ["callId", "rootCallId"]);
+    requiredString(data.toolCall.callId, `${type} toolCall callId`);
+    requiredString(data.toolCall.rootCallId, `${type} toolCall rootCallId`);
+  }
+  if (!settled) return;
+  nonNegativeInteger(data.finishedAt, "job/settled finishedAt");
+  enumValue(data.status, ["completed", "killed", "failed"], "job/settled status");
+  enumValue(data.cause, ["producer", "kill", "teardown"], "job/settled cause");
+  if (typeof data.producerReported !== "boolean") {
+    fail("Modern history job/settled producerReported is invalid");
+  }
+  if (data.detail !== undefined && typeof data.detail !== "string") {
+    fail("Modern history job/settled detail is invalid");
+  }
+}
+
 function validatePtcDispatch(
   type: string,
   data: Record<string, unknown>,
@@ -1689,8 +1750,9 @@ function validatePtcDispatch(
   const settle = type === "tool/ptc-dispatch";
   const required = ["rootCallId", "parentCallId", "subCallId", "name", "arguments"];
   if (settle) required.push("isError", "content");
-  // A failed sub-call settles with tool/result's optional error identity.
-  requiredOptionalKeys(data, required, settle ? ["error"] : []);
+  // A failed sub-call settles with tool/result's optional error identity; DSH
+  // 0.2.1 also keeps the sub-tool's presentation metadata, which is opaque here.
+  requiredOptionalKeys(data, required, settle ? ["error", "meta"] : []);
   for (const key of ["rootCallId", "parentCallId", "subCallId", "name"]) {
     requiredString(data[key], `tool/ptc-dispatch ${key}`);
   }

@@ -275,7 +275,7 @@ CodexHost는 다른 방식을 택합니다.
       <sub><strong>함께 기여해 주세요.</strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="위챗 그룹 QR 코드" src="../imgs/wechat-group-4-qrcode.jpg" />
+      <img width="230" alt="위챗 그룹 QR 코드" src="../imgs/wechat-group-4-qrcode-2026-10-17.jpg" />
     </td>
   </tr>
 </table>

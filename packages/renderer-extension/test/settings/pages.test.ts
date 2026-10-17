@@ -1553,7 +1553,7 @@ describe("Renderer Connections page", () => {
     );
     if (!dshRow) throw new Error("DeepSeek Harness row is not rendered");
     dshRow.dispatch("click", { target: null });
-    expect(visibleText(content)).toContain("0.2.0-rc.2");
+    expect(visibleText(content)).toContain("0.2.1-rc.2");
     expect(visibleText(content)).toContain(
       pluginDescriptor("deepseek-harness").notice?.["zh-CN"] ?? "missing plugin notice",
     );

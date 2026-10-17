@@ -76,7 +76,10 @@ const { outputFiles } = await build({
             return { owner: "codex", locked: true };
           }),
         }]).inspectThread,
-        inspectThreadUsage: async ({ threadId }) => ({ threadId, usage: null }),
+        inspectThreadUsage: async ({ threadId }) => ({
+          threadId,
+          usage: globalThis.withUsage ? { totalTokens: 12345, inputTokens: 10000, outputTokens: 2345 } : null,
+        }),
         inspectHarnessCommands: async () => ({ commands: [] }),
         inspectThreadCommands: async () => ({ commands: [] }),
         listThreadOwnership: async () => ({ threads: [] }),
@@ -230,26 +233,46 @@ async function calls(page: Page) {
   return page.evaluate(() => Reflect.get(globalThis, "accountsFixture").calls);
 }
 
-test("Usage shows the global current Account and follows Host changes without token data", async ({
+test("Usage stays hidden without token data when the current Account or Host changes", async ({
   page,
 }) => {
   await setup(page);
+  const usage = page.locator("[data-codexhost-usage-control]");
   const details = page.getByRole("dialog", { name: "Thread Usage details" });
-  await page.getByRole("button", { name: "Thread Usage: Usage", exact: true }).hover();
-  await expect(details).toBeVisible();
-  await expect(details).toContainText("local-default@example.com");
-  await page.keyboard.press("Escape");
-  await page.mouse.move(0, 0);
+  await expect(usage).toBeHidden();
+  await expect(details).toBeHidden();
   await selectOtherAccount(page);
-  await page.getByRole("button", { name: "Thread Usage: Usage", exact: true }).hover();
-  await expect(details).toContainText("local-other@example.com");
-  await expect(details).not.toContainText("local-default@example.com");
+  await expect(page.locator(trigger)).toHaveAttribute("title", /local-other@example.com/);
+  await expect(usage).toBeHidden();
+  await action(page, "switchHost", "remote");
+  await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
+  await expect(usage).toBeHidden();
+  await expect(details).toBeHidden();
+});
+
+test("Usage displays native token data without the current Account identity", async ({ page }) => {
+  await setup(page, { boundThread: true, withUsage: true });
+  const usage = page.locator("[data-codexhost-usage-control]");
+  const details = page.getByRole("dialog", { name: "Thread Usage details" });
+  await expect(usage).toHaveText("12.3K tokens");
+  await usage.hover();
+  await expect(details).toBeVisible();
+  await expect(details).toContainText("Input / output10K / 2.3K");
+  await expect(details).not.toContainText("Account");
+  await expect(details).not.toContainText("@example.com");
+  await selectOtherAccount(page);
+  await expect(page.locator(trigger)).toHaveAttribute("title", /local-other@example.com/);
+  await expect(details).not.toContainText("@example.com");
+  await page.keyboard.press("Escape");
   await page.mouse.move(0, 0);
   await action(page, "switchHost", "remote");
   await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
-  await page.getByRole("button", { name: "Thread Usage: Usage", exact: true }).hover();
-  await expect(details).toContainText("remote-default@example.com");
-  await expect(details).not.toContainText("local-other@example.com");
+  await expect(usage).toHaveText("12.3K tokens");
+  await usage.hover();
+  await expect(details).toBeVisible();
+  await expect(details).toContainText("Total12.3K");
+  await expect(details).not.toContainText("Account");
+  await expect(details).not.toContainText("@example.com");
 });
 
 async function waitForPending(page: Page, key: string): Promise<void> {

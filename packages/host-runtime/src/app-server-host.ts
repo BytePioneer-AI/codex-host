@@ -259,6 +259,7 @@ import {
 } from "./thread-list-aggregator.js";
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
+import { externalThreadEmptyOfficialResult } from "./external-thread-official-defaults.js";
 import { ModelPriceCatalog } from "./model-prices.js";
 import { ObservedSessionUsage } from "./observed-session-usage.js";
 import type { UsageStatistics, UsageStatisticsSource } from "./usage-statistics.js";
@@ -2090,8 +2091,11 @@ export class AppServerHost {
       const location = await this.#locateExternalThread(request.params.threadId);
       if (await this.#writeResolutionError(request, location)) return;
       if (location.kind === "external") {
+        const emptyResult = externalThreadEmptyOfficialResult(request.method);
         await this.#writer.json(
-          rpcError(request, -32076, `External Thread does not support ${request.method}`),
+          emptyResult
+            ? rpcEnvelope(request, { result: emptyResult })
+            : rpcError(request, -32076, `External Thread does not support ${request.method}`),
         );
         return;
       }

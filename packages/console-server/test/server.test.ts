@@ -371,3 +371,46 @@ describe("console server", () => {
     expect(updates.start).not.toHaveBeenCalled();
   });
 });
+
+it("proxies Host display notifications and aborts upstream on browser disconnect", async () => {
+  let upstreamSignal: AbortSignal | undefined;
+  const { base } = await start({
+    host: {
+      available: async () => true,
+      request: async () => ({ result: {} }),
+      displayEvents: async (signal) => {
+        upstreamSignal = signal;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode('data: {"type":"display-settings-changed"}\n\n'),
+              );
+              signal.addEventListener("abort", () => controller.close());
+            },
+          }),
+        );
+      },
+    },
+  });
+  expect(await (await fetch(`${base}/api/host/display-capabilities`)).json()).toEqual({
+    events: true,
+  });
+  const controller = new AbortController();
+  const response = await fetch(`${base}/api/host/display-events`, { signal: controller.signal });
+  expect(response.headers.get("content-type")).toBe("text/event-stream");
+  if (!response.body) throw new Error("Missing event stream");
+  const reader = response.body.getReader();
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+    "display-settings-changed",
+  );
+  controller.abort();
+  await vi.waitFor(() => expect(upstreamSignal?.aborted).toBe(true));
+});
+
+it("explicitly reports missing Console event transport for legacy fallback", async () => {
+  const { base } = await start();
+  expect(await (await fetch(`${base}/api/host/display-capabilities`)).json()).toEqual({
+    events: false,
+  });
+});

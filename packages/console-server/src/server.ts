@@ -256,6 +256,35 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     const method = request.method ?? "GET";
     const route = `${method} ${url.pathname}`;
 
+    if (route === "GET /api/host/display-capabilities") {
+      sendJson(response, 200, { events: typeof options.host.displayEvents === "function" });
+      return;
+    }
+    if (route === "GET /api/host/display-events" && options.host.displayEvents) {
+      const controller = new AbortController();
+      response.on("close", () => controller.abort());
+      try {
+        const upstream = await options.host.displayEvents(controller.signal);
+        if (!upstream.ok || !upstream.body) {
+          sendJson(response, upstream.status, {});
+          return;
+        }
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-store",
+        });
+        for await (const chunk of upstream.body) {
+          if (!response.write(chunk)) {
+            controller.abort();
+            break;
+          }
+        }
+      } catch {
+        /* EventSource reconnects through current Host discovery. */
+      }
+      response.end();
+      return;
+    }
     if (route === "GET /api/health") {
       sendJson(response, 200, {
         service: CONSOLE_SERVICE,

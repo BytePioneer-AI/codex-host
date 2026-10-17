@@ -28,7 +28,15 @@ import {
 } from "./renderer-trigger-chip-style.js";
 
 import { rendererHarnessMessages } from "./renderer-harness-localization.js";
-import { readModelFavorites, writeModelFavorites } from "./renderer-model-favorites.js";
+import {
+  modelFavoritesPending,
+  readModelFavorites,
+  writeModelFavorites,
+} from "./renderer-model-favorites.js";
+import {
+  HARNESS_PREFERENCES_UPDATED_EVENT,
+  rendererHarnessPreferenceGeneration,
+} from "./renderer-harness-preferences.js";
 import { createModelFavoriteIcon, ensureModelOptionStyle } from "./renderer-model-option-style.js";
 import {
   mountRendererModelSelectionNotice,
@@ -351,6 +359,7 @@ function orderModelFavorites(control: RendererModelPickerControl): void {
     for (const [id, option] of control.options) {
       const isFavorite = control.favorites.has(id);
       syncFavorite(option, isFavorite);
+      option.favorite.disabled = modelFavoritesPending(control.harnessId);
       if (isFavorite === favorite) control.modelMenu.append(option.row);
     }
   }
@@ -511,6 +520,7 @@ export function mountRendererModelPicker(
   // Safety net: if the harness still manages to steal focus to the composer
   // (e.g. via an earlier capture-phase listener), pull the cursor back into the
   // search box as long as the submenu remains open.
+  let searchRefocusFrame: number | undefined;
   const onSearchBlur = (): void => {
     if (!popoverOpen(modelMenu)) return;
     const active = document.activeElement;
@@ -520,7 +530,9 @@ export function mountRendererModelPicker(
         (active.matches('textarea, [contenteditable="true"], [role="textbox"]') ||
           active.closest('textarea, [contenteditable="true"], [role="textbox"]') !== null));
     if (!movedToComposer) return;
-    requestAnimationFrame(() => {
+    if (searchRefocusFrame !== undefined) cancelAnimationFrame(searchRefocusFrame);
+    searchRefocusFrame = requestAnimationFrame(() => {
+      searchRefocusFrame = undefined;
       // A legitimate move to a model/favorite button may complete after blur.
       // Do not steal focus back from that control on the next animation frame.
       if (
@@ -595,24 +607,41 @@ export function mountRendererModelPicker(
     }
   };
   const onModelMenuClick = (event: MouseEvent): void => {
+    if (searchRefocusFrame !== undefined) {
+      cancelAnimationFrame(searchRefocusFrame);
+      searchRefocusFrame = undefined;
+    }
     const favoriteButton =
       event.target instanceof Element
         ? event.target.closest<HTMLButtonElement>("button[data-favorite-model-id]")
         : null;
     const favoriteId = favoriteButton?.dataset.favoriteModelId;
     if (favoriteId) {
+      if (modelFavoritesPending(control.harnessId)) return;
       event.stopPropagation();
       control.favorites = readModelFavorites(control.harnessId);
       if (control.favorites.has(favoriteId)) control.favorites.delete(favoriteId);
       else control.favorites.add(favoriteId);
-      writeModelFavorites(control.harnessId, control.favorites);
       const focused = document.activeElement;
+      const generation = rendererHarnessPreferenceGeneration();
+      const restoreFocus = (): void => {
+        if (generation !== rendererHarnessPreferenceGeneration() || !popoverOpen(modelMenu)) return;
+        if (
+          focused instanceof HTMLButtonElement &&
+          focused.isConnected &&
+          !focused.disabled &&
+          modelMenu.contains(focused) &&
+          (document.activeElement === document.body || document.activeElement === focused)
+        )
+          focused.focus({ preventScroll: true });
+      };
+      void writeModelFavorites(control.harnessId, control.favorites)
+        .catch(() => {})
+        .finally(restoreFocus);
       orderModelFavorites(control);
-      // Moving a row can blur its button. Preserve keyboard operation without
-      // scrolling back down to an unfavorited row.
-      if (focused instanceof HTMLElement && modelMenu.contains(focused)) {
-        focused.focus({ preventScroll: true });
-      }
+      // Confirmation reorders rows and re-enables the star; retain keyboard focus
+      // only when the user has not moved to another control or connection.
+      restoreFocus();
       modelMenu.scrollTop = 0;
       return;
     }
@@ -703,11 +732,18 @@ export function mountRendererModelPicker(
       document.removeEventListener("keydown", onDocumentKeyDown, true);
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange, true);
+      if (searchRefocusFrame !== undefined) cancelAnimationFrame(searchRefocusFrame);
+      window.removeEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
       menu.remove();
       modelMenu.remove();
       root.remove();
     },
   };
+  const onPreferencesChanged = (): void => {
+    control.favorites = readModelFavorites(control.harnessId);
+    orderModelFavorites(control);
+  };
+  window.addEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
   syncRendererModelTriggerClass(control);
   return control;
 }

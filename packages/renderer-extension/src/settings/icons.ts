@@ -38,7 +38,10 @@ import CircleHelp from "lucide/dist/esm/icons/circle-question-mark.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import Users from "lucide/dist/esm/icons/users.mjs";
 import Plus from "lucide/dist/esm/icons/plus.mjs";
-import codexhostLogoUrl from "../assets/codexhost-app-icon.svg";
+import {
+  CODEXHOST_OTTER_DARK_DETAIL_PATH,
+  CODEXHOST_OTTER_PATH,
+} from "../assets/codexhost-otter.js";
 
 export const RENDERER_SETTINGS_ICON_NAMES = [
   "settings",
@@ -155,46 +158,27 @@ export function createRendererSettingsIcon(name: RendererSettingsIconName, size 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
 /**
- * Line brand mark in `currentColor` for native icon surfaces such as the rail:
- * the app icon's open ring and core square without its plate. The ring is a
- * little heavier than native strokes so the mark stays recognizable at 20px.
+ * Original otter without a plate: currentColor in light UI, two neutral inks in dark UI.
+ * Native color-scheme inheritance also works inside the settings shadow root.
+ * Rail hover/selection treatment is unchanged; historical CH marks remain archived.
  */
 export function createRendererSettingsBrandGlyph(size = 20): SVGElement {
   const svg = document.createElementNS(SVG_NAMESPACE, "svg");
-  svg.setAttribute("viewBox", "12.8 12.2 40 40");
+  svg.setAttribute("viewBox", "0 0 384 384");
   svg.setAttribute("width", String(size));
   svg.setAttribute("height", String(size));
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("focusable", "false");
-  const ring = document.createElementNS(SVG_NAMESPACE, "path");
-  ring.setAttribute("d", "M 44.55 23.97 A 14.35 14.35 0 1 0 44.55 40.43");
-  ring.setAttribute("fill", "none");
-  ring.setAttribute("stroke", "currentColor");
-  ring.setAttribute("stroke-width", "4.4");
-  ring.setAttribute("stroke-linecap", "round");
-  const core = document.createElementNS(SVG_NAMESPACE, "rect");
-  core.setAttribute("x", "27.6");
-  core.setAttribute("y", "27");
-  core.setAttribute("width", "10.4");
-  core.setAttribute("height", "10.4");
-  core.setAttribute("rx", "2.4");
-  core.setAttribute("fill", "currentColor");
-  svg.append(ring, core);
+  svg.setAttribute("data-codexhost-mark", "otter-navigation");
+  const detail = document.createElementNS(SVG_NAMESPACE, "path");
+  detail.setAttribute("d", CODEXHOST_OTTER_DARK_DETAIL_PATH);
+  detail.setAttribute("fill", "light-dark(transparent, #b8c0c6)");
+  detail.setAttribute("fill-rule", "evenodd");
+  const silhouette = document.createElementNS(SVG_NAMESPACE, "path");
+  silhouette.setAttribute("d", CODEXHOST_OTTER_PATH);
+  silhouette.setAttribute("fill", "light-dark(currentColor, #697680)");
+  silhouette.setAttribute("fill-rule", "evenodd");
+  svg.append(detail, silhouette);
   svg.classList.add("codexhost-settings-icon");
   return svg;
-}
-
-export function createRendererSettingsBrandIcon(size = 22): HTMLImageElement {
-  const icon = document.createElement("img");
-  icon.src = codexhostLogoUrl;
-  icon.alt = "";
-  icon.width = size;
-  icon.height = size;
-  icon.draggable = false;
-  icon.setAttribute("aria-hidden", "true");
-  icon.style.width = `${size}px`;
-  icon.style.height = `${size}px`;
-  icon.style.objectFit = "contain";
-  icon.classList.add("codexhost-settings-icon");
-  return icon;
 }

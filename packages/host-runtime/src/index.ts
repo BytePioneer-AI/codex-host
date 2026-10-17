@@ -13,6 +13,10 @@ export type {
 } from "./harness-plugin-loader.js";
 export { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 export { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
+export { ClientChannelEvents } from "./client-channel-events.js";
+export { SharedWebCodexOwner } from "./web-codex-owner.js";
+export { startClientChannelServer } from "./client-channel-server.js";
+export type { ClientChannelTarget } from "./client-channel-server.js";
 export {
   AppServerHost,
   classifyCreateRequestRoute,

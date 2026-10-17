@@ -102,6 +102,11 @@ export interface SessionReadOptions {
   sessionId?: string;
   onTokenCount?: (info: unknown) => void;
   onIncomplete?: () => void;
+  /** Native fork prefixes use exclusive per-Thread ordinals. */
+  endOrdinalExclusive?: number;
+  onInheritedHistory?: (metadata: Record<string, unknown>) => void;
+  onTurnId?: (id: string) => void;
+  onTurnTiming?: (turnId: string, latencyMs: number, at: number) => void;
 }
 
 /** Shared by the plugin and fixture tests; a thread can continue across several rollout files. */
@@ -121,10 +126,19 @@ export async function readCodexRollouts(
     forkAt = 0,
     seen = 0,
     firstPrompt: string | undefined;
-  for (const file of files) {
+  let lastOrdinal = -1;
+  reading: for (const file of files) {
     for await (const line of rolloutLines(file, signal)) {
       signal.throwIfAborted();
       if (++seen % 128 === 0) await yieldToEventLoop(undefined, { signal });
+      if (options.endOrdinalExclusive !== undefined) {
+        if (lastOrdinal >= options.endOrdinalExclusive - 1) break reading;
+        const ordinal = object(JSON.parse(line))?.ordinal;
+        if (typeof ordinal !== "number" || !Number.isSafeInteger(ordinal) || ordinal < 0)
+          throw new Error("Codex inherited history has no trustworthy ordinal boundary");
+        lastOrdinal = Math.max(lastOrdinal, ordinal);
+        if (ordinal >= options.endOrdinalExclusive) break reading;
+      }
       const kind = rowKind(line);
       if (!kind && line.trim()) options.onIncomplete?.();
       if (!kind || !ROW_KINDS.has(kind)) continue;
@@ -132,7 +146,7 @@ export async function readCodexRollouts(
       if (kind === "response_item" && !/"role"\s*:\s*"user"/u.test(line.slice(0, 1024))) continue;
       if (
         kind === "event_msg" &&
-        !/"type"\s*:\s*"(?:token_count|task_started|thread_settings_applied|user_message)"/u.test(
+        !/"type"\s*:\s*"(?:token_count|task_started|task_complete|thread_settings_applied|user_message)"/u.test(
           line.slice(0, 1024),
         )
       )
@@ -155,11 +169,17 @@ export async function readCodexRollouts(
           if (!firstMeta) {
             if (text(p.id) !== thread)
               throw new Error("Codex rollout identity does not match its source");
-            if (p.forked_from_id || p.parent_thread_id || p.subagent_history_start_ordinal) {
+            if (
+              p.forked_from_id ||
+              p.parent_thread_id ||
+              p.subagent_history_start_ordinal ||
+              object(p.history_base)
+            ) {
               forkAt = nativeTimeMs(p.timestamp) ?? at;
               // Global attribution excludes inherited requests. Until a complete session-view
               // replay exists, do not advertise these own-only records as the whole session.
-              options.onIncomplete?.();
+              if (options.onInheritedHistory) options.onInheritedHistory(p);
+              else options.onIncomplete?.();
             }
             cwd = text(p.cwd);
             firstMeta = true;
@@ -169,6 +189,7 @@ export async function readCodexRollouts(
           break;
         }
         case "turn_context":
+          if (text(p.turn_id)) options.onTurnId?.(text(p.turn_id));
           ownFrom ??= counters.entries.length;
           model = text(p.model) || model;
           counters.context("", text(p.turn_id), model);
@@ -195,8 +216,15 @@ export async function readCodexRollouts(
           break;
         case "event_msg":
           if (p.type === "task_started") {
+            if (text(p.turn_id)) options.onTurnId?.(text(p.turn_id));
             counters.context("", text(p.turn_id), "");
             counters.boundary();
+          }
+          if (p.type === "task_complete" && text(p.turn_id)) {
+            options.onTurnId?.(text(p.turn_id));
+            const latency = p.time_to_first_token_ms;
+            if (typeof latency === "number" && Number.isSafeInteger(latency) && latency >= 0)
+              options.onTurnTiming?.(text(p.turn_id), latency, at);
           }
           if (p.type === "user_message") {
             counters.boundary();
@@ -222,6 +250,8 @@ export async function readCodexRollouts(
       }
     }
   }
+  if (options.endOrdinalExclusive !== undefined && lastOrdinal < options.endOrdinalExclusive - 1)
+    options.onIncomplete?.();
   if (!firstMeta) throw new Error("Codex rollout has no valid session metadata");
   return counters.entries.flatMap((v, index) => {
     // Replayed history still feeds the counters above, so later deltas stay right; it is not

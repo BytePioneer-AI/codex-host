@@ -273,7 +273,7 @@ export function createFixture(
     pluginDirectory?: string;
     codexUsage?: boolean;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
-    mappingStore?: MappingStore;
+    mappingStore?: AppServerHostOptions["mappingStore"];
     mappingStoreDirectory?: string;
     closeMappingStoreOnExit?: boolean;
     desktopOutput?: PassThrough;

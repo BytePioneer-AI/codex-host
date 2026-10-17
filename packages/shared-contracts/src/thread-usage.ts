@@ -7,6 +7,24 @@ const nonNegativeSafeIntegerSchema = z.number().int().safe().nonnegative();
 const finiteNonNegativeNumberSchema = z.number().finite().nonnegative();
 const cacheHitRatePercentSchema = z.number().finite().min(0).max(100);
 
+/** Latest reliable display measurements; no execution state or request ledger. */
+const usageMeasurementSchema = z
+  .object({
+    value: finiteNonNegativeNumberSchema,
+    turnId: z.string().min(1).max(1024),
+    at: nonNegativeSafeIntegerSchema,
+  })
+  .strict();
+export const usageMeasurementsSchema = z
+  .object({
+    outputTokensPerSecond: usageMeasurementSchema.optional(),
+    timeToFirstOutputMs: usageMeasurementSchema
+      .extend({ value: nonNegativeSafeIntegerSchema })
+      .optional(),
+  })
+  .strict();
+export type UsageMeasurementsSnapshot = z.infer<typeof usageMeasurementsSchema>;
+
 export const threadUsageSnapshotSchema = z
   .object({
     inputTokens: nonNegativeSafeIntegerSchema.optional(),

@@ -1,3 +1,7 @@
+import {
+  HARNESS_PREFERENCES_UPDATED_EVENT,
+  rendererHarnessPreferences,
+} from "./renderer-harness-preferences.js";
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
 import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
@@ -742,6 +746,8 @@ export function installRendererBindingProbe(
     ...(options.defaultAgent ? { defaultAgent: options.defaultAgent } : {}),
   });
   const mountedByComposer = new Map<Element, MountedComposer>();
+  // composerId belongs to the logical draft and survives DOM replacement.
+  const pendingDefaultPreferences = new Map<string, boolean>();
   const catalogRequests = new WeakMap<MountedComposer, MountedCatalogRequest>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
@@ -945,6 +951,8 @@ export function installRendererBindingProbe(
   };
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
+    const mounted = mountedByComposer.get(composer);
+    if (mounted) pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
     const state = controller.recordSubmission(composer);
     const preferenceStorage = rendererNewThreadPreferenceStorage(activeModelHostId(composer));
     writeNewThreadAgentPreference(state.agent, preferenceStorage);
@@ -997,6 +1005,7 @@ export function installRendererBindingProbe(
 
   const renderMounted = (mounted: MountedComposer): void => {
     if (!isMountedComposer(mounted.composer)) return;
+    restorePendingDraftPreference(mounted);
     const hostId = mounted.hostId;
     mounted.control.setPlugins(
       hostId
@@ -2168,6 +2177,7 @@ export function installRendererBindingProbe(
     mounted: MountedComposer,
     agent: RendererAgent,
   ): Promise<boolean> => {
+    pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
     if (agent !== "codex" && composerAvailability(mounted)[agent] !== "ready") {
       return false;
     }
@@ -2204,6 +2214,37 @@ export function installRendererBindingProbe(
       }
     }
   };
+
+  // A delayed initial snapshot may initialize only a pristine draft. User input,
+  // explicit configuration and submission permanently take ownership of this draft.
+  function restorePendingDraftPreference(mounted: MountedComposer): void {
+    if (!pendingDefaultPreferences.get(controller.get(mounted.composer).composerId)) return;
+    const state = controller.get(mounted.composer);
+    const editor = mounted.composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
+    if (
+      mounted.modelTarget?.[0] !== "default" ||
+      state.phase !== "draft" ||
+      controller.isSubmissionPending(mounted.composer) ||
+      editor?.textContent?.trim()
+    ) {
+      pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
+      return;
+    }
+    const hostId = activeModelHostId(mounted.composer);
+    if (!hostId || !rendererHarnessPreferences(hostId)) return;
+    const agent = readNewThreadAgentPreference(
+      new Set(enabledAgents),
+      rendererNewThreadPreferenceStorage(hostId),
+    );
+    if (agent && agent !== "codex" && composerAvailability(mounted)[agent] !== "ready") return;
+    pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
+    if (!agent) return;
+    if (state.agent !== agent) void switchComposerAgent(mounted, agent);
+    else if (agent !== "codex") {
+      controller.clearConfiguration(mounted.composer);
+      void loadExternalCatalog(mounted);
+    }
+  }
 
   const loadCodexAccounts = async (): Promise<void> => {
     const hostIds = new Set([...mountedByComposer.values()].map((mounted) => mounted.hostId));
@@ -2696,16 +2737,19 @@ export function installRendererBindingProbe(
       (modelId) => {
         const mounted = mountedByComposer.get(composer);
         if (!composer.isConnected || !mounted) return;
+        pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
         void selectExternalModel(mounted, modelId);
       },
       (thinkingOptionId) => {
         const mounted = mountedByComposer.get(composer);
         if (!composer.isConnected || !mounted) return;
+        pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
         void selectExternalThinking(mounted, thinkingOptionId);
       },
       (permissionModeId) => {
         const mounted = mountedByComposer.get(composer);
         if (!composer.isConnected || !mounted) return;
+        pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
         void selectPermissionMode(mounted, permissionModeId);
       },
       () => {
@@ -2714,6 +2758,14 @@ export function installRendererBindingProbe(
         if (editor) delegationMention?.openFor(editor);
       },
     );
+    if (!pendingDefaultPreferences.has(state.composerId)) {
+      pendingDefaultPreferences.set(
+        state.composerId,
+        modelTarget?.[0] === "default" &&
+          !(hostId && rendererHarnessPreferences(hostId)) &&
+          !editor.textContent?.trim(),
+      );
+    }
     const mounted: MountedComposer = {
       composer,
       composerId: state.composerId,
@@ -2962,6 +3014,7 @@ export function installRendererBindingProbe(
     if (!composer) return;
     controller.clearPendingSubmission(composer);
     const mounted = mountedByComposer.get(composer);
+    if (mounted) pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
     if (mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) return;
     if (controller.isSwitching(composer) || !applyComposerAgent(composer)) blockEvent(event);
   };
@@ -3007,6 +3060,7 @@ export function installRendererBindingProbe(
     const candidate = composerForElement(button);
     const composer = candidate && isMountedComposer(candidate) ? candidate : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
+    if (mounted) pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
     if (!composer || !mounted || refreshSendButton(mounted.control) !== button) return;
     if (!prepareComposer(composer)) {
       blockEvent(event);
@@ -3122,6 +3176,10 @@ export function installRendererBindingProbe(
       }
     }
   };
+  const onPreferencesChanged = (): void => {
+    for (const mounted of mountedByComposer.values()) renderMounted(mounted);
+  };
+  window.addEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
   window.addEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
   window.addEventListener("codexhost:draft-workspace", onDraftWorkspace);
   window.addEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
@@ -3301,6 +3359,8 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      pendingDefaultPreferences.clear();
+      window.removeEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
       usageNotificationDispose();
       adapterDispose?.();
       adapterDispose = null;

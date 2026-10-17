@@ -1,0 +1,56 @@
+{
+  "name": "@deepseek-ai/dsh-client-ui-conversation",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-client-store": "*",
+    "@deepseek-ai/dsh-util-values": "*",
+    "@deepseek-ai/dsh-util-crypto": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-client-ui-primitives": "*",
+    "@deepseek-ai/dsh-client-ui-slots": "*",
+    "@deepseek-ai/dsh-file-reference": "*",
+    "@deepseek-ai/dsh-util-workspace-path": "*",
+    "react": "^18.2.0",
+    "clsx": "^2.0.0",
+    "react-dom": "^18.2.0",
+    "lexical": "^0.49.0",
+    "@lexical/utils": "^0.49.0",
+    "@deepseek-ai/dsh-api-workspace-controller": "*",
+    "zod": "^4.4.3",
+    "@lexical/plain-text": "^0.49.0",
+    "@lexical/history": "^0.49.0",
+    "@lexical/text": "^0.49.0"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-file-upload",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ],
+      "platform": "web"
+    }
+  }
+}

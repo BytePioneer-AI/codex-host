@@ -1,0 +1,29 @@
+{
+  "name": "@deepseek-ai/dsh-client-connection",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "*"
+  },
+  "dsh": {
+    "client": {
+      "inject": [],
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

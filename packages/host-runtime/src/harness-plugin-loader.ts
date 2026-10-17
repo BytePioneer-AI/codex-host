@@ -12,7 +12,9 @@ import {
   HARNESS_PLUGIN_API_VERSION,
   HARNESS_PLUGIN_LIMIT,
   harnessPluginDescriptorSchema,
+  isHarnessPluginInScope,
   type HarnessPluginDescriptor,
+  type HarnessPluginScope,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -45,6 +47,8 @@ export interface LoadHarnessPluginsOptions {
   /** Absolute trusted roots only. Each root grants execution through enabled.json. */
   roots: readonly string[];
   context: HarnessPluginContext;
+  /** Defaults to external. Codex execution requires a separate Web-owned registry. */
+  scope?: HarnessPluginScope;
   /** Local, persisted entrypoints; requested only for opted-in plugins. */
   launchCommandForPlugin?: (id: string) => Promise<string | undefined>;
   /** Prevent conflicts with explicitly injected Adapters, e.g. test fixtures. */
@@ -57,6 +61,8 @@ export interface LoadHarnessPluginsOptions {
   warmup?: boolean;
   /** Dedicated runtime owners (e.g. a Broker) may instantiate only their requested plugin. */
   onlyIds?: ReadonlySet<string>;
+  /** A GUI proxy loads usage plugins only; the shared owner loads Session adapters. */
+  sessionPlugins?: boolean;
   /** Load statistics-only plugins first and publish their settled registry before Session
    * plugins start. Ownership/cleanup remains with the returned registry.
    */
@@ -238,7 +244,8 @@ export async function loadHarnessPlugins(
     throw new Error("Plugin load timeout must be between 1 and 60000 milliseconds");
   }
   if (options.roots.length > 8) throw new Error("Too many Harness plugin roots");
-  const registry = new HarnessPluginRegistry();
+  const scope = options.scope ?? "external";
+  const registry = new HarnessPluginRegistry(scope);
   // Diagnostics contain stable codes and public identity only, never module errors,
   // filesystem paths, configuration values, or credentials supplied by plugins.
   const diagnose = (diagnostic: HarnessPluginDiagnostic): void => {
@@ -255,7 +262,7 @@ export async function loadHarnessPlugins(
   for (const { manifest } of candidates)
     counts.set(manifest.id, (counts.get(manifest.id) ?? 0) + 1);
   for (const id of enabledIds) {
-    if (!counts.has(id)) diagnose({ id, code: "notFound" });
+    if (isHarnessPluginInScope(id, scope) && !counts.has(id)) diagnose({ id, code: "notFound" });
   }
   if (candidates.length > HARNESS_PLUGIN_LIMIT) {
     diagnose({ code: "invalidRoot" });
@@ -265,7 +272,11 @@ export async function loadHarnessPlugins(
   const pending: Candidate[] = [];
   for (const candidate of candidates) {
     const { manifest } = candidate;
+    // Runtime ownership is checked before imports, factory calls, or warmup. An
+    // enabled.json entry or onlyIds selection cannot widen the owner's scope.
+    if (!isHarnessPluginInScope(manifest.id, scope)) continue;
     if (!candidate.enabled || (options.onlyIds && !options.onlyIds.has(manifest.id))) continue;
+    if (options.sessionPlugins === false && manifest.kind !== "usage") continue;
     if (counts.get(manifest.id) !== 1 || options.reservedIds?.has(manifest.id)) {
       if (!conflicted.has(manifest.id)) diagnose({ id: manifest.id, code: "duplicateId" });
       conflicted.add(manifest.id);

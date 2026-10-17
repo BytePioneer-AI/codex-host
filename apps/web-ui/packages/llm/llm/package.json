@@ -1,0 +1,45 @@
+{
+  "name": "@deepseek-ai/dsh-llm",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./types": {
+      "types": "./src/types.ts",
+      "default": "./src/types.ts"
+    },
+    "./brand": {
+      "types": "./src/brand.ts",
+      "default": "./src/brand.ts"
+    },
+    "./message": {
+      "types": "./src/message.ts",
+      "default": "./src/message.ts"
+    },
+    "./assistant-stream": {
+      "types": "./src/assistant-stream.ts",
+      "default": "./src/assistant-stream.ts"
+    },
+    "./typert": {
+      "types": "./src/typert.host.ts",
+      "default": "./src/typert.host.ts"
+    },
+    "./remote": {
+      "types": "./generated/remote.d.ts",
+      "default": "./generated/remote.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-util-values": "*",
+    "@deepseek-ai/dsh-brand": "*",
+    "@deepseek-ai/dsh-util-crypto": "*",
+    "zod": "^4.4.3"
+  }
+}

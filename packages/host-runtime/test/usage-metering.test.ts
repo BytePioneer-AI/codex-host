@@ -306,3 +306,15 @@ describe("UsageMeter timing", () => {
     expect(completeMeter().derive(null, prices)?.outputTokensPerSecond).toBeUndefined();
   });
 });
+
+it("preserves the latest native speed after taking a boundary snapshot without replacing native fees", () => {
+  const meter = new UsageMeter();
+  meter.restoreMeasurements({ outputTokensPerSecond: 100 }, "old", 1);
+  const native = { outputTokensPerSecond: 55, totalCostUsd: 0.25 };
+  expect(meter.derive(native, prices)).toMatchObject(native);
+  expect(meter.measurementSnapshot(native, "next").outputTokensPerSecond).toMatchObject({
+    value: 55,
+    turnId: "next",
+  });
+  expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(55);
+});

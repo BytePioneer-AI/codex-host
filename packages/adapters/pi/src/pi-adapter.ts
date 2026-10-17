@@ -879,11 +879,17 @@ class PiHarnessSession implements HarnessSession {
           }
           this.#completeTurn(
             active,
-            {
-              status: "failed",
-              error: normalizedError(error, "nativeFailure"),
-              ...(identity ? { checkpoint: identity.checkpoint } : {}),
-            },
+            active.cancellationRequested
+              ? {
+                  status: "cancelled",
+                  reason: "Cancelled by user",
+                  ...(identity ? { checkpoint: identity.checkpoint } : {}),
+                }
+              : {
+                  status: "failed",
+                  error: normalizedError(error, "nativeFailure"),
+                  ...(identity ? { checkpoint: identity.checkpoint } : {}),
+                },
             undefined,
             identity?.nativeTurnRef,
           );

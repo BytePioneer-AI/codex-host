@@ -1,7 +1,9 @@
 import { z } from "zod";
+export * from "./client-channel.js";
 export * from "./delegation-read.js";
 export * from "./credential-imports.js";
 export * from "./harness-display-settings.js";
+export * from "./harness-preferences.js";
 export * from "./harness-presentation.js";
 export * from "./account-credits-presentation.js";
 export * from "./model-price-overrides.js";
@@ -79,12 +81,15 @@ export {
   harnessPluginListParamsSchema,
   harnessPluginListResultSchema,
   harnessPluginManifestSchema,
+  installedHarnessPluginIdSchema,
+  isHarnessPluginInScope,
 } from "./harness-plugins.js";
 export type {
   HarnessPluginConfiguration,
   HarnessPluginDescriptor,
   HarnessPluginListResult,
   HarnessPluginManifest,
+  HarnessPluginScope,
 } from "./harness-plugins.js";
 export * from "./harness-launch-settings.js";
 export * from "./harness-installation.js";
@@ -373,3 +378,6 @@ export {
   type CodexSshConnection,
   type CodexSshDraft,
 } from "./remote-connections.js";
+
+export { usageMeasurementsSchema, type UsageMeasurementsSnapshot } from "./thread-usage.js";
+export * from "./web-codex-owner.js";

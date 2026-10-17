@@ -20,7 +20,9 @@ import {
   RendererSettingsPageScope,
   type RendererSettingsPageDefinition,
 } from "../settings/core.js";
-import { createRendererSettingsBrandIcon, createRendererSettingsIcon } from "../settings/icons.js";
+import { createRendererSettingsIcon } from "../settings/icons.js";
+import { createRendererColoredBrandMark } from "../renderer-brand-mark.js";
+import coloredBrandCss from "../renderer-brand-mark.css";
 import {
   resolveRendererSettingsLocale,
   rendererSettingsMessages,
@@ -184,7 +186,7 @@ export function startConsoleApp(document: Document): void {
   // Constructable sheets: the page CSP forbids inline style elements.
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(
-    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${consoleCss}`,
+    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${consoleCss}\n${coloredBrandCss}`,
   );
   shadow.adoptedStyleSheets = [sheet];
 
@@ -231,7 +233,7 @@ export function startConsoleApp(document: Document): void {
     document,
     "div",
     { className: "console-brand" },
-    createRendererSettingsBrandIcon(28),
+    createRendererColoredBrandMark(document, 28),
     h(
       document,
       "div",

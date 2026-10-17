@@ -1,0 +1,31 @@
+{
+  "name": "@deepseek-ai/dsh-schedule",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client.ts",
+      "default": "./src/client.ts"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./typert": {
+      "types": "./src/typert.host.ts",
+      "default": "./src/typert.host.ts"
+    },
+    "./remote": {
+      "types": "./generated/remote.d.ts",
+      "default": "./generated/remote.js"
+    }
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  }
+}

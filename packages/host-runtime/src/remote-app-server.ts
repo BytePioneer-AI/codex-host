@@ -2,9 +2,10 @@ import { createServer, type Server as HttpServer } from "node:http";
 import net from "node:net";
 import { chmod, lstat, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { PassThrough, type Readable, type Writable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
+import { attachRemoteAppServerSession } from "./remote-app-server-session.js";
 
-import { WebSocketServer, type RawData, type WebSocket } from "ws";
+import { WebSocketServer } from "ws";
 
 import { withRemoteAppServerSocketInitializationLock } from "./remote-socket-lock.js";
 
@@ -269,13 +270,6 @@ export function officialLoopbackListenerArguments(arguments_: readonly string[])
   return result;
 }
 
-function rawDataBuffer(data: RawData): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data);
-  throw new Error("Unsupported WebSocket frame payload");
-}
-
 interface UnixFileIdentity {
   dev: number;
   ino: number;
@@ -338,27 +332,6 @@ export async function prepareRemoteAppServerSocketDirectory(socketPath: string):
   await chmod(socketDirectory, 0o700);
 }
 
-function sendOutputFrames(socket: WebSocket, output: PassThrough): void {
-  let pending = Buffer.alloc(0);
-  output.on("data", (chunk: Buffer | string) => {
-    pending = Buffer.concat([pending, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-    while (true) {
-      const newline = pending.indexOf(0x0a);
-      if (newline < 0) break;
-      const frame = pending.subarray(0, newline);
-      pending = pending.subarray(newline + 1);
-      if (socket.readyState === socket.OPEN) socket.send(frame, { binary: false });
-    }
-  });
-  output.once("end", () => {
-    if (pending.length > 0 && socket.readyState === socket.OPEN) {
-      socket.close(1011, "Host Runtime emitted an incomplete frame");
-    } else if (socket.readyState === socket.OPEN) {
-      socket.close(1000);
-    }
-  });
-}
-
 export function createRemoteAppServerWebSocketListener(input: {
   socketPath: string;
   diagnosticOutput: Writable;
@@ -381,89 +354,17 @@ export function createRemoteAppServerWebSocketListener(input: {
   const closed = Promise.withResolvers<undefined>();
 
   webSockets.on("connection", (socket) => {
-    const desktopInput = new PassThrough();
-    const desktopOutput = new PassThrough();
-    const session = input.createSession({
-      input: desktopInput,
-      output: desktopOutput,
+    const session = attachRemoteAppServerSession({
+      socket,
       diagnosticOutput: input.diagnosticOutput,
+      createSession: input.createSession,
     });
-    sendOutputFrames(socket, desktopOutput);
-    let inputTail = Promise.resolve();
-    let sessionDisconnecting = false;
-    let sessionClosing = false;
-    let sessionFinished = false;
-    const disconnectSession = (): void => {
-      if (sessionDisconnecting || sessionClosing || sessionFinished) return;
-      sessionDisconnecting = true;
-      const disconnect = (): void => {
-        if (sessionClosing || sessionFinished) return;
-        try {
-          session.disconnect();
-        } catch (error) {
-          input.diagnosticOutput.write(
-            `codexhost remote app-server disconnect: ${error instanceof Error ? error.message : String(error)}\n`,
-          );
-          closeSession();
-        }
-      };
-      void inputTail.then(disconnect, disconnect);
-    };
-    const closeSession = (): void => {
-      desktopInput.destroy();
-      if (sessionClosing || sessionFinished) return;
-      sessionClosing = true;
-      try {
-        session.close();
-      } catch (error) {
-        input.diagnosticOutput.write(
-          `codexhost remote app-server close: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-      }
-    };
-    socket.on("message", (data, isBinary) => {
-      if (isBinary) {
-        socket.close(1003, "Codex app-server messages must be text");
-        return;
-      }
-      const frame = rawDataBuffer(data);
-      inputTail = inputTail.then(
-        () =>
-          new Promise<void>((resolve, reject) => {
-            desktopInput.write(Buffer.concat([frame, Buffer.from("\n")]), (error) =>
-              error ? reject(error) : resolve(),
-            );
-          }),
-      );
-      void inputTail.catch(() => socket.close(1011, "Host Runtime input failed"));
+    const running = session.running.finally(() => {
+      sessions.delete(running);
+      sessionClosers.delete(session.close);
     });
-    // A transport disconnect is not a user cancellation. End the Desktop input
-    // after accepted frames drain so AppServerHost can keep an active Turn alive
-    // until its real terminal event. Listener shutdown still uses closeSession.
-    socket.once("close", disconnectSession);
-    socket.once("error", disconnectSession);
-    const running = session
-      .run()
-      .then((code) => {
-        if (code !== 0 && socket.readyState === socket.OPEN) {
-          socket.close(1011, "Host Runtime exited");
-        }
-      })
-      .catch((error: unknown) => {
-        input.diagnosticOutput.write(
-          `codexhost remote app-server: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-        if (socket.readyState === socket.OPEN) socket.close(1011, "Host Runtime failed");
-      })
-      .finally(() => {
-        sessionFinished = true;
-        desktopInput.destroy();
-        desktopOutput.end();
-        sessions.delete(running);
-        sessionClosers.delete(closeSession);
-      });
     sessions.add(running);
-    sessionClosers.add(closeSession);
+    sessionClosers.add(session.close);
   });
 
   return {

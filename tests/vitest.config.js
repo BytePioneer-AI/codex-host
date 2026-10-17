@@ -6,6 +6,7 @@ import { configDefaults, defineConfig } from "vitest/config";
 const root = path.resolve(import.meta.dirname, "..");
 const include = [
   "packages/**/test/**/*.test.ts",
+  "tests/integration/**/*.test.ts",
   "packages/repository-automation/test/**/*.test.mjs",
   "tests/release/**/*.test.mjs",
   "tools/**/*.test.mjs",
@@ -35,9 +36,14 @@ export default defineConfig({
   test: {
     environment: "node",
     include,
-    ...(platformOnly
-      ? { exclude: [...configDefaults.exclude, ...platformIndependentFiles()] }
-      : {}),
+    // The Web Host owns Node test-runner suites, invoked by npm run test:web.
+    exclude: [
+      ...configDefaults.exclude,
+      "packages/web-server/test/**",
+      // Native service tests use Node's runner after building the Rust Launcher.
+      "packages/host-runtime/test/native/**",
+      ...(platformOnly ? platformIndependentFiles() : []),
+    ],
     maxWorkers: 4,
     passWithNoTests: false,
     // Hosted Windows runners have highly variable disk latency (fsync + rename

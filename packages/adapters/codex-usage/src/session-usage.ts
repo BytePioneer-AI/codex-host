@@ -1,11 +1,11 @@
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { parseHostUsage, parseHostUsageRequest, type HostUsage } from "@codexhost/harness-adapter";
-import type {
-  HarnessSessionUsageCapability,
-  HarnessSessionUsageHistory,
-} from "@codexhost/harness-adapter/plugin";
-import { createCodexUsageStatistics } from "./usage-statistics.js";
-import { observeSessionUsage, rolloutTokenSnapshot } from "./session-observation.js";
+import { parseHostUsageRequest, type HostUsage } from "@codexhost/harness-adapter";
+import type { HarnessSessionUsageCapability } from "@codexhost/harness-adapter/plugin";
+import { createCodexSessionHistoryReader } from "./session-history.js";
+import { observeSessionUsage } from "./session-observation.js";
 import { CodexResponseTiming } from "./response-timing.js";
 import { object } from "./counters.js";
 
@@ -18,8 +18,19 @@ export function createCodexSessionUsage(
   const rawCompleted = "rawResponse/completed";
   let hideRawCompleted = false;
   const live = new Map<string, HostUsage>();
-  const cache = new Map<string, { fingerprint: string; history: HarnessSessionUsageHistory }>();
+  const reader = createCodexSessionHistoryReader(environment);
+  const home = resolve(
+    environment.CODEX_HOME ||
+      join(environment.HOME || environment.USERPROFILE || homedir(), ".codex"),
+  );
+  let canonicalHome = home;
+  try {
+    canonicalHome = realpathSync(home);
+  } catch {
+    /* A missing home has no history yet. */
+  }
   return {
+    measurementScope: `codex-usage:${canonicalHome}`,
     requestOptions({ method, params, initializeParams }) {
       if (closed.aborted) return null;
       if (method === "initialize") {
@@ -66,68 +77,31 @@ export function createCodexSessionUsage(
       signal = AbortSignal.any([signal, closed]);
       signal.throwIfAborted();
       for (let attempt = 0; ; attempt++) {
-        let snapshot: HostUsage | null = null;
-        let complete = true;
-        const reader = createCodexUsageStatistics(environment, {
-          sessionId,
-          onTokenCount: (info) => {
-            snapshot = rolloutTokenSnapshot(info) ?? snapshot;
-          },
-          onIncomplete: () => {
-            complete = false;
-          },
-        });
-        const sources = await reader.listSources(signal);
-        const source = sources[0];
-        if (!source) return null;
-        let history = cache.get(sessionId);
-        if (history?.fingerprint !== source.fingerprint) {
-          const entries = await reader.readSource(source.id, signal);
-          const requests = entries.map((entry) =>
-            parseHostUsageRequest({
-              requestId: entry.id,
-              historical: true,
-              ...(entry.model ? { model: entry.model } : {}),
-              inputTokens: entry.inputTokens,
-              outputTokens: entry.outputTokens,
-              ...(entry.cachedInputTokens !== undefined
-                ? { cachedInputTokens: entry.cachedInputTokens }
-                : {}),
-              // Codex/OpenAI cache has no separately billed cache creation bucket.
-              cacheWriteInputTokens: entry.cacheWriteInputTokens ?? 0,
-              ...(entry.reasoningOutputTokens !== undefined
-                ? { reasoningOutputTokens: entry.reasoningOutputTokens }
-                : {}),
-            }),
-          );
-          const inputTokens = requests.reduce((sum, r) => sum + r.inputTokens, 0);
-          const outputTokens = requests.reduce((sum, r) => sum + r.outputTokens, 0);
-          const cachedInputTokens = requests.every((r) => r.cachedInputTokens !== undefined)
-            ? requests.reduce((sum, r) => sum + (r.cachedInputTokens ?? 0), 0)
-            : undefined;
-          const last = requests.at(-1);
-          const usage = requests.length
-            ? parseHostUsage({
-                ...(snapshot ?? {}),
-                inputTokens,
-                outputTokens,
-                totalTokens: inputTokens + outputTokens,
-                ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
-                ...(complete && cachedInputTokens !== undefined
-                  ? { sessionCacheUsage: { inputTokens, cachedInputTokens } }
-                  : {}),
-                ...(last?.inputTokens && last.cachedInputTokens !== undefined
-                  ? { cacheHitRatePercent: (last.cachedInputTokens / last.inputTokens) * 100 }
-                  : {}),
-              })
-            : snapshot;
-          history = {
-            fingerprint: source.fingerprint,
-            history: { usage, requests, complete: complete && requests.length > 0 },
-          };
-          cache.set(sessionId, history);
-        }
-        const result = history.history;
+        const history = await reader.read(sessionId, signal);
+        if (!history) return null;
+        const requests = history.entries.map((entry) =>
+          parseHostUsageRequest({
+            requestId: entry.id,
+            historical: true,
+            ...(entry.model ? { model: entry.model } : {}),
+            inputTokens: entry.inputTokens,
+            outputTokens: entry.outputTokens,
+            ...(entry.cachedInputTokens !== undefined
+              ? { cachedInputTokens: entry.cachedInputTokens }
+              : {}),
+            cacheWriteInputTokens: entry.cacheWriteInputTokens ?? 0,
+            ...(entry.reasoningOutputTokens !== undefined
+              ? { reasoningOutputTokens: entry.reasoningOutputTokens }
+              : {}),
+          }),
+        );
+        const result = {
+          usage: history.usage,
+          requests,
+          complete: history.complete && requests.length > 0,
+          retainedTurnIds: history.retainedTurnIds,
+          ...(history.lastTurnTiming ? { lastTurnTiming: history.lastTurnTiming } : {}),
+        };
         const latest = live.get(sessionId);
         // Native notifications can precede disk flush. Never present a stale partial cost as total.
         const caughtUp =

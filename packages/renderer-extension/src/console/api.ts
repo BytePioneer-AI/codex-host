@@ -72,9 +72,30 @@ export async function consolePost<T>(
  */
 export function hostRequestManager(): {
   sendRequest(method: string, params: unknown, options?: unknown): Promise<unknown>;
+  addNotificationCallback?(
+    methods: string | readonly string[],
+    listener: (notification: unknown) => void,
+  ): () => void;
 } {
   return {
+    addNotificationCallback(methods, listener) {
+      const requested = typeof methods === "string" ? [methods] : methods;
+      if (!requested.includes("codexhost/harness/display-settings/changed")) return () => {};
+      const source = new EventSource("/api/host/display-events");
+      source.onmessage = () =>
+        listener({ method: "codexhost/harness/display-settings/changed", params: {} });
+      return () => source.close();
+    },
     async sendRequest(method, params, options) {
+      if (method === "codexhost/harness/display-settings/capabilities") {
+        try {
+          const transport = await consoleGet<{ events: boolean }>("/api/host/display-capabilities");
+          if (!transport.events) return { events: false };
+        } catch (error) {
+          if (error instanceof ConsoleApiError && error.status === 404) return { events: false };
+          throw error;
+        }
+      }
       const signal = options instanceof AbortSignal ? options : undefined;
       const reply = await consolePost<{
         result?: unknown;

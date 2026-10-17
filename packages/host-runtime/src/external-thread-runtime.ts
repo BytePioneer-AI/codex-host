@@ -249,7 +249,10 @@ export class ExternalThreadRuntime {
         !thread.sessionUnavailable &&
         !this.#lifecycle.busy(thread.id) &&
         (input.idleRelease?.canRelease(thread) ?? false),
-      ...(input.idleRelease?.onClosed ? { onClosed: input.idleRelease.onClosed } : {}),
+      onClosed: async (thread) => {
+        await this.persistUsageMeasurements(thread);
+        await input.idleRelease?.onClosed?.(thread);
+      },
       diagnose: input.diagnose,
     });
   }
@@ -298,6 +301,7 @@ export class ExternalThreadRuntime {
     thread.sessionUnavailable = true;
     await this.#lifecycle.release(thread.id, thread.session, thread.outputTask);
     if (this.#threads.get(thread.id) !== thread) return;
+    await this.persistUsageMeasurements(thread);
     await this.#retireSubagents(thread);
     if (this.#threads.get(thread.id) === thread) this.#threads.delete(thread.id);
   }
@@ -392,6 +396,7 @@ export class ExternalThreadRuntime {
       ignoredInteractionIds: new Set(),
       sessionUnavailable: false,
     };
+    this.#restoreUsageMeasurements(externalThread);
     this.idleRelease.touch(externalThread);
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
@@ -711,6 +716,7 @@ export class ExternalThreadRuntime {
       thread.stateObserver = new SessionStateObserver(observerState);
       thread.latestUsage = session.initialUsage;
       thread.usageMeter = new UsageMeter();
+      this.#restoreUsageMeasurements(thread);
       thread.usageTurnId = null;
       thread.thread = externalThreadValue({
         record: aligned.record,
@@ -730,12 +736,83 @@ export class ExternalThreadRuntime {
     }
   }
 
+  /** Persist first accepted input before replying, never on the output/token path. */
+  async capturePreview(thread: ExternalThread, turn: JsonObject): Promise<void> {
+    if (
+      thread.record.preview !== undefined ||
+      thread.record.turnMappings.length !== 0 ||
+      thread.turns.length !== 0
+    )
+      return;
+    try {
+      thread.record = await this.#repository.updatePreview(thread.record, [turn]);
+      thread.thread.preview = thread.record.preview ?? "";
+    } catch (error) {
+      // A display hint must not turn accepted native work into a rejected send.
+      // A later native history read can backfill it.
+      this.#diagnose(error);
+    }
+  }
+
+  #restoreUsageMeasurements(thread: ExternalThread): void {
+    const saved = thread.record.usageMeasurements;
+    if (
+      !saved ||
+      JSON.stringify(saved.nativeSessionRef) !== JSON.stringify(thread.record.nativeSessionRef)
+    )
+      return;
+    const retained = new Set<string>(
+      thread.record.turnMappings.map((mapping) => mapping.hostTurnId),
+    );
+    for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
+      const value = saved.values[field];
+      if (value && retained.has(value.turnId))
+        thread.usageMeter.restoreMeasurements({ [field]: value.value }, value.turnId, value.at);
+    }
+  }
+
+  /** Save display telemetry at lifecycle boundaries; optional failures cannot fail native work. */
+  async persistUsageMeasurements(thread: ExternalThread): Promise<void> {
+    if (this.#threads.get(thread.id) !== thread || thread.record.state !== "ready") return;
+    const snapshot = thread.usageMeter.measurementSnapshot(
+      thread.latestUsage,
+      thread.usageTurnId ?? thread.record.turnMappings.at(-1)?.hostTurnId,
+    );
+    const previous = thread.record.usageMeasurements;
+    if (
+      previous &&
+      JSON.stringify(previous.nativeSessionRef) === JSON.stringify(thread.record.nativeSessionRef)
+    ) {
+      for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
+        const before = previous.values[field],
+          next = snapshot[field];
+        if (before && next && before.value === next.value && before.turnId === next.turnId)
+          snapshot[field] = before;
+      }
+    }
+    if (!Object.keys(snapshot).length && !previous) return;
+    try {
+      const saved = await this.#repository.saveUsageMeasurements(thread.record, snapshot);
+      if (
+        this.#threads.get(thread.id) !== thread ||
+        JSON.stringify(saved.nativeSessionRef) !== JSON.stringify(thread.record.nativeSessionRef)
+      )
+        return;
+      if (saved.usageMeasurements)
+        thread.record = { ...thread.record, usageMeasurements: saved.usageMeasurements };
+      else delete thread.record.usageMeasurements;
+    } catch (error) {
+      this.#diagnose(error);
+    }
+  }
+
   async persistTerminalIdentity(
     thread: ExternalThread,
     event: TurnCompletedEvent,
   ): Promise<Error | null> {
     if (thread.persistenceError) return thread.persistenceError;
     if (!event.nativeTurnRef) {
+      await this.persistUsageMeasurements(thread);
       return event.outcome.status === "succeeded"
         ? new Error("Successful external Turn has no Native Turn identity")
         : null;
@@ -747,6 +824,7 @@ export class ExternalThreadRuntime {
         event.nativeTurnRef,
         event.outcome.checkpoint,
       );
+      await this.persistUsageMeasurements(thread);
       return null;
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(errorMessage(error));

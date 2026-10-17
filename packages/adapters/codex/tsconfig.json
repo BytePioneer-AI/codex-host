@@ -1,0 +1,15 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "types": ["node"],
+    "lib": ["ES2024", "DOM"],
+    "rootDir": "src",
+    "outDir": "dist",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "references": [{ "path": "../../harness-adapter/tsconfig.json" }],
+  "include": ["src/**/*.ts"]
+}

@@ -454,7 +454,7 @@ describe("Harness plugin discovery and loading", () => {
     expect(diagnose).toHaveBeenCalledExactlyOnceWith({ id: "duplicate", code: "duplicateId" });
   });
 
-  it("does not shadow a transitional built-in and rejects the official identity", async () => {
+  it("does not shadow a transitional built-in or register the official identity", async () => {
     const directory = await root(["sample-agent"]);
     await plugin(directory, "sample-agent");
     await plugin(directory, "codex");
@@ -466,10 +466,7 @@ describe("Harness plugin discovery and loading", () => {
       diagnose,
     });
     expect(registry.list()).toEqual([]);
-    expect(diagnose.mock.calls.map(([entry]) => entry.code)).toEqual([
-      "invalidManifest",
-      "duplicateId",
-    ]);
+    expect(diagnose.mock.calls.map(([entry]) => entry.code)).toEqual(["duplicateId"]);
   });
 
   it("keeps an incompatible plugin visible but never imports its entry", async () => {

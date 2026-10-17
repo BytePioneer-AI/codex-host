@@ -5,8 +5,13 @@ import {
   decodeHarnessPluginRoute,
   encodeHarnessPluginRoute,
   harnessPluginConfigurationSchema,
+  harnessPluginDescriptorSchema,
+  harnessPluginIdSchema,
+  harnessPluginListResultSchema,
   harnessPluginManifestSchema,
   harnessPluginRouteSchema,
+  installedHarnessPluginIdSchema,
+  isHarnessPluginInScope,
 } from "../src/index.js";
 
 const manifest = {
@@ -25,7 +30,33 @@ describe("Harness plugin public contracts", () => {
     );
   });
 
-  it.each(["codex", "../agent", "UPPER", "", "a/b", "a..b"])("rejects identity %j", (id) => {
+  it("accepts Codex installation without granting an external Harness identity or route", () => {
+    expect(installedHarnessPluginIdSchema.parse("codex")).toBe("codex");
+    expect(harnessPluginManifestSchema.parse({ ...manifest, id: "codex" }).id).toBe("codex");
+    expect(
+      harnessPluginConfigurationSchema.parse({ version: 1, enabled: ["codex", "codex-usage"] })
+        .enabled,
+    ).toEqual(["codex", "codex-usage"]);
+    const descriptor = harnessPluginDescriptorSchema.parse({
+      id: "codex",
+      name: "Codex",
+      version: "1.0.0",
+    });
+    expect(harnessPluginListResultSchema.safeParse({ plugins: [descriptor] }).success).toBe(false);
+    expect(harnessPluginIdSchema.safeParse("codex").success).toBe(false);
+    expect(harnessPluginRouteSchema.safeParse({ harnessId: "codex" }).success).toBe(false);
+  });
+
+  it("keeps Web Codex and external runtime scopes disjoint", () => {
+    for (const id of ["codex-usage", "sample-agent"]) {
+      expect(isHarnessPluginInScope(id, "external")).toBe(true);
+      expect(isHarnessPluginInScope(id, "web-codex")).toBe(false);
+    }
+    expect(isHarnessPluginInScope("codex", "external")).toBe(false);
+    expect(isHarnessPluginInScope("codex", "web-codex")).toBe(true);
+  });
+
+  it.each(["../agent", "UPPER", "", "a/b", "a..b"])("rejects identity %j", (id) => {
     expect(harnessPluginManifestSchema.safeParse({ ...manifest, id }).success).toBe(false);
   });
 

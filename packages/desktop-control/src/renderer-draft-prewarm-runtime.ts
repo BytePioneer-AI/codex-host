@@ -494,6 +494,12 @@ export function createDraftPrewarmPolicyBridge(
     if (!isRecord(parameters) || parameters.ephemeral === true) {
       return parameters;
     }
+    // An explicit Host route belongs to its caller (including Web over CDP),
+    // not the visible Desktop draft. Preserve its Harness and configuration;
+    // the Host remains responsible for validating the carrier.
+    if (typeof parameters.model === "string" && parameters.model.startsWith("codexhost/")) {
+      return parameters;
+    }
     return {
       ...parameters,
       ...(selectedModel === null ? {} : { model: selectedModel }),

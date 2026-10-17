@@ -5,6 +5,7 @@ mod compatibility;
 mod console;
 mod desktop_attachment;
 mod desktop_path_overrides;
+mod host_service;
 mod installation_layout;
 mod native_harness_broker;
 mod runtime_instance;
@@ -1323,6 +1324,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             codexhost_platform::open_external_url(&url).map_err(Into::into)
         }
         Some("open-loopback-url") => Err("open-loopback-url accepts no arguments".into()),
+        Some("host") => host_service::run(&arguments[1..]),
         Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
         Some("harness") | Some("delegate") | Some("thread") => run_delegation_cli(arguments),
         _ => {

@@ -1,0 +1,71 @@
+.controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 4px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.trigger:hover:not(:disabled) {
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.trigger:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color);
+  outline-offset: 2px;
+}
+
+.trigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  object-fit: contain;
+  border-radius: 3px;
+}
+
+.menu[role="menu"] {
+  width: 248px;
+  min-width: min(220px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: min(520px, calc(100dvh - 48px));
+}
+
+.menu [role="menuitem"] {
+  min-height: 44px;
+  gap: 10px;
+}
+
+.menu [role="menuitem"]:has([data-current]) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.menu [role="presentation"] {
+  white-space: normal;
+}
+
+@media (max-width: 600px) {
+  .trigger {
+    width: 40px;
+    height: 44px;
+  }
+}

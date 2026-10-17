@@ -1,0 +1,23 @@
+{
+  "name": "@codexhost/adapter-codex",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "LGPL-3.0-only",
+  "exports": {
+    "./plugin": {
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js"
+    },
+    "./items": {
+      "types": "./dist/items.d.ts",
+      "import": "./dist/items.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@codexhost/harness-adapter": "0.0.0"
+  }
+}

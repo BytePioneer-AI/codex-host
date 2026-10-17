@@ -7,14 +7,26 @@ export const HARNESS_PLUGIN_MANIFEST_MAX_BYTES = 32 * 1024;
 export const HARNESS_PLUGIN_ICON_MAX_BYTES = 128 * 1024;
 export const HARNESS_PLUGIN_LIMIT = 128;
 
-/** Plugin identities are portable directory/route keys, not arbitrary Native Session IDs. */
-export const harnessPluginIdSchema = z
+/** Installed plugin identities are portable directory keys, not Native Session IDs. */
+export const installedHarnessPluginIdSchema = z
   .string()
   .min(1)
   .max(128)
   .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u)
-  .refine((id) => id !== "codex", "The official Codex identity is reserved")
   .pipe(harnessIdSchema);
+
+/** External Harness routes must never take over the official Desktop Codex identity. */
+export const harnessPluginIdSchema = installedHarnessPluginIdSchema.refine(
+  (id) => id !== "codex",
+  "The official Codex identity is reserved",
+);
+
+/** Selected by the runtime owner, never by a browser request or plugin metadata. */
+export type HarnessPluginScope = "external" | "web-codex";
+
+export function isHarnessPluginInScope(id: string, scope: HarnessPluginScope): boolean {
+  return scope === "web-codex" ? id === "codex" : scope === "external" && id !== "codex";
+}
 
 const relativeResourceSchema = z
   .string()
@@ -56,7 +68,7 @@ export const harnessInstallationGuideSchema = z
 export type HarnessInstallationGuide = z.infer<typeof harnessInstallationGuideSchema>;
 
 const pluginPresentationShape = {
-  id: harnessPluginIdSchema,
+  id: installedHarnessPluginIdSchema,
   name: z.string().trim().min(1).max(128),
   version: z.string().min(1).max(128),
   /** Capability-only plugin; omitted for existing session-capable plugins. */
@@ -143,9 +155,12 @@ export const harnessPluginDescriptorSchema = z
 export type HarnessPluginDescriptor = z.infer<typeof harnessPluginDescriptorSchema>;
 
 export const harnessPluginListParamsSchema = z.object({}).strict();
+/** This is the Desktop/CH external plugin directory, not a Web execution registry. */
 export const harnessPluginListResultSchema = z
   .object({
-    plugins: z.array(harnessPluginDescriptorSchema).max(HARNESS_PLUGIN_LIMIT),
+    plugins: z
+      .array(harnessPluginDescriptorSchema.extend({ id: harnessPluginIdSchema }))
+      .max(HARNESS_PLUGIN_LIMIT),
   })
   .strict();
 export type HarnessPluginListResult = z.infer<typeof harnessPluginListResultSchema>;
@@ -154,7 +169,7 @@ export type HarnessPluginListResult = z.infer<typeof harnessPluginListResultSche
 export const harnessPluginConfigurationSchema = z
   .object({
     version: z.literal(1),
-    enabled: z.array(harnessPluginIdSchema).max(HARNESS_PLUGIN_LIMIT),
+    enabled: z.array(installedHarnessPluginIdSchema).max(HARNESS_PLUGIN_LIMIT),
   })
   .strict()
   .refine((value) => new Set(value.enabled).size === value.enabled.length, {

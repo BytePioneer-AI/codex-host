@@ -70,6 +70,7 @@ export async function findHost(
 }
 
 export interface ConsoleHostClient {
+  displayEvents?(signal: AbortSignal): Promise<Response>;
   available(): Promise<boolean>;
   request(method: string, params: unknown): Promise<HostReply>;
 }
@@ -80,6 +81,14 @@ export function createConsoleHostClient(
 ): ConsoleHostClient {
   const timeoutMs = options.timeoutMs ?? 150_000;
   return {
+    async displayEvents(signal) {
+      const host = await findHost(descriptorDirectory, options.isAlive);
+      if (!host) throw new HostUnavailableError();
+      return fetch(`http://127.0.0.1:${host.port}/display-events`, {
+        headers: { authorization: `Bearer ${host.token}` },
+        signal,
+      });
+    },
     async available() {
       return (await findHost(descriptorDirectory, options.isAlive)) !== null;
     },

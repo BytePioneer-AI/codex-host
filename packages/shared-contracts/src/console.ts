@@ -37,6 +37,7 @@ export const CONSOLE_HOST_METHODS = Object.freeze([
   "codexhost/runtime/status",
   "codexhost/remote/ssh-setup",
   "codexhost/harness/plugins/list",
+  "codexhost/harness/display-settings/capabilities",
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",
   "codexhost/harness/inspect",

@@ -1,0 +1,34 @@
+{
+  "name": "@deepseek-ai/dsh-agent-preset-registry",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./types": {
+      "types": "./src/types.ts",
+      "default": "./src/types.ts"
+    },
+    "./display": {
+      "types": "./src/display.ts",
+      "default": "./src/display.ts"
+    },
+    "./typert": {
+      "types": "./src/typert.host.ts",
+      "default": "./src/typert.host.ts"
+    },
+    "./remote": {
+      "types": "./generated/remote.d.ts",
+      "default": "./generated/remote.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  }
+}

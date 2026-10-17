@@ -56,6 +56,10 @@ plugins/
 
 每个根目录都有自己的 `enabled.json`。发行版生成预装目录的启用文件，作为对随包交付插件的显式信任；用户目录由用户配置。发现但未启用的插件不执行，也不进入目录查询结果。缺少某个根目录或其 `enabled.json` 时不加载该根目录插件；配置无效时拒绝该根目录，不回退到硬编码内置实现。不扫描项目目录，不自动安装或下载依赖，不热替换。
 
+启用许可与运行时所有权是两个条件。公共 Manifest、配置和通用描述可以使用 `codex` ID；Desktop / CH Host 加载器及 Registry 默认使用 `external` 范围，在模块导入、工厂和预取之前排除 `codex`。`onlyIds` 或 `enabled.json` 不能扩大这个范围。独立 Web Codex 执行入口显式使用 `web-codex`，仅加载 `codex`；两种 Registry 各自管理关闭生命周期。范围由服务端装配决定，不由浏览器请求或插件自行声明。
+
+Desktop / CH 的公开插件目录、外部 Harness 路由、Broker 和会话导入仍拒绝 `codex`。GUI 原生 Codex 不注册成 external Thread，也不通过这个执行插件创建、恢复或操作会话；是否共用进程不改变这些边界。
+
 用户目录不是覆盖层；两个根目录出现相同 ID 时，两份候选都拒绝加载。用户 `enabled.json` 也不用于修改预装根目录的启用集合。
 
 **启用的插件是可信本机代码，不是沙箱代码。** 工厂在 Host 进程内运行，具有该进程的权限，并能读取传入的环境变量，包括其中可能存在的凭据。路径和元数据校验不能防止可信插件主动导入其他文件、访问网络、调用 `process.exit` 或阻塞事件循环；也不提供对本地恶意并发文件替换的隔离保证。
@@ -80,7 +84,7 @@ plugins/
 }
 ```
 
-- ID 为最长 128 字符的小写可移植标识；`codex` 保留给官方路径。
+- ID 为最长 128 字符的小写可移植标识；通用安装身份允许 `codex`，外部 Harness 身份仍将其保留给 GUI 官方路径。
 - `manifestVersion` 当前为 `1`；`adapterApiVersion` 与 Host 的整数 API 版本精确匹配。尚未采用版本范围协商。
 - `entry` 是插件内的 `.js` 或 `.mjs` ESM 文件；`.js` 需要按 Node.js ESM 规则声明所属包。Manifest 不负责安装依赖。
 - 资源只能是插件内部相对路径；拒绝目录遍历和解析后逃出根目录的符号链接。
@@ -112,7 +116,7 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 这类插件复用同一可信目录、显式启用、身份校验、加载超时、失败隔离和关闭流程；目录描述保留 `kind: "usage"`。Registry 将其与可创建 Session 的 Adapter 分开，Host 把统计能力接入公共全局统计，可选的 `sessionUsage` 能力接入会话浮窗，不将它加入聊天、模型选择、会话导入或委派路由。加载失败通过统计失败信息报告，不伪造空结果或 Session 方法。
 
-预装的 `codex-usage`（显示名 Codex）是这种插件，实现在 `packages/adapters/codex-usage`。官方 `codex` 身份仍保留给原生路径；插件只读 rollout，并观察现有官方连接的会话用量与轮次通知，不改变 Codex 的聊天、分叉和恢复操作，也不读取账户配额。统计插件可以脱离 Desktop 加载，私有解析与公共 Host 汇总分离，详见[全局用量统计](../product/usage-statistics.md)。
+预装的 `codex-usage`（显示名 Codex）是这种插件，实现在 `packages/adapters/codex-usage`。它与 Web 的 `codex` 执行插件平行、互不依赖；GUI 的官方 `codex` 身份仍保留给原生路径。统计插件只读 rollout，并观察现有官方连接的会话用量与轮次通知，不改变 Codex 的聊天、分叉和恢复操作，也不读取账户配额。统计插件可以脱离 Desktop 加载，私有解析与公共 Host 汇总分离，详见[全局用量统计](../product/usage-statistics.md)。
 
 ### 可选的独立会话用量
 

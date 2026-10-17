@@ -23,7 +23,7 @@ The hook forces Statsig `checkGate("206132468")` to false on every client regist
 
 1. Unless `CODEXHOST_CPA_LIVE_VOICE=0`, the Controller prefixes the production Renderer source with a frozen `globalThis.__codexhostCpaLiveVoiceHookV1` record (audited Desktop version and `app-initial` asset name only).
 2. `Page.addScriptToEvaluateOnNewDocument` plus immediate `Runtime.evaluate` inject the Host Renderer into the primary `app://-/index.html` page.
-3. Voice starts on the avatar overlay (`app://-/index.html?initialRoute=/avatar-overlay`). That page gets a **hook-only** bundle (`cpa-live-voice-hook.js`), not the Host Renderer binding. The overlay loads the same audited `app-initial` asset in its own JavaScript realm with its own Statsig client.
+3. Voice starts on the avatar overlay (`app://-/index.html?initialRoute=/avatar-overlay`). That page gets a **hook-only** bundle (`cpa-live-voice-hook.js`), not the Host Renderer binding. The overlay loads the same audited `app-initial` asset in its own JavaScript realm with its own Statsig client. The overlay bundle also drops Host `thread/started` and turn/item notifications unless that overlay currently owns the realtime Thread, so a leftover overlay does not upsert CLI-created Threads or rebind the same Turn into the main chat.
 4. The Renderer hook no-ops unless the exact audited `app://-/assets/app-initial-6350d04672d0.js` asset is present (performance entries, script src, or link href, including relative URLs). Unknown assets fail closed; matching text in a query string or source-map filename is insufficient.
 5. On a matching page it polls for up to 60 seconds until a Statsig client is registered, then wraps that client's `checkGate`. The gate is read when voice starts, so the wrap only has to land before the first voice click.
 
@@ -44,3 +44,103 @@ Audited only for Desktop **26.1007.30912** (primary bundle `app-initial-6350d046
 - Do not quit or replace the working Voice copy until the CodexHost path proves `POST /v1/realtime/calls` 201.
 - Do not put call IDs, SDP, or auth material in docs, git, or command output.
 - Do not `git push` this branch or open an upstream PR unless explicitly requested.
+
+## External Harness voice (local development build)
+
+New-chat voice launches use the primary Composer's current Harness selection.
+On the audited Desktop build, the primary Renderer imports the already-loaded
+browser module `app-shared-8bd9d0399038.js` and wraps only its native
+`realtimeVoiceRuntime` service reference (export `fN`). Its RPC stubs themselves
+are immutable. For `composer_button_new_thread`, the wrapper snapshots the
+matching Host's selected transport carrier into
+`activeCollaborationMode.settings.model`. The separate voice overlay forwards
+that collaboration mode into native Thread creation, which uses its model for
+`thread/start`. This prevents a new Grok voice chat from silently becoming an
+official Codex chat. No browser message transport or ASAR code is patched.
+
+The wrapper requires both exact audited frontend assets. It imports only after
+they are present and waits up to 60 seconds for the native services record.
+Existing-Thread launches, avatar/global launches, official Codex selection,
+ambiguous Composers and mismatched/disconnected Host owners pass through.
+Selection is captured before launch, so changing the draft later cannot retarget
+an in-flight voice chat. This is generic to the selected Harness, not Grok-specific.
+The new-chat correction has focused routing/forwarding tests; installed native
+button acceptance is still required. Earlier installed acceptance exposed the
+missing new-chat selection handoff despite successful isolated transport trials.
+
+External `thread/start`, `thread/resume`, and `thread/fork` report
+`sandbox: { type: "externalSandbox", networkAccess: "enabled" }`. Codex does not
+enforce a sandbox on those Threads; Harness permission modes stay authoritative.
+Native voice overlay startup also sends `thread/settings/update` with
+`summary: "detailed"` when concurrent reasoning summaries are enabled. External
+`thread/settings/update` returns an empty success without applying Codex
+sandbox or permission changes; Harness permission modes stay authoritative.
+Official Codex sandbox traffic is unchanged.
+
+External Threads now have a separate Host-owned handler for native WebRTC audio
+`thread/realtime/start` and `thread/realtime/stop`. Official Codex Threads continue
+through the native app-server unchanged, including their existing gateway routing.
+The handler uses the selected external Thread's existing HarnessSession and normal
+Turn/approval projection; it does not start a second agent or import a concrete Adapter.
+
+The transport targets CPA's frameless V3 client-delegation protocol. It posts the
+Desktop SDP and client-delegation session to the configured realtime call base,
+returns the answer through native `started`/`sdp` notifications, and joins the
+configured WebSocket base at `/live/{callId}`. Both configured bases must use HTTPS
+and share an origin. Authentication uses the selected configured model provider's
+`experimental_bearer_token` or `env_key`; OAuth from `auth.json` is never copied.
+The Host reads `CODEX_HOME/config.toml` only and does not mutate gateway settings.
+Profile/command-line credential overrides are not resolved by this prototype.
+
+V3 `delegation.created` task text goes to that same external Thread. Only completed
+agent-message results are returned as speakable context; private reasoning and tool
+output are excluded. Delegation IDs are deduplicated within a call. Transcripts are
+projected through native notifications. Closing the call releases voice resources
+and suppresses late speech, but does not cancel a running agent task: explicit task
+cancellation remains the existing `turn/interrupt` operation.
+
+The speech service is instructed to delegate every question and task, including
+simple arithmetic; it supplies speech rather than owning task reasoning.
+The prototype defaults to Cantonese and the protocol's `cove` voice; supported V3
+voices can be requested. Text/audio append transports, ExistingCall attachment,
+overlapping-task steering, newer public GPT-Live event dialects, remote-host media
+topology, and seamless call recovery are not supported. A rejected control connection
+or session-initialization timeout emits error/closed notifications and performs
+bounded hangup cleanup. Retry is explicit and never resubmits an agent task.
+If the gateway returns success without a usable call identity, the Host rejects
+startup and releases the response body, but cannot identify a safe remote hangup
+target. Remote cleanup is then unconfirmed. Network failures during hangup are
+also reported as `cleanup_unconfirmed`; a closed local overlay is not proof of
+remote cleanup.
+
+Verification includes an isolated real native call through New API/CPA (creation,
+WebRTC, data channel, session initialization, sideband, and hangup), a real Host
+trial using the public Grok plugin and an existing microphone clip, and Host
+fixtures for multiple Harness IDs and official passthrough. The Host trial
+observed a completed Grok Turn and the returned spoken-answer transcript, with
+no official app-server request; the final trial confirmed hangup with HTTP 404
+(call already gone). One preceding trial returned the answer but did not confirm
+hangup. These are isolated headless-page trials, not installed Desktop button
+acceptance or proof that every plugin is voice-compatible. Continuous conversation,
+speech interruption, task cancellation and approvals need attended acceptance.
+
+## Harness session rules (Grok home rule)
+
+Host Runtime installs `codexhost-desktop.md` into `~/.grok/rules/` only. It does
+not write `~/.claude/rules/`. A previously managed Claude copy is removed when
+its digest still matches a Host-owned version; a user-edited Claude copy is
+preserved.
+
+Grok home rules are always scanned. At the first user turn the agent runs a
+secret-free `CODEXHOST_THREAD_ID` set/unset check. `set` means this is a
+CodexHost external Thread, including a Desktop chat whose cwd is a real
+repository. A Playground `realtime-voice-chat*` cwd also activates the rule and
+asks for a new Thread in the real repo. `unset` outside that Playground cwd
+leaves the six Desktop rules inactive. The agent never prints tokens, endpoints,
+or runtime descriptors.
+
+The rule covers composer Model selection (including that `flash-max` is Gemini
+Flash), starting in the real repo, voice versus text tool work, per-Harness MCP
+and skills, Codex Desktop chrome / Markdown View, and official Codex live voice
+versus Host-owned external `thread/realtime/*`. A user-edited Grok copy is
+preserved.

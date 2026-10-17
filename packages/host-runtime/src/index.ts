@@ -38,6 +38,7 @@ export { runDelegationCli, DELEGATION_HELP } from "./delegation-cli.js";
 export { DelegationControlRegistry } from "./delegation-control-registry.js";
 export { startDelegationControlServer } from "./delegation-control-server.js";
 export { installDelegationSkills, CODEXHOST_DELEGATION_SKILL } from "./delegation-skill.js";
+export { installCodexhostDesktopRules, CODEXHOST_DESKTOP_RULE } from "./codexhost-desktop-rule.js";
 export {
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_CLI_NODE_PATH_ENV,

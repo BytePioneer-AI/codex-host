@@ -14,6 +14,12 @@ import {
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
+import { ExternalVoice } from "./external-voice.js";
+import { ExternalVoiceResults } from "./external-voice-results.js";
+import {
+  configuredExternalVoiceGateway,
+  type ExternalVoiceCallFactory,
+} from "./external-voice-gateway.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
@@ -349,6 +355,8 @@ export interface AppServerHostOptions {
   modelPrices?: ModelPriceCatalog;
   /** Machine-wide usage statistics; one per runtime, read from the loaded Harness plugins. */
   usageStatistics?: UsageStatistics;
+  /** External Harness voice only; official Codex realtime is always native passthrough. */
+  createExternalVoiceCall?: ExternalVoiceCallFactory;
 }
 
 interface TurnProjectionGate {
@@ -553,17 +561,9 @@ function requestText(params: JsonObject): string {
   return text;
 }
 
-function sandboxResult(params: JsonObject): JsonObject {
-  const sandbox = params.sandbox;
-  if (sandbox === "read-only") return { type: "readOnly", networkAccess: false };
-  if (sandbox === "danger-full-access") return { type: "dangerFullAccess" };
-  return {
-    type: "workspaceWrite",
-    networkAccess: false,
-    writableRoots: [],
-    excludeTmpdirEnvVar: false,
-    excludeSlashTmp: false,
-  };
+/** Native protocol type: Codex does not enforce a sandbox on external Threads. */
+function sandboxResult(): JsonObject {
+  return { type: "externalSandbox", networkAccess: "enabled" };
 }
 
 function turnProjectionGate(): TurnProjectionGate {
@@ -619,6 +619,8 @@ export class AppServerHost {
   readonly #executionHosts = new WeakMap<ExternalThread, string>();
   readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering = new ExternalTurnSteering();
+  readonly #externalVoice: ExternalVoice;
+  readonly #externalVoiceResults = new ExternalVoiceResults();
   readonly #liveCommandCache = new LiveCommandCatalogCache();
   readonly #modelPrices: ModelPriceCatalog;
   readonly #observedSessionUsage: ObservedSessionUsage;
@@ -681,6 +683,12 @@ export class AppServerHost {
       return this.#takeConsoleReply(value);
     });
     const environment = this.#options.environment ?? process.env;
+    this.#externalVoice = new ExternalVoice({
+      createCall: options.createExternalVoiceCall ?? configuredExternalVoiceGateway(environment),
+      notify: (method, params) => this.#writer.json({ method, params }),
+      diagnose: () => this.#diagnose("External voice cleanup was not confirmed"),
+      runTask: (threadId, text, signal) => this.#runExternalVoiceTask(threadId, text, signal),
+    });
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
     );
@@ -775,6 +783,7 @@ export class AppServerHost {
       idleRelease: {
         queue: this.#desktopRequests,
         onClosed: async (thread) => {
+          await this.#externalVoice.stop(thread.id);
           for (const pending of [...this.#pendingDesktopApprovals.values()]) {
             if (pending.thread === thread)
               await this.#resolveDesktopApproval(pending.interaction.interactionId);
@@ -785,6 +794,7 @@ export class AppServerHost {
           }
         },
         canRelease: (thread) =>
+          !this.#externalVoice.has(thread.id) &&
           !this.#hasRunningSubagents(thread.id) &&
           !thread.session.hasBackgroundWork?.() &&
           !this.#externalSteering.hasPending(thread.id) &&
@@ -857,6 +867,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    void this.#externalVoice.close();
     this.#options.sharedThreads?.close();
     this.#externalRuntime.idleRelease.disable();
     this.#pluginLoadAbort.abort();
@@ -999,6 +1010,7 @@ export class AppServerHost {
       return this.#closeRequested ? 0 : 1;
     } finally {
       this.#options.sharedThreads?.close();
+      await this.#externalVoice.close();
       this.#pluginLoadAbort.abort();
       // Stop replacement waiters before waiting for their tracked Host operations.
       this.#externalSteering.close();
@@ -2079,6 +2091,22 @@ export class AppServerHost {
       if (await this.#writeResolutionError(request, location)) return;
       if (location.kind === "external") {
         await this.#cleanExternalBackgroundTerminals(request, request.params.threadId);
+        return;
+      }
+    }
+    if (
+      request.method.startsWith("thread/realtime/") &&
+      isRecord(request.params) &&
+      typeof request.params.threadId === "string"
+    ) {
+      const resolution = await this.#resolveExternalThread(request.params.threadId);
+      if (await this.#writeResolutionError(request, resolution)) return;
+      if (resolution.kind === "external") {
+        this.#dispatchDesktopReply(
+          request,
+          () => this.#handleExternalVoiceRequest(request, resolution.thread),
+          resolution.thread.id,
+        );
         return;
       }
     }
@@ -4045,7 +4073,7 @@ export class AppServerHost {
               approvalPolicy:
                 typeof params.approvalPolicy === "string" ? params.approvalPolicy : "never",
               approvalsReviewer: "user",
-              sandbox: sandboxResult(params),
+              sandbox: sandboxResult(),
               reasoningEffort: "medium",
               serviceTier: "flex",
               multiAgentMode: "explicitRequestOnly",
@@ -4170,9 +4198,6 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, result.error.code, result.error.message));
       return;
     }
-    const params: JsonObject = {
-      ...(fork.sandbox ? { sandbox: fork.sandbox } : {}),
-    };
     await this.#writer.json(
       rpcEnvelope(request, {
         result: threadForkResult(result.responseThread, {
@@ -4182,7 +4207,7 @@ export class AppServerHost {
             ? { runtimeWorkspaceRoots: fork.runtimeWorkspaceRoots }
             : {}),
           ...(fork.approvalPolicy ? { approvalPolicy: fork.approvalPolicy } : {}),
-          sandbox: sandboxResult(params),
+          sandbox: sandboxResult(),
           ...(fork.serviceTier ? { serviceTier: fork.serviceTier } : {}),
         }),
       }),
@@ -4287,6 +4312,7 @@ export class AppServerHost {
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
   ): Promise<void> {
     const thread = location.thread;
+    await this.#externalVoice.stop(location.record.hostThreadId);
     try {
       await this.#repository.removeThread(location.record.hostThreadId);
     } catch {
@@ -4430,7 +4456,7 @@ export class AppServerHost {
         ? params.runtimeWorkspaceRoots.filter((value): value is string => typeof value === "string")
         : [],
       approvalPolicy: typeof params.approvalPolicy === "string" ? params.approvalPolicy : "never",
-      sandbox: sandboxResult(params),
+      sandbox: sandboxResult(),
       ...(typeof params.serviceTier === "string" ? { serviceTier: params.serviceTier } : {}),
     });
     try {
@@ -4553,6 +4579,49 @@ export class AppServerHost {
       this.#signalActiveWorkChanged();
       throw new Error(result.error.message);
     }
+  }
+
+  async #handleExternalVoiceRequest(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+  ): Promise<void> {
+    try {
+      if (request.method === "thread/realtime/start") {
+        await this.#externalVoice.start(thread.id, requestObject(request));
+      } else if (request.method === "thread/realtime/stop") {
+        await this.#externalVoice.stop(thread.id);
+      } else {
+        await this.#writer.json(
+          rpcError(request, -32076, "External voice uses the native WebRTC audio transport"),
+        );
+        return;
+      }
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    } catch {
+      await this.#writer.json(
+        rpcError(request, -32076, "External voice could not complete this call request"),
+      );
+    }
+  }
+
+  async #runExternalVoiceTask(
+    threadId: string,
+    text: string,
+    signal: AbortSignal,
+  ): Promise<string> {
+    let answer: Promise<string> | undefined;
+    await this.#desktopRequests.run(threadId, async () => {
+      if (signal.aborted) throw new Error("Voice session ended");
+      const thread = this.#externalRuntime.get(threadId);
+      if (!thread || this.#closeRequested) throw new Error("External chat is unavailable");
+      const started = await this.#beginExternalInputTurn(thread, text);
+      answer = this.#externalVoiceResults.watch(threadId, started.turnId, signal);
+      // Attach rejection handling before admitting output; the caller awaits after queue release.
+      void answer.catch(() => undefined);
+      started.gate.resolve();
+    });
+    if (!answer) throw new Error("External voice task did not start");
+    return answer;
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
@@ -5026,6 +5095,7 @@ export class AppServerHost {
       return;
     }
     if (event.type === "session.faulted") {
+      this.#externalVoiceResults.observe(thread.id, event);
       this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));
       this.#externalRuntime.markSessionUnavailable(thread);
@@ -5161,6 +5231,7 @@ export class AppServerHost {
       thread.projectedTurns.delete(event.turnId);
     }
     for (const message of result.messages) await this.#writer.json(message);
+    this.#externalVoiceResults.observe(thread.id, event);
     if (event.type === "turn.completed") {
       await this.#setThreadStatus(
         thread,

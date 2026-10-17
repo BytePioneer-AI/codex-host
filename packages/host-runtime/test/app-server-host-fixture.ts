@@ -289,6 +289,7 @@ export function createFixture(
     onCreateRequestRoute?: AppServerHostOptions["onCreateRequestRoute"];
     modelPrices?: AppServerHostOptions["modelPrices"];
     usageStatistics?: AppServerHostOptions["usageStatistics"];
+    createExternalVoiceCall?: AppServerHostOptions["createExternalVoiceCall"];
   } = {},
 ) {
   const adapter =
@@ -358,6 +359,9 @@ export function createFixture(
     ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
     ...(options.modelPrices ? { modelPrices: options.modelPrices } : {}),
     ...(options.usageStatistics ? { usageStatistics: options.usageStatistics } : {}),
+    ...(options.createExternalVoiceCall
+      ? { createExternalVoiceCall: options.createExternalVoiceCall }
+      : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),

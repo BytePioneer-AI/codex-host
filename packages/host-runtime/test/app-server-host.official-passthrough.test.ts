@@ -63,7 +63,24 @@ describe("official Codex passthrough", () => {
       params: { threadId: "official-thread", gitInfo: { branch: { name: "future" } } },
     },
     { method: "thread/section/move", params: { threadId: "official-thread", sectionId: 7 } },
+    {
+      method: "thread/settings/update",
+      params: { threadId: "official-thread", summary: "detailed" },
+    },
     { method: "turn/start" },
+    {
+      method: "thread/realtime/start",
+      params: {
+        threadId: "official-voice",
+        outputModality: "audio",
+        transport: { type: "webrtc", sdp: "native-offer" },
+      },
+    },
+    { method: "thread/realtime/stop", params: { threadId: "official-voice" } },
+    {
+      method: "thread/realtime/appendText",
+      params: { threadId: "official-voice", role: "user", text: "native text" },
+    },
     { method: "turn/interrupt", params: "future-params-shape" },
     { method: "thread/read" },
     { method: "future/method", params: { anything: [1, "two"] } },

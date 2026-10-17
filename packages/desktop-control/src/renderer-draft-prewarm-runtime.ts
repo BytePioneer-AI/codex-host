@@ -689,6 +689,11 @@ export function createDraftPrewarmPolicyBridge(
         throw new Error("Renderer request manager is retired");
       return manager;
     },
+    selectedModel(): string | null {
+      if (disposed || (isCurrentManager && !isCurrentManager()))
+        throw new Error("Renderer request manager is retired");
+      return selectedModel;
+    },
     select(model: string | null): boolean {
       if (disposed || (isCurrentManager && !isCurrentManager()))
         throw new Error("Renderer request manager is retired");

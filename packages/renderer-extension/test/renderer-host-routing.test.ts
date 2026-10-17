@@ -6,6 +6,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { afterEach, assert, expect, it, vi } from "vitest";
 import { installCurrentRendererAdapter } from "../src/versioned-renderer-adapter.js";
+import { routeExternalVoiceLaunch } from "../src/renderer-external-voice-launch.js";
 
 const remoteId = "remote-ssh-discovered:linux";
 const piRequest = { harnessId: harnessIdSchema.parse("pi") };
@@ -104,6 +105,32 @@ async function setup(initialHostId: string) {
 afterEach(() => {
   window.__codexhostHostRoutingV1?.dispose();
   vi.unstubAllGlobals();
+});
+
+it("carries the adapter's selected Harness across native new-voice launch and clears for Codex", async () => {
+  const fixture = await setup("local");
+  try {
+    const request = {
+      source: "composer_button_new_thread",
+      activeCollaborationMode: { mode: "default", settings: { model: "gpt-6.1-sol" } },
+    };
+    expect(fixture.adapter.applyAgent("grok")).toBe(true);
+    const expected = encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("grok") });
+    const overlayRequest = structuredClone(
+      routeExternalVoiceLaunch(request, window.__codexhostHostRoutingV1),
+    );
+    expect(overlayRequest).toMatchObject({
+      activeCollaborationMode: { settings: { model: expected } },
+    });
+    expect(fixture.adapter.applyAgent("codex")).toBe(true);
+    expect(routeExternalVoiceLaunch(request, window.__codexhostHostRoutingV1)).toBe(request);
+    // An owner replacement retires its selection instead of leaking to the new connection.
+    expect(fixture.adapter.applyAgent("grok")).toBe(true);
+    fixture.managers.delete("local");
+    expect(routeExternalVoiceLaunch(request, window.__codexhostHostRoutingV1)).toBe(request);
+  } finally {
+    fixture.adapter.dispose();
+  }
 });
 
 it.each(["local", remoteId])(

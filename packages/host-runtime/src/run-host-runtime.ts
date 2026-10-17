@@ -15,6 +15,7 @@ import { createOwnedUnixBackend } from "./codex-runtime/owned-official-backends.
 import { DelegationControlRegistry } from "./delegation-control-registry.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
+import { installCodexhostDesktopRules } from "./codexhost-desktop-rule.js";
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import { readRemoteDelegationThread } from "./remote-delegation-read.js";
@@ -140,6 +141,24 @@ export function delegationCliEnvironment(
   };
 }
 
+async function installManagedHomeFiles(
+  install: () => Promise<ReadonlyArray<{ status: string; path: string }>>,
+  label: string,
+): Promise<void> {
+  try {
+    const results = await install();
+    for (const result of results) {
+      if (result.status === "conflict") {
+        process.stderr.write(
+          `codexhost ${label} conflict: preserving user-managed file at ${result.path}\n`,
+        );
+      }
+    }
+  } catch (error) {
+    process.stderr.write(`codexhost ${label} installation failed: ${String(error)}\n`);
+  }
+}
+
 async function prepareDelegationRuntime(input: {
   environment: NodeJS.ProcessEnv;
   hostRuntimePath?: string;
@@ -164,19 +183,8 @@ async function prepareDelegationRuntime(input: {
     [DELEGATION_RUNTIME_ENDPOINT_ENV]: server.endpoint,
     [DELEGATION_RUNTIME_TOKEN_ENV]: token,
   };
-  await installDelegationSkills()
-    .then((results) => {
-      for (const result of results) {
-        if (result.status === "conflict") {
-          process.stderr.write(
-            `codexhost delegation Skill conflict: preserving user-managed file at ${result.path}\n`,
-          );
-        }
-      }
-    })
-    .catch((error) => {
-      process.stderr.write(`codexhost delegation Skill installation failed: ${String(error)}\n`);
-    });
+  await installManagedHomeFiles(installDelegationSkills, "delegation Skill");
+  await installManagedHomeFiles(installCodexhostDesktopRules, "Desktop rule");
   try {
     return await input.createHost(environment, (value) => registry.register(value), registry);
   } finally {

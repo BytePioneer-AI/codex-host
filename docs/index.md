@@ -131,7 +131,7 @@
 | [`operations/remote-thread-read.md`](operations/remote-thread-read.md) | 通过现有 Desktop 远程连接跨 Harness 读取会话；包含部署要求、分页、响应大小与超时限制。 |
 | [`operations/host-runtime-log.md`](operations/host-runtime-log.md) | Host Runtime 日志文件的位置、内容与边界；排查 Runtime 崩溃或异常退出时阅读。 |
 | [`operations/codexhost-console.md`](operations/codexhost-console.md) | 本地控制台的打开方式、页面、项目公告、与运行中 Host 的连接、端口、诊断文件、安全与更新边界；排查启动失败或维护 Web 公告时阅读。 |
-| [`operations/fork-versioning.md`](operations/fork-versioning.md) | Fork `karlorz/codex-host` 标签规则：upstream 停在 `0.13.3` 时用 `v0.13.3-0`、`v0.13.3-0-1`…；已发 `v0.13.2-3` 为 GitHub latest 与 npm `@karlorz/codexhost-cli@latest`；数字计数走 `Release packages` latest；不向 upstream 推送、不发布 `@codexhost/*`。 |
+| [`operations/fork-versioning.md`](operations/fork-versioning.md) | Fork `karlorz/codex-host` 标签规则：upstream 停在 `0.13.3` 时用 `v0.13.3-0`、`v0.13.3-1`…；已发 `v0.13.3-0` 为 GitHub latest 与 npm `@karlorz/codexhost-cli@latest`；数字计数走 `Release packages` latest；不向 upstream 推送、不发布 `@codexhost/*`。 |
 | [`NOTICE.md`](NOTICE.md) | Web 控制台打开或刷新时读取的项目公告，含显示开关、标题、类型与正文；默认关闭，发布规则见控制台文档。 |
 | [`operations/repository-maintenance.md`](operations/repository-maintenance.md) | PR 标签、CI 评论和发布前检查自动化；修改仓库自动化时阅读。 |
 

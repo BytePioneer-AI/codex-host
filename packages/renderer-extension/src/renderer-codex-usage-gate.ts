@@ -434,15 +434,9 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
       }
     }
   };
-  // Re-read the scope while bound, so a component that subscribes another
-  // Account gate after the first bind (a child mounted later) is found too.
-  const scope = (): GateScope | null => {
-    const found = findSubmitScope(composer, projections);
-    if (!owner) return found;
-    return found?.owner === owner.owner ? found : owner;
-  };
   const bind = (): RendererCodexUsageGateStatus => {
-    const current = scope();
+    // A commit can publish an alternate owner with additional gate subscriptions.
+    const current = findSubmitScope(composer, projections);
     const gates = current && discoverGates(current, projections);
     // The reserve gate always reads its field, so its absence means an unknown contract.
     if (!current || !gates?.some(([kind]) => kind === "reserve")) {

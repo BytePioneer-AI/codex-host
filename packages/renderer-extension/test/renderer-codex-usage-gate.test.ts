@@ -414,6 +414,55 @@ describe("Codex usage gate for external Harness Composers", () => {
     },
   );
 
+  it.each([false, true])(
+    "binds a late child Account gate in the committed alternate tree (snapshotWrapper: %s)",
+    (snapshotWrapper) => {
+      vi.useFakeTimers();
+      const f = composerFixture(undefined, { childAccount: true, snapshotWrapper });
+      const ownerAccount = required(f.instances[1]);
+      const childAccount = required(f.instances[3]);
+      const childHooks = f.child.memoizedState;
+      f.child.memoizedState = null;
+      const rootState = { current: null as unknown };
+      const previousRoot = { stateNode: rootState, child: f.owner };
+      Object.assign(f.owner, { return: previousRoot, child: f.child });
+      rootState.current = previousRoot;
+      expect(f.gate.update(true)).toBe("bypassed");
+      expect(ownerAccount.getSnapshot()).toBe(false);
+      if (snapshotWrapper) {
+        ownerAccount.getSnapshot = () => required(f.subscribers[1]).getSnapshot();
+      }
+
+      const child = { ...f.child, memoizedState: childHooks, alternate: f.child };
+      const owner = { ...f.owner, child, alternate: f.owner };
+      const currentRoot = { stateNode: rootState, child: owner };
+      Object.assign(f.owner, { alternate: owner });
+      Object.assign(owner, { return: currentRoot });
+      child.return = owner;
+      Object.assign(f.child, { alternate: child });
+      // The DOM retains the old Fiber pointer while React publishes the alternate.
+      rootState.current = currentRoot;
+      expect(childAccount.getSnapshot()).toBe(true);
+      vi.advanceTimersByTime(1000);
+      expect(f.gate.refresh()).toBe("bypassed");
+      expect(childAccount.getSnapshot()).toBe(false);
+      expect(ownerAccount.getSnapshot()).toBe(false);
+      expect(f.gate.update(false)).toBe("native");
+      expect(childAccount.getSnapshot()).toBe(true);
+      expect(ownerAccount.getSnapshot()).toBe(true);
+    },
+  );
+
+  it("restores native gates when the committed submit scope is no longer available", () => {
+    vi.useFakeTimers();
+    const f = composerFixture();
+    expect(f.gate.update(true)).toBe("bypassed");
+    Object.assign(f.editor, { __reactFiber$test: { return: null } });
+    vi.advanceTimersByTime(1000);
+    expect(f.gate.refresh()).toBe("unsupported");
+    expect(f.blocked()).toBe(true);
+  });
+
   it("restores the original wrapper after React refreshes the instance getter", () => {
     const f = composerFixture(undefined, { snapshotWrapper: true, signalReserve: true });
     const instance = required(f.instances[1]);

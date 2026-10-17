@@ -1,14 +1,14 @@
 /**
- * Lets an external Harness Composer submit while the signed-in ChatGPT Codex
- * subscription is out of usage.
+ * Lets a Composer submit while the signed-in ChatGPT Codex subscription is
+ * out of usage.
  *
  * Desktop blocks Composer submission through two boolean selectors: the
  * ChatGPT Account rate-limit gate and the reserve `hardBlocked` gate. Both are
  * Account-wide, only apply to ChatGPT sign-in, and are not a protocol limit.
  * This module projects `false` for those two subscriptions of one Composer
- * only. It never writes Accounts, atoms or query data, so the Codex path and
- * other Composers keep the native result. Other native submit blockers are
- * unaffected. Anything that cannot be verified keeps the native restriction.
+ * only. It never writes Accounts, atoms or query data, so other Composers keep
+ * the native result. Other native submit blockers are unaffected. Anything
+ * that cannot be verified keeps the native restriction.
  */
 import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
 
@@ -63,9 +63,12 @@ function hooksOf(fiber: unknown): Hook[] {
 }
 
 /**
- * Composer components that combine native submit blockers into `submitDisabled`
- * and hold the reserve gate. Desktop wraps the owner in a pass-through component
- * with the same props but no gate hooks, so props alone are ambiguous.
+ * Composer components that combine native submit blockers into `submitDisabled`.
+ * Desktop wraps the owner in a pass-through component with the same props, so
+ * props alone are ambiguous: a candidate whose own hooks hold the reserve gate
+ * wins. When no candidate holds gates, they may be subscribed in a descendant;
+ * candidates are ordered innermost first, so the first candidate whose subtree
+ * holds the gates is the owner.
  */
 function submitOwners(composer: Element): Fiber[] {
   // The ProseMirror editor is not rendered by React; start at its nearest React host.
@@ -75,7 +78,7 @@ function submitOwners(composer: Element): Fiber[] {
       name.startsWith("__reactFiber$"),
     );
     if (key) {
-      const owners = committedReactAncestors(
+      const candidates = committedReactAncestors(
         Object.getOwnPropertyDescriptor(element, key)?.value,
       ).filter(
         ({ memoizedProps: props }) =>
@@ -83,10 +86,11 @@ function submitOwners(composer: Element): Fiber[] {
           "onLocalSubmitStart" in props &&
           typeof props.submitDisabled === "boolean",
       ) as Fiber[];
-      return owners.filter((owner) => {
-        const gates = gateSubscriptions(owner);
+      const owner = candidates.find((fiber) => {
+        const gates = subtreeGateSubscriptions(fiber);
         return !gates.invalid && gates.reserve.length > 0;
       });
+      return owner ? [owner] : candidates;
     }
     element = element.parentElement;
   }
@@ -203,8 +207,9 @@ function gateKind({ store, atom }: Subscription): GateKind | "mixed" | null {
   }
   const reserve = read.has("reserve.hardBlocked") && !read.has("reserve.active");
   const account = read.has("auth.authMethod") && read.has("limit.allowed");
-  // A combined selector cannot be separated into the two verified gates.
-  if (account && (read.has("reserve.hardBlocked") || read.has("reserve.active"))) return "mixed";
+  // Account may read reserve.active as a local exemption. Mixing in
+  // hardBlocked cannot be separated from the reserve gate.
+  if (account && read.has("reserve.hardBlocked")) return "mixed";
   if (reserve) return "reserve";
   if (account) return "account";
   return null;
@@ -237,9 +242,41 @@ function snapshotsMatch(
   }
 }
 
+function projectionFor(
+  projections: ReadonlyMap<Instance, Projection> | undefined,
+  instance: Instance,
+): Projection | undefined {
+  return projections?.get(instance);
+}
+
+/** True when every subscription is the same store+atom pair, including none or one. */
+function sameLogicalGate(subscriptions: readonly Subscription[]): boolean {
+  const first = subscriptions[0];
+  if (!first) return true;
+  return subscriptions.every((item) => item.store === first.store && item.atom === first.atom);
+}
+
+type FiberNode = Fiber & { child?: unknown; sibling?: unknown };
+
+const MAX_SUBTREE_FIBERS = 1024;
+
+/** Committed descendant fibers of a component, bounded to one Composer. */
+function subtreeFibers(root: Fiber): Fiber[] {
+  const result: Fiber[] = [];
+  const stack: unknown[] = [(root as FiberNode).child];
+  while (stack.length > 0) {
+    const fiber = stack.pop();
+    if (!isRecord(fiber)) continue;
+    result.push(fiber as Fiber);
+    if (result.length >= MAX_SUBTREE_FIBERS) return [];
+    stack.push((fiber as FiberNode).child, (fiber as FiberNode).sibling);
+  }
+  return result;
+}
+
 function gateSubscriptions(
   owner: Fiber,
-  projections?: ReadonlyMap<GateKind, Projection>,
+  projections?: ReadonlyMap<Instance, Projection>,
 ): Record<GateKind, Subscription[]> & { invalid: boolean } {
   const found: Record<GateKind, Subscription[]> & { invalid: boolean } = {
     account: [],
@@ -250,7 +287,10 @@ function gateSubscriptions(
     const subscription = subscriptionAt(hook);
     const kind = subscription && gateKind(subscription);
     if (subscription && kind) {
-      if (kind !== "mixed" && snapshotsMatch(subscription, projections?.get(kind))) {
+      if (
+        kind !== "mixed" &&
+        snapshotsMatch(subscription, projectionFor(projections, subscription.instance))
+      ) {
         found[kind].push(subscription);
       } else found.invalid = true;
     }
@@ -259,23 +299,44 @@ function gateSubscriptions(
 }
 
 /**
- * Gate subscriptions by kind; `null` when a kind is ambiguous. The account gate
- * returns early without reading usage when it cannot block (for example API-key
- * sign-in), so it may legitimately be absent until it reads `rate_limit`.
+ * Gate subscriptions anywhere under the submit owner, including the component
+ * that forwards `submitDisabled`. Several hooks of one kind are one logical
+ * gate when they share store and atom; different atoms stay ambiguous.
+ */
+function subtreeGateSubscriptions(
+  owner: Fiber,
+  projections?: ReadonlyMap<Instance, Projection>,
+): Record<GateKind, Subscription[]> & { invalid: boolean } {
+  const combined: Record<GateKind, Subscription[]> & { invalid: boolean } = {
+    account: [],
+    reserve: [],
+    invalid: false,
+  };
+  for (const fiber of [owner, ...subtreeFibers(owner)]) {
+    const gates = gateSubscriptions(fiber, projections);
+    if (gates.invalid) combined.invalid = true;
+    combined.account.push(...gates.account);
+    combined.reserve.push(...gates.reserve);
+  }
+  if (!sameLogicalGate(combined.account) || !sameLogicalGate(combined.reserve)) {
+    combined.invalid = true;
+  }
+  return combined;
+}
+
+/**
+ * Gate subscriptions grouped by kind; `null` when a kind is ambiguous. The
+ * account gate returns early without reading usage when it cannot block (for
+ * example API-key sign-in), so it may legitimately be absent until it reads
+ * `rate_limit`.
  */
 function discoverGates(
   owner: Fiber,
-  projections: ReadonlyMap<GateKind, Projection>,
-): Map<GateKind, Subscription> | null {
-  const gates = gateSubscriptions(owner, projections);
+  projections: ReadonlyMap<Instance, Projection>,
+): Record<GateKind, Subscription[]> | null {
+  const gates = subtreeGateSubscriptions(owner, projections);
   if (gates.invalid) return null;
-  const found = new Map<GateKind, Subscription>();
-  for (const kind of ["account", "reserve"] as const) {
-    const subscriptions = gates[kind];
-    if (subscriptions.length > 1) return null;
-    if (subscriptions[0]) found.set(kind, subscriptions[0]);
-  }
-  return found;
+  return { account: gates.account, reserve: gates.reserve };
 }
 
 export interface RendererCodexUsageGateInspection {
@@ -287,7 +348,7 @@ export interface RendererCodexUsageGateInspection {
 /** Read-only contract audit: counts only, never patches or subscribes. */
 export function inspectComposerCodexUsageGate(composer: Element): RendererCodexUsageGateInspection {
   const owners = submitOwners(composer);
-  const gates = owners.length === 1 && owners[0] ? gateSubscriptions(owners[0]) : null;
+  const gates = owners.length === 1 && owners[0] ? subtreeGateSubscriptions(owners[0]) : null;
   return {
     ownerCount: owners.length,
     reserveGateCount: gates?.reserve.length ?? 0,
@@ -345,8 +406,11 @@ function project({ subscriber, store, atom, instance, subscribeEffect }: Subscri
 function isBound(owner: Fiber, projections: Iterable<Projection>): boolean {
   const alternate = isRecord(owner.alternate) ? owner.alternate : null;
   const bound = [...projections];
-  return [owner, alternate].some((fiber) => {
-    const hooks = hooksOf(fiber);
+  const subtrees = [owner, alternate].flatMap((fiber) =>
+    fiber ? [[fiber, ...subtreeFibers(fiber)]] : [],
+  );
+  return subtrees.some((fibers) => {
+    const hooks = fibers.flatMap((fiber) => hooksOf(fiber));
     return bound.every(({ subscriber, instance }) =>
       hooks.some(
         (hook) =>
@@ -361,7 +425,7 @@ function isBound(owner: Fiber, projections: Iterable<Projection>): boolean {
 export type RendererCodexUsageGateStatus = "native" | "bypassed" | "unsupported";
 
 export interface RendererCodexUsageGate {
-  /** `allowed`: this Composer submits to a ready external Harness. */
+  /** `allowed`: this Composer should lift the native Codex usage submit gate. */
   update(allowed: boolean): RendererCodexUsageGateStatus;
   /** Re-apply the last decision, rebinding if Desktop replaced the Composer hooks. */
   refresh(): RendererCodexUsageGateStatus;
@@ -370,7 +434,7 @@ export interface RendererCodexUsageGate {
 
 export function createRendererCodexUsageGate(composer: Element): RendererCodexUsageGate {
   let owner: Fiber | null = null;
-  const projections = new Map<GateKind, Projection>();
+  const projections = new Map<Instance, Projection>();
   let retryAt = 0;
   let allowed = false;
   const release = (): void => {
@@ -389,10 +453,12 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
     const current = owner ?? findSubmitOwner(composer);
     const gates = current && discoverGates(current, projections);
     // The reserve gate always reads its field, so its absence means an unknown contract.
-    if (!current || !gates?.has("reserve")) throw new Error("Codex usage gate is unavailable");
+    if (!current || !gates || gates.reserve.length === 0) {
+      throw new Error("Codex usage gate is unavailable");
+    }
     owner = current;
-    for (const [kind, gate] of gates) {
-      if (!projections.has(kind)) projections.set(kind, project(gate));
+    for (const gate of [...gates.reserve, ...gates.account]) {
+      if (!projections.has(gate.instance)) projections.set(gate.instance, project(gate));
     }
     return "bypassed";
   };
@@ -406,7 +472,6 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
       release();
       retryAt = 0;
     }
-    if (owner && projections.size === 2) return "bypassed";
     if (Date.now() < retryAt) return owner ? "bypassed" : "unsupported";
     retryAt = Date.now() + RETRY_DELAY_MS;
     try {

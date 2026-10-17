@@ -12,18 +12,21 @@ function required<T>(value: T | undefined): T {
 }
 
 /** Desktop-shaped selectors: an Account rate-limit gate and a reserve gate. */
-function desktopStore() {
+function desktopStore(options: { accountReadsActive?: boolean } = {}) {
   let authMethod = "chatgpt";
   let allowed = false;
   let hardBlocked = false;
+  let active = false;
   const auth: Atom = { read: () => ({ authMethod, authenticatedAccountId: "account" }) };
   const usage: Atom = { read: () => ({ data: { rate_limit: { allowed } } }) };
-  const reserve: Atom = { read: () => ({ active: false, eligible: true, hardBlocked }) };
+  const reserve: Atom = { read: () => ({ active, eligible: true, hardBlocked }) };
   const accountGate: Atom = {
     read: (get) => {
       const a = get(auth) as { authMethod: string };
       // Like Desktop: API-key sign-in returns before reading ChatGPT usage.
       if (a.authMethod !== "chatgpt") return false;
+      // 26.1007: local reserve-active is an exemption inside the account selector.
+      if (options.accountReadsActive && (get(reserve) as { active: boolean }).active) return false;
       return (
         (get(usage) as { data: { rate_limit: { allowed: boolean } } }).data.rate_limit.allowed ===
         false
@@ -71,6 +74,10 @@ function desktopStore() {
       hardBlocked = value;
       emit();
     },
+    setActive(value: boolean) {
+      active = value;
+      emit();
+    },
     listenerCount: () => [...listeners.values()].reduce((n, set) => n + set.size, 0),
   };
 }
@@ -81,19 +88,23 @@ function composerFixture(
   options: {
     omitReserve?: boolean;
     duplicateAccount?: boolean;
+    duplicateAccountAtom?: boolean;
     snapshotWrapper?: boolean;
     signalReserve?: boolean;
+    descendantGates?: boolean;
   } = {},
 ) {
   const subscribers: Array<{ getSnapshot(): unknown }> = [];
   const instances: Array<{ value: unknown; getSnapshot(): unknown }> = [];
   const hooks: Array<Record<string, unknown>> = [];
   const rerender = vi.fn();
+  const extraAccount: Atom = { read: (get) => source.accountGate.read(get) };
   for (const selector of [
     source.reserveActive,
     source.accountGate,
     ...(options.omitReserve ? [] : [source.reserveGate]),
     ...(options.duplicateAccount ? [source.accountGate] : []),
+    ...(options.duplicateAccountAtom ? [extraAccount] : []),
   ]) {
     // Desktop 26.928 wraps parameterized selectors in a readonly signal atom.
     const signal = options.signalReserve && selector !== source.accountGate;
@@ -138,10 +149,23 @@ function composerFixture(
     effect.create();
   }
   // Desktop owners have more than a thousand hooks; do not rely on positions.
-  hooks.unshift(...Array.from({ length: 230 }, () => ({ memoizedState: null })));
-  hooks.forEach((hook, i) => {
-    hook.next = hooks[i + 1] ?? null;
-  });
+  const fillers: Array<Record<string, unknown>> = Array.from({ length: 230 }, () => ({
+    memoizedState: null,
+  }));
+  const gateHooks = [...hooks];
+  if (options.descendantGates) {
+    gateHooks.forEach((hook, i) => {
+      hook.next = gateHooks[i + 1] ?? null;
+    });
+    fillers.forEach((hook, i) => {
+      hook.next = fillers[i + 1] ?? null;
+    });
+  } else {
+    hooks.unshift(...fillers);
+    hooks.forEach((hook, i) => {
+      hook.next = hooks[i + 1] ?? null;
+    });
+  }
   const props = { onLocalSubmitStart() {}, submitDisabled: false };
   // Desktop wraps the owner in a pass-through component with the same props.
   const wrapper = {
@@ -149,11 +173,22 @@ function composerFixture(
     memoizedState: { memoizedState: null, next: null },
     return: null,
   };
-  const owner = {
+  const owner: Record<string, unknown> = {
     memoizedProps: props,
-    memoizedState: hooks[0] as unknown,
+    memoizedState: (options.descendantGates ? fillers[0] : hooks[0]) as unknown,
     return: wrapper,
   };
+  if (options.descendantGates) {
+    // Newer Desktop versions subscribe the gates in the component that
+    // receives `submitDisabled` below the owner, not on the owner itself.
+    owner.child = {
+      memoizedProps: { submitDisabled: false },
+      memoizedState: gateHooks[0] as unknown,
+      child: null,
+      sibling: null,
+      return: owner,
+    };
+  }
   const editor = { parentElement: null, __reactFiber$test: owner };
   const composer = {
     isConnected: true,
@@ -192,6 +227,25 @@ describe("Codex usage gate for external Harness Composers", () => {
     expect(store.set).not.toHaveBeenCalled();
     expect(store.sub).toBe(originalSub);
     expect(f.source.listenerCount()).toBe(listeners);
+
+    expect(f.gate.update(false)).toBe("native");
+    expect(f.blocked()).toBe(true);
+  });
+
+  it("binds gate subscriptions a descendant holds below the submit owner", () => {
+    const f = composerFixture(undefined, { descendantGates: true });
+    expect(inspectComposerCodexUsageGate(f.composer)).toEqual({
+      ownerCount: 1,
+      reserveGateCount: 1,
+      accountGateCount: 1,
+    });
+    expect(f.blocked()).toBe(true);
+
+    expect(f.gate.update(true)).toBe("bypassed");
+    expect(f.blocked()).toBe(false);
+    expect(f.rerender).toHaveBeenCalled();
+    expect(f.gate.refresh()).toBe("bypassed");
+    expect(f.source.store.set).not.toHaveBeenCalled();
 
     expect(f.gate.update(false)).toBe("native");
     expect(f.blocked()).toBe(true);
@@ -393,9 +447,11 @@ describe("Codex usage gate for external Harness Composers", () => {
   it("keeps native restrictions when the contract is missing, ambiguous or read-only", () => {
     for (const options of [
       { omitReserve: true },
-      { duplicateAccount: true },
+      { duplicateAccountAtom: true },
       { omitReserve: true, snapshotWrapper: true, signalReserve: true },
-      { duplicateAccount: true, snapshotWrapper: true, signalReserve: true },
+      { duplicateAccountAtom: true, snapshotWrapper: true, signalReserve: true },
+      { omitReserve: true, descendantGates: true },
+      { duplicateAccountAtom: true, descendantGates: true },
     ]) {
       const f = composerFixture(undefined, options);
       expect(f.gate.update(true)).toBe("unsupported");
@@ -404,6 +460,46 @@ describe("Codex usage gate for external Harness Composers", () => {
     const f = composerFixture();
     Object.defineProperty(f.source.store, "sub", { writable: false });
     expect(f.gate.update(true)).toBe("unsupported");
+    expect(f.blocked()).toBe(true);
+  });
+
+  it("accepts an account gate with a local reserve-active exemption", () => {
+    const source = desktopStore({ accountReadsActive: true });
+    const f = composerFixture(source);
+    expect(inspectComposerCodexUsageGate(f.composer)).toEqual({
+      ownerCount: 1,
+      reserveGateCount: 1,
+      accountGateCount: 1,
+    });
+    expect(f.blocked()).toBe(true);
+    expect(f.gate.update(true)).toBe("bypassed");
+    expect(f.blocked()).toBe(false);
+    expect(required(f.instances[0]).getSnapshot()).toBe(false);
+    f.gate.update(false);
+    expect(f.blocked()).toBe(true);
+    source.setActive(true);
+    expect(required(f.instances[1]).getSnapshot()).toBe(false);
+  });
+
+  it("projects same-atom account subscriptions on the owner and a descendant", () => {
+    const f = composerFixture(undefined, { duplicateAccount: true, descendantGates: true });
+    expect(inspectComposerCodexUsageGate(f.composer).accountGateCount).toBe(2);
+    expect(f.blocked()).toBe(true);
+    expect(f.gate.update(true)).toBe("bypassed");
+    expect(f.blocked()).toBe(false);
+    expect(f.gate.refresh()).toBe("bypassed");
+    f.gate.dispose();
+    expect(f.blocked()).toBe(true);
+  });
+
+  it("rejects a duplicate account wrapper and restores every projected member", () => {
+    const f = composerFixture(undefined, { duplicateAccount: true, snapshotWrapper: true });
+    Object.assign(required(f.subscribers[3]), {
+      createRender: () => ({ getSnapshot: () => true }),
+    });
+    const original = required(f.instances[1]).getSnapshot;
+    expect(f.gate.update(true)).toBe("unsupported");
+    expect(required(f.instances[1]).getSnapshot).toBe(original);
     expect(f.blocked()).toBe(true);
   });
 

@@ -50,6 +50,7 @@ import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
+import { readCodexUsageBannerPreference } from "./renderer-codex-usage-banner-preference.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -91,6 +92,7 @@ export interface ComposerAgentControl {
   nativeModelControl: NativeModelControlState | null;
   nativePermissionModeControl: NativePermissionModeControlState | null;
   nativeContextUsageControl?: NativeControlState | null;
+  nativeUsageBanner?: NativeControlState | null;
   nativePermissionModeControlVerified: boolean;
   credits: RendererCreditsControl;
   usage: RendererUsageControl | null;
@@ -358,6 +360,24 @@ export function nativeContextUsageControlForComposer(composer: Element): HTMLEle
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
+/**
+ * Codex usage / upsell recovery banner above the Composer: an aside with a
+ * title and CTA buttons. Some Desktop versions also mark it as a polite
+ * status; others omit those ARIA attributes. Ambiguous matches stay visible.
+ */
+export function isNativeUsageBannerCandidate(element: Element): boolean {
+  if (element.localName !== "aside") return false;
+  if (typeof element.querySelector !== "function") return false;
+  return element.querySelector("h3") !== null && element.querySelector("button") !== null;
+}
+
+export function nativeUsageBannerForComposer(composer: Element): HTMLElement | null {
+  const candidates = [...composer.querySelectorAll<HTMLElement>("aside")].filter(
+    isNativeUsageBannerCandidate,
+  );
+  return candidates.length === 1 ? (candidates[0] ?? null) : null;
+}
+
 function contractElementVisible(element: Element): boolean {
   const typed = element as HTMLElement;
   const bounds = typed.getBoundingClientRect?.();
@@ -450,6 +470,13 @@ function refreshNativeContextUsageControl(control: ComposerAgentControl): void {
   if (candidate === control.nativeContextUsageControl?.element) return;
   restoreNativeControl(control.nativeContextUsageControl);
   control.nativeContextUsageControl = captureNativeControl(candidate);
+}
+
+function refreshNativeUsageBanner(control: ComposerAgentControl): void {
+  const candidate = nativeUsageBannerForComposer(control.composer);
+  if (candidate === control.nativeUsageBanner?.element) return;
+  restoreNativeControl(control.nativeUsageBanner);
+  control.nativeUsageBanner = captureNativeControl(candidate);
 }
 
 function refreshNativeModelControl(control: ComposerAgentControl): void {
@@ -640,6 +667,7 @@ export function reconcileComposerNativeControls(
   // it below, so Credits never reads a stale (e.g. mount-time fallback)
   // location for it within this same pass.
   refreshNativePermissionModeControl(control);
+  refreshNativeUsageBanner(control);
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
   refreshCreditsPlacement(control);
@@ -649,6 +677,20 @@ export function reconcileComposerNativeControls(
   // visible when the external Model control is substituted.
   setNativeControlHidden(control.nativeContextUsageControl, false);
   setNativeControlHidden(control.nativePermissionModeControl, hidePermissionMode);
+  // Settings → Appearance, default on: hide the account-wide Codex usage
+  // aside on every Composer, including Codex threads. The aside reports the
+  // ChatGPT Account rate limit and upsell, not a per-thread notice.
+  setNativeControlHidden(
+    control.nativeUsageBanner,
+    readCodexUsageBannerPreference(preferenceOwner(control)),
+  );
+}
+
+function preferenceOwner(control: ComposerAgentControl): Window | null {
+  return (
+    control.composer.ownerDocument?.defaultView ??
+    (typeof document !== "undefined" ? document.defaultView : null)
+  );
 }
 
 export function mountComposerAgentControl(
@@ -672,6 +714,7 @@ export function mountComposerAgentControl(
   const nativeContextUsageControl = captureNativeControl(
     nativeContextUsageControlForComposer(composer),
   );
+  const nativeUsageBanner = captureNativeControl(nativeUsageBannerForComposer(composer));
   const semanticNativePermissionModeControl =
     semanticNativePermissionModeControlForComposer(composer);
   const nativePermissionModeControl = captureNativeControl(semanticNativePermissionModeControl);
@@ -746,6 +789,7 @@ export function mountComposerAgentControl(
     nativeModelControl,
     nativePermissionModeControl,
     nativeContextUsageControl,
+    nativeUsageBanner,
     nativePermissionModeControlVerified,
     credits,
     usage: null,
@@ -771,8 +815,8 @@ function nativeSendDisabled(button: HTMLButtonElement, fallback: boolean): boole
 }
 
 /**
- * Returns whether this Composer is ready to submit to an external Harness:
- * not Codex, Adapter ready, and no codexhost submission blocker.
+ * Returns whether this Composer should lift the native Codex usage submit
+ * gate: no codexhost submission blocker, and either Codex or a ready Adapter.
  */
 export function renderComposerAgentControl(
   control: ComposerAgentControl,
@@ -869,7 +913,7 @@ export function renderComposerAgentControl(
   control.harnessCommands.root.hidden = state.agent === "codex";
   control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
   renderRendererCreditsControl(control.credits, accountCredits, locale);
-  return state.agent !== "codex" && adapterState === "ready" && !submissionBlocked;
+  return !submissionBlocked && (state.agent === "codex" || adapterState === "ready");
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
@@ -881,6 +925,7 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
   }
   restoreNativeControl(control.nativeModelControl);
   restoreNativeControl(control.nativeContextUsageControl);
+  restoreNativeControl(control.nativeUsageBanner);
   restoreNativeControl(control.nativePermissionModeControl);
   control.credits.dispose();
   control.usage?.dispose();

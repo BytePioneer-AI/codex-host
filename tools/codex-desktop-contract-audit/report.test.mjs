@@ -76,6 +76,7 @@ describe("Codex Desktop contract audit report", () => {
       verdict: "unverified",
       reason: "codex-usage-account-gate-dormant",
     });
+    expect(verdictFor({ accountGateCount: 2 })?.verdict).toBe("no-impact");
     expect(verdictFor({ composerCount: 0, ownerCount: 0, reserveGateCount: 0 })?.verdict).toBe(
       "unverified",
     );

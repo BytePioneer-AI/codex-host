@@ -38,6 +38,10 @@ export interface RendererSettingsMessages {
   readonly otherSection: string;
   readonly appearanceDescription: string;
   readonly appearanceGroup: string;
+  readonly hideCodexUsageBannerTitle: string;
+  readonly hideCodexUsageBannerDescription: string;
+  readonly hideCodexUsageBannerHelpLabel: string;
+  readonly hideCodexUsageBannerHelp: readonly string[];
   readonly cpaLiveVoiceTitle: string;
   readonly cpaLiveVoiceDescription: string;
   readonly cpaLiveVoiceHelpLabel: string;
@@ -295,6 +299,14 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   otherSection: "Other",
   appearanceDescription: "Conversation display and local resource management.",
   appearanceGroup: "Appearance",
+  hideCodexUsageBannerTitle: "Hide Codex usage warning",
+  hideCodexUsageBannerDescription: "On by default. Hide the out-of-usage card on every Composer.",
+  hideCodexUsageBannerHelpLabel: "About hiding the Codex usage warning",
+  hideCodexUsageBannerHelp: Object.freeze([
+    "The native card appears when the signed-in ChatGPT Codex quota is exhausted.",
+    "When this is on, that card is hidden on every Composer, including Codex threads. Reset usage and Upgrade stay available in Settings.",
+    "Turning this off only shows the native card again. Send on this Composer, including Codex threads, is already separated from that quota card.",
+  ]),
   cpaLiveVoiceTitle: "Override live voice",
   cpaLiveVoiceDescription: "On by default. Host creates the realtime call instead of ChatGPT.",
   cpaLiveVoiceHelpLabel: "About overriding live voice",
@@ -613,6 +625,14 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   otherSection: "其他",
   appearanceDescription: "会话显示与本地资源管理。",
   appearanceGroup: "外观",
+  hideCodexUsageBannerTitle: "隐藏 Codex 额度警告",
+  hideCodexUsageBannerDescription: "默认开启。在所有 Composer 上隐藏额度耗尽卡片。",
+  hideCodexUsageBannerHelpLabel: "隐藏 Codex 额度警告说明",
+  hideCodexUsageBannerHelp: Object.freeze([
+    "已登录的 ChatGPT Codex 额度耗尽时，Desktop 会显示原生警告卡片。",
+    "开启后，所有 Composer 都隐藏该卡片，包括 Codex 会话。「重置用量」和「升级」仍可在设置中使用。",
+    "关闭此开关只会重新显示原生卡片。当前 Composer 的发送（包括 Codex 会话）已与该额度卡片分离。",
+  ]),
   cpaLiveVoiceTitle: "改写实时语音",
   cpaLiveVoiceDescription: "默认开启。由 Host 创建 realtime 通话，而不是 ChatGPT。",
   cpaLiveVoiceHelpLabel: "改写实时语音说明",

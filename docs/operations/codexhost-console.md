@@ -6,7 +6,7 @@
 - **设置**：连接、远程连接、账号、会话导入、更新，与 Codex 设置页使用同一套页面和 Host 接口。连接页支持通过运行中的本地 Host 安装 Harness CLI、检查版本和更新，复用安装进度、错误提示及安装后检测；不支持远程 Host 安装。WorkBuddy 仍通过官网手动下载安装桌面应用。Host 不可用时不提供一键安装。
 - **其他**：关于。
 
-外观（思考文本显示、空闲释放、改写实时语音）由 Codex 界面保存，只能在 Codex 设置页修改。本 fork 的改写实时语音默认开启；`~/.codex/config.toml` 里的 realtime 基址仍需自行配置。设计背景见 [`proposals/独立 Web 控制台方案.md`](../proposals/独立%20Web%20控制台方案.md)。
+外观（思考文本显示、隐藏 Codex 额度警告、空闲释放、改写实时语音）由 Codex 界面保存，只能在 Codex 设置页修改。隐藏 Codex 额度警告与改写实时语音均默认开启。`~/.codex/config.toml` 里的 realtime 基址仍需自行配置。设计背景见 [`proposals/独立 Web 控制台方案.md`](../proposals/独立%20Web%20控制台方案.md)。
 
 ## 项目公告
 

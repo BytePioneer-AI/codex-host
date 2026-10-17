@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import type { JsonObject } from "@codexhost/shared-contracts";
 import {
   completePiTurn,
   createFixture,

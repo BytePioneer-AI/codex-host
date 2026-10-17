@@ -17,6 +17,15 @@ import {
   type DeepSeekExecutableGeneration,
 } from "../src/generation-selector.js";
 
+const VERIFIED_VERSIONS = [
+  "0.1.7-rc.1",
+  "0.1.7-rc.2",
+  "0.2.0-rc.1",
+  "0.2.0-rc.2",
+  "0.2.1-rc.1",
+  "0.2.1-rc.2",
+] as const;
+
 const readyInspection: HarnessInspection = {
   status: "ready",
   catalog: { models: [], thinkingOptions: [] },
@@ -126,93 +135,85 @@ describe("DeepSeek public generation selector", () => {
     await adapter.close();
   });
 
-  it.each([
-    "0.1.7-rc.1",
-    "0.1.7-rc.2",
-    "0.2.0-rc.1",
-    "0.2.0-rc.2",
-    "0.2.1-rc.1",
-    "0.2.1-rc.2",
-  ] as const)("revalidates import metadata and preserves %s native identity", async (version) => {
-    const modern = new FakeAdapter();
-    const list = vi
-      .spyOn(modern.sessionImport, "listCandidates")
-      .mockResolvedValueOnce({
+  it.each(VERIFIED_VERSIONS)(
+    "revalidates import metadata and preserves %s native identity",
+    async (version) => {
+      const modern = new FakeAdapter();
+      const list = vi
+        .spyOn(modern.sessionImport, "listCandidates")
+        .mockResolvedValueOnce({
+          ok: true,
+          value: [
+            {
+              nativeSessionId: "native",
+              cwd: "/project",
+              title: "Fresh",
+              updatedAt: 1,
+              running: true,
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ ok: true, value: [] });
+      const adapter = new DeepSeekHarnessAdapter(
+        {},
+        {
+          probeExecutable: () => Promise.resolve({ ...modernExecutable, version }),
+          createModernAdapter: () => modern,
+        },
+      );
+      expect(await adapter.sessionImport.resolveCandidate("native")).toEqual({
         ok: true,
-        value: [
-          {
+        value: {
+          candidate: {
             nativeSessionId: "native",
             cwd: "/project",
             title: "Fresh",
             updatedAt: 1,
             running: true,
           },
-        ],
-      })
-      .mockResolvedValueOnce({ ok: true, value: [] });
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable: () => Promise.resolve({ ...modernExecutable, version }),
-        createModernAdapter: () => modern,
-      },
-    );
-    expect(await adapter.sessionImport.resolveCandidate("native")).toEqual({
-      ok: true,
-      value: {
-        candidate: {
-          nativeSessionId: "native",
-          cwd: "/project",
-          title: "Fresh",
-          updatedAt: 1,
-          running: true,
+          nativeRef: {
+            harnessId: "deepseek-harness",
+            nativeSessionId: "native",
+            formatVersion: 1,
+            locator: { dshVersion: version },
+          },
         },
-        nativeRef: {
-          harnessId: "deepseek-harness",
-          nativeSessionId: "native",
-          formatVersion: 1,
-          locator: { dshVersion: version },
+      });
+      expect(await adapter.sessionImport.resolveCandidate("native")).toMatchObject({
+        ok: false,
+        error: { code: "sessionNotFound" },
+      });
+      expect(list).toHaveBeenCalledTimes(2);
+      await adapter.close();
+    },
+  );
+
+  it.each(VERIFIED_VERSIONS)(
+    "passes exact %s through the managed Modern Adapter factory",
+    async (version) => {
+      const executable = { ...modernExecutable, version };
+      const modernDelegate = new FakeAdapter();
+      const createModernAdapter = vi.fn(() => modernDelegate);
+      const adapter = new DeepSeekHarnessAdapter(
+        {},
+        {
+          probeExecutable: () => Promise.resolve(executable),
+          createModernAdapter,
         },
-      },
-    });
-    expect(await adapter.sessionImport.resolveCandidate("native")).toMatchObject({
-      ok: false,
-      error: { code: "sessionNotFound" },
-    });
-    expect(list).toHaveBeenCalledTimes(2);
-    await adapter.close();
-  });
+      );
 
-  it.each([
-    "0.1.7-rc.1",
-    "0.1.7-rc.2",
-    "0.2.0-rc.1",
-    "0.2.0-rc.2",
-    "0.2.1-rc.1",
-    "0.2.1-rc.2",
-  ] as const)("passes exact %s through the managed Modern Adapter factory", async (version) => {
-    const executable = { ...modernExecutable, version };
-    const modernDelegate = new FakeAdapter();
-    const createModernAdapter = vi.fn(() => modernDelegate);
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable: () => Promise.resolve(executable),
-        createModernAdapter,
-      },
-    );
-
-    await expect(adapter.inspect()).resolves.toBe(readyInspection);
-    expect(createModernAdapter).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: executable.command.command,
-        commandArguments: executable.command.arguments,
-        version,
-      }),
-    );
-    await adapter.close();
-    expect(modernDelegate.closeCalls).toBe(1);
-  });
+      await expect(adapter.inspect()).resolves.toBe(readyInspection);
+      expect(createModernAdapter).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: executable.command.command,
+          commandArguments: executable.command.arguments,
+          version,
+        }),
+      );
+      await adapter.close();
+      expect(modernDelegate.closeCalls).toBe(1);
+    },
+  );
 
   it("forwards the Host-owned Web handoff only to the selected Modern Adapter", async () => {
     const handoff = vi.fn<(url: URL) => Promise<void>>(() => Promise.resolve());

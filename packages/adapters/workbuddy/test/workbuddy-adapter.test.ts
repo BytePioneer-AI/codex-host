@@ -58,6 +58,45 @@ function fakeFactory(): CodeBuddyClientFactory {
     }) satisfies CodeBuddyClient;
 }
 
+function unauthenticatedFactory(authenticate: CodeBuddyClient["authenticate"] = async () => ({})) {
+  const state = { attempts: 0, authenticated: false };
+  const authCalls: string[] = [];
+  const factory: CodeBuddyClientFactory = () => {
+    state.attempts += 1;
+    return {
+      initialize: async () => ({ protocolVersion: 1 }),
+      open: async () => {
+        // The first client (the inspection probe) is logged out; after a
+        // successful authenticate the retry sees a logged-in agent.
+        if (!state.authenticated)
+          throw new CodeBuddyError("authenticationRequired", "Authentication required");
+        return { sessionId: "workbuddy-native", configOptions };
+      },
+      ...(authenticate
+        ? {
+            authenticate: async (params: { methodId: string }) => {
+              authCalls.push(params.methodId);
+              await authenticate(params);
+              state.authenticated = true;
+              return {};
+            },
+          }
+        : {}),
+      configure: async (_sessionId, id, value) => ({
+        configOptions: configOptions.map((option) => ({
+          ...option,
+          currentValue: option.id === id ? value : option.currentValue,
+        })),
+      }),
+      prompt: async () => ({ stopReason: "end_turn" }),
+      cancel: async () => {},
+      answer: async () => {},
+      close: async () => {},
+    } satisfies CodeBuddyClient;
+  };
+  return { factory, authCalls, clientCount: () => state.attempts, state };
+}
+
 describe("WorkBuddy Adapter identity", () => {
   it.each(["notification", "explicit refresh"])(
     "publishes persisted requests before Turn completion on %s",
@@ -274,7 +313,7 @@ describe("WorkBuddy Adapter identity", () => {
     });
   });
 
-  it("keeps macOS on the ACP catalog and rejects Models omitted by ACP", async () => {
+  it("merges WorkBuddy product-file Models into the macOS ACP catalog too", async () => {
     const adapter = new WorkBuddyAdapter({
       platform: "darwin",
       clientFactory: fakeFactory(),
@@ -284,8 +323,9 @@ describe("WorkBuddy Adapter identity", () => {
 
     expect(await adapter.inspect({ cwd: process.cwd() })).toMatchObject({
       status: "ready",
-      catalog: { models: [{ label: "Native Model" }] },
+      catalog: { models: [{ label: "Native Model" }, { label: "GLM-5.2" }] },
     });
+    // Product-file Models stay selectable even when ACP omits them.
     expect(
       await adapter.open({
         kind: "create",
@@ -294,9 +334,62 @@ describe("WorkBuddy Adapter identity", () => {
         model: modelRef("glm-5.2"),
       }),
     ).toMatchObject({
-      ok: false,
-      error: { code: "invalidRequest" },
+      ok: true,
+      value: {
+        initialState: {
+          effectiveModel: modelRef("glm-5.2"),
+          resolvedModelLabel: "glm-5.2",
+        },
+      },
     });
+  });
+
+  it("recovers from logged-out inspection with a silent native authenticate", async () => {
+    const { factory, authCalls } = unauthenticatedFactory();
+    const adapter = new WorkBuddyAdapter({
+      clientFactory: factory,
+      // Environment-independent: no real app cache may leak into the assertion.
+      productModels: async () => [],
+    });
+    adapters.push(adapter);
+
+    expect(await adapter.inspect({ cwd: process.cwd() })).toMatchObject({
+      status: "ready",
+      catalog: { models: [{ label: "Native Model" }] },
+    });
+    expect(authCalls).toEqual(["internal"]);
+  });
+
+  it("keeps the original error when silent authentication fails", async () => {
+    const { factory } = unauthenticatedFactory(async () => {
+      throw new CodeBuddyError("authenticationRequired", "Authentication required");
+    });
+    const adapter = new WorkBuddyAdapter({ clientFactory: factory });
+    adapters.push(adapter);
+
+    expect(await adapter.inspect({ cwd: process.cwd() })).toMatchObject({
+      status: "unavailable",
+      error: { code: "authenticationRequired" },
+    });
+  });
+
+  it("does not authenticate when inspection fails for non-auth reasons", async () => {
+    const { factory, authCalls } = unauthenticatedFactory();
+    const adapter = new WorkBuddyAdapter({
+      clientFactory: (options) => ({
+        ...factory(options),
+        open: async () => {
+          throw new CodeBuddyError("nativeFailure", "boom");
+        },
+      }),
+    });
+    adapters.push(adapter);
+
+    expect(await adapter.inspect({ cwd: process.cwd() })).toMatchObject({
+      status: "unavailable",
+      error: { code: "nativeFailure" },
+    });
+    expect(authCalls).toEqual([]);
   });
 
   it("rejects CodeBuddy refs instead of crossing Harness history", async () => {

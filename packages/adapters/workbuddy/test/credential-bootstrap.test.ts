@@ -52,7 +52,12 @@ async function fixture(provider: string, cli: string, extraEnvironment: NodeJS.P
 }
 
 describe("WorkBuddy bundled credential startup", () => {
-  it("lets the native CLI decrypt existing credentials before its first request", async () => {
+  it.each([
+    ["unset", undefined],
+    ["fields", "fields"],
+    ["empty", ""],
+    ["blank", "   "],
+  ])("decrypts existing credentials with a %s encryption policy", async (_name, policy) => {
     const secret = Buffer.alloc(32, 7).toString("base64");
     const key = createHash("sha256").update(secret, "utf8").digest();
     const nonce = Buffer.alloc(12, 3);
@@ -93,6 +98,7 @@ describe("WorkBuddy bundled credential startup", () => {
       });
       server.listen(env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);
       `,
+      policy === undefined ? {} : { WORKBUDDY_AT_REST_ENCRYPTION: policy },
     );
     expect(stdout.trim()).toBe("2");
     expect(stderr).toBe("");
@@ -109,15 +115,78 @@ describe("WorkBuddy bundled credential startup", () => {
   });
 
   it("preserves a caller-owned managed credential bootstrap", async () => {
-    const { stdout } = await fixture(
-      `throw Error('Do not access the provider for a managed child');`,
-      `if(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET !== 'existing-bootstrap') throw Error('Overwritten bootstrap'); console.log('managed');`,
-      {
-        WORKBUDDY_AT_REST_ENCRYPTION: "fields",
-        CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET: "existing-bootstrap",
-      },
+    const environment = {
+      WORKBUDDY_AT_REST_ENCRYPTION: "fields",
+      CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET: "existing-bootstrap",
+      CODEBUDDY_SIDECAR_READY_SOCKET: "existing-ready",
+      CODEBUDDY_SIDECAR_READY_TOKEN: "existing-token",
+      CODEBUDDY_SIDECAR_READY_SESSION_ID: "existing-session",
+    };
+    const { stdout, stderr } = await fixture(
+      `process.stderr.write('Unexpected key provider access'); throw Error('Managed child');`,
+      `const assert = require('node:assert/strict'); const expected = ${JSON.stringify(environment)};
+      for (const [name, value] of Object.entries(expected)) assert.equal(process.env[name], value);
+      console.log('managed');`,
+      environment,
     );
     expect(stdout.trim()).toBe("managed");
+    expect(stderr).toBe("");
+  });
+
+  it.each(["disabled", "required"])("preserves the native %s encryption policy", async (policy) => {
+    const { stdout, stderr } = await fixture(
+      `process.stderr.write('Unexpected key provider access'); throw Error('Native policy');`,
+      `const assert = require('node:assert/strict');
+      assert.equal(process.env.WORKBUDDY_AT_REST_ENCRYPTION, ${JSON.stringify(policy)});
+      assert.equal(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET, undefined);
+      console.log('native');`,
+      { WORKBUDDY_AT_REST_ENCRYPTION: policy },
+    );
+    expect(stdout.trim()).toBe("native");
+    expect(stderr).toBe("");
+  });
+
+  it.each([
+    ["bootstrap socket only", { CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET: "existing" }],
+    [
+      "policy and bootstrap socket only",
+      {
+        WORKBUDDY_AT_REST_ENCRYPTION: "fields",
+        CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET: "existing",
+      },
+    ],
+    [
+      "missing policy",
+      {
+        CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET: "existing",
+        CODEBUDDY_SIDECAR_READY_SOCKET: "existing-ready",
+        CODEBUDDY_SIDECAR_READY_TOKEN: "existing-token",
+        CODEBUDDY_SIDECAR_READY_SESSION_ID: "existing-session",
+      },
+    ],
+    [
+      "blank token",
+      {
+        WORKBUDDY_AT_REST_ENCRYPTION: "fields",
+        CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET: "existing",
+        CODEBUDDY_SIDECAR_READY_SOCKET: "existing-ready",
+        CODEBUDDY_SIDECAR_READY_TOKEN: "   ",
+        CODEBUDDY_SIDECAR_READY_SESSION_ID: "existing-session",
+      },
+    ],
+    ["empty ready socket", { CODEBUDDY_SIDECAR_READY_SOCKET: "" }],
+  ] as const)("rejects an incomplete managed bootstrap: %s", async (_name, environment) => {
+    await expect(
+      fixture(
+        `process.stderr.write('Unexpected key provider access'); throw Error('Incomplete bootstrap');`,
+        `console.log('CLI should not start');`,
+        environment,
+      ),
+    ).rejects.toMatchObject({
+      code: 1,
+      stdout: "",
+      stderr: expect.stringContaining("WorkBuddy credential bootstrap environment is incomplete"),
+    });
   });
 
   it("fails before loading the CLI when the native key payload is invalid", async () => {

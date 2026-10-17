@@ -34,7 +34,7 @@ ELECTRON_RUN_AS_NODE=1 "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron" 
 
 直接运行内置 CLI 时，其内部默认值可能回退到 `~/.codebuddy`。插件不会沿用这一跨产品默认值：它只把 `WORKBUDDY_CONFIG_DIR` 视为用户选择；没有该值时使用 `~/.workbuddy-ai`，随后强制传给子进程的 `WORKBUDDY_CONFIG_DIR` 与 `CODEBUDDY_CONFIG_DIR` 指向同一 WorkBuddy 根。这样即使普通 CodeBuddy 配置了自己的 `CODEBUDDY_CONFIG_DIR`，WorkBuddy 的历史、认证和设置也不会泄漏到该目录。WorkBuddy CLI 负责认证、原生设置、工具和 MCP 配置；codexhost 不保存、复制或推断其凭据。
 
-新版内置 CLI 的独立 ACP 启动不会自行初始化加密凭据读取能力。对于应用内置入口，插件先在同一个 WorkBuddy Electron 进程中调用其 `electron_browser_workbuddy_storage` 原生绑定，再通过内置 CLI 的 credential bootstrap 接收器初始化字段加密。密钥按原生 `normalizeAtRestKeyPayload` 规则规范化，只在该进程内存与本次随机管道中传递；不写入参数、环境变量或文件，也不由 Host 解密、复制登录 Token。CLI 随后按自己的认证逻辑读取已有登录文件。已有的受管 bootstrap 环境保持原样；旧应用没有该原生绑定时继续原有启动流程。
+新版内置 CLI 的独立 ACP 启动不会自行初始化加密凭据读取能力。对于应用内置入口，插件先在同一个 WorkBuddy Electron 进程中调用其 `electron_browser_workbuddy_storage` 原生绑定，再通过内置 CLI 的 credential bootstrap 接收器初始化字段加密。密钥按原生 `normalizeAtRestKeyPayload` 规则规范化，只在该进程内存与本次随机管道中传递；不写入参数、环境变量或文件，也不由 Host 解密、复制登录 Token。CLI 随后按自己的认证逻辑读取已有登录文件。完整的受管 bootstrap 环境保持原样；已有 socket、Token 或 Session ID 配置时，要求加密策略与四项通信配置均非空，否则在加载 CLI 前明确报错。仅设置 `WORKBUDDY_AT_REST_ENCRYPTION=fields` 或空策略时仍执行字段加密引导，其他显式策略交给原生 CLI 处理；旧应用没有该原生绑定时继续原有启动流程。
 
 此接入使用 WorkBuddy 自带的实现接口，不属于 ACP 标准：当前已在 Windows WorkBuddy AI 5.7.6 / CLI 2.156.0 的字段加密策略下验证，升级后须复核原生绑定、密钥格式和接收器。失败时停止启动，不关闭加密或写回明文凭据。POSIX 临时 socket 使用独立的 `0700` 目录，Windows 使用随机命名管道；收到原生确认后清理引导资源。若独立 CLI 仍要求认证，应在 Host 外启动相同产品配置和数据根的内置 TUI，然后执行官方 [`/login`](https://cloud.tencent.com/document/product/1831/137046)：
 

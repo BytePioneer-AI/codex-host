@@ -2,13 +2,21 @@
 export const WORKBUDDY_CREDENTIAL_PRELOAD = String.raw`
 (() => {
   const env = process.env;
-  if ([
-    "WORKBUDDY_AT_REST_ENCRYPTION",
+  const bootstrapEnvironment = [
     "CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET",
     "CODEBUDDY_SIDECAR_READY_SOCKET",
     "CODEBUDDY_SIDECAR_READY_TOKEN",
     "CODEBUDDY_SIDECAR_READY_SESSION_ID",
-  ].some(name => env[name] !== undefined)) return;
+  ];
+  if (bootstrapEnvironment.some(name => env[name] !== undefined)) {
+    if (!["WORKBUDDY_AT_REST_ENCRYPTION", ...bootstrapEnvironment].every(name => env[name]?.trim())) {
+      throw Error("WorkBuddy credential bootstrap environment is incomplete");
+    }
+    return;
+  }
+  const policy = env.WORKBUDDY_AT_REST_ENCRYPTION?.trim();
+  // Other explicit policies remain owned by the native CLI.
+  if (policy && policy !== "fields") return;
 
   let provider;
   try {

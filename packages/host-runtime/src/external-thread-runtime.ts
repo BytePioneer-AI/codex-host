@@ -81,6 +81,8 @@ export interface ExternalThread {
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
+  /** Text-only context accepted from Codex's thread/inject_items before the next Turn. */
+  pendingInjectedText: string[];
   /** Native Session faulted or closed; idle Threads should restore instead of reuse. */
   sessionUnavailable: boolean;
 }
@@ -390,6 +392,7 @@ export class ExternalThreadRuntime {
       persistenceError: null,
       projectedTerminalTurnId: null,
       ignoredInteractionIds: new Set(),
+      pendingInjectedText: [],
       sessionUnavailable: false,
     };
     this.idleRelease.touch(externalThread);

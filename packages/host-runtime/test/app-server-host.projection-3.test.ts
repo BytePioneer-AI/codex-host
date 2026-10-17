@@ -1384,6 +1384,86 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("accepts Side Chat context injection and carries it into the first external Turn", async () => {
+    const fixture = createFixture();
+    try {
+      const sourceThreadId = await startPiThread(fixture);
+      await completePiTurn(fixture, sourceThreadId, 2);
+
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/fork",
+        params: { threadId: sourceThreadId },
+      });
+      const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+      const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
+      if (typeof derivedId !== "string") throw new Error("Fork response has no derived Thread ID");
+
+      writeRequest(fixture.desktopInput, {
+        id: 11,
+        method: "thread/inject_items",
+        params: {
+          threadId: derivedId,
+          items: [
+            {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: "Side conversation boundary." }],
+            },
+          ],
+        },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 11)),
+      ).resolves.toMatchObject({ result: {} });
+
+      const turnId = await startPiTurn(fixture, derivedId, 12);
+      const derivedSession = fixture.adapter.sessions[1];
+      if (!derivedSession) throw new Error("Fake derived Session was not opened");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      derivedSession.appendText("side answer");
+      derivedSession.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      await expect(derivedSession.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {},
+            { input: [{ type: "text", text: "Side conversation boundary.\n\nsynthetic" }] },
+          ],
+        },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("rejects non-text External Side Chat context items", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/inject_items",
+        params: {
+          threadId,
+          items: [
+            {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_image", image_url: "data:image/png;base64,AA==" }],
+            },
+          ],
+        },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 10)),
+      ).resolves.toMatchObject({ error: { code: -32602 } });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("rejects a running source that has no completed Fork Checkpoint", async () => {
     const fixture = createFixture();
     const sourceThreadId = await startPiThread(fixture);

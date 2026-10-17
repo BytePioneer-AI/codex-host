@@ -985,20 +985,32 @@ class AntigravitySession implements HarnessSession {
     } else {
       const nativeError = event.result.error?.trim();
       const errorDetail = nativeError || active.stderr;
-      this.#completeTurn(
-        active,
-        {
-          status: "failed",
-          error: normalizedProcessError(
-            errorDetail,
-            `Antigravity Turn ended with status ${event.result.status}`,
-            nativeError !== undefined,
-          ),
-          checkpoint,
-        },
-        nativeTurnRef,
+      const error = normalizedProcessError(
+        errorDetail,
+        `Antigravity Turn ended with status ${event.result.status}`,
+        nativeError !== undefined,
       );
+      if (active.agentItem && nativeError && this.#reportedEarlier(error)) {
+        // agy keeps a Conversation's first failure and repeats it in the result
+        // of every later Turn, even when that Turn answered without error. A
+        // Turn that replied and only repeats an error an earlier Turn of this
+        // Conversation already reported did not fail.
+        this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
+      } else {
+        this.#completeTurn(active, { status: "failed", error, checkpoint }, nativeTurnRef);
+      }
     }
+  }
+
+  #reportedEarlier(error: HarnessError): boolean {
+    return this.#history
+      .snapshot()
+      .some(
+        ({ outcome }) =>
+          outcome.status === "failed" &&
+          outcome.error.code === error.code &&
+          outcome.error.message === error.message,
+      );
   }
 
   #publishUsage(active: ActiveTurn, usage: HostUsage): void {

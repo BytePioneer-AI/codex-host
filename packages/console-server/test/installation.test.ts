@@ -86,4 +86,32 @@ describe("console installation", () => {
   it("rejects inspect output from an unknown schema", () => {
     expect(() => parseInspectDocument({ schemaVersion: 2, runtime: {} })).toThrow("schema");
   });
+
+  it("preserves CLI selection diagnostics while accepting older schema v1 launchers", () => {
+    const document = {
+      schemaVersion: 1,
+      launcherVersion: "1.0.0",
+      launcherExecutable: "/installed/codexhost",
+      desktop: {
+        platform: "linux",
+        version: "1.2.3",
+        build: "1.2.3",
+        installRoot: "/usr/lib/chatgpt",
+        processIds: [],
+      },
+      desktopError: null,
+      runtime: { descriptorPath: null, running: false, launcherPid: null },
+    };
+    expect(parseInspectDocument(document).desktop?.executableCodexCli).toBeUndefined();
+    const selected = {
+      ...document,
+      desktop: {
+        ...document.desktop,
+        packagedCodexCli: "/usr/lib/chatgpt/resources/codex",
+        executableCodexCli: "/independent/codex",
+        codexCliSource: "command-line",
+      },
+    };
+    expect(parseInspectDocument(selected).desktop).toEqual(selected.desktop);
+  });
 });

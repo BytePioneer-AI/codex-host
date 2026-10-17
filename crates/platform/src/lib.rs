@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 mod background;
 #[cfg(not(target_os = "windows"))]
 mod background;
+mod codex_cli;
 mod desktop_launch;
 mod installation;
 #[cfg(target_os = "linux")]
@@ -37,20 +38,23 @@ mod windows_proxy;
 mod windows_ui;
 
 pub use background::detach_from_terminal;
+pub use codex_cli::{CodexCliOverride, CodexCliSource, resolve_codex_cli_override};
 pub use desktop_launch::{
     DesktopProcess, launch_desktop, launch_stock_desktop, open_external_url,
     open_latest_codexhost_release,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
-#[cfg(not(target_os = "linux"))]
-pub use installation::discover_codex_desktop;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub use installation::discover_codex_desktop_from_root;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use installation::discover_codex_desktop_from_root_with_cli;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub use installation::discover_desktop_managed_codex_cli;
+#[cfg(not(target_os = "linux"))]
+pub use installation::{discover_codex_desktop, discover_codex_desktop_with_cli};
 #[cfg(target_os = "linux")]
-pub use linux_installation::discover_codex_desktop;
+pub use linux_installation::{discover_codex_desktop, discover_codex_desktop_with_cli};
 pub use macos_native_harness_broker::{
     NATIVE_HARNESS_BROKER_LABEL, NativeHarnessBrokerCommand, NativeHarnessBrokerInstallStep,
     NativeHarnessBrokerLaunchAgentPlan, NativeHarnessBrokerLaunchctlPlan,
@@ -160,6 +164,7 @@ pub struct DesktopInstallation {
     pub desktop_executable: PathBuf,
     pub packaged_codex_cli: PathBuf,
     pub executable_codex_cli: PathBuf,
+    pub codex_cli_source: CodexCliSource,
 }
 
 #[derive(Debug)]

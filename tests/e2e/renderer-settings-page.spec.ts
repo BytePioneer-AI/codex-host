@@ -41,6 +41,10 @@ const { outputFiles } = await build({
         // returning from another destination restores the previous conversation.
         const nativeNavigations = [];
         history.replaceState({}, "", "/thread/settings-test");
+        document.querySelector('[data-app-shell-titlebar] button').addEventListener("click", () => {
+          nativeNavigations.push("back");
+          history.pushState({}, "", "/thread/previous");
+        });
         document.body.addEventListener("click", (event) => {
           const destination = event.target.closest("[data-sidebar-destination]");
           if (!destination) return;
@@ -78,6 +82,8 @@ if (!bundle) throw new Error("Settings page fixture bundle missing");
 // [data-selected]::before and expose the current destination via aria-current.
 const nativeShell = `<!doctype html><html><head><style>
   body { margin: 0; display: flex; height: 100vh; }
+  [data-app-shell-titlebar] { position: fixed; top: 0; left: 56px; height: 40px; }
+  [data-app-shell-titlebar] button { width: 32px; height: 32px; }
   nav { width: 56px; margin-top: 40px; display: flex; flex-direction: column; gap: 4px; }
   .rail-button { position: relative; width: 36px; height: 36px; border: 0; background: none;
     --button-text-color: rgb(120, 120, 120); color: var(--button-text-color); }
@@ -86,6 +92,9 @@ const nativeShell = `<!doctype html><html><head><style>
   .rail-button[data-selected]::before { opacity: 1; }
   main { flex: 1; }
 </style></head><body>
+  <header data-app-shell-titlebar="true">
+    <button aria-label="Back"><svg width="16" height="16"><path d="M12 8H4L8 4M4 8L8 12" /></svg></button>
+  </header>
   <nav data-app-navigation-rail="true">
     <button class="rail-button" data-sidebar-destination="builtin:home" data-selected="" aria-current="page">H</button>
     <button class="rail-button" data-sidebar-destination="builtin:plugins">P</button>
@@ -128,6 +137,77 @@ function fixtureState(page: Page) {
     };
   });
 }
+
+for (const nativeDisabled of [true, false]) {
+  for (const activation of ["click", "Enter", "Space", "Meta+[", "Alt+ArrowLeft"] as const) {
+    test(`settings Back works with native Back ${nativeDisabled ? "disabled" : "enabled"} (${activation})`, async ({
+      page,
+    }) => {
+      await setup(page);
+      const nativeBack = page.locator("[data-app-shell-titlebar] button");
+      await nativeBack.evaluate((button: HTMLButtonElement, disabled) => {
+        button.disabled = disabled;
+        button.setAttribute("aria-disabled", String(disabled));
+        if (disabled) {
+          button.setAttribute("data-disabled", "");
+          button.tabIndex = -1;
+        }
+      }, nativeDisabled);
+      const bounds = await nativeBack.boundingBox();
+      await openSettings(page);
+      const back = page.getByRole("button", { name: "Back", exact: true });
+      await expect(back).toBeEnabled();
+      expect(await back.boundingBox()).toEqual(bounds);
+      if (activation === "click") await back.locator("svg").click();
+      else {
+        await back.focus();
+        await page.keyboard.press(activation);
+      }
+      await expect(page.locator(".codexhost-settings-page")).toBeHidden();
+      await expect(page.locator("[data-codexhost-settings-back]")).toHaveCount(0);
+      await expect(nativeBack).toBeVisible();
+      expect(await nativeBack.isDisabled()).toBe(nativeDisabled);
+      expect(await fixtureState(page)).toMatchObject({
+        events: [true, false],
+        pathname: "/thread/settings-test",
+        nativeNavigations: [],
+      });
+      if (!nativeDisabled) {
+        await nativeBack.click();
+        expect(await fixtureState(page)).toMatchObject({
+          pathname: "/thread/previous",
+          nativeNavigations: ["back"],
+        });
+      }
+    });
+  }
+}
+
+test("keeps settings Back available when Desktop remounts its titlebar", async ({ page }) => {
+  await setup(page);
+  await openSettings(page);
+  await page.locator("[data-app-shell-titlebar]").evaluate((header) => {
+    const replacement = header.cloneNode(true) as HTMLElement;
+    const button = replacement.querySelector("button");
+    if (!button) throw new Error("Native Back fixture missing");
+    button.disabled = true;
+    header.replaceWith(replacement);
+  });
+  const back = page.getByRole("button", { name: "Back", exact: true });
+  await expect(back).toBeEnabled();
+  await back.click();
+  await expect(page.locator(".codexhost-settings-page")).toBeHidden();
+});
+
+test("disposing open settings restores native Back and removes its settings action", async ({
+  page,
+}) => {
+  await setup(page);
+  await openSettings(page);
+  await page.evaluate(() => Reflect.get(globalThis, "settingsFixture").shell.dispose());
+  await expect(page.locator("[data-codexhost-settings-back]")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Back", exact: true })).toBeVisible();
+});
 
 test("covers the content beside the rail and hides native selection without editing it", async ({
   page,

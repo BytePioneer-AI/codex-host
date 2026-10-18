@@ -1,4 +1,5 @@
 import { SETTINGS_TRIGGER_ATTRIBUTE } from "./trigger.js";
+import { attachSettingsBackNavigation } from "./back-navigation.js";
 
 const NAVIGATION_RAIL_SELECTOR = "nav[data-app-navigation-rail]";
 const RAIL_DESTINATION_SELECTOR = "[data-sidebar-destination]";
@@ -78,6 +79,7 @@ export function attachRendererSettingsRailPage(
     if (disposed) return;
     onNavigateAway();
   };
+  const backNavigation = attachSettingsBackNavigation(ownerDocument, navigateAway);
 
   const checkNavigation = (): void => {
     if (disposed) return;
@@ -158,6 +160,7 @@ export function attachRendererSettingsRailPage(
     dispose() {
       if (disposed) return;
       disposed = true;
+      backNavigation.dispose();
       railMutations?.disconnect();
       railResize?.disconnect();
       bodyMutations?.disconnect();

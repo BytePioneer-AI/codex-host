@@ -89,7 +89,7 @@ Read the current call sites and follow each surface independently from discovery
 - sidebar decoration;
 - settings entry;
 - Fork;
-- Codex usage gate (`renderer-codex-usage-gate.ts`, driven by `renderComposerAgentControl`'s external-submission readiness);
+- Codex usage gate (`renderer-codex-usage-gate.ts`, driven by `renderComposerAgentControl`'s usage-gate allowance for Codex or a ready external Adapter);
 - Host create and subsequent-Turn routing.
 
 Prefer unique semantic candidates plus ownership checks. Record fail-closed behavior for absent or ambiguous candidates. Keep source relocation separate from an actual anchor or ownership change.
@@ -128,7 +128,7 @@ The runner does not accept the `.app` directory. A controlled flow may verify Ag
 
 ### Codex usage gate probe
 
-This surface lets an external Harness submit while the ChatGPT-signed-in Codex subscription is out of usage by projecting `false` for one Composer's two Desktop usage-gate subscriptions. It depends on private React/state-library internals, so check it on every update. `npm run audit:codex-desktop` reports its structure as the `codex-usage-gate` surface (see `tools/codex-desktop-contract-audit/README.md`); `codex-usage-account-gate-dormant` means the audit ran without a ChatGPT sign-in whose Account gate reads usage. The audit does not verify behavior.
+This surface lets a Composer submit while the ChatGPT-signed-in Codex subscription is out of usage by projecting `false` for one Composer's two Desktop usage-gate subscriptions. It depends on private React/state-library internals, so check it on every update. `npm run audit:codex-desktop` reports its structure as the `codex-usage-gate` surface (see `tools/codex-desktop-contract-audit/README.md`); `codex-usage-account-gate-dormant` means the audit ran without a ChatGPT sign-in whose Account gate reads usage. The audit does not verify behavior.
 
 Bundle evidence (evidence only, not contracts): the Composer owner combines `submitDisabled` from an Account rate-limit selector (`authMethod !== "chatgpt"` early return, then `rate_limit.allowed === false`, gated to host `local`) and a reserve `hardBlocked` selector. Confirm both still exist and still feed `submitDisabled`, and that no new Account-wide usage blocker was added beside them. If Desktop now exempts external models/Threads or stops blocking in the Renderer, report that the module can be removed.
 
@@ -141,7 +141,7 @@ Manual read-only live probe, when the audit surface is not `no-impact` or its co
 
 With codexhost running and an external Agent selected, bound gates show an instance `getSnapshot` of `() => false` for both hooks. The Agent control's hover title shows the "cannot separate from Codex usage" message when binding failed.
 
-Behavioral check requires a ChatGPT account that is out of Codex usage; API-key sign-in never triggers the gate. With non-empty text and an external Agent, Send is enabled in a new draft and an existing Thread; after switching to Codex it returns to disabled. Do not submit a message unless the user asks. Remove any temporary text without touching text the user typed. Report `unverified` when no exhausted account is available.
+Behavioral check requires a ChatGPT account that is out of Codex usage; API-key sign-in never triggers the gate. With non-empty text, Send and Enter are enabled in a new draft, an existing Thread, and a Codex Thread. Do not submit a message unless the user asks. Remove any temporary text without touching text the user typed. Report `unverified` when no exhausted account is available.
 
 Completion criterion: no surface receives a live verdict from bundle inspection alone.
 
@@ -205,5 +205,5 @@ Do not bury the answer in the evidence. “Frontend changed” and “codexhost 
 - Declaring Host routing, title creation, or Fork healthy without exercising that boundary.
 - Updating multiple controls before isolating the failed ownership contract.
 - Reformatting, resetting, staging, or overwriting unrelated work while investigating.
-- Declaring the Codex usage gate healthy from a Codex-selected, empty, API-key-signed-in, or not-exhausted Composer; only the external Agent path with exhausted ChatGPT usage exercises it.
+- Declaring the Codex usage gate healthy from an empty, API-key-signed-in, or not-exhausted Composer; exhausted ChatGPT usage on a new draft, existing Thread, or Codex Thread exercises it.
 - Checking only the Send button's DOM `disabled`; Desktop also guards Enter and the submit function with the same `submitDisabled`.

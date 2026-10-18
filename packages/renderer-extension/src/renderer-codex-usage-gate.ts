@@ -1,14 +1,14 @@
 /**
- * Lets an external Harness Composer submit while the signed-in ChatGPT Codex
- * subscription is out of usage.
+ * Lets a Composer submit while the signed-in ChatGPT Codex subscription is
+ * out of usage.
  *
  * Desktop blocks Composer submission through two boolean selectors: the
  * ChatGPT Account rate-limit gate and the reserve `hardBlocked` gate. Both are
  * Account-wide, only apply to ChatGPT sign-in, and are not a protocol limit.
  * This module projects `false` for those two subscriptions of one Composer
- * only. It never writes Accounts, atoms or query data, so the Codex path and
- * other Composers keep the native result. Other native submit blockers are
- * unaffected. Anything that cannot be verified keeps the native restriction.
+ * only. It never writes Accounts, atoms or query data, so other Composers keep
+ * the native result. Other native submit blockers are unaffected. Anything
+ * that cannot be verified keeps the native restriction.
  *
  * Desktop 26.1002 moved the Account gate into a child of the submit owner and
  * lets an active reserve exempt it, so gates are collected along the Composer's
@@ -17,6 +17,7 @@
 import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
 
 import { createRendererCodexUsageBanner } from "./renderer-codex-usage-banner.js";
+import { readCodexUsageBannerPreference } from "./renderer-codex-usage-banner-preference.js";
 
 type RecordValue = Record<string, unknown>;
 type Atom = { read(get: (atom: Atom) => unknown): unknown };
@@ -408,7 +409,7 @@ function isBound(projections: Iterable<Projection>): boolean {
 export type RendererCodexUsageGateStatus = "native" | "bypassed" | "unsupported";
 
 export interface RendererCodexUsageGate {
-  /** `allowed`: this Composer submits to a ready external Harness. */
+  /** `allowed`: this Composer should lift the native Codex usage submit gate. */
   update(allowed: boolean): RendererCodexUsageGateStatus;
   /** Re-apply the last decision, rebinding if Desktop replaced the Composer hooks. */
   refresh(): RendererCodexUsageGateStatus;
@@ -448,11 +449,15 @@ export function createRendererCodexUsageGate(composer: Element): RendererCodexUs
     }
     return "bypassed";
   };
-  // The usage banner only describes the Codex path; hide it while bypassed.
+  // Fiber banner hide follows Settings → Appearance. Default on.
   const apply = (): RendererCodexUsageGateStatus => {
     const status = applyGate();
-    if (status === "bypassed" && owner) banner.hide(owner.owner);
-    else banner.restore();
+    const ownerWindow =
+      composer.ownerDocument?.defaultView ??
+      (typeof document !== "undefined" ? document.defaultView : null);
+    if (status === "bypassed" && owner && readCodexUsageBannerPreference(ownerWindow)) {
+      banner.hide(owner.owner);
+    } else banner.restore();
     return status;
   };
   const applyGate = (): RendererCodexUsageGateStatus => {

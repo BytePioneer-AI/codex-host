@@ -1,5 +1,10 @@
 import { readCpaLiveVoiceHookConfig } from "../renderer-cpa-live-voice-hook.js";
 import {
+  CODEX_USAGE_BANNER_CHANGE_EVENT,
+  readCodexUsageBannerPreference,
+  writeCodexUsageBannerPreference,
+} from "../renderer-codex-usage-banner-preference.js";
+import {
   CPA_LIVE_VOICE_CHANGE_EVENT,
   readCpaLiveVoicePreference,
   writeCpaLiveVoicePreference,
@@ -41,6 +46,32 @@ export function createAppearanceSettingsPage(
       description.textContent = messages.appearanceDescription;
 
       const { group, card } = createPreferenceGroup(document, messages.appearanceGroup);
+      const usageBannerId = preferenceId("hide-codex-usage-banner");
+      const usageBannerRow = createPreferenceItem(document, {
+        title: messages.hideCodexUsageBannerTitle,
+        description: messages.hideCodexUsageBannerDescription,
+        controlId: usageBannerId,
+        help: {
+          label: messages.hideCodexUsageBannerHelpLabel,
+          lines: messages.hideCodexUsageBannerHelp,
+        },
+      });
+      const usageBanner = createPreferenceSwitch(
+        document,
+        usageBannerId,
+        usageBannerRow.description.id,
+      );
+      usageBanner.checked = readCodexUsageBannerPreference(ownerWindow);
+      usageBanner.addEventListener("change", () => {
+        writeCodexUsageBannerPreference(ownerWindow, usageBanner.checked);
+      });
+      const syncUsageBanner = (): void => {
+        usageBanner.checked = readCodexUsageBannerPreference(ownerWindow);
+      };
+      ownerWindow.addEventListener(CODEX_USAGE_BANNER_CHANGE_EVENT, syncUsageBanner);
+      usageBannerRow.item.append(usageBanner);
+      card.append(usageBannerRow.item);
+
       const liveVoiceId = preferenceId("cpa-live-voice");
       const liveVoiceRow = createPreferenceItem(document, {
         title: messages.cpaLiveVoiceTitle,
@@ -92,6 +123,7 @@ export function createAppearanceSettingsPage(
         getLoadedSessionsClient,
       );
       return () => {
+        ownerWindow.removeEventListener(CODEX_USAGE_BANNER_CHANGE_EVENT, syncUsageBanner);
         ownerWindow.removeEventListener(CPA_LIVE_VOICE_CHANGE_EVENT, syncLiveVoice);
         ownerWindow.removeEventListener(REASONING_SOFT_WRAP_CHANGE_EVENT, sync);
         disposeIdleRelease();

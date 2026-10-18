@@ -34,7 +34,7 @@ Controlled mode reuses the existing production `RendererControlSession`. It can 
 
 ## Codex usage gate surface
 
-The `codex-usage-gate` surface covers `renderer-codex-usage-gate.ts`, which lets an external Harness submit while the ChatGPT-signed-in Codex subscription is out of usage. For each Composer with an editor it records bounded counts:
+The `codex-usage-gate` surface covers `renderer-codex-usage-gate.ts`, which lets a Composer submit while the ChatGPT-signed-in Codex subscription is out of usage. For each Composer with an editor it records bounded counts:
 
 - `ownerCount` — Composer owners exposing `onLocalSubmitStart` and boolean `submitDisabled` that hold the reserve gate (pass-through wrappers with the same props are excluded);
 - `reserveGateCount` — boolean subscriptions whose selector reads reserve `hardBlocked`;
@@ -46,7 +46,7 @@ Verdicts:
 - no Account gate is `unverified` (`codex-usage-account-gate-dormant`): the selector returns early for API-key sign-in or while Account data loads, so inspect again signed in with ChatGPT;
 - no Composer with an editor is `unverified`.
 
-The probe replays selectors read-only and never lifts gates, writes Account or query data, or submits input. Whether Send and Enter work for an external Agent with exhausted usage is behavioral and stays outside this tool.
+The probe replays selectors read-only and never lifts gates, writes Account or query data, or submits input. Whether Send and Enter work with exhausted usage on a new chat, existing Thread, or Codex Thread is behavioral and stays outside this tool.
 
 ## Transcript surface
 

@@ -1693,6 +1693,68 @@ describe("Codex UI projector", () => {
     ).toMatchObject({ status: "completed", items: [] });
   });
 
+  it("projects generatedImage as Desktop imageGeneration with completedAtMs", () => {
+    const value = projector();
+    const imageId = itemId("image-1");
+    const savedPath = "/Users/karlchow/.grok/sessions/session-1/images/1.jpg";
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "generatedImage",
+          itemId: imageId,
+          savedPath,
+          revisedPrompt: "1.jpg",
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            id: "image-1",
+            type: "imageGeneration",
+            status: "inProgress",
+            savedPath,
+            result: "",
+            revisedPrompt: "1.jpg",
+          },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "generatedImage",
+            itemId: imageId,
+            savedPath,
+            revisedPrompt: "1.jpg",
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          completedAtMs: expect.any(Number),
+          item: {
+            id: "image-1",
+            type: "imageGeneration",
+            status: "completed",
+            savedPath,
+            result: "",
+          },
+        },
+      },
+    ]);
+  });
+
   it("projects failed Turns through the complete Codex error notification shape", () => {
     const value = projector();
     const message = '503: {"message":"Service temporarily unavailable","type":"api_error"}';

@@ -61,6 +61,7 @@ export type {
   HostEvent,
   HostFileChange,
   HostFileChangeItem,
+  HostGeneratedImageItem,
   HistoricalTurnOutcome,
   HostInteraction,
   HostInteractionResponse,

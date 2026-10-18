@@ -101,6 +101,12 @@ import {
 } from "./grok-subagent.js";
 import type { GrokCompactResult } from "./grok-manual-compaction.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
+import {
+  grokGeneratedImageItem,
+  mergeGrokGeneratedImage,
+  projectGrokGeneratedImage,
+  type GrokGeneratedImage,
+} from "./grok-generated-image.js";
 import { forkGrokSession } from "./grok-fork.js";
 import { mapGrokReplay } from "./grok-history.js";
 import { rewindGrokLastTurn } from "./grok-rewind.js";
@@ -188,6 +194,7 @@ export interface GrokAcpTransportLike {
 interface ActiveTool {
   item: GrokProjectedToolItem;
   status?: string;
+  generatedImage?: GrokGeneratedImage;
 }
 
 interface ActiveApproval {
@@ -1139,7 +1146,12 @@ class GrokHarnessSession implements HarnessSession {
     });
     const projection = projectGrokToolOutput(event.content, event.rawOutput, this.#toolOutputLimit);
     if (hasGrokToolProjection(projection)) item = applyGrokToolProjection(item, projection);
-    active.tools.set(event.callId, { item, ...(event.status ? { status: event.status } : {}) });
+    const generatedImage = projectGrokGeneratedImage(event.content, event.rawOutput);
+    active.tools.set(event.callId, {
+      item,
+      ...(event.status ? { status: event.status } : {}),
+      ...(generatedImage ? { generatedImage } : {}),
+    });
     this.#event({ type: "item.started", turnId: active.command.turnId, item });
     if (event.status === "completed" || event.status === "failed") {
       this.#completeTool(active, event.callId, event.status, event.content, event.rawOutput);
@@ -1213,6 +1225,10 @@ class GrokHarnessSession implements HarnessSession {
       }
     }
     if (event.status) tool.status = event.status;
+    tool.generatedImage = mergeGrokGeneratedImage(
+      tool.generatedImage,
+      projectGrokGeneratedImage(event.content, event.rawOutput),
+    );
     if (event.status === "completed" || event.status === "failed") {
       this.#completeTool(active, event.callId, event.status, event.content, event.rawOutput);
     }
@@ -1247,15 +1263,24 @@ class GrokHarnessSession implements HarnessSession {
     if (status !== "completed") return;
     this.#completeWatchedSubagents(active, tool.item, content, rawOutput);
     const changes = projectGrokFileChanges(content, this.#cwd);
-    if (!changes) return;
-    const fileItem: HostFileChangeItem = {
-      type: "fileChange",
-      itemId: hostItemIdSchema.parse(this.#randomUUID()),
-      sourceItemIds: [tool.item.itemId],
-      changes,
-    };
-    this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
-    this.#completeItem(active, fileItem, { status: "succeeded" });
+    if (changes) {
+      const fileItem: HostFileChangeItem = {
+        type: "fileChange",
+        itemId: hostItemIdSchema.parse(this.#randomUUID()),
+        sourceItemIds: [tool.item.itemId],
+        changes,
+      };
+      this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
+      this.#completeItem(active, fileItem, { status: "succeeded" });
+    }
+    if (!tool.generatedImage) return;
+    const imageItem = grokGeneratedImageItem(
+      tool.generatedImage,
+      hostItemIdSchema.parse(this.#randomUUID()),
+      tool.item.itemId,
+    );
+    this.#event({ type: "item.started", turnId: active.command.turnId, item: imageItem });
+    this.#completeItem(active, imageItem, { status: "succeeded" });
   }
 
   #completeSubagentTool(

@@ -354,6 +354,15 @@ export interface HostFileChangeItem {
   sourceItemIds?: HostItemId[];
 }
 
+/** Desktop `imageGeneration` gallery. Requires an absolute saved file. */
+export interface HostGeneratedImageItem {
+  type: "generatedImage";
+  itemId: HostItemId;
+  savedPath: string;
+  revisedPrompt?: string;
+  sourceItemIds?: HostItemId[];
+}
+
 export type HostSubagentStatus = "pending" | "running" | "completed" | "failed" | "interrupted";
 
 export interface HostSubagentState {
@@ -385,6 +394,7 @@ export type HostItem =
   | HostCommandExecutionItem
   | HostToolExecutionItem
   | HostFileChangeItem
+  | HostGeneratedImageItem
   | HostSubagentDelegationItem;
 
 export type HostItemUpdate =

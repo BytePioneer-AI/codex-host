@@ -397,3 +397,57 @@ describe("Grok history local media Markdown", () => {
     }
   });
 });
+
+describe("Grok history generated images", () => {
+  it("restores ImageGen files as generatedImage items", async () => {
+    const sessionDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-grok-image-"));
+    const imagePath = path.join(sessionDirectory, "images", "1.jpg");
+    try {
+      await mkdir(path.dirname(imagePath), { recursive: true });
+      await writeFile(imagePath, "jpeg");
+      const snapshot = mapGrokReplay(
+        [
+          { type: "user.text", text: "draw a cat" },
+          {
+            type: "tool.call",
+            callId: "img-1",
+            title: "image_gen",
+            name: "image_gen",
+            rawInput: { prompt: "cat" },
+          },
+          {
+            type: "tool.update",
+            callId: "img-1",
+            status: "completed",
+            rawOutput: {
+              type: "ImageGen",
+              path: imagePath,
+              filename: "1.jpg",
+              session_folder: "images",
+            },
+          },
+          { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+        ],
+        grokHarnessId,
+        "session-1",
+        sessionDirectory,
+      );
+      expect(snapshot.turns[0]?.items).toMatchObject([
+        {
+          item: { type: "toolExecution", toolName: "image_gen" },
+          outcome: { status: "succeeded" },
+        },
+        {
+          item: {
+            type: "generatedImage",
+            savedPath: imagePath,
+            revisedPrompt: "1.jpg",
+          },
+          outcome: { status: "succeeded" },
+        },
+      ]);
+    } finally {
+      await rm(sessionDirectory, { recursive: true, force: true });
+    }
+  });
+});

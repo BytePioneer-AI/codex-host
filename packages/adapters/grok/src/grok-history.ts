@@ -18,6 +18,12 @@ import {
 
 import type { GrokTransportEvent } from "./acp-transport.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
+import {
+  grokGeneratedImageItem,
+  mergeGrokGeneratedImage,
+  projectGrokGeneratedImage,
+  type GrokGeneratedImage,
+} from "./grok-generated-image.js";
 import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
 import {
   grokNativeSubagentId,
@@ -124,6 +130,7 @@ export function mapGrokReplay(
   let agent: HostAgentMessageItem | null = null;
   let reasoning: HostReasoningItem | null = null;
   const tools = new Map<string, GrokProjectedToolItem>();
+  const generatedImages = new Map<string, GrokGeneratedImage>();
   const mediaRoots = grokMediaResolveRoots(cwd, sessionDirectory);
   const subagents = new Map<string, HostSubagentDelegationItem>();
   const subagentAliases = new Map<string, string>();
@@ -247,6 +254,7 @@ export function mapGrokReplay(
       items.push({ item: tool, outcome: { status: "succeeded" } });
     }
     tools.clear();
+    generatedImages.clear();
     for (const item of subagents.values()) {
       items.push({ item, outcome: { status: "succeeded" } });
     }
@@ -263,6 +271,11 @@ export function mapGrokReplay(
     if (hasGrokToolProjection(projection)) {
       tools.set(callId, applyGrokToolProjection(tool, projection));
     }
+    const image = mergeGrokGeneratedImage(
+      generatedImages.get(callId),
+      projectGrokGeneratedImage(content, rawOutput),
+    );
+    if (image) generatedImages.set(callId, image);
   };
   const completeTool = (
     callId: string,
@@ -274,6 +287,8 @@ export function mapGrokReplay(
     const tool = tools.get(callId);
     if (!tool) return;
     tools.delete(callId);
+    const generatedImage = generatedImages.get(callId);
+    generatedImages.delete(callId);
     const outcome: HostItemSnapshot["outcome"] =
       status === "failed"
         ? {
@@ -296,14 +311,24 @@ export function mapGrokReplay(
     items.push({ item: tool, outcome });
     if (status !== "completed") return;
     const changes = projectGrokFileChanges(content, cwd);
-    if (!changes) return;
-    const fileItem: HostFileChangeItem = {
-      type: "fileChange",
-      itemId: stableId("file-change", turnIndex, ++messageIndex),
-      sourceItemIds: [tool.itemId],
-      changes,
-    };
-    items.push({ item: fileItem, outcome: { status: "succeeded" } });
+    if (changes) {
+      const fileItem: HostFileChangeItem = {
+        type: "fileChange",
+        itemId: stableId("file-change", turnIndex, ++messageIndex),
+        sourceItemIds: [tool.itemId],
+        changes,
+      };
+      items.push({ item: fileItem, outcome: { status: "succeeded" } });
+    }
+    if (!generatedImage) return;
+    items.push({
+      item: grokGeneratedImageItem(
+        generatedImage,
+        stableId("generated-image", turnIndex, ++messageIndex),
+        tool.itemId,
+      ),
+      outcome: { status: "succeeded" },
+    });
   };
   const completeTurn = (outcome: HistoricalTurnOutcome, terminalKey?: string): void => {
     if (input.length === 0) return;
@@ -358,6 +383,7 @@ export function mapGrokReplay(
       agent = null;
       reasoning = null;
       tools.clear();
+      generatedImages.clear();
       subagents.clear();
       subagentAliases.clear();
       continue;

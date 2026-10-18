@@ -545,6 +545,18 @@ function projectItem(
         changes: projectFileChanges(item.changes),
         status: itemStatus(outcome),
       };
+    case "generatedImage":
+      return {
+        id: item.itemId,
+        type: "imageGeneration",
+        status: itemStatus(outcome),
+        savedPath: item.savedPath,
+        result: "",
+        revisedPrompt: item.revisedPrompt ?? null,
+        inputImages: [],
+        failure: null,
+        transparentBackground: null,
+      };
     case "subagentDelegation": {
       const primary = item.subagents[0];
       // Codex exposes one configuration per Item, not per receiver. Do not

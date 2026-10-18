@@ -312,7 +312,7 @@ function hasMediaExtension(value: string): boolean {
   return MEDIA_EXTENSIONS.has(path.extname(pathname).toLowerCase());
 }
 
-function mediaFileExists(absolutePath: string): boolean {
+export function mediaFileExists(absolutePath: string): boolean {
   try {
     return existsSync(absolutePath) && statSync(absolutePath).isFile();
   } catch {

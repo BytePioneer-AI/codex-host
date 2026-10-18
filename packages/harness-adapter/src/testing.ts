@@ -606,6 +606,18 @@ export class FakeHarnessSession implements HarnessSession {
     return itemId;
   }
 
+  emitGeneratedImage(savedPath: string, revisedPrompt?: string): HostItemId {
+    const itemId = this.#nextItemId();
+    this.#startItem({
+      type: "generatedImage",
+      itemId,
+      savedPath,
+      ...(revisedPrompt ? { revisedPrompt } : {}),
+    });
+    this.completeItem(itemId, { status: "succeeded" });
+    return itemId;
+  }
+
   askQuestion(
     question: HostQuestion,
     options: { itemId?: HostItemId; title?: string; expiresAt?: string } = {},

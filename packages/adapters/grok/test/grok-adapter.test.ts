@@ -994,6 +994,68 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it("projects ImageGen files as generatedImage items and restores them from history", async () => {
+    const imageRoot = await mkdtemp(path.join(os.tmpdir(), "codexhost-grok-image-"));
+    const imagePath = path.join(imageRoot, "1.jpg");
+    await writeFile(imagePath, "jpeg");
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-generated-image");
+    try {
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "draw" }],
+      });
+      expect((await nextEvent(iterator)).type).toBe("turn.started");
+      transport.event({
+        type: "tool.call",
+        callId: "img-1",
+        title: "image_gen",
+        name: "image_gen",
+        status: "in_progress",
+        rawInput: { prompt: "cat" },
+      });
+      expect((await nextEvent(iterator)).type).toBe("item.started");
+      transport.event({
+        type: "tool.update",
+        callId: "img-1",
+        status: "completed",
+        rawOutput: {
+          type: "ImageGen",
+          path: imagePath,
+          filename: "1.jpg",
+          session_folder: "images",
+        },
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.completed",
+        snapshot: { item: { type: "toolExecution" }, outcome: { status: "succeeded" } },
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.started",
+        item: {
+          type: "generatedImage",
+          savedPath: imagePath,
+          revisedPrompt: "1.jpg",
+        },
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.completed",
+        snapshot: { item: { type: "generatedImage" }, outcome: { status: "succeeded" } },
+      });
+      transport.finish();
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "turn.completed",
+        outcome: { status: "succeeded" },
+      });
+    } finally {
+      await adapter.close();
+      await rm(imageRoot, { recursive: true, force: true });
+    }
+  });
+
   it("keeps failed terminal ACP Diff Content Tool-only", async () => {
     const transport = new FakeGrokTransport();
     const { adapter, session } = await openedSession(transport);

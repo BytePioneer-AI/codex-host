@@ -90,6 +90,7 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/grok/subagent-status-and-model.md`](harnesses/grok/subagent-status-and-model.md) | Grok Subagent 状态、Model、Transcript 与 Desktop 投影；修改 Grok Subagent 时阅读。 |
+| [`harnesses/grok/generated-images.md`](harnesses/grok/generated-images.md) | Grok Imagine files project to Desktop `imageGeneration`; keep Markdown rewrite for videos and cited paths. |
 
 ### ZCode
 

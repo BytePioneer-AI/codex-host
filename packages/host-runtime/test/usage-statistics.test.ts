@@ -14,6 +14,7 @@ import {
   hostThreadIdSchema,
   nativeSessionRefSchema,
   USAGE_STATISTICS_METHOD,
+  usageStatisticsResultSchema,
 } from "@codexhost/shared-contracts";
 
 import { ModelPriceCatalog } from "../src/model-prices.js";
@@ -665,6 +666,60 @@ it("serves statistics through the Host from Adapters that expose local usage", a
     await stopFixture(fixture);
   }
 });
+
+it.each(["native", "Desktop"])(
+  "returns schema-valid statistics for a long %s emoji title",
+  async (source) => {
+    const title = `${"a".repeat(199)}😀`;
+    const storage = new FakeStorage(
+      new Map([
+        [
+          "one",
+          {
+            fingerprint: "1",
+            entries: [
+              entry("r", {
+                sessionId: "s",
+                sessionTitle: source === "native" ? title : "Native title",
+              }),
+            ],
+          },
+        ],
+      ]),
+    );
+    const records: UsageSessionTitleRecord[] =
+      source === "Desktop"
+        ? [
+            {
+              harnessId: harnessIdSchema.parse("pi"),
+              nativeSessionRef: nativeSessionRefSchema.parse({
+                harnessId: "pi",
+                nativeSessionId: "s",
+                formatVersion: 1,
+              }),
+              state: "ready",
+              title,
+              updatedAt: new Date(NOW).toISOString(),
+            },
+          ]
+        : [];
+    const stats = statistics();
+    stats.attach(
+      () => [{ harness: "pi", capability: storage }],
+      async () => records,
+    );
+    try {
+      const result = await settledGet(stats);
+      expect(usageStatisticsResultSchema.safeParse(result).success).toBe(true);
+      expect(result.sessions[0]?.title).toBe(`${"a".repeat(199)}…`);
+      expect(result.recentSessions?.[0]?.title).toBe(`${"a".repeat(199)}…`);
+      expect(result.totals.requests).toBe(1);
+      if (source === "Desktop") expect(records[0]?.title).toBe(title);
+    } finally {
+      stats.close();
+    }
+  },
+);
 
 it("selects the latest named ready mapping and never borrows titles for a fork", async () => {
   const storage = new FakeStorage(

@@ -15,6 +15,7 @@ import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { ExternalVoice } from "./external-voice.js";
+import { voiceSessionInputFromTurns } from "./external-voice-session-input.js";
 import { ExternalVoiceResults } from "./external-voice-results.js";
 import {
   configuredExternalVoiceGateway,
@@ -4587,7 +4588,11 @@ export class AppServerHost {
   ): Promise<void> {
     try {
       if (request.method === "thread/realtime/start") {
-        await this.#externalVoice.start(thread.id, requestObject(request));
+        await this.#externalVoice.start(
+          thread.id,
+          requestObject(request),
+          voiceSessionInputFromTurns(thread.turns),
+        );
       } else if (request.method === "thread/realtime/stop") {
         await this.#externalVoice.stop(thread.id);
       } else {
@@ -4892,9 +4897,9 @@ export class AppServerHost {
       !thread.running ||
       thread.activeTurnId !== requestedTurnId
     ) {
-      await this.#writer.json(
-        rpcError(request, -32074, "External turn/interrupt must reference the active Turn"),
-      );
+      // Late overlay stop after the Turn already completed. Desktop retries a
+      // mismatch error against whichever Turn is now active.
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
       return;
     }
     const turnId = thread.activeTurnId;
@@ -5231,7 +5236,11 @@ export class AppServerHost {
       thread.projectedTurns.delete(event.turnId);
     }
     for (const message of result.messages) await this.#writer.json(message);
-    this.#externalVoiceResults.observe(thread.id, event);
+    this.#externalVoiceResults.observe(
+      thread.id,
+      event,
+      event.type === "turn.completed" ? result.completedTurn : undefined,
+    );
     if (event.type === "turn.completed") {
       await this.#setThreadStatus(
         thread,

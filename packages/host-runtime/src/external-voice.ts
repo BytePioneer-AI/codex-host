@@ -2,11 +2,26 @@ import { randomUUID } from "node:crypto";
 import type { JsonObject } from "@codexhost/protocol-core";
 import type { ExternalVoiceCall, ExternalVoiceCallFactory } from "./external-voice-gateway.js";
 
+interface VoiceTask {
+  id: string;
+  text: string;
+  result?: string;
+  delegationId?: string;
+  spokenFor?: string | null;
+}
+
+interface PendingHandle {
+  id: string;
+  turnId: string;
+}
+
 interface VoiceSession {
   controller: AbortController;
   call?: ExternalVoiceCall;
   creation?: Promise<ExternalVoiceCall>;
   seen: Set<string>;
+  tasks: Map<string, VoiceTask>;
+  pendingHandles: PendingHandle[];
   initializationTimeout?: ReturnType<typeof setTimeout>;
   stopping?: Promise<void>;
 }
@@ -27,6 +42,24 @@ const voices = new Set([
   "cove",
 ]);
 
+function protocolId(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
+}
+
+function userTurnId(event: JsonObject, turn: JsonObject): string | undefined {
+  return protocolId(turn.id) ?? protocolId(event.event_id);
+}
+
+function delegationTurnId(event: JsonObject, item: JsonObject): string | undefined {
+  return (
+    protocolId(item.user_bidi_turn_id) ??
+    protocolId(item.turn_id) ??
+    protocolId(item.turnId) ??
+    protocolId(event.turn_id) ??
+    (object(event.turn) ? protocolId(event.turn.id) : undefined)
+  );
+}
+
 /** External-only native call lifecycle. Native Codex requests never enter this owner. */
 export class ExternalVoice {
   readonly #sessions = new Map<string, VoiceSession>();
@@ -43,7 +76,7 @@ export class ExternalVoice {
     return this.#sessions.has(threadId);
   }
 
-  async start(threadId: string, params: JsonObject): Promise<void> {
+  async start(threadId: string, params: JsonObject, conversation?: JsonObject[]): Promise<void> {
     if (this.has(threadId)) throw new Error("This chat already has a voice call");
     if (
       !object(params.transport) ||
@@ -58,7 +91,12 @@ export class ExternalVoice {
     if (params.voice != null && (typeof params.voice !== "string" || !voices.has(params.voice))) {
       throw new Error("Selected voice is unavailable for the external live-call protocol");
     }
-    const session: VoiceSession = { controller: new AbortController(), seen: new Set() };
+    const session: VoiceSession = {
+      controller: new AbortController(),
+      seen: new Set(),
+      tasks: new Map(),
+      pendingHandles: [],
+    };
     this.#sessions.set(threadId, session);
     const requireActive = (): void => {
       if (session.controller.signal.aborted || this.#sessions.get(threadId) !== session)
@@ -68,6 +106,7 @@ export class ExternalVoice {
       session.creation = this.options.createCall({
         sdp: params.transport.sdp,
         ...(typeof params.voice === "string" ? { voice: params.voice } : {}),
+        ...(conversation && conversation.length > 0 ? { input: conversation } : {}),
         signal: session.controller.signal,
         onEvent: (event) => {
           void this.#event(threadId, session, event).catch(() => this.#fail(threadId, session));
@@ -170,6 +209,10 @@ export class ExternalVoice {
       return;
     }
     if (event.type === "turn.done" && object(event.turn)) {
+      const userTask =
+        String(event.turn.role) === "user" && typeof event.turn.transcript === "string"
+          ? this.#registerTask(session, userTurnId(event, event.turn), event.turn.transcript)
+          : undefined;
       if (
         ["user", "assistant"].includes(String(event.turn.role)) &&
         typeof event.turn.transcript === "string"
@@ -180,53 +223,110 @@ export class ExternalVoice {
           text: event.turn.transcript,
         });
       }
+      if (userTask) await this.#startTask(threadId, session, userTask);
       return;
     }
     if (event.type !== "delegation.created" || !object(event.item)) return;
     const item = event.item;
-    if (
-      item.type !== "delegation" ||
-      item.target !== "client" ||
-      typeof item.id !== "string" ||
-      !item.id ||
-      item.id.length > 256
-    )
-      return;
-    if (session.seen.has(item.id)) return;
+    const delegationId = protocolId(item.id);
+    if (item.type !== "delegation" || item.target !== "client" || !delegationId) return;
+    if (session.seen.has(delegationId)) return;
     if (session.seen.size >= 512) {
       await this.#fail(threadId, session);
       return;
     }
-    session.seen.add(item.id);
+    session.seen.add(delegationId);
+    const turnId = delegationTurnId(event, item);
+    if (turnId) this.#attachHandle(session, turnId, delegationId);
     const text = Array.isArray(item.content)
       ? item.content
           .filter(object)
-          .filter((part) => part.type === "input_text" && typeof part.text === "string")
-          .map((part) => part.text)
-          .join("")
-          .trim()
+          .map((part) =>
+            part.type === "input_text" && typeof part.text === "string" ? part.text : "",
+          )
+          .filter(Boolean)
+          .join("\n")
       : "";
-    if (!text || text.length > 32_000)
-      throw new Error("External voice delegation has no valid task text");
+    if (turnId && text) {
+      const task = this.#registerTask(session, turnId, text);
+      if (task) await this.#startTask(threadId, session, task);
+    }
+  }
+
+  #attachHandle(session: VoiceSession, turnId: string, delegationId: string): void {
+    const byId = session.tasks.get(turnId);
+    if (byId) {
+      if (!byId.delegationId) {
+        byId.delegationId = delegationId;
+        if (byId.result) this.#speak(session, byId);
+      }
+      return;
+    }
+    if (session.pendingHandles.length < 512)
+      session.pendingHandles.push({ id: delegationId, turnId });
+  }
+
+  #takePendingHandle(session: VoiceSession, task: VoiceTask): void {
+    if (task.delegationId) return;
+    const byTurn = session.pendingHandles.findIndex((handle) => handle.turnId === task.id);
+    if (byTurn < 0) return;
+    const [handle] = session.pendingHandles.splice(byTurn, 1);
+    if (handle) task.delegationId = handle.id;
+  }
+
+  #registerTask(
+    session: VoiceSession,
+    turnId: string | undefined,
+    text: string,
+  ): VoiceTask | undefined {
+    const transcript = text.trim();
+    if (!transcript || transcript.length > 32_000) return;
+    const id = turnId ?? `user-turn:${randomUUID()}`;
+    if (session.tasks.has(id) || session.tasks.size >= 512) return;
+    const task: VoiceTask = { id, text: transcript };
+    session.tasks.set(id, task);
+    this.#takePendingHandle(session, task);
+    return task;
+  }
+
+  async #startTask(threadId: string, session: VoiceSession, task: VoiceTask): Promise<void> {
+    if (session.controller.signal.aborted || this.#sessions.get(threadId) !== session) return;
     let result: string;
     try {
-      result = await this.options.runTask(threadId, text, session.controller.signal);
+      result = await this.options.runTask(threadId, task.text, session.controller.signal);
     } catch {
       result =
         "The selected agent could not complete this request. No completion is confirmed. Check the chat for its current task status.";
     }
+    task.result = result;
     if (session.controller.signal.aborted || this.#sessions.get(threadId) !== session) return;
-    // Conservative Unicode chunks stay below the protocol's context append limit.
-    const characters = [...result].slice(0, 8_000);
+    this.#speak(session, task);
+  }
+
+  #speak(session: VoiceSession, task: VoiceTask): void {
+    const result = task.result;
     const call = session.call;
-    if (!call) return;
+    if (!result || !call) return;
+    const spokenFor = task.delegationId ?? null;
+    if (task.spokenFor === spokenFor) return;
+    task.spokenFor = spokenFor;
+    const characters = [...result].slice(0, 8_000);
+    const delegationId = task.delegationId;
     for (let offset = 0; offset < characters.length; offset += 120) {
-      call.send({
-        type: "delegation.context.append",
-        delegation_item_id: item.id,
-        channel: "speakable",
-        content: [{ type: "input_text", text: characters.slice(offset, offset + 120).join("") }],
-      });
+      const chunk = characters.slice(offset, offset + 120).join("");
+      call.send(
+        delegationId
+          ? {
+              type: "delegation.context.append",
+              delegation_item_id: delegationId,
+              channel: "speakable",
+              content: [{ type: "input_text", text: chunk }],
+            }
+          : {
+              type: "session.context.append",
+              content: [{ type: "input_text", text: chunk }],
+            },
+      );
     }
   }
 }

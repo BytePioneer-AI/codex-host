@@ -1,5 +1,33 @@
 import type { HostEvent } from "@codexhost/harness-adapter";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Speakable Agent Message text already projected for Desktop, including inferred final answers. */
+export function speakableFromProjectedTurn(turn: unknown): string | undefined {
+  if (!isRecord(turn) || !Array.isArray(turn.items)) return undefined;
+  const messages = turn.items.filter(
+    (item): item is Record<string, unknown> & { text: string } =>
+      isRecord(item) && item.type === "agentMessage" && typeof item.text === "string",
+  );
+  return speakableFromItems(messages);
+}
+
+function speakableFromItems(
+  items: Iterable<{ text: string; phase?: unknown }>,
+): string | undefined {
+  const values = [...items];
+  const finals = values.filter((item) => item.phase === "final_answer");
+  const text = (
+    finals.length ? finals : values.filter((item) => item.phase !== "commentary").slice(-1)
+  )
+    .map((item) => item.text)
+    .join("\n")
+    .trim();
+  return text.length > 0 ? text : undefined;
+}
+
 /** Fan-out from the existing Host consumer; never consumes HarnessSession.outputs. */
 export class ExternalVoiceResults {
   readonly #pending = new Map<
@@ -31,7 +59,7 @@ export class ExternalVoiceResults {
     });
   }
 
-  observe(threadId: string, event: HostEvent): void {
+  observe(threadId: string, event: HostEvent, projectedTurn?: unknown): void {
     if (event.type === "session.faulted") {
       for (const [turnId, pending] of this.#pending) {
         if (pending.threadId !== threadId) continue;
@@ -44,6 +72,16 @@ export class ExternalVoiceResults {
     if (!("turnId" in event)) return;
     const pending = this.#pending.get(event.turnId);
     if (!pending || pending.threadId !== threadId) return;
+    if (event.type === "item.started" && event.item.type === "agentMessage") {
+      pending.items.set(event.item.itemId, {
+        text: event.item.text,
+        ...(event.item.phase ? { phase: event.item.phase } : {}),
+      });
+    }
+    if (event.type === "item.updated" && event.update.type === "text.append") {
+      const item = pending.items.get(event.itemId);
+      if (item) item.text += event.update.text;
+    }
     if (
       event.type === "item.completed" &&
       event.snapshot.item.type === "agentMessage" &&
@@ -62,14 +100,8 @@ export class ExternalVoiceResults {
       pending.reject(new Error("External agent task did not complete"));
       return;
     }
-    const items = [...pending.items.values()];
-    const finals = items.filter((item) => item.phase === "final_answer");
-    const text = (
-      finals.length ? finals : items.filter((item) => item.phase !== "commentary").slice(-1)
-    )
-      .map((item) => item.text)
-      .join("\n")
-      .trim();
+    const text =
+      speakableFromItems(pending.items.values()) ?? speakableFromProjectedTurn(projectedTurn);
     if (!text) {
       pending.reject(new Error("External agent returned no spoken result"));
       return;

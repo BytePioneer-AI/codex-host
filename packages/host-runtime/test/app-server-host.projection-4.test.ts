@@ -1175,7 +1175,68 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("rejects an interrupt that does not reference the active Pi Turn", async () => {
+  it("treats interrupt of an already-completed Turn as a no-op success", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.appendText("done");
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/interrupt",
+      params: { threadId, turnId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 3))).resolves.toEqual({
+      id: 3,
+      result: {},
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("does not cancel a newer Turn when interrupt names an earlier Turn", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const firstTurnId = await startPiTurn(fixture, threadId);
+    const first = fixture.adapter.sessions[0];
+    if (!first) throw new Error("Fake Pi Session was not opened");
+    first.appendText("first");
+    first.succeedTurn();
+    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+
+    const secondTurnId = await startPiTurn(fixture, threadId, 3);
+    const second = fixture.adapter.sessions[0];
+    if (!second) throw new Error("Fake Pi Session was not opened");
+    second.startCommandExecution("sleep 10");
+    const execute = vi.spyOn(second, "execute");
+
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "turn/interrupt",
+      params: { threadId, turnId: firstTurnId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 4))).resolves.toEqual({
+      id: 4,
+      result: {},
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(
+      fixture.collector.messages.some(
+        (message) =>
+          method(message, "turn/completed") &&
+          ((message.params as JsonObject).turn as JsonObject | undefined)?.id === secondTurnId,
+      ),
+    ).toBe(false);
+    await stopFixture(fixture);
+  });
+
+  it("accepts interrupt without an active Turn as already stopped", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
     fixture.official.stdin.on("data", officialWrite);
@@ -1186,10 +1247,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "turn/interrupt",
       params: { threadId, turnId: "missing-turn" },
     });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 2)),
-    ).resolves.toMatchObject({
-      error: { code: -32074, message: "External turn/interrupt must reference the active Turn" },
+    await expect(fixture.collector.waitFor((message) => requestId(message, 2))).resolves.toEqual({
+      id: 2,
+      result: {},
     });
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);

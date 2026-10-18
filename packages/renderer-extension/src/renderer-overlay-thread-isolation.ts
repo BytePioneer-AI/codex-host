@@ -19,12 +19,12 @@ export function isAvatarOverlayHref(href: string): boolean {
 export function overlayBlocksHostNotification(
   method: string,
   threadId: string | undefined,
-  activeRealtimeThreadIds: ReadonlySet<string>,
+  allowedRealtimeThreadIds: ReadonlySet<string>,
 ): boolean {
   if (method.startsWith("thread/realtime/")) {
     return false;
   }
-  if (threadId !== undefined && activeRealtimeThreadIds.has(threadId)) {
+  if (threadId !== undefined && allowedRealtimeThreadIds.has(threadId)) {
     return false;
   }
   if (BLOCKED_METHODS.has(method)) return true;
@@ -82,26 +82,22 @@ export function installOverlayThreadIsolation(
   if (typeof href !== "string" || !isAvatarOverlayHref(href)) {
     return { status: "disabled", dispose() {} };
   }
-  const activeRealtimeThreadIds = new Set<string>();
+  // Native stream ownership can outlive the call. A primary follower still
+  // receives this Thread's updates through the overlay owner after hangup.
+  const voiceThreadIds = new Set<string>();
   const listener = (event: OverlayIsolationMessageEvent): void => {
     const message = event.data;
     if (!isRecord(message) || message.type !== "mcp-notification") return;
     if (typeof message.method !== "string") return;
     const threadId = notificationThreadId(message.params);
     if (message.method === "thread/realtime/started" && threadId) {
-      activeRealtimeThreadIds.add(threadId);
+      voiceThreadIds.add(threadId);
       return;
     }
-    if (
-      (message.method === "thread/realtime/closed" || message.method === "thread/realtime/error") &&
-      threadId
-    ) {
-      activeRealtimeThreadIds.delete(threadId);
-      return;
-    }
-    if (overlayBlocksHostNotification(message.method, threadId, activeRealtimeThreadIds)) {
+    if (overlayBlocksHostNotification(message.method, threadId, voiceThreadIds)) {
       event.stopImmediatePropagation();
     }
+    if (message.method === "thread/deleted" && threadId) voiceThreadIds.delete(threadId);
   };
   target.addEventListener("message", listener, true);
   return {

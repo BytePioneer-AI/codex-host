@@ -112,6 +112,8 @@ describe("configured voice gateway", () => {
         delegation: { type: "client", ack_filler: false },
         audio: { output: { voice: "cove" } },
       });
+      expect(JSON.parse(String(form.get("session")))).not.toHaveProperty("input");
+      expect(JSON.parse(String(form.get("session")))).not.toHaveProperty("initial_items");
       await call.connect();
       expect(connections).toHaveLength(1);
       expect(connections[0]).toMatchObject({
@@ -141,6 +143,32 @@ describe("configured voice gateway", () => {
     const factory = await gateway(extra);
     await expect(factory(input())).rejects.toThrow(/External voice/);
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("includes resumed conversation history in the native session create request", async () => {
+    const request = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(created())
+      .mockResolvedValueOnce(new Response());
+    vi.stubGlobal("fetch", request);
+    const factory = await gateway();
+    const history = [
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "list files" }],
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Only empty outputs/ and work/." }],
+      },
+    ];
+    await factory({ ...input(), input: history });
+    const form = request.mock.calls[0]?.[1]?.body as FormData;
+    const session = JSON.parse(String(form.get("session")));
+    expect(session.initial_items).toEqual(history);
+    expect(session).not.toHaveProperty("input");
   });
 
   it("never substitutes another provider or OAuth when the selected credential is missing", async () => {

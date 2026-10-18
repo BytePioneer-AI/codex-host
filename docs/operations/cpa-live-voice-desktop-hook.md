@@ -23,7 +23,7 @@ The hook forces Statsig `checkGate("206132468")` to false on every client regist
 
 1. Unless `CODEXHOST_CPA_LIVE_VOICE=0`, the Controller prefixes the production Renderer source with a frozen `globalThis.__codexhostCpaLiveVoiceHookV1` record (audited Desktop version and `app-initial` asset name only).
 2. `Page.addScriptToEvaluateOnNewDocument` plus immediate `Runtime.evaluate` inject the Host Renderer into the primary `app://-/index.html` page.
-3. Voice starts on the avatar overlay (`app://-/index.html?initialRoute=/avatar-overlay`). That page gets a **hook-only** bundle (`cpa-live-voice-hook.js`), not the Host Renderer binding. The overlay loads the same audited `app-initial` asset in its own JavaScript realm with its own Statsig client. The overlay bundle also drops Host `thread/started` and turn/item notifications unless that overlay currently owns the realtime Thread, so a leftover overlay does not upsert CLI-created Threads or rebind the same Turn into the main chat.
+3. Voice starts on the avatar overlay (`app://-/index.html?initialRoute=/avatar-overlay`). That page gets a **hook-only** bundle (`cpa-live-voice-hook.js`), not the Host Renderer binding. The overlay loads the same audited `app-initial` asset in its own JavaScript realm with its own Statsig client. The overlay bundle also drops Host `thread/started` and turn/item notifications for Threads that have not hosted voice in that overlay, so a leftover overlay does not upsert CLI-created Threads or rebind the same Turn into the main chat. Known voice Threads keep receiving notifications after hangup because native stream ownership can outlive the call.
 4. The Renderer hook no-ops unless the exact audited `app://-/assets/app-initial-6350d04672d0.js` asset is present (performance entries, script src, or link href, including relative URLs). Unknown assets fail closed; matching text in a query string or source-map filename is insufficient.
 5. On a matching page it polls for up to 60 seconds until a Statsig client is registered, then wraps that client's `checkGate`. The gate is read when voice starts, so the wrap only has to land before the first voice click.
 
@@ -86,18 +86,40 @@ Turn/approval projection; it does not start a second agent or import a concrete 
 The transport targets CPA's frameless V3 client-delegation protocol. It posts the
 Desktop SDP and client-delegation session to the configured realtime call base,
 returns the answer through native `started`/`sdp` notifications, and joins the
-configured WebSocket base at `/live/{callId}`. Both configured bases must use HTTPS
-and share an origin. Authentication uses the selected configured model provider's
+configured WebSocket base at `/live/{callId}`. Reopened calls on an existing
+External Thread include that Thread's user and agent messages as GPT-Live
+`session.initial_items`, using the V3 role-bearing message format. A native
+`delegation.created` with task text and `user_bidi_turn_id` starts Harness work
+and binds its speakable handle (`item.id`) to that user turn. The service can
+wait for the client answer before emitting user `turn.done`, so that final
+transcript is not a prerequisite for a linked handoff. A completed user
+`turn.done` starts work only if the same turn has not already been registered.
+Matching uses protocol turn identifiers, including `turn_id` / `turnId`, not
+text similarity or timing. A handle without a turn identifier is ignored for
+routing. Both configured
+bases must use HTTPS and share an origin. Authentication uses the
+selected configured model provider's
 `experimental_bearer_token` or `env_key`; OAuth from `auth.json` is never copied.
 The Host reads `CODEX_HOME/config.toml` only and does not mutate gateway settings.
 Profile/command-line credential overrides are not resolved by this prototype.
 
-V3 `delegation.created` task text goes to that same external Thread. Only completed
+V3 handoff text and user `turn.done` transcripts go to that same external Thread. Only completed
 agent-message results are returned as speakable context; private reasoning and tool
-output are excluded. Delegation IDs are deduplicated within a call. Transcripts are
+output are excluded. Delegation IDs are deduplicated within a call and used only
+to address `delegation.context.append` when the handle names the user turn.
+Results without a linked handle are appended with the supported
+`session.context.append` event. A handoff with no task text or no turn identifier
+does not start work and does not bind a later utterance. Partial `turn.created`
+and `turn.delta` transcripts do not start work. Transcripts are
 projected through native notifications. Closing the call releases voice resources
 and suppresses late speech, but does not cancel a running agent task: explicit task
-cancellation remains the existing `turn/interrupt` operation.
+cancellation remains the existing `turn/interrupt` operation. The avatar overlay
+keeps delivering known voice Threads' `turn/*` and `item/*` notifications after
+hangup, including later text turns. The primary window may remain a native
+stream follower of the overlay, so call closure or an idle status does not
+release notification delivery. Deleting a Thread removes it from this set.
+`turn/interrupt` for a Turn that is already complete, or that is not the active
+Turn, returns success without cancelling a newer Turn.
 
 The speech service is instructed to delegate every question and task, including
 simple arithmetic; it supplies speech rather than owning task reasoning.

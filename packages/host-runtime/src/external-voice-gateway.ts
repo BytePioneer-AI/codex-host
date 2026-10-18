@@ -17,6 +17,8 @@ export type ExternalVoiceCallFactory = (input: {
   sdp: string;
   voice?: string;
   signal: AbortSignal;
+  /** Prior Thread messages for GPT-Live `session.initial_items`; omitted when empty. */
+  input?: JsonObject[];
   onEvent(event: JsonObject): void;
   onError(): void;
 }) => Promise<ExternalVoiceCall>;
@@ -96,6 +98,7 @@ export function configuredExternalVoiceGateway(
           "Speak only verified client results; do not read private reasoning or machine identifiers.",
         audio: { output: { voice: input.voice ?? "cove" } },
         delegation: { type: "client", ack_filler: false },
+        ...(input.input && input.input.length > 0 ? { initial_items: input.input } : {}),
       }),
     );
     const response = await fetch(`${url.href.replace(/\/$/u, "")}/realtime/calls`, {

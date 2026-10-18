@@ -57,6 +57,31 @@ class FakeOverlayWindow implements OverlayIsolationTarget {
 const overlayHref = "app://-/index.html?initialRoute=%2Favatar-overlay";
 
 describe("overlay thread isolation", () => {
+  it("keeps delivering later text turns for a voice Thread after hangup", () => {
+    const overlay = new FakeOverlayWindow({ href: overlayHref });
+    const hook = installOverlayThreadIsolation(overlay);
+    const dispatch = (method: string, params: Record<string, unknown>) =>
+      overlay.dispatch({ type: "mcp-notification", method, params });
+    dispatch("thread/realtime/started", { threadId: "known-thread" });
+    dispatch("turn/started", { threadId: "known-thread", turn: { id: "voice-turn" } });
+    dispatch("thread/realtime/closed", { threadId: "known-thread" });
+    dispatch("turn/completed", { threadId: "known-thread", turn: { id: "voice-turn" } });
+    dispatch("thread/realtime/started", { threadId: "another-voice-thread" });
+    expect(
+      dispatch("turn/started", { threadId: "known-thread", turn: { id: "later-text-turn" } }),
+    ).toBe(false);
+    expect(
+      dispatch("item/completed", { threadId: "known-thread", turnId: "later-text-turn" }),
+    ).toBe(false);
+    expect(
+      dispatch("turn/completed", { threadId: "known-thread", turn: { id: "later-text-turn" } }),
+    ).toBe(false);
+    expect(dispatch("turn/started", { threadId: "unknown-cli-thread" })).toBe(true);
+    dispatch("thread/deleted", { threadId: "known-thread" });
+    expect(dispatch("turn/started", { threadId: "known-thread" })).toBe(true);
+    hook.dispose();
+  });
+
   it("recognizes avatar overlay hrefs", () => {
     expect(isAvatarOverlayHref(overlayHref)).toBe(true);
     expect(isAvatarOverlayHref("app://-/avatar-overlay.html")).toBe(true);
@@ -137,6 +162,75 @@ describe("overlay thread isolation", () => {
         method: "item/completed",
         params: { threadId: "voice-thread" },
       }),
+    ).toBe(false);
+    hook.dispose();
+  });
+
+  it("keeps the overlay open for an in-flight Turn after hangup until it completes", () => {
+    const overlay = new FakeOverlayWindow({ href: overlayHref });
+    const hook = installOverlayThreadIsolation(overlay);
+    overlay.dispatch({
+      type: "mcp-notification",
+      method: "thread/realtime/started",
+      params: { threadId: "voice-thread" },
+    });
+    overlay.dispatch({
+      type: "mcp-notification",
+      method: "turn/started",
+      params: { threadId: "voice-thread", turn: { id: "turn-3" } },
+    });
+    overlay.dispatch({
+      type: "mcp-notification",
+      method: "item/started",
+      params: { threadId: "voice-thread", turnId: "turn-3" },
+    });
+    overlay.dispatch({
+      type: "mcp-notification",
+      method: "thread/realtime/closed",
+      params: { threadId: "voice-thread" },
+    });
+    expect(
+      overlay.dispatch({
+        type: "mcp-notification",
+        method: "item/completed",
+        params: { threadId: "voice-thread", turnId: "turn-3" },
+      }),
+    ).toBe(false);
+    expect(
+      overlay.dispatch({
+        type: "mcp-notification",
+        method: "turn/completed",
+        params: { threadId: "voice-thread", turn: { id: "turn-3" } },
+      }),
+    ).toBe(false);
+    expect(
+      overlay.dispatch({
+        type: "mcp-notification",
+        method: "item/completed",
+        params: { threadId: "voice-thread", turnId: "turn-3" },
+      }),
+    ).toBe(false);
+    hook.dispose();
+  });
+
+  it("delivers final Turn and Item events when idle arrives before completion after hangup", () => {
+    const overlay = new FakeOverlayWindow({ href: overlayHref });
+    const hook = installOverlayThreadIsolation(overlay);
+    const dispatch = (method: string, params: Record<string, unknown>) =>
+      overlay.dispatch({ type: "mcp-notification", method, params });
+    dispatch("thread/realtime/started", { threadId: "voice-thread" });
+    dispatch("turn/started", { threadId: "voice-thread", turn: { id: "native-turn" } });
+    dispatch("thread/realtime/closed", { threadId: "voice-thread" });
+    dispatch("thread/status/changed", { threadId: "voice-thread", status: { type: "idle" } });
+
+    expect(dispatch("item/completed", { threadId: "voice-thread", turnId: "native-turn" })).toBe(
+      false,
+    );
+    expect(
+      dispatch("turn/completed", { threadId: "voice-thread", turn: { id: "native-turn" } }),
+    ).toBe(false);
+    expect(
+      dispatch("turn/started", { threadId: "unrelated-thread", turn: { id: "unrelated-turn" } }),
     ).toBe(true);
     hook.dispose();
   });

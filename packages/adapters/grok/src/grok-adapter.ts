@@ -1225,10 +1225,11 @@ class GrokHarnessSession implements HarnessSession {
       }
     }
     if (event.status) tool.status = event.status;
-    tool.generatedImage = mergeGrokGeneratedImage(
+    const generatedImage = mergeGrokGeneratedImage(
       tool.generatedImage,
       projectGrokGeneratedImage(event.content, event.rawOutput),
     );
+    if (generatedImage) tool.generatedImage = generatedImage;
     if (event.status === "completed" || event.status === "failed") {
       this.#completeTool(active, event.callId, event.status, event.content, event.rawOutput);
     }

@@ -12,6 +12,102 @@
 - `docs/archive/codex-desktop-incidents/26.814-compatibility-debt.md`
 - `docs/archive/codex-desktop-incidents/26.908-request-manager-wrapper.md`（Fiber hook 把 Request Manager 包进 `{ hostId, manager, status }` 后，连接检查全部失败）
 
+## Recovering “ChatGPT hit a snag” without losing session state
+
+This screen can be a React render failure while Desktop, Host, and the native
+Harness sessions continue running. It does not establish that a session was
+lost, that an active Turn stopped, or that the Agent named in another sidebar
+Thread caused the failure. An Adapter reporting `ready / request-bridge` also
+does not establish that the conversation rendered successfully.
+
+### Recovery procedure
+
+1. Preserve the running processes and active work. Record the Desktop version,
+   build, visible error, and first relevant render stack before making changes.
+   Discover the current CDP endpoint from process arguments; do not assume a
+   fixed port. Inspect the primary conversation Renderer, not the pet overlay.
+2. Confirm that the error boundary and its **Try again** button are visible.
+   A matching string or hidden button in the DOM is insufficient: retained
+   views and rendered messages can contain the same text. Click **Try again**
+   once. This is the error-boundary retry, not a Composer submission or Desktop
+   update. Do not install an automatic reload or retry loop.
+3. If Desktop returns to project home, reopen the existing Thread from the
+   sidebar. Verify that history and a visible Composer return and that the error
+   boundary is gone. For an external Thread, verify that its existing Agent
+   ownership remains locked and that its Model control is available. Do not
+   submit a test prompt as part of recovery.
+4. Check the existing Turn's state before sending anything. Recovered history
+   and controls establish view recovery; they do not prove that an interrupted
+   response resumed or that a new Turn can complete. Mapping files and native
+   session files establish persistence, not history completeness.
+5. If one retry immediately fails again, stop retrying and capture the new
+   stack. Separate a repeatable render/data failure from a disconnected or dead
+   native backend. A controlled Desktop/Host restart is a later option when
+   view retry cannot recover or a process/connection failure requires it, after
+   checking active Turns and preserving Harness state. Restart only the
+   necessary component. An unresponsive UI is not permission to cancel work.
+
+Do not clear histories, delete mappings or native sessions, rewrite transcripts,
+replay messages, switch Harness ownership, or update Desktop as a default
+recovery step. If there is uncertainty about whether a request was accepted,
+inspect the existing Thread before explicitly retrying that request.
+
+### Image completion state failure in Desktop 26.1007.30912
+
+For build `20156` (Chromium `155.0.8059.40`), the observed render stack was
+`b0n` in `app-shared-8bd9d0399038.js:529:120057`, then `hQe` and `Qft` in
+`app-primary-6f60e9ac4103.js`. These names and coordinates identify this build
+only; they are not binding contracts.
+
+The null value in that comparator is the account's dismissed image-completion
+record, not a Thread returned by Grok. The relevant installed function is:
+
+```js
+function sameImageCompletion(latest, dismissed) {
+  return (
+    dismissed?.completedAtMs === latest.completedAtMs &&
+    dismissed.threadId === latest.threadId &&
+    dismissed.turnId === latest.turnId
+  );
+}
+```
+
+The dismissed record defaults to null. With a missing `latest.completedAtMs`,
+the first comparison is `undefined === undefined`, so evaluation continues to
+`dismissed.threadId` and throws. With a numeric completion timestamp, the first
+comparison returns false and short-circuits safely. The Composer's image limit
+hook calls this comparison whenever the latest image record exists, including
+successful completions with no usage-limit failure.
+
+The image notification listener copies `params.completedAtMs` into that account
+record. The installed native `ItemCompletedNotification` contract requires a
+Unix timestamp in milliseconds. An experimental image-preview diagnostic sent
+an `item/completed` notification without this field before the reported failure.
+That malformed notification is a concrete likely trigger: evaluating the exact
+installed comparator with the resulting value shape reproduces the reported
+exception. The account-state values at the moment of the original failure were
+not captured, so the historical causal link remains inferred.
+
+Production codexhost has no hosted-image completion synthesis on this path.
+Its external Item projector supplies `completedAtMs` on completion, and native
+notifications pass through the routing bridge. The experimental preview code
+was removed. Do not add blanket null suppression, fabricated image completions,
+or native account-state writes to compensate for this diagnostic error. Image
+presentation investigations should use the native image-tool path or inspect
+recovered image files outside Desktop's notification stream. Any future
+compatibility producer must validate the full lifecycle notification contract,
+including timing, and test downstream consumers in an isolated fixture before
+touching a user's running Renderer.
+
+The successful recovery used **Try again**, then reopened an existing Thread.
+The user subsequently confirmed that the original native conversation rendered
+again. No restart, session deletion, transcript rewriting, or message replay was
+required. A fresh Grok response was not tested. The sandbox `localStorage`
+`SecurityError` and usage-reader warning `Codex rollout changed while reading;
+refresh to retry` were also observed, but neither is established as the cause.
+The latter comes from usage statistics rejecting a file that changed during a
+read; it does not itself report session loss.
+
 ## 一、先建立分层模型
 
 ### 历史原生会话不能拖入引用或通过 `@` 搜索会话

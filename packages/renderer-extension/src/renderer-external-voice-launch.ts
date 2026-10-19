@@ -1,8 +1,14 @@
+import {
+  CLIENT_OWNED_VOICE_VERSION,
+  CLIENT_OWNED_VOICE_INITIAL_ASSET,
+  CLIENT_OWNED_VOICE_SHARED_ASSET,
+} from "./renderer-client-owned-voice.js";
 import type { RendererHostRouting } from "@codexhost/desktop-control/renderer-bindings";
 import {
   AUDITED_CPA_LIVE_VOICE_APP_INITIAL_ASSET,
   AUDITED_CPA_LIVE_VOICE_DESKTOP_VERSION,
   auditedAppInitialAssetPresent,
+  loadedAssetNames,
   readCpaLiveVoiceHookConfig,
 } from "./renderer-cpa-live-voice-hook.js";
 
@@ -76,7 +82,9 @@ export function installExternalVoiceLaunchHook(options: InstallOptions = {}): La
   if (
     config.auditedDesktopVersion !== AUDITED_CPA_LIVE_VOICE_DESKTOP_VERSION ||
     config.auditedAppInitialAsset !== AUDITED_CPA_LIVE_VOICE_APP_INITIAL_ASSET ||
-    (config.desktopVersion !== undefined && config.desktopVersion !== config.auditedDesktopVersion)
+    (config.desktopVersion !== undefined &&
+      config.desktopVersion !== config.auditedDesktopVersion &&
+      config.desktopVersion !== CLIENT_OWNED_VOICE_VERSION)
   )
     return { status: "unsupported", dispose() {} };
   const importModule: (url: string) => Promise<RecordValue> =
@@ -99,19 +107,19 @@ export function installExternalVoiceLaunchHook(options: InstallOptions = {}): La
   const attempt = async (): Promise<void> => {
     if (disposed) return;
     try {
-      const names =
-        target.performance?.getEntriesByType("resource").map((entry) => entry.name) ?? [];
-      for (const element of target.document?.querySelectorAll("script[src], link[href]") ?? []) {
-        const name = element.getAttribute("src") ?? element.getAttribute("href");
-        if (name) names.push(name);
-      }
-      if (
+      const names = loadedAssetNames(target.document, target.performance);
+      const clientOwned =
+        auditedAppInitialAssetPresent(names, CLIENT_OWNED_VOICE_INITIAL_ASSET) &&
+        auditedAppInitialAssetPresent(names, CLIENT_OWNED_VOICE_SHARED_ASSET);
+      const legacy =
         auditedAppInitialAssetPresent(names, AUDITED_CPA_LIVE_VOICE_APP_INITIAL_ASSET) &&
-        auditedAppInitialAssetPresent(names, SHARED_ASSET)
-      ) {
-        module ??= await importModule(`app://-/assets/${SHARED_ASSET}`);
+        auditedAppInitialAssetPresent(names, SHARED_ASSET);
+      if (clientOwned || legacy) {
+        module ??= await importModule(
+          `app://-/assets/${clientOwned ? CLIENT_OWNED_VOICE_SHARED_ASSET : SHARED_ASSET}`,
+        );
         if (disposed) return;
-        const services = module?.fN;
+        const services = clientOwned ? module?.Kat : module?.fN;
         if (isRecord(services)) {
           const original = services.realtimeVoiceRuntime;
           if (typeof original === "function" || isRecord(original)) {

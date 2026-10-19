@@ -76,6 +76,23 @@ const settle = async () => {
 afterEach(() => vi.useRealTimers());
 
 describe("native new-voice selection", () => {
+  it("keeps the selected Harness on the client-owned-call Desktop build", async () => {
+    const f = hookFixture();
+    f.names.splice(0, f.names.length, "app-initial-90eb42395b7d.js", "app-shared-52443cbe9ac4.js");
+    const hook = installExternalVoiceLaunchHook({
+      target: f.target,
+      importModule: async () => ({ Kat: f.services }),
+    });
+    await settle();
+    expect(hook.status).toBe("active");
+    const routed = f.services.realtimeVoiceRuntime.requestRealtimeStart(request()) as {
+      args: unknown[];
+    };
+    expect(routed.args[0]).toMatchObject({
+      activeCollaborationMode: { settings: { model: carrier } },
+    });
+    hook.dispose();
+  });
   it("snapshots the external route into a separately cloned overlay request", () => {
     const { routing, policy } = routingFixture();
     const original = request();

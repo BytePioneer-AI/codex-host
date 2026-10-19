@@ -1,8 +1,10 @@
 import { installCpaLiveVoiceHook } from "./renderer-cpa-live-voice-hook.js";
+import { installClientOwnedVoiceHook } from "./renderer-client-owned-voice.js";
 import { installRendererBinding } from "./install-renderer-binding.js";
 import { installExternalVoiceLaunchHook } from "./renderer-external-voice-launch.js";
 
 installCpaLiveVoiceHook();
+installClientOwnedVoiceHook();
 installExternalVoiceLaunchHook();
 
 const installBinding = (): void => {

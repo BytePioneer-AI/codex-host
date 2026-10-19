@@ -64,6 +64,20 @@ afterEach(async () => {
 });
 
 describe("configured voice gateway", () => {
+  it("joins a Desktop-created call using gateway auth without another creation request", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response());
+    vi.stubGlobal("fetch", request);
+    const factory = await gateway();
+    const call = await factory({ ...input(), sdp: "", callId: "rtc_fixture" });
+    expect(request).not.toHaveBeenCalled();
+    await call.connect();
+    expect(connections[0]?.url).toBe("wss://gateway.example/v1/live/rtc_fixture");
+    await call.close();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0]?.[0]).toBe(
+      "https://gateway.example/v1/realtime/calls/rtc_fixture/hangup",
+    );
+  });
   it.each(["http://[invalid", "/unrecognized", ""])(
     "rejects an unusable call identity without claiming remote cleanup: %s",
     async (location) => {

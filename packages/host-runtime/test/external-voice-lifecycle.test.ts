@@ -24,6 +24,30 @@ async function voiceSession() {
 }
 
 describe("voice lifecycle", () => {
+  it("attaches a Desktop-owned call without creating a second SDP exchange", async () => {
+    const createCall = vi.fn(async () => ({
+      sdp: "",
+      connect: vi.fn(async () => {}),
+      send: vi.fn(),
+      close: vi.fn(async () => {}),
+    }));
+    const notify = vi.fn<ExternalVoice["options"]["notify"]>(async () => {});
+    const voice = new ExternalVoice({ createCall, notify, runTask: vi.fn(), diagnose: vi.fn() });
+    await voice.start("external", {
+      outputModality: "audio",
+      realtimeSessionId: "native-session",
+      transport: { type: "existingCall", callId: "rtc_fixture" },
+    });
+    expect(createCall).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "rtc_fixture", sdp: "" }),
+    );
+    expect(notify).toHaveBeenCalledWith(
+      "thread/realtime/started",
+      expect.objectContaining({ realtimeSessionId: "native-session" }),
+    );
+    expect(notify.mock.calls.some(([method]) => method === "thread/realtime/sdp")).toBe(false);
+    await voice.close();
+  });
   it("answers a native handoff before turn.done and deduplicates its later transcript", async () => {
     const session = await voiceSession();
     session.task.mockResolvedValue("Two empty folders.");

@@ -1,3 +1,5 @@
+import { REALTIME_CALL_METHOD } from "@codexhost/shared-contracts";
+import { NativeVoiceGateway } from "./native-voice-gateway.js";
 import {
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
@@ -620,6 +622,7 @@ export class AppServerHost {
   readonly #executionHosts = new WeakMap<ExternalThread, string>();
   readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering = new ExternalTurnSteering();
+  readonly #nativeVoiceGateway: NativeVoiceGateway;
   readonly #externalVoice: ExternalVoice;
   readonly #externalVoiceResults = new ExternalVoiceResults();
   readonly #liveCommandCache = new LiveCommandCatalogCache();
@@ -684,6 +687,7 @@ export class AppServerHost {
       return this.#takeConsoleReply(value);
     });
     const environment = this.#options.environment ?? process.env;
+    this.#nativeVoiceGateway = new NativeVoiceGateway(environment);
     this.#externalVoice = new ExternalVoice({
       createCall: options.createExternalVoiceCall ?? configuredExternalVoiceGateway(environment),
       notify: (method, params) => this.#writer.json({ method, params }),
@@ -868,6 +872,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#nativeVoiceGateway.close();
     void this.#externalVoice.close();
     this.#options.sharedThreads?.close();
     this.#externalRuntime.idleRelease.disable();
@@ -1011,6 +1016,7 @@ export class AppServerHost {
       return this.#closeRequested ? 0 : 1;
     } finally {
       this.#options.sharedThreads?.close();
+      this.#nativeVoiceGateway.close();
       await this.#externalVoice.close();
       this.#pluginLoadAbort.abort();
       // Stop replacement waiters before waiting for their tracked Host operations.
@@ -1306,6 +1312,19 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(request, -32090, "Remote service is updating; reconnect shortly"),
       );
+      return;
+    }
+    if (request.method === REALTIME_CALL_METHOD && !this.#options.externalOnly) {
+      try {
+        const result = await this.#nativeVoiceGateway.request(request.params);
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch {
+        // The Renderer maps every voice failure to one message; never echo request
+        // payloads, schema details or transport diagnostics back over the bridge.
+        await this.#writer.json(
+          rpcError(request, -32090, "Configured voice gateway request failed"),
+        );
+      }
       return;
     }
     if (request.method === DELEGATION_READ_METHOD) {

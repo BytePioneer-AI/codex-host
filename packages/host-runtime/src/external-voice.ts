@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isRealtimeCallId } from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
 import type { ExternalVoiceCall, ExternalVoiceCallFactory } from "./external-voice-gateway.js";
 
@@ -78,16 +79,13 @@ export class ExternalVoice {
 
   async start(threadId: string, params: JsonObject, conversation?: JsonObject[]): Promise<void> {
     if (this.has(threadId)) throw new Error("This chat already has a voice call");
-    if (
-      !object(params.transport) ||
-      params.transport.type !== "webrtc" ||
-      typeof params.transport.sdp !== "string" ||
-      !params.transport.sdp.startsWith("v=0") ||
-      params.transport.sdp.length > 256_000 ||
-      params.outputModality !== "audio"
-    ) {
+    const transport = object(params.transport) ? params.transport : undefined;
+    const callId = transport?.callId;
+    const existingCall = transport?.type === "existingCall" && isRealtimeCallId(callId);
+    const sdp = transport?.type === "webrtc" ? transport.sdp : undefined;
+    const webrtc = typeof sdp === "string" && sdp.startsWith("v=0") && sdp.length <= 256_000;
+    if ((!existingCall && !webrtc) || params.outputModality !== "audio")
       throw new Error("External voice requires the native WebRTC audio call transport");
-    }
     if (params.voice != null && (typeof params.voice !== "string" || !voices.has(params.voice))) {
       throw new Error("Selected voice is unavailable for the external live-call protocol");
     }
@@ -104,7 +102,8 @@ export class ExternalVoice {
     };
     try {
       session.creation = this.options.createCall({
-        sdp: params.transport.sdp,
+        sdp: webrtc ? String(sdp) : "",
+        ...(existingCall ? { callId: String(callId) } : {}),
         ...(typeof params.voice === "string" ? { voice: params.voice } : {}),
         ...(conversation && conversation.length > 0 ? { input: conversation } : {}),
         signal: session.controller.signal,
@@ -123,11 +122,13 @@ export class ExternalVoice {
       requireActive();
       await this.options.notify("thread/realtime/started", {
         threadId,
-        realtimeSessionId: randomUUID(),
+        realtimeSessionId:
+          typeof params.realtimeSessionId === "string" ? params.realtimeSessionId : randomUUID(),
         version: "v3",
       });
       requireActive();
-      await this.options.notify("thread/realtime/sdp", { threadId, sdp: session.call.sdp });
+      if (!existingCall)
+        await this.options.notify("thread/realtime/sdp", { threadId, sdp: session.call.sdp });
       requireActive();
       session.initializationTimeout = setTimeout(() => {
         void this.#fail(threadId, session);

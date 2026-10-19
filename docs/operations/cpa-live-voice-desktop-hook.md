@@ -1,6 +1,6 @@
 # CPA live-voice Desktop hook
 
-Gated CodexHost Renderer hook that forces durable-only `clientOwnsCall` on official Codex Desktop **26.1007.30912**, so CPA can create the realtime call (`POST /v1/realtime/calls`) without rewriting `app.asar` or replacing `/Applications/ChatGPT.app`.
+CodexHost routes native live-voice call creation through the configured realtime gateway without rewriting `app.asar` or replacing `/Applications/ChatGPT.app`. Desktop **26.1007.30912** uses a call-ownership gate override. Desktop **26.1013.40934** uses the native client-owned-call flow described below.
 
 ## Default
 
@@ -13,7 +13,84 @@ experimental_realtime_ws_base_url = "https://<realtime-host>/v1"
 experimental_realtime_webrtc_call_base_url = "https://<realtime-host>/v1"
 ```
 
-## What it changes
+## Desktop 26.1013.40934: client-owned calls
+
+This Desktop build always creates its WebRTC call in the Renderer before asking
+app-server to attach with `transport: { type: "existingCall", callId }`. The old
+Statsig gate is absent. The two `experimental_realtime_*_base_url` settings alone
+therefore cannot route that initial frontend request.
+
+On the exact audited `app-initial-90eb42395b7d.js` and
+`app-shared-52443cbe9ac4.js` assets, the hook wraps the loaded native WebFetch
+singleton's `fetch` method only for `POST /wham/realtime/calls`. It forwards the
+native SDP/session through `codexhost/realtime/call` on the local Host connection.
+Other WebFetch requests pass through with their original receiver and arguments.
+No global fetch, message transport or application archive is replaced.
+
+The Host reads the configured realtime URLs and selected provider's
+`experimental_bearer_token` or `env_key`. Both URLs must use HTTPS and share an
+origin. Header forwarding is allowlisted twice: the Renderer bridge drops every
+name outside `REALTIME_CALL_FORWARDED_HEADERS` before the request crosses to the
+Host, and the Host applies the same list again before sending. Desktop OAuth,
+`ChatGPT-Account-Id`, `Cookie` and every other unlisted header are therefore
+excluded at both boundaries. Credentials stay in the Host; only the SDP response,
+status and allowed response headers return to the Renderer. Configuration and
+transport failures do not fall back to the signed-in ChatGPT account. The
+Settings preference is checked again at call time.
+
+Cancellation aborts an in-flight bootstrap. A known created call is hung up if
+startup fails or its answer arrives after cancellation. If no call identity is
+available, remote cleanup cannot be confirmed. Existing native app-server
+sideband and stop requests continue through their configured gateway route.
+External Harness Threads attach to the same existing call without a second
+creation or SDP exchange, retaining the selected Harness for new-chat launches.
+
+The native frontend exports used here are version-specific and must be re-audited
+before another Desktop build is enabled. An enabled CPA scheduler only selects
+accounts for requests that actually reach CPA. Its configured inventory and
+selection counts do not establish successful upstream calls.
+
+### Account failover: current limitation
+
+Bounded quota failover is **not** implemented, because no public CPA plugin
+contract can observe a pre-call quota result for this route. Evidence from the
+deployed baseline:
+
+- `internal/client/codex/live/live.go:223` selects once via `selectOAuth`, and
+  `:330` sends that single selection once (`performRequest(selected)`). There is
+  no retry loop, no `tried`-set and no second `SelectAuthByKind` call on this
+  path.
+- The plugin-facing scheduler contract is pick-only: `SchedulerPickRequest` /
+  `SchedulerPickResponse` in `sdk/pluginapi/types.go:487-546` carry no outcome or
+  result field, and the only scheduler ABI method is `scheduler.pick`
+  (`sdk/pluginabi/types.go:55`). A scheduler plugin cannot learn that its pick
+  returned `usage_limit_reached`.
+- The result-feedback contracts that do exist — `RequestLifecyclePlugin`
+  (`HandleRequestComplete`), `RequestInterceptor` and `ResponseInterceptor` —
+  are emitted only by `BaseAPIHandler` execution paths
+  (`sdk/api/handlers/handlers_execution.go`, `handlers_stream.go`,
+  `handlers_interceptors.go:160-165`). The Codex live handler is a standalone
+  `Handler` (`internal/client/codex/live/live.go:49`) that never participates in
+  interception or lifecycle, so those callbacks never fire for `/v1/realtime/calls`.
+- The `QuotaProvider` contract (`sdk/pluginapi/types.go:1577`) reports and resets
+  quota for management clients; it is not wired into live selection and cannot
+  skip an exhausted account before a call.
+- Disabled-account exclusion is already enforced by core before any plugin sees a
+  candidate: `sdk/cliproxy/auth/conductor_selection.go:1852` drops
+  `candidate.Disabled`, and `availableAuthsForSelector` narrows the set the plugin
+  receives. `cpa-live-voice` intersects that set with `live_auth_ids`
+  (`selector.go` `PickAuth`), so the disabled Alice Plus credential cannot be
+  selected — no plugin change is required for exclusion.
+
+Consequently a retry that skips the exhausted account and re-selects a remaining
+priority needs a new CPA core seam: the live handler must record the definitive
+`usage_limit_reached` result and re-enter selection with that account excluded.
+That is a core change, not a plugin change, and is out of scope here pending a
+separate decision. The smallest core seam would be an exported
+"exclude these auth IDs and select again" entry point plus a single bounded retry
+in `Handle` after a definitive pre-call quota response.
+
+## Desktop 26.1007.30912: call-ownership gate
 
 Desktop’s voice-start path sets `clientOwnsCall` when the `hostId` argument is `durable` **or** both of these hold: the host's app-server version supports the `threadRealtimeExistingCall` capability (a version comparison, not a stored flag), and Statsig gate `206132468` passes. That second branch POSTs to ChatGPT `/wham/realtime/calls` and then starts `thread/realtime/start` as `ExistingCall`. CPA never sees creation, so the sideband websocket 404s.
 
@@ -31,11 +108,17 @@ Verify before a trial: on the overlay, `__STATSIG__.firstInstance.checkGate("206
 
 Overlay discovery, connection, and injection share one timeout. Overlay attempts run concurrently, and a stalled or disappearing overlay does not prevent the primary Host session from becoming ready after that deadline.
 
+The Controller sets Zod's global `jitless` configuration before evaluating either
+the primary Renderer or the overlay bundle. Response validation therefore runs
+without JavaScript string compilation under Desktop's Content Security Policy,
+including when the bundle was initially evaluated through the debugger. The
+policy does not need `unsafe-eval`.
+
 The hook does not copy OpenAI frontend JavaScript into git. Tests cover the asset gate and Statsig override with synthetic clients.
 
 ## Version gate
 
-Audited only for Desktop **26.1007.30912** (primary bundle `app-initial-6350d04672d0.js`). Re-audit before enabling on a newer build. Fail closed: no wrap, no ASAR patch, keep `~/Applications/ChatGPT-Voice.app` if that copy is still the working path.
+Audited for Desktop **26.1007.30912** (gate path, primary bundle `app-initial-6350d04672d0.js`) and **26.1013.40934** (client-owned path, assets listed above). Re-audit before enabling on another build. Fail closed: no wrap, no ASAR patch, keep `~/Applications/ChatGPT-Voice.app` if that copy is still the working path.
 
 ## Invariants
 
@@ -49,8 +132,9 @@ Audited only for Desktop **26.1007.30912** (primary bundle `app-initial-6350d046
 
 New-chat voice launches use the primary Composer's current Harness selection.
 On the audited Desktop build, the primary Renderer imports the already-loaded
-browser module `app-shared-8bd9d0399038.js` and wraps only its native
-`realtimeVoiceRuntime` service reference (export `fN`). Its RPC stubs themselves
+browser module `app-shared-8bd9d0399038.js` (26.1007, export `fN`) or
+`app-shared-52443cbe9ac4.js` (26.1013, export `Kat`) and wraps only its native
+`realtimeVoiceRuntime` service reference. Its RPC stubs themselves
 are immutable. For `composer_button_new_thread`, the wrapper snapshots the
 matching Host's selected transport carrier into
 `activeCollaborationMode.settings.model`. The separate voice overlay forwards
@@ -124,7 +208,7 @@ Turn, returns success without cancelling a newer Turn.
 The speech service is instructed to delegate every question and task, including
 simple arithmetic; it supplies speech rather than owning task reasoning.
 The prototype defaults to Cantonese and the protocol's `cove` voice; supported V3
-voices can be requested. Text/audio append transports, ExistingCall attachment,
+voices can be requested. Text/audio append transports,
 overlapping-task steering, newer public GPT-Live event dialects, remote-host media
 topology, and seamless call recovery are not supported. A rejected control connection
 or session-initialization timeout emits error/closed notifications and performs

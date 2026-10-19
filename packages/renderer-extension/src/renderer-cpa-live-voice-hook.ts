@@ -78,18 +78,23 @@ export function auditedAppInitialAssetPresent(
   });
 }
 
-function resourceNamesFromPerformance(): string[] {
-  if (typeof performance === "undefined" || typeof performance.getEntriesByType !== "function") {
-    return [];
-  }
-  return performance
+function resourceNamesFromPerformance(
+  source: Pick<Performance, "getEntriesByType"> | undefined,
+): string[] {
+  const target = source ?? (typeof performance === "undefined" ? undefined : performance);
+  if (!target || typeof target.getEntriesByType !== "function") return [];
+  return target
     .getEntriesByType("resource")
     .map((entry) => entry.name)
     .filter((name): name is string => typeof name === "string");
 }
 
-function resourceNamesFromDocument(root: ParentNode | undefined): string[] {
-  const names = resourceNamesFromPerformance();
+/** Every loaded asset name this page exposes: resource timing plus script/link tags. */
+export function loadedAssetNames(
+  root: ParentNode | undefined,
+  performanceSource?: Pick<Performance, "getEntriesByType">,
+): string[] {
+  const names = resourceNamesFromPerformance(performanceSource);
   if (!root || !("querySelectorAll" in root)) return names;
   for (const element of root.querySelectorAll("script[src], link[href]")) {
     const value = element.getAttribute("src") ?? element.getAttribute("href");
@@ -167,7 +172,7 @@ export function installCpaLiveVoiceHook(
   };
   const attempt = (): boolean => {
     if (!auditedAssetFound) {
-      const resourceNames = options.resourceNames ?? resourceNamesFromDocument(root);
+      const resourceNames = options.resourceNames ?? loadedAssetNames(root);
       auditedAssetFound = configAllowsInstall(config, resourceNames);
       if (!auditedAssetFound) return false;
     }

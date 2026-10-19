@@ -30,16 +30,22 @@ function speakableFromItems(
 
 /** Fan-out from the existing Host consumer; never consumes HarnessSession.outputs. */
 export class ExternalVoiceResults {
+  constructor(readonly onProgress?: (threadId: string, text: string) => void) {}
+
   readonly #pending = new Map<
     string,
     {
       threadId: string;
-      items: Map<string, { text: string; phase?: string }>;
+      items: Map<string, { text: string; phase?: string; completed?: boolean }>;
       resolve(text: string): void;
       reject(error: Error): void;
       dispose(): void;
     }
   >();
+
+  has(threadId: string, turnId: string): boolean {
+    return this.#pending.get(turnId)?.threadId === threadId;
+  }
 
   watch(threadId: string, turnId: string, signal: AbortSignal): Promise<string> {
     if (signal.aborted) return Promise.reject(new Error("Voice session ended"));
@@ -72,6 +78,15 @@ export class ExternalVoiceResults {
     if (!("turnId" in event)) return;
     const pending = this.#pending.get(event.turnId);
     if (!pending || pending.threadId !== threadId) return;
+    if (event.type === "item.started") {
+      // A later Item makes an unphased, completed Agent Message progress rather
+      // than the Turn's inferred final answer. Never publish partial text.
+      for (const item of pending.items.values()) {
+        if (!item.completed || item.phase !== undefined) continue;
+        item.phase = "commentary";
+        if (item.text.trim()) this.onProgress?.(threadId, item.text);
+      }
+    }
     if (event.type === "item.started" && event.item.type === "agentMessage") {
       pending.items.set(event.item.itemId, {
         text: event.item.text,
@@ -88,9 +103,15 @@ export class ExternalVoiceResults {
       event.snapshot.outcome.status === "succeeded"
     ) {
       const item = event.snapshot.item;
+      const previous = pending.items.get(item.itemId);
+      if (item.phase === "commentary" && item.text.trim() && !previous?.completed) {
+        this.onProgress?.(threadId, item.text);
+      }
+      const phase = item.phase ?? previous?.phase;
       pending.items.set(item.itemId, {
         text: item.text,
-        ...(item.phase ? { phase: item.phase } : {}),
+        ...(phase ? { phase } : {}),
+        completed: true,
       });
     }
     if (event.type !== "turn.completed") return;

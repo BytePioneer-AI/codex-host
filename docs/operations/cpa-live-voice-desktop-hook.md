@@ -189,9 +189,14 @@ selected configured model provider's
 The Host reads `CODEX_HOME/config.toml` only and does not mutate gateway settings.
 Profile/command-line credential overrides are not resolved by this prototype.
 
-V3 handoff text and user `turn.done` transcripts go to that same external Thread. Only completed
-agent-message results are returned as speakable context; private reasoning and tool
-output are excluded. Delegation IDs are deduplicated within a call and used only
+V3 handoff text and user `turn.done` transcripts go to that same external Thread.
+An open call also follows ordinary text or attachment tasks in that Thread,
+including a task already running when the call opens. Completed agent progress
+messages are forwarded during work: explicit `commentary` is eligible at Item
+completion; an unphased message is eligible after a later Item starts, proving
+that it is not the inferred final answer. The final result waits for successful
+Turn completion. Partial messages, private reasoning and tool output are excluded.
+Delegation IDs are deduplicated within a call and used only
 to address `delegation.context.append` when the handle names the user turn.
 Results without a linked handle are appended with the supported
 `session.context.append` event. A handoff with no task text or no turn identifier
@@ -206,6 +211,9 @@ stream follower of the overlay, so call closure or an idle status does not
 release notification delivery. Deleting a Thread removes it from this set.
 `turn/interrupt` for a Turn that is already complete, or that is not the active
 Turn, returns success without cancelling a newer Turn.
+
+Context forwarding confirms delivery to the voice control connection. Exact
+audible progress and completion still require an attended Desktop call test.
 
 The speech service is instructed to delegate every question and task, including
 simple arithmetic; it supplies speech rather than owning task reasoning.
@@ -231,6 +239,60 @@ no official app-server request; the final trial confirmed hangup with HTTP 404
 hangup. These are isolated headless-page trials, not installed Desktop button
 acceptance or proof that every plugin is voice-compatible. Continuous conversation,
 speech interruption, task cancellation and approvals need attended acceptance.
+
+### Automated smoke and attended verification
+
+From the repository root, run:
+
+```sh
+npm run test:voice:smoke
+```
+
+This builds the TypeScript packages and packaged Harness plugins, then runs the
+focused voice regression files using `tests/vitest.config.js`. It does not launch,
+reload or stop Desktop, create a real call, or require gateway credentials. It
+covers:
+
+- Completed public progress, streamed final text, successful Turn completion,
+  and exclusion of private reasoning and tool output.
+- Ordinary text/attachment tasks during an open call, tasks already running
+  when voice opens, and output held until the control connection is ready.
+- Linked handoff deduplication, history seeding, gateway routing and cleanup,
+  and suppression of late speech after hangup without cancelling Harness work.
+- Claude native completed scout results containing quoted background-launch
+  wording, while preserving genuine asynchronous scout launches.
+- Overlay delivery after hangup, new-chat Harness selection, audited call hooks,
+  preference gating, and CSP-compatible validation setup.
+
+These files also run in the normal TypeScript CI suite; the named command is a
+local focused entry point. Use it instead of `npm test -- <files>`: the root
+`test` script invokes the broader TypeScript and Rust suites.
+
+For attended verification, use the existing configured Desktop installation;
+no separate voice hook, mock process or worktree is required:
+
+1. Open an external Harness Thread and start voice. Keep the call open through
+   task completion.
+2. Submit a normal text task while the call is open, asking for a short read-only
+   inspection, one separate public progress message before tool work, and a brief
+   final summary. This exercises ordinary-turn forwarding. A task spoken into
+   voice exercises the delegation path instead.
+3. Verify progress only if the Harness actually emits a separate public message.
+   A progress heading inside the final answer is one final message and does not
+   verify intermediate speech. Private reasoning and command output are excluded.
+4. Check that the final answer is heard before hangup, the backend Turn completes,
+   and Desktop returns to idle. Native voice-work presentation can suppress the
+   backend assistant text in favor of voice transcripts; hidden text alone does
+   not establish a broken event stream.
+5. If the UI appears stuck, preserve the call and inspect the backend Turn and
+   Desktop state before restarting or reloading. An active command is expected
+   to remain busy. Judge a stale busy state after the final backend reply.
+
+The attended Claude Code check on Desktop **26.1013.40934** on 19 October 2026
+confirmed an audible final answer, completed Turn and idle Desktop. That run
+emitted no separate public progress message, so intermediate audio remains
+unverified. Automated transport assertions do not establish physical playback,
+universal Model compatibility or recovery from every long-task failure.
 
 ## Harness session rules (Grok ACP `_meta.rules`)
 

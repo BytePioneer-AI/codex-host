@@ -24,6 +24,53 @@ async function voiceSession() {
 }
 
 describe("voice lifecycle", () => {
+  it("holds observed task output until the control connection opens", async () => {
+    const connected = Promise.withResolvers<undefined>();
+    let open = false;
+    const send = vi.fn(() => {
+      if (!open) throw new Error("Control connection not open");
+    });
+    const voice = new ExternalVoice({
+      createCall: async () => ({
+        sdp: "answer",
+        connect: () => connected.promise,
+        send,
+        close: async () => {},
+      }),
+      runTask: vi.fn(),
+      notify: async () => {},
+      diagnose: vi.fn(),
+    });
+    try {
+      await voice.start("external", params);
+      voice.reportProgress("external", "Checking the audit.");
+      voice.followTurn("external", async () => "Audit complete.");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(send).not.toHaveBeenCalled();
+      expect(voice.has("external")).toBe(true);
+      open = true;
+      connected.resolve(undefined);
+      await vi.waitFor(() =>
+        expect(send.mock.calls).toEqual([
+          [
+            {
+              type: "session.context.append",
+              content: [{ type: "input_text", text: "Checking the audit." }],
+            },
+          ],
+          [
+            {
+              type: "session.context.append",
+              content: [{ type: "input_text", text: "Audit complete." }],
+            },
+          ],
+        ]),
+      );
+    } finally {
+      await voice.close();
+    }
+  });
+
   it("attaches a Desktop-owned call without creating a second SDP exchange", async () => {
     const createCall = vi.fn(async () => ({
       sdp: "",

@@ -624,7 +624,9 @@ export class AppServerHost {
   readonly #externalSteering = new ExternalTurnSteering();
   readonly #nativeVoiceGateway: NativeVoiceGateway;
   readonly #externalVoice: ExternalVoice;
-  readonly #externalVoiceResults = new ExternalVoiceResults();
+  readonly #externalVoiceResults = new ExternalVoiceResults((threadId, text) =>
+    this.#externalVoice.reportProgress(threadId, text),
+  );
   readonly #liveCommandCache = new LiveCommandCatalogCache();
   readonly #modelPrices: ModelPriceCatalog;
   readonly #observedSessionUsage: ObservedSessionUsage;
@@ -4612,6 +4614,8 @@ export class AppServerHost {
           requestObject(request),
           voiceSessionInputFromTurns(thread.turns),
         );
+        if (thread.activeTurnId && !thread.ephemeralTurnIds.has(thread.activeTurnId))
+          this.#followExternalVoiceTurn(thread.id, thread.activeTurnId);
       } else if (request.method === "thread/realtime/stop") {
         await this.#externalVoice.stop(thread.id);
       } else {
@@ -4646,6 +4650,13 @@ export class AppServerHost {
     });
     if (!answer) throw new Error("External voice task did not start");
     return answer;
+  }
+
+  #followExternalVoiceTurn(threadId: string, turnId: string): void {
+    if (this.#externalVoiceResults.has(threadId, turnId)) return;
+    this.#externalVoice.followTurn(threadId, (signal) =>
+      this.#externalVoiceResults.watch(threadId, turnId, signal),
+    );
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
@@ -5202,6 +5213,8 @@ export class AppServerHost {
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
     if (event.type === "turn.started") {
+      if (!thread.ephemeralTurnIds.has(event.turnId))
+        this.#followExternalVoiceTurn(thread.id, event.turnId);
       await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {

@@ -1,5 +1,10 @@
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
-import { harnessIdSchema, type JsonObject } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  hostItemIdSchema,
+  hostTurnIdSchema,
+  type JsonObject,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import type { ExternalVoiceCallFactory } from "../src/external-voice-gateway.js";
 import {
@@ -35,6 +40,137 @@ function transport() {
 }
 
 describe("external native voice routing", () => {
+  it.each(["grok", "claude-code"])(
+    "forwards %s attachment-task progress and completion to an already open call",
+    async (name) => {
+      const adapter = new FakeHarnessAdapter(harnessIdSchema.parse(name));
+      const call = transport();
+      const fixture = createFixture({
+        externalAdapters: new Map([[name, adapter]]),
+        createExternalVoiceCall: call.createCall,
+      });
+      try {
+        const threadId = await startExternalThread(fixture, `codexhost/${name}-native`);
+        writeRequest(fixture.desktopInput, {
+          id: 2,
+          method: "thread/realtime/start",
+          params: {
+            threadId,
+            outputModality: "audio",
+            transport: { type: "existingCall", callId: "rtc_fixture" },
+          },
+        });
+        await fixture.collector.waitFor((message) => requestId(message, 2));
+        writeRequest(fixture.desktopInput, {
+          id: 3,
+          method: "turn/start",
+          params: { threadId, input: [{ type: "text", text: "Read the attached audit task." }] },
+        });
+        const response = await fixture.collector.waitFor((message) => requestId(message, 3));
+        const turnId = (response.result as JsonObject).turn as JsonObject;
+        const session = adapter.sessions[0];
+        if (!session) throw new Error("Expected selected Harness session");
+        session.startReasoning("PRIVATE REASONING MUST NOT BE SPOKEN");
+        const command = session.startCommandExecution("PRIVATE TOOL MUST NOT BE SPOKEN");
+        session.completeItem(command, { status: "succeeded" });
+        const item = {
+          type: "agentMessage" as const,
+          itemId: hostItemIdSchema.parse("44444444-4444-4444-8444-444444444444"),
+          text: "Both scouts have returned. Checking their findings.",
+        };
+        const activeTurnId = hostTurnIdSchema.parse(turnId.id);
+        session.emitEvent({ type: "item.started", turnId: activeTurnId, item });
+        session.emitEvent({
+          type: "item.completed",
+          turnId: activeTurnId,
+          snapshot: { item, outcome: { status: "succeeded" } },
+        });
+        const validation = session.startCommandExecution("PRIVATE VALIDATION MUST NOT BE SPOKEN");
+        session.completeItem(validation, { status: "succeeded" });
+        await vi.waitFor(() => expect(call.sent).toHaveLength(1));
+        session.appendText("Audit complete. The focused tests passed.");
+        session.succeedTurn();
+        await fixture.collector.waitFor(
+          (message) =>
+            message.method === "turn/completed" &&
+            ((message.params as JsonObject).turn as JsonObject)?.id === turnId.id,
+        );
+        await vi.waitFor(() => expect(call.sent).toHaveLength(2));
+        expect(call.sent).toEqual([
+          {
+            type: "session.context.append",
+            content: [{ type: "input_text", text: item.text }],
+          },
+          {
+            type: "session.context.append",
+            content: [{ type: "input_text", text: "Audit complete. The focused tests passed." }],
+          },
+        ]);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it.each([
+    { hangup: false, label: "forwards completion of work already running when voice opens" },
+    { hangup: true, label: "suppresses completion after hangup without cancelling existing work" },
+  ])("$label", async ({ hangup }) => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const call = transport();
+    const fixture = createFixture({
+      externalAdapters: new Map([["claude-code", adapter]]),
+      createExternalVoiceCall: call.createCall,
+    });
+    try {
+      const threadId = await startExternalThread(fixture, "codexhost/claude-code-native");
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "Audit the voice lifecycle." }] },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 2));
+      const params = {
+        threadId,
+        outputModality: "audio",
+        transport: { type: "existingCall", callId: "rtc_fixture" },
+      };
+      writeRequest(fixture.desktopInput, { id: 3, method: "thread/realtime/start", params });
+      await fixture.collector.waitFor((message) => requestId(message, 3));
+      if (hangup) {
+        writeRequest(fixture.desktopInput, {
+          id: 4,
+          method: "thread/realtime/stop",
+          params: { threadId },
+        });
+        await fixture.collector.waitFor((message) => requestId(message, 4));
+      }
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Expected selected Harness session");
+      session.appendText("Audit complete.");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => message.method === "turn/completed");
+      if (!hangup) {
+        await vi.waitFor(() =>
+          expect(call.sent).toEqual([
+            {
+              type: "session.context.append",
+              content: [{ type: "input_text", text: "Audit complete." }],
+            },
+          ]),
+        );
+        return;
+      }
+      expect(call.sent).toEqual([]);
+      writeRequest(fixture.desktopInput, { id: 5, method: "thread/realtime/start", params });
+      await fixture.collector.waitFor((message) => requestId(message, 5));
+      expect(call.createCall).toHaveBeenCalledTimes(2);
+      expect(call.sent).toEqual([]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it.each(["grok", "claude-code"])(
     "uses the selected %s session and never starts a Codex task",
     async (name) => {

@@ -379,6 +379,59 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 
+  it.each([
+    { status: "completed", agentId: "native-agent-1" },
+    { isAsync: false, agentId: "native-agent-1" },
+    undefined,
+  ])(
+    "does not interpret a completed audit's quoted background text as live status (%j)",
+    (nativeResult) => {
+      const turn = new ClaudeNativeTurnAccumulator();
+      turn.consume(
+        toolUse("Agent", "agent-1", {
+          description: "Audit subagent lifecycle",
+          run_in_background: false,
+        }),
+      );
+      const content =
+        'The parser checks whether output contains "The agent is working in the background.". This is a source-code finding; the audit is complete.';
+      const completed = turn.consume(toolResult("agent-1", { content, nativeResult }));
+      expect(completed.events).toEqual([
+        {
+          type: "subagent.completed",
+          callId: "agent-1",
+          isError: false,
+          ...(nativeResult ? { nativeSubagentId: "native-agent-1" } : {}),
+          resultSummary: content,
+        },
+      ]);
+      expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+    },
+  );
+
+  it("prefers structured completed status over a background-looking result body", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    turn.consume(toolUse("Agent", "agent-1"));
+    const content =
+      "Async agent launched successfully.\nagentId: native-agent-1\nThe agent is working in the background.";
+    expect(
+      turn.consume(
+        toolResult("agent-1", {
+          content,
+          nativeResult: { status: "completed", agentId: "native-agent-1" },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "agent-1",
+        isError: false,
+        nativeSubagentId: "native-agent-1",
+        resultSummary: content,
+      },
+    ]);
+  });
+
   it("keeps an async Agent spawn running when its launch Tool Result returns", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

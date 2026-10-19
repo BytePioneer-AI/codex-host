@@ -18,6 +18,7 @@ interface PendingHandle {
 
 interface VoiceSession {
   controller: AbortController;
+  ready: { promise: Promise<undefined>; resolve(value: undefined): void };
   call?: ExternalVoiceCall;
   creation?: Promise<ExternalVoiceCall>;
   seen: Set<string>;
@@ -42,6 +43,9 @@ const voices = new Set([
   "sol",
   "cove",
 ]);
+
+const FAILED_TASK_RESULT =
+  "The selected agent could not complete this request. No completion is confirmed. Check the chat for its current task status.";
 
 function protocolId(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
@@ -77,6 +81,33 @@ export class ExternalVoice {
     return this.#sessions.has(threadId);
   }
 
+  /** Follow work submitted through the chat while this call is open. */
+  followTurn(threadId: string, result: (signal: AbortSignal) => Promise<string>): void {
+    const session = this.#sessions.get(threadId);
+    if (!session || session.controller.signal.aborted) return;
+    void (async () => {
+      let text: string;
+      try {
+        text = await result(session.controller.signal);
+      } catch {
+        text = FAILED_TASK_RESULT;
+      }
+      await this.#reportContext(threadId, session, text);
+    })().catch(() => this.#fail(threadId, session));
+  }
+
+  reportProgress(threadId: string, text: string): void {
+    const session = this.#sessions.get(threadId);
+    if (!session || session.controller.signal.aborted) return;
+    void this.#reportContext(threadId, session, text).catch(() => this.#fail(threadId, session));
+  }
+
+  async #reportContext(threadId: string, session: VoiceSession, text: string): Promise<void> {
+    await session.ready.promise;
+    if (session.controller.signal.aborted || this.#sessions.get(threadId) !== session) return;
+    this.#appendContext(session, text);
+  }
+
   async start(threadId: string, params: JsonObject, conversation?: JsonObject[]): Promise<void> {
     if (this.has(threadId)) throw new Error("This chat already has a voice call");
     const transport = object(params.transport) ? params.transport : undefined;
@@ -91,6 +122,7 @@ export class ExternalVoice {
     }
     const session: VoiceSession = {
       controller: new AbortController(),
+      ready: Promise.withResolvers<undefined>(),
       seen: new Set(),
       tasks: new Map(),
       pendingHandles: [],
@@ -134,7 +166,10 @@ export class ExternalVoice {
         void this.#fail(threadId, session);
       }, 20_000);
       session.initializationTimeout.unref();
-      void session.call.connect().catch(() => this.#fail(threadId, session));
+      void session.call.connect().then(
+        () => session.ready.resolve(undefined),
+        () => this.#fail(threadId, session),
+      );
     } catch {
       await this.#fail(threadId, session);
       throw new Error("External voice could not start");
@@ -146,6 +181,7 @@ export class ExternalVoice {
     if (!session) return;
     if (session.stopping) return session.stopping;
     session.controller.abort();
+    session.ready.resolve(undefined);
     clearTimeout(session.initializationTimeout);
     session.stopping = (async () => {
       let failed = false;
@@ -296,8 +332,7 @@ export class ExternalVoice {
     try {
       result = await this.options.runTask(threadId, task.text, session.controller.signal);
     } catch {
-      result =
-        "The selected agent could not complete this request. No completion is confirmed. Check the chat for its current task status.";
+      result = FAILED_TASK_RESULT;
     }
     task.result = result;
     if (session.controller.signal.aborted || this.#sessions.get(threadId) !== session) return;
@@ -311,8 +346,13 @@ export class ExternalVoice {
     const spokenFor = task.delegationId ?? null;
     if (task.spokenFor === spokenFor) return;
     task.spokenFor = spokenFor;
-    const characters = [...result].slice(0, 8_000);
-    const delegationId = task.delegationId;
+    this.#appendContext(session, result, task.delegationId);
+  }
+
+  #appendContext(session: VoiceSession, text: string, delegationId?: string): void {
+    const call = session.call;
+    if (!call) return;
+    const characters = [...text].slice(0, 8_000);
     for (let offset = 0; offset < characters.length; offset += 120) {
       const chunk = characters.slice(offset, offset + 120).join("");
       call.send(

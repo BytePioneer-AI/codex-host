@@ -306,10 +306,15 @@ function subagentContinuesInBackground(
   outputText: string | undefined,
 ): boolean {
   if (isRecord(nativeResult)) {
+    // Native lifecycle fields take precedence over the agent's report text.
+    if (typeof nativeResult.status === "string") return nativeResult.status === "async_launched";
     if (nativeResult.isAsync === true || nativeResult.is_async === true) return true;
-    if (nativeResult.status === "async_launched") return true;
+    if (nativeResult.isAsync === false || nativeResult.is_async === false) return false;
   }
-  return outputText?.includes("The agent is working in the background.") ?? false;
+  // Text-only launch receipts have a fixed prefix; quoted report text is not a receipt.
+  return /^Async agent launched successfully\.\r?\nagentId: [A-Za-z0-9_-]+\r?\nThe agent is working in the background\.(?:\r?\n|$)/u.test(
+    outputText ?? "",
+  );
 }
 
 function resultText(content: unknown, nativeResult: unknown): string | undefined {

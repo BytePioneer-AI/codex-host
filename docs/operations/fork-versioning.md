@@ -4,6 +4,92 @@ This checkout tracks [BytePioneer-AI/codex-host](https://github.com/BytePioneer-
 
 Package identity follows the same fork-scope rule as other karlorz forks: a permanent `@karlorz/` rename, not a publish-time override, and not `@codexhost/*`.
 
+## Preserve Live Voice when syncing upstream
+
+The fork's [Live Voice integration](cpa-live-voice-desktop-hook.md) is maintained
+alongside upstream. Documentation records its contract; it does not enforce merge
+resolution or guarantee compatibility with a new Desktop build.
+
+Before an upstream sync:
+
+1. Commit approved fork changes and integrate them into the fork's `main` before
+   creating the sync branch. A feature branch running locally is not part of
+   `main` until merged. Record the starting commit and keep a local backup branch.
+2. Verify `origin` is `karlorz/codex-host` and `upstream` is
+   `BytePioneer-AI/codex-host`. Fetch both, then merge upstream on a separate sync
+   branch based on the fork's current main. Do not reset or replace fork main with
+   upstream main. A conflict-free merge still needs behavioral verification.
+3. Inspect conflicts and overlapping changes by responsibility. Do not apply a
+   blanket choice of either side. Preserve the contracts below, or replace them
+   with an upstream implementation only after equivalent behavior is verified.
+
+Required voice contracts:
+
+- **Existing switch:** Settings → General → Override live voice controls the
+  audited voice routing hook. The separate usage-warning switch does not route
+  calls or change account selection.
+- **Native call creation:** On the audited client-owned Desktop flow,
+  `renderer-client-owned-voice.ts` forwards the native call-create request through
+  `codexhost/realtime/call` to `native-voice-gateway.ts`. Preserve the Host RPC
+  dispatch, Renderer entry points, shared `realtime-call.ts` contracts and
+  `realtime-gateway-config.ts`; gateway credentials stay in the Host, request
+  headers remain allowlisted, and gateway failures do not fall back to Desktop
+  OAuth.
+- **CSP:** `production-controller.ts` sets Zod `jitless` before both the primary
+  Renderer and overlay bundles are evaluated. Preserve strict CSP without adding
+  `unsafe-eval`.
+- **Lifecycle and Harness:** Preserve cancellation/hangup cleanup, external
+  existing-call attachment without duplicate creation, and the selected Harness
+  for new-chat launches. Official Codex realtime handling continues through its
+  native app-server path.
+- **Version boundary:** Preserve exact audited asset checks. After a Desktop
+  update, re-audit its native exports and call ownership before enabling another
+  build; a passing source merge does not qualify new Desktop assets.
+- **Gateway boundary:** Disabled-account selection and any future automatic
+  quota retry belong to CPA. This fork's voice override does not implement
+  account failover. Do not edit CPA core or deploy a gateway as part of a routine
+  codex-host sync.
+
+After resolving the sync, build the TypeScript packages before dependent tests:
+
+```bash
+npm run build:typescript
+npm run typecheck
+npm run lint
+npm run build:renderer
+npx vitest run --config tests/vitest.config.js \
+  packages/desktop-control/test/production-controller.test.ts \
+  packages/shared-contracts/test/realtime-call.test.ts \
+  packages/renderer-extension/test/renderer-client-owned-voice.test.ts \
+  packages/renderer-extension/test/renderer-external-voice-launch.test.ts \
+  packages/renderer-extension/test/renderer-cpa-live-voice-hook.test.ts \
+  packages/renderer-extension/test/renderer-cpa-live-voice-preference.test.ts \
+  packages/host-runtime/test/native-voice-gateway.test.ts \
+  packages/host-runtime/test/external-voice-gateway.test.ts \
+  packages/host-runtime/test/external-voice-lifecycle.test.ts \
+  packages/host-runtime/test/app-server-host.external-voice.test.ts
+npm run test:e2e -- renderer-voice-csp.spec.ts
+git diff --check
+```
+
+The browser regression requires an installed Playwright browser. If using an
+installed Chrome executable, set `CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH` for that
+test command. Broaden checks for any additional packages or Rust code affected by
+the sync; the voice set is not a substitute for those checks.
+
+With restart and live testing authorized, use `npm start` to rebuild and launch
+the sync result. Confirm the running overlay hook is active on audited assets,
+call creation reaches the configured gateway, WebRTC connects, and hangup is
+confirmed without CSP errors. Then verify native-button startup, audible output
+and the selected Harness. A silent transport probe alone does not establish
+microphone/conversation acceptance. Record the tested commit, Desktop version,
+checks and remaining limitations in the wiki without credentials, SDP or call
+identities.
+
+Integrate the verified sync branch into fork main. Pushes, releases, upstream PRs
+and production changes remain separate authorized actions. This checklist does
+not install an automatic sync guard or change branch protection.
+
 ## Tag rule
 
 Fork versions stay on the **upstream version that is currently held**, plus a numeric fork counter.

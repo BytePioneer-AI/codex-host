@@ -2,6 +2,8 @@
 
 CodexHost routes native live-voice call creation through the configured realtime gateway without rewriting `app.asar` or replacing `/Applications/ChatGPT.app`. Desktop **26.1007.30912** uses a call-ownership gate override. Desktop **26.1013.40934** uses the native client-owned-call flow described below.
 
+For upstream merges, follow the [Live Voice preservation checklist](fork-versioning.md#preserve-live-voice-when-syncing-upstream), including regression checks and separate Desktop-version qualification.
+
 ## Default
 
 **On** in this fork. The Desktop Controller injects the hook unless `CODEXHOST_CPA_LIVE_VOICE=0`. That environment variable is **not live**: changing it requires relaunching Codex. Codex Settings → General has an **Override live voice** switch, also on by default (`localStorage` missing means on; `"0"` means off). The switch applies on the next voice overlay without relaunch. If the hook was not injected (`CODEXHOST_CPA_LIVE_VOICE=0`), the page shows a restart warning and the switch cannot take effect until relaunch. The unaudited-Desktop asset gate still fail-closes. The Web console does not duplicate this switch.

@@ -254,7 +254,7 @@ export async function runDesktopController(
     if (rendererSource.trim().length === 0) throw new Error("production Renderer Bundle is empty");
     const overlayHookSource =
       bootstrap && overlayBundle && overlayBundle.trim().length > 0
-        ? `${bootstrap}${overlayBundle}`
+        ? `${RENDERER_CSP_BOOTSTRAP}\n${bootstrap}${overlayBundle}`
         : undefined;
     startupTrace("installing Renderer Session");
     const installed = await installProductionSession(

@@ -145,6 +145,9 @@ describe("production Desktop Controller", () => {
     expect(source).toContain("production renderer");
     expect(source).toContain("__codexhostCpaLiveVoiceHookV1");
     expect(install.mock.calls[0]?.[0].overlayHookSource).toContain("__codexhostCpaLiveVoiceHookV1");
+    expect(install.mock.calls[0]?.[0].overlayHookSource).toMatch(
+      /^globalThis\.__zod_globalConfig \?\?= \{\}; globalThis\.__zod_globalConfig\.jitless = true;\n/,
+    );
     expect(startAttachmentServer).toHaveBeenCalledWith({
       port: 43124,
       nonce: attachmentNonce,

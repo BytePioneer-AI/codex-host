@@ -10,6 +10,13 @@ const { outputFiles } = await build({
   stdin: {
     contents: `
       import { createHarnessVersionPanel } from "./packages/renderer-extension/src/settings/harness-version-panel.ts";
+      import pi from "./packages/adapters/pi/manifest.json";
+      import claude from "./packages/adapters/claude-code/manifest.json";
+      import grok from "./packages/adapters/grok/manifest.json";
+      import omp from "./packages/adapters/omp/manifest.json";
+      import grokIcon from "./packages/adapters/grok/assets/icon.png";
+      import ompIcon from "./packages/adapters/omp/assets/icon.svg";
+      const plugins = { pi, "claude-code": claude, grok: { ...grok, icon: grokIcon }, omp: { ...omp, icon: ompIcon } };
       globalThis.setupLocalizedVersion = (locale, latestVersion, messageCode) => {
         document.body.replaceChildren(createHarnessVersionPanel(
           document, rendererSettingsMessages(locale), new AbortController().signal, "hermes",
@@ -17,6 +24,7 @@ const { outputFiles } = await build({
             currentVersion: "0.21.5+5355.g357f51c.dirty @ 357f51c4",
             latestVersion, messageCode, updateAvailable: true, canUpdate: false,
             message: "Use the native updater manually.",
+            notice: { en: "Needs a clean source checkout", "zh-CN": "要求源码目录无未提交修改" },
           }) },
         ));
       };
@@ -24,7 +32,7 @@ const { outputFiles } = await build({
       import { createRendererSettingsPageRegistry } from "./packages/renderer-extension/src/settings/core.ts";
       import { rendererSettingsMessages } from "./packages/renderer-extension/src/settings/localization.ts";
       import { mountRendererSettingsShell } from "./packages/renderer-extension/src/settings/shell.ts";
-      globalThis.setupHarnessVersions = () => {
+      globalThis.setupHarnessVersions = (patched = false) => {
         const calls = [];
         let updated = false;
         let installAttempts = 0;
@@ -35,13 +43,26 @@ const { outputFiles } = await build({
             hosts: ["local", "remote-test"].map(hostId => ({ hostId, active:hostId === "local", agents: [
               {agent:"pi",availability:"ready",error:null},
               {agent:"claude-code",availability:"ready",error:null},
+              {agent:"grok",availability:"ready",error:null},
               {agent:"omp",availability:installedHosts.has(hostId) ? "ready" : "notInstalled",error:null},
-            ] })),
+            ].map(agent => ({ ...agent, plugin: plugins[agent.agent] })) })),
           }),
           subscribe: () => () => {},
           refresh: async () => {},
           installation: async (hostId, agent, action) => {
             calls.push({hostId,agent,action});
+            if (patched && (agent === "grok" || agent === "claude-code")) {
+              const manager = agent === "grok" ? "grokgod" : "clawgod";
+              return {
+                currentVersion: agent === "grok" ? "1.0.45" : "2.1.263",
+                latestVersion: "Unknown", latestVersionKind: "unknown",
+                updateAvailable: false, canUpdate: false, messageCode: "original-installer",
+                notice: {
+                  en: "Managed by " + manager + ". Use " + manager + "'s updater or installer to preserve the installed patches. The latest patched version is not checked here.",
+                  "zh-CN": "此安装由 " + manager + " 管理。请使用 " + manager + " 的更新程序或安装程序保留补丁；此处不检查最新补丁版本。",
+                },
+              };
+            }
             if (agent === "claude-code") throw {code:-32078};
             if (action === "install") {
               installAttempts++;
@@ -112,6 +133,30 @@ test("renders version hints and adapter notes in the selected language", async (
     );
     if (locale === "zh-CN") await expect(panel).not.toContainText("Use the native updater");
     else await expect(panel).not.toContainText("请手动");
+  }
+});
+
+test("shows patch-manager ownership and unknown latest versions for patched launchers", async ({
+  page,
+}, testInfo) => {
+  await page.evaluate(() => {
+    document.body.replaceChildren();
+    (
+      globalThis as unknown as { setupHarnessVersions(patched: boolean): void }
+    ).setupHarnessVersions(true);
+  });
+  for (const [agent, manager, version] of [
+    ["grok", "grokgod", "1.0.45"],
+    ["claude-code", "clawgod", "2.1.263"],
+  ]) {
+    await page.locator(`[data-connection-item="${agent}"]`).click();
+    const panel = page.locator(".settings-harness-version");
+    await expect(panel).toContainText(`当前版本: ${version}`);
+    await expect(panel).toContainText("最新版本: 未知");
+    await expect(panel).toContainText(`此安装由 ${manager} 管理`);
+    await expect(panel).not.toContainText("操作未完成");
+    await expect(panel.getByRole("button", { name: "更新", exact: true })).toBeDisabled();
+    await page.screenshot({ path: testInfo.outputPath(`${manager}-versions.png`) });
   }
 });
 

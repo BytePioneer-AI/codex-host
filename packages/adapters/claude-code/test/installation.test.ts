@@ -7,12 +7,14 @@ const mocks = vi.hoisted(() => ({
   resolve: vi.fn(),
   realpath: vi.fn(),
   read: vi.fn(),
+  launcher: vi.fn(),
 }));
 vi.mock("@codexhost/harness-discovery", async (original) => ({
   ...(await original<object>()),
   runInstallationCommand: mocks.run,
   fetchInstallationText: mocks.fetch,
   npmInstallation: mocks.npm,
+  readLauncherScript: mocks.launcher,
 }));
 vi.mock("node:fs/promises", async (original) => ({
   ...(await original<object>()),
@@ -32,6 +34,7 @@ beforeEach(() => {
     path.join(environment.HOME, ".local", "share", "claude", "versions", "2.1.0"),
   );
   mocks.read.mockResolvedValue("{}");
+  mocks.launcher.mockResolvedValue("");
   mocks.npm.mockResolvedValue(null);
   mocks.fetch.mockResolvedValue("2.2.0");
   mocks.run.mockResolvedValue("2.1.0 (Claude Code)");
@@ -39,6 +42,28 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Claude installation", () => {
+  it.each(["check", "update"] as const)(
+    "keeps clawgod %s read-only without comparing official releases",
+    async (action) => {
+      mocks.launcher.mockResolvedValue('#!/bin/bash\nCLAWGOD_CLI="/custom/.clawgod/cli.cjs"');
+      const result = await createClaudeInstallation(environment)(action);
+      expect(result).toMatchObject({
+        currentVersion: "2.1.0",
+        latestVersion: "Unknown",
+        latestVersionKind: "unknown",
+        updateAvailable: false,
+        canUpdate: false,
+        notice: { en: expect.stringContaining("Managed by clawgod") },
+      });
+      expect(mocks.run).toHaveBeenCalledExactlyOnceWith(executable, ["--version"], {
+        ...environment,
+        DISABLE_AUTOUPDATER: "1",
+      });
+      expect(mocks.fetch).not.toHaveBeenCalled();
+      expect(mocks.npm).not.toHaveBeenCalled();
+    },
+  );
+
   it("reads the configured stable channel and uses the native policy-aware updater", async () => {
     mocks.read.mockImplementation(async (file: string) =>
       file === path.join(environment.HOME, ".claude", "settings.json")

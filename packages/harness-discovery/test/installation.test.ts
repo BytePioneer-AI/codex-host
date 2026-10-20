@@ -1,8 +1,12 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createInstallationManager,
   installationVersion,
   newerInstallationVersion,
+  readLauncherScript,
   runInstallationCommand,
 } from "../src/installation.js";
 
@@ -14,6 +18,26 @@ const state = (current = "1.0.0", canUpdate = true) => ({
 });
 
 describe("Harness installation versions", () => {
+  it("reads only a launcher prefix and ignores native binary contents", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "harness-launcher-"));
+    try {
+      const launcher = path.join(root, "grok");
+      await writeFile(launcher, `#!/bin/sh\nGROKGOD_HOME=custom\n${"x".repeat(8192)}`);
+      const text = await readLauncherScript(launcher);
+      expect(text).toHaveLength(4096);
+      expect(text).toContain("GROKGOD_HOME=custom");
+      const native = path.join(root, "native");
+      await writeFile(native, Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0]));
+      expect(await readLauncherScript(native)).toBe("");
+      const windows = path.join(root, "grok.cmd");
+      await writeFile(windows, "@echo off\r\nset GROKGOD_HOME=custom\r\n");
+      expect(await readLauncherScript(windows)).toContain("GROKGOD_HOME=custom");
+      await expect(readLauncherScript(path.join(root, "missing"))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("validates versions and never downgrades a newer local build", () => {
     expect(installationVersion("v1.2.3")).toBe("1.2.3");
     expect(newerInstallationVersion("1.2.3", "1.2.2")).toBe(false);

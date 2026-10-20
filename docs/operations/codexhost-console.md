@@ -12,6 +12,8 @@ The Voice page uses drafts, Cancel and **Apply changes**. Injection changes use 
 
 The overview restart action remains available for recovery. A different Launcher and ready Controller are required for restart completion; the Voice page additionally checks loaded injection and applied route acknowledgment. See [voice routing and configuration](cpa-live-voice-desktop-hook.md) for contracts and constraints.
 
+When the selected Grok or Claude Code launcher is managed by grokgod or clawgod, the connection page reads the installed CLI version with background updates disabled. It identifies the patch manager, shows the latest patched version as unknown, and leaves updates to that manager's updater or installer. A version check does not invoke the stock updater through these launchers or compare a patched installation against official releases. Grok Thinking selections use the native ACP `_meta.reasoningEffort` field, alongside `_meta.contextWindow` when selected.
+
 ## 项目公告
 
 Web 控制台在所有页面的内容区顶部显示仓库 `main` 分支的 [`docs/NOTICE.md`](../NOTICE.md)。只影响 Web，不改变 Codex 内置设置。控制台服务通过固定的 GitHub Raw HTTPS 地址读取公告，浏览器只访问本机 `/api/announcement`，不需要运行中的 Host。

@@ -29,6 +29,7 @@ export {
   fetchInstallationText,
   installationVersion,
   newerInstallationVersion,
+  readLauncherScript,
   runInstallationCommand,
   versionFromOutput,
   type InstallationState,

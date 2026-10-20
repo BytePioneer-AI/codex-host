@@ -5,7 +5,7 @@ import {
 import type { HarnessModelCatalog, HarnessSessionCapabilities } from "@codexhost/harness-adapter";
 import type { CursorSessionInfo, CursorNativeModel } from "./transport.js";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
-import { cursorThinking, cursorThinkingState } from "./thinking.js";
+import { cursorThinking, cursorThinkingState, isCursorThinkingOption } from "./thinking.js";
 import { cursorForkAvailable } from "./fork-support.js";
 
 export const CURSOR_CAPABILITIES: HarnessSessionCapabilities = {
@@ -201,8 +201,12 @@ export function cursorCapabilities(info: CursorSessionInfo): HarnessSessionCapab
 
 /** Keep native non-Thinking parameters in the persisted Model Ref across Host restarts. */
 export function cursorConfiguredModelRef(model: string, options?: SessionConfigOption[] | null) {
+  // Parameters offered as Thinking must stay out of the Ref; otherwise changing them would
+  // produce a Ref absent from the catalog and the selection could never be confirmed.
   const parameters = (options ?? []).flatMap((option) =>
-    option.category === "model_config" && option.type === "select"
+    option.category === "model_config" &&
+    option.type === "select" &&
+    !isCursorThinkingOption(option)
       ? [`${option.id}=${option.currentValue}`]
       : [],
   );

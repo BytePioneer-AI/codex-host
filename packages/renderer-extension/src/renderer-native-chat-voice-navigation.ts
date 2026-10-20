@@ -2,6 +2,40 @@ import type { NativeChatVoiceBinding } from "./renderer-native-chat-voice.js";
 
 type NativeModule = Record<string, unknown>;
 
+interface VoiceState {
+  isVoiceModeActive: boolean;
+  isWorkMode: boolean;
+  conversationId: unknown;
+  hasConnectedOnce: boolean;
+}
+
+/** START acknowledges its queued command before transport setup completes. */
+async function waitForConnection(
+  store: { getState(): VoiceState; subscribe(listener: () => void): () => void },
+  current: () => boolean,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const ready = () => {
+    const state = store.getState();
+    if (signal.aborted || !current() || !state.isVoiceModeActive) return false;
+    return state.hasConnectedOnce ? true : undefined;
+  };
+  const initial = ready();
+  if (initial !== undefined) return initial;
+  return new Promise((resolve) => {
+    const check = () => {
+      const result = ready();
+      if (result === undefined) return;
+      unsubscribe();
+      signal.removeEventListener("abort", check);
+      resolve(result);
+    };
+    const unsubscribe = store.subscribe(check);
+    signal.addEventListener("abort", check, { once: true });
+    check();
+  });
+}
+
 /** Native START stores draft voice messages without selecting the conversation page. */
 export async function navigateNativeChatVoiceDraft(
   binding: NativeChatVoiceBinding,
@@ -21,14 +55,18 @@ export async function navigateNativeChatVoiceDraft(
   const voiceStore = Reflect.apply(initial.ejn as (...args: unknown[]) => unknown, undefined, [
     binding.scope,
   ]) as {
-    getState(): { isVoiceModeActive: boolean; isWorkMode: boolean; conversationId: unknown };
+    getState(): VoiceState;
+    subscribe(listener: () => void): () => void;
   };
-  const state = voiceStore.getState();
-  if (
-    !state.isVoiceModeActive ||
-    state.isWorkMode !== false ||
-    state.conversationId !== binding.props.conversationId
-  )
+  const current = () => {
+    const state = voiceStore.getState();
+    return (
+      binding.scope.get(initial.FFr) === origin &&
+      state.isWorkMode === false &&
+      state.conversationId === binding.props.conversationId
+    );
+  };
+  if (!(await waitForConnection(voiceStore, current, signal)) || signal.aborted || !current())
     return false;
   // xat formats a native Chat locator; uIr uses the AppScope navigation bridge.
   // The store owns mapping this draft to its server UUID and streaming transcript.

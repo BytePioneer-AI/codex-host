@@ -254,9 +254,12 @@ function installFixture() {
   const enabled = {};
   let browserEnabled: unknown = false;
   let active = false;
+  let connected = true;
+  const listeners = new Set<() => void>();
+  const unsubscribe = vi.fn();
   const locationSelector = {};
   let location: unknown = { pathname: "/", key: "original" };
-  const start = vi.fn(async () => undefined);
+  const start = vi.fn<(...args: unknown[]) => Promise<undefined>>(async () => undefined);
   f.scope.get.mockImplementation((selector: unknown) =>
     selector === enabled
       ? browserEnabled
@@ -316,9 +319,17 @@ function installFixture() {
     ejn: () => ({
       getState: () => ({
         isVoiceModeActive: active,
+        hasConnectedOnce: connected,
         isWorkMode: false,
         conversationId: f.props.conversationId,
       }),
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+          unsubscribe();
+        };
+      },
     }),
   };
   const shared = {
@@ -374,8 +385,15 @@ function installFixture() {
     overlayButton,
     overlayButtons,
     browserEnabled: () => browserEnabled,
+    listeners,
+    unsubscribe,
+    setConnected: (value: boolean) => {
+      connected = value;
+      for (const listener of listeners) listener();
+    },
     setActive: (value: boolean) => {
       active = value;
+      for (const listener of listeners) listener();
     },
     setVisible: (value: boolean) => {
       visible = value;
@@ -385,6 +403,73 @@ function installFixture() {
 
 afterEach(() => vi.useRealTimers());
 describe("native Chat voice lifecycle installation", () => {
+  it("retains startup through a hidden composer before native START returns", async () => {
+    vi.useFakeTimers();
+    const f = installFixture();
+    const gate = Promise.withResolvers<undefined>();
+    f.start.mockImplementation(() => gate.promise);
+    const hook = installNativeChatVoiceHook(f);
+    await vi.advanceTimersByTimeAsync(0);
+    const starting = hook.start();
+    const signal = f.start.mock.calls[0]?.[3] as AbortSignal;
+    f.setVisible(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(signal.aborted).toBe(false);
+    expect(f.unmount).not.toHaveBeenCalled();
+    expect(f.browserEnabled()).toBe(true);
+    gate.resolve(undefined);
+    await starting;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(f.unmount).toHaveBeenCalledOnce();
+    hook.dispose();
+  });
+
+  it.each(["connected", "ended", "disposed", "navigated-away"])(
+    "waits for native transport before selecting a new Chat: %s",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const f = installFixture();
+      const draft = "local-chatgpt:bf2d4b2f-43ee-49df-b802-b55c9fb345d7";
+      f.props.conversationId = draft;
+      f.props.composerSelectionContext.conversationId = draft;
+      useNewChatComposer(f);
+      const nativeGet = f.scope.get.getMockImplementation();
+      if (!nativeGet) throw new Error("Fixture native getter is missing");
+      f.scope.get.mockImplementation((selector, argument) =>
+        selector === f.backendConversationId ? null : nativeGet(selector, argument),
+      );
+      f.setConnected(false);
+      f.start.mockImplementation(async () => {
+        f.setActive(true);
+      });
+      const hook = installNativeChatVoiceHook(f);
+      await vi.advanceTimersByTimeAsync(0);
+      const starting = hook.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(f.initial.uIr).not.toHaveBeenCalled();
+      expect(hook.activeCall).toBe(true);
+      if (outcome === "disposed") hook.dispose();
+      else if (outcome === "ended") f.setActive(false);
+      else {
+        if (outcome === "navigated-away") f.setLocation({ pathname: "/another-chat" });
+        f.setConnected(true);
+      }
+      await starting;
+      expect(f.initial.uIr).toHaveBeenCalledTimes(outcome === "connected" ? 1 : 0);
+      if (outcome === "ended") {
+        const retry = hook.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(f.start).toHaveBeenCalledTimes(2);
+        expect(f.initial.uIr).not.toHaveBeenCalled();
+        f.setConnected(true);
+        await retry;
+        expect(f.initial.uIr).toHaveBeenCalledOnce();
+      }
+      hook.dispose();
+      expect(f.listeners.size).toBe(0);
+    },
+  );
+
   it("shows only native Chat START and restores the overlay control on Work or gateway override", async () => {
     vi.useFakeTimers();
     const f = installFixture();
@@ -481,10 +566,13 @@ describe("native Chat voice lifecycle installation", () => {
     await vi.advanceTimersByTimeAsync(0);
     const starting = hook.start();
     f.setActive(outcome !== "inactive");
+    const originalStore = f.initial.ejn();
     if (outcome === "different-session" || outcome === "work-session")
       f.initial.ejn = () => ({
+        ...originalStore,
         getState: () => ({
           isVoiceModeActive: true,
+          hasConnectedOnce: true,
           isWorkMode: outcome === "work-session",
           conversationId: outcome === "different-session" ? "another-chat" : draft,
         }),

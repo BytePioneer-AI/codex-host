@@ -1,0 +1,50 @@
+import { chatVoiceDebug } from "./renderer-chat-voice-debug.js";
+import type { ChatVoiceScope } from "./renderer-native-chat-voice.js";
+
+/** Observe only audited lifecycle flags; native errors and session payloads stay private. */
+export function observeNativeChatVoiceState(
+  scope: ChatVoiceScope,
+  initial: Record<string, unknown>,
+): () => void {
+  const store = Reflect.apply(initial.ejn as (...args: unknown[]) => unknown, undefined, [
+    scope,
+  ]) as {
+    getState(): {
+      isVoiceModeActive?: boolean;
+      hasConnectedOnce?: boolean;
+      hasVoiceSessionStarted?: boolean;
+      server?: { connectionState?: unknown };
+    };
+    subscribe(listener: () => void): () => void;
+  };
+  let last = "";
+  const report = () => {
+    const state = store.getState();
+    const connection = state.server?.connectionState;
+    const microphone = initial.sUn == null ? undefined : scope.get(initial.sUn);
+    const detail = {
+      active: state.isVoiceModeActive === true,
+      connectedOnce: state.hasConnectedOnce === true,
+      sessionStarted: state.hasVoiceSessionStarted === true,
+      connection:
+        typeof connection === "string" &&
+        ["disconnected", "connecting", "connected", "reconnecting", "signalReconnecting"].includes(
+          connection,
+        )
+          ? connection
+          : "unknown",
+      microphone:
+        typeof microphone === "string" &&
+        ["unknown", "pending", "granted", "denied"].includes(microphone)
+          ? microphone
+          : "unknown",
+    };
+    const next = JSON.stringify(detail);
+    if (next === last) return;
+    last = next;
+    chatVoiceDebug("native-chat-state", detail);
+  };
+  const unsubscribe = store.subscribe(report);
+  report();
+  return unsubscribe;
+}

@@ -91,8 +91,8 @@ through unchanged; native eligibility decides whether that draft can prewarm.
 Native eligibility, cache keys,
 cancellation and reuse decide prewarming; the hook never creates a WM call on
 selection itself. Leaving Chat after the call ends unmounts the controller and
-restores the prior browser-voice flag. An active call retains its runtime when the
-native voice UI hides the composer.
+restores the prior browser-voice flag. Startup and an active call retain their
+runtime when the native voice UI hides the composer.
 
 A separate **Start Voice** waveform button beside **Dictate** invokes the native
 `start-voice` action (`Xe`, exported as `n` by the audited start-voice chunk).
@@ -110,11 +110,12 @@ new Thread; a failed Chat binding or START does not fall back to that overlay.
 The explicit Chat gateway override keeps the existing gateway launch path.
 For a new Chat, START receives the native draft props with an absent backend
 conversation ID; native voice owns creating and attaching the Chat conversation.
-After START returns with that draft's Chat voice session active, the hook selects
-the same native draft through Desktop's Chat route formatter and AppScope
+After START returns, the hook waits for that draft's native voice transport to
+connect before selecting the same native draft through Desktop's Chat route formatter and AppScope
 navigation bridge. Native mapping resolves its server UUID and transcript. This
-handoff runs only if the original navigation object is unchanged; canceled starts,
-Work sessions, existing Chats and a user who navigated elsewhere are not redirected.
+handoff runs only if the original navigation object is unchanged; canceled or
+disconnected starts, Work sessions, existing Chats and a user who navigated
+elsewhere are not redirected.
 
 The hook does not build WM multipart requests, convert Thread IDs, suppress
 `thread/realtime/start`, or copy browser cookies. Work and external Harness voice
@@ -125,7 +126,11 @@ document start, so loading the chunk alone does not establish gateway readiness.
 
 Debug events use `__codexhostChatVoiceDebug` and the bounded localStorage key
 `codexhost.chat-voice-debug.v1`. They contain event names, timestamps and routing
-booleans, with no conversation IDs, SDP, credentials or raw errors.
+booleans, with no conversation IDs, SDP, credentials or raw errors. Native store
+subscriptions additionally record active/connected/session-started flags, an
+allowlisted connection state, and the allowlisted microphone request state. A
+START return is a command acknowledgment, not evidence of a connected call.
+These subscriptions are removed with the AppScope binding.
 
 The production Renderer entry installs this hook on every document. Its polling
 rebinds after leaving Chat, returning, or native composer replacement; no manual

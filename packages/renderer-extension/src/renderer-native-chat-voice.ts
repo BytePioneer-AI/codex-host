@@ -11,6 +11,7 @@ import {
   readCpaLiveVoiceHookConfig,
 } from "./renderer-cpa-live-voice-hook.js";
 import { nativeChatVoicePreferenceAllowsStart } from "./renderer-cpa-live-voice-preference.js";
+import { observeNativeChatVoiceState } from "./renderer-native-chat-voice-state.js";
 import { navigateNativeChatVoiceDraft } from "./renderer-native-chat-voice-navigation.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
@@ -399,14 +400,7 @@ export function installNativeChatVoiceHook(
       }
       const current = findBinding();
       if (!current) {
-        if (
-          boundScope &&
-          typeof modules.initial.ejn === "function" &&
-          (
-            modules.initial.ejn(boundScope) as { getState(): { isVoiceModeActive: boolean } }
-          ).getState().isVoiceModeActive
-        )
-          return;
+        if (handle.activeCall) return;
         release();
         handle.status = "pending";
         return;
@@ -434,6 +428,7 @@ export function installNativeChatVoiceHook(
             renderFailed = true;
           },
         });
+        const stopObserving = observeNativeChatVoiceState(scope, initial);
         let appChain: Map<unknown, unknown> | undefined;
         let composerChain: Map<unknown, unknown> | undefined;
         mounted = {
@@ -456,6 +451,7 @@ export function installNativeChatVoiceHook(
             );
           },
           dispose() {
+            stopObserving();
             root.unmount();
             container.remove();
             if (scope.get(initial.Aw) === true) scope.set(initial.Aw, previous);

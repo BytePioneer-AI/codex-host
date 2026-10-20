@@ -810,7 +810,7 @@ export class AppServerHost {
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
       startOfficial: (input) => this.#startOfficialDelegation(input),
       listOfficial: (input) => this.#listDelegationThreads(input),
-      officialThreadCwd: (threadId) => this.#readOfficialThreadCwd(threadId),
+      officialThreadMetadata: (threadId) => this.#readOfficialThreadMetadata(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
       externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
     });
@@ -2375,12 +2375,18 @@ export class AppServerHost {
     return thread !== null || childDelegation !== null || delegation !== null;
   }
 
-  async #readOfficialThreadCwd(threadId: string): Promise<string | undefined> {
-    const response = await this.#requestOfficial("thread/read", { threadId });
-    if (isRecord(response.error)) return undefined;
+  async #readOfficialThreadMetadata(threadId: string): Promise<{ cwd?: string; title?: string }> {
+    const response = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
+    if (isRecord(response.error)) return {};
     const result = isRecord(response.result) ? response.result : null;
     const thread = result && isRecord(result.thread) ? result.thread : null;
-    return thread && typeof thread.cwd === "string" && thread.cwd.trim() ? thread.cwd : undefined;
+    if (!thread) return {};
+    const title =
+      typeof thread.name === "string" && thread.name.trim() ? thread.name : thread.preview;
+    return {
+      ...(typeof thread.cwd === "string" && thread.cwd.trim() ? { cwd: thread.cwd } : {}),
+      ...(typeof title === "string" && title.trim() ? { title } : {}),
+    };
   }
 
   async #inspectOfficialDelegationTarget(
@@ -2463,7 +2469,7 @@ export class AppServerHost {
   }
 
   async #startOfficialDelegation(
-    input: DelegationStartInput & { parentThreadId: string; cwd: string },
+    input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
   ): Promise<DelegationStartResult> {
     let requestedModel: HarnessModelRef | undefined;
     try {
@@ -2568,6 +2574,8 @@ export class AppServerHost {
     this.#pendingOfficialDelegationThreads.add(threadId);
     let turnId: string;
     try {
+      const named = await this.#requestOfficial("thread/name/set", { threadId, name: input.title });
+      if (isRecord(named.error)) throw new Error("Official Thread title could not be set");
       const turn = await this.#requestOfficial("turn/start", {
         threadId,
         input: [{ type: "text", text: input.task }],

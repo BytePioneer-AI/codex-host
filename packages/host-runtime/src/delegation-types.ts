@@ -59,6 +59,8 @@ export interface DelegationThreadSnapshot {
 export interface DelegationStartInput {
   harnessId: RoutedHarnessId;
   task: string;
+  /** Short display name; the full task remains the initial message. */
+  taskName?: string;
   cwd?: string;
   parentThreadId?: string;
   requestId?: string;

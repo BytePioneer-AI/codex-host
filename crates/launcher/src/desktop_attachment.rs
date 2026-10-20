@@ -260,13 +260,13 @@ pub(super) fn stop_orphaned_controller(
     for process_id in &matches {
         terminate_controller_process(*process_id, false)?;
     }
-    if wait_for_endpoint_exit(descriptor.control_port, ORPHANED_CONTROLLER_STOP_GRACE) {
+    if wait_for_controller_exit(descriptor, ORPHANED_CONTROLLER_STOP_GRACE)? {
         return Ok(());
     }
     for process_id in matching_controller_process_ids(descriptor)? {
         terminate_controller_process(process_id, true)?;
     }
-    if wait_for_endpoint_exit(descriptor.control_port, ORPHANED_CONTROLLER_STOP_GRACE) {
+    if wait_for_controller_exit(descriptor, ORPHANED_CONTROLLER_STOP_GRACE)? {
         return Ok(());
     }
     Err(format!(
@@ -323,14 +323,21 @@ fn terminate_controller_process(process_id: u32, force: bool) -> Result<(), Box<
     }
 }
 
-fn wait_for_endpoint_exit(port: u16, timeout: Duration) -> bool {
+fn wait_for_controller_exit(
+    descriptor: &RuntimeDescriptor,
+    timeout: Duration,
+) -> Result<bool, Box<dyn Error>> {
     let started = Instant::now();
     loop {
-        if !endpoint_ready(port, Duration::from_millis(50)) {
-            return true;
+        // A Controller can close its socket before its asynchronous cleanup finishes.
+        // The Launcher cannot finish shutdown while that process remains alive.
+        if matching_controller_process_ids(descriptor)?.is_empty()
+            && !endpoint_ready(descriptor.control_port, Duration::from_millis(50))
+        {
+            return Ok(true);
         }
         if started.elapsed() >= timeout {
-            return false;
+            return Ok(false);
         }
         thread::sleep(Duration::from_millis(20));
     }
@@ -508,13 +515,19 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn spawn_matching_listener(port: u16, nonce: &str) -> std::process::Child {
+    fn spawn_matching_listener(port: u16, nonce: &str, close_only: bool) -> std::process::Child {
+        let signal_handler = if close_only {
+            "signal.signal(signal.SIGTERM, lambda *_: server.close())\n"
+        } else {
+            ""
+        };
         let script = format!(
-            "import socket, time\n\
+            "import socket, time, signal\n\
              server = socket.socket()\n\
              server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
              server.bind(('127.0.0.1', {port}))\n\
              server.listen(1)\n\
+             {signal_handler}\
              while True:\n\
              \ttime.sleep(0.2)\n"
         );
@@ -558,7 +571,7 @@ mod tests {
         let port = listener.local_addr().expect("reserved address").port();
         drop(listener);
         let descriptor = descriptor(port);
-        let mut child = spawn_matching_listener(port, &descriptor.nonce);
+        let mut child = spawn_matching_listener(port, &descriptor.nonce, false);
         wait_until_listening(port);
 
         let result = stop_orphaned_controller(&descriptor);
@@ -569,6 +582,23 @@ mod tests {
             !endpoint_ready(port, Duration::from_millis(50)),
             "matching leftover Controller kept its attachment port"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_orphaned_controller_escalates_after_socket_closes_but_process_stays_alive() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let descriptor = descriptor(port);
+        let mut child = spawn_matching_listener(port, &descriptor.nonce, true);
+        wait_until_listening(port);
+        let result = stop_orphaned_controller(&descriptor);
+        let exited = child.try_wait().unwrap().is_some();
+        let _ = child.kill();
+        let _ = child.wait();
+        result.expect("stop Controller whose socket closed during cleanup");
+        assert!(exited, "Controller process survived shutdown");
     }
 
     #[cfg(unix)]

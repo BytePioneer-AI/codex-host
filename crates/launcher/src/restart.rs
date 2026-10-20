@@ -14,7 +14,13 @@ use crate::runtime_instance::{
 
 fn request_stop(descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
     let address = format!("127.0.0.1:{}", descriptor.control_port).parse()?;
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    let mut stream = match TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            return crate::desktop_attachment::stop_orphaned_controller(descriptor);
+        }
+        Err(error) => return Err(error.into()),
+    };
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     writeln!(stream, "STOP {}", descriptor.nonce)?;

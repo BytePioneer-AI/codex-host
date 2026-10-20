@@ -25,9 +25,12 @@ Before an upstream sync:
 
 Required voice contracts:
 
-- **Existing switch:** Settings → General → Override live voice controls the
-  audited voice routing hook. The separate usage-warning switch does not route
-  calls or change account selection.
+- **Existing switches:** Console **Inject live-voice hook** (default on, relaunch)
+  is the process-lifetime wrap. Desktop **Work live voice (gateway)** defaults on
+  and **Chat live voice (gateway)** defaults off. Chat Instant Connect on
+  `https://chatgpt.com/realtime/wm` keeps
+  Desktop ChatGPT login. Work uses Host → gateway. A disabled Work switch calls
+  the original `/wham` WebFetch. The usage-warning switch does not route calls.
 - **Native call creation:** On the audited client-owned Desktop flow,
   `renderer-client-owned-voice.ts` forwards the native call-create request through
   `codexhost/realtime/call` to `native-voice-gateway.ts`. Preserve the Host RPC

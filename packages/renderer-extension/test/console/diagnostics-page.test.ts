@@ -38,6 +38,7 @@ function overview(): ConsoleOverview {
     ],
     controller: null,
     launchAvailable: true,
+    liveVoice: { inject: true, envOverride: null },
     summary: { state: "running", detail: null },
     issueUrl: "",
     hostAvailable: false,

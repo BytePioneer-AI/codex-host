@@ -82,7 +82,12 @@ function fakeHarnesses(): ConsoleHarnesses {
 }
 
 async function start(
-  options: { codexRunning?: boolean; launch?: () => void; host?: ConsoleHostClient } = {},
+  options: {
+    codexRunning?: boolean;
+    launch?: () => void;
+    host?: ConsoleHostClient;
+    environment?: NodeJS.ProcessEnv;
+  } = {},
 ) {
   const updates = fakeUpdates();
   const onExit = vi.fn();
@@ -102,6 +107,7 @@ async function start(
     inspect: async () => inspectDocument(options.codexRunning ?? false),
     launch: options.launch ?? vi.fn(),
     onExit,
+    environment: { CODEXHOST_DATA_DIR: directory, ...options.environment },
   });
   const base = `http://127.0.0.1:${running.port}`;
   return { updates, onExit, base, port: running.port };
@@ -158,6 +164,7 @@ describe("console server", () => {
         "startup",
         "controller",
         "launchAvailable",
+        "liveVoice",
         "summary",
         "issueUrl",
         "hostAvailable",
@@ -219,6 +226,60 @@ describe("console server", () => {
     expect(launch).not.toHaveBeenCalled();
     expect((await post({ origin: base, ...CHANGE })).status).toBe(202);
     expect(launch).toHaveBeenCalledWith("/opt/codexhost/bin/codexhost", ["launch"]);
+  });
+
+  it("persists live-voice inject and includes it on overview", async () => {
+    const { base } = await start();
+    const first = (await (await fetch(`${base}/api/live-voice-inject`)).json()) as {
+      inject: boolean;
+      envOverride: string | null;
+    };
+    expect(first).toEqual({ inject: true, envOverride: null });
+    const saved = await fetch(`${base}/api/live-voice-inject`, {
+      method: "POST",
+      headers: { origin: base, "content-type": "application/json", ...CHANGE },
+      body: JSON.stringify({ inject: false }),
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({ inject: false, envOverride: null });
+    const overview = (await (await fetch(`${base}/api/overview`)).json()) as {
+      liveVoice: { inject: boolean };
+    };
+    expect(overview.liveVoice.inject).toBe(false);
+  });
+
+  it("rejects invalid or foreign voice-setting writes without changing the setting", async () => {
+    const { base } = await start();
+    const post = (origin: string, inject: unknown) =>
+      fetch(`${base}/api/live-voice-inject`, {
+        method: "POST",
+        headers: { origin, "content-type": "application/json", ...CHANGE },
+        body: JSON.stringify({ inject }),
+      });
+    expect((await post("https://evil.example", false)).status).toBe(403);
+    for (const inject of ["false", null, 0]) {
+      expect((await post(base, inject)).status).toBe(400);
+    }
+    expect(await (await fetch(`${base}/api/live-voice-inject`)).json()).toEqual({
+      inject: true,
+      envOverride: null,
+    });
+  });
+
+  it("shows an env override while still persisting the requested setting", async () => {
+    const { base } = await start({ environment: { CODEXHOST_CPA_LIVE_VOICE: "1" } });
+    const response = await fetch(`${base}/api/live-voice-inject`, {
+      method: "POST",
+      headers: { origin: base, "content-type": "application/json", ...CHANGE },
+      body: JSON.stringify({ inject: false }),
+    });
+    expect(await response.json()).toEqual({ inject: true, envOverride: "1" });
+    await running?.close();
+    const restarted = await start();
+    expect(await (await fetch(`${restarted.base}/api/live-voice-inject`)).json()).toEqual({
+      inject: false,
+      envOverride: null,
+    });
   });
 
   it("refuses an update while codexhost is running", async () => {

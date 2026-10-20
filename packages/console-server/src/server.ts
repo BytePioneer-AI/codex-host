@@ -24,6 +24,7 @@ import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
 import { CONSOLE_PAGE_CSS, CONSOLE_PAGE_HTML } from "./page.js";
 import type { ConsolePaths } from "./paths.js";
 import { ConsoleUpdateError, type ConsoleUpdates } from "./updates.js";
+import { readLiveVoiceInjectState, writeLiveVoiceInjectFile } from "./live-voice-inject.js";
 
 export const CONSOLE_SERVICE = "codexhost-console";
 const MAX_BODY_BYTES = 16 * 1024;
@@ -216,6 +217,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       summary,
       issueUrl: reportIssueUrl,
       hostAvailable: await options.host.available(),
+      liveVoice: await readLiveVoiceInjectState(options.paths.dataDirectory, environment),
     };
   }
 
@@ -401,6 +403,27 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
           error: error instanceof Error ? error.message : String(error),
         });
       }
+      return;
+    }
+    if (route === "GET /api/live-voice-inject") {
+      sendJson(
+        response,
+        200,
+        await readLiveVoiceInjectState(options.paths.dataDirectory, environment),
+      );
+      return;
+    }
+    if (route === "POST /api/live-voice-inject") {
+      if (typeof body.inject !== "boolean") {
+        sendJson(response, 400, { error: "Expected { inject: boolean }" });
+        return;
+      }
+      await writeLiveVoiceInjectFile(options.paths.dataDirectory, body.inject);
+      sendJson(
+        response,
+        200,
+        await readLiveVoiceInjectState(options.paths.dataDirectory, environment),
+      );
       return;
     }
     if (route === "POST /api/launch") {

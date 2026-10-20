@@ -37,6 +37,7 @@ export interface ConsoleOverview {
     };
   } | null;
   launchAvailable: boolean;
+  liveVoice: { inject: boolean; envOverride: "0" | "1" | null };
   summary: {
     state:
       | "starting"

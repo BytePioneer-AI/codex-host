@@ -47,6 +47,11 @@ export interface RendererSettingsMessages {
   readonly cpaLiveVoiceHelpLabel: string;
   readonly cpaLiveVoiceHelp: readonly string[];
   readonly cpaLiveVoiceRestartRequired: string;
+  readonly cpaLiveVoiceOpenConsole: string;
+  readonly chatLiveVoiceTitle: string;
+  readonly chatLiveVoiceDescription: string;
+  readonly chatLiveVoiceHelpLabel: string;
+  readonly chatLiveVoiceHelp: readonly string[];
   readonly loadedSessions: {
     title: string;
     description: string;
@@ -307,17 +312,27 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "When this is on, that card is hidden on every Composer, including Codex threads. Reset usage and Upgrade stay available in Settings.",
     "Turning this off only shows the native card again. Send on this Composer, including Codex threads, is already separated from that quota card.",
   ]),
-  cpaLiveVoiceTitle: "Override live voice",
-  cpaLiveVoiceDescription: "On by default. Host creates the realtime call instead of ChatGPT.",
-  cpaLiveVoiceHelpLabel: "About overriding live voice",
+  cpaLiveVoiceTitle: "Work live voice (gateway)",
+  cpaLiveVoiceDescription:
+    "On by default. Work, Codex and external Harness Start Voice uses the configured gateway.",
+  cpaLiveVoiceHelpLabel: "About Work live voice",
   cpaLiveVoiceHelp: Object.freeze([
-    "Overrides Desktop's existing-call path on audited 26.1007.30912 so a local host can create the WebRTC call.",
-    "This switch applies on the next voice session. No relaunch.",
-    "Also set both keys in ~/.codex/config.toml and relaunch Codex: experimental_realtime_ws_base_url and experimental_realtime_webrtc_call_base_url, each pointing at your realtime host /v1.",
-    "CODEXHOST_CPA_LIVE_VOICE=0 is not live. Relaunch Codex after changing that environment variable.",
+    "When the live-voice hook is injected, Work Start Voice is created through Host and your realtime gateway.",
+    "This switch applies to the next voice session. Changing the console integration setting requires fully quitting and reopening codexhost.",
+    "Also set both keys in ~/.codex/config.toml: experimental_realtime_ws_base_url and experimental_realtime_webrtc_call_base_url, each pointing at your realtime host /v1.",
   ]),
   cpaLiveVoiceRestartRequired:
-    "This override is not injected. Unset CODEXHOST_CPA_LIVE_VOICE=0 and relaunch Codex. The switch cannot take effect until then.",
+    "The live-voice hook is not injected. Open the console, turn Inject live-voice hook on, and relaunch Codex.",
+  cpaLiveVoiceOpenConsole: "Open console",
+  chatLiveVoiceTitle: "Chat live voice (gateway)",
+  chatLiveVoiceDescription:
+    "Off by default. When off, Chat uses Desktop's native Chat voice (existing web conversation Instant Connect). When on, Chat uses the same gateway as Work.",
+  chatLiveVoiceHelpLabel: "About Chat live voice",
+  chatLiveVoiceHelp: Object.freeze([
+    "Chat Instant Connect for an existing web conversation is Desktop's Chat/browser voice stack, not a Codex /wham rewrite.",
+    "When this is on, Chat goes through the Work gateway instead. Gateway failures are reported instead of falling back to Instant Connect.",
+    "This switch changes Chat calls only. Work has its own gateway switch.",
+  ]),
   loadedSessions: {
     title: "Loaded sessions",
     description:
@@ -633,17 +648,26 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "开启后，所有 Composer 都隐藏该卡片，包括 Codex 会话。「重置用量」和「升级」仍可在设置中使用。",
     "关闭此开关只会重新显示原生卡片。当前 Composer 的发送（包括 Codex 会话）已与该额度卡片分离。",
   ]),
-  cpaLiveVoiceTitle: "改写实时语音",
-  cpaLiveVoiceDescription: "默认开启。由 Host 创建 realtime 通话，而不是 ChatGPT。",
-  cpaLiveVoiceHelpLabel: "改写实时语音说明",
+  cpaLiveVoiceTitle: "Work 实时语音（网关）",
+  cpaLiveVoiceDescription: "默认开启。Work、Codex 和外部 Harness 的「开始语音」走已配置的网关。",
+  cpaLiveVoiceHelpLabel: "Work 实时语音说明",
   cpaLiveVoiceHelp: Object.freeze([
-    "在已审计的 Desktop 26.1007.30912 上覆盖 existing-call 路径，让本地 Host 创建 WebRTC 通话。",
-    "此开关在下一次语音会话生效，无需重新启动。",
-    "还需要在 ~/.codex/config.toml 设置 experimental_realtime_ws_base_url 与 experimental_realtime_webrtc_call_base_url，都指向你的 realtime 主机 /v1，然后重新启动 Codex。",
-    "CODEXHOST_CPA_LIVE_VOICE=0 不会即时生效。修改该环境变量后必须重新启动 Codex。",
+    "在已注入 live-voice 钩子时，Work「开始语音」由 Host 通过 realtime 网关创建。",
+    "此开关在下一次语音会话生效。控制台中的注入开关需完全退出并重新打开 codexhost 后才会改变。",
+    "还需要在 ~/.codex/config.toml 设置 experimental_realtime_ws_base_url 与 experimental_realtime_webrtc_call_base_url，都指向你的 realtime 主机 /v1。",
   ]),
   cpaLiveVoiceRestartRequired:
-    "当前未注入此改写。请取消 CODEXHOST_CPA_LIVE_VOICE=0 并重新启动 Codex，本开关才会生效。",
+    "当前未注入 live-voice 钩子。请打开控制台，打开「注入 live-voice 钩子」，然后重新启动 Codex。",
+  cpaLiveVoiceOpenConsole: "打开控制台",
+  chatLiveVoiceTitle: "Chat 实时语音（网关）",
+  chatLiveVoiceDescription:
+    "默认关闭。关闭时，Chat 使用 Desktop 原生 ChatGPT 语音（已有网页会话的 Instant Connect）；开启后与 Work 共用网关。",
+  chatLiveVoiceHelpLabel: "Chat 实时语音说明",
+  chatLiveVoiceHelp: Object.freeze([
+    "已有网页会话的 Chat Instant Connect 走 Desktop 原生 Chat 语音栈，而不是改写 Codex /wham。",
+    "开启后 Chat 改走 Work 网关；网关失败会直接报错，不会回退到 Instant Connect。",
+    "此开关只影响 Chat 语音，Work 使用自己的网关开关。",
+  ]),
   loadedSessions: {
     title: "已加载会话",
     description:

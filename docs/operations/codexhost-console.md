@@ -3,10 +3,10 @@
 控制台是一个本地网页，不依赖 Codex Desktop 启动成功。左侧导航分为：
 
 - **总览**：当前状态与下一步操作、codexhost 版本 / Codex Desktop 版本 / 安装方式三个信息框、最近一次启动的结果；失败时说明卡在哪一步和错误原文，内部阶段时间线折叠在“详细信息”中；注入持续失败时显示原因。成功时不展示时间线，不显示启动历史表格。原启动诊断页已合并，旧的 `#diagnostics` 和 `?view=diagnostics` 链接显示总览。日志不在页面中展示，通过“导出诊断包（含日志）”获取。安装包上的 **codexhost 版本** 来自 `app/codexhost-distribution.json`。`release:prepare` 只同步 `package.json` / lock / Cargo；distribution 文件由随后的 `release:package` 或 `release:npm` 写出。本 fork 上该数字必须等于当前 fork 标签，例如已发 `v0.13.2-3` 时显示 `0.13.2-3`，见 [fork-versioning.md](fork-versioning.md)。热装现有 app 时需重打包或直接改写已安装的 `codexhost-distribution.json`。
-- **设置**：连接、远程连接、账号、会话导入、更新，与 Codex 设置页使用同一套页面和 Host 接口。连接页支持通过运行中的本地 Host 安装 Harness CLI、检查版本和更新，复用安装进度、错误提示及安装后检测；不支持远程 Host 安装。WorkBuddy 仍通过官网手动下载安装桌面应用。Host 不可用时不提供一键安装。
+- **设置**：连接、远程连接、账号、会话导入、实时语音、更新。连接、远程连接、账号、会话导入与 Codex 设置页使用同一套页面和 Host 接口。**实时语音**保存 `~/.codexhost/live-voice-inject-v1.json` 的注入开关（默认开启），修改后需完全退出并重新打开 codexhost。连接页支持通过运行中的本地 Host 安装 Harness CLI、检查版本和更新，复用安装进度、错误提示及安装后检测；不支持远程 Host 安装。WorkBuddy 仍通过官网手动下载安装桌面应用。Host 不可用时不提供一键安装。
 - **其他**：关于。
 
-外观（思考文本显示、隐藏 Codex 额度警告、空闲释放、改写实时语音）由 Codex 界面保存，只能在 Codex 设置页修改。隐藏 Codex 额度警告与改写实时语音均默认开启。`~/.codex/config.toml` 里的 realtime 基址仍需自行配置。设计背景见 [`proposals/独立 Web 控制台方案.md`](../proposals/独立%20Web%20控制台方案.md)。
+外观（思考文本显示、隐藏 Codex 额度警告、空闲释放、Work/Chat 网关开关）由 Codex 界面保存，只能在 Codex 设置页修改。Work 网关默认开启，Chat 网关默认关闭。注入开关不能热切换，在控制台修改后需完全退出并重新打开 codexhost；普通启动操作只会连接到已运行的受管 Desktop，不会重新启动。`~/.codex/config.toml` 里的 realtime 基址仍需自行配置。设计背景见 [`proposals/独立 Web 控制台方案.md`](../proposals/独立%20Web%20控制台方案.md)。
 
 ## 项目公告
 

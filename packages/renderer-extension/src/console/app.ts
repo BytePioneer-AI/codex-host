@@ -10,6 +10,7 @@ import { h } from "./dom.js";
 import { consoleMessages, type ConsoleMessages } from "./messages.js";
 import { createOfflineHarnessesPage } from "./pages/harnesses-offline.js";
 import { hostPage } from "./pages/host-required.js";
+import { createLiveVoicePage } from "./pages/live-voice.js";
 import { createOverviewPage } from "./pages/overview.js";
 import { ConsoleState } from "./state.js";
 import { createConsoleRemoteConnections } from "./remote-connections.js";
@@ -168,6 +169,7 @@ export function startConsoleApp(document: Document): void {
         hostPage(required(settingsPages, "accounts"), messages, state),
         hostPage(required(settingsPages, "session-import"), messages, state),
         hostPage(required(settingsPages, "usage-statistics"), messages, state),
+        createLiveVoicePage(messages, state),
         required(settingsPages, "updates"),
       ],
     },

@@ -6,7 +6,15 @@ For upstream merges, follow the [Live Voice preservation checklist](fork-version
 
 ## Default
 
-**On** in this fork. The Desktop Controller injects the hook unless `CODEXHOST_CPA_LIVE_VOICE=0`. That environment variable is **not live**: changing it requires relaunching Codex. Codex Settings → General has an **Override live voice** switch, also on by default (`localStorage` missing means on; `"0"` means off). The switch applies on the next voice overlay without relaunch. If the hook was not injected (`CODEXHOST_CPA_LIVE_VOICE=0`), the page shows a restart warning and the switch cannot take effect until relaunch. The unaudited-Desktop asset gate still fail-closes. The Web console does not duplicate this switch.
+**Inject on** by default. Persist `~/.codexhost/live-voice-inject-v1.json` (`inject: true|false`). Process env `CODEXHOST_CPA_LIVE_VOICE=0` or `1` wins for that launch. Inject is **not live**: change it in the Web console **设置 → 实时语音** then fully quit and reopen codexhost. The normal launch action attaches to an already running managed Desktop; it does not restart it.
+
+When injected, the Renderer wrap on `POST /wham/realtime/calls`:
+
+- **Chat** (`productExperience: chat`): the native Chat/browser voice stack owns Instant Connect (`fetchVoiceRequest` → `https://chatgpt.com/realtime/wm`). The `/wham` wrapper passes Chat requests through unless **Chat live voice (gateway)** is enabled. Explicit Chat launch ownership takes precedence over a remembered Work surface or Harness selection.
+- **Work / Harness**: Host → configured gateway. Composer `work` or `backend_model_name` `codexhost/…` / non-`gpt-live` + `codex`.
+- Desktop **Work live voice (gateway)** defaults on; **Chat live voice (gateway)** defaults off (chatgpt.com Instant Connect). Both apply to the next voice launch. When inject is off they are disabled and link to the console.
+
+The unaudited-Desktop asset gate still fail-closes. `~/.codex/config.toml` realtime keys stay manual.
 
 The hook only changes Desktop call ownership. Point Codex at the realtime host in `~/.codex/config.toml` as well, then relaunch:
 
@@ -25,8 +33,13 @@ therefore cannot route that initial frontend request.
 On the exact audited `app-initial-90eb42395b7d.js` and
 `app-shared-52443cbe9ac4.js` assets, the hook wraps the loaded native WebFetch
 singleton's `fetch` method only for `POST /wham/realtime/calls`. It forwards the
-native SDP/session through `codexhost/realtime/call` on the local Host connection.
-Other WebFetch requests pass through with their original receiver and arguments.
+native SDP/session through `codexhost/realtime/call` on the local Host connection
+when the matching switch is on: Work composer surface or a Work/Harness backend
+model uses **Work live voice (gateway)** through Host. Chat with the Chat gateway
+switch off leaves native `/wham` so Desktop Chat voice can own Instant Connect.
+Chat gateway on uses the same Host path as Work. Other WebFetch requests
+pass through with their original receiver and
+arguments.
 No global fetch, message transport or application archive is replaced.
 
 The Host reads the configured realtime URLs and selected provider's
@@ -38,7 +51,7 @@ Host, and the Host applies the same list again before sending. Desktop OAuth,
 excluded at both boundaries. Credentials stay in the Host; only the SDP response,
 status and allowed response headers return to the Renderer. Configuration and
 transport failures do not fall back to the signed-in ChatGPT account. The
-Settings preference is checked again at call time.
+Settings preference for the request's mode is checked again at call time.
 
 Cancellation aborts an in-flight bootstrap. A known created call is hung up if
 startup fails or its answer arrives after cancellation. If no call identity is
@@ -167,9 +180,11 @@ Desktop’s voice-start path sets `clientOwnsCall` when the `hostId` argument is
 
 The hook forces Statsig `checkGate("206132468")` to false on every client registered on `__STATSIG__`. In the audited build that gate has no other reader, so the result is durable-only ownership: a local host gets `clientOwnsCall=false` and `transport=webrtc`, and CPA can `POST /v1/realtime/calls`. Other gates pass through unchanged. Official app-server traffic is not rewritten. Host still passes official `thread/realtime/*` through.
 
+The legacy gate override reads **Work live voice (gateway)** at install time. Per-request routing and the separate Chat gateway switch apply to the 26.1013 client-owned fetch wrap.
+
 ## How it is installed
 
-1. Unless `CODEXHOST_CPA_LIVE_VOICE=0`, the Controller prefixes the production Renderer source with a frozen `globalThis.__codexhostCpaLiveVoiceHookV1` record (audited Desktop version and `app-initial` asset name only).
+1. When the saved injection setting is on (unless overridden by `CODEXHOST_CPA_LIVE_VOICE=0|1`), the Controller prefixes the production Renderer source with a frozen `globalThis.__codexhostCpaLiveVoiceHookV1` record (audited Desktop version and `app-initial` asset name only).
 2. `Page.addScriptToEvaluateOnNewDocument` plus immediate `Runtime.evaluate` inject the Host Renderer into the primary `app://-/index.html` page.
 3. Voice starts on the avatar overlay (`app://-/index.html?initialRoute=/avatar-overlay`). That page gets a **hook-only** bundle (`cpa-live-voice-hook.js`), not the Host Renderer binding. The overlay loads the same audited `app-initial` asset in its own JavaScript realm with its own Statsig client. The overlay bundle also drops Host `thread/started` and turn/item notifications for Threads that have not hosted voice in that overlay, so a leftover overlay does not upsert CLI-created Threads or rebind the same Turn into the main chat. Known voice Threads keep receiving notifications after hangup because native stream ownership can outlive the call.
 4. The Renderer hook no-ops unless the exact audited `app://-/assets/app-initial-6350d04672d0.js` asset is present (performance entries, script src, or link href, including relative URLs). Unknown assets fail closed; matching text in a query string or source-map filename is insufficient.

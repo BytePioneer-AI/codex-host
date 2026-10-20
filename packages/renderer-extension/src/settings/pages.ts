@@ -712,7 +712,11 @@ export function createDefaultRendererSettingsPages(
       requestUsageStatistics,
       messages.locale,
     ),
-    createAppearanceSettingsPage(messages, getLoadedSessionsClient),
+    createAppearanceSettingsPage(messages, getLoadedSessionsClient, async () => {
+      const client = getUpdateClient();
+      if (!client?.openConsole) throw new Error(messages.aboutConsoleFailed);
+      return client.openConsole();
+    }),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages, getUpdateClient),
   ]);

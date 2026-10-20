@@ -29,7 +29,11 @@ const { outputFiles } = await build({
       document.querySelector("button").addEventListener("click", async () => {
         try {
           const response = await client.fetch("/wham/realtime/calls?intent=quicksilver", {
-            method: "POST", body: "fixture-offer",
+            method: "POST",
+            body: JSON.stringify({ sdp: "offer", session: { model: "gpt-live-1-codex" } }),
+            headers: {
+              "x-codex-turn-metadata": JSON.stringify({ backend_model_name: "gpt-5.3-codex" }),
+            },
           });
           document.querySelector("output").textContent = response.status + ":" + await response.text();
         } catch (error) {

@@ -1,3 +1,4 @@
+import { chatVoiceDebug } from "./renderer-chat-voice-debug.js";
 import {
   REALTIME_CALL_METHOD,
   filterRealtimeCallHeaders,
@@ -10,7 +11,11 @@ import {
   loadedAssetNames,
   readCpaLiveVoiceHookConfig,
 } from "./renderer-cpa-live-voice-hook.js";
-import { cpaLiveVoicePreferenceAllowsInstall } from "./renderer-cpa-live-voice-preference.js";
+import {
+  chatLiveVoicePreferenceAllowsOverride,
+  cpaLiveVoicePreferenceAllowsInstall,
+} from "./renderer-cpa-live-voice-preference.js";
+import { RENDERER_NEW_THREAD_PREFERENCE_KEY } from "./renderer-new-thread-preference.js";
 
 export const CLIENT_OWNED_VOICE_VERSION = "26.1013.40934";
 export const CLIENT_OWNED_VOICE_INITIAL_ASSET = "app-initial-90eb42395b7d.js";
@@ -66,24 +71,142 @@ interface NativeVoiceFetch {
   fetch(url: string, options?: RequestInit): Promise<Response>;
 }
 
+/** Desktop Chat/Work toggle persistence. Missing means Chat. */
+export const HOME_COMPOSER_MODE_STORAGE_KEY = "home-composer-mode-v1";
+
+function headerRecord(headers?: HeadersInit): Record<string, string> {
+  return Object.fromEntries(new Headers(headers));
+}
+
+function backendModelName(headers?: HeadersInit): string {
+  const raw = headerRecord(headers)["x-codex-turn-metadata"];
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw) as { backend_model_name?: unknown };
+    return typeof parsed.backend_model_name === "string" ? parsed.backend_model_name : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Coding / Harness backend models. Speech `gpt-live*` is used by Chat and Work. */
+function isWorkBackendModel(name: string): boolean {
+  const model = name.toLowerCase();
+  if (!model) return false;
+  if (model.startsWith("codexhost/")) return true;
+  return model.includes("codex") && !model.includes("gpt-live");
+}
+
+export function isWorkComposerSurface(owner: object = globalThis): boolean {
+  const storage = (owner as { localStorage?: Storage }).localStorage;
+  if (!storage) return false;
+  try {
+    const raw = storage.getItem(HOME_COMPOSER_MODE_STORAGE_KEY);
+    if (raw == null || raw === "") return false;
+    let value: unknown = raw;
+    if (raw.startsWith("{") || raw.startsWith('"') || raw.startsWith("[")) {
+      try {
+        value = JSON.parse(raw) as unknown;
+      } catch {
+        value = raw;
+      }
+    }
+    return value === "work";
+  } catch {
+    return false;
+  }
+}
+
+function isWorkVoiceCall(options: RequestInit | undefined, workSurface: () => boolean): boolean {
+  return isWorkBackendModel(backendModelName(options?.headers)) || workSurface();
+}
+
+function selectedComposerModel(owner: object): string {
+  const routing = (
+    owner as {
+      __codexhostHostRoutingV1?: {
+        forComposer(): { policy: { selectedModel(): string | undefined } } | undefined;
+      };
+    }
+  ).__codexhostHostRoutingV1;
+  try {
+    const model = routing?.forComposer()?.policy.selectedModel();
+    return typeof model === "string" ? model : "";
+  } catch {
+    return "";
+  }
+}
+
+let lastVoiceProductExperience: string | undefined;
+
+export function rememberVoiceProductExperience(request: unknown): void {
+  const experience = object(request) ? request.productExperience : undefined;
+  lastVoiceProductExperience =
+    experience === "chat" || experience === "work" ? experience : undefined;
+}
+
+export function lastVoiceLaunchProductExperience(): string | undefined {
+  return lastVoiceProductExperience;
+}
+
+export function isExternalHarnessComposer(owner: object = globalThis): boolean {
+  if (lastVoiceProductExperience === "chat") return false;
+  if (selectedComposerModel(owner).startsWith("codexhost/")) return true;
+  if (lastVoiceProductExperience !== "work") return false;
+  const storage = (owner as { localStorage?: Storage }).localStorage;
+  if (!storage) return false;
+  try {
+    const parsed = JSON.parse(storage.getItem(RENDERER_NEW_THREAD_PREFERENCE_KEY) ?? "") as {
+      lastAgent?: unknown;
+    };
+    return (
+      typeof parsed.lastAgent === "string" &&
+      parsed.lastAgent !== "" &&
+      parsed.lastAgent !== "codex"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Only the audited native WebFetch voice bootstrap is forwarded. Other native
  * requests retain their receiver, arguments, authentication and error behavior.
  */
 export function wrapClientOwnedVoiceFetch(
   client: NativeVoiceFetch,
   bridge: NativeVoiceBridge,
-  enabled: () => boolean,
+  workOverride: () => boolean,
   responseError: (response: Response, url: string) => Promise<unknown>,
+  chatOverride: () => boolean = () => false,
+  workSurface: () => boolean = () => isWorkComposerSurface(),
+  externalHarness: () => boolean = () => isExternalHarnessComposer(),
 ): () => void {
   const original = client.fetch;
   const wrapped: NativeVoiceFetch["fetch"] = async function (this: NativeVoiceFetch, url, options) {
     if (
       typeof url !== "string" ||
       url.split("?")[0] !== "/wham/realtime/calls" ||
-      options?.method !== "POST" ||
-      !enabled()
+      options?.method !== "POST"
     )
       return original.call(this, url, options);
+    const chat = lastVoiceLaunchProductExperience() === "chat";
+    const work = !chat && isWorkVoiceCall(options, workSurface);
+    const external = !chat && externalHarness();
+    chatVoiceDebug("wham-create", {
+      work,
+      external,
+      productExperience: lastVoiceLaunchProductExperience() ?? "unset",
+    });
+    if (external || work) {
+      if (!external && !workOverride()) return original.call(this, url, options);
+    } else if (!chatOverride()) {
+      // Native Chat Instant Connect is Desktop's browser-voice stack
+      // (fetchVoiceRequest → chatgpt.com/realtime/wm), not Codex /wham.
+      chatVoiceDebug("chat-native-passthrough", {
+        hasThreadId: new Headers(options.headers).has("Thread-Id"),
+      });
+      return original.call(this, url, options);
+    }
     if (typeof options.body !== "string") throw new Error("Unsupported native voice call request");
     options.signal?.throwIfAborted();
     const requestId = crypto.randomUUID();
@@ -155,8 +278,7 @@ export function installClientOwnedVoiceHook(
   const existing = target[HOOK_GLOBAL] as VoiceHook | undefined;
   if (existing) return existing;
   const config = readCpaLiveVoiceHookConfig(target);
-  if (!config || !cpaLiveVoicePreferenceAllowsInstall(target))
-    return { status: "disabled", dispose() {} };
+  if (!config) return { status: "disabled", dispose() {} };
   if (config.desktopVersion !== undefined && config.desktopVersion !== CLIENT_OWNED_VOICE_VERSION)
     return { status: "unsupported", dispose() {} };
   const importModule = options.importModule ?? ((url: string) => import(url));
@@ -184,6 +306,10 @@ export function installClientOwnedVoiceHook(
       try {
         const module = await importModule(`app://-/assets/${CLIENT_OWNED_VOICE_SHARED_ASSET}`);
         if (disposed) return;
+        // The shared chunk exports lazy bindings. Initialize WebFetch and its
+        // message bridge before reading their singleton classes on document start.
+        if (typeof module.frt !== "function") throw new Error();
+        module.frt();
         const fetchClass = module.urt;
         const bridgeClass = module.mPt;
         if (!object(fetchClass) && typeof fetchClass !== "function") throw new Error();
@@ -202,6 +328,9 @@ export function installClientOwnedVoiceHook(
           bridge,
           () => cpaLiveVoicePreferenceAllowsInstall(target),
           module.grt as (response: Response, url: string) => Promise<unknown>,
+          () => chatLiveVoicePreferenceAllowsOverride(target),
+          () => isWorkComposerSurface(target),
+          () => isExternalHarnessComposer(target),
         );
         handle.status = "active";
       } catch {

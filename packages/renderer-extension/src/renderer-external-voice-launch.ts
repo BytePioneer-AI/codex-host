@@ -1,7 +1,9 @@
+import { startNativeChatVoiceForRequest } from "./renderer-native-chat-voice.js";
 import {
   CLIENT_OWNED_VOICE_VERSION,
   CLIENT_OWNED_VOICE_INITIAL_ASSET,
   CLIENT_OWNED_VOICE_SHARED_ASSET,
+  rememberVoiceProductExperience,
 } from "./renderer-client-owned-voice.js";
 import type { RendererHostRouting } from "@codexhost/desktop-control/renderer-bindings";
 import {
@@ -24,8 +26,10 @@ function isRecord(value: unknown): value is RecordValue {
  * Capture the primary Composer's explicit selection before crossing that boundary.
  */
 export function routeExternalVoiceLaunch(request: unknown, routing?: RendererHostRouting): unknown {
+  rememberVoiceProductExperience(request);
   if (!routing || !isRecord(request) || request.source !== "composer_button_new_thread")
     return request;
+  if (request.productExperience === "chat") return request;
   const hostId = request.hostId ?? "local";
   if (typeof hostId !== "string" || !hostId) return request;
   const route = routing.forComposer();
@@ -130,6 +134,8 @@ export function installExternalVoiceLaunchHook(options: InstallOptions = {}): La
             }
             const launch = (...args: unknown[]): unknown => {
               let request = args[0];
+              const chatStart = startNativeChatVoiceForRequest(request, target);
+              if (chatStart) return chatStart;
               try {
                 request = routeExternalVoiceLaunch(request, target.__codexhostHostRoutingV1);
               } catch {

@@ -93,6 +93,19 @@ describe("native new-voice selection", () => {
     });
     hook.dispose();
   });
+  it("does not move Chat-mode Start Voice onto the selected Harness", () => {
+    const { routing } = routingFixture();
+    const original = { ...request(), productExperience: "chat" };
+    expect(routeExternalVoiceLaunch(original, routing)).toBe(original);
+  });
+  it("keeps Work-mode Start Voice on the selected Harness", () => {
+    const { routing } = routingFixture();
+    const routed = routeExternalVoiceLaunch(
+      { ...request(), productExperience: "work" },
+      routing,
+    ) as ReturnType<typeof request>;
+    expect(routed.activeCollaborationMode.settings.model).toBe(carrier);
+  });
   it("snapshots the external route into a separately cloned overlay request", () => {
     const { routing, policy } = routingFixture();
     const original = request();
@@ -249,5 +262,52 @@ describe("versioned native voice service hook", () => {
     resolve({ fN: fixture.services });
     await settle();
     expect(fixture.services.realtimeVoiceRuntime).toBe(fixture.runtime);
+  });
+});
+
+describe("native Chat service interception", () => {
+  it("awaits the native Chat START without entering the overlay's new-thread launcher", async () => {
+    const f = hookFixture();
+    const chatStart = vi.fn().mockResolvedValue(undefined);
+    Object.assign(f.target, {
+      __codexhostNativeChatVoiceV1: { status: "active", start: chatStart },
+    });
+    const hook = installExternalVoiceLaunchHook(f);
+    await settle();
+    await f.services.realtimeVoiceRuntime.requestRealtimeStart({
+      ...request(),
+      productExperience: "chat",
+    });
+    expect(chatStart).toHaveBeenCalledOnce();
+    expect(f.start).not.toHaveBeenCalled();
+    await f.services.realtimeVoiceRuntime.requestRealtimeStart({
+      ...request(),
+      productExperience: "work",
+    });
+    expect(f.start).toHaveBeenCalledOnce();
+    expect(f.start.mock.calls[0]?.[0]).toMatchObject({
+      activeCollaborationMode: { settings: { model: carrier } },
+    });
+    hook.dispose();
+  });
+
+  it("does not fall back to a Grok/Codex overlay when native Chat START rejects", async () => {
+    const f = hookFixture();
+    Object.assign(f.target, {
+      __codexhostNativeChatVoiceV1: {
+        status: "active",
+        start: vi.fn().mockRejectedValue(new Error("native start failed")),
+      },
+    });
+    const hook = installExternalVoiceLaunchHook(f);
+    await settle();
+    await expect(
+      f.services.realtimeVoiceRuntime.requestRealtimeStart({
+        ...request(),
+        productExperience: "chat",
+      }),
+    ).rejects.toThrow("native start failed");
+    expect(f.start).not.toHaveBeenCalled();
+    hook.dispose();
   });
 });

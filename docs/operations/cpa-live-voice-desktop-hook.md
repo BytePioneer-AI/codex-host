@@ -52,6 +52,75 @@ before another Desktop build is enabled. An enabled CPA scheduler only selects
 accounts for requests that actually reach CPA. Its configured inventory and
 selection counts do not establish successful upstream calls.
 
+### Existing and new ChatGPT conversations: native Instant Connect
+
+The primary Renderer installs `renderer-native-chat-voice.ts` only for the exact
+26.1013.40934 assets above. It identifies the visible `data-chatgpt-composer`
+through the committed React owner and its native AppScope. The owner must be a
+non-temporary Chat conversation that permits external egress. Its composer
+selection context must match. For a saved conversation, the native `pZn` selector
+must resolve a backend ChatGPT conversation UUID. A new Chat can instead have a
+native `local-chatgpt:` draft locator and no backend UUID. Its ComposerScope must
+be a native new-Chat scope whose `lXt` draft selector matches the owner's locator.
+A Desktop locator or `Thread-Id` is never used as a backend UUID. Missing or
+ambiguous ownership leaves Start Voice unavailable.
+
+While that Chat is selected and the Chat gateway override is off, the hook enables
+Desktop's native browser-voice runtime (`Aw`) and mounts the native
+`VoiceInstantConnectCacheController` under the native AppScope and ComposerScope
+contexts. Both providers are required: prewarm reads the selected conversation from
+ComposerScope. It preserves one controller across Chat selections and updates the
+ComposerScope provider when its native chain changes. The new-Chat scope is passed
+through unchanged; native eligibility decides whether that draft can prewarm.
+Native eligibility, cache keys,
+cancellation and reuse decide prewarming; the hook never creates a WM call on
+selection itself. Leaving Chat after the call ends unmounts the controller and
+restores the prior browser-voice flag. An active call retains its runtime when the
+native voice UI hides the composer.
+
+A separate **Start Voice** waveform button beside **Dictate** invokes the native
+`start-voice` action (`Xe`, exported as `n` by the audited start-voice chunk).
+While that control is installed, the eligible Chat composer's Codex **Start voice
+chat** / **Start new voice chat** entry is hidden. Those entries initialize Codex
+onboarding and optimistic launch state before the service RPC; forwarding that RPC
+alone does not remove the competing screen. Leaving Chat, disposing the hook, or
+enabling the Chat gateway override restores the entry's original inline display.
+The action validates navigation and session state, reads `conversation_id` from
+Chat's store, and dispatches `START`. Native `VoiceRoom`, WebRTC data-channel
+configuration, WM event handling, microphone controls and End Voice remain in
+Desktop's browser-voice lifecycle. Chat service launches are intercepted at
+`realtimeVoiceRuntime.requestRealtimeStart` before the Codex overlay can create a
+new Thread; a failed Chat binding or START does not fall back to that overlay.
+The explicit Chat gateway override keeps the existing gateway launch path.
+For a new Chat, START receives the native draft props with an absent backend
+conversation ID; native voice owns creating and attaching the Chat conversation.
+
+The hook does not build WM multipart requests, convert Thread IDs, suppress
+`thread/realtime/start`, or copy browser cookies. Work and external Harness voice
+continue through their existing overlay and Host → CPA gateway path.
+The client-owned gateway hook initializes the shared chunk's native WebFetch
+exports (`frt`) before reading its singleton classes. These exports are lazy at
+document start, so loading the chunk alone does not establish gateway readiness.
+
+Debug events use `__codexhostChatVoiceDebug` and the bounded localStorage key
+`codexhost.chat-voice-debug.v1`. They contain event names, timestamps and routing
+booleans, with no conversation IDs, SDP, credentials or raw errors.
+
+The production Renderer entry installs this hook on every document. Its polling
+rebinds after leaving Chat, returning, or native composer replacement; no manual
+session activation is required. The installed codexhost Renderer must contain the
+change for it to survive a Desktop restart. A live CDP injection alone does not
+update the installed release, and a subsequent codexhost update replaces a local
+installation patch.
+
+Attended verification uses both an existing web-backed Chat and a new Chat draft:
+click **Start Voice**,
+confirm the conversation remains selected, the native state reports `wm` and
+`connected`, and **End Voice** is present. Confirm speech and microphone release
+separately. Leave and return to each Chat, then reload Desktop and confirm the
+waveform control returns. Then verify Work/Grok voice still reaches the configured
+CPA gateway.
+
 ### Account failover: current limitation
 
 Bounded quota failover is **not** implemented, because no public CPA plugin

@@ -239,9 +239,15 @@ function installFixture() {
   const enabled = {};
   let browserEnabled: unknown = false;
   let active = false;
+  const locationSelector = {};
+  let location: unknown = { pathname: "/", key: "original" };
   const start = vi.fn(async () => undefined);
   f.scope.get.mockImplementation((selector: unknown) =>
-    selector === enabled ? browserEnabled : "6ad6391c-9a48-83e8-8a22-21548902d6d4",
+    selector === enabled
+      ? browserEnabled
+      : selector === locationSelector
+        ? location
+        : "6ad6391c-9a48-83e8-8a22-21548902d6d4",
   );
   f.scope.set.mockImplementation((_selector, value) => {
     browserEnabled = value;
@@ -290,12 +296,21 @@ function installFixture() {
     lXt: f.draftConversationId,
     Aw: enabled,
     jw: vi.fn(),
-    ejn: () => ({ getState: () => ({ isVoiceModeActive: active }) }),
+    FFr: locationSelector,
+    uIr: vi.fn(),
+    ejn: () => ({
+      getState: () => ({
+        isVoiceModeActive: active,
+        isWorkMode: false,
+        conversationId: f.props.conversationId,
+      }),
+    }),
   };
   const shared = {
     Cot: f.scopeDefinition,
     yzt: () => ({ createElement }),
     vMt: () => ({ createRoot }),
+    xat: vi.fn((id: string) => `/c/${encodeURIComponent(id)}`),
   };
   const assets = ["app-initial-90eb42395b7d.js", "app-shared-52443cbe9ac4.js"];
   const doc = {
@@ -335,6 +350,10 @@ function installFixture() {
     createElement,
     elements,
     initial,
+    shared,
+    setLocation: (value: unknown) => {
+      location = value;
+    },
     assets,
     parent,
     overlayButton,
@@ -415,8 +434,61 @@ describe("native Chat voice lifecycle installation", () => {
       expect.any(AbortSignal),
     );
     expect(f.props.conversationId).toBe(draft);
+    expect(f.initial.uIr).not.toHaveBeenCalled();
     expect(f.scope.set).toHaveBeenCalledWith(f.initial.Aw, true);
     expect(f.scope.set).toHaveBeenCalledTimes(1);
+    hook.dispose();
+  });
+
+  it.each([
+    "active",
+    "navigated-away",
+    "disposed",
+    "inactive",
+    "different-session",
+    "work-session",
+    "navigation-failed",
+  ])("selects the same new Chat after START only when still current: %s", async (outcome) => {
+    vi.useFakeTimers();
+    const f = installFixture();
+    const draft = "local-chatgpt:bf2d4b2f-43ee-49df-b802-b55c9fb345d7";
+    f.props.conversationId = draft;
+    f.props.composerSelectionContext.conversationId = draft;
+    useNewChatComposer(f);
+    const nativeGet = f.scope.get.getMockImplementation();
+    if (!nativeGet) throw new Error("Missing native getter");
+    f.scope.get.mockImplementation((selector, argument) =>
+      selector === f.backendConversationId ? null : nativeGet(selector, argument),
+    );
+    const gate = Promise.withResolvers<undefined>();
+    f.start.mockImplementation(() => gate.promise);
+    const hook = installNativeChatVoiceHook(f);
+    await vi.advanceTimersByTimeAsync(0);
+    const starting = hook.start();
+    f.setActive(outcome !== "inactive");
+    if (outcome === "different-session" || outcome === "work-session")
+      f.initial.ejn = () => ({
+        getState: () => ({
+          isVoiceModeActive: true,
+          isWorkMode: outcome === "work-session",
+          conversationId: outcome === "different-session" ? "another-chat" : draft,
+        }),
+      });
+    if (outcome === "navigation-failed")
+      f.initial.uIr.mockImplementation(() => {
+        throw new Error("Navigation bridge unavailable");
+      });
+    if (outcome === "navigated-away") f.setLocation({ pathname: "/another-chat" });
+    if (outcome === "disposed") hook.dispose();
+    gate.resolve(undefined);
+    await starting;
+    if (outcome === "active" || outcome === "navigation-failed") {
+      expect(f.shared.xat).toHaveBeenCalledWith(draft);
+      expect(f.initial.uIr).toHaveBeenCalledExactlyOnceWith(
+        f.scope,
+        `/c/${encodeURIComponent(draft)}`,
+      );
+    } else expect(f.initial.uIr).not.toHaveBeenCalled();
     hook.dispose();
   });
 
@@ -441,8 +513,10 @@ describe("native Chat voice lifecycle installation", () => {
     expect(f.parent.append).toHaveBeenCalledTimes(3);
     expect(f.createRoot).toHaveBeenCalledTimes(2);
     expect(f.start).not.toHaveBeenCalled();
+    f.start.mockImplementation(async () => f.setActive(true));
     await hook.start();
     expect(f.start).toHaveBeenCalledOnce();
+    expect(f.initial.uIr).not.toHaveBeenCalled();
     hook.dispose();
   });
 
@@ -515,6 +589,7 @@ describe("native Chat voice lifecycle installation", () => {
       { event_source: "composer" },
       expect.any(AbortSignal),
     );
+    expect(f.initial.uIr).not.toHaveBeenCalled();
     hook.dispose();
     expect(f.unmount).toHaveBeenCalledOnce();
     expect(f.browserEnabled()).toBe(false);

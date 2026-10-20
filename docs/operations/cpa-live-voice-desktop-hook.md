@@ -111,6 +111,11 @@ new Thread; a failed Chat binding or START does not fall back to that overlay.
 The explicit Chat gateway override keeps the existing gateway launch path.
 For a new Chat, START receives the native draft props with an absent backend
 conversation ID; native voice owns creating and attaching the Chat conversation.
+After START returns with that draft's Chat voice session active, the hook selects
+the same native draft through Desktop's Chat route formatter and AppScope
+navigation bridge. Native mapping resolves its server UUID and transcript. This
+handoff runs only if the original navigation object is unchanged; canceled starts,
+Work sessions, existing Chats and a user who navigated elsewhere are not redirected.
 
 The hook does not build WM multipart requests, convert Thread IDs, suppress
 `thread/realtime/start`, or copy browser cookies. Work and external Harness voice

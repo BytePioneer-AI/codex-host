@@ -11,6 +11,7 @@ import {
   readCpaLiveVoiceHookConfig,
 } from "./renderer-cpa-live-voice-hook.js";
 import { chatLiveVoicePreferenceAllowsOverride } from "./renderer-cpa-live-voice-preference.js";
+import { navigateNativeChatVoiceDraft } from "./renderer-native-chat-voice-navigation.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
 const START_ASSET = "start-voice-954090654801.js";
@@ -100,7 +101,7 @@ export function detectNativeChatVoiceBinding(
     const backendId = scope.get(native.backendConversationId, props.conversationId);
     const hasBackendId = typeof backendId === "string" && CONVERSATION_UUID.test(backendId);
     // Native drafts have a local locator until voice or a message creates the Chat.
-    // START accepts an absent backend ID and owns that creation/navigation lifecycle.
+    // START accepts an absent backend ID and owns conversation creation.
     const isDraft =
       backendId == null &&
       props.conversationId.startsWith("local-chatgpt:") &&
@@ -283,6 +284,8 @@ export function installNativeChatVoiceHook(
         throw new Error("Select a ChatGPT conversation to start Chat voice");
       starting = true;
       controller = new AbortController();
+      const signal = controller.signal;
+      const origin = current.scope.get(modules.initial.FFr);
       chatVoiceDebug("native-chat-start", {
         hasConversationId: current.backendConversationId !== undefined,
       });
@@ -293,9 +296,25 @@ export function installNativeChatVoiceHook(
           current.scope,
           current.props,
           { event_source: "composer" },
-          controller.signal,
+          signal,
         ]);
         chatVoiceDebug("native-chat-start-returned");
+        try {
+          if (
+            !disposed &&
+            !chatLiveVoicePreferenceAllowsOverride(target) &&
+            (await navigateNativeChatVoiceDraft(
+              current,
+              modules.initial,
+              modules.shared,
+              origin,
+              signal,
+            ))
+          )
+            chatVoiceDebug("native-chat-draft-selected");
+        } catch {
+          chatVoiceDebug("native-chat-draft-selection-failed");
+        }
       } catch {
         chatVoiceDebug("native-chat-start-failed");
         throw new Error("Native Chat voice could not start");
@@ -344,6 +363,9 @@ export function installNativeChatVoiceHook(
           typeof start.t !== "function" ||
           typeof start.n !== "function" ||
           typeof initial.jw !== "function" ||
+          typeof initial.ejn !== "function" ||
+          typeof initial.uIr !== "function" ||
+          typeof shared.xat !== "function" ||
           typeof shared.yzt !== "function" ||
           typeof shared.vMt !== "function" ||
           typeof prewarm.VoiceInstantConnectCacheController !== "function"
@@ -356,6 +378,7 @@ export function installNativeChatVoiceHook(
           !initial.pZn ||
           !initial.lXt ||
           !initial.Aw ||
+          !initial.FFr ||
           !record(initial.xAt) ||
           !record(initial.xAt.scope)
         )

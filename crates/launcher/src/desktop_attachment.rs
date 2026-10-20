@@ -323,7 +323,7 @@ fn terminate_controller_process(process_id: u32, force: bool) -> Result<(), Box<
     }
 }
 
-fn wait_for_controller_exit(
+pub(super) fn wait_for_controller_exit(
     descriptor: &RuntimeDescriptor,
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {

@@ -34,7 +34,10 @@ fn request_stop(descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
     if response.trim_end() != "stopping" {
         return Err("Controller cannot restart this runtime; fully quit and reopen codexhost once to load the new controller".into());
     }
-    Ok(())
+    if crate::desktop_attachment::wait_for_controller_exit(descriptor, Duration::from_secs(2))? {
+        return Ok(());
+    }
+    crate::desktop_attachment::stop_orphaned_controller(descriptor)
 }
 
 pub(super) fn stop_managed_runtime() -> Result<(), Box<dyn Error>> {
@@ -101,6 +104,44 @@ mod tests {
             server.join().unwrap();
         }
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn acknowledged_stop_escalates_when_controller_closes_socket_but_remains_alive() {
+        use std::process::{Command, Stdio};
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let descriptor =
+            RuntimeDescriptor::new(1, port, crate::runtime_instance::random_nonce().unwrap())
+                .unwrap();
+        let mut child = Command::new("python3")
+            .args([
+                "-c",
+                "import socket,signal,time,sys\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\ns=socket.socket()\ns.bind(('127.0.0.1',int(sys.argv[2])))\ns.listen(1)\nprint('ready',flush=True)\nc,_=s.accept()\nline=c.makefile('rb').readline()\nassert line == ('STOP '+sys.argv[4]+'\\n').encode()\nc.sendall(b'stopping\\n')\nc.close()\ns.close()\nwhile True: time.sleep(0.1)",
+                "--attachment-port",
+                &port.to_string(),
+                "--attachment-nonce",
+                &descriptor.nonce,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        let result = request_stop(&descriptor);
+        let exited = child.try_wait().unwrap().is_some();
+        let _ = child.kill();
+        let _ = child.wait();
+        result.expect("finish acknowledged Controller stop");
+        assert!(exited, "acknowledging Controller survived shutdown");
+    }
+
     #[test]
     fn restart_waits_for_owned_lifecycle_and_refuses_another_installation() {
         let root = std::env::temp_dir().join(format!(

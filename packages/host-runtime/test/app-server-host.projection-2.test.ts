@@ -460,6 +460,77 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("prepends Side Chat context to a delegated follow-up Turn", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      const starting = delegationApi.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const started = await starting;
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Delegated Session was not opened");
+      session.succeedTurn();
+      await fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/completed") &&
+          (message.params as JsonObject).threadId === started.threadId,
+      );
+
+      writeRequest(fixture.desktopInput, {
+        id: 900,
+        method: "thread/inject_items",
+        params: {
+          threadId: started.threadId,
+          items: [
+            {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: "Side conversation boundary." }],
+            },
+          ],
+        },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 900)),
+      ).resolves.toMatchObject({ result: {} });
+
+      const execute = vi.spyOn(session, "execute");
+      const sent = await delegationApi.send({
+        threadId: started.threadId,
+        message: "follow-up",
+      });
+      expect(sent).toMatchObject({ status: "running" });
+      expect(execute).toHaveBeenCalledWith({
+        type: "turn.start",
+        turnId: expect.any(String),
+        input: [
+          {
+            type: "text",
+            text: "Side conversation boundary.\n\nfollow-up",
+          },
+        ],
+      });
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", sent.turnId),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("inherits cwd from a native Codex parent when delegation omits cwd", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({

@@ -81,6 +81,11 @@ export interface ExternalThread {
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
+  /**
+   * Text-only context accepted from Codex's thread/inject_items before the next Turn.
+   * shortcut: Host-process-local; persist it when Side Chat must survive a Host restart.
+   */
+  pendingInjectedText: string[];
   /** Native Session faulted or closed; idle Threads should restore instead of reuse. */
   sessionUnavailable: boolean;
 }
@@ -302,6 +307,11 @@ export class ExternalThreadRuntime {
     if (this.#threads.get(thread.id) === thread) this.#threads.delete(thread.id);
   }
 
+  /** Pending context has no native copy, so retain its owner when recovery fails. */
+  async #dropIdleSessionAfterRecoveryFailure(thread: ExternalThread): Promise<void> {
+    if (thread.pendingInjectedText.length === 0) await this.#dropIdleSession(thread);
+  }
+
   /** Called without awaiting from the output consumer: release itself drains that consumer. */
   async discardUnavailableIdle(thread: ExternalThread): Promise<void> {
     const session = thread.session;
@@ -312,6 +322,7 @@ export class ExternalThreadRuntime {
           this.#threads.get(thread.id) !== thread ||
           thread.session !== session ||
           !thread.sessionUnavailable ||
+          thread.pendingInjectedText.length > 0 ||
           !this.#idleForRestore(thread)
         )
           return;
@@ -390,6 +401,7 @@ export class ExternalThreadRuntime {
       persistenceError: null,
       projectedTerminalTurnId: null,
       ignoredInteractionIds: new Set(),
+      pendingInjectedText: [],
       sessionUnavailable: false,
     };
     this.idleRelease.touch(externalThread);
@@ -526,6 +538,13 @@ export class ExternalThreadRuntime {
         if (location.kind !== "external") return location;
         if (location.thread) {
           if (location.thread.sessionUnavailable && this.#idleForRestore(location.thread)) {
+            // Pending Side Chat context only exists in this Host owner, so revive in place.
+            if (location.thread.pendingInjectedText.length > 0) {
+              const recoveryError = await this.#reviveIdleSession(location.thread);
+              if (recoveryError) return { kind: "error", error: recoveryError };
+              this.idleRelease.touch(location.thread);
+              return { kind: "external", thread: location.thread, historyFresh: true };
+            }
             await this.#dropIdleSession(location.thread);
             // register/remove can be used by other Host lifecycle owners. A late close must
             // neither remove their replacement nor open a second owner over it.
@@ -607,7 +626,7 @@ export class ExternalThreadRuntime {
     const harnessId = thread.record.harnessId as ExternalHarnessId;
     const adapter = this.#adapters.get(harnessId);
     if (!adapter || !thread.record.nativeSessionRef) {
-      await this.#dropIdleSession(thread);
+      await this.#dropIdleSessionAfterRecoveryFailure(thread);
       return { code: -32077, message: "External Harness is unavailable" };
     }
     await this.#lifecycle.release(thread.id, thread.session, thread.outputTask);
@@ -634,7 +653,7 @@ export class ExternalThreadRuntime {
         : {}),
     });
     if (!opened.ok) {
-      await this.#dropIdleSession(thread);
+      await this.#dropIdleSessionAfterRecoveryFailure(thread);
       return mapExternalThreadHarnessError(opened.error, "resume");
     }
     const session = opened.value;
@@ -646,7 +665,7 @@ export class ExternalThreadRuntime {
       const snapshot = await session.readSnapshot();
       if (!snapshot.ok) {
         await this.#lifecycle.release(thread.id, session, Promise.resolve());
-        await this.#dropIdleSession(thread);
+        await this.#dropIdleSessionAfterRecoveryFailure(thread);
         return mapExternalThreadHarnessError(snapshot.error, "read");
       }
       let aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
@@ -725,7 +744,7 @@ export class ExternalThreadRuntime {
       if (error instanceof ExternalSessionReleaseError) throw error;
       await this.#lifecycle.release(thread.id, session, Promise.resolve());
       this.#diagnose(error);
-      await this.#dropIdleSession(thread);
+      await this.#dropIdleSessionAfterRecoveryFailure(thread);
       return { code: -32081, message: "External Thread history could not be persisted" };
     }
   }

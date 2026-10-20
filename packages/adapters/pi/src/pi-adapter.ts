@@ -3,7 +3,6 @@ import { fetchPiAccounts } from "./account-balance.js";
 import { createPiCredentialImports } from "./pi-credential-imports.js";
 import { PI_FAST_COMMAND, piFastModelKeys, withPiFast } from "./pi-fast-mode.js";
 import { persistEmptyPiSession, readPiEmptySessionConfiguration } from "./pi-empty-session.js";
-import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -32,7 +31,6 @@ import {
   type HostCommandExecutionItem,
   type HostContextCompactionItem,
   type HostEvent,
-  type HostFileChange,
   type HostItem,
   type HostItemOutcome,
   type HostQuestionInteraction,
@@ -80,6 +78,7 @@ import {
 
 import { resolvePiInspectCwd } from "./command.js";
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
+import { piToolFileChanges } from "./pi-file-change.js";
 import {
   PiSubagents,
   parsePiSubagentId,
@@ -379,26 +378,6 @@ function numberField(value: JsonValue, key: string): number | null | undefined {
   return typeof field === "number" || field === null ? field : undefined;
 }
 
-function stripDiffPrefix(pathString: string | undefined): string {
-  if (typeof pathString !== "string" || pathString.length === 0) return "";
-  return pathString.startsWith("a/") || pathString.startsWith("b/")
-    ? pathString.slice(2)
-    : pathString;
-}
-
-function displayPath(nativePath: string, cwd: string): { path: string; absolute: boolean } | null {
-  const resolvedCwd = path.resolve(cwd);
-  const resolvedPath = path.isAbsolute(nativePath)
-    ? path.resolve(nativePath)
-    : path.resolve(cwd, nativePath);
-  const relative = path.relative(resolvedCwd, resolvedPath);
-  const inside = relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`);
-  const selected = inside ? relative : resolvedPath;
-  const normalized = selected.replaceAll("\\", "/");
-  if (normalized.length === 0 || normalized === ".") return null;
-  return { path: normalized, absolute: !inside };
-}
-
 function normalizeToolName(name: string): string {
   const lower = name.toLowerCase();
   switch (lower) {
@@ -434,147 +413,6 @@ function normalizeToolName(name: string): string {
     default:
       return name.length > 0 ? `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}` : name;
   }
-}
-
-function fileMutatingKind(toolName: string): "edit" | "write" | null {
-  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
-  if (
-    [
-      "edit",
-      "editfile",
-      "fileedit",
-      "strreplace",
-      "searchreplace",
-      "applypatch",
-      "replace",
-    ].includes(lower)
-  ) {
-    return "edit";
-  }
-  if (["write", "writefile", "filewrite", "create", "createfile"].includes(lower)) return "write";
-  return null;
-}
-
-function nestedToolString(value: unknown, keys: readonly string[]): string | undefined {
-  if (!isRecord(value)) return undefined;
-  for (const key of keys) {
-    const field = value[key];
-    if (typeof field === "string" && field.length > 0) return field;
-  }
-  for (const wrapper of ["input", "arguments", "params", "details"] as const) {
-    const nested = nestedToolString(value[wrapper], keys);
-    if (nested) return nested;
-  }
-  return undefined;
-}
-
-function patchFromResult(result: JsonValue): string | undefined {
-  if (!isRecord(result)) return undefined;
-  for (const key of ["patch", "diff", "unifiedDiff"] as const) {
-    const field = result[key];
-    if (typeof field === "string" && field.length > 0) return field;
-  }
-  if (isRecord(result.details)) {
-    for (const key of ["patch", "diff", "unifiedDiff"] as const) {
-      const field = result.details[key];
-      if (typeof field === "string" && field.length > 0) return field;
-    }
-  }
-  return undefined;
-}
-
-function fileChangeFromPatch(patch: string, cwd: string): HostFileChange[] | null {
-  let parsed: ReturnType<typeof parsePatch>;
-  try {
-    parsed = parsePatch(patch);
-  } catch {
-    return null;
-  }
-  const file = parsed[0];
-  if (parsed.length !== 1 || !file) return null;
-  const oldFile = typeof file.oldFileName === "string" ? file.oldFileName : undefined;
-  const newFile = typeof file.newFileName === "string" ? file.newFileName : undefined;
-  if (!oldFile && !newFile) return null;
-  const kind =
-    oldFile === "/dev/null" || !oldFile
-      ? "add"
-      : newFile === "/dev/null" || !newFile
-        ? "delete"
-        : "update";
-  const candidate = kind === "delete" ? oldFile : (newFile ?? oldFile);
-  const rawPath = stripDiffPrefix(candidate);
-  if (!rawPath || rawPath === "/dev/null") return null;
-  const displayed = displayPath(rawPath, cwd);
-  if (!displayed) return null;
-  return [{ path: displayed.path, kind, unifiedDiff: patch }];
-}
-
-function synthesizeFileChange(
-  kind: "edit" | "write",
-  args: unknown,
-  cwd: string,
-): HostFileChange[] | null {
-  const filePath = nestedToolString(args, ["path", "file_path", "filePath", "file"]);
-  if (!filePath) return null;
-  const displayed = displayPath(filePath, cwd);
-  if (!displayed) return null;
-  if (kind === "write") {
-    const content = nestedToolString(args, [
-      "content",
-      "new_string",
-      "newString",
-      "newText",
-      "text",
-    ]);
-    if (content === undefined) return null;
-    const oldHeader = "/dev/null";
-    const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
-    return [
-      {
-        path: displayed.path,
-        kind: "add",
-        unifiedDiff: createTwoFilesPatch(oldHeader, newHeader, "", content, "", "", { context: 3 }),
-        diffScope: "fragment",
-      },
-    ];
-  }
-  const oldText = nestedToolString(args, ["old_string", "oldString", "oldText", "old_text"]);
-  const newText = nestedToolString(args, [
-    "new_string",
-    "newString",
-    "newText",
-    "new_text",
-    "content",
-  ]);
-  if (oldText === undefined || newText === undefined) return null;
-  const oldHeader = displayed.absolute ? displayed.path : `a/${displayed.path}`;
-  const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
-  return [
-    {
-      path: displayed.path,
-      kind: "update",
-      unifiedDiff: createTwoFilesPatch(oldHeader, newHeader, oldText, newText, "", "", {
-        context: 3,
-      }),
-      diffScope: "fragment",
-    },
-  ];
-}
-
-function reliableFileChange(
-  toolName: string,
-  args: unknown,
-  result: JsonValue,
-  cwd: string,
-): HostFileChange[] | null {
-  const kind = fileMutatingKind(toolName);
-  if (!kind) return null;
-  const patch = patchFromResult(result);
-  if (patch) {
-    const fromPatch = fileChangeFromPatch(patch, cwd);
-    if (fromPatch) return fromPatch;
-  }
-  return synthesizeFileChange(kind, args, cwd) ?? synthesizeFileChange(kind, result, cwd);
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -723,6 +561,7 @@ class PiHarnessSession implements HarnessSession {
             {
               sessionId: transport.state.sessionId,
               model: nativeModelForHistory(transport.state),
+              cwd: this.#cwd,
             },
             this.#subagents,
           ),
@@ -1864,12 +1703,8 @@ class PiHarnessSession implements HarnessSession {
 
     if (!event.isError) {
       try {
-        const kind = fileMutatingKind(event.toolName);
         const args = tool.item.type === "toolExecution" ? tool.item.arguments : {};
-        if (kind && !patchFromResult(event.result) && synthesizeFileChange(kind, args, this.#cwd)) {
-          return;
-        }
-        const changes = reliableFileChange(event.toolName, args, event.result, this.#cwd);
+        const changes = piToolFileChanges(event.toolName, args, event.result, this.#cwd);
         if (changes) {
           const fileItem: HostItem = {
             type: "fileChange",

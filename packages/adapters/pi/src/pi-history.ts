@@ -1,5 +1,6 @@
 import type {
   HostAgentMessageItem,
+  HostFileChangeItem,
   HostItemOutcome,
   HostItemSnapshot,
   HostReasoningItem,
@@ -20,6 +21,7 @@ import {
   type NativeCheckpointRef,
 } from "@codexhost/shared-contracts";
 
+import { piNestedCallFileChanges, piToolFileChanges } from "./pi-file-change.js";
 import { PiSubagents } from "./pi-subagents.js";
 import { encodePiModelRef, type PiNativeModelRef } from "./pi-model-catalog.js";
 
@@ -31,6 +33,8 @@ export interface PiSessionHistory {
 export interface PiHistoryState {
   sessionId: string;
   model: PiNativeModelRef | null;
+  /** Session cwd for file change paths; snapshots used only for Turn identity omit it. */
+  cwd?: string;
 }
 
 interface PiEntry extends JsonObject {
@@ -160,10 +164,42 @@ function toolOutput(value: unknown): HostToolOutput | undefined {
   return text.length > 0 ? { content: [{ type: "text", text }] } : undefined;
 }
 
+/** The file changes the live Turn showed for this tool call; history has no fileChange Items. */
+function historicalFileChanges(
+  call: { entryId: string; ordinal: number; name: string; arguments: JsonValue },
+  nativeMessage: Record<string, unknown>,
+  toolItemId: HostToolExecutionItem["itemId"],
+  cwd: string,
+): HostFileChangeItem[] {
+  const items: HostFileChangeItem[] = [];
+  const changes =
+    nativeMessage.isError === false
+      ? piToolFileChanges(call.name, call.arguments, nativeMessage, cwd)
+      : null;
+  if (changes) {
+    items.push({
+      type: "fileChange",
+      itemId: itemId(call.entryId, "file", call.ordinal),
+      sourceItemIds: [toolItemId],
+      changes,
+    });
+  }
+  for (const nested of piNestedCallFileChanges(nativeMessage.nestedCalls, cwd)) {
+    items.push({
+      type: "fileChange",
+      itemId: itemId(call.entryId, `nested-${nested.index}-file`, call.ordinal),
+      sourceItemIds: [toolItemId],
+      changes: nested.changes,
+    });
+  }
+  return items;
+}
+
 function snapshotItems(
   entries: PiEntry[],
   outcome: HistoricalTurnOutcome,
   subagents?: PiSubagents,
+  cwd?: string,
 ): HostItemSnapshot[] {
   const snapshots: HostItemSnapshot[] = [];
   const toolCalls = new Map<
@@ -256,6 +292,11 @@ function snapshotItems(
             },
           },
     });
+    if (cwd) {
+      for (const fileItem of historicalFileChanges(call, nativeMessage, item.itemId, cwd)) {
+        snapshots.push({ item: fileItem, outcome: { status: "succeeded" } });
+      }
+    }
     if (delegation) snapshots.push({ item: delegation, outcome: { status: "succeeded" } });
   }
   return snapshots;
@@ -310,7 +351,7 @@ export function mapPiSnapshot(
       nativeTurnRef,
       checkpoint,
       input: [{ type: "text", text: userText }],
-      items: snapshotItems(entries, outcome, subagents),
+      items: snapshotItems(entries, outcome, subagents, state.cwd),
       outcome,
       ...(effectiveModel ? { model: encodePiModelRef(effectiveModel) } : {}),
     });

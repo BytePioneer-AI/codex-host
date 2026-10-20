@@ -244,7 +244,13 @@ syncBuiltinESMExports();
 
 async function runLauncherLifecycle(
   platform,
-  { locale = "en_US.UTF-8", noColor = false, tty = false, platformVersion = "0.1.0" } = {},
+  {
+    locale = "en_US.UTF-8",
+    noColor = false,
+    tty = false,
+    platformVersion = "0.1.0",
+    args = [],
+  } = {},
 ) {
   const root = await temporaryDirectory();
   try {
@@ -267,7 +273,7 @@ async function runLauncherLifecycle(
     else delete environment.NO_COLOR;
     return spawnSync(
       process.execPath,
-      ["--import", pathToFileURL(preloadPath).href, launcherPath],
+      ["--import", pathToFileURL(preloadPath).href, launcherPath, ...args],
       {
         encoding: "utf8",
         env: environment,
@@ -513,7 +519,9 @@ describe("npm package release", () => {
     expect(source).toContain('extras.push("--host-runtime", hostRuntime)');
     expect(source).toContain('extras.push("--desktop-controller", desktopController)');
     expect(source).toContain('extras.push("--renderer", rendererExtension)');
-    expect(source).toContain('if (launchArguments?.[0] === "launch")');
+    expect(source).toContain(
+      'if (launchArguments?.[0] === "launch" || launchArguments?.[0] === "restart")',
+    );
     expect(source).toContain('userArguments[0] === "remote"');
     expect(source).toContain('userArguments[0] === "broker"');
     expect(source).toContain("brokerArguments = userArguments.slice(1)");
@@ -630,6 +638,14 @@ describe("npm package release", () => {
       "--host-runtime",
       expect.stringMatching(/host-runtime\.mjs$/u),
     ]);
+  });
+
+  it("routes restart through the native ready handshake", async () => {
+    const result = await runLauncherLifecycle("darwin", { args: ["restart"] });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("received Launcher ready");
+    expect(result.stderr).not.toContain("unknown command");
   });
 
   it("keeps Windows launcher supervision alive after the ready handshake", async () => {

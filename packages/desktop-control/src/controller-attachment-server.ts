@@ -18,6 +18,7 @@ export interface StartControllerAttachmentServerOptions {
   port: number;
   nonce: string;
   attach(): Promise<void>;
+  stop?(): void;
   openLocalPage?(url: string): Promise<LocalPageHandle>;
   remoteConnections?(request: RemoteConnectionsRequest): Promise<RemoteConnectionsReply>;
 }
@@ -140,6 +141,10 @@ export async function startControllerAttachmentServer(
         const completion = page.then(() => undefined);
         pages.add(completion);
         void completion.finally(() => pages.delete(completion));
+        return;
+      }
+      if (options.stop && line === `STOP ${options.nonce}` && request.slice(newline + 1) === "") {
+        socket.end("stopping\n", () => options.stop?.());
         return;
       }
       if (line === `ATTACH ${options.nonce}`) {

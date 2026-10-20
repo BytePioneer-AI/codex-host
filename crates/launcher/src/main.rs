@@ -7,6 +7,7 @@ mod desktop_attachment;
 mod desktop_path_overrides;
 mod installation_layout;
 mod native_harness_broker;
+mod restart;
 mod runtime_instance;
 #[cfg(target_os = "linux")]
 mod secure_storage;
@@ -130,7 +131,7 @@ impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost update\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
+        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost update\n  codexhost restart\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
     );
 }
 
@@ -783,7 +784,12 @@ fn supervise_desktop(
             }
         }
         if let Some(status) = controller.try_wait()? {
-            let _ = desktop.shutdown(Duration::from_secs(2));
+            desktop.shutdown(Duration::from_secs(2))?;
+            desktop.cleanup_escaped(Duration::from_secs(2))?;
+            desktop.disarm_cleanup();
+            if status.success() {
+                return Ok(());
+            }
             return Err(
                 format!("Desktop Controller exited while Desktop was running: {status}").into(),
             );
@@ -883,6 +889,9 @@ fn supervise_desktop(
             }
             let _ = desktop.kill();
             let _ = desktop.wait();
+            if status.success() {
+                return Ok(());
+            }
             return Err(
                 format!("Desktop Controller exited while Desktop was running: {status}").into(),
             );
@@ -1268,7 +1277,7 @@ fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
 fn is_launch_command(arguments: &[String]) -> bool {
     matches!(
         arguments.first().map(String::as_str),
-        None | Some(START_MENU_ARGUMENT) | Some("launch")
+        None | Some(START_MENU_ARGUMENT) | Some("launch") | Some("restart")
     )
 }
 
@@ -1305,6 +1314,13 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         Some("update") => Err("update accepts no arguments".into()),
         Some("console") => Err("console accepts no arguments".into()),
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
+        Some("restart") => {
+            let options = parse_launch_options(&arguments[1..])?;
+            let resolved = parse_launch_options(&arguments[1..])?.resolve()?;
+            let _ = discover_desktop(resolved.custom_install_root.as_deref())?;
+            restart::stop_managed_runtime()?;
+            launch(options, false)
+        }
         Some("open-loopback-url") if arguments.len() == 1 => {
             let url = read_bounded_loopback_url(std::io::stdin().lock())?;
             validate_loopback_root_url(&url)?;
@@ -1335,11 +1351,16 @@ fn main() -> ExitCode {
     let launching = is_launch_command(&arguments);
     if launching {
         startup_record::begin();
-        console::set_presentation(if arguments.first().map(String::as_str) == Some("launch") {
-            console::Presentation::Print
-        } else {
-            console::Presentation::Browser
-        });
+        console::set_presentation(
+            if matches!(
+                arguments.first().map(String::as_str),
+                Some("launch" | "restart")
+            ) {
+                console::Presentation::Print
+            } else {
+                console::Presentation::Browser
+            },
+        );
     }
     match run(&arguments) {
         Ok(()) => ExitCode::SUCCESS,

@@ -37,7 +37,14 @@ export interface ConsoleOverview {
     };
   } | null;
   launchAvailable: boolean;
-  liveVoice: { inject: boolean; envOverride: "0" | "1" | null };
+  liveVoice: {
+    inject: boolean;
+    savedInject?: boolean;
+    envOverride: "0" | "1" | null;
+    activeInject?: boolean | null;
+    activeEnvOverride?: "0" | "1" | null;
+  };
+  restart?: { phase: "idle" | "restarting" | "succeeded" | "failed"; error: string | null };
   summary: {
     state:
       | "starting"
@@ -66,12 +73,37 @@ export class ConsoleState {
   overview: ConsoleOverview | null = null;
   update: UpdateSummary | null = null;
   offline = false;
+  restartConfirm = false;
+  restartSubmitting = false;
+  restartError: string | null = null;
   readonly #listeners = new Set<Listener>();
   #timer: number | undefined;
 
   subscribe(listener: Listener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  confirmRestart(confirm: boolean): void {
+    this.restartConfirm = confirm;
+    this.#emit();
+  }
+
+  async restart(): Promise<void> {
+    if (!this.restartConfirm || this.restartSubmitting) return;
+    this.restartConfirm = false;
+    this.restartSubmitting = true;
+    this.restartError = null;
+    this.#emit();
+    try {
+      await consolePost("/api/restart", { confirm: true });
+      await this.refresh();
+    } catch (error) {
+      this.restartError = error instanceof Error ? error.message : String(error);
+    } finally {
+      this.restartSubmitting = false;
+      this.#emit();
+    }
   }
 
   async refresh(): Promise<void> {

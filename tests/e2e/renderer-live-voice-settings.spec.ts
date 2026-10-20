@@ -57,7 +57,11 @@ async function setup(page: Page, mode = "console") {
 }
 
 function overview(inject = true, envOverride: string | null = null) {
-  return { liveVoice: { inject, envOverride } };
+  return {
+    liveVoice: { inject, envOverride },
+    launchAvailable: true,
+    summary: { state: "running" },
+  };
 }
 
 test("loads before editing, saves the toggle, and retains restart guidance after remount", async ({
@@ -73,7 +77,7 @@ test("loads before editing, saves the toggle, and retains restart guidance after
     return route.fulfill({ json: { inject: saved, envOverride: null } });
   });
   await setup(page);
-  const toggle = page.getByRole("switch", { name: "Inject live-voice hook", exact: true });
+  const toggle = page.getByRole("switch", { name: "Enable voice integration", exact: true });
   await expect(toggle).toBeDisabled();
   await page.evaluate(() => Reflect.get(globalThis, "fixture").refresh());
   await expect(toggle).toBeEnabled();
@@ -83,7 +87,7 @@ test("loads before editing, saves the toggle, and retains restart guidance after
   expect(writes).toEqual([{ inject: false }]);
   await page.evaluate(() => Reflect.get(globalThis, "fixture").remount());
   await expect(toggle).not.toBeChecked();
-  await expect(page.getByRole("status")).toContainText("Fully quit and reopen codexhost");
+  await expect(page.getByRole("status")).toContainText("Active setting is unknown");
   await expect(page.getByRole("button", { name: /relaunch/i })).toHaveCount(0);
 });
 
@@ -157,12 +161,12 @@ test("Desktop separates gateway defaults, persists them and releases listeners",
   page,
 }) => {
   await setup(page, "injected");
-  const work = page.getByRole("switch", { name: "Work live voice (gateway)", exact: true });
-  const chat = page.getByRole("switch", { name: "Chat live voice (gateway)", exact: true });
-  await expect(work).toBeChecked();
-  await expect(chat).not.toBeChecked();
-  await chat.check();
-  await work.uncheck();
+  const work = page.getByRole("combobox", { name: "Work voice", exact: true });
+  const chat = page.getByRole("combobox", { name: "Chat voice", exact: true });
+  await expect(work).toHaveValue("gateway");
+  await expect(chat).toHaveValue("native");
+  await chat.selectOption("gateway");
+  await work.selectOption("native");
   expect(
     await page.evaluate(() => [
       localStorage.getItem("codexhost.cpa-live-voice.v1"),
@@ -170,31 +174,86 @@ test("Desktop separates gateway defaults, persists them and releases listeners",
     ]),
   ).toEqual(["0", "1"]);
   await page.evaluate(() => Reflect.get(globalThis, "fixture").dispatchChat());
-  await expect(chat).not.toBeChecked();
-  await chat.check();
+  await expect(chat).toHaveValue("native");
+  await chat.selectOption("gateway");
   await page.evaluate(() => {
     const f = Reflect.get(globalThis, "fixture");
     f.dispose();
     f.dispatchChat();
   });
-  await expect(chat).toBeChecked();
+  await expect(chat).toHaveValue("gateway");
   await page.reload();
   await page.addScriptTag({ content: bundle });
   await page.evaluate(() => Reflect.get(globalThis, "setup")("injected"));
-  await expect(work).not.toBeChecked();
-  await expect(chat).not.toBeChecked();
+  await expect(work).toHaveValue("native");
+  await expect(chat).toHaveValue("native");
 });
 
 test("Desktop disables gateway controls without injection and reports console-opening failure", async ({
   page,
 }) => {
   await setup(page, "disabled");
-  await expect(
-    page.getByRole("switch", { name: "Work live voice (gateway)", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("switch", { name: "Chat live voice (gateway)", exact: true }),
-  ).toBeDisabled();
+  await expect(page.getByRole("combobox", { name: "Work voice", exact: true })).toBeDisabled();
+  await expect(page.getByRole("combobox", { name: "Chat voice", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Open console", exact: true }).click();
   await expect(page.getByRole("status").filter({ hasText: "console unavailable" })).toBeVisible();
+});
+
+test("shows saved versus active settings and confirms a real restart request", async ({ page }) => {
+  let inject = true;
+  let activeInject = true;
+  let phase = "idle";
+  const writes: unknown[] = [];
+  await page.route("**/api/overview", (route) =>
+    route.fulfill({
+      json: {
+        ...overview(inject),
+        liveVoice: { inject, envOverride: null, activeInject },
+        restart: { phase, error: null },
+      },
+    }),
+  );
+  await page.route("**/api/live-voice-inject", (route) => {
+    inject = route.request().postDataJSON().inject;
+    return route.fulfill({ json: { inject, envOverride: null } });
+  });
+  await page.route("**/api/restart", (route) => {
+    writes.push(route.request().postDataJSON());
+    phase = "restarting";
+    return route.fulfill({ status: 202, json: { phase, error: null } });
+  });
+  await setup(page);
+  await page.evaluate(() => Reflect.get(globalThis, "fixture").refresh());
+  await expect(page.getByRole("status")).toContainText("Saved setting is active");
+  await page.getByRole("switch").uncheck();
+  await expect(page.getByRole("status")).toContainText("Saved — restart required");
+  await page.getByRole("button", { name: "Restart codexhost", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "may interrupt" })).toBeVisible();
+  expect(writes).toEqual([]);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(writes).toEqual([]);
+  await page.getByRole("button", { name: "Restart codexhost", exact: true }).click();
+  await page.getByRole("button", { name: "Restart now", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Restart codexhost", exact: true })).toBeDisabled();
+  expect(writes).toEqual([{ confirm: true }]);
+  activeInject = false;
+  phase = "succeeded";
+  await page.evaluate(() => Reflect.get(globalThis, "fixture").refresh());
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved setting is active" }),
+  ).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Restart complete" })).toBeVisible();
+});
+
+test("shows restart API errors without claiming completion", async ({ page }) => {
+  await page.route("**/api/overview", (route) => route.fulfill({ json: overview() }));
+  await page.route("**/api/restart", (route) =>
+    route.fulfill({ status: 500, json: { error: "restart unavailable" } }),
+  );
+  await setup(page);
+  await page.evaluate(() => Reflect.get(globalThis, "fixture").refresh());
+  await page.getByRole("button", { name: "Restart codexhost", exact: true }).click();
+  await page.getByRole("button", { name: "Restart now", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText("restart unavailable");
+  await expect(page.getByText("Restart complete.", { exact: false })).toHaveCount(0);
 });

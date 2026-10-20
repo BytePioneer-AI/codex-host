@@ -35,6 +35,8 @@ export interface RendererIntegrationStatus {
 export interface ControllerStatus {
   pid: number;
   startedAt: number;
+  voiceInjection?: boolean;
+  voiceEnvOverride?: "0" | "1" | null;
   renderer: RendererIntegrationStatus;
 }
 
@@ -125,6 +127,14 @@ export async function readControllerStatus(filePath: string): Promise<Controller
   return {
     pid: document.pid,
     startedAt: document.startedAt,
+    ...(typeof document.voiceInjection === "boolean"
+      ? { voiceInjection: document.voiceInjection }
+      : {}),
+    ...(document.voiceEnvOverride === "0" ||
+    document.voiceEnvOverride === "1" ||
+    document.voiceEnvOverride === null
+      ? { voiceEnvOverride: document.voiceEnvOverride }
+      : {}),
     renderer: {
       state: renderer.state as RendererIntegrationStatus["state"],
       error: typeof renderer.error === "string" ? renderer.error : null,

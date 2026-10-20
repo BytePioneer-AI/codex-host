@@ -1,3 +1,4 @@
+import { renderRestartControl } from "./restart-control.js";
 import { consolePost } from "../api.js";
 import { h } from "../dom.js";
 import type { ConsoleMessages } from "../messages.js";
@@ -43,8 +44,14 @@ export function createLiveVoicePage(
           controlId: id,
         });
         const toggle = createPreferenceSwitch(document, id, row.description.id);
-        toggle.checked = live?.inject ?? true;
-        toggle.disabled = saving || !live || state.offline || live.envOverride !== null;
+        toggle.checked = live?.savedInject ?? live?.inject ?? true;
+        toggle.disabled =
+          saving ||
+          !live ||
+          state.offline ||
+          live.envOverride !== null ||
+          state.restartSubmitting ||
+          state.overview?.restart?.phase === "restarting";
         toggle.addEventListener("change", () => {
           const inject = toggle.checked;
           saving = true;
@@ -80,7 +87,13 @@ export function createLiveVoicePage(
             document,
             "p",
             { className: "text-xs leading-[18px] text-settings-warning", role: "status" },
-            messages.liveVoiceRelaunchRequired,
+            state.offline || typeof live?.activeInject !== "boolean"
+              ? messages.voiceUnknown
+              : live.envOverride || live.activeEnvOverride
+                ? messages.liveVoiceEnvOverride
+                : live.activeInject === (live.savedInject ?? live.inject)
+                  ? messages.voiceActive
+                  : messages.voicePending,
           ),
           h(
             document,
@@ -94,7 +107,11 @@ export function createLiveVoicePage(
             h(document, "p", { className: "text-settings-danger", role: "alert" }, error),
           );
         }
-        context.content.replaceChildren(heading, group);
+        context.content.replaceChildren(
+          heading,
+          group,
+          renderRestartControl(document, messages, state),
+        );
       };
       render();
       const unsubscribe = state.subscribe(render);

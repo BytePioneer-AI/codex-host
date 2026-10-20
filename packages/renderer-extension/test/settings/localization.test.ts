@@ -37,11 +37,11 @@ describe("Renderer settings localization", () => {
     expect(chinese.hideCodexUsageBannerTitle).toBe("隐藏 Codex 额度警告");
     expect(english.hideCodexUsageBannerDescription).toContain("On by default");
     expect(chinese.hideCodexUsageBannerDescription).toContain("默认开启");
-    expect(english.cpaLiveVoiceTitle).toBe("Work live voice (gateway)");
-    expect(chinese.cpaLiveVoiceTitle).toBe("Work 实时语音（网关）");
+    expect(english.cpaLiveVoiceTitle).toBe("Work voice");
+    expect(chinese.cpaLiveVoiceTitle).toBe("Work 语音");
     expect(english.cpaLiveVoiceTitle.toLowerCase()).not.toContain("cpa");
     expect(chinese.cpaLiveVoiceTitle.toLowerCase()).not.toContain("cpa");
-    expect(english.cpaLiveVoiceDescription).toContain("On by default");
+    expect(english.cpaLiveVoiceDescription).toContain("Configured gateway by default");
     expect(english.cpaLiveVoiceDescription).toContain("Work");
     expect(chinese.cpaLiveVoiceDescription).toContain("默认开启");
     expect(chinese.cpaLiveVoiceDescription).toContain("Work");
@@ -49,15 +49,15 @@ describe("Renderer settings localization", () => {
     expect(chinese.cpaLiveVoiceHelp.join(" ")).toContain(
       "experimental_realtime_webrtc_call_base_url",
     );
-    expect(english.cpaLiveVoiceRestartRequired).toContain("Inject live-voice hook");
-    expect(chinese.cpaLiveVoiceRestartRequired).toContain("重新启动 Codex");
-    expect(english.chatLiveVoiceTitle).toBe("Chat live voice (gateway)");
-    expect(chinese.chatLiveVoiceTitle).toBe("Chat 实时语音（网关）");
+    expect(english.cpaLiveVoiceRestartRequired).toContain("Enable voice integration");
+    expect(chinese.cpaLiveVoiceRestartRequired).toContain("重新启动 codexhost");
+    expect(english.chatLiveVoiceTitle).toBe("Chat voice");
+    expect(chinese.chatLiveVoiceTitle).toBe("Chat 语音");
     expect(english.chatLiveVoiceTitle.toLowerCase()).not.toContain("cpa");
     expect(chinese.chatLiveVoiceTitle.toLowerCase()).not.toContain("cpa");
-    expect(english.chatLiveVoiceDescription).toContain("Off by default");
-    expect(english.chatLiveVoiceDescription).toContain("existing web conversation");
-    expect(chinese.chatLiveVoiceDescription).toContain("默认关闭");
+    expect(english.chatLiveVoiceDescription).toContain("ChatGPT by default");
+    expect(english.chatLiveVoiceDescription).toContain("ChatGPT conversation");
+    expect(chinese.chatLiveVoiceDescription).toContain("默认使用 ChatGPT");
     expect(chinese.chatLiveVoiceDescription).toContain("ChatGPT");
     expect(english.chatLiveVoiceHelp.join(" ")).toContain("Work has its own gateway switch");
     expect(chinese.chatLiveVoiceHelp.join(" ")).toContain("网关失败");

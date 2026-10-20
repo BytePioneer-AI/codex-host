@@ -26,6 +26,7 @@ export interface DesktopControllerOptions {
   rendererPath: string;
   attachmentPort: number;
   attachmentNonce: string;
+  requestStop?(): void;
 }
 
 export interface DesktopControllerReadiness {
@@ -226,8 +227,18 @@ export async function runDesktopController(
   let session: RendererCdpControlSession | undefined;
   let nextRecoveryAt = 0;
   let recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
+  const bootstrap = cpaLiveVoiceHookBootstrap();
   const status = createRendererStatusReporter(
-    (document) => dependencies.publishStatus?.(document),
+    (document) =>
+      dependencies.publishStatus?.({
+        ...document,
+        voiceInjection: Boolean(bootstrap),
+        voiceEnvOverride:
+          process.env.CODEXHOST_CPA_LIVE_VOICE === "0" ||
+          process.env.CODEXHOST_CPA_LIVE_VOICE === "1"
+            ? process.env.CODEXHOST_CPA_LIVE_VOICE
+            : null,
+      }),
     now,
   );
   const recordRecoveryFailure = (error: unknown): void => {
@@ -244,7 +255,6 @@ export async function runDesktopController(
     status.installing();
     startupTrace("reading Renderer bundle");
     const rendererRead = dependencies.readRenderer(options.rendererPath);
-    const bootstrap = cpaLiveVoiceHookBootstrap();
     const overlayPath = bootstrap
       ? path.join(path.dirname(options.rendererPath), "cpa-live-voice-hook.js")
       : undefined;
@@ -309,6 +319,7 @@ export async function runDesktopController(
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
+      ...(options.requestStop ? { stop: options.requestStop } : {}),
       remoteConnections: async (request) => {
         // Serialize session recovery, not the native request: the renderer can await Host
         // responses while other settings reads run. Never retry a submitted mutation.

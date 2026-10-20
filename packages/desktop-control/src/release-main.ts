@@ -6,7 +6,10 @@ process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
 
 try {
-  await runDesktopController(parseDesktopControllerArguments(process.argv.slice(2)), abort.signal);
+  await runDesktopController(
+    { ...parseDesktopControllerArguments(process.argv.slice(2)), requestStop: stop },
+    abort.signal,
+  );
 } catch (error) {
   console.error(
     `codexhost Desktop Controller: ${error instanceof Error ? error.message : String(error)}`,

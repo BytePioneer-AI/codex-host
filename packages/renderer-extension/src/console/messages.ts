@@ -16,7 +16,7 @@ const ENGLISH = {
   stoppedDetail: "Start codexhost to use Codex Desktop with your Harnesses.",
   start: "Start codexhost",
   liveVoice: "Live voice",
-  liveVoiceInjectTitle: "Inject live-voice hook",
+  liveVoiceInjectTitle: "Enable voice integration",
   liveVoiceInjectDescription:
     "On by default. Enables ChatGPT voice in Chat and gateway voice in Work. Changes take effect after you fully quit and reopen codexhost.",
   liveVoiceRelaunchRequired:
@@ -24,6 +24,16 @@ const ENGLISH = {
   liveVoiceEnvOverride: "CODEXHOST_CPA_LIVE_VOICE on this process overrides the saved file.",
   liveVoiceConfigToml:
     "Work gateway still needs experimental_realtime_ws_base_url and experimental_realtime_webrtc_call_base_url in ~/.codex/config.toml.",
+  voiceActive: "Saved setting is active.",
+  voicePending: "Saved — restart required.",
+  voiceUnknown: "Active setting is unknown. Restart to load and verify the saved setting.",
+  restart: "Restart codexhost",
+  restartConfirm: "Restart now",
+  restartCancel: "Cancel",
+  restartWarning:
+    "Restart closes Desktop and may interrupt a voice call or running tasks. Finish or stop them before continuing. Saved chats remain available; Desktop controls which chat reopens.",
+  restarting: "Restarting codexhost… Waiting for the new Desktop controller.",
+  restarted: "Restart complete. The new Desktop controller is ready.",
   starting: "Starting…",
   startingTitle: "codexhost is starting",
   startingDetail: "Preparing Codex Desktop. Please wait; there is no need to start it again.",
@@ -219,7 +229,7 @@ const CHINESE: ConsoleMessages = {
   stoppedDetail: "启动 codexhost 后即可在 Codex Desktop 中使用各个 Harness。",
   start: "启动 codexhost",
   liveVoice: "实时语音",
-  liveVoiceInjectTitle: "注入 live-voice 钩子",
+  liveVoiceInjectTitle: "启用语音集成",
   liveVoiceInjectDescription:
     "默认开启。在 Chat 中启用 ChatGPT 语音，在 Work 中启用网关语音。修改后需完全退出并重新打开 codexhost。",
   liveVoiceRelaunchRequired:
@@ -227,6 +237,16 @@ const CHINESE: ConsoleMessages = {
   liveVoiceEnvOverride: "当前进程的 CODEXHOST_CPA_LIVE_VOICE 会覆盖已保存的文件。",
   liveVoiceConfigToml:
     "Work 网关仍需在 ~/.codex/config.toml 设置 experimental_realtime_ws_base_url 与 experimental_realtime_webrtc_call_base_url。",
+  voiceActive: "已保存的设置正在生效。",
+  voicePending: "已保存 — 需要重新启动。",
+  voiceUnknown: "当前生效设置未知。请重新启动以加载并验证已保存设置。",
+  restart: "重新启动 codexhost",
+  restartConfirm: "立即重新启动",
+  restartCancel: "取消",
+  restartWarning:
+    "重新启动会关闭 Desktop，可能中断语音通话或运行中的任务。请先完成或停止它们。已保存聊天仍可使用；重新打开哪个聊天由 Desktop 决定。",
+  restarting: "正在重新启动 codexhost… 等待新的 Desktop 控制器。",
+  restarted: "重新启动完成。新的 Desktop 控制器已就绪。",
   starting: "正在启动…",
   startingTitle: "codexhost 正在启动",
   startingDetail: "正在准备 Codex Desktop，请稍候，无需重复启动。",

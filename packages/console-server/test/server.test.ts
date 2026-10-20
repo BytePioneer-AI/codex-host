@@ -87,6 +87,8 @@ async function start(
     launch?: () => void;
     host?: ConsoleHostClient;
     environment?: NodeJS.ProcessEnv;
+    restart?: (command: string, args: string[]) => Promise<void>;
+    inspect?: () => Promise<InspectDocument>;
   } = {},
 ) {
   const updates = fakeUpdates();
@@ -104,8 +106,9 @@ async function start(
     harnesses: fakeHarnesses(),
     pageScript: "window.consoleLoaded = true;\n",
     host: options.host ?? { available: vi.fn(async () => false), request: vi.fn() },
-    inspect: async () => inspectDocument(options.codexRunning ?? false),
+    inspect: options.inspect ?? (async () => inspectDocument(options.codexRunning ?? false)),
     launch: options.launch ?? vi.fn(),
+    ...(options.restart ? { restart: options.restart } : {}),
     onExit,
     environment: { CODEXHOST_DATA_DIR: directory, ...options.environment },
   });
@@ -165,6 +168,7 @@ describe("console server", () => {
         "controller",
         "launchAvailable",
         "liveVoice",
+        "restart",
         "summary",
         "issueUrl",
         "hostAvailable",
@@ -234,14 +238,14 @@ describe("console server", () => {
       inject: boolean;
       envOverride: string | null;
     };
-    expect(first).toEqual({ inject: true, envOverride: null });
+    expect(first).toEqual({ inject: true, savedInject: true, envOverride: null });
     const saved = await fetch(`${base}/api/live-voice-inject`, {
       method: "POST",
       headers: { origin: base, "content-type": "application/json", ...CHANGE },
       body: JSON.stringify({ inject: false }),
     });
     expect(saved.status).toBe(200);
-    expect(await saved.json()).toEqual({ inject: false, envOverride: null });
+    expect(await saved.json()).toEqual({ inject: false, savedInject: false, envOverride: null });
     const overview = (await (await fetch(`${base}/api/overview`)).json()) as {
       liveVoice: { inject: boolean };
     };
@@ -262,6 +266,7 @@ describe("console server", () => {
     }
     expect(await (await fetch(`${base}/api/live-voice-inject`)).json()).toEqual({
       inject: true,
+      savedInject: true,
       envOverride: null,
     });
   });
@@ -273,13 +278,69 @@ describe("console server", () => {
       headers: { origin: base, "content-type": "application/json", ...CHANGE },
       body: JSON.stringify({ inject: false }),
     });
-    expect(await response.json()).toEqual({ inject: true, envOverride: "1" });
+    expect(await response.json()).toEqual({ inject: true, savedInject: false, envOverride: "1" });
     await running?.close();
     const restarted = await start();
     expect(await (await fetch(`${restarted.base}/api/live-voice-inject`)).json()).toEqual({
       inject: false,
+      savedInject: false,
       envOverride: null,
     });
+  });
+
+  it("guards restart, rejects duplicates and verifies a fresh ready controller", async () => {
+    let launcherPid = 101;
+    const install = async (pid: number, inject: boolean) => {
+      const file = consolePaths({ CODEXHOST_DATA_DIR: directory }).controllerStatusFile;
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(
+        file,
+        JSON.stringify({
+          schemaVersion: 1,
+          pid,
+          startedAt: Date.now(),
+          voiceInjection: inject,
+          voiceEnvOverride: null,
+          renderer: { state: "installed", failures: 0, updatedAt: Date.now() },
+        }),
+      );
+    };
+    await install(process.pid, true);
+    const gate = Promise.withResolvers<undefined>();
+    const restart = vi.fn(async () => {
+      await gate.promise;
+      launcherPid = 102;
+      await install(process.ppid, false);
+    });
+    const { base } = await start({
+      codexRunning: true,
+      restart,
+      inspect: async () => ({
+        ...inspectDocument(true),
+        runtime: { running: true, descriptorPath: "/fixture/runtime.json", launcherPid },
+      }),
+    });
+    const post = (confirm: boolean, origin = base) =>
+      fetch(`${base}/api/restart`, {
+        method: "POST",
+        headers: { origin, ...CHANGE },
+        body: JSON.stringify({ confirm }),
+      });
+    expect((await post(true, "https://evil.example")).status).toBe(403);
+    expect((await post(false)).status).toBe(400);
+    expect(restart).not.toHaveBeenCalled();
+    expect((await post(true)).status).toBe(202);
+    expect((await post(true)).status).toBe(409);
+    expect(restart).toHaveBeenCalledExactlyOnceWith("/opt/codexhost/bin/codexhost", ["restart"]);
+    const read = async () =>
+      (await (await fetch(`${base}/api/overview`)).json()) as {
+        restart: { phase: string };
+        liveVoice: { activeInject: boolean; inject: boolean };
+      };
+    expect((await read()).restart.phase).toBe("restarting");
+    gate.resolve(undefined);
+    await vi.waitFor(async () => expect((await read()).restart.phase).toBe("succeeded"));
+    expect((await read()).liveVoice).toMatchObject({ activeInject: false, inject: true });
   });
 
   it("refuses an update while codexhost is running", async () => {

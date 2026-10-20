@@ -52,6 +52,21 @@ describe("Controller attachment server", () => {
     }
   });
 
+  it("stops only on an authenticated single command", async () => {
+    const port = await availablePort();
+    const stop = vi.fn();
+    const server = await startControllerAttachmentServer({ port, nonce, attach: vi.fn(), stop });
+    try {
+      expect(await request(port, `STOP ${"0".repeat(32)}\n`)).toBe("rejected\n");
+      expect(await request(port, `STOP ${nonce}\nATTACH ${nonce}\n`)).toBe("rejected\n");
+      expect(stop).not.toHaveBeenCalled();
+      expect(await request(port, `STOP ${nonce}\n`)).toBe("stopping\n");
+      expect(stop).toHaveBeenCalledOnce();
+    } finally {
+      await server.close();
+    }
+  });
+
   it("validates remote settings commands at the socket boundary", async () => {
     const port = await availablePort();
     const remoteConnections = vi.fn(async () => ({ result: [] }));

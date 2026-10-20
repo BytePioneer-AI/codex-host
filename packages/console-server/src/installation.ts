@@ -122,16 +122,17 @@ export interface LaunchCommand {
 export function launchCommand(
   installation: ConsoleInstallation,
   environment: NodeJS.ProcessEnv = process.env,
+  action: "launch" | "restart" = "launch",
 ): LaunchCommand | null {
   if (installation.distribution?.distribution === "npm") {
     const node = environment.CODEXHOST_NPM_NODE_PATH;
     const wrapper = environment.CODEXHOST_NPM_LAUNCHER_PATH;
     if (node && wrapper && path.isAbsolute(node) && path.isAbsolute(wrapper)) {
-      return { command: node, args: [wrapper] };
+      return { command: node, args: [wrapper, ...(action === "restart" ? [action] : [])] };
     }
     return null;
   }
   return installation.launcherExecutable
-    ? { command: installation.launcherExecutable, args: ["launch"] }
+    ? { command: installation.launcherExecutable, args: [action] }
     : null;
 }

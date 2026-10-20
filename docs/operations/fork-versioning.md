@@ -26,8 +26,8 @@ Before an upstream sync:
 Required voice contracts:
 
 - **Existing switches:** Console **Inject live-voice hook** (default on, relaunch)
-  is the process-lifetime wrap. Desktop **Work live voice (gateway)** defaults on
-  and **Chat live voice (gateway)** defaults off. Chat Instant Connect on
+  is the process-lifetime wrap. Desktop **Work voice** defaults to **Configured gateway**
+  and **Chat voice** defaults to **ChatGPT**. Chat Instant Connect on
   `https://chatgpt.com/realtime/wm` keeps
   Desktop ChatGPT login. Work uses Host → gateway. A disabled Work switch calls
   the original `/wham` WebFetch. The usage-warning switch does not route calls.

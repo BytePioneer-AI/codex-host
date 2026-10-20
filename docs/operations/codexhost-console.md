@@ -6,7 +6,7 @@
 - **设置**：连接、远程连接、账号、会话导入、实时语音、更新。连接、远程连接、账号、会话导入与 Codex 设置页使用同一套页面和 Host 接口。**实时语音**保存 `~/.codexhost/live-voice-inject-v1.json` 的注入开关（默认开启），修改后需完全退出并重新打开 codexhost。连接页支持通过运行中的本地 Host 安装 Harness CLI、检查版本和更新，复用安装进度、错误提示及安装后检测；不支持远程 Host 安装。WorkBuddy 仍通过官网手动下载安装桌面应用。Host 不可用时不提供一键安装。
 - **其他**：关于。
 
-外观（思考文本显示、隐藏 Codex 额度警告、空闲释放、Work/Chat 网关开关）由 Codex 界面保存，只能在 Codex 设置页修改。Work 网关默认开启，Chat 网关默认关闭。注入开关不能热切换，在控制台修改后需完全退出并重新打开 codexhost；普通启动操作只会连接到已运行的受管 Desktop，不会重新启动。`~/.codex/config.toml` 里的 realtime 基址仍需自行配置。设计背景见 [`proposals/独立 Web 控制台方案.md`](../proposals/独立%20Web%20控制台方案.md)。
+外观（思考文本显示、隐藏 Codex 额度警告、空闲释放、Work/Chat 语音选择）由 Codex 界面保存，只能在 Codex 设置页修改。Work 语音默认选择已配置的网关，Chat 语音默认选择 ChatGPT。注入开关不能热切换，在控制台修改后需完全退出并重新打开 codexhost；普通启动操作只会连接到已运行的受管 Desktop，不会重新启动。总览和实时语音页的「重新启动 codexhost」会先提示通话与任务可能中断，再调用原生 restart 命令；只有新的 Launcher 和已就绪 Controller 都替换旧实例后才报告完成。语音页分别显示已保存设置与实际生效状态，旧版或已退出 Controller 的状态显示为未知。`~/.codex/config.toml` 里的 realtime 基址仍需自行配置。设计背景见 [`proposals/独立 Web 控制台方案.md`](../proposals/独立%20Web%20控制台方案.md)。
 
 ## 项目公告
 

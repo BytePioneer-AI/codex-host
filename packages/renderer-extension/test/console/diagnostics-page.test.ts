@@ -87,7 +87,7 @@ describe("overview startup diagnostics", () => {
     refresh?.();
     const ready = JSON.stringify(replaceChildren.mock.calls.at(-1));
     expect(ready).toContain("codexhost 正在运行");
-    expect(ready).not.toContain('"tag":"button"');
+    expect(ready).toContain("重新启动 codexhost");
   });
 
   it("does not present an abandoned starting record as a successful startup", () => {

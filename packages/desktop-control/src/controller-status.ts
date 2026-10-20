@@ -27,6 +27,8 @@ export interface DesktopControllerStatusDocument {
   schemaVersion: 1;
   pid: number;
   startedAt: number;
+  voiceInjection?: boolean;
+  voiceEnvOverride?: "0" | "1" | null;
   renderer: RendererIntegrationStatus;
 }
 

@@ -1,0 +1,148 @@
+//! Restart only the runtime authenticated by this installation's descriptor.
+use std::error::Error;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use codexhost_platform::process_executable_path;
+
+use crate::runtime_instance::{
+    RuntimeDescriptor, default_descriptor_path, default_guard_path, read_descriptor,
+    try_acquire_launcher_guard,
+};
+
+fn request_stop(descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
+    let address = format!("127.0.0.1:{}", descriptor.control_port).parse()?;
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    writeln!(stream, "STOP {}", descriptor.nonce)?;
+    let mut response = String::new();
+    BufReader::new(stream).take(128).read_line(&mut response)?;
+    if response.trim_end() == "rejected" {
+        // Older controllers have no STOP command. Only the process whose command
+        // line matches this descriptor's port and nonce is eligible for shutdown.
+        return crate::desktop_attachment::stop_orphaned_controller(descriptor);
+    }
+    if response.trim_end() != "stopping" {
+        return Err("Controller cannot restart this runtime; fully quit and reopen codexhost once to load the new controller".into());
+    }
+    Ok(())
+}
+
+pub(super) fn stop_managed_runtime() -> Result<(), Box<dyn Error>> {
+    stop_managed_runtime_at(
+        &default_descriptor_path()?,
+        &default_guard_path()?,
+        &std::env::current_exe()?.canonicalize()?,
+        Duration::from_secs(45),
+    )
+}
+
+fn stop_managed_runtime_at(
+    descriptor_path: &std::path::Path,
+    guard_path: &std::path::Path,
+    expected: &std::path::Path,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let descriptor = read_descriptor(descriptor_path)?.ok_or("No managed Desktop is running")?;
+    if process_executable_path(descriptor.launcher_pid)?.canonicalize()? != expected {
+        return Err("The running Desktop belongs to another codexhost installation".into());
+    }
+    request_stop(&descriptor)?;
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if let Some(_guard) = try_acquire_launcher_guard(guard_path)?
+            && read_descriptor(descriptor_path)?.is_none()
+        {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err("Managed Desktop did not stop before the restart timeout".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn stop_authenticates_and_requires_explicit_acknowledgment() {
+        for (reply, accepted) in [
+            ("stopping\n", true),
+            ("ready\n", false),
+            ("failed\n", false),
+        ] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let descriptor = RuntimeDescriptor::new(
+                1,
+                listener.local_addr().unwrap().port(),
+                "0123456789abcdef0123456789abcdef".into(),
+            )
+            .unwrap();
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(socket.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                assert_eq!(line, "STOP 0123456789abcdef0123456789abcdef\n");
+                socket.write_all(reply.as_bytes()).unwrap();
+            });
+            assert_eq!(request_stop(&descriptor).is_ok(), accepted);
+            server.join().unwrap();
+        }
+    }
+    #[test]
+    fn restart_waits_for_owned_lifecycle_and_refuses_another_installation() {
+        let root = std::env::temp_dir().join(format!(
+            "codexhost-restart-{}",
+            crate::runtime_instance::random_nonce().unwrap()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let descriptor_path = root.join("runtime.json");
+        let guard_path = root.join("owner.lock");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let descriptor = RuntimeDescriptor::new(
+            std::process::id(),
+            listener.local_addr().unwrap().port(),
+            "0123456789abcdef0123456789abcdef".into(),
+        )
+        .unwrap();
+        std::fs::write(&descriptor_path, serde_json::to_vec(&descriptor).unwrap()).unwrap();
+        let guard = try_acquire_launcher_guard(&guard_path).unwrap().unwrap();
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        assert!(
+            stop_managed_runtime_at(
+                &descriptor_path,
+                &guard_path,
+                &root.join("other"),
+                Duration::from_secs(1)
+            )
+            .is_err()
+        );
+        let removed = descriptor_path.clone();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(socket.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            socket.write_all(b"stopping\n").unwrap();
+            thread::sleep(Duration::from_millis(100));
+            std::fs::remove_file(removed).unwrap();
+            drop(guard);
+        });
+        stop_managed_runtime_at(
+            &descriptor_path,
+            &guard_path,
+            &executable,
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        server.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

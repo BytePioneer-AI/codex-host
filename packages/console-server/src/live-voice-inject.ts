@@ -7,6 +7,7 @@ export const LIVE_VOICE_INJECT_FILE = "live-voice-inject-v1.json";
 
 export interface LiveVoiceInjectState {
   inject: boolean;
+  savedInject: boolean;
   envOverride: "0" | "1" | null;
 }
 
@@ -30,9 +31,10 @@ export async function readLiveVoiceInjectState(
   } catch {
     inject = true;
   }
+  const savedInject = inject;
   if (envOverride === "0") inject = false;
   if (envOverride === "1") inject = true;
-  return { inject, envOverride };
+  return { inject, savedInject, envOverride };
 }
 
 export async function writeLiveVoiceInjectFile(

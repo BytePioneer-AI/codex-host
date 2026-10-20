@@ -542,7 +542,7 @@ let delegationArguments = null;
 let consoleArguments = null;
 if (userArguments.length === 0) {
   launchArguments = ["launch"];
-} else if (userArguments[0] === "launch") {
+} else if (userArguments[0] === "launch" || userArguments[0] === "restart") {
   launchArguments = userArguments;
 } else if (userArguments[0] === "inspect") {
   launchArguments = userArguments;
@@ -571,6 +571,7 @@ if (userArguments.length === 0) {
       "  codexhost inspect",
       "  codexhost console",
       "  codexhost update",
+      "  codexhost restart",
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost broker install|status|stop|uninstall",
@@ -590,7 +591,7 @@ if (userArguments.length === 0) {
   );
 }
 
-if (launchArguments?.[0] === "launch") {
+if (launchArguments?.[0] === "launch" || launchArguments?.[0] === "restart") {
   const injected = new Set();
   for (let index = 1; index < launchArguments.length; index += 1) {
     const argument = launchArguments[index];
@@ -613,7 +614,7 @@ if (launchArguments?.[0] === "launch") {
     extras.push("--desktop-controller", desktopController);
   }
   if (!injected.has("--renderer")) extras.push("--renderer", rendererExtension);
-  launchArguments = ["launch", ...extras, ...launchArguments.slice(1)];
+  launchArguments = [launchArguments[0], ...extras, ...launchArguments.slice(1)];
 }
 
 if (consoleArguments !== null) {
@@ -761,7 +762,7 @@ if (consoleArguments !== null) {
     }
     process.exit(code ?? 1);
   });
-} else if (launchArguments?.[0] === "launch") {
+} else if (launchArguments?.[0] === "launch" || launchArguments?.[0] === "restart") {
   // The Launcher prints "ready" once the Desktop, Controller, and Host chain
   // are up, then detaches from the terminal to keep supervising. Windows
   // command hosts may clean up a completed command's process tree, so keep the

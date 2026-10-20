@@ -1,3 +1,4 @@
+import { ConsoleRestart } from "./restart.js";
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
@@ -49,6 +50,7 @@ export interface ConsoleServerOptions {
   idleTimeoutMs?: number;
   inspect?(launcherExecutable: string): Promise<InspectDocument>;
   launch?(command: string, args: string[]): void;
+  restart?(command: string, args: string[]): Promise<void>;
   onExit(): void;
 }
 
@@ -122,11 +124,46 @@ function defaultLaunch(command: string, args: string[]): void {
   child.unref();
 }
 
+function defaultRestart(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
+    child.once("error", () => reject(new Error("Could not start the installed restart command")));
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
 export function startConsoleServer(options: ConsoleServerOptions): Promise<RunningConsoleServer> {
   const environment = options.environment ?? process.env;
   const inspect = options.inspect ?? inspectInstallation;
   const launch = options.launch ?? defaultLaunch;
   const loadAnnouncement = options.announcement ?? readAnnouncement;
+  let restartRequestedAt = 0;
+  const restart = new ConsoleRestart(
+    async () => {
+      restartRequestedAt = Date.now();
+      const command = launchCommand(options.installation, environment, "restart");
+      if (!command) throw new Error("This installation cannot be restarted from the console");
+      await (options.restart ?? defaultRestart)(command.command, command.args);
+    },
+    async () => {
+      inspectCache = null;
+      const collected = await collect();
+      const latest = collected.startup[0];
+      return {
+        launcherPid: collected.inspectDocument?.runtime.launcherPid ?? null,
+        controllerPid: collected.controllerAlive ? (collected.controller?.pid ?? null) : null,
+        installed:
+          collected.controllerAlive && collected.controller?.renderer.state === "installed",
+        failure:
+          latest?.outcome === "failed" && latest.startedAtMs >= restartRequestedAt
+            ? (latest.error ?? "Desktop startup failed")
+            : null,
+      };
+    },
+  );
   // Updated with the bound port; tests may listen on port 0.
   let port = options.port;
   let inspectCache: { at: number; value: Promise<InspectDocument> } | null = null;
@@ -217,7 +254,17 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       summary,
       issueUrl: reportIssueUrl,
       hostAvailable: await options.host.available(),
-      liveVoice: await readLiveVoiceInjectState(options.paths.dataDirectory, environment),
+      liveVoice: {
+        ...(await readLiveVoiceInjectState(options.paths.dataDirectory, environment)),
+        activeInject:
+          collected.controllerAlive && typeof controller?.voiceInjection === "boolean"
+            ? controller.voiceInjection
+            : null,
+        activeEnvOverride: collected.controllerAlive
+          ? (controller?.voiceEnvOverride ?? null)
+          : null,
+      },
+      restart: restart.status,
     };
   }
 
@@ -424,6 +471,34 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
         200,
         await readLiveVoiceInjectState(options.paths.dataDirectory, environment),
       );
+      return;
+    }
+    if (route === "POST /api/restart") {
+      if (body.confirm !== true) {
+        sendJson(response, 400, {
+          error: "Confirm that restart may interrupt voice and running tasks",
+        });
+        return;
+      }
+      const current = await collect();
+      if (
+        !current.inspectDocument?.runtime.running ||
+        !launchCommand(options.installation, environment, "restart")
+      ) {
+        sendJson(response, 409, { error: "No restartable managed Desktop is running" });
+        return;
+      }
+      if (restart.status.phase === "restarting") {
+        sendJson(response, 409, { error: "Restart is already in progress" });
+        return;
+      }
+      restart.start({
+        launcherPid: current.inspectDocument.runtime.launcherPid,
+        controllerPid: current.controller?.pid ?? null,
+        installed: current.controller?.renderer.state === "installed",
+        failure: null,
+      });
+      sendJson(response, 202, restart.status);
       return;
     }
     if (route === "POST /api/launch") {

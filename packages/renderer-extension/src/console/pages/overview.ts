@@ -1,3 +1,4 @@
+import { renderRestartControl } from "./restart-control.js";
 import { consolePost } from "../api.js";
 import { button, h } from "../dom.js";
 import type { ConsoleMessages } from "../messages.js";
@@ -92,6 +93,8 @@ export function createOverviewPage(
           start.disabled = launching || !overview.launchAvailable;
           actions.append(start);
         }
+        if (summaryState === "running" || summaryState === "integration-unavailable")
+          actions.append(renderRestartControl(document, messages, state));
         if (state.update?.updateAvailable) {
           actions.append(
             button(document, `${messages.viewUpdate} · ${state.update.latestVersion ?? ""}`, () =>

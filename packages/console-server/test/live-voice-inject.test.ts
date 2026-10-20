@@ -21,6 +21,7 @@ describe("live voice injection setting", () => {
   it("defaults on, persists both values, and leaves only the published file", async () => {
     expect(await readLiveVoiceInjectState(directory, {})).toEqual({
       inject: true,
+      savedInject: true,
       envOverride: null,
     });
     for (const inject of [false, true]) {
@@ -28,7 +29,11 @@ describe("live voice injection setting", () => {
       expect(
         JSON.parse(await readFile(path.join(directory, LIVE_VOICE_INJECT_FILE), "utf8")),
       ).toEqual({ version: 1, inject });
-      expect(await readLiveVoiceInjectState(directory, {})).toEqual({ inject, envOverride: null });
+      expect(await readLiveVoiceInjectState(directory, {})).toEqual({
+        inject,
+        savedInject: inject,
+        envOverride: null,
+      });
     }
     expect(await readdir(directory)).toEqual([LIVE_VOICE_INJECT_FILE]);
     if (process.platform !== "win32") {
@@ -46,6 +51,7 @@ describe("live voice injection setting", () => {
     await writeFile(path.join(directory, LIVE_VOICE_INJECT_FILE), content);
     expect(await readLiveVoiceInjectState(directory, {})).toEqual({
       inject: true,
+      savedInject: true,
       envOverride: null,
     });
   });
@@ -54,16 +60,18 @@ describe("live voice injection setting", () => {
     await writeLiveVoiceInjectFile(directory, false);
     expect(await readLiveVoiceInjectState(directory, { CODEXHOST_CPA_LIVE_VOICE: "1" })).toEqual({
       inject: true,
+      savedInject: false,
       envOverride: "1",
     });
     await writeLiveVoiceInjectFile(directory, true);
     expect(await readLiveVoiceInjectState(directory, { CODEXHOST_CPA_LIVE_VOICE: "0" })).toEqual({
       inject: false,
+      savedInject: true,
       envOverride: "0",
     });
     expect(
       await readLiveVoiceInjectState(directory, { CODEXHOST_CPA_LIVE_VOICE: "other" }),
-    ).toEqual({ inject: true, envOverride: null });
+    ).toEqual({ inject: true, savedInject: true, envOverride: null });
   });
 
   it("reports publication failure and cleans up the temporary file", async () => {

@@ -28,6 +28,30 @@ import {
   preferenceId,
 } from "./preference-ui.js";
 
+function voiceChoice(
+  document: Document,
+  id: string,
+  describedBy: string,
+  nativeLabel: string,
+  gatewayLabel: string,
+): HTMLSelectElement {
+  const select = document.createElement("select");
+  select.id = id;
+  select.setAttribute("aria-describedby", describedBy);
+  select.className =
+    "rounded-md border border-settings-border bg-settings-panel px-3 py-2 text-settings-text";
+  for (const [value, label] of [
+    ["native", nativeLabel],
+    ["gateway", gatewayLabel],
+  ] as const) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.append(option);
+  }
+  return select;
+}
+
 export function createAppearanceSettingsPage(
   messages: RendererSettingsMessages,
   getLoadedSessionsClient: () => LoadedSessionsClient | null = () => null,
@@ -83,14 +107,20 @@ export function createAppearanceSettingsPage(
         controlId: liveVoiceId,
         help: { label: messages.cpaLiveVoiceHelpLabel, lines: messages.cpaLiveVoiceHelp },
       });
-      const liveVoice = createPreferenceSwitch(document, liveVoiceId, liveVoiceRow.description.id);
-      liveVoice.checked = readCpaLiveVoicePreference(ownerWindow);
+      const liveVoice = voiceChoice(
+        document,
+        liveVoiceId,
+        liveVoiceRow.description.id,
+        messages.voiceDesktopDefault,
+        messages.voiceGateway,
+      );
+      liveVoice.value = readCpaLiveVoicePreference(ownerWindow) ? "gateway" : "native";
       liveVoice.addEventListener("change", () => {
-        writeCpaLiveVoicePreference(ownerWindow, liveVoice.checked);
-        liveVoice.checked = readCpaLiveVoicePreference(ownerWindow);
+        writeCpaLiveVoicePreference(ownerWindow, liveVoice.value === "gateway");
+        liveVoice.value = readCpaLiveVoicePreference(ownerWindow) ? "gateway" : "native";
       });
       const syncLiveVoice = (): void => {
-        liveVoice.checked = readCpaLiveVoicePreference(ownerWindow);
+        liveVoice.value = readCpaLiveVoicePreference(ownerWindow) ? "gateway" : "native";
       };
       ownerWindow.addEventListener(CPA_LIVE_VOICE_CHANGE_EVENT, syncLiveVoice);
       liveVoiceRow.item.append(liveVoice);
@@ -130,14 +160,20 @@ export function createAppearanceSettingsPage(
         controlId: chatVoiceId,
         help: { label: messages.chatLiveVoiceHelpLabel, lines: messages.chatLiveVoiceHelp },
       });
-      const chatVoice = createPreferenceSwitch(document, chatVoiceId, chatVoiceRow.description.id);
-      chatVoice.checked = readChatLiveVoicePreference(ownerWindow);
+      const chatVoice = voiceChoice(
+        document,
+        chatVoiceId,
+        chatVoiceRow.description.id,
+        "ChatGPT",
+        messages.voiceGateway,
+      );
+      chatVoice.value = readChatLiveVoicePreference(ownerWindow) ? "gateway" : "native";
       chatVoice.addEventListener("change", () => {
-        writeChatLiveVoicePreference(ownerWindow, chatVoice.checked);
-        chatVoice.checked = readChatLiveVoicePreference(ownerWindow);
+        writeChatLiveVoicePreference(ownerWindow, chatVoice.value === "gateway");
+        chatVoice.value = readChatLiveVoicePreference(ownerWindow) ? "gateway" : "native";
       });
       const syncChatVoice = (): void => {
-        chatVoice.checked = readChatLiveVoicePreference(ownerWindow);
+        chatVoice.value = readChatLiveVoicePreference(ownerWindow) ? "gateway" : "native";
       };
       ownerWindow.addEventListener(CHAT_LIVE_VOICE_CHANGE_EVENT, syncChatVoice);
       chatVoice.disabled = !injected;

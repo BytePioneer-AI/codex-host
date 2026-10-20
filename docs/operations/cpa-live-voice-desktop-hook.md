@@ -6,13 +6,17 @@ For upstream merges, follow the [Live Voice preservation checklist](fork-version
 
 ## Default
 
-**Inject on** by default. Persist `~/.codexhost/live-voice-inject-v1.json` (`inject: true|false`). Process env `CODEXHOST_CPA_LIVE_VOICE=0` or `1` wins for that launch. Inject is **not live**: change it in the Web console **设置 → 实时语音** then fully quit and reopen codexhost. The normal launch action attaches to an already running managed Desktop; it does not restart it.
+**Inject on** by default. Persist `~/.codexhost/live-voice-inject-v1.json` (`inject: true|false`). Process env `CODEXHOST_CPA_LIVE_VOICE=0` or `1` wins for that launch. Inject is **not live**: change it in the Web console **设置 → 实时语音** then fully quit and reopen codexhost. Console **Restart codexhost** runs the native `restart` command after confirming possible call/task interruption. A successful result requires a different ready Desktop Controller. The normal launch action still attaches to an already running managed Desktop.
 
 When injected, the Renderer wrap on `POST /wham/realtime/calls`:
 
-- **Chat** (`productExperience: chat`): the native Chat/browser voice stack owns Instant Connect (`fetchVoiceRequest` → `https://chatgpt.com/realtime/wm`). The `/wham` wrapper passes Chat requests through unless **Chat live voice (gateway)** is enabled. Explicit Chat launch ownership takes precedence over a remembered Work surface or Harness selection.
+- **Chat** (`productExperience: chat`): the native Chat/browser voice stack owns Instant Connect (`fetchVoiceRequest` → `https://chatgpt.com/realtime/wm`). The `/wham` wrapper passes Chat requests through unless **Chat voice → Configured gateway** is selected. Explicit Chat launch ownership takes precedence over a remembered Work surface or Harness selection.
 - **Work / Harness**: Host → configured gateway. Composer `work` or `backend_model_name` `codexhost/…` / non-`gpt-live` + `codex`.
-- Desktop **Work live voice (gateway)** defaults on; **Chat live voice (gateway)** defaults off (chatgpt.com Instant Connect). Both apply to the next voice launch. When inject is off they are disabled and link to the console.
+- Desktop **Work voice** defaults to **Configured gateway**; **Chat voice** defaults to **ChatGPT** (chatgpt.com Instant Connect). Both apply to the next voice launch. When inject is off they are disabled and link to the console.
+
+The Controller publishes its loaded injection flag and environment override in its status file. The console compares that active flag with the saved effective setting: unknown state remains unknown, differing values require restart, and matching values are active. This status confirms configuration loading, not voice connectivity.
+
+The 26.1013 Work/Chat routing choices apply on the next call. The injection setting and process environment require restart. Host call creation rereads the selected provider and realtime URLs from `CODEX_HOME/config.toml`; Desktop-owned config consumers can require restart. End an existing call before changing its gateway configuration so cleanup uses the correct gateway.
 
 The unaudited-Desktop asset gate still fail-closes. `~/.codex/config.toml` realtime keys stay manual.
 
@@ -35,7 +39,7 @@ On the exact audited `app-initial-90eb42395b7d.js` and
 singleton's `fetch` method only for `POST /wham/realtime/calls`. It forwards the
 native SDP/session through `codexhost/realtime/call` on the local Host connection
 when the matching switch is on: Work composer surface or a Work/Harness backend
-model uses **Work live voice (gateway)** through Host. Chat with the Chat gateway
+model uses **Work voice → Configured gateway** through Host. Chat with the Chat gateway
 switch off leaves native `/wham` so Desktop Chat voice can own Instant Connect.
 Chat gateway on uses the same Host path as Work. Other WebFetch requests
 pass through with their original receiver and
@@ -180,7 +184,7 @@ Desktop’s voice-start path sets `clientOwnsCall` when the `hostId` argument is
 
 The hook forces Statsig `checkGate("206132468")` to false on every client registered on `__STATSIG__`. In the audited build that gate has no other reader, so the result is durable-only ownership: a local host gets `clientOwnsCall=false` and `transport=webrtc`, and CPA can `POST /v1/realtime/calls`. Other gates pass through unchanged. Official app-server traffic is not rewritten. Host still passes official `thread/realtime/*` through.
 
-The legacy gate override reads **Work live voice (gateway)** at install time. Per-request routing and the separate Chat gateway switch apply to the 26.1013 client-owned fetch wrap.
+The legacy gate override reads the Work gateway preference at install time. Per-request routing and the separate Chat gateway switch apply to the 26.1013 client-owned fetch wrap.
 
 ## How it is installed
 

@@ -48,6 +48,8 @@ export interface RendererSettingsMessages {
   readonly cpaLiveVoiceHelp: readonly string[];
   readonly cpaLiveVoiceRestartRequired: string;
   readonly cpaLiveVoiceOpenConsole: string;
+  readonly voiceDesktopDefault: string;
+  readonly voiceGateway: string;
   readonly chatLiveVoiceTitle: string;
   readonly chatLiveVoiceDescription: string;
   readonly chatLiveVoiceHelpLabel: string;
@@ -312,9 +314,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "When this is on, that card is hidden on every Composer, including Codex threads. Reset usage and Upgrade stay available in Settings.",
     "Turning this off only shows the native card again. Send on this Composer, including Codex threads, is already separated from that quota card.",
   ]),
-  cpaLiveVoiceTitle: "Work live voice (gateway)",
+  cpaLiveVoiceTitle: "Work voice",
+  voiceDesktopDefault: "Desktop default",
+  voiceGateway: "Configured gateway",
   cpaLiveVoiceDescription:
-    "On by default. Work, Codex and external Harness Start Voice uses the configured gateway.",
+    "Configured gateway by default. Applies to Work, Codex and external Harness voice.",
   cpaLiveVoiceHelpLabel: "About Work live voice",
   cpaLiveVoiceHelp: Object.freeze([
     "When the live-voice hook is injected, Work Start Voice is created through Host and your realtime gateway.",
@@ -322,15 +326,15 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "Also set both keys in ~/.codex/config.toml: experimental_realtime_ws_base_url and experimental_realtime_webrtc_call_base_url, each pointing at your realtime host /v1.",
   ]),
   cpaLiveVoiceRestartRequired:
-    "The live-voice hook is not injected. Open the console, turn Inject live-voice hook on, and relaunch Codex.",
+    "Voice integration is not active. Enable voice integration in the console and restart codexhost.",
   cpaLiveVoiceOpenConsole: "Open console",
-  chatLiveVoiceTitle: "Chat live voice (gateway)",
+  chatLiveVoiceTitle: "Chat voice",
   chatLiveVoiceDescription:
-    "Off by default. When off, Chat uses Desktop's native Chat voice (existing web conversation Instant Connect). When on, Chat uses the same gateway as Work.",
+    "ChatGPT by default. Keeps voice on your ChatGPT conversation. Configured gateway uses the same gateway as Work.",
   chatLiveVoiceHelpLabel: "About Chat live voice",
   chatLiveVoiceHelp: Object.freeze([
     "Chat Instant Connect for an existing web conversation is Desktop's Chat/browser voice stack, not a Codex /wham rewrite.",
-    "When this is on, Chat goes through the Work gateway instead. Gateway failures are reported instead of falling back to Instant Connect.",
+    "When Configured gateway is selected, Chat goes through the Work gateway. Gateway failures are reported instead of falling back to Instant Connect.",
     "This switch changes Chat calls only. Work has its own gateway switch.",
   ]),
   loadedSessions: {
@@ -648,7 +652,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "开启后，所有 Composer 都隐藏该卡片，包括 Codex 会话。「重置用量」和「升级」仍可在设置中使用。",
     "关闭此开关只会重新显示原生卡片。当前 Composer 的发送（包括 Codex 会话）已与该额度卡片分离。",
   ]),
-  cpaLiveVoiceTitle: "Work 实时语音（网关）",
+  cpaLiveVoiceTitle: "Work 语音",
+  voiceDesktopDefault: "Desktop 默认",
+  voiceGateway: "已配置的网关",
   cpaLiveVoiceDescription: "默认开启。Work、Codex 和外部 Harness 的「开始语音」走已配置的网关。",
   cpaLiveVoiceHelpLabel: "Work 实时语音说明",
   cpaLiveVoiceHelp: Object.freeze([
@@ -656,12 +662,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "此开关在下一次语音会话生效。控制台中的注入开关需完全退出并重新打开 codexhost 后才会改变。",
     "还需要在 ~/.codex/config.toml 设置 experimental_realtime_ws_base_url 与 experimental_realtime_webrtc_call_base_url，都指向你的 realtime 主机 /v1。",
   ]),
-  cpaLiveVoiceRestartRequired:
-    "当前未注入 live-voice 钩子。请打开控制台，打开「注入 live-voice 钩子」，然后重新启动 Codex。",
+  cpaLiveVoiceRestartRequired: "语音集成未生效。请在控制台启用语音集成，然后重新启动 codexhost。",
   cpaLiveVoiceOpenConsole: "打开控制台",
-  chatLiveVoiceTitle: "Chat 实时语音（网关）",
+  chatLiveVoiceTitle: "Chat 语音",
   chatLiveVoiceDescription:
-    "默认关闭。关闭时，Chat 使用 Desktop 原生 ChatGPT 语音（已有网页会话的 Instant Connect）；开启后与 Work 共用网关。",
+    "默认使用 ChatGPT，语音保留在当前 ChatGPT 聊天中。选择网关则与 Work 共用网关。",
   chatLiveVoiceHelpLabel: "Chat 实时语音说明",
   chatLiveVoiceHelp: Object.freeze([
     "已有网页会话的 Chat Instant Connect 走 Desktop 原生 Chat 语音栈，而不是改写 Codex /wham。",

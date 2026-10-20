@@ -1,16 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  CHAT_LIVE_VOICE_CHANGE_EVENT,
   CHAT_LIVE_VOICE_STORAGE_KEY,
-  CPA_LIVE_VOICE_CHANGE_EVENT,
   CPA_LIVE_VOICE_STORAGE_KEY,
   chatLiveVoicePreferenceAllowsOverride,
   cpaLiveVoicePreferenceAllowsInstall,
   readChatLiveVoicePreference,
   readCpaLiveVoicePreference,
-  writeChatLiveVoicePreference,
-  writeCpaLiveVoicePreference,
+  applySharedVoiceRoutes,
+  nativeChatVoicePreferenceAllowsStart,
+  legacyVoiceRoutes,
 } from "../src/renderer-cpa-live-voice-preference.js";
 
 function fixture(initial?: string, key = CPA_LIVE_VOICE_STORAGE_KEY) {
@@ -40,34 +39,47 @@ function throwingOwner() {
 }
 
 describe("CPA live-voice Settings preference", () => {
-  it("defaults on, persists off as 0, and allows install when storage is missing", () => {
-    const unset = fixture();
-    expect(readCpaLiveVoicePreference(unset.owner)).toBe(true);
+  it("reads the old Work preference for migration and defaults on", () => {
+    expect(readCpaLiveVoicePreference(fixture().owner)).toBe(true);
+    expect(readCpaLiveVoicePreference(fixture("0").owner)).toBe(false);
+    expect(readCpaLiveVoicePreference(fixture("1").owner)).toBe(true);
     expect(cpaLiveVoicePreferenceAllowsInstall({})).toBe(true);
-    expect(cpaLiveVoicePreferenceAllowsInstall(unset.owner)).toBe(true);
-
-    const events: string[] = [];
-    unset.owner.addEventListener(CPA_LIVE_VOICE_CHANGE_EVENT, () => events.push("changed"));
-    expect(writeCpaLiveVoicePreference(unset.owner, false)).toBe(true);
-    expect(unset.values.get(CPA_LIVE_VOICE_STORAGE_KEY)).toBe("0");
-    expect(readCpaLiveVoicePreference(unset.owner)).toBe(false);
-    expect(cpaLiveVoicePreferenceAllowsInstall(unset.owner)).toBe(false);
-    expect(events).toEqual(["changed"]);
-
-    expect(writeCpaLiveVoicePreference(unset.owner, true)).toBe(true);
-    expect(unset.values.get(CPA_LIVE_VOICE_STORAGE_KEY)).toBe("1");
-    expect(readCpaLiveVoicePreference(unset.owner)).toBe(true);
   });
 
   it("stays on when localStorage throws", () => {
     const owner = throwingOwner();
     expect(readCpaLiveVoicePreference(owner)).toBe(true);
-    expect(writeCpaLiveVoicePreference(owner, false)).toBe(false);
     expect(cpaLiveVoicePreferenceAllowsInstall(owner)).toBe(true);
   });
 });
 
 describe("Chat live-voice Settings preference", () => {
+  it("distinguishes native ChatGPT, Codex default and gateway without changing Work", () => {
+    const { owner } = fixture("0");
+    expect(legacyVoiceRoutes(owner).workConnection).toBe("desktop");
+    for (const [chatExperience, chatConnection, native, gateway] of [
+      ["chatgpt", "gateway", true, false],
+      ["codex", "desktop", false, false],
+      ["codex", "gateway", false, true],
+    ] as const) {
+      applySharedVoiceRoutes(owner, { chatExperience, chatConnection, workConnection: "desktop" });
+      expect(nativeChatVoicePreferenceAllowsStart(owner)).toBe(native);
+      expect(chatLiveVoicePreferenceAllowsOverride(owner)).toBe(gateway);
+      expect(cpaLiveVoicePreferenceAllowsInstall(owner)).toBe(false);
+    }
+  });
+  it("restores the last shared route on a fresh renderer document before polling", () => {
+    const { owner, storage } = fixture();
+    applySharedVoiceRoutes(owner, {
+      chatExperience: "codex",
+      chatConnection: "desktop",
+      workConnection: "desktop",
+    });
+    const reloaded = { localStorage: storage } as unknown as Window;
+    expect(nativeChatVoicePreferenceAllowsStart(reloaded)).toBe(false);
+    expect(chatLiveVoicePreferenceAllowsOverride(reloaded)).toBe(false);
+    expect(cpaLiveVoicePreferenceAllowsInstall(reloaded)).toBe(false);
+  });
   it("defaults off and enables only on the exact 1 value", () => {
     const chat = (initial?: string) => fixture(initial, CHAT_LIVE_VOICE_STORAGE_KEY);
     expect(readChatLiveVoicePreference(chat().owner)).toBe(false);
@@ -78,22 +90,22 @@ describe("Chat live-voice Settings preference", () => {
     expect(chatLiveVoicePreferenceAllowsOverride(chat("1").owner)).toBe(true);
   });
 
-  it("persists the choice under its own key and stays off when storage throws", () => {
-    const unset = fixture();
-    const events: string[] = [];
-    unset.owner.addEventListener(CHAT_LIVE_VOICE_CHANGE_EVENT, () => events.push("changed"));
-    expect(writeChatLiveVoicePreference(unset.owner, true)).toBe(true);
-    expect(unset.values.get(CHAT_LIVE_VOICE_STORAGE_KEY)).toBe("1");
-    expect(readChatLiveVoicePreference(unset.owner)).toBe(true);
-    expect(unset.values.has(CPA_LIVE_VOICE_STORAGE_KEY)).toBe(false);
-    expect(writeChatLiveVoicePreference(unset.owner, false)).toBe(true);
-    expect(unset.values.get(CHAT_LIVE_VOICE_STORAGE_KEY)).toBe("0");
-    expect(readChatLiveVoicePreference(unset.owner)).toBe(false);
-    expect(events).toEqual(["changed", "changed"]);
-
-    const owner = throwingOwner();
-    expect(readChatLiveVoicePreference(owner)).toBe(false);
-    expect(writeChatLiveVoicePreference(owner, true)).toBe(false);
-    expect(chatLiveVoicePreferenceAllowsOverride(owner)).toBe(false);
+  it("keeps Chat and Work migration independent and handles unavailable browser storage", () => {
+    const owner = fixture("0").owner;
+    expect(legacyVoiceRoutes(owner)).toEqual({
+      chatExperience: "chatgpt",
+      chatConnection: "desktop",
+      workConnection: "desktop",
+    });
+    expect(readChatLiveVoicePreference(throwingOwner())).toBe(false);
+    expect(chatLiveVoicePreferenceAllowsOverride(throwingOwner())).toBe(false);
+    const blocked = throwingOwner();
+    applySharedVoiceRoutes(blocked, {
+      chatExperience: "codex",
+      chatConnection: "gateway",
+      workConnection: "desktop",
+    });
+    expect(chatLiveVoicePreferenceAllowsOverride(blocked)).toBe(true);
+    expect(cpaLiveVoicePreferenceAllowsInstall(blocked)).toBe(false);
   });
 });

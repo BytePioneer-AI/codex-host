@@ -42,18 +42,6 @@ export interface RendererSettingsMessages {
   readonly hideCodexUsageBannerDescription: string;
   readonly hideCodexUsageBannerHelpLabel: string;
   readonly hideCodexUsageBannerHelp: readonly string[];
-  readonly cpaLiveVoiceTitle: string;
-  readonly cpaLiveVoiceDescription: string;
-  readonly cpaLiveVoiceHelpLabel: string;
-  readonly cpaLiveVoiceHelp: readonly string[];
-  readonly cpaLiveVoiceRestartRequired: string;
-  readonly cpaLiveVoiceOpenConsole: string;
-  readonly voiceDesktopDefault: string;
-  readonly voiceGateway: string;
-  readonly chatLiveVoiceTitle: string;
-  readonly chatLiveVoiceDescription: string;
-  readonly chatLiveVoiceHelpLabel: string;
-  readonly chatLiveVoiceHelp: readonly string[];
   readonly loadedSessions: {
     title: string;
     description: string;
@@ -313,29 +301,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "The native card appears when the signed-in ChatGPT Codex quota is exhausted.",
     "When this is on, that card is hidden on every Composer, including Codex threads. Reset usage and Upgrade stay available in Settings.",
     "Turning this off only shows the native card again. Send on this Composer, including Codex threads, is already separated from that quota card.",
-  ]),
-  cpaLiveVoiceTitle: "Work voice",
-  voiceDesktopDefault: "Desktop default",
-  voiceGateway: "Configured gateway",
-  cpaLiveVoiceDescription:
-    "Configured gateway by default. Applies to Work, Codex and external Harness voice.",
-  cpaLiveVoiceHelpLabel: "About Work live voice",
-  cpaLiveVoiceHelp: Object.freeze([
-    "When the live-voice hook is injected, Work Start Voice is created through Host and your realtime gateway.",
-    "This switch applies to the next voice session. Changing the console integration setting requires fully quitting and reopening codexhost.",
-    "Also set both keys in ~/.codex/config.toml: experimental_realtime_ws_base_url and experimental_realtime_webrtc_call_base_url, each pointing at your realtime host /v1.",
-  ]),
-  cpaLiveVoiceRestartRequired:
-    "Voice integration is not active. Enable voice integration in the console and restart codexhost.",
-  cpaLiveVoiceOpenConsole: "Open console",
-  chatLiveVoiceTitle: "Chat voice",
-  chatLiveVoiceDescription:
-    "ChatGPT by default. Keeps voice on your ChatGPT conversation. Configured gateway uses the same gateway as Work.",
-  chatLiveVoiceHelpLabel: "About Chat live voice",
-  chatLiveVoiceHelp: Object.freeze([
-    "Chat Instant Connect for an existing web conversation is Desktop's Chat/browser voice stack, not a Codex /wham rewrite.",
-    "When Configured gateway is selected, Chat goes through the Work gateway. Gateway failures are reported instead of falling back to Instant Connect.",
-    "This switch changes Chat calls only. Work has its own gateway switch.",
   ]),
   loadedSessions: {
     title: "Loaded sessions",
@@ -625,6 +590,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     connections: "Connections",
     "remote-connections": "Remote connections",
     appearance: "General",
+    voice: "Voice",
     accounts: "Accounts",
     "session-import": "Session Import",
     "usage-statistics": "Usage statistics",
@@ -651,27 +617,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "已登录的 ChatGPT Codex 额度耗尽时，Desktop 会显示原生警告卡片。",
     "开启后，所有 Composer 都隐藏该卡片，包括 Codex 会话。「重置用量」和「升级」仍可在设置中使用。",
     "关闭此开关只会重新显示原生卡片。当前 Composer 的发送（包括 Codex 会话）已与该额度卡片分离。",
-  ]),
-  cpaLiveVoiceTitle: "Work 语音",
-  voiceDesktopDefault: "Desktop 默认",
-  voiceGateway: "已配置的网关",
-  cpaLiveVoiceDescription: "默认开启。Work、Codex 和外部 Harness 的「开始语音」走已配置的网关。",
-  cpaLiveVoiceHelpLabel: "Work 实时语音说明",
-  cpaLiveVoiceHelp: Object.freeze([
-    "在已注入 live-voice 钩子时，Work「开始语音」由 Host 通过 realtime 网关创建。",
-    "此开关在下一次语音会话生效。控制台中的注入开关需完全退出并重新打开 codexhost 后才会改变。",
-    "还需要在 ~/.codex/config.toml 设置 experimental_realtime_ws_base_url 与 experimental_realtime_webrtc_call_base_url，都指向你的 realtime 主机 /v1。",
-  ]),
-  cpaLiveVoiceRestartRequired: "语音集成未生效。请在控制台启用语音集成，然后重新启动 codexhost。",
-  cpaLiveVoiceOpenConsole: "打开控制台",
-  chatLiveVoiceTitle: "Chat 语音",
-  chatLiveVoiceDescription:
-    "默认使用 ChatGPT，语音保留在当前 ChatGPT 聊天中。选择网关则与 Work 共用网关。",
-  chatLiveVoiceHelpLabel: "Chat 实时语音说明",
-  chatLiveVoiceHelp: Object.freeze([
-    "已有网页会话的 Chat Instant Connect 走 Desktop 原生 Chat 语音栈，而不是改写 Codex /wham。",
-    "开启后 Chat 改走 Work 网关；网关失败会直接报错，不会回退到 Instant Connect。",
-    "此开关只影响 Chat 语音，Work 使用自己的网关开关。",
   ]),
   loadedSessions: {
     title: "已加载会话",
@@ -944,6 +889,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     connections: "连接",
     "remote-connections": "远程连接",
     appearance: "通用",
+    voice: "语音",
     accounts: "账号",
     "session-import": "会话导入",
     "usage-statistics": "用量统计",

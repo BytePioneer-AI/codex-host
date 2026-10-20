@@ -24,6 +24,7 @@ describe("Renderer settings foundation", () => {
       "Session Import",
       "Usage statistics",
       "General",
+      "Voice",
       "Updates",
       "About",
     ]);
@@ -33,6 +34,7 @@ describe("Renderer settings foundation", () => {
       "accounts",
       "session-import",
       "dashboard",
+      "settings",
       "settings",
       "updates",
       "about",
@@ -52,6 +54,7 @@ describe("Renderer settings foundation", () => {
       "session-import",
       "usage-statistics",
       "appearance",
+      "voice",
       "updates",
       "about",
     ]);

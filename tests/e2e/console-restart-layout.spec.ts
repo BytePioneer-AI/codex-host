@@ -71,3 +71,73 @@ for (const width of [1920, 640]) {
     expect(restartRequests).toBe(0);
   });
 }
+
+for (const width of [1280, 430]) {
+  test(`shared console Voice page and navigation fit ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1100 });
+    await page.route("http://console-layout.test/**", async (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === "/")
+        return route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" });
+      if (pathname === "/api/overview")
+        return route.fulfill({
+          json: {
+            console: { version: "0.13.3-5", distribution: null },
+            inspect: { runtime: { running: true }, desktop: null },
+            startup: [],
+            controller: null,
+            launchAvailable: true,
+            liveVoice: { inject: true, envOverride: null },
+            summary: { state: "running" },
+            issueUrl: "",
+            hostAvailable: false,
+          },
+        });
+      if (pathname === "/api/voice-settings")
+        return route.fulfill({
+          json: {
+            settings: {
+              inject: true,
+              chatExperience: "chatgpt",
+              chatConnection: "desktop",
+              workConnection: "desktop",
+            },
+            initialized: true,
+            revision: "1",
+            activeInject: true,
+            envOverride: null,
+            activeEnvOverride: null,
+            activeCall: false,
+            routesActive: true,
+            gatewayReady: true,
+            restartAvailable: true,
+            restart: { phase: "idle", error: null },
+          },
+        });
+      return route.fulfill({ json: {} });
+    });
+    await page.goto("http://console-layout.test/#live-voice");
+    await page.addScriptTag({ content: bundle });
+    await expect(page.getByRole("combobox", { name: "Voice experience", exact: true })).toHaveValue(
+      "chatgpt",
+    );
+    await expect(page.getByText("Voice", { exact: true }).filter({ visible: true })).toHaveCount(
+      width < 760 ? 1 : 2,
+    );
+    const overflow = await page
+      .locator(".console-app")
+      .evaluate((element) => element.scrollWidth > element.clientWidth);
+    expect(overflow).toBe(false);
+    if (width < 760) {
+      const menu = page.locator(".console-menu-button");
+      await menu.click();
+      await expect(page.getByRole("button", { name: "Voice", exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "Voice", exact: true }).click();
+      await expect(menu).toHaveAttribute("aria-expanded", "false");
+    }
+    await page.screenshot({
+      path: test.info().outputPath(`console-voice-${width}.png`),
+      fullPage: true,
+    });
+  });
+}

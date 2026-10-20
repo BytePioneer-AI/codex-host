@@ -118,6 +118,56 @@ async function start(
 
 const CHANGE = { "x-codexhost-console": "1" };
 
+it("shares validated voice settings, protects writes and blocks changes during a reported call", async () => {
+  const { base } = await start();
+  const call = async (body: unknown) =>
+    fetch(`${base}/api/voice-settings`, {
+      method: "POST",
+      headers: { ...CHANGE, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const initial = await (await call({ operation: "get" })).json();
+  expect(initial).toMatchObject({ initialized: false, activeInject: null, gatewayReady: null });
+  const settings = {
+    inject: true,
+    chatExperience: "codex",
+    chatConnection: "desktop",
+    workConnection: "desktop",
+  };
+  expect((await call({ operation: "set", revision: initial.revision, settings })).status).toBe(200);
+  const saved = await (await call({ operation: "get" })).json();
+  expect(saved.settings).toEqual(settings);
+  expect((await call({ operation: "set", revision: initial.revision, settings })).status).toBe(409);
+  expect(
+    (
+      await call({
+        operation: "set",
+        revision: saved.revision,
+        settings: { ...settings, chatExperience: "invalid" },
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await fetch(`${base}/api/voice-settings`, {
+        method: "POST",
+        headers: { ...CHANGE, origin: "https://other.example" },
+        body: JSON.stringify({ operation: "get" }),
+      })
+    ).status,
+  ).toBe(403);
+  await call({
+    operation: "get",
+    runtime: {
+      id: "5b4ca336-19a2-4d9f-a9bc-2603a0019c3a",
+      revision: saved.revision,
+      activeCall: true,
+    },
+  });
+  expect((await call({ operation: "set", revision: saved.revision, settings })).status).toBe(409);
+  expect((await call({ operation: "restart", confirm: true })).status).toBe(409);
+});
+
 function rawRequest(port: number, host: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const request = httpRequest(

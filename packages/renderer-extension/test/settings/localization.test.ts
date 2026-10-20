@@ -6,6 +6,7 @@ import {
   rendererSettingsMessages,
   resolveRendererSettingsLocale,
 } from "../../src/settings/localization.js";
+import { voiceMessages } from "../../src/settings/voice-messages.js";
 import { createDefaultRendererSettingsPages } from "../../src/settings/pages.js";
 
 describe("Renderer settings localization", () => {
@@ -37,30 +38,15 @@ describe("Renderer settings localization", () => {
     expect(chinese.hideCodexUsageBannerTitle).toBe("隐藏 Codex 额度警告");
     expect(english.hideCodexUsageBannerDescription).toContain("On by default");
     expect(chinese.hideCodexUsageBannerDescription).toContain("默认开启");
-    expect(english.cpaLiveVoiceTitle).toBe("Work voice");
-    expect(chinese.cpaLiveVoiceTitle).toBe("Work 语音");
-    expect(english.cpaLiveVoiceTitle.toLowerCase()).not.toContain("cpa");
-    expect(chinese.cpaLiveVoiceTitle.toLowerCase()).not.toContain("cpa");
-    expect(english.cpaLiveVoiceDescription).toContain("Configured gateway by default");
-    expect(english.cpaLiveVoiceDescription).toContain("Work");
-    expect(chinese.cpaLiveVoiceDescription).toContain("默认开启");
-    expect(chinese.cpaLiveVoiceDescription).toContain("Work");
-    expect(english.cpaLiveVoiceHelp.join(" ")).toContain("experimental_realtime_ws_base_url");
-    expect(chinese.cpaLiveVoiceHelp.join(" ")).toContain(
-      "experimental_realtime_webrtc_call_base_url",
-    );
-    expect(english.cpaLiveVoiceRestartRequired).toContain("Enable voice integration");
-    expect(chinese.cpaLiveVoiceRestartRequired).toContain("重新启动 codexhost");
-    expect(english.chatLiveVoiceTitle).toBe("Chat voice");
-    expect(chinese.chatLiveVoiceTitle).toBe("Chat 语音");
-    expect(english.chatLiveVoiceTitle.toLowerCase()).not.toContain("cpa");
-    expect(chinese.chatLiveVoiceTitle.toLowerCase()).not.toContain("cpa");
-    expect(english.chatLiveVoiceDescription).toContain("ChatGPT by default");
-    expect(english.chatLiveVoiceDescription).toContain("ChatGPT conversation");
-    expect(chinese.chatLiveVoiceDescription).toContain("默认使用 ChatGPT");
-    expect(chinese.chatLiveVoiceDescription).toContain("ChatGPT");
-    expect(english.chatLiveVoiceHelp.join(" ")).toContain("Work has its own gateway switch");
-    expect(chinese.chatLiveVoiceHelp.join(" ")).toContain("网关失败");
+    const englishVoice = voiceMessages("en");
+    const chineseVoice = voiceMessages("zh-CN");
+    expect(Object.keys(englishVoice)).toEqual(Object.keys(chineseVoice));
+    expect(englishVoice.title).toBe("Voice");
+    expect(chineseVoice.title).toBe("语音");
+    expect(englishVoice.chatHint).toContain("current Chat conversation");
+    expect(englishVoice.workHint).toContain("External Harness voice uses the configured gateway");
+    expect(englishVoice.applyRestart).toBe("Apply and restart codexhost");
+    expect(chineseVoice.applyRestart).toContain("重启 codexhost");
     expect(chinese.openSettings).toBe("打开 codexhost 设置");
     expect(chinese.starOnGitHub).toBe("Star 支持");
     expect(english.starOnGitHub).toBe("Star to support");
@@ -112,6 +98,6 @@ describe("Renderer settings localization", () => {
       createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).map(
         ({ label }) => label,
       ),
-    ).toEqual(["连接", "远程连接", "账号", "会话导入", "用量统计", "通用", "更新", "关于"]);
+    ).toEqual(["连接", "远程连接", "账号", "会话导入", "用量统计", "通用", "语音", "更新", "关于"]);
   });
 });

@@ -1,3 +1,4 @@
+import { VOICE_GATEWAY_STATUS_METHOD } from "@codexhost/shared-contracts";
 import { readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
@@ -91,7 +92,11 @@ export function createConsoleHostClient(
         headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" },
         body: JSON.stringify({ method, params: params ?? {} }),
         signal: AbortSignal.timeout(
-          method === "codexhost/remote/ssh-setup" ? Math.max(timeoutMs, 330_000) : timeoutMs,
+          method === VOICE_GATEWAY_STATUS_METHOD
+            ? Math.min(timeoutMs, 2_000)
+            : method === "codexhost/remote/ssh-setup"
+              ? Math.max(timeoutMs, 330_000)
+              : timeoutMs,
         ),
       });
       const body = (await response.json().catch(() => null)) as HostReply | null;

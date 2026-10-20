@@ -1,3 +1,4 @@
+import { startVoiceSettingsSync } from "./voice-settings-sync.js";
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
 import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
@@ -813,7 +814,14 @@ export function installRendererBindingProbe(
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
+  const requestLocalSettings = async (method: string, params: unknown): Promise<unknown> => {
+    const route = window.__codexhostHostRoutingV1?.forHost("local");
+    if (disposed || !route) throw new Error("Local Host connection is unavailable");
+    return route.manager.sendRequest(method, params);
+  };
+  const stopVoiceSync = startVoiceSettingsSync(window, requestLocalSettings);
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
+    requestVoiceSettings: (params) => requestLocalSettings("codexhost/voice/settings", params),
     getRemoteConnections: () => remoteConnections,
     getUpdateClient: () => modelControl,
     getAccountClient: () => modelControl,
@@ -3330,6 +3338,7 @@ export function installRendererBindingProbe(
       disposeReasoningSoftWrap();
       delegationMention?.dispose();
       sidebarAgentIcons.dispose();
+      stopVoiceSync();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);

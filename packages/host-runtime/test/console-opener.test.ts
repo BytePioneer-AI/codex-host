@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { createServer } from "node:http";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -25,6 +26,51 @@ function fakeChild(stdout: string, stderr: string, code: number) {
 }
 
 describe("Host console opener", () => {
+  it("ensures the console without opening a browser and sends bounded settings operations", async () => {
+    const received: unknown[] = [];
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      received.push({
+        path: request.url,
+        header: request.headers["x-codexhost-console"],
+        body: JSON.parse(Buffer.concat(chunks).toString()),
+      });
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ settings: "fixture" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing listener");
+    const spawnProcess = vi.fn(() =>
+      fakeChild(`codexhost console: http://127.0.0.1:${address.port}/\n`, "", 0),
+    );
+    const opener = createHostConsoleOpener({
+      entrypoint: "/console.mjs",
+      environment: {},
+      spawnProcess: spawnProcess as never,
+    });
+    try {
+      await expect(opener.voiceSettings?.({ operation: "get" })).resolves.toEqual({
+        settings: "fixture",
+      });
+      await opener.voiceSettings?.({ operation: "migrate", routes: {} });
+      expect(spawnProcess).toHaveBeenCalledOnce();
+      expect(spawnProcess.mock.calls[0]).toEqual([
+        process.execPath,
+        ["/console.mjs", "ensure"],
+        expect.any(Object),
+      ]);
+      expect(received).toEqual([
+        { path: "/api/voice-settings", header: "1", body: { operation: "get" } },
+        { path: "/api/voice-settings", header: "1", body: { operation: "migrate", routes: {} } },
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
   it("finds the console beside a release Host Runtime or in a source checkout", () => {
     expect(consoleEntrypoint("/opt/codexhost/app/host-runtime.mjs", () => true)).toBe(
       path.join("/opt/codexhost/app", "console-server.mjs"),

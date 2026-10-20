@@ -6,15 +6,17 @@ For upstream merges, follow the [Live Voice preservation checklist](fork-version
 
 ## Default
 
-**Inject on** by default. Persist `~/.codexhost/live-voice-inject-v1.json` (`inject: true|false`). Process env `CODEXHOST_CPA_LIVE_VOICE=0` or `1` wins for that launch. Inject is **not live**: change it in the Web console **设置 → 实时语音** then fully quit and reopen codexhost. Console **Restart codexhost** runs the native `restart` command after confirming possible call/task interruption. A successful result requires a different ready Desktop Controller. The normal launch action still attaches to an already running managed Desktop.
+Desktop and the console expose the same **Voice** page using the existing settings components. Voice is separate from General/Appearance. Choose **Chat → Voice experience → ChatGPT or Codex**, then **Codex connection → Desktop default or Configured gateway** when Codex is selected. **Work → Voice connection** independently chooses Desktop default or gateway for Codex Work. External Harness voice remains Host → configured gateway, including when Codex Work selects Desktop default.
 
-When injected, the Renderer wrap on `POST /wham/realtime/calls`:
+The local console owns `~/.codexhost/live-voice-inject-v1.json`: version 1 retains `inject` and optionally stores `routes` with `chatExperience`, `chatConnection` and `workConnection`. Desktop reaches this service through the local Host's bounded `codexhost/voice/settings` bridge; it does not open a browser or use cross-origin browser requests. Desktop legacy preferences migrate once, only while shared routes are absent. A console edit takes precedence over later migration. Atomic publication preserves the existing Controller reader. Revision checks reject stale edits from another window.
 
-- **Chat** (`productExperience: chat`): the native Chat/browser voice stack owns Instant Connect (`fetchVoiceRequest` → `https://chatgpt.com/realtime/wm`). The `/wham` wrapper passes Chat requests through unless **Chat voice → Configured gateway** is selected. Explicit Chat launch ownership takes precedence over a remembered Work surface or Harness selection.
-- **Work / Harness**: Host → configured gateway. Composer `work` or `backend_model_name` `codexhost/…` / non-`gpt-live` + `codex`.
-- Desktop **Work voice** defaults to **Configured gateway**; **Chat voice** defaults to **ChatGPT** (chatgpt.com Instant Connect). Both apply to the next voice launch. When inject is off they are disabled and link to the console.
+ChatGPT is the default Chat experience; its native START and Instant Connect prewarm remain owned by Desktop's browser-voice stack. Codex/Desktop default restores the original Codex voice entry and passes `/wham` through. Codex/gateway forwards call creation through Host. Explicit Chat launch ownership takes precedence over remembered Work/Harness selection. Work defaults to gateway; saved choices are preserved.
 
-The Controller publishes its loaded injection flag and environment override in its status file. The console compares that active flag with the saved effective setting: unknown state remains unknown, differing values require restart, and matching values are active. This status confirms configuration loading, not voice connectivity.
+Edits are drafts until **Apply changes**. **Cancel** restores the loaded snapshot. Desktop polls shared choices every two seconds and acknowledges its applied revision; the page reports pending or unknown activation until that acknowledgment. A validated browser cache restores the last applied route before the first Host poll on a new document. Route changes are deferred during a detected active call, and fresh Desktop call reports block setting writes and Voice-page restarts. Runtime reports expire after 12 seconds; an absent report is unknown, not evidence that no call exists.
+
+**Advanced → Enable voice integration** defaults on. Changing injection uses **Apply and restart codexhost**, with explicit task/call interruption confirmation. Environment `CODEXHOST_CPA_LIVE_VOICE=0|1` controls injection for that launch and locks its saved toggle. The Controller's loaded flag is compared with the desired effective setting; saving and restart completion alone never claim configuration activation. Restart failures retain the saved configuration and permit retry. The normal launch action attaches to an already running Desktop.
+
+Gateway configuration details are collapsed under **Configuration → Gateway → Configure**. This reveals setup guidance, not a credential editor. The readiness check returns only a boolean from the Host; it does not probe a live call or expose provider credentials. Narrow console layouts use a compact expandable navigation menu and stacked preference controls without a horizontal navigation scrollbar.
 
 The 26.1013 Work/Chat routing choices apply on the next call. The injection setting and process environment require restart. Host call creation rereads the selected provider and realtime URLs from `CODEX_HOME/config.toml`; Desktop-owned config consumers can require restart. End an existing call before changing its gateway configuration so cleanup uses the correct gateway.
 
@@ -38,10 +40,7 @@ On the exact audited `app-initial-90eb42395b7d.js` and
 `app-shared-52443cbe9ac4.js` assets, the hook wraps the loaded native WebFetch
 singleton's `fetch` method only for `POST /wham/realtime/calls`. It forwards the
 native SDP/session through `codexhost/realtime/call` on the local Host connection
-when the matching switch is on: Work composer surface or a Work/Harness backend
-model uses **Work voice → Configured gateway** through Host. Chat with the Chat gateway
-switch off leaves native `/wham` so Desktop Chat voice can own Instant Connect.
-Chat gateway on uses the same Host path as Work. Other WebFetch requests
+when the matching route uses the gateway. Codex Work honors **Work → Voice connection**; external Harness calls always use Host. **Chat → Codex → Configured gateway** uses the same Host path. **Chat → Codex → Desktop default** leaves `/wham` untouched. **Chat → ChatGPT** invokes native browser voice separately and leaves `/wham` untouched. Other WebFetch requests
 pass through with their original receiver and
 arguments.
 No global fetch, message transport or application archive is replaced.

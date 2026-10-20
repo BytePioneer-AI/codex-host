@@ -1,4 +1,4 @@
-import { hostRequestManager, consoleUpdateClient } from "./api.js";
+import { hostRequestManager, consoleUpdateClient, consolePost } from "./api.js";
 import { mountConsoleAnnouncement } from "./announcement.js";
 import { startAgentGroupSync } from "../agent-group-sync.js";
 import { getSharedAgentGroupPreferenceStore } from "../agent-group-preference.js";
@@ -10,7 +10,7 @@ import { h } from "./dom.js";
 import { consoleMessages, type ConsoleMessages } from "./messages.js";
 import { createOfflineHarnessesPage } from "./pages/harnesses-offline.js";
 import { hostPage } from "./pages/host-required.js";
-import { createLiveVoicePage } from "./pages/live-voice.js";
+import { createVoiceSettingsPage } from "../settings/voice-page.js";
 import { createOverviewPage } from "./pages/overview.js";
 import { ConsoleState } from "./state.js";
 import { createConsoleRemoteConnections } from "./remote-connections.js";
@@ -145,6 +145,8 @@ export function startConsoleApp(document: Document): void {
     (method, params) => manager.sendRequest(method, params),
   );
   const navigate = (pageId: string): void => {
+    navigation.classList.remove("is-open");
+    menu.setAttribute("aria-expanded", "false");
     window.location.hash = pageId;
   };
   const sections: NavigationSection[] = [
@@ -169,7 +171,11 @@ export function startConsoleApp(document: Document): void {
         hostPage(required(settingsPages, "accounts"), messages, state),
         hostPage(required(settingsPages, "session-import"), messages, state),
         hostPage(required(settingsPages, "usage-statistics"), messages, state),
-        createLiveVoicePage(messages, state),
+        createVoiceSettingsPage(
+          locale,
+          (input) => consolePost("/api/voice-settings", input, AbortSignal.timeout(10_000)),
+          { id: "live-voice" },
+        ),
         required(settingsPages, "updates"),
       ],
     },
@@ -251,6 +257,32 @@ export function startConsoleApp(document: Document): void {
     createRendererSettingsIcon("alert", 16),
     h(document, "span", {}, `${messages.consoleOffline} · ${messages.consoleOfflineBody}`),
   );
+  const menu = h(
+    document,
+    "button",
+    {
+      type: "button",
+      className: "console-menu-button settings-command-button settings-command-button--secondary",
+      "aria-label": settingsMessages.sectionsLabel,
+      "aria-expanded": "false",
+      "aria-controls": "console-navigation",
+    },
+    "☰",
+  );
+  navigation.id = "console-navigation";
+  menu.addEventListener("click", () => {
+    const open = menu.getAttribute("aria-expanded") !== "true";
+    menu.setAttribute("aria-expanded", String(open));
+    navigation.classList.toggle("is-open", open);
+  });
+  navigation.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      navigation.classList.remove("is-open");
+      menu.setAttribute("aria-expanded", "false");
+      menu.focus();
+    }
+  });
+  brand.append(menu);
   shadow.append(
     h(
       document,
@@ -287,6 +319,8 @@ export function startConsoleApp(document: Document): void {
     const pageId = pages.has(requested) ? requested : "overview";
     if (pageId === activeId) return;
     activeId = pageId;
+    navigation.classList.remove("is-open");
+    menu.setAttribute("aria-expanded", "false");
     scope?.dispose();
     try {
       cleanup?.();

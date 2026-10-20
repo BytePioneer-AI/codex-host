@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { voiceRoutesSchema, type VoiceRoutes } from "@codexhost/shared-contracts";
 
 const CPA_LIVE_VOICE_ENV = "CODEXHOST_CPA_LIVE_VOICE";
 export const LIVE_VOICE_INJECT_FILE = "live-voice-inject-v1.json";
@@ -40,14 +41,27 @@ export async function readLiveVoiceInjectState(
 export async function writeLiveVoiceInjectFile(
   dataDirectory: string,
   inject: boolean,
+  routes?: VoiceRoutes,
 ): Promise<void> {
+  if (!routes) {
+    try {
+      const saved = JSON.parse(await readFile(injectPath(dataDirectory), "utf8"));
+      if (saved?.version === 1) routes = voiceRoutesSchema.safeParse(saved.routes).data;
+    } catch {
+      /* Missing or malformed settings use the injection default. */
+    }
+  }
   await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
   const temporaryPath = path.join(dataDirectory, `.${LIVE_VOICE_INJECT_FILE}.${randomUUID()}.tmp`);
   try {
-    await writeFile(temporaryPath, `${JSON.stringify({ version: 1, inject }, null, 2)}\n`, {
-      mode: 0o600,
-      flag: "wx",
-    });
+    await writeFile(
+      temporaryPath,
+      `${JSON.stringify({ version: 1, inject, ...(routes ? { routes } : {}) }, null, 2)}\n`,
+      {
+        mode: 0o600,
+        flag: "wx",
+      },
+    );
     await rename(temporaryPath, injectPath(dataDirectory));
   } finally {
     await rm(temporaryPath, { force: true });

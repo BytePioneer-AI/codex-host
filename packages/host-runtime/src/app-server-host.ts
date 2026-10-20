@@ -1,3 +1,9 @@
+import {
+  VOICE_SETTINGS_METHOD,
+  VOICE_GATEWAY_STATUS_METHOD,
+  voiceSettingsRequestSchema,
+} from "@codexhost/shared-contracts";
+import { readRealtimeGateway } from "./realtime-gateway-config.js";
 import { REALTIME_CALL_METHOD } from "@codexhost/shared-contracts";
 import { NativeVoiceGateway } from "./native-voice-gateway.js";
 import {
@@ -1502,6 +1508,40 @@ export class AppServerHost {
       request.method === "codexhost/update/status"
     ) {
       this.#dispatchDesktopReply(request, () => this.#handleUpdateRequest(request));
+      return;
+    }
+    if (
+      request.method === VOICE_SETTINGS_METHOD ||
+      request.method === VOICE_GATEWAY_STATUS_METHOD
+    ) {
+      this.#dispatchDesktopReply(request, async () => {
+        const service = this.#options.consoleOpener;
+        if (!service?.voiceSettings) {
+          await this.#writer.json(
+            rpcError(request, -32090, "Voice settings are available on the local Host only"),
+          );
+          return;
+        }
+        if (request.method === VOICE_GATEWAY_STATUS_METHOD) {
+          const ready = await readRealtimeGateway(this.#options.environment ?? process.env).then(
+            () => true,
+            () => false,
+          );
+          await this.#writer.json(rpcEnvelope(request, { result: ready }));
+          return;
+        }
+        const parsed = voiceSettingsRequestSchema.safeParse(request.params);
+        if (!parsed.success) {
+          await this.#writer.json(rpcError(request, -32602, "Invalid voice settings request"));
+          return;
+        }
+        try {
+          const result = await service.voiceSettings(parsed.data);
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32092, errorMessage(error).slice(0, 500)));
+        }
+      });
       return;
     }
     if (request.method === CONSOLE_OPEN_METHOD) {

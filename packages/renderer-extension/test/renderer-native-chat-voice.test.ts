@@ -4,7 +4,10 @@ import {
   installNativeChatVoiceHook,
   startNativeChatVoiceForRequest,
 } from "../src/renderer-native-chat-voice.js";
-import { CHAT_LIVE_VOICE_STORAGE_KEY } from "../src/renderer-cpa-live-voice-preference.js";
+import {
+  CHAT_LIVE_VOICE_STORAGE_KEY,
+  applySharedVoiceRoutes,
+} from "../src/renderer-cpa-live-voice-preference.js";
 
 function fixture() {
   const scopeDefinition = { id: Symbol(), __scopeBrand: "AppScope" };
@@ -198,6 +201,18 @@ describe("native Chat composer binding", () => {
 });
 
 describe("Chat voice service launch boundary", () => {
+  it("leaves Codex Desktop default on the native Codex service without invoking Chat START", () => {
+    const start = vi.fn();
+    const target = { __codexhostNativeChatVoiceV1: { status: "active", start } };
+    applySharedVoiceRoutes(target, {
+      chatExperience: "codex",
+      chatConnection: "desktop",
+      workConnection: "gateway",
+    });
+    expect(startNativeChatVoiceForRequest({ productExperience: "chat" }, target)).toBeUndefined();
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("starts native Chat and propagates failure without invoking a new-thread overlay", async () => {
     const start = vi.fn().mockRejectedValue(new Error("native unavailable"));
     const target = { __codexhostNativeChatVoiceV1: { status: "active", start } };

@@ -10,7 +10,7 @@ import {
   loadedAssetNames,
   readCpaLiveVoiceHookConfig,
 } from "./renderer-cpa-live-voice-hook.js";
-import { chatLiveVoicePreferenceAllowsOverride } from "./renderer-cpa-live-voice-preference.js";
+import { nativeChatVoicePreferenceAllowsStart } from "./renderer-cpa-live-voice-preference.js";
 import { navigateNativeChatVoiceDraft } from "./renderer-native-chat-voice-navigation.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
@@ -170,6 +170,7 @@ export function detectNativeChatVoiceBinding(
 }
 
 interface ChatVoiceHook {
+  readonly activeCall?: boolean;
   status: "disabled" | "pending" | "active" | "unsupported";
   start(): Promise<void>;
   dispose(): void;
@@ -190,7 +191,7 @@ export function startNativeChatVoiceForRequest(
   if (
     !record(request) ||
     request.productExperience !== "chat" ||
-    chatLiveVoicePreferenceAllowsOverride(target)
+    !nativeChatVoicePreferenceAllowsStart(target)
   )
     return;
   const hook = (target as RecordValue)[HOOK_GLOBAL] as ChatVoiceHook | undefined;
@@ -259,7 +260,7 @@ export function installNativeChatVoiceHook(
     boundScope = undefined;
   };
   const findBinding = () => {
-    if (!modules || chatLiveVoicePreferenceAllowsOverride(target)) return;
+    if (!modules || !nativeChatVoicePreferenceAllowsStart(target)) return;
     const forms = [...doc.querySelectorAll("[data-chatgpt-composer]")].filter(
       (form) => form.getBoundingClientRect().width > 0 && !form.closest("[hidden], [inert]"),
     );
@@ -276,6 +277,17 @@ export function installNativeChatVoiceHook(
     });
   };
   const handle: ChatVoiceHook = {
+    get activeCall() {
+      if (starting) return true;
+      if (!boundScope || !modules || typeof modules.initial.ejn !== "function") return false;
+      try {
+        return (
+          modules.initial.ejn(boundScope) as { getState(): { isVoiceModeActive: boolean } }
+        ).getState().isVoiceModeActive;
+      } catch {
+        return false;
+      }
+    },
     status: "pending",
     async start() {
       if (disposed || starting) return;
@@ -302,7 +314,7 @@ export function installNativeChatVoiceHook(
         try {
           if (
             !disposed &&
-            !chatLiveVoicePreferenceAllowsOverride(target) &&
+            nativeChatVoicePreferenceAllowsStart(target) &&
             (await navigateNativeChatVoiceDraft(
               current,
               modules.initial,

@@ -8,6 +8,7 @@ const CONSOLE_URL_PREFIX = "codexhost console: ";
 
 export interface HostConsoleOpener {
   open(): Promise<{ url: string }>;
+  voiceSettings?(input: unknown): Promise<unknown>;
 }
 
 /**
@@ -65,43 +66,63 @@ export function createHostConsoleOpener(
   options: CreateHostConsoleOpenerOptions,
 ): HostConsoleOpener {
   const spawnProcess = options.spawnProcess ?? spawn;
-  return {
-    open() {
-      return new Promise((resolve, reject) => {
-        const child = spawnProcess(
-          options.nodePath ?? process.execPath,
-          [options.entrypoint, "open"],
-          {
-            env: options.environment,
-            stdio: ["ignore", "pipe", "pipe"],
-            windowsHide: true,
-          },
-        );
-        let stdout = "";
-        let stderr = "";
-        const append = (current: string, chunk: Buffer): string =>
-          (current + chunk.toString("utf8")).slice(-OUTPUT_LIMIT);
-        child.stdout?.on("data", (chunk: Buffer) => (stdout = append(stdout, chunk)));
-        child.stderr?.on("data", (chunk: Buffer) => (stderr = append(stderr, chunk)));
-        const timer = setTimeout(() => {
-          child.kill();
-          reject(new Error("codexhost console did not open in time"));
-        }, OPEN_TIMEOUT_MS);
-        child.once("error", (error) => {
-          clearTimeout(timer);
-          reject(error);
-        });
-        child.once("exit", (code) => {
-          clearTimeout(timer);
-          const url = parseConsoleAddress(stdout);
-          if (code === 0 && url) {
-            resolve({ url });
-            return;
-          }
-          const detail = stderr.trim().split(/\r?\n/u).at(-1);
-          reject(new Error(detail || "codexhost console could not be opened"));
-        });
+  const address = (command: "open" | "ensure"): Promise<{ url: string }> =>
+    new Promise((resolve, reject) => {
+      const child = spawnProcess(
+        options.nodePath ?? process.execPath,
+        [options.entrypoint, command],
+        {
+          env: options.environment,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+        },
+      );
+      let stdout = "";
+      let stderr = "";
+      const append = (current: string, chunk: Buffer): string =>
+        (current + chunk.toString("utf8")).slice(-OUTPUT_LIMIT);
+      child.stdout?.on("data", (chunk: Buffer) => (stdout = append(stdout, chunk)));
+      child.stderr?.on("data", (chunk: Buffer) => (stderr = append(stderr, chunk)));
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(new Error("codexhost console did not open in time"));
+      }, OPEN_TIMEOUT_MS);
+      child.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
       });
+      child.once("exit", (code) => {
+        clearTimeout(timer);
+        const url = parseConsoleAddress(stdout);
+        if (code === 0 && url) {
+          resolve({ url });
+          return;
+        }
+        const detail = stderr.trim().split(/\r?\n/u).at(-1);
+        reject(new Error(detail || "codexhost console could not be opened"));
+      });
+    });
+  let ready: Promise<{ url: string }> | null = null;
+  return {
+    open: () => address("open"),
+    async voiceSettings(input) {
+      ready ??= address("ensure");
+      try {
+        const { url } = await ready;
+        const response = await fetch(new URL("api/voice-settings", url), {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-codexhost-console": "1" },
+          body: JSON.stringify(input),
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000),
+        });
+        const body = (await response.json()) as { error?: string };
+        if (!response.ok) throw new Error(body.error ?? "Voice settings request failed");
+        return body;
+      } catch (error) {
+        ready = null;
+        throw error;
+      }
     },
   };
 }

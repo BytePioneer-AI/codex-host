@@ -341,6 +341,11 @@
     monospace;
 }
 
+.console-menu-button {
+  display: none;
+  margin-left: auto;
+}
+
 /* Empty states */
 
 .console-empty {
@@ -439,8 +444,26 @@
   }
 
   .console-sidebar .settings-nav {
+    display: none;
+    flex-direction: column;
+    overflow-x: hidden;
+    max-height: 55vh;
+    overflow-y: auto;
+  }
+
+  .console-menu-button {
+    display: inline-flex;
+  }
+  .console-brand {
+    padding: 12px 16px;
+  }
+  .console-brand__copy {
     flex-direction: row;
-    overflow-x: auto;
+    gap: 5px;
+    align-items: baseline;
+  }
+  .console-sidebar .settings-nav.is-open {
+    display: flex;
   }
 
   .console-sidebar .settings-nav-section-label,

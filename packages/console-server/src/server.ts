@@ -2,7 +2,12 @@ import { ConsoleRestart } from "./restart.js";
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import { isConsoleHostMethod, type ConsoleAnnouncement } from "@codexhost/shared-contracts";
+import {
+  isConsoleHostMethod,
+  voiceSettingsRequestSchema,
+  VOICE_GATEWAY_STATUS_METHOD,
+  type ConsoleAnnouncement,
+} from "@codexhost/shared-contracts";
 import { readAnnouncement } from "./announcement.js";
 import { allowedChange, allowedHost, CONSOLE_REQUEST_HEADER } from "./request-guard.js";
 import {
@@ -25,7 +30,9 @@ import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
 import { CONSOLE_PAGE_CSS, CONSOLE_PAGE_HTML } from "./page.js";
 import type { ConsolePaths } from "./paths.js";
 import { ConsoleUpdateError, type ConsoleUpdates } from "./updates.js";
-import { readLiveVoiceInjectState, writeLiveVoiceInjectFile } from "./live-voice-inject.js";
+import { readLiveVoiceInjectState } from "./live-voice-inject.js";
+
+import { VoiceSettingsStore, VoiceSettingsConflict } from "./voice-settings.js";
 
 export const CONSOLE_SERVICE = "codexhost-console";
 const MAX_BODY_BYTES = 16 * 1024;
@@ -140,6 +147,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
   const inspect = options.inspect ?? inspectInstallation;
   const launch = options.launch ?? defaultLaunch;
   const loadAnnouncement = options.announcement ?? readAnnouncement;
+  const voiceSettings = new VoiceSettingsStore(options.paths.dataDirectory);
   let restartRequestedAt = 0;
   const restart = new ConsoleRestart(
     async () => {
@@ -303,7 +311,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     scheduleIdleExit();
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     const method = request.method ?? "GET";
-    const route = `${method} ${url.pathname}`;
+    let route = `${method} ${url.pathname}`;
 
     if (route === "GET /api/health") {
       sendJson(response, 200, {
@@ -350,6 +358,82 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       }
     }
 
+    if (route === "POST /api/voice-settings") {
+      const parsed = voiceSettingsRequestSchema.safeParse(body);
+      if (!parsed.success) {
+        sendJson(response, 400, { error: "Invalid voice settings request" });
+        return;
+      }
+      const input = parsed.data;
+      if (input.operation === "restart") {
+        if ((await voiceSettings.read()).activeCall) {
+          sendJson(response, 409, { error: "End your voice call before restarting." });
+          return;
+        }
+        route = "POST /api/restart";
+      } else {
+        try {
+          if (input.operation === "get" && input.runtime) voiceSettings.report(input.runtime);
+          if (input.operation === "set") {
+            const current = await readLiveVoiceInjectState(
+              options.paths.dataDirectory,
+              environment,
+            );
+            if (current.envOverride && input.settings.inject !== current.savedInject) {
+              sendJson(response, 409, {
+                error: "Voice integration is controlled by this launch environment.",
+              });
+              return;
+            }
+          }
+          const saved =
+            input.operation === "get"
+              ? await voiceSettings.read()
+              : await voiceSettings.write(input);
+          const collected = await collect();
+          const controller = collected.controller;
+          const injection = await readLiveVoiceInjectState(
+            options.paths.dataDirectory,
+            environment,
+          );
+          let gatewayReady: boolean | null = null;
+          try {
+            const reply =
+              input.operation === "get" && input.runtime
+                ? null
+                : await options.host.request(VOICE_GATEWAY_STATUS_METHOD, {});
+            if (reply && "result" in reply && typeof reply.result === "boolean")
+              gatewayReady = reply.result;
+          } catch {
+            /* Host can be stopped while the console remains available. */
+          }
+          sendJson(response, 200, {
+            ...saved,
+            activeInject:
+              collected.controllerAlive && typeof controller?.voiceInjection === "boolean"
+                ? controller.voiceInjection
+                : null,
+            envOverride: injection.envOverride,
+            activeEnvOverride: collected.controllerAlive
+              ? (controller?.voiceEnvOverride ?? null)
+              : null,
+            gatewayReady,
+            restartAvailable:
+              !!collected.inspectDocument?.runtime.running &&
+              !!launchCommand(options.installation, environment, "restart"),
+            restart: restart.status,
+          });
+        } catch (error) {
+          sendJson(response, error instanceof VoiceSettingsConflict ? 409 : 500, {
+            error:
+              error instanceof VoiceSettingsConflict
+                ? error.message
+                : "Could not save or read voice settings",
+          });
+        }
+        return;
+      }
+    }
     if (route === "POST /api/shutdown") {
       sendJson(response, 200, { ok: true });
       setImmediate(exit);
@@ -465,7 +549,17 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
         sendJson(response, 400, { error: "Expected { inject: boolean }" });
         return;
       }
-      await writeLiveVoiceInjectFile(options.paths.dataDirectory, body.inject);
+      try {
+        await voiceSettings.setInjection(body.inject);
+      } catch (error) {
+        sendJson(response, error instanceof VoiceSettingsConflict ? 409 : 500, {
+          error:
+            error instanceof VoiceSettingsConflict
+              ? error.message
+              : "Could not save voice integration",
+        });
+        return;
+      }
       sendJson(
         response,
         200,

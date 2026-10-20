@@ -15,18 +15,6 @@ const ENGLISH = {
   stopped: "codexhost is not running",
   stoppedDetail: "Start codexhost to use Codex Desktop with your Harnesses.",
   start: "Start codexhost",
-  liveVoice: "Live voice",
-  liveVoiceInjectTitle: "Enable voice integration",
-  liveVoiceInjectDescription:
-    "On by default. Enables ChatGPT voice in Chat and gateway voice in Work. Changes take effect after you fully quit and reopen codexhost.",
-  liveVoiceRelaunchRequired:
-    "Fully quit and reopen codexhost to apply this setting. Opening an already running app does not apply it.",
-  liveVoiceEnvOverride: "CODEXHOST_CPA_LIVE_VOICE on this process overrides the saved file.",
-  liveVoiceConfigToml:
-    "Work gateway still needs experimental_realtime_ws_base_url and experimental_realtime_webrtc_call_base_url in ~/.codex/config.toml.",
-  voiceActive: "Saved setting is active.",
-  voicePending: "Saved — restart required.",
-  voiceUnknown: "Active setting is unknown. Restart to load and verify the saved setting.",
   restart: "Restart codexhost",
   restartConfirm: "Restart now",
   restartCancel: "Cancel",
@@ -228,18 +216,6 @@ const CHINESE: ConsoleMessages = {
   stopped: "codexhost 未运行",
   stoppedDetail: "启动 codexhost 后即可在 Codex Desktop 中使用各个 Harness。",
   start: "启动 codexhost",
-  liveVoice: "实时语音",
-  liveVoiceInjectTitle: "启用语音集成",
-  liveVoiceInjectDescription:
-    "默认开启。在 Chat 中启用 ChatGPT 语音，在 Work 中启用网关语音。修改后需完全退出并重新打开 codexhost。",
-  liveVoiceRelaunchRequired:
-    "请完全退出并重新打开 codexhost 来应用此设置。仅打开已运行的应用不会生效。",
-  liveVoiceEnvOverride: "当前进程的 CODEXHOST_CPA_LIVE_VOICE 会覆盖已保存的文件。",
-  liveVoiceConfigToml:
-    "Work 网关仍需在 ~/.codex/config.toml 设置 experimental_realtime_ws_base_url 与 experimental_realtime_webrtc_call_base_url。",
-  voiceActive: "已保存的设置正在生效。",
-  voicePending: "已保存 — 需要重新启动。",
-  voiceUnknown: "当前生效设置未知。请重新启动以加载并验证已保存设置。",
   restart: "重新启动 codexhost",
   restartConfirm: "立即重新启动",
   restartCancel: "取消",

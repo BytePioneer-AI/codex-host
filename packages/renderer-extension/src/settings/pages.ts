@@ -1,3 +1,4 @@
+import { createVoiceSettingsPage, type VoiceSettingsRequestClient } from "./voice-page.js";
 import {
   createUsageStatisticsPage,
   type RendererUsageStatisticsRequest,
@@ -85,6 +86,7 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "session-import",
   "usage-statistics",
   "appearance",
+  "voice",
   "updates",
   "about",
 ] as const;
@@ -696,6 +698,8 @@ export function createDefaultRendererSettingsPages(
   getRemoteConnections: () => RemoteConnectionsControl | null = () => null,
   requestUsageStatistics: RendererUsageStatisticsRequest = () =>
     Promise.reject(new Error("Local Host connection is unavailable")),
+  requestVoiceSettings: VoiceSettingsRequestClient = () =>
+    Promise.reject(new Error("Local Host connection is unavailable")),
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
@@ -712,11 +716,8 @@ export function createDefaultRendererSettingsPages(
       requestUsageStatistics,
       messages.locale,
     ),
-    createAppearanceSettingsPage(messages, getLoadedSessionsClient, async () => {
-      const client = getUpdateClient();
-      if (!client?.openConsole) throw new Error(messages.aboutConsoleFailed);
-      return client.openConsole();
-    }),
+    createAppearanceSettingsPage(messages, getLoadedSessionsClient),
+    createVoiceSettingsPage(messages.locale, requestVoiceSettings, { desktop: true }),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages, getUpdateClient),
   ]);

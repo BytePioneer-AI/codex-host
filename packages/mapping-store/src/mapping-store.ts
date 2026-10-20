@@ -167,8 +167,8 @@ function threadMetadataOf(record: StoredThreadRecordV1): StoredThreadMetadataV1 
 
 /** The record as written to the Thread file, which older releases must still accept. */
 function withoutThreadMetadata(record: StoredThreadRecordV1): StoredThreadRecordV1 {
-  const { projectId, daybreakEnabled, gitInfo, ...core } = record;
-  void [projectId, daybreakEnabled, gitInfo];
+  const { projectId, daybreakEnabled, gitInfo, subagentConfiguration, ...core } = record;
+  void [projectId, daybreakEnabled, gitInfo, subagentConfiguration];
   return core;
 }
 
@@ -188,6 +188,14 @@ function applyThreadMetadataPatch(
   patch: ThreadMetadataPatch,
 ): StoredThreadRecordV1 {
   const next = { ...current };
+  if (patch.subagentConfiguration !== undefined) {
+    if (!current.subagent) throw new Error("Child configuration requires a Subagent Thread");
+    next.subagentConfiguration = { ...current.subagentConfiguration };
+    for (const name of ["model", "reasoningEffort"] as const) {
+      const value = patch.subagentConfiguration[name];
+      if (value !== undefined) next.subagentConfiguration[name] = value;
+    }
+  }
   if (patch.projectId !== undefined) {
     if (patch.projectId === null) delete next.projectId;
     else next.projectId = patch.projectId;

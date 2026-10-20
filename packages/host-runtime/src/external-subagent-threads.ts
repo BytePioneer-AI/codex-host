@@ -2,7 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 
 import type { HostSubagentState, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
-import { projectHistoricalTurn, type JsonObject } from "@codexhost/protocol-core";
+import {
+  encodeExternalTransportSelection,
+  projectHistoricalTurn,
+  type JsonObject,
+} from "@codexhost/protocol-core";
 import { hostThreadIdSchema, type NativeSessionRef } from "@codexhost/shared-contracts";
 
 import type { ExternalThreadStore } from "./external-thread-repository.js";
@@ -117,13 +121,25 @@ function subagentMaterializer(
         (previousRequest ? byRequest.get(previousRequest) : undefined) ??
         null;
     }
+    const configured = (record: StoredThreadRecordV1) =>
+      child.model !== undefined || child.reasoningEffort !== undefined
+        ? store.updateMetadata(record.hostThreadId, {
+            subagentConfiguration: {
+              ...(child.model !== undefined ? { model: child.model } : {}),
+              ...(child.reasoningEffort !== undefined
+                ? { reasoningEffort: child.reasoningEffort }
+                : {}),
+            },
+          })
+        : record;
     if (existing?.state === "ready") {
-      if (existing.nativeSessionRef?.nativeSessionId === nativeRef.nativeSessionId) return existing;
+      if (existing.nativeSessionRef?.nativeSessionId === nativeRef.nativeSessionId)
+        return configured(existing);
       if (!previousRef) throw new Error("Subagent belongs to a different Native Session");
       // Only children retained in a validated rollback Snapshot are rebound. Native
       // Session IDs remain part of ordinary lookup, so later reused IDs cannot
       // accidentally select children removed by a previous rollback.
-      return rebind(existing, parent);
+      return configured(await rebind(existing, parent));
     }
 
     // MappingStore atomically deduplicates overlapping live/history creation.
@@ -135,7 +151,7 @@ function subagentMaterializer(
         harnessId: parent.harnessId,
         cwd: parent.cwd,
         title: child.description,
-        transportModelId: parent.transportModelId,
+        transportModelId: encodeExternalTransportSelection(parent.harnessId, {}),
         ephemeral: parent.ephemeral,
         historyMode: "paginated",
         subagent: {
@@ -144,12 +160,14 @@ function subagentMaterializer(
           ...(child.role ? { role: child.role } : {}),
         },
       }));
-    return provisional.state === "ready"
-      ? provisional
-      : store.commitReady({
-          hostThreadId: provisional.hostThreadId,
-          nativeSessionRef: nativeRef,
-        });
+    return configured(
+      provisional.state === "ready"
+        ? provisional
+        : await store.commitReady({
+            hostThreadId: provisional.hostThreadId,
+            nativeSessionRef: nativeRef,
+          }),
+    );
   };
 }
 

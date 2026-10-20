@@ -592,6 +592,12 @@ export function externalThreadValue(input: {
         }
       : "vscode",
     threadSource: record.subagent ? "subAgentThreadSpawn" : null,
+    ...(record.subagent
+      ? {
+          model: record.subagentConfiguration?.model ?? null,
+          reasoningEffort: record.subagentConfiguration?.reasoningEffort ?? null,
+        }
+      : {}),
     modelProvider: "codexhost",
     cliVersion: "codexhost",
     createdAt,

@@ -4472,7 +4472,9 @@ export class AppServerHost {
       turns: params.excludeTurns === true ? [] : turns,
     };
     const result = threadForkResult(responseThread, {
-      model: thread.transportModelId,
+      model: thread.record.subagent
+        ? (thread.record.subagentConfiguration?.model ?? "")
+        : thread.transportModelId,
       cwd: thread.cwd,
       runtimeWorkspaceRoots: Array.isArray(params.runtimeWorkspaceRoots)
         ? params.runtimeWorkspaceRoots.filter((value): value is string => typeof value === "string")
@@ -4481,6 +4483,8 @@ export class AppServerHost {
       sandbox: sandboxResult(),
       ...(typeof params.serviceTier === "string" ? { serviceTier: params.serviceTier } : {}),
     });
+    if (thread.record.subagent)
+      result.reasoningEffort = thread.record.subagentConfiguration?.reasoningEffort ?? null;
     try {
       if (
         params.initialTurnsPage !== undefined &&
@@ -5293,6 +5297,15 @@ export class AppServerHost {
       subagent.status === "pending" || subagent.status === "running" ? "active" : "idle";
     const record = await this.#repository.materializeSubagent(parent.record, subagent);
     if (!record) return subagent;
+    const loaded = this.#externalRuntime.get(record.hostThreadId);
+    if (loaded) {
+      loaded.record = record;
+      loaded.thread = {
+        ...loaded.thread,
+        model: record.subagentConfiguration?.model ?? null,
+        reasoningEffort: record.subagentConfiguration?.reasoningEffort ?? null,
+      };
+    }
     if (this.#subagentThreadStatuses.has(record.hostThreadId)) {
       this.#trackRunningSubagent(parent.id, record.hostThreadId, status);
       await this.#setSubagentThreadStatus(record.hostThreadId, status);

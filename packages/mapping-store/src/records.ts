@@ -81,12 +81,24 @@ const storedThreadCoreV1Shape = {
  * strict Thread record keeps its pre-metadata shape and an older release can still load it.
  */
 const storedThreadMetadataFieldsShape = {
+  subagentConfiguration: z
+    .object({
+      model: nonBlankTextSchema.max(1_024).optional(),
+      reasoningEffort: nonBlankTextSchema.max(1_024).optional(),
+    })
+    .strict()
+    .optional(),
   projectId: nonBlankTextSchema.max(1_024).optional(),
   daybreakEnabled: z.boolean().optional(),
   gitInfo: storedGitInfoV1Schema.optional(),
 };
 
-export const THREAD_METADATA_FIELDS = ["projectId", "daybreakEnabled", "gitInfo"] as const;
+export const THREAD_METADATA_FIELDS = [
+  "projectId",
+  "daybreakEnabled",
+  "gitInfo",
+  "subagentConfiguration",
+] as const;
 
 export const storedThreadMetadataV1Schema = z
   .object({
@@ -235,6 +247,8 @@ export interface FindRecentDelegationInput {
  * unchanged; `null` clears the stored value.
  */
 export interface ThreadMetadataPatch {
+  /** Observed child configuration; omitted fields preserve previous observations. */
+  subagentConfiguration?: { model?: string; reasoningEffort?: string };
   projectId?: string | null;
   daybreakEnabled?: boolean;
   gitInfo?: {

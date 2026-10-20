@@ -450,21 +450,29 @@ function toolContentItems(item: Extract<HostItem, { type: "toolExecution" }>): J
   );
 }
 
-function collabAgentStatus(
-  status: Extract<HostItem, { type: "subagentDelegation" }>["subagents"][number]["status"],
-): string {
-  switch (status) {
-    case "pending":
-      return "pendingInit";
-    case "running":
-      return "running";
-    case "completed":
-      return "completed";
-    case "failed":
-      return "errored";
-    case "interrupted":
-      return "interrupted";
-  }
+/** Read-only native activities never advertise a writable spawnAgent receiver. */
+function projectSubagentActivities(
+  item: Extract<HostItem, { type: "subagentDelegation" }>,
+): JsonObject[] {
+  return item.subagents.flatMap((child) => {
+    const activity: JsonObject = {
+      id: `${item.itemId}-subagent-${encodeURIComponent(child.subagentId)}`,
+      type: "subAgentActivity",
+      agentThreadId: child.subagentId,
+      agentPath: child.description || child.role || child.subagentId,
+      kind: item.operation === "spawn" ? "started" : "interacted",
+    };
+    // Keep the spawn activity for Desktop's descendant discovery after history reload.
+    if (child.status === "pending" || child.status === "running") return [activity];
+    return [
+      activity,
+      {
+        ...activity,
+        id: `${activity.id}-status`,
+        kind: child.status === "completed" ? "completed" : "interrupted",
+      },
+    ];
+  });
 }
 
 function projectItem(
@@ -472,7 +480,6 @@ function projectItem(
   outcome: HostItemOutcome | null,
   defaultCwd: string,
   includeCommandOutput = true,
-  senderThreadId?: string,
 ): JsonObject {
   switch (item.type) {
     case "agentMessage":
@@ -557,33 +564,8 @@ function projectItem(
         failure: null,
         transparentBackground: null,
       };
-    case "subagentDelegation": {
-      const primary = item.subagents[0];
-      // Codex exposes one configuration per Item, not per receiver. Do not
-      // attribute the first child's configuration to a heterogeneous group.
-      const sameConfiguration = item.subagents.every(
-        (subagent) =>
-          subagent.model === primary?.model &&
-          subagent.reasoningEffort === primary?.reasoningEffort,
-      );
-      return {
-        id: item.itemId,
-        type: "collabAgentToolCall",
-        tool: item.operation === "spawn" ? "spawnAgent" : "sendInput",
-        status: itemStatus(outcome),
-        senderThreadId: senderThreadId ?? "",
-        receiverThreadIds: item.subagents.map(({ subagentId }) => subagentId),
-        prompt: item.prompt ?? null,
-        model: sameConfiguration ? (primary?.model ?? null) : null,
-        reasoningEffort: sameConfiguration ? (primary?.reasoningEffort ?? null) : null,
-        agentsStates: Object.fromEntries(
-          item.subagents.map(({ subagentId, status, resultSummary }) => [
-            subagentId,
-            { status: collabAgentStatus(status), message: resultSummary ?? null },
-          ]),
-        ),
-      };
-    }
+    case "subagentDelegation":
+      throw new Error("Subagent delegation requires per-child activity projection");
   }
 }
 
@@ -680,13 +662,11 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
       if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments)) return [];
       if (isFileMutatingTool(item.toolName)) return [];
     }
+    if (item.type === "subagentDelegation") return projectSubagentActivities(item);
     if (item.type === "reasoning" && !reasoningDisplayText(item.text)) return [];
     return item.type === "reasoning"
-      ? [
-          projectItem(item, outcome, cwd, true, input.threadId ?? ""),
-          projectReasoningTranscriptItem(item, outcome, cwd),
-        ]
-      : [projectItem(item, outcome, cwd, true, input.threadId ?? "")];
+      ? [projectItem(item, outcome, cwd), projectReasoningTranscriptItem(item, outcome, cwd)]
+      : [projectItem(item, outcome, cwd)];
   };
   const entries = snapshot.items.map((entry) => ({ entry, projected: projectEntry(entry) }));
   const lastVisible = entries.findLast(({ projected }) => projected.length > 0)?.entry;
@@ -797,7 +777,7 @@ export class CodexTurnProjector {
       if (!this.#detached.has(itemId)) continue;
       const projected = this.#items.get(itemId);
       if (!projected || projected.outcome) continue;
-      items.set(itemId, projectItem(projected.item, null, this.#cwd, true, this.#threadId));
+      items.set(itemId, projectItem(projected.item, null, this.#cwd));
     }
     return items;
   }
@@ -1029,6 +1009,18 @@ export class CodexTurnProjector {
       if (isFileMutatingTool(event.item.toolName)) return { messages: [] };
     }
     if (event.item.type === "fileChange") return { messages: this.#fileChangeUpdates(startedAtMs) };
+    if (event.item.type === "subagentDelegation") {
+      projected.wireStarted = true;
+      this.#wireItemOrder.push(event.item.itemId);
+      return {
+        messages: this.#subagentActivityMessages(
+          event.item,
+          "item/started",
+          startedAtMs,
+          startedAtMs,
+        ),
+      };
+    }
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
     const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
     if (event.item.type === "reasoning") {
@@ -1117,16 +1109,15 @@ export class CodexTurnProjector {
     } else if (event.update.type === "fileChanges.replace") {
       messages.push(...this.#fileChangeUpdates(emittedAtMs));
     } else if (event.update.type === "subagents.replace") {
-      messages.push({
-        method: "item/started",
-        emittedAtMs,
-        params: {
-          threadId: this.#threadId,
-          turnId: this.#turnId,
-          startedAtMs: projected.startedAtMs ?? emittedAtMs,
-          item: projectItem(next, null, this.#cwd, true, this.#threadId),
-        },
-      });
+      if (next.type !== "subagentDelegation") throw new Error("Invalid Subagent update");
+      messages.push(
+        ...this.#subagentActivityMessages(
+          next,
+          "item/started",
+          emittedAtMs,
+          projected.startedAtMs ?? emittedAtMs,
+        ),
+      );
     }
     return { messages };
   }
@@ -1184,15 +1175,19 @@ export class CodexTurnProjector {
       }
       return { messages: [] };
     }
+    if (projected.item.type === "subagentDelegation") {
+      return {
+        messages: this.#subagentActivityMessages(
+          projected.item,
+          "item/completed",
+          emittedAtMs,
+          startedAtMs,
+        ),
+      };
+    }
     const messages = [
       completedItem(
-        projectItem(
-          projected.item,
-          projected.outcome,
-          this.#cwd,
-          !projected.streamedCommandOutput,
-          this.#threadId,
-        ),
+        projectItem(projected.item, projected.outcome, this.#cwd, !projected.streamedCommandOutput),
       ),
     ];
     if (projected.item.type === "reasoning") {
@@ -1355,6 +1350,25 @@ export class CodexTurnProjector {
         ];
   }
 
+  #subagentActivityMessages(
+    item: Extract<HostItem, { type: "subagentDelegation" }>,
+    method: "item/started" | "item/completed",
+    emittedAtMs: number,
+    startedAtMs: number,
+  ): JsonObject[] {
+    return projectSubagentActivities(item).map((activity) => ({
+      method,
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        startedAtMs,
+        ...(method === "item/completed" ? { completedAtMs: emittedAtMs } : {}),
+        item: activity,
+      },
+    }));
+  }
+
   #startWireItem(projected: ProjectedItem, item: HostItem, startedAtMs: number): JsonObject {
     if (projected.wireStarted) throw new Error("Codex Item started more than once");
     projected.wireStarted = true;
@@ -1367,7 +1381,7 @@ export class CodexTurnProjector {
         threadId: this.#threadId,
         turnId: this.#turnId,
         startedAtMs,
-        item: projectItem(item, null, this.#cwd, true, this.#threadId),
+        item: projectItem(item, null, this.#cwd),
       },
     };
   }

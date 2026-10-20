@@ -20,7 +20,7 @@ Validated with agy 1.1.27 on Windows:
 The Antigravity Adapter emits the existing `subagentDelegation`,
 `subagent.state.changed`, and `subagent.transcript.changed` contracts.
 The common Host creates a read-only child Thread and the common projector emits
-`collabAgentToolCall`. No Antigravity-specific Renderer or Host RPC is added.
+`subAgentActivity` for Desktop’s native read-only Subagents panel. No Antigravity-specific Renderer or Host RPC is added.
 
 The creation Item completes when the native spawn call completes. Its child
 remains running until the separate native status confirms otherwise. During an

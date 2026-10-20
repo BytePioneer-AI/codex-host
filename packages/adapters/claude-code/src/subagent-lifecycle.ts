@@ -53,6 +53,7 @@ export class ClaudeSubagentLifecycle {
       ...(event.nativeSubagentId ? { nativeSubagentId: event.nativeSubagentId } : {}),
       description: event.description,
       ...(event.role ? { role: event.role } : {}),
+      ...(event.model ? { model: event.model } : {}),
       background: event.background,
       status: "running",
     };
@@ -78,6 +79,7 @@ export class ClaudeSubagentLifecycle {
       ...(event.nativeSubagentId ? { nativeSubagentId: event.nativeSubagentId } : {}),
       ...(event.description ? { description: event.description } : {}),
       ...(event.role ? { role: event.role } : {}),
+      ...(event.model ? { model: event.model } : {}),
       ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
     };
     active.item = { ...active.item, subagents: [subagent] };

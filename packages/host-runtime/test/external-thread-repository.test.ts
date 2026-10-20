@@ -206,9 +206,9 @@ describe("ExternalThreadRepository", () => {
     });
     expect(first.turns[0]?.items).toContainEqual(
       expect.objectContaining({
-        type: "collabAgentToolCall",
-        senderThreadId: hostThreadId,
-        receiverThreadIds: [child?.hostThreadId],
+        type: "subAgentActivity",
+        agentThreadId: child?.hostThreadId,
+        kind: "started",
       }),
     );
     await repository.close();

@@ -119,6 +119,12 @@ function subagentBackground(argumentsValue: unknown): boolean {
   return isRecord(argumentsValue) && argumentsValue.run_in_background === true;
 }
 
+function subagentModel(argumentsValue: unknown): string | undefined {
+  if (!isRecord(argumentsValue)) return undefined;
+  const model = boundedString(argumentsValue.model, SUBAGENT_DESCRIPTION_LIMIT);
+  return model === "inherit" ? undefined : model;
+}
+
 function targetedSubagentId(argumentsValue: unknown): string | undefined {
   if (!isRecord(argumentsValue)) return undefined;
   return boundedString(
@@ -489,6 +495,10 @@ export class ClaudeNativeTurnAccumulator {
     const parentTool = parentCallId ? this.#tools.get(parentCallId) : undefined;
     if (parentCallId && parentTool && (message.type === "assistant" || message.type === "user")) {
       if (parentTool.subagent) {
+        const model = message.type === "assistant" ? subagentModel(message.message) : undefined;
+        if (model && model !== "<synthetic>") {
+          events.push({ type: "subagent.updated", callId: parentCallId, status: "running", model });
+        }
         events.push({ type: "subagent.transcript.changed", callId: parentCallId });
       } else if (parentTool.workflow) {
         events.push({ type: "workflow.activity", callId: parentCallId });
@@ -891,6 +901,8 @@ export class ClaudeNativeTurnAccumulator {
       } else if (subagent) {
         const prompt = subagentPrompt(argumentsResult.data);
         const role = subagentRole(argumentsResult.data);
+        const model =
+          block.name === "SendMessage" ? undefined : subagentModel(argumentsResult.data);
         const agentId = targetedSubagentId(argumentsResult.data);
         events.push({
           type: "subagent.started",
@@ -899,6 +911,7 @@ export class ClaudeNativeTurnAccumulator {
           description: subagentDescription(argumentsResult.data, block.name),
           ...(prompt ? { prompt } : {}),
           ...(role ? { role } : {}),
+          ...(model ? { model } : {}),
           background: block.name === "SendMessage" || subagentBackground(argumentsResult.data),
           ...(agentId ? { nativeSubagentId: agentId } : {}),
         });

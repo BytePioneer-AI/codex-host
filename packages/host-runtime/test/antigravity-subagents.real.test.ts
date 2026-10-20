@@ -131,9 +131,9 @@ describe.skipIf(!RUN_REAL)("Antigravity real Subagent Desktop protocol", () => {
         (message) =>
           message.method === "item/completed" &&
           params(message).threadId === parentId &&
-          (params(message).item as JsonObject | undefined)?.type === "collabAgentToolCall",
+          (params(message).item as JsonObject | undefined)?.type === "subAgentActivity",
       );
-      expect((params(card).item as JsonObject).receiverThreadIds).toEqual([childId]);
+      expect((params(card).item as JsonObject).agentThreadId).toBe(childId);
       stage = "open child";
       // Materialize the child while it runs so progress notifications are exercised.
       await host.request("thread/turns/list", { threadId: childId, limit: 20, itemsView: "full" });

@@ -280,7 +280,15 @@ describe("Claude native Turn interpretation", () => {
           "agent-call",
         ),
       ).events,
-    ).toEqual([{ type: "subagent.transcript.changed", callId: "agent-call" }]);
+    ).toEqual([
+      {
+        type: "subagent.updated",
+        callId: "agent-call",
+        status: "running",
+        model: "claude-sonnet-4-6",
+      },
+      { type: "subagent.transcript.changed", callId: "agent-call" },
+    ]);
     expect(
       turn.consume({
         type: "assistant",
@@ -313,6 +321,58 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 
+  it("uses child-specific response models without exposing nested response text", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    turn.consume(toolUse("Agent", "agent-model", { model: "haiku" }));
+    const child = (model: string, parent = "agent-model") => ({
+      type: "assistant",
+      parent_tool_use_id: parent,
+      message: { model, content: [{ type: "text", text: "private child response" }] },
+    });
+    expect(turn.consume(child("claude-sonnet-4-6")).events).toEqual([
+      {
+        type: "subagent.updated",
+        callId: "agent-model",
+        status: "running",
+        model: "claude-sonnet-4-6",
+      },
+      { type: "subagent.transcript.changed", callId: "agent-model" },
+    ]);
+    expect(turn.consume(child("<synthetic>")).events).toEqual([
+      { type: "subagent.transcript.changed", callId: "agent-model" },
+    ]);
+    expect(turn.consume(child("claude-opus-4-6", "untracked-agent")).events).toEqual([]);
+  });
+
+  it.each(["Agent", "Task"])("preserves explicit %s model aliases", (name) => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    expect(
+      turn.consume(toolUse(name, "agent-model", { model: " sonnet " })).events[0],
+    ).toMatchObject({
+      type: "subagent.started",
+      model: "sonnet",
+    });
+  });
+
+  it.each([undefined, null, "", "  ", "inherit", 42])(
+    "leaves unknown or inherited Agent model %j unspecified",
+    (model) => {
+      const turn = new ClaudeNativeTurnAccumulator();
+      const event = turn.consume(
+        toolUse("Agent", "agent-model", model === undefined ? {} : { model }),
+      ).events[0];
+      expect(event).toMatchObject({ type: "subagent.started" });
+      expect(event).not.toHaveProperty("model");
+    },
+  );
+
+  it("does not interpret a SendMessage argument as child configuration", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const event = turn.consume(toolUse("SendMessage", "send-model", { model: "haiku" })).events[0];
+    expect(event).toMatchObject({ type: "subagent.started", operation: "send" });
+    expect(event).not.toHaveProperty("model");
+  });
+
   it("maps Root Agent delegation without exposing nested Tool events", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
@@ -323,6 +383,7 @@ describe("Claude native Turn interpretation", () => {
           subagent_type: "Explore",
           run_in_background: true,
           prompt: "private prompt",
+          model: "haiku",
         }),
       ).events,
     ).toEqual([
@@ -333,6 +394,7 @@ describe("Claude native Turn interpretation", () => {
         description: "Inspect implementation",
         prompt: "private prompt",
         role: "Explore",
+        model: "haiku",
         background: true,
       },
       {

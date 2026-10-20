@@ -15,7 +15,7 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
+import { CodexTurnProjector, projectHistoricalTurn, type JsonObject } from "../src/index.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -256,10 +256,14 @@ describe("Codex UI projector", () => {
           status: "completed",
         }),
         expect.objectContaining({
-          id: "historical-subagent",
-          type: "collabAgentToolCall",
-          status: "completed",
-          receiverThreadIds: ["historical-agent-1"],
+          type: "subAgentActivity",
+          kind: "started",
+          agentThreadId: "historical-agent-1",
+        }),
+        expect.objectContaining({
+          type: "subAgentActivity",
+          kind: "completed",
+          agentThreadId: "historical-agent-1",
         }),
       ],
       error: null,
@@ -560,193 +564,111 @@ describe("Codex UI projector", () => {
     ]);
   });
 
-  it("projects Subagent delegation through native collaboration Items", () => {
+  it("keeps live and restored native children read-only, including multiple receivers", () => {
     const value = projector();
     const delegationId = itemId("delegation-1");
-    const startedItem: HostSubagentDelegationItem = {
+    const item: HostSubagentDelegationItem = {
       type: "subagentDelegation",
       itemId: delegationId,
       operation: "spawn",
       subagents: [
         {
-          subagentId: "claude-agent-1",
-          description: "Inspect implementation",
-          role: "Explore",
-          model: "grok-4.6",
-          reasoningEffort: "high",
+          subagentId: "child-a",
+          description: "Inspect",
+          model: "model-a",
           background: true,
+          status: "running",
+        },
+        {
+          subagentId: "child-b",
+          description: "Review",
+          model: "model-b",
+          background: false,
           status: "pending",
         },
       ],
     };
     value.project({ type: "turn.started", turnId });
-
-    expect(
-      value.project({ type: "item.started", turnId, item: startedItem }).messages,
-    ).toMatchObject([
+    const started = value.project({ type: "item.started", turnId, item }).messages;
+    expect(started).toMatchObject([
       {
         method: "item/started",
-        params: {
-          item: {
-            id: "delegation-1",
-            type: "collabAgentToolCall",
-            tool: "spawnAgent",
-            status: "inProgress",
-            senderThreadId: "thread-1",
-            receiverThreadIds: ["claude-agent-1"],
-            model: "grok-4.6",
-            reasoningEffort: "high",
-            agentsStates: {
-              "claude-agent-1": { status: "pendingInit", message: null },
-            },
-          },
-        },
+        params: { item: { type: "subAgentActivity", agentThreadId: "child-a", kind: "started" } },
       },
-    ]);
-    const startedSubagent = startedItem.subagents[0];
-    if (!startedSubagent) throw new Error("Test delegation has no Subagent");
-    const runningSubagent = { ...startedSubagent, status: "running" as const };
-    expect(
-      value.project({
-        type: "item.updated",
-        turnId,
-        itemId: delegationId,
-        update: { type: "subagents.replace", subagents: [runningSubagent] },
-      }).messages,
-    ).toMatchObject([
       {
         method: "item/started",
-        params: {
-          item: {
-            type: "collabAgentToolCall",
-            agentsStates: {
-              "claude-agent-1": { status: "running", message: null },
-            },
-          },
-        },
+        params: { item: { type: "subAgentActivity", agentThreadId: "child-b", kind: "started" } },
       },
     ]);
-    const completedItem: HostSubagentDelegationItem = {
-      ...startedItem,
-      subagents: [
-        {
-          ...startedSubagent,
-          status: "completed",
-          resultSummary: "Inspection complete",
-        },
-      ],
+    const completed: HostSubagentDelegationItem = {
+      ...item,
+      subagents: item.subagents.map((child) => ({ ...child, status: "completed" })),
     };
-    expect(
-      value.project({
-        type: "item.updated",
-        turnId,
-        itemId: delegationId,
-        update: { type: "subagents.replace", subagents: completedItem.subagents },
-      }).messages,
-    ).toMatchObject([
-      {
-        method: "item/started",
-        params: {
-          item: {
-            type: "collabAgentToolCall",
-            agentsStates: {
-              "claude-agent-1": { status: "completed", message: "Inspection complete" },
-            },
-          },
-        },
+    const updated = value.project({
+      type: "item.updated",
+      turnId,
+      itemId: delegationId,
+      update: { type: "subagents.replace", subagents: completed.subagents },
+    }).messages;
+    const finished = value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: completed, outcome: { status: "succeeded" } },
+    }).messages;
+    const wireItems = (messages: typeof started) =>
+      messages.map((message) => (message.params as JsonObject).item);
+    expect(wireItems(updated)).toEqual(wireItems(finished));
+    const historical = projectHistoricalTurn({
+      turnId,
+      cwd: "/workspace",
+      snapshot: {
+        nativeTurnRef: nativeTurnRefSchema.parse({
+          harnessId: "grok",
+          nativeSessionId: "parent",
+          nativeTurnKey: "turn-1",
+          formatVersion: 1,
+        }),
+        input: [],
+        items: [{ item: completed, outcome: { status: "succeeded" } }],
+        outcome: { status: "succeeded" },
       },
+    });
+    const activities = (historical.items as JsonObject[]).filter(
+      (entry) => entry.type === "subAgentActivity",
+    );
+    expect(activities).toEqual(wireItems(finished));
+    expect(activities.map((entry) => [entry.agentThreadId, entry.kind])).toEqual([
+      ["child-a", "started"],
+      ["child-a", "completed"],
+      ["child-b", "started"],
+      ["child-b", "completed"],
     ]);
-    expect(
-      value.project({
-        type: "item.completed",
-        turnId,
-        snapshot: { item: completedItem, outcome: { status: "succeeded" } },
-      }).messages,
-    ).toMatchObject([
-      {
-        method: "item/completed",
-        params: {
-          item: {
-            type: "collabAgentToolCall",
-            status: "completed",
-            agentsStates: {
-              "claude-agent-1": { status: "completed", message: "Inspection complete" },
-            },
-          },
-        },
-      },
-    ]);
+    expect(new Set(activities.map((entry) => entry.id)).size).toBe(4);
+    // Desktop infers writable child chats from collabAgentToolCall/spawnAgent.
+    expect([...wireItems(started), ...activities]).not.toContainEqual(
+      expect.objectContaining({ type: "collabAgentToolCall" }),
+    );
   });
 
-  it.each([
-    { configurations: [{}], expected: { model: null, reasoningEffort: null } },
-    { configurations: [], expected: { model: null, reasoningEffort: null } },
-    {
-      configurations: [{ model: "provider/raw-model-id" }],
-      expected: { model: "provider/raw-model-id", reasoningEffort: null },
-    },
-    {
-      configurations: [{ reasoningEffort: "xhigh" }],
-      expected: { model: null, reasoningEffort: "xhigh" },
-    },
-    {
-      configurations: [
-        { model: "grok-4.6", reasoningEffort: "high" },
-        { model: "grok-4.6", reasoningEffort: "high" },
-      ],
-      expected: { model: "grok-4.6", reasoningEffort: "high" },
-    },
-    {
-      configurations: [{ model: "grok-4.6" }, {}],
-      expected: { model: null, reasoningEffort: null },
-    },
-    {
-      configurations: [{ model: "model-a" }, { model: "model-b" }],
-      expected: { model: null, reasoningEffort: null },
-    },
-    {
-      configurations: [
-        { model: "grok-4.6", reasoningEffort: "high" },
-        { model: "grok-4.6", reasoningEffort: "low" },
-      ],
-      expected: { model: null, reasoningEffort: null },
-    },
-  ])(
-    "preserves native Subagent configuration without formatting or group guesses: %j",
-    ({ configurations, expected }) => {
+  it.each(["failed", "interrupted"] as const)(
+    "projects %s children as terminal read-only activities",
+    (status) => {
       const value = projector();
-      const item: HostSubagentDelegationItem = {
-        type: "subagentDelegation",
-        itemId: itemId("child-config"),
-        operation: "spawn",
-        subagents: configurations.map((configuration, index) => ({
-          subagentId: `child-${index}`,
-          description: "Inspect",
-          background: true,
-          status: "completed",
-          ...configuration,
-        })),
-      };
       value.project({ type: "turn.started", turnId });
-      expect(value.project({ type: "item.started", turnId, item }).messages).toMatchObject([
-        { method: "item/started", params: { item: expected } },
-      ]);
-      const historical = projectHistoricalTurn({
+      const result = value.project({
+        type: "item.started",
         turnId,
-        cwd: "/workspace",
-        snapshot: {
-          nativeTurnRef: nativeTurnRefSchema.parse({
-            harnessId: "grok",
-            nativeSessionId: "parent",
-            nativeTurnKey: "turn-1",
-            formatVersion: 1,
-          }),
-          input: [{ type: "text", text: "delegate" }],
-          items: [{ item, outcome: { status: "succeeded" } }],
-          outcome: { status: "succeeded" },
+        item: {
+          type: "subagentDelegation",
+          itemId: itemId("send"),
+          operation: "send",
+          subagents: [{ subagentId: "child", description: "Child", background: false, status }],
         },
       });
-      expect(historical.items).toMatchObject([{ type: "userMessage" }, expected]);
+      expect(result.messages).toMatchObject([
+        { params: { item: { kind: "interacted", agentThreadId: "child" } } },
+        { params: { item: { kind: "interrupted", agentThreadId: "child" } } },
+      ]);
     },
   );
 

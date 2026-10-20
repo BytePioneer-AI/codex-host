@@ -2462,8 +2462,10 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("projects Claude Agent delegation as one common Subagent Item", async () => {
+  it("preserves requested and reported child models through Claude Agent lifecycle", async () => {
+    const model = "haiku";
     const { adapter, transports } = fixture();
+    const reportedModel = "claude-sonnet-4-6";
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
 
@@ -2482,6 +2484,7 @@ describe("Claude Code HarnessAdapter", () => {
       callId: "agent-1",
       description: "Inspect implementation",
       role: "Explore",
+      model,
       background: true,
     });
     expect(await nextEvent(iterator)).toMatchObject({
@@ -2498,6 +2501,7 @@ describe("Claude Code HarnessAdapter", () => {
             subagentId: "agent-1",
             description: "Inspect implementation",
             role: "Explore",
+            model,
             background: true,
             status: "running",
           },
@@ -2511,6 +2515,7 @@ describe("Claude Code HarnessAdapter", () => {
       status: "running",
       nativeSubagentId: "native-agent-1",
       resultSummary: "Reading files",
+      model: reportedModel,
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.updated",
@@ -2521,6 +2526,7 @@ describe("Claude Code HarnessAdapter", () => {
             status: "running",
             nativeSubagentId: "native-agent-1",
             resultSummary: "Reading files",
+            model: reportedModel,
           },
         ],
       },
@@ -2544,13 +2550,22 @@ describe("Claude Code HarnessAdapter", () => {
       type: "item.updated",
       update: {
         type: "subagents.replace",
-        subagents: [{ status: "completed", resultSummary: "Agent launched successfully" }],
+        subagents: [
+          {
+            status: "completed",
+            resultSummary: "Agent launched successfully",
+            model: reportedModel,
+          },
+        ],
       },
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.completed",
       snapshot: {
-        item: { type: "subagentDelegation", subagents: [{ status: "completed" }] },
+        item: {
+          type: "subagentDelegation",
+          subagents: [{ status: "completed", model: reportedModel }],
+        },
         outcome: { status: "succeeded" },
       },
     });

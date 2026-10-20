@@ -333,9 +333,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
             {
               items: expect.arrayContaining([
                 expect.objectContaining({
-                  type: "collabAgentToolCall",
-                  senderThreadId: parentId,
-                  receiverThreadIds: [childId],
+                  type: "subAgentActivity",
+                  agentThreadId: childId,
+                  kind: "started",
                 }),
               ]),
             },
@@ -427,6 +427,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
       subagentId: "agent-call",
       nativeSubagentId: "native-agent-1",
       description: "Analyze files",
+      model: "child-model",
+      reasoningEffort: "high",
       background: false,
       status: "running",
     });
@@ -434,8 +436,22 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(messageParams(childStarted).thread).toMatchObject({
       status: { type: "active" },
       canAcceptDirectInput: false,
+      model: "child-model",
+      reasoningEffort: "high",
     });
     const childThreadId = (messageParams(childStarted).thread as JsonObject).id as string;
+    writeRequest(fixture.desktopInput, {
+      id: 901,
+      method: "thread/resume",
+      params: { threadId: childThreadId },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 901))).toMatchObject({
+      result: {
+        model: "child-model",
+        reasoningEffort: "high",
+        thread: { model: "child-model", reasoningEffort: "high", canAcceptDirectInput: false },
+      },
+    });
     writeRequest(fixture.desktopInput, {
       id: 98,
       method: "thread/turns/list",
@@ -444,6 +460,32 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const initialHistory = await fixture.collector.waitFor((message) => requestId(message, 98));
     expect(initialHistory).toMatchObject({
       result: { data: [{ items: [expect.objectContaining({ type: "userMessage" })] }] },
+    });
+
+    const beforeModelChange = fixture.collector.messages.length;
+    session.replaceSubagents(itemId, [
+      {
+        subagentId: "agent-call",
+        nativeSubagentId: "native-agent-1",
+        description: "Analyze files",
+        model: "reported-child-model",
+        background: false,
+        status: "running",
+      },
+    ]);
+    await fixture.collector.waitFor(
+      (message) =>
+        fixture.collector.messages.indexOf(message) >= beforeModelChange &&
+        method(message, "item/started") &&
+        (messageParams(message).item as JsonObject | undefined)?.agentThreadId === childThreadId,
+    );
+    writeRequest(fixture.desktopInput, {
+      id: 902,
+      method: "thread/read",
+      params: { threadId: childThreadId, includeTurns: false },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 902))).toMatchObject({
+      result: { thread: { model: "reported-child-model", reasoningEffort: "high" } },
     });
 
     subagentPhase = "temporarily-empty";
@@ -548,11 +590,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const completed = await fixture.collector.waitFor(
       (message) =>
         method(message, "item/completed") &&
-        (messageParams(message).item as JsonObject | undefined)?.type === "collabAgentToolCall",
+        (messageParams(message).item as JsonObject | undefined)?.type === "subAgentActivity",
     );
-    const completedChildThreadId = (
-      (messageParams(completed).item as JsonObject).receiverThreadIds as string[]
-    )[0];
+    const completedChildThreadId = (messageParams(completed).item as JsonObject)
+      .agentThreadId as string;
     expect(completedChildThreadId).toBe(childThreadId);
     expect(childThreadId).toBeTruthy();
     expect(childThreadId).not.toBe("agent-call");
@@ -745,6 +786,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: { threadId: childThreadId, excludeTurns: true },
     });
     const opened = await fixture.collector.waitFor((message) => requestId(message, 96));
+    expect(opened.result).toMatchObject({
+      model: "",
+      reasoningEffort: null,
+      thread: { model: null, reasoningEffort: null, canAcceptDirectInput: false },
+    });
     expect((opened.result as JsonObject).thread).toEqual(
       expect.objectContaining({ id: childThreadId, status: { type: "active", activeFlags: [] } }),
     );

@@ -1,10 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import type { HostThreadSnapshot, HostTurnSnapshot } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
-import { MappingStore } from "@codexhost/mapping-store";
+import { MappingStore, storedThreadCoreV1Schema } from "@codexhost/mapping-store";
 import { decodeThreadListRequest } from "@codexhost/protocol-core";
 import {
   harnessIdSchema,
@@ -17,7 +17,10 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { listExternalThreadMetadata } from "../src/external-thread-list.js";
-import { ExternalThreadRepository } from "../src/external-thread-repository.js";
+import {
+  ExternalThreadRepository,
+  externalThreadValue,
+} from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 
 const directories: string[] = [];
@@ -92,6 +95,80 @@ afterEach(async () => {
 });
 
 describe("External native child identity", () => {
+  it("persists child configuration independently, upgrades legacy mappings, and never borrows parent settings", async () => {
+    const { directory, input, repository, store, parent } = await fixture();
+    const configuredParent = await repository.setTransportModelId(parentId, "parent-model");
+    const child = {
+      subagentId: "child",
+      nativeSubagentId: "child",
+      description: "Scout",
+      background: false,
+      status: "running" as const,
+    };
+    let reopened: ExternalThreadRepository | undefined;
+    try {
+      const legacyId = hostThreadIdSchema.parse("legacy-child");
+      await repository.createProvisional({
+        ...input,
+        hostThreadId: legacyId,
+        createRequestId: "legacy-child",
+        transportModelId: "parent-model",
+        subagent: { parentHostThreadId: parentId, nativeSubagentId: "child" },
+      });
+      const legacy = await repository.commitNative(legacyId, sourceRef);
+      const view = (record: typeof legacy | null) => {
+        if (!record) throw new Error("Missing child mapping");
+        return externalThreadValue({ record, turns: [], sessionId: parentId });
+      };
+      expect(view(legacy)).toMatchObject({
+        model: null,
+        reasoningEffort: null,
+        canAcceptDirectInput: false,
+      });
+      const known = await repository.materializeSubagent(configuredParent, {
+        ...child,
+        model: "sonnet",
+        reasoningEffort: "high",
+      });
+      expect(known?.hostThreadId).toBe(legacyId);
+      expect(view(known)).toMatchObject({
+        model: "sonnet",
+        reasoningEffort: "high",
+        parentThreadId: parentId,
+      });
+      await repository.materializeSubagent(configuredParent, { ...child, model: "reported-model" });
+      const missing = await repository.materializeSubagent(configuredParent, child);
+      expect(view(missing)).toMatchObject({ model: "reported-model", reasoningEffort: "high" });
+      const unknown = await repository.materializeSubagent(configuredParent, {
+        ...child,
+        subagentId: "other",
+        nativeSubagentId: "other",
+      });
+      expect(unknown?.transportModelId).not.toBe(configuredParent.transportModelId);
+      expect(view(unknown)).toMatchObject({ model: null, reasoningEffort: null });
+      expect(view(parent)).not.toHaveProperty("model");
+      expect(await repository.find(parentId)).toEqual(configuredParent);
+      // Child observations stay in the metadata sidecar, preserving the strict core format.
+      expect(
+        storedThreadCoreV1Schema.safeParse(
+          JSON.parse(await readFile(path.join(directory, "threads", `${legacyId}.json`), "utf8")),
+        ).success,
+      ).toBe(true);
+      await expect(
+        store.updateMetadata(parentId, { subagentConfiguration: { model: "wrong" } }),
+      ).rejects.toThrow("Subagent Thread");
+      await repository.close();
+      reopened = new ExternalThreadRepository(new MappingStore({ directory }));
+      await reopened.initialize();
+      expect(view(await reopened.find(legacyId))).toMatchObject({
+        model: "reported-model",
+        reasoningEffort: "high",
+      });
+    } finally {
+      await (reopened ?? repository).close();
+    }
+  });
+
   it.each([sourceRef, replacementRef])(
     "retains child and Turn IDs across rollback to $nativeSessionId",
     async (ref) => {
@@ -126,8 +203,8 @@ describe("External native child identity", () => {
         });
         expect(rolledBack.turns[0]?.items).toContainEqual(
           expect.objectContaining({
-            type: "collabAgentToolCall",
-            receiverThreadIds: [child.hostThreadId],
+            type: "subAgentActivity",
+            agentThreadId: child.hostThreadId,
           }),
         );
         expect(
@@ -365,8 +442,8 @@ describe("External native child identity", () => {
       expect(list).toHaveBeenCalledTimes(1);
       expect(result.turns[0]?.items).toContainEqual(
         expect.objectContaining({
-          type: "collabAgentToolCall",
-          receiverThreadIds: ["legacy-a", "legacy-b"],
+          type: "subAgentActivity",
+          agentThreadId: "legacy-a",
         }),
       );
     } finally {

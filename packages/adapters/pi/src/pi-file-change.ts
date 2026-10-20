@@ -147,7 +147,7 @@ function synthesizeFileChange(
   if (kind === "write") {
     const content = nestedToolString(
       args,
-      ["content", "new_string", "newString", "newText", "text"],
+      ["content", "new_string", "newString", "newText", "file_text", "text", "new"],
       true,
     );
     if (content === undefined) return null;
@@ -162,10 +162,15 @@ function synthesizeFileChange(
       },
     ];
   }
-  const oldText = nestedToolString(args, ["old_string", "oldString", "oldText", "old_text"], true);
+  // The same argument keys as the Host's fileChangeFromTool, so hostDerivesFileChange agrees with it.
+  const oldText = nestedToolString(
+    args,
+    ["old_string", "oldString", "oldText", "old_text", "old"],
+    true,
+  );
   const newText = nestedToolString(
     args,
-    ["new_string", "newString", "newText", "new_text", "content"],
+    ["new_string", "newString", "newText", "new_text", "content", "new"],
     true,
   );
   if (oldText === undefined || newText === undefined) return null;

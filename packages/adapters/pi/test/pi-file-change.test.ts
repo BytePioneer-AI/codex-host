@@ -98,6 +98,11 @@ describe("Pi tool file changes", () => {
 
   it("leaves plain write arguments to the Host and resolves Pi-only path forms itself", () => {
     expect(piToolFileChanges("write", { path: "new.txt", content: "x" }, {}, cwd)).toBeNull();
+    // The Host's other argument keys: left to it on plain paths, resolved here on Pi-only ones.
+    expect(piToolFileChanges("write", { path: "new.txt", file_text: "x" }, {}, cwd)).toBeNull();
+    expect(
+      piToolFileChanges("edit", { path: "@old.txt", old: "a", new: "b" }, {}, cwd),
+    ).toMatchObject([{ path: "old.txt", kind: "update" }]);
     expect(piToolFileChanges("write", { path: "@out/a.txt", content: "x" }, {}, cwd)).toMatchObject(
       [{ path: "out/a.txt", kind: "add" }],
     );

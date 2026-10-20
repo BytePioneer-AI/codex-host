@@ -8,6 +8,7 @@ import {
   CHAT_LIVE_VOICE_STORAGE_KEY,
   applySharedVoiceRoutes,
 } from "../src/renderer-cpa-live-voice-preference.js";
+import { navigateNativeChatVoiceDraft } from "../src/renderer-native-chat-voice-navigation.js";
 
 function fixture() {
   const scopeDefinition = { id: Symbol(), __scopeBrand: "AppScope" };
@@ -255,6 +256,8 @@ function installFixture() {
   let browserEnabled: unknown = false;
   let active = false;
   let connected = true;
+  let sessionStarted = true;
+  let serverId: unknown = "a7e3282d-f457-4586-9b28-921411364f6b";
   const listeners = new Set<() => void>();
   const unsubscribe = vi.fn();
   const locationSelector = {};
@@ -320,6 +323,9 @@ function installFixture() {
       getState: () => ({
         isVoiceModeActive: active,
         hasConnectedOnce: connected,
+        hasVoiceSessionStarted: sessionStarted,
+        earlyServerThreadId: serverId,
+        server: { connectionState: connected ? "connected" : null },
         isWorkMode: false,
         conversationId: f.props.conversationId,
       }),
@@ -387,6 +393,14 @@ function installFixture() {
     browserEnabled: () => browserEnabled,
     listeners,
     unsubscribe,
+    setSessionStarted: (value: boolean) => {
+      sessionStarted = value;
+      for (const listener of listeners) listener();
+    },
+    setServerId: (value: unknown) => {
+      serverId = value;
+      for (const listener of listeners) listener();
+    },
     setConnected: (value: boolean) => {
       connected = value;
       for (const listener of listeners) listener();
@@ -403,6 +417,101 @@ function installFixture() {
 
 afterEach(() => vi.useRealTimers());
 describe("native Chat voice lifecycle installation", () => {
+  it.each(["mapped", "matching", "conflicting"])(
+    "checks native draft-to-server identity before navigation: %s",
+    async (identity) => {
+      vi.useFakeTimers();
+      const f = installFixture();
+      const draft = "local-chatgpt:bf2d4b2f-43ee-49df-b802-b55c9fb345d7";
+      const serverId = "a7e3282d-f457-4586-9b28-921411364f6b";
+      f.props.conversationId = draft;
+      f.props.composerSelectionContext.conversationId = draft;
+      useNewChatComposer(f);
+      const nativeGet = f.scope.get.getMockImplementation();
+      if (!nativeGet) throw new Error("Fixture native getter is missing");
+      let mapping: unknown = null;
+      f.scope.get.mockImplementation((selector, argument) =>
+        selector === f.backendConversationId ? mapping : nativeGet(selector, argument),
+      );
+      const binding = detectNativeChatVoiceBinding(f.composer, f);
+      if (!binding) throw new Error("Native draft binding is missing");
+      mapping = serverId;
+      f.setActive(true);
+      f.setServerId(
+        identity === "mapped"
+          ? null
+          : identity === "matching"
+            ? serverId
+            : "c3545bb8-b121-4f77-b86d-6eb7972d841b",
+      );
+      const controller = new AbortController();
+      const result = navigateNativeChatVoiceDraft(
+        binding,
+        f.initial,
+        f.shared,
+        f.scope.get(f.initial.FFr),
+        controller.signal,
+      );
+      if (identity === "conflicting") {
+        await vi.advanceTimersByTimeAsync(500);
+        expect(f.initial.uIr).not.toHaveBeenCalled();
+        controller.abort();
+        expect(await result).toBe(false);
+      } else {
+        expect(await result).toBe(true);
+        expect(f.shared.xat).toHaveBeenCalledExactlyOnceWith(serverId);
+      }
+      expect(f.listeners.size).toBe(0);
+    },
+  );
+
+  it.each(["accepted", "rejected"])(
+    "opens only a server-backed Chat after native session startup: %s",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const f = installFixture();
+      const draft = "local-chatgpt:bf2d4b2f-43ee-49df-b802-b55c9fb345d7";
+      const serverId = "a7e3282d-f457-4586-9b28-921411364f6b";
+      f.props.conversationId = draft;
+      f.props.composerSelectionContext.conversationId = draft;
+      useNewChatComposer(f);
+      const nativeGet = f.scope.get.getMockImplementation();
+      if (!nativeGet) throw new Error("Fixture native getter is missing");
+      f.scope.get.mockImplementation((selector, argument) =>
+        selector === f.backendConversationId ? null : nativeGet(selector, argument),
+      );
+      f.setSessionStarted(false);
+      f.setServerId(undefined);
+      f.start.mockImplementation(async () => {
+        f.setActive(true);
+      });
+      f.initial.uIr.mockReturnValue(outcome === "accepted");
+      const hook = installNativeChatVoiceHook(f);
+      await vi.advanceTimersByTimeAsync(0);
+      const starting = hook.start();
+      await vi.advanceTimersByTimeAsync(500);
+      // A connected transport alone must not open the draft route and end voice.
+      expect(f.shared.xat).not.toHaveBeenCalled();
+      f.setSessionStarted(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.shared.xat).not.toHaveBeenCalled();
+      for (const invalid of [draft, "not-a-server-id", null]) {
+        f.setServerId(invalid);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(f.initial.uIr).not.toHaveBeenCalled();
+      }
+      f.setServerId(serverId);
+      await starting;
+      expect(f.shared.xat).toHaveBeenCalledExactlyOnceWith(serverId);
+      expect(f.initial.uIr).toHaveBeenCalledExactlyOnceWith(f.scope, `/c/${serverId}`);
+      const events = Reflect.get(globalThis, "__codexhostChatVoiceDebug") as { event: string }[];
+      expect(events.at(-1)?.event === "native-chat-draft-selected").toBe(outcome === "accepted");
+      expect(f.listeners.size).toBe(1);
+      hook.dispose();
+      expect(f.listeners.size).toBe(0);
+    },
+  );
+
   it("retains startup through a hidden composer before native START returns", async () => {
     vi.useFakeTimers();
     const f = installFixture();
@@ -571,8 +680,7 @@ describe("native Chat voice lifecycle installation", () => {
       f.initial.ejn = () => ({
         ...originalStore,
         getState: () => ({
-          isVoiceModeActive: true,
-          hasConnectedOnce: true,
+          ...originalStore.getState(),
           isWorkMode: outcome === "work-session",
           conversationId: outcome === "different-session" ? "another-chat" : draft,
         }),
@@ -586,10 +694,10 @@ describe("native Chat voice lifecycle installation", () => {
     gate.resolve(undefined);
     await starting;
     if (outcome === "active" || outcome === "navigation-failed") {
-      expect(f.shared.xat).toHaveBeenCalledWith(draft);
+      expect(f.shared.xat).toHaveBeenCalledWith("a7e3282d-f457-4586-9b28-921411364f6b");
       expect(f.initial.uIr).toHaveBeenCalledExactlyOnceWith(
         f.scope,
-        `/c/${encodeURIComponent(draft)}`,
+        "/c/a7e3282d-f457-4586-9b28-921411364f6b",
       );
     } else expect(f.initial.uIr).not.toHaveBeenCalled();
     hook.dispose();

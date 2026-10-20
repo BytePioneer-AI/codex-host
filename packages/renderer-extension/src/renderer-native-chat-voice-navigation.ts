@@ -6,19 +6,32 @@ interface VoiceState {
   isVoiceModeActive: boolean;
   isWorkMode: boolean;
   conversationId: unknown;
-  hasConnectedOnce: boolean;
+  hasVoiceSessionStarted: boolean;
+  earlyServerThreadId?: unknown;
+  server: { connectionState: unknown };
 }
 
-/** START acknowledges its queued command before transport setup completes. */
-async function waitForConnection(
+const CONVERSATION_UUID = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
+
+/** The conversation page needs a server-owned Chat, beyond a connected transport. */
+async function waitForConversation(
   store: { getState(): VoiceState; subscribe(listener: () => void): () => void },
   current: () => boolean,
+  backendId: () => unknown,
   signal: AbortSignal,
-): Promise<boolean> {
+): Promise<string | false> {
   const ready = () => {
     const state = store.getState();
     if (signal.aborted || !current() || !state.isVoiceModeActive) return false;
-    return state.hasConnectedOnce ? true : undefined;
+    if (!state.hasVoiceSessionStarted || state.server.connectionState !== "connected") return;
+    const mapped = backendId();
+    const id = mapped ?? state.earlyServerThreadId;
+    if (
+      typeof id === "string" &&
+      CONVERSATION_UUID.test(id) &&
+      (state.earlyServerThreadId == null || state.earlyServerThreadId === id)
+    )
+      return id;
   };
   const initial = ready();
   if (initial !== undefined) return initial;
@@ -66,16 +79,19 @@ export async function navigateNativeChatVoiceDraft(
       state.conversationId === binding.props.conversationId
     );
   };
-  if (!(await waitForConnection(voiceStore, current, signal)) || signal.aborted || !current())
+  const id = await waitForConversation(
+    voiceStore,
+    current,
+    () => binding.scope.get(initial.pZn, binding.props.conversationId),
+    signal,
+  );
+  if (id === false || signal.aborted || !current() || !voiceStore.getState().isVoiceModeActive)
     return false;
-  // xat formats a native Chat locator; uIr uses the AppScope navigation bridge.
-  // The store owns mapping this draft to its server UUID and streaming transcript.
-  const path = Reflect.apply(shared.xat as (...args: unknown[]) => unknown, undefined, [
-    binding.props.conversationId,
-  ]);
-  await Reflect.apply(initial.uIr as (...args: unknown[]) => unknown, undefined, [
+  // Both IDs come from this native session's store. A draft locator is never a page ID.
+  const path = Reflect.apply(shared.xat as (...args: unknown[]) => unknown, undefined, [id]);
+  const accepted = await Reflect.apply(initial.uIr as (...args: unknown[]) => unknown, undefined, [
     binding.scope,
     path,
   ]);
-  return true;
+  return accepted !== false;
 }

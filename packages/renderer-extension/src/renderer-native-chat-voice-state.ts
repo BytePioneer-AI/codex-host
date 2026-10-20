@@ -13,6 +13,7 @@ export function observeNativeChatVoiceState(
       isVoiceModeActive?: boolean;
       hasConnectedOnce?: boolean;
       hasVoiceSessionStarted?: boolean;
+      earlyServerThreadId?: unknown;
       server?: { connectionState?: unknown };
     };
     subscribe(listener: () => void): () => void;
@@ -26,6 +27,9 @@ export function observeNativeChatVoiceState(
       active: state.isVoiceModeActive === true,
       connectedOnce: state.hasConnectedOnce === true,
       sessionStarted: state.hasVoiceSessionStarted === true,
+      serverConversationReady:
+        typeof state.earlyServerThreadId === "string" &&
+        /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(state.earlyServerThreadId),
       connection:
         typeof connection === "string" &&
         ["disconnected", "connecting", "connected", "reconnecting", "signalReconnecting"].includes(

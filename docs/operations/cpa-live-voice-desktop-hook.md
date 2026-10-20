@@ -110,10 +110,13 @@ new Thread; a failed Chat binding or START does not fall back to that overlay.
 The explicit Chat gateway override keeps the existing gateway launch path.
 For a new Chat, START receives the native draft props with an absent backend
 conversation ID; native voice owns creating and attaching the Chat conversation.
-After START returns, the hook waits for that draft's native voice transport to
-connect before selecting the same native draft through Desktop's Chat route formatter and AppScope
-navigation bridge. Native mapping resolves its server UUID and transcript. This
-handoff runs only if the original navigation object is unchanged; canceled or
+After START returns, the hook waits for the same native voice session to start,
+its transport to be connected, and a backend ChatGPT UUID to be available from
+`pZn` or that session's native `earlyServerThreadId`. Conflicting IDs do not
+navigate. It opens that server-backed Chat through Desktop's Chat route formatter
+and AppScope navigation bridge; the temporary `local-chatgpt:` locator is never
+passed as a conversation-page ID. A rejected navigation is not reported as a
+selected draft. This handoff runs only if the original navigation object is unchanged; canceled or
 disconnected starts, Work sessions, existing Chats and a user who navigated
 elsewhere are not redirected.
 
@@ -127,8 +130,9 @@ document start, so loading the chunk alone does not establish gateway readiness.
 Debug events use `__codexhostChatVoiceDebug` and the bounded localStorage key
 `codexhost.chat-voice-debug.v1`. They contain event names, timestamps and routing
 booleans, with no conversation IDs, SDP, credentials or raw errors. Native store
-subscriptions additionally record active/connected/session-started flags, an
-allowlisted connection state, and the allowlisted microphone request state. A
+subscriptions additionally record active/connected/session-started and
+server-conversation-ready flags, an allowlisted connection state, and the
+allowlisted microphone request state. A
 START return is a command acknowledgment, not evidence of a connected call.
 These subscriptions are removed with the AppScope binding.
 

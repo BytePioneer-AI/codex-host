@@ -12,6 +12,7 @@ describe("native Chat lifecycle diagnostics", () => {
       isVoiceModeActive: false,
       hasConnectedOnce: false,
       hasVoiceSessionStarted: false,
+      earlyServerThreadId: null as unknown,
       server: { connectionState: "connecting", messages: ["private transcript"] },
       voiceSessionId: "private session ID",
       pendingDisconnect: { error: "private error" },
@@ -43,9 +44,19 @@ describe("native Chat lifecycle diagnostics", () => {
       active: true,
       connectedOnce: true,
       sessionStarted: false,
+      serverConversationReady: false,
       connection: "connected",
       microphone: "granted",
     });
+    state.earlyServerThreadId = "a7e3282d-f457-4586-9b28-921411364f6b";
+    listener?.();
+    expect(chatVoiceDebug).toHaveBeenLastCalledWith(
+      "native-chat-state",
+      expect.objectContaining({ serverConversationReady: true }),
+    );
+    expect(JSON.stringify(vi.mocked(chatVoiceDebug).mock.calls)).not.toContain(
+      state.earlyServerThreadId,
+    );
     // Unexpected native strings must not enter the persisted diagnostic ring.
     state.server.connectionState = "private transport error";
     get.mockReturnValue("private permission error");

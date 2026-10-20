@@ -7,7 +7,7 @@ export function renderRestartControl(
   messages: ConsoleMessages,
   state: ConsoleState,
 ): HTMLElement {
-  const root = h(document, "div", { className: "console-actions" });
+  const root = h(document, "div", { className: "console-actions console-restart" });
   const status = state.overview?.restart;
   const busy = state.restartSubmitting || status?.phase === "restarting";
   if (state.restartConfirm && !busy) {

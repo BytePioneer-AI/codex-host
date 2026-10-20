@@ -178,13 +178,17 @@
 
 .console-hero {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 16px;
   padding: 20px;
   background: var(--settings-panel);
   border: 1px solid var(--settings-border);
   border-radius: 14px;
+}
+
+.console-hero > .console-actions {
+  grid-column: 1 / -1;
 }
 
 .console-hero__icon {

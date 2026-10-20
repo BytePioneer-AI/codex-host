@@ -12,7 +12,6 @@ import {
 } from "./renderer-cpa-live-voice-hook.js";
 import { nativeChatVoicePreferenceAllowsStart } from "./renderer-cpa-live-voice-preference.js";
 import { observeNativeChatVoiceState } from "./renderer-native-chat-voice-state.js";
-import { navigateNativeChatVoiceDraft } from "./renderer-native-chat-voice-navigation.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
 const START_ASSET = "start-voice-954090654801.js";
@@ -298,7 +297,6 @@ export function installNativeChatVoiceHook(
       starting = true;
       controller = new AbortController();
       const signal = controller.signal;
-      const origin = current.scope.get(modules.initial.FFr);
       chatVoiceDebug("native-chat-start", {
         hasConversationId: current.backendConversationId !== undefined,
       });
@@ -312,22 +310,6 @@ export function installNativeChatVoiceHook(
           signal,
         ]);
         chatVoiceDebug("native-chat-start-returned");
-        try {
-          if (
-            !disposed &&
-            nativeChatVoicePreferenceAllowsStart(target) &&
-            (await navigateNativeChatVoiceDraft(
-              current,
-              modules.initial,
-              modules.shared,
-              origin,
-              signal,
-            ))
-          )
-            chatVoiceDebug("native-chat-draft-selected");
-        } catch {
-          chatVoiceDebug("native-chat-draft-selection-failed");
-        }
       } catch {
         chatVoiceDebug("native-chat-start-failed");
         throw new Error("Native Chat voice could not start");
@@ -377,8 +359,6 @@ export function installNativeChatVoiceHook(
           typeof start.n !== "function" ||
           typeof initial.jw !== "function" ||
           typeof initial.ejn !== "function" ||
-          typeof initial.uIr !== "function" ||
-          typeof shared.xat !== "function" ||
           typeof shared.yzt !== "function" ||
           typeof shared.vMt !== "function" ||
           typeof prewarm.VoiceInstantConnectCacheController !== "function"
@@ -391,7 +371,6 @@ export function installNativeChatVoiceHook(
           !initial.pZn ||
           !initial.lXt ||
           !initial.Aw ||
-          !initial.FFr ||
           !record(initial.xAt) ||
           !record(initial.xAt.scope)
         )

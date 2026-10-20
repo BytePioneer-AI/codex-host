@@ -20,6 +20,15 @@ Gateway configuration details are collapsed under **Configuration → Gateway �
 
 The 26.1013 Work/Chat routing choices apply on the next call. The injection setting and process environment require restart. Host call creation rereads the selected provider and realtime URLs from `CODEX_HOME/config.toml`; Desktop-owned config consumers can require restart. End an existing call before changing its gateway configuration so cleanup uses the correct gateway.
 
+**Desktop default** leaves Renderer call creation on Desktop's service; it does
+not clear the native backend's `experimental_realtime_*` URL overrides. If those
+still point at a gateway, native Work can create its call on Desktop and then
+attempt to attach through the gateway, producing a WebSocket 404. With gateway
+URLs configured, select **Configured gateway** for Codex Work to align creation
+and attachment. Returning to the official backend also requires restoring the
+native realtime configuration and restarting. The **Configured** status checks
+configuration and credential presence only, not call connectivity.
+
 The unaudited-Desktop asset gate still fail-closes. `~/.codex/config.toml` realtime keys stay manual.
 
 The hook only changes Desktop call ownership. Point Codex at the realtime host in `~/.codex/config.toml` as well, then relaunch:
@@ -43,6 +52,11 @@ native SDP/session through `codexhost/realtime/call` on the local Host connectio
 when the matching route uses the gateway. Codex Work honors **Work → Voice connection**; external Harness calls always use Host. **Chat → Codex → Configured gateway** uses the same Host path. **Chat → Codex → Desktop default** leaves `/wham` untouched. **Chat → ChatGPT** invokes native browser voice separately and leaves `/wham` untouched. Other WebFetch requests
 pass through with their original receiver and
 arguments.
+External Harness ownership also comes from an explicit `codexhost/` backend
+model in native request metadata, so a cold avatar overlay does not depend on
+the main composer's routing state or remembered launch. Explicit Chat ownership
+still takes precedence. Safe bootstrap diagnostics report the selected
+`desktop` or `gateway` route without model names, identifiers or credentials.
 No global fetch, message transport or application archive is replaced.
 
 The Host reads the configured realtime URLs and selected provider's

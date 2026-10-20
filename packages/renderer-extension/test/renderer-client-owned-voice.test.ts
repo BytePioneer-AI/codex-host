@@ -195,6 +195,30 @@ describe("client-owned voice gateway", () => {
     expect(f.original).not.toHaveBeenCalled();
     expect(f.dispatch).toHaveBeenCalledOnce();
   });
+  it.each(["codexhost/grok/grok-4", "codexhost/claude/opus"])(
+    "routes the cold overlay's explicit Harness metadata through Host: %s",
+    async (model) => {
+      const f = fixture();
+      // No primary Composer, remembered launch, or lastAgent exists in this realm.
+      wrapClientOwnedVoiceFetch(
+        f.client,
+        f.bridge,
+        () => false,
+        f.responseError,
+        () => false,
+        () => false,
+        () => false,
+      );
+      await f.client.fetch(
+        url,
+        options(speechBody(), {
+          "x-codex-turn-metadata": JSON.stringify({ backend_model_name: model }),
+        }),
+      );
+      expect(f.dispatch).toHaveBeenCalledOnce();
+      expect(f.original).not.toHaveBeenCalled();
+    },
+  );
   it("honors the Work preference at call time", async () => {
     const f = fixture();
     wrapClientOwnedVoiceFetch(f.client, f.bridge, () => false, f.responseError);
@@ -445,7 +469,9 @@ describe("explicit Chat launch ownership", () => {
       () => true,
       () => true,
     );
-    const request = workOptions();
+    const request = options(speechBody(), {
+      "x-codex-turn-metadata": JSON.stringify({ backend_model_name: "codexhost/grok/grok-4" }),
+    });
     await f.client.fetch(url, request);
     expect(f.original).toHaveBeenCalledWith(url, request);
     expect(f.dispatch).not.toHaveBeenCalled();

@@ -117,10 +117,6 @@ export function isWorkComposerSurface(owner: object = globalThis): boolean {
   }
 }
 
-function isWorkVoiceCall(options: RequestInit | undefined, workSurface: () => boolean): boolean {
-  return isWorkBackendModel(backendModelName(options?.headers)) || workSurface();
-}
-
 function selectedComposerModel(owner: object): string {
   const routing = (
     owner as {
@@ -190,21 +186,25 @@ export function wrapClientOwnedVoiceFetch(
     )
       return original.call(this, url, options);
     const chat = lastVoiceLaunchProductExperience() === "chat";
-    const work = !chat && isWorkVoiceCall(options, workSurface);
-    const external = !chat && externalHarness();
+    const model = backendModelName(options.headers);
+    const work = !chat && (isWorkBackendModel(model) || workSurface());
+    // The avatar overlay has no primary Composer routing state. The native
+    // request's explicit Harness model still owns its gateway bootstrap there.
+    const external = !chat && (model.startsWith("codexhost/") || externalHarness());
+    const gateway = external || (work ? workOverride() : chatOverride());
     chatVoiceDebug("wham-create", {
       work,
       external,
+      route: gateway ? "gateway" : "desktop",
       productExperience: lastVoiceLaunchProductExperience() ?? "unset",
     });
-    if (external || work) {
-      if (!external && !workOverride()) return original.call(this, url, options);
-    } else if (!chatOverride()) {
-      // Native Chat Instant Connect is Desktop's browser-voice stack
-      // (fetchVoiceRequest → chatgpt.com/realtime/wm), not Codex /wham.
-      chatVoiceDebug("chat-native-passthrough", {
-        hasThreadId: new Headers(options.headers).has("Thread-Id"),
-      });
+    if (!gateway) {
+      if (!external && !work)
+        // Native Chat Instant Connect is Desktop's browser-voice stack
+        // (fetchVoiceRequest → chatgpt.com/realtime/wm), not Codex /wham.
+        chatVoiceDebug("chat-native-passthrough", {
+          hasThreadId: new Headers(options.headers).has("Thread-Id"),
+        });
       return original.call(this, url, options);
     }
     if (typeof options.body !== "string") throw new Error("Unsupported native voice call request");

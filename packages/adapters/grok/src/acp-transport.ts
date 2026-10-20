@@ -940,9 +940,15 @@ export class GrokAcpTransport {
       {
         sessionId: this.#sessionId,
         modelId,
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-        ...(contextWindowTokens !== undefined
-          ? { _meta: { contextWindow: contextWindowTokens } }
+        ...(reasoningEffort || contextWindowTokens !== undefined
+          ? {
+              _meta: {
+                ...(reasoningEffort ? { reasoningEffort } : {}),
+                ...(contextWindowTokens !== undefined
+                  ? { contextWindow: contextWindowTokens }
+                  : {}),
+              },
+            }
           : {}),
       },
     );

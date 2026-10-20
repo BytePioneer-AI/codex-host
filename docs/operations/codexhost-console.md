@@ -8,6 +8,8 @@
 
 外观（思考文本显示、隐藏 Codex 额度警告、空闲释放、改写实时语音）由 Codex 界面保存，只能在 Codex 设置页修改。隐藏 Codex 额度警告与改写实时语音均默认开启。`~/.codex/config.toml` 里的 realtime 基址仍需自行配置。设计背景见 [`proposals/独立 Web 控制台方案.md`](../proposals/独立%20Web%20控制台方案.md)。
 
+When the selected Grok or Claude Code launcher is managed by grokgod or clawgod, the connection page reads the installed CLI version with background updates disabled. It identifies the patch manager, shows the latest patched version as unknown, and leaves updates to that manager's updater or installer. A version check does not invoke the stock updater through these launchers or compare a patched installation against official releases. Grok Thinking selections use the native ACP `_meta.reasoningEffort` field, alongside `_meta.contextWindow` when selected.
+
 ## 项目公告
 
 Web 控制台在所有页面的内容区顶部显示仓库 `main` 分支的 [`docs/NOTICE.md`](../NOTICE.md)。只影响 Web，不改变 Codex 内置设置。控制台服务通过固定的 GitHub Raw HTTPS 地址读取公告，浏览器只访问本机 `/api/announcement`，不需要运行中的 Host。

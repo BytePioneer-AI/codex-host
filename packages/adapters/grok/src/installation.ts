@@ -1,7 +1,9 @@
 import {
   createInstallationManager,
   installationVersion,
+  readLauncherScript,
   runInstallationCommand,
+  versionFromOutput,
 } from "@codexhost/harness-discovery";
 import { resolveGrokExecutable } from "./command.js";
 
@@ -18,6 +20,29 @@ export function createGrokInstallation(environment: NodeJS.ProcessEnv, command?:
   let installer = "";
   return createInstallationManager({
     async check() {
+      const launcher = await readLauncherScript(
+        resolveGrokExecutable({ environment, ...(command ? { command } : {}) }),
+      );
+      if (launcher.includes("GROKGOD_HOME=") && launcher.includes("GROKGOD_BIN=")) {
+        return {
+          currentVersion: versionFromOutput(
+            await run(["--version"], undefined, {
+              GROK_DISABLE_AUTOUPDATER: "1",
+              GROKGOD_UPDATE_CHECK_DISABLE: "1",
+            }),
+          ),
+          latestVersion: "Unknown",
+          latestVersionKind: "unknown" as const,
+          updateAvailable: false,
+          canUpdate: false,
+          messageCode: "original-installer",
+          notice: {
+            en: "Managed by grokgod. Use grokgod's updater or installer to preserve the installed patches. The latest patched version is not checked here.",
+            "zh-CN":
+              "此安装由 grokgod 管理。请使用 grokgod 的更新程序或安装程序保留补丁；此处不检查最新补丁版本。",
+          },
+        };
+      }
       const state = JSON.parse(await run(["update", "--check", "--json"])) as Record<
         string,
         unknown

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { commandInvocation } from "./invocation.js";
 import { withNodeRuntimeOnPath } from "./node-runtime.js";
@@ -13,6 +14,19 @@ export interface InstallationState {
   /** Adapter-owned display text; Host validates locales and the English fallback. */
   notice?: Record<string, string>;
   latestVersionKind?: "unknown" | "tracking-branch";
+}
+
+/** Read a bounded launcher header without loading a native executable into memory. */
+export async function readLauncherScript(command: string): Promise<string> {
+  const file = await open(command, "r");
+  try {
+    const buffer = Buffer.alloc(4096);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    const prefix = buffer.toString("utf8", 0, bytesRead);
+    return prefix.startsWith("#!") || /\.(cmd|bat|ps1)$/i.test(command) ? prefix : "";
+  } finally {
+    await file.close();
+  }
 }
 
 /** Fixed adapter-owned commands only. No shell, prompt input, or raw output in errors. */

@@ -7,6 +7,7 @@ import {
   installationVersion,
   newerInstallationVersion,
   npmInstallation,
+  readLauncherScript,
   runInstallationCommand,
   versionFromOutput,
 } from "@codexhost/harness-discovery";
@@ -38,6 +39,27 @@ export function createClaudeInstallation(environment: NodeJS.ProcessEnv, command
         environment,
         ...(command ? { command } : {}),
       });
+      const launcherScript = await readLauncherScript(executable);
+      if (launcherScript.includes("CLAWGOD_CLI=")) {
+        return {
+          currentVersion: versionFromOutput(
+            await runInstallationCommand(executable, ["--version"], {
+              ...environment,
+              DISABLE_AUTOUPDATER: "1",
+            }),
+          ),
+          latestVersion: "Unknown",
+          latestVersionKind: "unknown" as const,
+          updateAvailable: false,
+          canUpdate: false,
+          messageCode: "original-installer",
+          notice: {
+            en: "Managed by clawgod. Use clawgod's updater or installer to preserve the installed patches. The latest patched version is not checked here.",
+            "zh-CN":
+              "此安装由 clawgod 管理。请使用 clawgod 的更新程序或安装程序保留补丁；此处不检查最新补丁版本。",
+          },
+        };
+      }
       const home = environment.HOME ?? environment.USERPROFILE ?? homedir();
       const config = environment.CLAUDE_CONFIG_DIR
         ? path.resolve(home, environment.CLAUDE_CONFIG_DIR)

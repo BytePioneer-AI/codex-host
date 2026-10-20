@@ -12,6 +12,7 @@ import {
 } from "./renderer-cpa-live-voice-hook.js";
 import { nativeChatVoicePreferenceAllowsStart } from "./renderer-cpa-live-voice-preference.js";
 import { observeNativeChatVoiceState } from "./renderer-native-chat-voice-state.js";
+import { nativeChatVoiceDraftSelection } from "./renderer-native-chat-voice-selection.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
 const START_ASSET = "start-voice-954090654801.js";
@@ -238,6 +239,7 @@ export function installNativeChatVoiceHook(
   const overlayButtons = new Map<HTMLButtonElement, [string, string]>();
   let controller: AbortController | undefined;
   let starting = false;
+  let selectDraft: (() => void) | undefined;
   let renderFailed = false;
   const started = Date.now();
   const removeButton = () => {
@@ -245,6 +247,7 @@ export function installNativeChatVoiceHook(
     button = undefined;
   };
   const release = () => {
+    selectDraft = undefined;
     controller?.abort();
     controller = undefined;
     removeButton();
@@ -297,6 +300,13 @@ export function installNativeChatVoiceHook(
       starting = true;
       controller = new AbortController();
       const signal = controller.signal;
+      let origin: unknown;
+      try {
+        if (modules.initial.FFr != null) origin = current.scope.get(modules.initial.FFr);
+      } catch {
+        chatVoiceDebug("native-chat-selection-failed");
+      }
+      selectDraft = undefined;
       chatVoiceDebug("native-chat-start", {
         hasConversationId: current.backendConversationId !== undefined,
       });
@@ -310,6 +320,18 @@ export function installNativeChatVoiceHook(
           signal,
         ]);
         chatVoiceDebug("native-chat-start-returned");
+        try {
+          selectDraft = nativeChatVoiceDraftSelection(
+            current,
+            modules.initial,
+            modules.shared,
+            origin,
+            signal,
+          );
+          selectDraft();
+        } catch {
+          chatVoiceDebug("native-chat-selection-failed");
+        }
       } catch {
         chatVoiceDebug("native-chat-start-failed");
         throw new Error("Native Chat voice could not start");
@@ -378,6 +400,7 @@ export function installNativeChatVoiceHook(
         modules = { shared, initial, start, prewarm };
       }
       const current = findBinding();
+      selectDraft?.();
       if (!current) {
         if (handle.activeCall) return;
         release();

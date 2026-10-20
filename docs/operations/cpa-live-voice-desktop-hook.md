@@ -110,12 +110,15 @@ new Thread; a failed Chat binding or START does not fall back to that overlay.
 The explicit Chat gateway override keeps the existing gateway launch path.
 For a new Chat, START receives the native draft props with an absent backend
 conversation ID; native voice owns creating and attaching the Chat conversation.
-The hook leaves page navigation to Desktop. It does not open a conversation page
-from a draft locator, a newly reported server ID, or voice connection events.
-Existing Chats remain selected; a new Chat uses native voice presentation and
-native transcript persistence. Open its saved transcript from Recents when needed.
-Automatic transcript-page selection is not implemented.
-
+Existing Chats remain selected. For a new Chat, the hook selects its native draft
+page once the active session has started, the Chat store has adopted the draft's
+backend ID, and the transcript's current message exists. Desktop resolves the
+draft alias and owns the canonical redirect. An early server ID alone never
+triggers navigation. Selection is attempted once and cancelled if the user leaves
+the starting page, the voice session ends or changes, or the binding is released.
+The same AppScope runtime and prewarm root survive the hidden composer and native
+page transition. Missing selection exports leave voice available with manual
+transcript selection from Recents.
 
 The hook does not build WM multipart requests, convert Thread IDs, suppress
 `thread/realtime/start`, or copy browser cookies. Work and external Harness voice

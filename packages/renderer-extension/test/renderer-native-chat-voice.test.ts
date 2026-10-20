@@ -311,6 +311,8 @@ function installFixture() {
     Aw: enabled,
     jw: vi.fn(),
     FFr: {},
+    kZn: {},
+    SZn: {},
     uIr: vi.fn(),
     ejn: () => ({
       getState: () => ({
@@ -407,6 +409,59 @@ function installFixture() {
 
 afterEach(() => vi.useRealTimers());
 describe("native Chat voice lifecycle installation", () => {
+  it("selects the adopted voice draft while its composer is hidden without releasing the native runtime", async () => {
+    vi.useFakeTimers();
+    const f = installFixture();
+    const draft = "local-chatgpt:bf2d4b2f-43ee-49df-b802-b55c9fb345d7";
+    const backend = "a7e3282d-f457-4586-9b28-921411364f6b";
+    f.props.conversationId = draft;
+    f.props.composerSelectionContext.conversationId = draft;
+    useNewChatComposer(f);
+    let adopted = false;
+    const nativeGet = f.scope.get.getMockImplementation();
+    if (!nativeGet) throw new Error("Fixture native getter is missing");
+    f.scope.get.mockImplementation((selector, argument) => {
+      if (selector === f.initial.pZn) return adopted ? backend : null;
+      if (selector === f.initial.SZn) return adopted ? "message" : null;
+      if (selector === f.initial.kZn)
+        return adopted ? { message: { message: { author: { role: "user" } } } } : null;
+      return nativeGet(selector, argument);
+    });
+    f.start.mockImplementation(async () => {
+      f.setActive(true);
+    });
+    const hook = installNativeChatVoiceHook(f);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await hook.start();
+      const signal = f.start.mock.calls[0]?.[3] as AbortSignal;
+      f.setVisible(false);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(f.initial.uIr).not.toHaveBeenCalled();
+      adopted = true;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(f.initial.uIr).toHaveBeenCalledExactlyOnceWith(
+        f.scope,
+        `/c/${encodeURIComponent(draft)}`,
+      );
+      expect(f.shared.xat).toHaveBeenCalledExactlyOnceWith(draft);
+      // Native canonicalization publishes the selected Chat composer in the same AppScope.
+      f.props.conversationId = backend;
+      f.props.composerSelectionContext.conversationId = backend;
+      f.composerNode.value.kind = "chatgpt";
+      f.composerNode.value.chatGptSelectionContext.conversationId = backend;
+      f.setVisible(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(f.createRoot).toHaveBeenCalledOnce();
+      expect(f.unmount).not.toHaveBeenCalled();
+      expect(signal.aborted).toBe(false);
+      expect(hook.activeCall).toBe(true);
+      expect(f.initial.uIr).toHaveBeenCalledOnce();
+    } finally {
+      hook.dispose();
+    }
+  });
+
   it("starts native voice without private page-navigation exports", async () => {
     vi.useFakeTimers();
     const f = installFixture();

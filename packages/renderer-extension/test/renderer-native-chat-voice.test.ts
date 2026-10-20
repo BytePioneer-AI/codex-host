@@ -513,7 +513,10 @@ describe("native Chat voice lifecycle installation", () => {
     expect(f.parent.append).toHaveBeenCalledTimes(3);
     expect(f.createRoot).toHaveBeenCalledTimes(2);
     expect(f.start).not.toHaveBeenCalled();
-    f.start.mockImplementation(async () => f.setActive(true));
+    f.start.mockImplementation(async () => {
+      f.setActive(true);
+      return undefined;
+    });
     await hook.start();
     expect(f.start).toHaveBeenCalledOnce();
     expect(f.initial.uIr).not.toHaveBeenCalled();

@@ -25,10 +25,14 @@ export function cursorSessionDirectory(sessionId: string, environment: NodeJS.Pr
   return path.join(cursorConfigDirectory(environment), "acp-sessions", sessionId);
 }
 
+/** The interactive CLI records process.cwd(), which carries the on-disk case of every path
+ * segment; Host paths may use a different case on case-insensitive file systems (macOS). */
 export function cursorSameWorkspace(left: string, right: string): boolean {
   return (
     path.resolve(left) === path.resolve(right) ||
-    (existsSync(left) && existsSync(right) && realpathSync(left) === realpathSync(right))
+    (existsSync(left) &&
+      existsSync(right) &&
+      realpathSync.native(left) === realpathSync.native(right))
   );
 }
 

@@ -127,6 +127,31 @@ describe("scanHarnessSkillsRoot", () => {
       await removeTree(root);
     }
   });
+  it("marks skills inside a hidden directory as archived", async () => {
+    const root = await temporaryRoot();
+    try {
+      await mkdir(path.join(root, ".archive/retired"), { recursive: true });
+      await mkdir(path.join(root, "live"), { recursive: true });
+      await writeFile(
+        path.join(root, ".archive/retired/SKILL.md"),
+        "---\nname: retired\ndescription: parked\n---\n",
+      );
+      await writeFile(
+        path.join(root, "live/SKILL.md"),
+        "---\nname: live\ndescription: loaded\n---\n",
+      );
+      const scan = await scanHarnessSkillsRoot(
+        root,
+        { readdir, readFile: readFileText },
+        AbortSignal.timeout(5000),
+      );
+      const byName = new Map(scan.skills.map((skill) => [skill.name, skill]));
+      expect(byName.get("retired")?.archived).toBe(true);
+      expect(byName.get("live")?.archived).toBeUndefined();
+    } finally {
+      await removeTree(root);
+    }
+  });
 });
 
 describe("shared skills directory", () => {

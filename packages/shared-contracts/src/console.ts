@@ -59,6 +59,7 @@ export const CONSOLE_HOST_METHODS = Object.freeze([
   "codexhost/usage/model-prices/default",
   "codexhost/usage/statistics/get",
   "codexhost/skills/list",
+  "codexhost/skills/setEnabled",
   "codexhost/update/check",
   "codexhost/update/start",
   "codexhost/update/status",

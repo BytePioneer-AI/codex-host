@@ -32,6 +32,10 @@ export const harnessSkillDescriptionSchema = z
   .transform((value) => value.replaceAll(/[\u0000-\u0008\u000b-\u001f\u007f]/gu, "").trim())
   .pipe(z.string().max(4096));
 
+/** How the UI may change a skill's state, when the Harness exposes a switch at all. */
+export const HARNESS_SKILL_TOGGLES = ["config", "archive"] as const;
+export type HarnessSkillToggle = (typeof HARNESS_SKILL_TOGGLES)[number];
+
 export const harnessSkillEntrySchema = z.strictObject({
   /** Skill name: frontmatter `name`, else the directory name. */
   name: harnessSkillNameSchema,
@@ -40,6 +44,15 @@ export const harnessSkillEntrySchema = z.strictObject({
   category: harnessSkillCategorySchema.optional(),
   /** Absolute directory the SKILL.md lives in, as recorded on disk. */
   path: z.string().min(1).max(4096),
+  /** Whether the Harness loads this skill now. False for config-disabled and archived skills. */
+  enabled: z.boolean().default(true),
+  /** Parked in an archive/hidden directory: not loaded, and the Harness can restore it. */
+  archived: z.boolean().default(false),
+  /**
+   * The switch the UI shows: `config` toggles the skill in place, `archive` restores it from the
+   * archive directory. Absent means the Harness has no switch, so the page stays read-only.
+   */
+  toggle: z.enum(HARNESS_SKILL_TOGGLES).optional(),
 });
 
 export const harnessSkillGroupSchema = z.strictObject({
@@ -59,7 +72,24 @@ export const harnessSkillsListResultSchema = z.strictObject({
   groups: z.array(harnessSkillGroupSchema).max(128),
 });
 
+/** Turns one skill on or off; the Harness decides whether its switch is a config flip or a restore. */
+export const HARNESS_SKILL_SET_ENABLED_METHOD = "codexhost/skills/setEnabled";
+
+export const harnessSkillSetEnabledParamsSchema = z.strictObject({
+  harness: harnessSkillNameSchema,
+  name: harnessSkillNameSchema,
+  enabled: z.boolean(),
+});
+
+export const harnessSkillsSetEnabledResultSchema = z.strictObject({
+  ok: z.boolean(),
+  /** Present when the Harness refused; shown as-is next to the switch. */
+  reason: z.string().max(512).optional(),
+});
+
 export type HarnessSkillEntry = z.infer<typeof harnessSkillEntrySchema>;
 export type HarnessSkillGroup = z.infer<typeof harnessSkillGroupSchema>;
 export type HarnessSkillsListParams = z.infer<typeof harnessSkillsListParamsSchema>;
 export type HarnessSkillsListResult = z.infer<typeof harnessSkillsListResultSchema>;
+export type HarnessSkillSetEnabledParams = z.infer<typeof harnessSkillSetEnabledParamsSchema>;
+export type HarnessSkillsSetEnabledResult = z.infer<typeof harnessSkillsSetEnabledResultSchema>;

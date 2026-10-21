@@ -40,11 +40,12 @@ export function createHarnessSkillsCatalog(options: {
           signal,
         );
         for (const skill of scan.skills) {
-          skills.push(
-            !skill.category && root.categoryFallback
+          skills.push({
+            ...(!skill.category && root.categoryFallback
               ? { ...skill, category: root.categoryFallback }
-              : skill,
-          );
+              : skill),
+            root: root.directory,
+          });
         }
         failures.push(...scan.failures);
         if (signal.aborted) break;

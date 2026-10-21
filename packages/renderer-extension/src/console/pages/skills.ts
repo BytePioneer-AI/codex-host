@@ -1,6 +1,10 @@
 import {
   HARNESS_SKILLS_METHOD,
+  HARNESS_SKILL_SET_ENABLED_METHOD,
+  harnessSkillSetEnabledParamsSchema,
   harnessSkillsListParamsSchema,
+  harnessSkillsSetEnabledResultSchema,
+  type HarnessSkillEntry,
   type HarnessSkillGroup,
   type HarnessSkillsListResult,
 } from "@codexhost/shared-contracts";
@@ -11,18 +15,20 @@ import type {
   RendererSettingsPageDefinition,
   RendererSettingsPageMountContext,
 } from "../../settings/core.js";
+import { segmented } from "../usage/controls.js";
 
 /** Console Host transport: the same JSON-RPC bridge the usage statistics page uses. */
 export type RendererSkillsRequest = (method: string, params: unknown) => Promise<unknown>;
 
-interface SkillRow {
-  name: string;
-  description: string;
-  category?: string | undefined;
-  path: string;
-}
+/** Filter values that are not a real Harness id or category name. */
+const ALL = "";
+const ARCHIVED = "\u0000archived";
+const NONE = 0;
 
-const INVISIBLE = 0;
+interface SkillRow {
+  group: HarnessSkillGroup;
+  skill: HarnessSkillEntry;
+}
 
 export function createSkillsPage(
   consoleMessages: ConsoleMessages,
@@ -37,13 +43,21 @@ export function createSkillsPage(
       const document = context.content.ownerDocument;
       const content = context.content;
 
-      const status = h(document, "p", { className: "settings-section-label" }, messages.loading);
+      const status = h(
+        document,
+        "p",
+        { className: "settings-section-label" },
+        messages.loading,
+      ) as HTMLParagraphElement;
+      const detail = h(document, "p", { className: "settings-hint console-skills-detail" });
       const search = h(document, "input", {
         type: "search",
         placeholder: messages.search,
         "aria-label": messages.search,
         className: "console-skills-search",
       }) as HTMLInputElement;
+      const harnessSlot = h(document, "div", { className: "console-skills-filters" });
+      const categorySlot = h(document, "div", { className: "console-skills-filters" });
       const groupsHost = h(document, "div", { className: "console-skills-groups" });
 
       const shell = h(
@@ -52,13 +66,20 @@ export function createSkillsPage(
         { className: "console-skills-page" },
         h(document, "h1", { className: "settings-section-label" }, messages.label),
         h(document, "p", { className: "settings-hint" }, messages.description),
+        harnessSlot,
+        categorySlot,
         search,
         status,
+        detail,
         groupsHost,
       );
       content.append(shell);
 
       let all: HarnessSkillGroup[] = [];
+      /** Selected Harness id, `ALL`, or `shared`. */
+      let harness = ALL;
+      /** Selected category name, `ALL`, or `ARCHIVED`. */
+      let category = ALL;
 
       const format = (template: string, values: Record<string, string | number>): string =>
         template.replaceAll(/\{(\w+)\}/gu, (match, key: string) =>
@@ -68,51 +89,185 @@ export function createSkillsPage(
       const groupTitle = (group: HarnessSkillGroup): string =>
         group.origin === "shared" ? messages.originShared : (group.sourceLabel ?? group.harness);
 
-      const skillCard = (skill: SkillRow): HTMLElement =>
-        h(
-          document,
-          "li",
-          { className: "console-skills-item" },
-          h(document, "span", { className: "console-skills-item-name" }, skill.name),
-          h(document, "span", { className: "console-skills-item-description" }, skill.description),
-          h(document, "code", { className: "console-skills-item-path" }, skill.path),
-        );
+      const selectedGroups = (): HarnessSkillGroup[] =>
+        harness === ALL ? all : all.filter((group) => group.harness === harness);
 
-      const failureLine = (path: string, messageText: string): HTMLElement =>
-        h(
-          document,
-          "p",
-          { className: "console-skills-failure", role: "alert" },
-          format(messages.failed, { path, message: messageText }),
-        );
+      const rows = (): SkillRow[] =>
+        selectedGroups().flatMap((group) => group.skills.map((skill) => ({ group, skill })));
 
-      const matches = (skill: SkillRow, query: string): boolean =>
+      /** Categories of the selected Harness; archived skills keep their own bucket. */
+      const categoriesOf = (): string[] => {
+        const names = new Set<string>();
+        for (const { skill } of rows()) {
+          if (!skill.archived && skill.category) names.add(skill.category);
+        }
+        return [...names].sort((a, b) => a.localeCompare(b));
+      };
+
+      const matchesQuery = (skill: HarnessSkillEntry, query: string): boolean =>
         `${skill.name} ${skill.description} ${skill.category ?? ""} ${skill.path}`
           .toLowerCase()
           .includes(query);
 
-      const render = (): void => {
+      const inCategory = (skill: HarnessSkillEntry): boolean => {
+        if (category === ALL) return true;
+        if (category === ARCHIVED) return skill.archived === true;
+        return !skill.archived && skill.category === category;
+      };
+
+      const toggleSwitch = async (row: SkillRow, button: HTMLButtonElement): Promise<void> => {
+        const next = row.skill.enabled === false;
+        button.disabled = true;
+        detail.textContent = messages.switching;
+        try {
+          const params = harnessSkillSetEnabledParamsSchema.parse({
+            harness: row.group.harness,
+            name: row.skill.name,
+            enabled: next,
+          });
+          const result = harnessSkillsSetEnabledResultSchema.parse(
+            await request(HARNESS_SKILL_SET_ENABLED_METHOD, params),
+          );
+          if (!result.ok) {
+            detail.textContent = result.reason ?? messages.toggleFailed;
+            return;
+          }
+          detail.textContent = ALL;
+          await load();
+        } catch (error) {
+          detail.textContent = error instanceof Error ? error.message : String(error);
+        } finally {
+          button.disabled = false;
+        }
+      };
+
+      const switchFor = (row: SkillRow): HTMLElement | undefined => {
+        if (!row.skill.toggle) return undefined;
+        const on = row.skill.enabled !== false;
+        const button = h(
+          document,
+          "button",
+          {
+            type: "button",
+            role: "switch",
+            "aria-checked": on ? "true" : "false",
+            "aria-label": row.skill.name,
+            className: `console-skills-switch${on ? " is-on" : ""}`,
+            title: on ? messages.turnOff : messages.turnOn,
+          },
+          h(document, "span", { className: "console-skills-switch-knob" }),
+        ) as HTMLButtonElement;
+        button.addEventListener("click", () => void toggleSwitch(row, button));
+        return button;
+      };
+
+      const rowItem = (row: SkillRow): HTMLElement => {
+        const switchControl = switchFor(row);
+        return h(
+          document,
+          "li",
+          { className: `console-skills-item${row.skill.enabled === false ? " is-off" : ""}` },
+          h(
+            document,
+            "div",
+            { className: "console-skills-item-main" },
+            h(
+              document,
+              "div",
+              { className: "console-skills-item-head" },
+              h(document, "span", { className: "console-skills-item-name" }, row.skill.name),
+              ...(row.skill.category && !row.skill.archived
+                ? [h(document, "span", { className: "console-skills-tag" }, row.skill.category)]
+                : []),
+              ...(row.skill.archived
+                ? [
+                    h(
+                      document,
+                      "span",
+                      { className: "console-skills-tag is-archived" },
+                      messages.archived,
+                    ),
+                  ]
+                : []),
+            ),
+            h(
+              document,
+              "p",
+              { className: "console-skills-item-description" },
+              row.skill.description,
+            ),
+            h(document, "code", { className: "console-skills-item-path" }, row.skill.path),
+          ),
+          ...(switchControl ? [switchControl] : []),
+        );
+      };
+
+      const renderFilters = (): void => {
+        const harnessOptions = [
+          { value: ALL, label: messages.allHarnesses },
+          ...all.map((group) => ({ value: group.harness, label: groupTitle(group) })),
+        ];
+        harnessSlot.replaceChildren(
+          segmented(
+            document,
+            messages.harnessFilter,
+            harnessOptions,
+            harness,
+            (value) => {
+              harness = value;
+              if (!categoriesOf().includes(category) && category !== ALL && category !== ARCHIVED) {
+                category = ALL;
+              }
+              renderFilters();
+              renderList();
+            },
+            "skills-harness",
+          ),
+        );
+        const archivedCount = rows().filter((row) => row.skill.archived).length;
+        const categoryOptions = [
+          { value: ALL, label: messages.allCategories },
+          ...categoriesOf().map((name) => ({ value: name, label: name })),
+          ...(archivedCount > NONE
+            ? [{ value: ARCHIVED, label: `${messages.archived} (${archivedCount})` }]
+            : []),
+        ];
+        categorySlot.replaceChildren(
+          segmented(
+            document,
+            messages.categoryFilter,
+            categoryOptions,
+            category,
+            (value) => {
+              category = value;
+              renderFilters();
+              renderList();
+            },
+            "skills-category",
+          ),
+        );
+      };
+
+      const renderList = (): void => {
         const query = search.value.trim().toLowerCase();
-        const total = all.reduce((sum, group) => sum + group.skills.length, INVISIBLE);
-        const visible = query
-          ? all
-              .map((group) => ({
-                ...group,
-                skills: group.skills.filter((skill) => matches(skill, query)),
-              }))
-              .filter(
-                (group) => group.skills.length > INVISIBLE || group.failures.length > INVISIBLE,
-              )
-          : all;
-        const shown = visible.reduce((sum, group) => sum + group.skills.length, INVISIBLE);
+        const visibleGroups = selectedGroups()
+          .map((group) => ({
+            group,
+            visible: group.skills.filter(
+              (skill) => inCategory(skill) && (!query || matchesQuery(skill, query)),
+            ),
+          }))
+          .filter((entry) => entry.visible.length > NONE || entry.group.failures.length > NONE);
+        const shown = visibleGroups.reduce((sum, entry) => sum + entry.visible.length, NONE);
+        const total = rows().filter((row) => inCategory(row.skill)).length;
         status.textContent =
-          total === INVISIBLE
+          total === NONE
             ? messages.empty
-            : query && shown === INVISIBLE
+            : query && shown === NONE
               ? messages.noMatches
               : format(messages.count, { count: shown });
         groupsHost.replaceChildren(
-          ...visible.map((group) =>
+          ...visibleGroups.map(({ group, visible }) =>
             h(
               document,
               "section",
@@ -122,76 +277,55 @@ export function createSkillsPage(
                 "h2",
                 { className: "settings-section-label" },
                 groupTitle(group),
-                ` · ${format(messages.count, { count: group.skills.length })}`,
+                ` · ${format(messages.count, { count: visible.length })}`,
               ),
-              ...group.failures.map((failure) => failureLine(failure.path, failure.message)),
-              ...categoryBuckets(group.skills).map(([category, skills]) =>
+              ...group.failures.map((failure) =>
                 h(
                   document,
-                  "div",
-                  { className: "console-skills-category" },
-                  h(
-                    document,
-                    "h3",
-                    { className: "console-skills-category-title" },
-                    category ?? messages.categoryUntitled,
-                  ),
-                  h(document, "ul", { className: "console-skills-list" }, ...skills.map(skillCard)),
+                  "p",
+                  { className: "console-skills-failure", role: "alert" },
+                  format(messages.failed, { path: failure.path, message: failure.message }),
                 ),
+              ),
+              h(
+                document,
+                "ul",
+                { className: "console-skills-list" },
+                ...visible
+                  .slice()
+                  .sort((left, right) => left.name.localeCompare(right.name))
+                  .map((skill) => rowItem({ group, skill })),
               ),
             ),
           ),
         );
       };
 
-      const categoryBuckets = (skills: readonly SkillRow[]): [string | undefined, SkillRow[]][] => {
-        const buckets = new Map<string, { category?: string; skills: SkillRow[] }>();
-        for (const skill of skills) {
-          const key = skill.category ?? "";
-          const bucket = buckets.get(key) ?? { ...(key ? { category: key } : {}), skills: [] };
-          bucket.skills.push(skill);
-          buckets.set(key, bucket);
-        }
-        return [...buckets.values()]
-          .sort((a, b) =>
-            a.category === undefined
-              ? INVISIBLE
-              : b.category === undefined
-                ? -1
-                : a.category.localeCompare(b.category),
-          )
-          .map(({ category, skills: bucketSkills }) => [category, bucketSkills] as const)
-          .map(([category, bucketSkills]) => [
-            category,
-            [...bucketSkills].sort((a, b) => a.name.localeCompare(b.name)),
-          ]);
-      };
+      async function load(): Promise<void> {
+        const parsed = harnessSkillsListParamsSchema.parse({});
+        const result = (await request(HARNESS_SKILLS_METHOD, parsed)) as HarnessSkillsListResult;
+        if (context.signal.aborted) return;
+        all = result.groups;
+        renderFilters();
+        renderList();
+      }
 
-      search.addEventListener("input", render);
-      const abort = context.signal;
-      abort.addEventListener(
+      search.addEventListener("input", renderList);
+      context.signal.addEventListener(
         "abort",
         () => {
-          search.removeEventListener("input", render);
+          search.removeEventListener("input", renderList);
         },
         { once: true },
       );
 
-      void (async () => {
-        try {
-          const parsed = harnessSkillsListParamsSchema.parse({});
-          const result = (await request(HARNESS_SKILLS_METHOD, parsed)) as HarnessSkillsListResult;
-          if (abort.aborted) return;
-          all = result.groups;
-          render();
-        } catch (error) {
-          if (abort.aborted) return;
-          status.textContent = error instanceof Error ? error.message : String(error);
-        }
-      })();
+      void load().catch((error: unknown) => {
+        if (context.signal.aborted) return;
+        status.textContent = error instanceof Error ? error.message : String(error);
+      });
 
       return () => {
-        search.removeEventListener("input", render);
+        search.removeEventListener("input", renderList);
       };
     },
   });

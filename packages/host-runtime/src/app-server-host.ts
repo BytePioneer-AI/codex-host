@@ -264,7 +264,12 @@ import { ModelPriceCatalog } from "./model-prices.js";
 import { ObservedSessionUsage } from "./observed-session-usage.js";
 import type { UsageStatistics, UsageStatisticsSource } from "./usage-statistics.js";
 import { USAGE_STATISTICS_METHOD, usageStatisticsParamsSchema } from "@codexhost/shared-contracts";
-import { HARNESS_SKILLS_METHOD, harnessSkillsListParamsSchema } from "@codexhost/shared-contracts";
+import {
+  HARNESS_SKILLS_METHOD,
+  HARNESS_SKILL_SET_ENABLED_METHOD,
+  harnessSkillsListParamsSchema,
+  harnessSkillSetEnabledParamsSchema,
+} from "@codexhost/shared-contracts";
 import type { HarnessSkillsCatalog } from "./skills-catalog.js";
 import type { HarnessSkillsSource } from "./skills-source.js";
 import {
@@ -1461,6 +1466,27 @@ export class AppServerHost {
       try {
         await this.#waitForPlugins();
         const result = await catalog.list(this.#skillsSources());
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch (error) {
+        this.#diagnose(error);
+        await this.#writer.json(rpcError(request, -32000, errorMessage(error)));
+      }
+      return;
+    }
+    if (request.method === HARNESS_SKILL_SET_ENABLED_METHOD) {
+      const parsed = harnessSkillSetEnabledParamsSchema.safeParse(request.params ?? {});
+      const catalog = this.#options.skillsCatalog;
+      if (!parsed.success || !catalog) {
+        await this.#writer.json(
+          parsed.success
+            ? rpcError(request, -32000, "Skills catalog is unavailable on this Host")
+            : rpcError(request, -32602, "Invalid skills switch request"),
+        );
+        return;
+      }
+      try {
+        await this.#waitForPlugins();
+        const result = await catalog.setEnabled(this.#skillsSources(), parsed.data);
         await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       } catch (error) {
         this.#diagnose(error);

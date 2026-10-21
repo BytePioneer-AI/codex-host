@@ -1,4 +1,4 @@
-import { opendir, readFile } from "node:fs/promises";
+import { opendir } from "node:fs/promises";
 import path from "node:path";
 
 /**

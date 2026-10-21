@@ -1829,43 +1829,84 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("rejects rollback when an external Thread is not an untouched derived prefix", async () => {
+  it("rolls an External Thread back to an earlier native Fork Checkpoint", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
     fixture.official.stdin.on("data", officialWrite);
-    const sourceThreadId = await startPiThread(fixture);
-    await completePiTurn(fixture, sourceThreadId, 2);
-    await completePiTurn(fixture, sourceThreadId, 3);
+    const threadId = await startPiThread(fixture);
+    const firstTurnId = await completePiTurn(fixture, threadId, 2);
+    await completePiTurn(fixture, threadId, 3);
+    await completePiTurn(fixture, threadId, 4);
 
     writeRequest(fixture.desktopInput, {
       id: 10,
       method: "thread/rollback",
-      params: { threadId: sourceThreadId, numTurns: 1 },
+      params: { threadId, numTurns: 2 },
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ error: { code: -32076 } });
-
-    writeRequest(fixture.desktopInput, {
-      id: 11,
-      method: "thread/fork",
-      params: { threadId: sourceThreadId },
-    });
-    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 11));
-    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
-    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
-    await completePiTurn(fixture, derivedId, 12, 1);
-
-    writeRequest(fixture.desktopInput, {
-      id: 13,
-      method: "thread/rollback",
-      params: { threadId: derivedId, numTurns: 1 },
+    ).resolves.toMatchObject({
+      result: { thread: { id: threadId, turns: [{ id: firstTurnId }] } },
     });
     await expect(
-      fixture.collector.waitFor((message) => requestId(message, 13)),
-    ).resolves.toMatchObject({ error: { code: -32076 } });
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      nativeSessionRef: { nativeSessionId: "fake-session-2" },
+      turnMappings: [{ hostTurnId: firstTurnId }],
+    });
     expect(fixture.adapter.sessions).toHaveLength(2);
+    await completePiTurn(fixture, threadId, 11, 1);
     expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("reverts an earlier Turn of a paginated External Thread", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const firstTurnId = await completePiTurn(fixture, threadId, 2);
+    const secondTurnId = await completePiTurn(fixture, threadId, 3);
+    await completePiTurn(fixture, threadId, 4);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: secondTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId } } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      nativeSessionRef: { nativeSessionId: "fake-session-2" },
+      turnMappings: [{ hostTurnId: firstTurnId }],
+    });
+    expect(adapter.sessions).toHaveLength(2);
+    await stopFixture(fixture);
+  });
+
+  it("rejects rollback of every Turn when no native Checkpoint precedes the first", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    await completePiTurn(fixture, threadId, 2);
+    await completePiTurn(fixture, threadId, 3);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/rollback",
+      params: { threadId, numTurns: 2 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32080 } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    expect(fixture.adapter.sessions).toHaveLength(1);
     await stopFixture(fixture);
   });
 

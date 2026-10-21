@@ -137,7 +137,15 @@ export function resolveRendererHostManager(
 ): RendererNativeRequestManager | null {
   if (!hostId) return null;
   const candidates = discovery.registries.length
-    ? discovery.registries.map((registry) => managerFrom(registry.getForHostId(hostId)))
+    ? discovery.registries.flatMap((registry) => {
+        try {
+          return [managerFrom(registry.getForHostId(hostId))];
+        } catch {
+          // One failing registry must not hide the others, and must not reopen
+          // the direct-manager fallback a present registry is meant to override.
+          return [];
+        }
+      })
     : discovery.managers;
   const matching = new Set(
     candidates.filter(

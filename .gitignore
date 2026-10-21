@@ -1,4 +1,5 @@
 # Local-only references, private documentation, and agent state
+/.worktrees/
 /docsp/
 /reference/
 /.pi/
@@ -66,3 +67,8 @@ Thumbs.db
 Desktop.ini
 
 NUL
+
+# Worktrees
+.worktrees/
+worktrees/
+.claude/worktrees/

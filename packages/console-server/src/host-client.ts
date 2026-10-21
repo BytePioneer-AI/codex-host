@@ -1,6 +1,8 @@
 import { readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
+import { harnessInstallationRequestTimeoutMs } from "@codexhost/shared-contracts";
+
 import { processIsAlive } from "./diagnostics.js";
 
 const DESCRIPTOR_PATTERN = /^host-\d{1,10}\.json$/u;
@@ -91,7 +93,11 @@ export function createConsoleHostClient(
         headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" },
         body: JSON.stringify({ method, params: params ?? {} }),
         signal: AbortSignal.timeout(
-          method === "codexhost/remote/ssh-setup" ? Math.max(timeoutMs, 330_000) : timeoutMs,
+          Math.max(
+            timeoutMs,
+            method === "codexhost/remote/ssh-setup" ? 330_000 : 0,
+            harnessInstallationRequestTimeoutMs(method, params) ?? 0,
+          ),
         ),
       });
       const body = (await response.json().catch(() => null)) as HostReply | null;

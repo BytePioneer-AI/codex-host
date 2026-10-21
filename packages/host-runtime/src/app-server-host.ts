@@ -16,7 +16,10 @@ import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
-import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
+import {
+  HARNESS_INSTALLATION_METHOD,
+  harnessInstallationRequestTimeoutMs,
+} from "@codexhost/shared-contracts";
 import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
 import {
   isConsoleHostMethod,
@@ -1102,6 +1105,8 @@ export class AppServerHost {
       return requestDesktopRemoteConnections(this.#options.environment ?? process.env, params);
     }
     if (method === REMOTE_SSH_SETUP_METHOD) timeoutMs = Math.max(timeoutMs, 330_000);
+    const installationTimeout = harnessInstallationRequestTimeoutMs(method, params);
+    if (installationTimeout !== undefined) timeoutMs = Math.max(timeoutMs, installationTimeout);
     const parsed = jsonRpcRequestSchema.safeParse({
       id: `${this.#consoleRequestPrefix}${++this.#nextConsoleRequest}`,
       method,

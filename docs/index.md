@@ -93,6 +93,7 @@
 | [`harnesses/grok/generated-images.md`](harnesses/grok/generated-images.md) | Grok Imagine files project to Desktop `imageGeneration`; keep Markdown rewrite for videos and cited paths. |
 | [`harnesses/grok/mcp-elicitation.md`](harnesses/grok/mcp-elicitation.md) | Grok MCP consent forms project to Desktop approval, including offered Always allow; bounded empty forms only. |
 | [`harnesses/grok/computer-use-release.md`](harnesses/grok/computer-use-release.md) | Grok native turn-end Computer Use cleanup, Mac Sky bridge, failure behavior, and runtime limits. |
+| [`harnesses/grok/computer-use-settings.md`](harnesses/grok/computer-use-settings.md) | CodexHost Connections toggle for Grok `cua_repl`; ChatGPT Computer use / Browser stay official Codex. |
 
 ### ZCode
 

@@ -2,6 +2,7 @@ import { createGrokUsageStatistics } from "./usage-statistics.js";
 import { randomUUID } from "node:crypto";
 import { readGrokCredentials } from "./grok-credential-export.js";
 import path from "node:path";
+import { applyGrokComputerUsePreference } from "@codexhost/harness-plugin-files";
 
 import type {
   PermissionOption,
@@ -1864,6 +1865,7 @@ export class GrokAdapter implements HarnessAdapter {
         },
       };
     }
+    await applyGrokComputerUsePreference(this.#environment ?? process.env).catch(() => undefined);
     const cwd = path.resolve(input.cwd);
     const parsedRef =
       input.kind === "resume" ? nativeSessionRefSchema.safeParse(input.nativeRef) : null;

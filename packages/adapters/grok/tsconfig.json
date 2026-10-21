@@ -16,6 +16,9 @@
     },
     {
       "path": "../../harness-discovery/tsconfig.json"
+    },
+    {
+      "path": "../../harness-plugin-files/tsconfig.json"
     }
   ],
   "include": ["src/**/*.ts"]

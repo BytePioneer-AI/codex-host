@@ -1,5 +1,6 @@
 import type {
   CodexhostError,
+  GrokComputerUseSettings,
   HarnessInstallationState,
   HarnessLaunchSettings,
   HarnessPluginDescriptor,
@@ -17,6 +18,7 @@ import type { RemoteConnectionsControl } from "../remote-connections-control.js"
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
+import { createGrokComputerUseControls } from "./grok-computer-use-controls.js";
 import { harnessHasInstallCommands } from "./harness-installation-guides.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
 import { harnessInstallStore } from "./harness-install-store.js";
@@ -61,6 +63,8 @@ export interface RendererConnectionDiagnostics {
     agent: ExternalRendererAgent,
     path: string | null,
   ): Promise<HarnessLaunchSettings>;
+  getGrokComputerUse?(hostId: string): Promise<GrokComputerUseSettings>;
+  setGrokComputerUse?(hostId: string, enabled: boolean): Promise<GrokComputerUseSettings>;
   subscribe(listener: () => void): () => void;
 }
 
@@ -603,6 +607,16 @@ function renderConnectionInspector(
         set: (path) => setLaunchSettings(hostId, agent, path),
       });
     body.append(launchControls);
+  }
+  const getGrokComputerUse = diagnostics?.getGrokComputerUse?.bind(diagnostics);
+  const setGrokComputerUse = diagnostics?.setGrokComputerUse?.bind(diagnostics);
+  if (hostId === "local" && agent === "grok" && getGrokComputerUse && setGrokComputerUse) {
+    body.append(
+      createGrokComputerUseControls(document, messages, {
+        get: () => getGrokComputerUse(hostId),
+        set: (enabled) => setGrokComputerUse(hostId, enabled),
+      }),
+    );
   }
   inspector.append(body);
   return launchControls;

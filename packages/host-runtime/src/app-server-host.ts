@@ -29,7 +29,12 @@ import {
   configuredExternalVoiceGateway,
   type ExternalVoiceCallFactory,
 } from "./external-voice-gateway.js";
-import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
+import {
+  GrokComputerUseError,
+  HarnessLaunchSettingsStore,
+  getGrokComputerUseSettings,
+  setGrokComputerUseEnabled,
+} from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
 import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
@@ -207,6 +212,9 @@ import type { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 import {
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
+  GROK_COMPUTER_USE_GET_METHOD,
+  GROK_COMPUTER_USE_SET_METHOD,
+  grokComputerUseSetSchema,
   harnessLaunchSettingsGetSchema,
   harnessLaunchSettingsSetSchema,
 } from "@codexhost/shared-contracts";
@@ -1670,6 +1678,34 @@ export class AppServerHost {
     }
     if (request.method === "codexhost/harness/web-ui/open") {
       this.#dispatchDesktopReply(request, () => this.#openHarnessWebUi(request));
+      return;
+    }
+    if (
+      request.method === GROK_COMPUTER_USE_GET_METHOD ||
+      request.method === GROK_COMPUTER_USE_SET_METHOD
+    ) {
+      this.#dispatchDesktopReply(request, async () => {
+        try {
+          const result =
+            request.method === GROK_COMPUTER_USE_SET_METHOD
+              ? await setGrokComputerUseEnabled(
+                  grokComputerUseSetSchema.parse(request.params).enabled,
+                  process.env,
+                )
+              : await getGrokComputerUseSettings(process.env);
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        } catch (error) {
+          await this.#writer.json(
+            rpcError(
+              request,
+              -32602,
+              error instanceof GrokComputerUseError
+                ? error.message
+                : "Could not read or save Grok Computer Use settings",
+            ),
+          );
+        }
+      });
       return;
     }
     if (

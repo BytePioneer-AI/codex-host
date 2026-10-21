@@ -1,10 +1,14 @@
 import path from "node:path";
 
 import {
+  GrokComputerUseError,
   HarnessLaunchSettingsStore,
   discoverHarnessPlugins,
+  getGrokComputerUseSettings,
   readPluginIcon,
+  setGrokComputerUseEnabled,
 } from "@codexhost/harness-plugin-files";
+import type { GrokComputerUseSettings } from "@codexhost/shared-contracts";
 
 import { dataDirectory } from "./paths.js";
 
@@ -20,6 +24,7 @@ export interface ConsoleHarness {
   links: { documentation?: string | undefined; installation?: string | undefined } | null;
   icon: string | null;
   launchPath: string | null;
+  computerUse?: GrokComputerUseSettings;
 }
 
 /**
@@ -54,6 +59,7 @@ export class ConsoleHarnessError extends Error {
 export interface ConsoleHarnesses {
   list(): Promise<ConsoleHarness[]>;
   setLaunchPath(id: string, value: string | null): Promise<ConsoleHarness>;
+  setGrokComputerUse(enabled: boolean): Promise<ConsoleHarness>;
 }
 
 /**
@@ -93,6 +99,9 @@ export function createConsoleHarnesses(
         links: manifest.links ?? null,
         icon,
         launchPath,
+        ...(manifest.id === "grok"
+          ? { computerUse: await getGrokComputerUseSettings(environment) }
+          : {}),
       });
     }
     return harnesses.sort(
@@ -113,6 +122,23 @@ export function createConsoleHarnesses(
         return { ...harness, launchPath: settings.path };
       } catch (error) {
         throw new ConsoleHarnessError(400, error instanceof Error ? error.message : String(error));
+      }
+    },
+    async setGrokComputerUse(enabled) {
+      const harness = (await list()).find((candidate) => candidate.id === "grok");
+      if (!harness) throw new ConsoleHarnessError(404, "Harness 'grok' is not installed");
+      try {
+        const computerUse = await setGrokComputerUseEnabled(enabled, environment);
+        return { ...harness, computerUse };
+      } catch (error) {
+        throw new ConsoleHarnessError(
+          400,
+          error instanceof GrokComputerUseError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        );
       }
     },
   };

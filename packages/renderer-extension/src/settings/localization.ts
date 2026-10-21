@@ -193,6 +193,15 @@ export interface RendererSettingsMessages {
   readonly launchPathLoading: string;
   readonly launchPathLoadError: string;
   readonly launchPathSaveError: string;
+  readonly grokComputerUseLabel: string;
+  readonly grokComputerUseHelp: string;
+  readonly grokComputerUseOn: string;
+  readonly grokComputerUseOff: string;
+  readonly grokComputerUseSaving: string;
+  readonly grokComputerUseLoading: string;
+  readonly grokComputerUseLoadError: string;
+  readonly grokComputerUseSaveError: string;
+  readonly grokComputerUseUnavailable: string;
   readonly connectionOfficialWebsite: string;
   readonly connectionOpenHarnessWeb: string;
   readonly connectionDeepSeekTestedVersions: string;
@@ -480,6 +489,17 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathLoadError: "Could not load launch settings. Reopen this detail panel to retry.",
   launchPathSaveError:
     "Could not save. Enter an existing absolute installation folder on this Host and check configuration permissions.",
+  grokComputerUseLabel: "Grok Computer Use",
+  grokComputerUseHelp:
+    "Lets Grok control Mac apps through ChatGPT’s Computer Use helper (cua_repl). ChatGPT Settings → Computer use still applies only to official Codex threads. Always-allowed apps stay in that ChatGPT list. New Grok threads pick up this switch.",
+  grokComputerUseOn: "On. New Grok threads load Computer Use.",
+  grokComputerUseOff: "Off. New Grok threads do not load Computer Use.",
+  grokComputerUseSaving: "Saving…",
+  grokComputerUseLoading: "Loading Grok Computer Use…",
+  grokComputerUseLoadError: "Could not load Grok Computer Use. Reopen this panel to retry.",
+  grokComputerUseSaveError:
+    "Could not save. Install ChatGPT.app with Computer Use, then try again.",
+  grokComputerUseUnavailable: "ChatGPT Desktop Computer Use files were not found on this Mac.",
   connectionOfficialWebsite: "Visit official website",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
@@ -786,6 +806,16 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathLoading: "正在读取启动设置…",
   launchPathLoadError: "无法读取启动设置，请重新打开此详情面板重试。",
   launchPathSaveError: "保存失败。请填写此 Host 上实际存在的安装目录绝对路径，并确认配置目录可写。",
+  grokComputerUseLabel: "Grok Computer Use",
+  grokComputerUseHelp:
+    "让 Grok 通过 ChatGPT 的 Computer Use 助手（cua_repl）控制 Mac 应用。ChatGPT 设置 → Computer use 仍只作用于官方 Codex 线程。Always-allowed 应用仍保存在该列表。新的 Grok 线程会读取此开关。",
+  grokComputerUseOn: "已开启。新的 Grok 线程会加载 Computer Use。",
+  grokComputerUseOff: "已关闭。新的 Grok 线程不会加载 Computer Use。",
+  grokComputerUseSaving: "正在保存…",
+  grokComputerUseLoading: "正在读取 Grok Computer Use…",
+  grokComputerUseLoadError: "无法读取 Grok Computer Use，请重新打开此面板重试。",
+  grokComputerUseSaveError: "保存失败。请先安装带 Computer Use 的 ChatGPT.app。",
+  grokComputerUseUnavailable: "本机未找到 ChatGPT Desktop 的 Computer Use 文件。",
   connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:

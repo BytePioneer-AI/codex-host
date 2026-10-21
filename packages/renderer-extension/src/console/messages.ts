@@ -78,6 +78,10 @@ const ENGLISH = {
   save: "Save",
   useAutomatic: "Use automatic",
   saved: "Saved",
+  grokComputerUse: "Grok Computer Use",
+  grokComputerUseHelp:
+    "Lets Grok control Mac apps through ChatGPT’s Computer Use helper. ChatGPT Settings → Computer use still applies only to official Codex. New Grok threads pick up this switch.",
+  grokComputerUseUnavailable: "ChatGPT Desktop Computer Use files were not found.",
   installGuide: "Install guide",
   noHarness: "No Harness plugins are installed.",
   consoleOffline: "The console is not running",
@@ -278,6 +282,10 @@ const CHINESE: ConsoleMessages = {
   save: "保存",
   useAutomatic: "恢复自动查找",
   saved: "已保存",
+  grokComputerUse: "Grok Computer Use",
+  grokComputerUseHelp:
+    "让 Grok 通过 ChatGPT 的 Computer Use 助手控制 Mac 应用。ChatGPT 设置 → Computer use 仍只作用于官方 Codex。新的 Grok 线程会读取此开关。",
+  grokComputerUseUnavailable: "未找到 ChatGPT Desktop 的 Computer Use 文件。",
   installGuide: "安装说明",
   noHarness: "没有已安装的 Harness 插件。",
   consoleOffline: "控制台未运行",

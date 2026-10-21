@@ -9,7 +9,7 @@
 - **CodeBuddy**：从 ACP 动态目录读取斜杠命令，按原生压缩事件及持久化结果确认上下文压缩；通过原生附加系统提示让会话发现 Host 委派 CLI。Fork 和修订通过无模型的原生复制、原生 `/fork` 与仅作用于新副本的 rollback 完成，校验完整历史前缀与源会话不变；派生配置随原生引用恢复。成功派生后通过同一临时 ACP 进程的原生 HTTP 接口删除中间副本；早期失败或强杀仍可能残留，详见专属文档。详见 [CodeBuddy 接入](codebuddy/codebuddy-harness-integration.md)。
 - **Cursor**：参数化模型目录提供 Thinking 组合；ACP 原生命令目录提供命令；每会话的原生 HTTP MCP 连接提供向外委派。详见 [Cursor 接入](cursor/cursor-cli-experimental.md)。
 - **Hermes**：会话统一使用官方 Gateway，不以版本数值差异阻断，接入提问、Thinking、命令、压缩、原生 Diff，以及未压缩历史的独立 Fork/修订；通过进程内注册的私有临时 Skill 发现 Host CLI 并保留父任务环境，不向共享技能目录写入临时 Skill。不再保留 ACP 实现或 SDK 依赖；历史发现和导入使用原生 SessionDB 只读查询，导入的原生身份通过 Gateway 恢复。详见 [Hermes 能力与边界](hermes/hermes-capabilities.md)。
-- **Grok**：MCP 同意表单通过 `_x.ai/mcp/elicit` 投影为 Desktop 审批（Allow once / Deny）。当请求携带已核验的 `persist: ["always"]` 时增加 Always allow。Allow this conversation 在原生 session 生命周期核实前不提供。仅支持无字段或已核验的空 object schema；URL elicitation、任意输入表单和原生 TUI elicitation 卡片均不提供。工具 `requestPermission` 仍走独立路径。详见 [Grok MCP elicitation](grok/mcp-elicitation.md)。
+- **Grok**：MCP 同意表单通过 `_x.ai/mcp/elicit` 投影为 Desktop 审批（Allow once / Deny）。当请求携带已核验的 `persist: ["always"]` 时增加 Always allow。Allow this conversation 在原生 session 生命周期核实前不提供。仅支持无字段或已核验的空 object schema；URL elicitation、任意输入表单和原生 TUI elicitation 卡片均不提供。工具 `requestPermission` 仍走独立路径。CodexHost 连接页可开关 Grok `cua_repl`；ChatGPT 设置中的 Computer use / Browser 仍只作用于官方 Codex。详见 [Grok MCP elicitation](grok/mcp-elicitation.md) 与 [Grok Computer Use setting](grok/computer-use-settings.md)。
 
 以上实现归各 Harness 插件所有，不在公共 Adapter、Host 或 Renderer 中添加 Harness 专用分支。跨插件参考实现不等于共用原生协议；各自保留配置确认、取消、持久化和权限语义。
 

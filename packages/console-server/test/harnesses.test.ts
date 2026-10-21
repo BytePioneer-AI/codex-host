@@ -84,4 +84,27 @@ describe("console Harnesses", () => {
       status: 400,
     });
   });
+
+  it("toggles Grok Computer Use on the grok plugin", async () => {
+    const pluginsRoot = path.join(root, "plugins");
+    await plugin(pluginsRoot, "grok", false);
+    await writeFile(
+      path.join(pluginsRoot, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["grok"] }),
+    );
+    const grokHome = path.join(root, "grok-home");
+    const environment = {
+      CODEXHOST_DATA_DIR: path.join(root, "data"),
+      GROK_HOME: grokHome,
+      HOME: path.join(root, "home"),
+    };
+    const harnesses = createConsoleHarnesses([pluginsRoot], environment);
+    const listed = await harnesses.list();
+    expect(listed[0]?.computerUse).toMatchObject({ enabled: false, available: false });
+    await expect(harnesses.setGrokComputerUse(true)).rejects.toMatchObject({ status: 400 });
+    await expect(harnesses.setGrokComputerUse(false)).resolves.toMatchObject({
+      id: "grok",
+      computerUse: { enabled: false },
+    });
+  });
 });

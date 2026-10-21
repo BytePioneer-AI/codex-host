@@ -519,6 +519,21 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       sendJson(response, 200, { harnesses: await options.harnesses.list() });
       return;
     }
+    if (route === "POST /api/harnesses/grok-computer-use") {
+      if (typeof body.enabled !== "boolean") {
+        sendJson(response, 400, { error: "Expected { enabled }" });
+        return;
+      }
+      try {
+        const harness = await options.harnesses.setGrokComputerUse(body.enabled);
+        sendJson(response, 200, { harness });
+      } catch (error) {
+        sendJson(response, error instanceof ConsoleHarnessError ? error.status : 500, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
     if (route === "POST /api/harnesses/launch-path") {
       const id = body.id;
       const value = body.path;

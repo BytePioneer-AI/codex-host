@@ -140,6 +140,10 @@ Codex 的会话用量解析已从公共协议层迁入 `codex-usage`，账户配
 
 **修改需要重启 codexhost。** 已创建的 Adapter 与 Session 不热替换；`restartRequired` 比较当前持久化值与此 Host 构造时的值。仅刷新连接状态不会应用新路径。设置页填写应用安装目录，例如 `D:\program\WorkBuddy`，不要求用户定位 `.exe` 或脚本。WorkBuddy Adapter 定位 `WorkBuddy.exe` / `WorkBuddy AI.exe` / `WorkBuddyAI.exe` 及同目录内置脚本。目录布局不完整时检查失败，不借用其他安装的文件，也不回退到 PATH 或默认安装。底层保留原有文件入口覆盖兼容能力。注册表自动发现不在本功能范围内。
 
+## Grok Computer Use 设置
+
+本地 Host 的 Grok 连接详情和未运行时的控制台连接页提供 Computer Use 开关。`codexhost/harness/grok-computer-use/get·set` 读写 `~/.codexhost/grok-computer-use.json`，并维护 `~/.grok/config.toml` 中的 `[mcp_servers.cua_repl]`（仅 `computer` 表面）。ChatGPT 设置中的 Computer use / Browser 仍只作用于官方 Codex。新的 Grok 线程读取该开关；已打开的线程不热加载 MCP。
+
 ## Harness CLI 版本与更新
 
 设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。首次选择详情时自动检查一次，不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。所选 Harness 的详情卡片标题旁提供官网外链图标，列表行及详情正文不重复提供通用官网或安装说明链接。未安装且有自动安装入口时显示下载图标；点击显式发起 CLI 安装，点击行本身查看手动安装命令、复制按钮、接入提示和「重新检测」，正文不提供额外的通用安装指南跳转入口。WorkBuddy 在详情正文提供一个「下载」按钮，跳转官网首页，并提示下载安装桌面应用，不提供分系统的安装指南链接。未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用，不回退更新本机的另一份安装。

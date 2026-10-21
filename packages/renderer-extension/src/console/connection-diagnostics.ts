@@ -134,6 +134,14 @@ export function createConsoleConnectionDiagnostics(
       if (!client.setHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
       return client.setHarnessLaunchSettings({ harnessId: harnessIdSchema.parse(agent), path });
     },
+    async getGrokComputerUse() {
+      if (!client.getGrokComputerUse) throw new Error("Grok Computer Use settings are unavailable");
+      return client.getGrokComputerUse();
+    },
+    async setGrokComputerUse(_hostId, enabled) {
+      if (!client.setGrokComputerUse) throw new Error("Grok Computer Use settings are unavailable");
+      return client.setGrokComputerUse(enabled);
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

@@ -44,6 +44,8 @@ export const CONSOLE_HOST_METHODS = Object.freeze([
   "codexhost/harness/installation",
   "codexhost/harness/launch-settings/get",
   "codexhost/harness/launch-settings/set",
+  "codexhost/harness/grok-computer-use/get",
+  "codexhost/harness/grok-computer-use/set",
   "codexhost/harness/web-ui/open",
   "codexhost/harness/accounts/sources",
   "codexhost/harness/accounts/list",

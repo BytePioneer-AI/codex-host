@@ -16,6 +16,7 @@ interface ConsoleHarness {
   links: { documentation?: string; installation?: string } | null;
   icon: string | null;
   launchPath: string | null;
+  computerUse?: { enabled: boolean; available: boolean; unavailableReason?: string };
 }
 
 /**
@@ -110,6 +111,49 @@ export function createOfflineHarnessesPage(
                   harness.launchPath
                     ? button(document, messages.useAutomatic, () => submit(null))
                     : null,
+                ),
+              );
+              if (status.has(harness.id)) {
+                row.append(
+                  h(document, "div", { className: "console-muted" }, status.get(harness.id) ?? ""),
+                );
+              }
+            }
+            if (harness.computerUse) {
+              const toggle = h(document, "input", {
+                type: "checkbox",
+                "aria-label": messages.grokComputerUse,
+              });
+              toggle.checked = harness.computerUse.enabled;
+              toggle.disabled = !harness.computerUse.available && !harness.computerUse.enabled;
+              toggle.addEventListener("change", () => {
+                void consolePost<{ harness: ConsoleHarness }>("/api/harnesses/grok-computer-use", {
+                  enabled: toggle.checked,
+                })
+                  .then(({ harness: saved }) => {
+                    harnesses = harnesses.map((entry) => (entry.id === saved.id ? saved : entry));
+                    status.set(harness.id, messages.saved);
+                  })
+                  .catch((error: unknown) =>
+                    status.set(harness.id, error instanceof Error ? error.message : String(error)),
+                  )
+                  .finally(render);
+              });
+              row.append(
+                h(
+                  document,
+                  "div",
+                  { className: "console-harness__path" },
+                  h(document, "label", {}, toggle, ` ${messages.grokComputerUse}`),
+                ),
+                h(
+                  document,
+                  "div",
+                  { className: "console-muted" },
+                  harness.computerUse.available
+                    ? messages.grokComputerUseHelp
+                    : (harness.computerUse.unavailableReason ??
+                        messages.grokComputerUseUnavailable),
                 ),
               );
               if (status.has(harness.id)) {

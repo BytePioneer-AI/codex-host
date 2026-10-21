@@ -2640,6 +2640,18 @@ export function installRendererBindingProbe(
       if (!client?.setHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
       return client.setHarnessLaunchSettings({ harnessId: harnessIdSchema.parse(agent), path });
     },
+    async getGrokComputerUse(hostId) {
+      const client = hostId === "local" ? modelClientForHost(hostId) : null;
+      if (!client?.getGrokComputerUse)
+        throw new Error("Grok Computer Use settings are unavailable");
+      return client.getGrokComputerUse();
+    },
+    async setGrokComputerUse(hostId, enabled) {
+      const client = hostId === "local" ? modelClientForHost(hostId) : null;
+      if (!client?.setGrokComputerUse)
+        throw new Error("Grok Computer Use settings are unavailable");
+      return client.setGrokComputerUse(enabled);
+    },
     async openWebUi(hostId: string, agent: ExternalRendererAgent): Promise<void> {
       const state = hostHarnessAvailabilityState(hostId);
       const client = hostId === "local" ? modelClientForHost(hostId) : null;

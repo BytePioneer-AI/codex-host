@@ -43,8 +43,8 @@ integration. [CLI ACP](https://cursor.com/docs/cli/acp) is the selected interfac
 - Native advertised slash commands and skills through ACP `available_commands_update`.
   Custom commands keep normal Turn identity; `/copy-request-id` can complete without
   creating a native user Turn.
-- Outbound cross-Harness delegation through a session-local native MCP server,
-  enabled only when the Host supplies all four delegation environment variables.
+- Outbound cross-Harness delegation through the Host `codexhost-delegation` skill
+  and CLI from Cursor's native shell, using the Host-provided environment.
 - Native Agent, Plan and Ask configuration, confirmed by the ACP response before
   changing Host state. These are execution modes, not fabricated approval levels.
 - Delegated `unattended-full-access` through the native `--force` Run Everything
@@ -206,7 +206,7 @@ native extensions, not fabricated RPC methods.
 | --- | --- |
 | Thinking | `initialize.clientCapabilities._meta.parameterizedModelPicker = true`, `cursor/list_available_models`, and `session/set_config_option`; implemented. |
 | Slash commands | `available_commands_update` plus native `session/prompt` slash parsing; implemented for advertised commands only. |
-| Cross-Harness collaboration | Native HTTP MCP passed to `session/new` / `session/load`; outbound tools implemented. Inbound unattended execution requests native `--force` Run Everything without claiming ACP policy confirmation. |
+| Cross-Harness collaboration | Outbound delegation runs the Host CLI from the native shell through the `codexhost-delegation` skill; no MCP server is injected. Inbound unattended execution requests native `--force` Run Everything without claiming ACP policy confirmation. |
 | Usage | The native ACP agent emits neither usage updates nor prompt usage; remains unknown. Shared SDK schemas alone are not evidence that Cursor emits these fields. |
 | Fork / edit previous message | ACP has no Fork or rollback operation. A native CLI `/fork` + conversation-only `/rewind` bridge supports historical Fork and edit previous message on macOS/Linux at available native anchors. |
 | Context compaction | The interactive CLI command is not part of the ACP slash-command handler; no native ACP compaction operation is implemented. Sending `/compact` as plain model text is not compaction. |
@@ -240,26 +240,20 @@ and `/copy-request-id`, although its custom-command parser accepts trailing text
 The plugin preserves that native behavior, honors an explicit `input: null` as
 argument-free, and treats the administrative command as argument-free.
 
-## Outbound delegation MCP bridge
+## Outbound delegation
 
-The Cursor plugin uses the official MCP SDK to expose a loopback-only HTTP server
-with a fresh bearer token for each writable Session. Native `mcpServers` injection
-makes its descriptions and tools available to Cursor without changing the user's
-project rules, global MCP settings, or prompts. The bridge is omitted from
-inspection and history/subagent replay. It is recreated with the current Session
-environment on resume and closed with the owning native transport.
+Cursor delegates through the same Host CLI as other Harnesses. The Host installs
+the `codexhost-delegation` skill under `~/.agents/skills` and `~/.claude/skills`,
+both of which Cursor loads natively, and the native ACP process inherits
+`CODEXHOST_CLI_PATH`, `CODEXHOST_RUNTIME_ENDPOINT`, `CODEXHOST_RUNTIME_TOKEN` and
+`CODEXHOST_THREAD_ID`. Cursor's shell tool passes them to the CLI, so the Host
+infers the calling Thread as the parent without `--parent-thread`. The plugin
+injects no MCP server (`mcpServers` is empty), changes no project rules, global
+MCP settings or prompts, and every CLI option is available without a per-Harness
+tool schema. Delegation commands are ordinary native shell commands, so Cursor's
+own terminal approval and allowlist apply.
 
-The tools are `harness_list`, `harness_inspect`, `delegate_start`, `thread_send`,
-`thread_read`, `thread_wait`, and `thread_cancel`. They invoke the exact absolute
-`CODEXHOST_CLI_PATH` without a shell, preserve `CODEXHOST_RUNTIME_ENDPOINT`,
-`CODEXHOST_RUNTIME_TOKEN`, and `CODEXHOST_THREAD_ID`, and use the Session cwd.
-Native MCP approvals still apply. Tool schemas restrict CLI operations; waits are
-limited to 60 seconds, CLI processes to 65 seconds, and captured output to 1 MiB.
-Closing a Session terminates its owned CLI requests and removes its listener.
-No bridge token or Host credential is persisted in a user configuration file.
-
-This makes a normal Cursor Thread able to delegate outward and observe/follow up
-on other Harnesses. A Host `unattended-full-access` request is carried into the
+A Host `unattended-full-access` request is carried into the
 native ACP process as Cursor's own Run Everything request (`--force` before the
 `acp` subcommand), persisted in the Native Session Ref locator, and reused by resume
 and by derived Fork/rollback Sessions. The native `--force` path still checks team
@@ -275,15 +269,13 @@ The installed `2026.09.18-9a7762b` bundle makes this fallback in
 an allowlist with a debug log and no client-visible result.
 
 Real native acceptance on the tested CLI confirmed Thinking selection and an
-administrative slash command without a model request. A separate native Turn
-called the injected MCP `harness_list` tool against a synthetic Host CLI, preserved
-the supplied parent Thread ID, and completed with a durable native Turn ID.
+administrative slash command without a model request. A delegated Cursor
+Thread, with no MCP server injected, ran the Host CLI from its native shell, started
+a Pi Thread whose inferred parent was the calling Cursor Thread, and read Pi's reply.
 A fresh native process also restored a non-default `fast` value from its saved
 Model ref after account-wide preferences were changed; native Turn identities
 remained equal. Native model preferences modified for validation were restored.
-Automated tests additionally cover tool discovery, argument safety, authentication,
-Session isolation, bounded waits, shutdown, partial configuration failure, and
-restoring non-Thinking parameters from saved Model refs. They also cover the native
+Automated tests additionally cover partial configuration failure and restoring non-Thinking parameters from saved Model refs. They also cover the native
 `--force` argument, policy persistence through resume/Fork/rollback, and the
 cancel-and-fail path for a native approval request in unattended full access; a live
 unattended delegated Turn under Cursor team policy was not exercised. These are

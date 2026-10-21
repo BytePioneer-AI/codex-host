@@ -116,7 +116,6 @@ export class CursorAdapter implements HarnessAdapter {
         const before = readCursorNativeTurns(parent.nativeSessionId, cwd, options.environment);
         replay = new CursorTransport({
           ...options,
-          delegation: false,
           executionPolicy: "default",
           loadModelCatalog: false,
         });
@@ -227,7 +226,6 @@ export class CursorAdapter implements HarnessAdapter {
     }
     const options = {
       ...this.transportOptions(input.cwd, input.environment),
-      delegation: true,
       executionPolicy,
     };
     const transport = prepared ?? new CursorTransport(options);
@@ -359,7 +357,7 @@ export class CursorAdapter implements HarnessAdapter {
           ...new Set([...Object.keys(sourceEnvironment), ...Object.keys(options.environment)]),
         ].every((key) => sourceEnvironment[key] === options.environment[key]);
       transport = new CursorTransport(
-        { ...options, delegation: true, executionPolicy },
+        { ...options, executionPolicy },
         sameEnvironment ? source?.info.nativeModels : undefined,
       );
       // Authentication needs no target ID; overlap it with the native CLI transaction.
@@ -558,7 +556,6 @@ export class CursorSession implements HarnessSession {
       if (!this.#snapshot || !before.revision || this.#snapshot.revision !== before.revision) {
         replay = new CursorTransport({
           ...this.transport.options,
-          delegation: false,
           executionPolicy: "default",
           loadModelCatalog: false,
         });

@@ -222,15 +222,22 @@ function sameFile(left: string | null | undefined, right: string | null | undefi
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-function isBrainFile(targetPath: string, conversationId?: string): boolean {
+function pathWithinDirectory(targetPath: string, directory: string): boolean {
+  const normalize = (value: string) =>
+    process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+  const target = normalize(targetPath);
+  const root = normalize(directory);
+  return target === root || target.startsWith(`${root}${path.sep}`);
+}
+
+export function isAntigravityBrainFile(targetPath: string, conversationId?: string): boolean {
   if (!targetPath) return false;
-  const resolved = path.resolve(targetPath);
   if (conversationId) {
-    const brainDir = path.resolve(nativeBrainDirPath(conversationId));
-    if (resolved.startsWith(brainDir)) return true;
+    const brainDir = nativeBrainDirPath(conversationId);
+    if (pathWithinDirectory(targetPath, brainDir)) return true;
   }
-  const defaultBrainRoot = path.resolve(os.homedir(), ".gemini", "antigravity-cli", "brain");
-  return resolved.startsWith(defaultBrainRoot);
+  const defaultBrainRoot = path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
+  return pathWithinDirectory(targetPath, defaultBrainRoot);
 }
 
 function cancelledReason(active: ActiveTurn): string {
@@ -340,9 +347,11 @@ function requestAntigravityContextUsage(
   port: number,
   conversationId: string,
   timeoutMs: number,
+  environment: NodeJS.ProcessEnv,
   modelId?: string,
 ): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
-  const csrfToken = process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
+  const csrfToken =
+    environment.ANTIGRAVITY_CSRF_TOKEN?.trim() || process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
   return new Promise((resolve) => {
     const request = https.request(
       {
@@ -619,6 +628,7 @@ async function antigravityHttpsPort(logPath: string): Promise<number | null> {
 async function pollAntigravityContextUsage(
   logPath: string,
   conversationId: string,
+  environment: NodeJS.ProcessEnv,
   modelId?: string,
   isDone?: () => boolean,
 ): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
@@ -632,6 +642,7 @@ async function pollAntigravityContextUsage(
         port,
         conversationId,
         CONTEXT_USAGE_RETRY_MS,
+        environment,
         modelId,
       );
       if (usage) return usage;
@@ -1187,17 +1198,21 @@ class AntigravitySession implements HarnessSession {
       if (!this.#initializedTranscriptSteps) {
         this.#initializedTranscriptSteps = true;
         const existing = await readAllExistingTranscriptSteps(event.conversation_id);
+        if (this.#active !== active) return;
         for (const step of existing) this.#emittedReasoningSteps.add(step);
       }
       this.#ensureContextUsage(active, event.conversation_id);
       return;
     }
     if (event.event === "step_update") {
-      if (event.step_update.conversation_id !== this.#nativeRef?.nativeSessionId) return;
+      const conversationId =
+        event.step_update.conversation_id.trim() || this.#nativeRef?.nativeSessionId;
+      if (!conversationId || conversationId !== this.#nativeRef?.nativeSessionId) return;
       await this.#handleStep(active, event.step_update);
+      if (this.#active !== active) return;
       const usage = hostUsage(event.step_update.usage, active.model?.id);
       if (usage) this.#publishUsage(active, usage);
-      this.#ensureContextUsage(active, event.step_update.conversation_id);
+      this.#ensureContextUsage(active, conversationId);
       return;
     }
     if (event.event !== "result") return;
@@ -1234,6 +1249,7 @@ class AntigravitySession implements HarnessSession {
           "",
         active.model?.id,
       )) ?? (active.contextUsagePromise ? await active.contextUsagePromise : null);
+    if (this.#active !== active) return;
     if (contextUsage) this.#publishUsage(active, contextUsage);
     await active.subagents.refresh();
     if (this.#active !== active) return;
@@ -1325,6 +1341,7 @@ class AntigravitySession implements HarnessSession {
   }
 
   #publishUsage(active: ActiveTurn, usage: HostUsage): void {
+    if (this.#active !== active) return;
     active.latestUsage = { ...(active.latestUsage ?? {}), ...usage };
     this.#event({
       type: "session.usage.changed",
@@ -1338,6 +1355,7 @@ class AntigravitySession implements HarnessSession {
     active.contextUsagePromise = pollAntigravityContextUsage(
       active.logPath,
       conversationId,
+      this.#environment,
       active.model?.id,
       () =>
         active.receivedResult || active.cancellationRequested || active.process.exitCode !== null,
@@ -1417,6 +1435,7 @@ class AntigravitySession implements HarnessSession {
     let item = active.tools.get(step.step_index);
     if (!item) {
       const started = await this.#startToolItem(active, merged);
+      if (this.#active !== active) return;
       if (!started) {
         active.pendingSteps.set(step.step_index, merged);
         return;
@@ -1458,6 +1477,7 @@ class AntigravitySession implements HarnessSession {
       isAntigravityFileMutatingTool(toolName)
     ) {
       const change = await this.#claimFileChange(active, merged, toolName);
+      if (this.#active !== active) return;
       if (change) {
         const fileItem: HostItem = {
           type: "fileChange",
@@ -1484,6 +1504,7 @@ class AntigravitySession implements HarnessSession {
     const toolName = step.tool_name ?? step.tool_info?.name ?? "antigravity.tool";
     if (isAntigravityFileMutatingTool(toolName)) {
       const change = await this.#claimFileChange(active, step, toolName);
+      if (this.#active !== active) return null;
       if (change) {
         return { type: "fileChange", itemId: this.#newItemId(), changes: [change] };
       }
@@ -1499,16 +1520,21 @@ class AntigravitySession implements HarnessSession {
   ): Promise<HostFileChange | null> {
     const claimed = active.fileChanges.get(step.step_index);
     if (claimed) return claimed;
+    const conversationId =
+      step.conversation_id.trim() || this.#nativeRef?.nativeSessionId || undefined;
     const target = toolTargetFile(toolName, step.tool_info?.parameters);
-    if (target && isBrainFile(target, step.conversation_id)) return null;
+    if (target && isAntigravityBrainFile(target, conversationId)) return null;
 
     const port = await this.#languageServerPort(active);
+    if (this.#active !== active) return null;
     if (port !== null && target) {
       const actions = await requestAntigravityTrajectorySteps(
         port,
-        step.conversation_id,
+        conversationId ?? "",
         TRAJECTORY_TIMEOUT_MS,
+        this.#environment.ANTIGRAVITY_CSRF_TOKEN,
       );
+      if (this.#active !== active) return null;
       const index = actions.findIndex(
         (action, at) => at >= active.codeActionCursor && sameFile(action.absolutePath, target),
       );
@@ -1531,16 +1557,17 @@ class AntigravitySession implements HarnessSession {
       active.fileChanges.set(step.step_index, fallback);
       return fallback;
     }
-    if (step.conversation_id) {
+    if (conversationId) {
       const transcriptArgs = await readTranscriptToolArgs(
-        step.conversation_id,
+        conversationId,
         step.step_index,
         toolName,
         target ?? undefined,
       );
+      if (this.#active !== active) return null;
       if (transcriptArgs) {
         const resolvedTarget = target ?? toolTargetFile(toolName, transcriptArgs);
-        if (resolvedTarget && isBrainFile(resolvedTarget, step.conversation_id)) {
+        if (resolvedTarget && isAntigravityBrainFile(resolvedTarget, conversationId)) {
           return null;
         }
         const fromTranscript = fileChangeFromAntigravityParameters(
@@ -1569,8 +1596,9 @@ class AntigravitySession implements HarnessSession {
       conversationId,
       this.#emittedReasoningSteps,
     );
-    if (thinkingSteps.length === 0) return;
+    if (thinkingSteps.length === 0 || this.#active !== active) return;
     for (const { stepIndex, thinking } of thinkingSteps) {
+      if (this.#active !== active) return;
       this.#emittedReasoningSteps.add(stepIndex);
       const itemId = this.#newItemId();
       const item: HostReasoningItem = {

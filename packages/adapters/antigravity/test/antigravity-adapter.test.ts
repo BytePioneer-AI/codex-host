@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 
 import { nativeBrainDirPath } from "../src/fork.js";
 import { AntigravityHistory } from "../src/history.js";
+import { isAntigravityBrainFile } from "../src/antigravity-adapter.js";
 import {
   ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
   AntigravityAdapter,
@@ -436,6 +437,17 @@ describe("Antigravity Adapter", () => {
       contextWindowTokens: 200_000,
     });
     expect(parseAntigravityContextUsage({ generatorMetadata: [] })).toBeNull();
+  });
+
+  it("matches brain files by directory boundary", () => {
+    const brainDir = nativeBrainDirPath("conv-brain-boundary");
+    const defaultBrainRoot = path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
+    const sibling = path.join(path.dirname(defaultBrainRoot), "brainstorm", "file.ts");
+    expect(isAntigravityBrainFile(brainDir, "conv-brain-boundary")).toBe(true);
+    expect(isAntigravityBrainFile(path.join(brainDir, "artifact.md"), "conv-brain-boundary")).toBe(
+      true,
+    );
+    expect(isAntigravityBrainFile(sibling)).toBe(false);
   });
 
   it("resolves context window sizes by model family with 1M Gemini default", () => {
@@ -1763,6 +1775,62 @@ setTimeout(() => { process.exit(0); }, 50);
           },
         });
 
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("uses the bound conversation when a step omits conversation_id", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-step-fallback",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "",
+            step_index: 1,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "write_to_file",
+            tool_info: { parameters: { TargetFile: "src/fallback.ts" } },
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-step-fallback",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "done",
+          },
+        }),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-step-fallback");
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "create fallback file" }],
+        });
+        expect((await nextEvent(iterator)).type).toBe("turn.started");
+        expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: { type: "toolExecution", toolName: "write_to_file" },
+        });
         await session.close();
       } finally {
         await adapter.close();

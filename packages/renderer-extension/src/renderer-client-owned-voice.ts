@@ -74,12 +74,8 @@ interface NativeVoiceFetch {
 /** Desktop Chat/Work toggle persistence. Missing means Chat. */
 export const HOME_COMPOSER_MODE_STORAGE_KEY = "home-composer-mode-v1";
 
-function headerRecord(headers?: HeadersInit): Record<string, string> {
-  return Object.fromEntries(new Headers(headers));
-}
-
 function backendModelName(headers?: HeadersInit): string {
-  const raw = headerRecord(headers)["x-codex-turn-metadata"];
+  const raw = new Headers(headers).get("x-codex-turn-metadata");
   if (!raw) return "";
   try {
     const parsed = JSON.parse(raw) as { backend_model_name?: unknown };

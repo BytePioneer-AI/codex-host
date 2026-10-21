@@ -224,6 +224,8 @@ function installFakeBrowser(): void {
     dispatchEvent: listeners.dispatchEvent.bind(listeners),
     setTimeout,
     clearTimeout,
+    setInterval,
+    clearInterval,
     open: vi.fn(),
   };
   const document_ = {

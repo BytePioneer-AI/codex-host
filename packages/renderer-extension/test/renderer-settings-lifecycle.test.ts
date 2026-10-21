@@ -183,16 +183,20 @@ describe("Renderer Settings lifecycle", () => {
 
   it("passes the local statistics transport to settings pages", () => {
     const requestUsageStatistics = vi.fn(async () => ({}));
+    const usageStatisticsHosts = vi.fn(async () => []);
     const ownerWindow = {
       navigator: { languages: ["en"] },
       document: {},
       setTimeout,
       clearTimeout,
     } as unknown as Window;
-    const lifecycle = installRendererSettingsLifecycle(ownerWindow, { requestUsageStatistics });
-    expect(vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1)?.[8]).toBe(
+    const lifecycle = installRendererSettingsLifecycle(ownerWindow, {
       requestUsageStatistics,
-    );
+      usageStatisticsHosts,
+    });
+    const call = vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1);
+    expect(call?.[8]).toBe(requestUsageStatistics);
+    expect(call?.[9]).toBe(usageStatisticsHosts);
     lifecycle.dispose();
   });
 

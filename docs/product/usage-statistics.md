@@ -1,10 +1,11 @@
 # 全局用量统计
 
-本地控制台（`codexhost console`）与 Codex Desktop 内置 CodexHost 设置中的“用量统计”页汇总本机全部原生会话的 Token、缓存命中与按官方公开价估算的 API 等价费用。两个入口复用同一页面、交互和样式；内置设置直接通过 Desktop 的本机 Host 连接请求统计及模型价格，不依赖控制台 HTTP 服务或当前 Composer 所在的远程 Host。设计与决策见 `openspec/changes/add-global-usage-statistics/`。
+本地控制台（`codexhost console`）与 Codex Desktop 内置 CodexHost 设置中的“用量统计”页汇总本机全部原生会话的 Token、缓存命中与按官方公开价估算的 API 等价费用。两个入口复用同一页面、交互和样式；内置设置通过 Desktop 的本机 Host 或页头所选机器的连接请求统计及模型价格，不依赖控制台 HTTP 服务。设计与决策见 `openspec/changes/add-global-usage-statistics/`。
 
 ## 范围
 
 - 统计本机原生会话，不论是否经 CodexHost 创建或导入；只统计所在 Host 的机器，远程 Host 各自统计。
+- 用量统计属于产生它的机器：页面一次只读取一个 Host，不把多台机器的数字相加。Desktop 设置页在页头提供“机器”下拉框，列出本机与 Desktop 已连接的远程 Host，可逐个查看（例如本机与一台通过 SSH 连接的远端机器）；本地控制台只有本机 Host 通道，不显示该下拉框。所选机器保存在入口自己的本地存储中；所选机器不可用时页面显示明确错误，不换用其他机器的数字。切换机器会重置 Harness、模型、项目与日期筛选（这些值属于上一台机器），时间范围、度量、粒度与自动刷新间隔保持；模型价格弹窗也作用于当前所选机器。
 - 已接线的读取器：Claude Code（含子代理与 workflows 转录）、Pi、OMP（含子代理会话）、CodeBuddy、WorkBuddy、OpenCode、ZCode、DeepSeek Harness、Grok、Qoder、Qoder CN、Hermes。Qoder 两个发行版已用本机真实会话核对：请求与原生消息一一对应，但本地记录的 Token 均为 0、只有积分，因此只计请求数，Token 与费用显示为未记录；模型以 Qoder 本地界面文字显示名称（如 `qfmodel` 显示为 Qwen3.8-Flash）。
 - 官方 Codex 通过独立预装统计插件 `codex-usage` 接入，显示名 Codex；不接管原生会话操作。Kimi Code、Antigravity、Kiro CLI、Cursor CLI 的本地数据限制见下文。
 - 只统计已启用的 Harness 插件；插件未实现读取能力时不出现，某个 Harness 读取失败只缺这一部分，页面会提示。

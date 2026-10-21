@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   codeActionFileChange,
+  fileChangeFromAntigravityParameters,
   parseAntigravityCodeActions,
   type AntigravityCodeAction,
 } from "../src/index.js";
@@ -188,7 +189,121 @@ describe("Antigravity Code Action diffs", () => {
       );
       const change = codeActionFileChange(requireAction(action), CWD);
       expect(change?.path).toBe(outside.replaceAll("\\", "/"));
-      expect(change?.unifiedDiff).toContain(`+++ ${outside.replaceAll("\\", "/")}`);
+      expect(change?.unifiedDiff).toContain(
+        `+++ b/${outside.replaceAll("\\", "/").replace(/^\/+/, "")}`,
+      );
+    });
+  });
+
+  describe("fileChangeFromAntigravityParameters", () => {
+    it("synthesizes add change from write_to_file parameters", () => {
+      const change = fileChangeFromAntigravityParameters(
+        "write_to_file",
+        {
+          TargetFile: "src/new-file.ts",
+          CodeContent: "const a = 1;\nconst b = 2;\n",
+        },
+        CWD,
+      );
+      expect(change).toEqual({
+        path: "src/new-file.ts",
+        kind: "add",
+        unifiedDiff: [
+          "diff --git a/src/new-file.ts b/src/new-file.ts",
+          "--- /dev/null",
+          "+++ b/src/new-file.ts",
+          "@@ -0,0 +1,2 @@",
+          "+const a = 1;",
+          "+const b = 2;",
+          "",
+        ].join("\n"),
+      });
+    });
+
+    it("synthesizes add change from write_file with Path and Content", () => {
+      const change = fileChangeFromAntigravityParameters(
+        "write_file",
+        {
+          Path: "config.json",
+          Content: '{\n  "ok": true\n}\n',
+        },
+        CWD,
+      );
+      expect(change).toMatchObject({
+        path: "config.json",
+        kind: "add",
+      });
+      expect(change?.unifiedDiff).toContain("--- /dev/null");
+      expect(change?.unifiedDiff).toContain("+++\ b/config.json");
+      expect(change?.unifiedDiff).toContain('+  "ok": true');
+    });
+
+    it("synthesizes update change from replace_file_content with StartLine", () => {
+      const change = fileChangeFromAntigravityParameters(
+        "replace_file_content",
+        {
+          TargetFile: "src/mod.ts",
+          TargetContent: "oldMethod() {\n  return 1;\n}\n",
+          ReplacementContent: "newMethod() {\n  return 2;\n}\n",
+          StartLine: "42",
+        },
+        CWD,
+      );
+      expect(change).toEqual({
+        path: "src/mod.ts",
+        kind: "update",
+        diffScope: "fragment",
+        unifiedDiff: [
+          "diff --git a/src/mod.ts b/src/mod.ts",
+          "--- a/src/mod.ts",
+          "+++ b/src/mod.ts",
+          "@@ -42,3 +42,3 @@",
+          "-oldMethod() {",
+          "-  return 1;",
+          "-}",
+          "+newMethod() {",
+          "+  return 2;",
+          "+}",
+          "",
+        ].join("\n"),
+      });
+    });
+
+    it("synthesizes update change from edit_file with Path, Target, and Replacement", () => {
+      const change = fileChangeFromAntigravityParameters(
+        "edit_file",
+        {
+          Path: "readme.md",
+          Target: "old title",
+          Replacement: "new title",
+        },
+        CWD,
+      );
+      expect(change).toMatchObject({
+        path: "readme.md",
+        kind: "update",
+        diffScope: "fragment",
+      });
+      expect(change?.unifiedDiff).toContain("--- a/readme.md");
+      expect(change?.unifiedDiff).toContain("+++ b/readme.md");
+      expect(change?.unifiedDiff).toContain("-old title");
+      expect(change?.unifiedDiff).toContain("+new title");
+    });
+
+    it("returns null when file mutating content is missing or unmodified", () => {
+      expect(
+        fileChangeFromAntigravityParameters("write_to_file", { TargetFile: "foo.txt" }, CWD),
+      ).toBeNull();
+      expect(
+        fileChangeFromAntigravityParameters(
+          "replace_file_content",
+          { TargetFile: "foo.txt", TargetContent: "same", ReplacementContent: "same" },
+          CWD,
+        ),
+      ).toBeNull();
+      expect(
+        fileChangeFromAntigravityParameters("run_command", { CommandLine: "echo 1" }, CWD),
+      ).toBeNull();
     });
   });
 });

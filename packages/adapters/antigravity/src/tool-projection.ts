@@ -54,7 +54,7 @@ export function displayPath(
   return { path: normalized, absolute: !inside };
 }
 
-function unwrapParameters(value: unknown): Record<string, unknown> | null {
+export function unwrapParameters(value: unknown): Record<string, unknown> | null {
   if (typeof value === "string") {
     try {
       const parsed = JSON.parse(value);
@@ -95,13 +95,21 @@ export function unwrapJsonString(value: string): string {
   return value;
 }
 
-function extractString(
+export function extractString(
   record: Record<string, unknown>,
   keys: readonly string[],
 ): string | undefined {
   for (const key of keys) {
     const val = record[key];
     if (typeof val === "string") return unwrapJsonString(val);
+  }
+  for (const [k, val] of Object.entries(record)) {
+    if (
+      typeof val === "string" &&
+      keys.some((targetKey) => targetKey.toLowerCase() === k.toLowerCase())
+    ) {
+      return unwrapJsonString(val);
+    }
   }
   for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
     if (isRecord(record[wrapper])) {
@@ -121,8 +129,8 @@ export function compactToolName(toolName: string): string {
   return baseName.toLowerCase().replaceAll(/[_-]/g, "");
 }
 
-const COMPACT_WRITE_TOOLS = new Set(["writetofile", "writefile", "write"]);
-const COMPACT_REPLACE_TOOLS = new Set([
+export const COMPACT_WRITE_TOOLS = new Set(["writetofile", "writefile", "write"]);
+export const COMPACT_REPLACE_TOOLS = new Set([
   "replacefilecontent",
   "multireplacefilecontent",
   "replacecontent",
@@ -170,6 +178,9 @@ export function toolTargetFile(toolName: string, params: unknown): string | null
     "file_path",
     "path",
     "file",
+    "Path",
+    "FilePath",
+    "File",
   ]);
   return rawPath && rawPath.trim().length > 0 ? rawPath : null;
 }

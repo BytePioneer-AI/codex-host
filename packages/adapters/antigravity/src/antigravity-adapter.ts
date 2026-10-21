@@ -26,6 +26,7 @@ import {
   type InspectHarnessInput,
   type HostAgentMessageItem,
   type HostCommand,
+  type HostContextCompactionItem,
   type HostEvent,
   type HostFileChange,
   type HostItem,
@@ -85,6 +86,7 @@ import { rollbackAntigravityLastTurn } from "./rollback.js";
 import { ANTIGRAVITY_COMMAND_CATALOG, parseAndFormatAntigravityCommand } from "./slash-commands.js";
 import {
   codeActionFileChange,
+  fileChangeFromAntigravityParameters,
   requestAntigravityTrajectorySteps,
   type AntigravityCodeAction,
 } from "./code-action-diff.js";
@@ -103,6 +105,7 @@ import {
   type AntigravityUsage,
 } from "./stream-events.js";
 import {
+  compactToolName,
   completeAntigravityToolItem,
   isAntigravityFileMutatingTool,
   startAntigravityToolItem,
@@ -121,11 +124,13 @@ export interface AntigravityAdapterOptions {
 interface ActiveTurn {
   startedAtMs: number;
   command: TurnStartCommand;
+  /** Compaction item active during explicit /compact or automatic checkpoint. */
+  compactionItem: HostContextCompactionItem | null;
   /** Model passed to this CLI invocation, independent of later selections. */
   model: HarnessModelRef | undefined;
   process: ChildProcessByStdio<Writable, Readable, Readable>;
   exited: Promise<void>;
-  questions: AntigravityQuestionBridge;
+  questions: AntigravityQuestionBridge | null;
   subagents: AntigravitySubagents;
   logPath: string;
   agentItem: HostAgentMessageItem | null;
@@ -209,10 +214,22 @@ function mergePendingStep(
  * trajectory reports a `file://` URI, so the two only compare after both are
  * resolved — case-insensitively where the filesystem is.
  */
-function sameFile(left: string, right: string): boolean {
+function sameFile(left: string | null | undefined, right: string | null | undefined): boolean {
+  if (!left || !right) return false;
   const a = path.resolve(left);
   const b = path.resolve(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function isBrainFile(targetPath: string, conversationId?: string): boolean {
+  if (!targetPath) return false;
+  const resolved = path.resolve(targetPath);
+  if (conversationId) {
+    const brainDir = path.resolve(nativeBrainDirPath(conversationId));
+    if (resolved.startsWith(brainDir)) return true;
+  }
+  const defaultBrainRoot = path.resolve(os.homedir(), ".gemini", "antigravity-cli", "brain");
+  return resolved.startsWith(defaultBrainRoot);
 }
 
 export function resolveAntigravityContextWindow(modelId?: string, reportedWindow?: number): number {
@@ -482,6 +499,119 @@ async function readAllExistingTranscriptSteps(conversationId: string): Promise<S
   }
   return steps;
 }
+
+export async function readTranscriptToolArgs(
+  conversationId: string,
+  stepIndex: number,
+  toolName?: string,
+  targetFile?: string,
+): Promise<Record<string, unknown> | null> {
+  if (!conversationId) return null;
+  const dir = path.join(nativeBrainDirPath(conversationId), ".system_generated", "logs");
+  const candidates = [path.join(dir, "transcript.jsonl"), path.join(dir, "transcript_full.jsonl")];
+
+  interface ParsedPlanner {
+    stepIndex: number;
+    toolCalls: Array<{ name: string; args: Record<string, unknown> }>;
+  }
+
+  for (const candidate of candidates) {
+    let content = "";
+    try {
+      content = await readFile(candidate, "utf8");
+    } catch {
+      continue;
+    }
+    if (!content.trim()) continue;
+
+    const planners: ParsedPlanner[] = [];
+    const lines = content.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (
+          isRecord(parsed) &&
+          parsed.source === "MODEL" &&
+          parsed.type === "PLANNER_RESPONSE" &&
+          typeof parsed.step_index === "number" &&
+          Array.isArray(parsed.tool_calls)
+        ) {
+          const toolCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+          for (const tc of parsed.tool_calls) {
+            if (isRecord(tc) && typeof tc.name === "string") {
+              const args = isRecord(tc.args) ? (tc.args as Record<string, unknown>) : {};
+              toolCalls.push({ name: tc.name, args });
+            }
+          }
+          if (toolCalls.length > 0) {
+            planners.push({ stepIndex: parsed.step_index, toolCalls });
+          }
+        }
+      } catch {
+        // Skip incomplete trailing line.
+      }
+    }
+
+    if (planners.length === 0) continue;
+
+    const compactTarget = toolName ? compactToolName(toolName) : undefined;
+    const precedingPlanners = planners
+      .filter((p) => p.stepIndex < stepIndex)
+      .sort((a, b) => b.stepIndex - a.stepIndex);
+
+    const matchesCall = (cand: { name: string; args: Record<string, unknown> }): boolean => {
+      if (compactTarget && compactToolName(cand.name) !== compactTarget) {
+        return false;
+      }
+      if (targetFile) {
+        const candFile = toolTargetFile(cand.name, cand.args);
+        if (!sameFile(candFile, targetFile)) return false;
+      }
+      return true;
+    };
+
+    // 1. Try the closest preceding planner response by offset
+    const closest = precedingPlanners[0];
+    if (closest) {
+      const offset = stepIndex - closest.stepIndex - 1;
+      if (offset >= 0 && offset < closest.toolCalls.length) {
+        const candidateCall = closest.toolCalls[offset];
+        if (candidateCall && matchesCall(candidateCall)) {
+          return candidateCall.args;
+        }
+      }
+
+      // 2. Search anywhere in the closest preceding planner response
+      for (const call of closest.toolCalls) {
+        if (matchesCall(call)) {
+          return call.args;
+        }
+      }
+    }
+
+    // 3. Search earlier planner responses
+    for (const planner of precedingPlanners.slice(1)) {
+      for (const call of planner.toolCalls) {
+        if (matchesCall(call)) {
+          return call.args;
+        }
+      }
+    }
+
+    // 4. Fallback search across all planner responses
+    for (const planner of planners) {
+      for (const call of planner.toolCalls) {
+        if (matchesCall(call)) {
+          return call.args;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 async function antigravityHttpsPort(logPath: string): Promise<number | null> {
   try {
     const log = await readFile(logPath, "utf8");
@@ -748,7 +878,7 @@ class AntigravitySession implements HarnessSession {
     if (command.type === "thinking.select") return this.#selectThinking(command);
     if (command.type === "interaction.respond") {
       return (
-        this.#active?.questions.respond(command) ?? {
+        this.#active?.questions?.respond(command) ?? {
           ok: false,
           error: invalidState("Antigravity Question is not active"),
         }
@@ -774,63 +904,91 @@ class AntigravitySession implements HarnessSession {
         error: { code: "invalidRequest", message: "Antigravity Turn is empty", retryable: false },
       };
     }
-
-    let questions: AntigravityQuestionBridge;
-    this.#preparingQuestions = AntigravityQuestionBridge.create({
-      turnId: command.turnId,
-      nativeSessionId: () =>
-        this.#active?.command === command && !this.#active.cancellationRequested
-          ? this.#nativeRef?.nativeSessionId
-          : undefined,
-      schedule: (action) => {
-        if (this.#active?.command === command) this.#enqueue(this.#active, action);
-        else action();
-      },
-      emit: (output) => {
-        const active = this.#active;
-        if (!active || active.command !== command) return;
-        if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
-          this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
-        }
-        if (output.kind === "event" && output.event.type === "item.completed") {
-          active.completedItems.push(output.event.snapshot);
-        }
-        this.#channel.emit(output);
-      },
-    });
-    try {
-      questions = await this.#preparingQuestions;
-    } catch (error) {
+    const isCompact = text === "/compact" || text.startsWith("/compact ");
+    const nativeConversationId = this.#nativeRef?.nativeSessionId;
+    if (isCompact && !nativeConversationId) {
       return {
         ok: false,
         error: {
-          code: "nativeFailure",
-          message: `Question bridge setup failed: ${errorMessage(error)}`,
-          retryable: true,
+          code: "invalidState",
+          message: "Antigravity context compaction requires an active conversation",
+          retryable: false,
         },
       };
-    } finally {
-      this.#preparingQuestions = null;
     }
-    if (this.#closed) {
-      await questions.dispose();
+
+    let questions: AntigravityQuestionBridge | null = null;
+    let environment = this.#environment;
+    if (!isCompact) {
+      this.#preparingQuestions = AntigravityQuestionBridge.create({
+        turnId: command.turnId,
+        nativeSessionId: () =>
+          this.#active?.command === command && !this.#active.cancellationRequested
+            ? this.#nativeRef?.nativeSessionId
+            : undefined,
+        schedule: (action) => {
+          if (this.#active?.command === command) this.#enqueue(this.#active, action);
+          else action();
+        },
+        emit: (output) => {
+          const active = this.#active;
+          if (!active || active.command !== command) return;
+          if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
+            this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
+          }
+          if (output.kind === "event" && output.event.type === "item.completed") {
+            active.completedItems.push(output.event.snapshot);
+          }
+          this.#channel.emit(output);
+        },
+      });
+      try {
+        questions = await this.#preparingQuestions;
+        environment = { ...this.#environment, ...questions.environment };
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message: `Question bridge setup failed: ${errorMessage(error)}`,
+            retryable: true,
+          },
+        };
+      } finally {
+        this.#preparingQuestions = null;
+      }
+      if (this.#closed) {
+        await questions.dispose();
+        return { ok: false, error: invalidState("Antigravity Session is closed") };
+      }
+    } else if (this.#closed) {
       return { ok: false, error: invalidState("Antigravity Session is closed") };
     }
-    const environment = { ...this.#environment, ...questions.environment };
     const logPath = path.join(os.tmpdir(), `codexhost-antigravity-${randomUUID()}.log`);
-    const arguments_ = [
-      "--input-format",
-      "stream-json",
-      "--output-format",
-      "stream-json",
-      "--print-timeout",
-      this.#printTimeout,
-    ];
-    if (this.#nativeRef) arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
+    const arguments_ = isCompact
+      ? [
+          "--conversation",
+          nativeConversationId ?? "",
+          `--print=${text}`,
+          "--output-format",
+          "stream-json",
+          "--print-timeout",
+          this.#printTimeout,
+        ]
+      : [
+          "--input-format",
+          "stream-json",
+          "--output-format",
+          "stream-json",
+          "--print-timeout",
+          this.#printTimeout,
+        ];
+    if (!isCompact && this.#nativeRef)
+      arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
     arguments_.push(...antigravityModelArguments(this.#model, this.#thinkingOptionId));
     arguments_.push("--dangerously-skip-permissions");
     arguments_.push("--add-dir", this.#cwd);
-    arguments_.push("--add-dir", questions.directory);
+    if (!isCompact && questions) arguments_.push("--add-dir", questions.directory);
     arguments_.push("--log-file", logPath);
     const invocation = commandInvocation(this.#executable, arguments_, environment);
     let child: ChildProcessByStdio<Writable, Readable, Readable>;
@@ -843,15 +1001,23 @@ class AntigravitySession implements HarnessSession {
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
-      await questions.dispose();
+      await questions?.dispose();
       return {
         ok: false,
         error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
       };
     }
+    let compactionItem: HostContextCompactionItem | null = null;
+    if (isCompact) {
+      compactionItem = {
+        type: "contextCompaction",
+        itemId: this.#newItemId(),
+      };
+    }
     const active: ActiveTurn = {
       startedAtMs: Date.now(),
       command,
+      compactionItem,
       model: this.#model,
       process: child,
       exited: new Promise<void>((resolve) => child.once("close", () => resolve())),
@@ -939,6 +1105,12 @@ class AntigravitySession implements HarnessSession {
         }
       });
     });
+    if (isCompact && compactionItem) {
+      child.stdin.end();
+      this.#event({ type: "turn.started", turnId: command.turnId });
+      this.#event({ type: "item.started", turnId: command.turnId, item: compactionItem });
+      return { ok: true, value: { turnId: command.turnId } };
+    }
     try {
       const turnPrompt = formatAntigravityTurnPrompt(text);
       if (child.stdin.writable) {
@@ -1114,6 +1286,9 @@ class AntigravitySession implements HarnessSession {
         nativeTurnRef,
       );
     } else if (event.result.status === "SUCCESS") {
+      if (active.compactionItem) {
+        this.#completeCompactionItem(active, { status: "succeeded" });
+      }
       if (active.permissionDenial !== null && !active.agentItem) {
         this.#completeTurn(
           active,
@@ -1128,6 +1303,16 @@ class AntigravitySession implements HarnessSession {
         this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
       }
     } else {
+      if (active.compactionItem) {
+        this.#completeCompactionItem(active, {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message: "Antigravity context compaction failed",
+            retryable: false,
+          },
+        });
+      }
       const nativeError = event.result.error?.trim();
       const errorDetail = nativeError || active.stderr;
       this.#completeTurn(
@@ -1198,6 +1383,39 @@ class AntigravitySession implements HarnessSession {
       }
       return;
     }
+    if (step.step_type === "checkpoint") {
+      if (active.agentItem) {
+        this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
+      }
+      if (!active.compactionItem) {
+        const item: HostContextCompactionItem = {
+          type: "contextCompaction",
+          itemId: this.#newItemId(),
+        };
+        active.compactionItem = item;
+        this.#event({ type: "item.started", turnId: active.command.turnId, item });
+      }
+      if (step.state === "DONE") {
+        this.#completeCompactionItem(active, { status: "succeeded" });
+        void readTranscriptContextUsage(step.conversation_id, active.model?.id).then(
+          (contextUsage) => {
+            if (contextUsage && this.#active === active) {
+              this.#publishUsage(active, contextUsage);
+            }
+          },
+        );
+      } else if (step.state === "ERROR") {
+        this.#completeCompactionItem(active, {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message: "Antigravity context compaction failed",
+            retryable: false,
+          },
+        });
+      }
+      return;
+    }
     if (step.step_type !== "tool") return;
     if (active.agentItem) {
       this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
@@ -1240,6 +1458,24 @@ class AntigravitySession implements HarnessSession {
           }
         : { status: "succeeded" };
     this.#completeItem(active, completed, itemOutcome);
+
+    if (
+      itemOutcome.status === "succeeded" &&
+      item.type !== "fileChange" &&
+      isAntigravityFileMutatingTool(toolName)
+    ) {
+      const change = await this.#claimFileChange(active, merged, toolName);
+      if (change) {
+        const fileItem: HostItem = {
+          type: "fileChange",
+          itemId: this.#newItemId(),
+          sourceItemIds: [completed.itemId],
+          changes: [change],
+        };
+        this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
+        this.#completeItem(active, fileItem, { status: "succeeded" });
+      }
+    }
   }
 
   /**
@@ -1271,24 +1507,61 @@ class AntigravitySession implements HarnessSession {
     const claimed = active.fileChanges.get(step.step_index);
     if (claimed) return claimed;
     const target = toolTargetFile(toolName, step.tool_info?.parameters);
-    if (!target) return null;
+    if (target && isBrainFile(target, step.conversation_id)) return null;
+
     const port = await this.#languageServerPort(active);
-    if (port === null) return null;
-    const actions = await requestAntigravityTrajectorySteps(
-      port,
-      step.conversation_id,
-      TRAJECTORY_TIMEOUT_MS,
+    if (port !== null && target) {
+      const actions = await requestAntigravityTrajectorySteps(
+        port,
+        step.conversation_id,
+        TRAJECTORY_TIMEOUT_MS,
+      );
+      const index = actions.findIndex(
+        (action, at) => at >= active.codeActionCursor && sameFile(action.absolutePath, target),
+      );
+      const action: AntigravityCodeAction | undefined = index === -1 ? undefined : actions[index];
+      if (action) {
+        const change = codeActionFileChange(action, this.#cwd);
+        if (change) {
+          active.codeActionCursor = index + 1;
+          active.fileChanges.set(step.step_index, change);
+          return change;
+        }
+      }
+    }
+    const fallback = fileChangeFromAntigravityParameters(
+      toolName,
+      step.tool_info?.parameters,
+      this.#cwd,
     );
-    const index = actions.findIndex(
-      (action, at) => at >= active.codeActionCursor && sameFile(action.absolutePath, target),
-    );
-    const action: AntigravityCodeAction | undefined = index === -1 ? undefined : actions[index];
-    if (!action) return null;
-    const change = codeActionFileChange(action, this.#cwd);
-    if (!change) return null;
-    active.codeActionCursor = index + 1;
-    active.fileChanges.set(step.step_index, change);
-    return change;
+    if (fallback) {
+      active.fileChanges.set(step.step_index, fallback);
+      return fallback;
+    }
+    if (step.conversation_id) {
+      const transcriptArgs = await readTranscriptToolArgs(
+        step.conversation_id,
+        step.step_index,
+        toolName,
+        target ?? undefined,
+      );
+      if (transcriptArgs) {
+        const resolvedTarget = target ?? toolTargetFile(toolName, transcriptArgs);
+        if (resolvedTarget && isBrainFile(resolvedTarget, step.conversation_id)) {
+          return null;
+        }
+        const fromTranscript = fileChangeFromAntigravityParameters(
+          toolName,
+          transcriptArgs,
+          this.#cwd,
+        );
+        if (fromTranscript) {
+          active.fileChanges.set(step.step_index, fromTranscript);
+          return fromTranscript;
+        }
+      }
+    }
+    return null;
   }
 
   async #languageServerPort(active: ActiveTurn): Promise<number | null> {
@@ -1445,7 +1718,7 @@ class AntigravitySession implements HarnessSession {
 
   #completeTurn(active: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (this.#active !== active) return;
-    active.questions.stop();
+    active.questions?.stop();
     this.#questionCleanup = this.#questionCleanup
       .then(async () => {
         if (outcome.status !== "succeeded") await active.subagents.cancel();
@@ -1453,7 +1726,7 @@ class AntigravitySession implements HarnessSession {
         if (active.process.stdin.writable) active.process.stdin.end();
         const timer = setTimeout(() => active.process.kill(), 2_000);
         await active.exited.finally(() => clearTimeout(timer));
-        await active.questions.dispose();
+        await active.questions?.dispose();
         this.#subagentObservers.delete(active.subagents);
       })
       .catch(() => undefined);
@@ -1465,6 +1738,9 @@ class AntigravitySession implements HarnessSession {
           ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
           : { status: "succeeded" };
     active.subagents.finish(itemOutcome);
+    if (active.compactionItem) {
+      this.#completeCompactionItem(active, itemOutcome);
+    }
     // A step whose patch never resolved still ran, so an interrupted Turn
     // reports it as a Tool Execution rather than dropping it silently.
     for (const step of active.pendingSteps.values()) {
@@ -1510,6 +1786,13 @@ class AntigravitySession implements HarnessSession {
     });
   }
 
+  #completeCompactionItem(active: ActiveTurn, outcome: HostItemOutcome): void {
+    const item = active.compactionItem;
+    if (!item) return;
+    active.compactionItem = null;
+    this.#completeItem(active, item, outcome);
+  }
+
   #completeItem(active: ActiveTurn, item: HostItem, outcome: HostItemOutcome): void {
     const snapshot = { item, outcome } satisfies HostItemSnapshot;
     active.completedItems.push(snapshot);
@@ -1536,6 +1819,16 @@ class AntigravitySession implements HarnessSession {
     if (!formatted.ok) {
       return formatted;
     }
+    if (formatted.value.descriptor.invocation === "/compact" && !this.#nativeRef) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidState",
+          message: "Antigravity context compaction requires an active conversation",
+          retryable: false,
+        },
+      };
+    }
     const started = await this.execute({
       type: "turn.start",
       turnId: command.turnId,
@@ -1560,7 +1853,7 @@ class AntigravitySession implements HarnessSession {
     }
     const active = this.#active;
     active.cancellationRequested = true;
-    active.questions.stop();
+    active.questions?.stop();
     await active.subagents.cancel();
     active.process.kill();
     return { ok: true, value: { cancellationRequested: true } };

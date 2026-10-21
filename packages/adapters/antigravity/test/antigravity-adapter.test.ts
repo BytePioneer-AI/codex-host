@@ -31,6 +31,7 @@ import {
   parseAntigravityUsageCommand,
   permissionDeniedTurnError,
   readTranscriptContextUsage,
+  readTranscriptToolArgs,
   resolveAntigravityContextWindow,
 } from "../src/index.js";
 
@@ -776,14 +777,20 @@ if (${keepAlive}) {
         const stateChanged = await nextEvent(iterator);
         expect(stateChanged.type).toBe("session.state.changed");
 
-        // Event 3: item.started for write_to_file. Without a reachable agy
-        // Language Server the applied patch is unknowable, so the step stays a
-        // Tool Execution instead of becoming an empty File Change card.
+        // Event 3: item.started for write_to_file projecting as fileChange
         const fileStarted = await nextEvent(iterator);
         expect(fileStarted).toMatchObject({
           type: "item.started",
           turnId,
-          item: { type: "toolExecution", toolName: "write_to_file" },
+          item: {
+            type: "fileChange",
+            changes: [
+              {
+                path: "test.ts",
+                kind: "add",
+              },
+            ],
+          },
         });
 
         // Event 4: item.completed for write_to_file
@@ -792,7 +799,15 @@ if (${keepAlive}) {
           type: "item.completed",
           turnId,
           snapshot: {
-            item: { type: "toolExecution", toolName: "write_to_file" },
+            item: {
+              type: "fileChange",
+              changes: [
+                {
+                  path: "test.ts",
+                  kind: "add",
+                },
+              ],
+            },
             outcome: { status: "succeeded" },
           },
         });
@@ -1564,7 +1579,6 @@ setTimeout(() => { process.exit(0); }, 50);
             tool_info: {
               parameters: {
                 TargetFile: "src/file1.ts",
-                CodeContent: "export const a = 1;\nexport const b = 2;\n",
               },
             },
           },
@@ -1580,8 +1594,6 @@ setTimeout(() => { process.exit(0); }, 50);
             tool_info: {
               parameters: {
                 TargetFile: "src/file2.ts",
-                TargetContent: "old line 1\nold line 2\n",
-                ReplacementContent: "new line 1\nnew line 2\nnew line 3\n",
               },
             },
           },
@@ -1656,6 +1668,174 @@ setTimeout(() => { process.exit(0); }, 50);
       } finally {
         await adapter.close();
         await cleanup();
+      }
+    });
+
+    it("recovers stripped tool parameters from transcript.jsonl and projects as fileChange with diff --git", async () => {
+      const convId = "conv-recovered-diff";
+      const brainLogsDir = path.join(nativeBrainDirPath(convId), ".system_generated", "logs");
+      await mkdir(brainLogsDir, { recursive: true });
+
+      const transcriptContent = [
+        JSON.stringify({
+          step_index: 0,
+          source: "USER_EXPLICIT",
+          type: "USER_INPUT",
+          content: "Create src/recovered.ts",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          source: "MODEL",
+          type: "PLANNER_RESPONSE",
+          content: "I will create the file.",
+          tool_calls: [
+            {
+              name: "write_file",
+              args: {
+                Path: '"src/recovered.ts"',
+                Content: '"const recovered = true;\\n"',
+              },
+            },
+          ],
+        }),
+      ].join("\n");
+      await writeFile(path.join(brainLogsDir, "transcript.jsonl"), transcriptContent, "utf8");
+
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: convId,
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: convId,
+            step_index: 2,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "write_file",
+            tool_info: {
+              // Real agy CLI strips Content from stdout stream-json!
+              parameters: {
+                Path: "src/recovered.ts",
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: convId,
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "File created successfully.",
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-recovered-diff");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "create recovered file" }],
+        });
+
+        expect((await nextEvent(iterator)).type).toBe("turn.started");
+        expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+
+        const fcStarted = await nextEvent(iterator);
+        expect(fcStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "fileChange",
+            changes: [{ path: "src/recovered.ts", kind: "add" }],
+          },
+        });
+        if (fcStarted.type === "item.started" && fcStarted.item.type === "fileChange") {
+          expect(fcStarted.item.changes[0]?.unifiedDiff).toContain(
+            "diff --git a/src/recovered.ts b/src/recovered.ts",
+          );
+        }
+
+        const fcCompleted = await nextEvent(iterator);
+        expect(fcCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "fileChange",
+              changes: [{ path: "src/recovered.ts", kind: "add" }],
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+        await rm(path.dirname(brainLogsDir), { recursive: true, force: true });
+      }
+    });
+
+    it("reads tool args from transcript across multi-call planner steps and unescapes quotes", async () => {
+      const convId = "conv-read-args-unit";
+      const brainLogsDir = path.join(nativeBrainDirPath(convId), ".system_generated", "logs");
+      await mkdir(brainLogsDir, { recursive: true });
+
+      const transcriptContent = [
+        JSON.stringify({
+          step_index: 1,
+          source: "MODEL",
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            {
+              name: "write_file",
+              args: { Path: '"first.ts"', Content: '"export const first = 1;"' },
+            },
+            {
+              name: "edit_file",
+              args: {
+                Path: '"second.ts"',
+                Target: '"old"',
+                Replacement: '"new"',
+              },
+            },
+          ],
+        }),
+      ].join("\n");
+      await writeFile(path.join(brainLogsDir, "transcript.jsonl"), transcriptContent, "utf8");
+
+      try {
+        const firstArgs = await readTranscriptToolArgs(convId, 2, "write_file", "first.ts");
+        expect(firstArgs).toEqual({
+          Path: '"first.ts"',
+          Content: '"export const first = 1;"',
+        });
+
+        const secondArgs = await readTranscriptToolArgs(convId, 3, "edit_file", "second.ts");
+        expect(secondArgs).toEqual({
+          Path: '"second.ts"',
+          Target: '"old"',
+          Replacement: '"new"',
+        });
+
+        const missingArgs = await readTranscriptToolArgs(convId, 99, "non_existent_tool");
+        expect(missingArgs).toBeNull();
+      } finally {
+        await rm(path.dirname(brainLogsDir), { recursive: true, force: true });
       }
     });
 

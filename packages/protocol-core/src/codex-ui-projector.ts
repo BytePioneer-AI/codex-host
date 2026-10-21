@@ -121,7 +121,16 @@ function nestedString(
     if (typeof field === "string" && (preserveText || field.trim().length > 0))
       return preserveText ? field : field.trim();
   }
-  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
+  for (const [k, field] of Object.entries(value)) {
+    if (
+      typeof field === "string" &&
+      (preserveText || field.trim().length > 0) &&
+      keys.some((targetKey) => targetKey.toLowerCase() === k.toLowerCase())
+    ) {
+      return preserveText ? field : field.trim();
+    }
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters", "tool_info"] as const) {
     const nested = nestedString(value[wrapper], keys, preserveText);
     if (nested !== undefined) return nested;
   }
@@ -435,22 +444,51 @@ function simpleUnifiedDiff(
   newText: string,
   kind: "add" | "update",
 ): string {
-  return createTwoFilesPatch(
-    kind === "add" ? "/dev/null" : `a/${displayedPath}`,
-    `b/${displayedPath}`,
-    oldText,
-    newText,
-  );
+  const cleanPath = displayedPath.replace(/^\/+/, "");
+  const aPath = kind === "add" ? "/dev/null" : `a/${cleanPath}`;
+  const bPath = `b/${cleanPath}`;
+  const gitHeader = `diff --git a/${cleanPath} ${bPath}`;
+  const patch = createTwoFilesPatch(aPath, bPath, oldText, newText);
+  const patchLines = patch.split("\n");
+  return patchLines[0]?.startsWith("===")
+    ? [gitHeader, ...patchLines.slice(1)].join("\n")
+    : `${gitHeader}\n${patch}`;
 }
 
 export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileChange[] | null {
   if (!isFileMutatingTool(toolName)) return null;
-  const displayedPath = nestedString(args, ["path", "file_path", "filePath", "file"]);
+  const displayedPath = nestedString(args, [
+    "path",
+    "file_path",
+    "filePath",
+    "file",
+    "TargetFile",
+    "targetFile",
+    "target_file",
+    "AbsolutePath",
+    "absolutePath",
+    "absolute_path",
+    "Path",
+    "FilePath",
+    "File",
+  ]);
   if (!displayedPath) return null;
   if (isWriteTool(toolName)) {
     const content = nestedString(
       args,
-      ["content", "new_string", "newString", "newText", "file_text", "text", "new"],
+      [
+        "content",
+        "new_string",
+        "newString",
+        "newText",
+        "file_text",
+        "text",
+        "new",
+        "CodeContent",
+        "codeContent",
+        "code_content",
+        "Content",
+      ],
       true,
     );
     if (content === undefined) return null;
@@ -465,12 +503,36 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
   }
   const oldText = nestedString(
     args,
-    ["old_string", "oldString", "oldText", "old_text", "old"],
+    [
+      "old_string",
+      "oldString",
+      "oldText",
+      "old_text",
+      "old",
+      "TargetContent",
+      "targetContent",
+      "target_content",
+      "Target",
+      "target",
+    ],
     true,
   );
   const newText = nestedString(
     args,
-    ["new_string", "newString", "newText", "new_text", "content", "new"],
+    [
+      "new_string",
+      "newString",
+      "newText",
+      "new_text",
+      "content",
+      "new",
+      "ReplacementContent",
+      "replacementContent",
+      "replacement_content",
+      "Replacement",
+      "replacement",
+      "Content",
+    ],
     true,
   );
   if (oldText === undefined || newText === undefined) return null;
@@ -1662,6 +1724,7 @@ export class CodexTurnProjector {
     return this.#fileItemId ? { ...summary, itemId: this.#fileItemId } : summary;
   }
 
+  /** `sourceItemIds` only deduplicates Host previews and never reaches the wire. */
   #fileChangeUpdates(emittedAtMs: number): JsonObject[] {
     const summary = this.#fileSummary();
     const messages: JsonObject[] = [];

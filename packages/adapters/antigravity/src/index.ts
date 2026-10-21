@@ -8,6 +8,7 @@ export {
   parseAntigravityContextUsage,
   permissionDeniedTurnError,
   readTranscriptContextUsage,
+  readTranscriptToolArgs,
   resolveAntigravityContextWindow,
 } from "./antigravity-adapter.js";
 export type { AntigravityAdapterOptions } from "./antigravity-adapter.js";
@@ -31,6 +32,7 @@ export {
 export type { AntigravityStreamEvent } from "./stream-events.js";
 export {
   codeActionFileChange,
+  fileChangeFromAntigravityParameters,
   parseAntigravityCodeActions,
   requestAntigravityTrajectorySteps,
 } from "./code-action-diff.js";

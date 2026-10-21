@@ -17,7 +17,15 @@ import https from "node:https";
 
 import type { HostFileChange } from "@codexhost/harness-adapter";
 
-import { displayPath } from "./tool-projection.js";
+import {
+  COMPACT_WRITE_TOOLS,
+  compactToolName,
+  displayPath,
+  extractString,
+  isAntigravityFileMutatingTool,
+  toolTargetFile,
+  unwrapParameters,
+} from "./tool-projection.js";
 
 const DIFF_CONTEXT_LINES = 3;
 
@@ -185,8 +193,9 @@ export function codeActionFileChange(
   if (!displayed) return null;
   const hunks = buildHunks(action.lines);
   if (hunks.length === 0) return null;
-  const aPath = displayed.absolute ? displayed.path : `a/${displayed.path}`;
-  const bPath = displayed.absolute ? displayed.path : `b/${displayed.path}`;
+  const cleanPath = displayed.path.replace(/^\/+/, "");
+  const aPath = `a/${cleanPath}`;
+  const bPath = `b/${cleanPath}`;
   const kind = action.createFile ? "add" : "update";
   const body = hunks.flatMap((hunk) => [
     `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`,
@@ -202,11 +211,131 @@ export function codeActionFileChange(
   return { path: displayed.path, kind, unifiedDiff };
 }
 
+export function fileChangeFromAntigravityParameters(
+  toolName: string,
+  params: unknown,
+  cwd: string,
+): HostFileChange | null {
+  if (!isAntigravityFileMutatingTool(toolName)) return null;
+  const rawPath = toolTargetFile(toolName, params);
+  if (!rawPath) return null;
+  const displayed = displayPath(rawPath, cwd);
+  if (!displayed) return null;
+
+  const record = unwrapParameters(params);
+  if (!record) return null;
+
+  const cleanPath = displayed.path.replace(/^\/+/, "");
+  const aPath = `a/${cleanPath}`;
+  const bPath = `b/${cleanPath}`;
+
+  const compact = compactToolName(toolName);
+  const isWrite = COMPACT_WRITE_TOOLS.has(compact);
+
+  if (isWrite) {
+    const content = extractString(record, [
+      "CodeContent",
+      "codeContent",
+      "code_content",
+      "Content",
+      "content",
+      "new_string",
+      "newString",
+      "newText",
+      "text",
+    ]);
+    if (content === undefined) return null;
+    const rawLines = content.split(/\r?\n/);
+    if (content.endsWith("\n") && rawLines.length > 1 && rawLines.at(-1) === "") {
+      rawLines.pop();
+    }
+    const hunks = buildHunks(rawLines.map((text) => ({ text, type: "insert" })));
+    if (hunks.length === 0) return null;
+    const body = hunks.flatMap((hunk) => [
+      `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`,
+      ...hunk.body,
+    ]);
+    const unifiedDiff = [
+      `diff --git ${aPath} ${bPath}`,
+      "--- /dev/null",
+      `+++ ${bPath}`,
+      ...body,
+      "",
+    ].join("\n");
+    return { path: displayed.path, kind: "add", unifiedDiff };
+  }
+
+  const oldText = extractString(record, [
+    "TargetContent",
+    "targetContent",
+    "target_content",
+    "Target",
+    "target",
+    "old_string",
+    "oldString",
+    "oldText",
+    "old_text",
+  ]);
+  const newText = extractString(record, [
+    "ReplacementContent",
+    "replacementContent",
+    "replacement_content",
+    "Replacement",
+    "replacement",
+    "new_string",
+    "newString",
+    "newText",
+    "new_text",
+    "content",
+  ]);
+
+  if (oldText === undefined && newText === undefined) return null;
+  if (oldText === newText) return null;
+
+  const oldLines = oldText !== undefined ? oldText.split(/\r?\n/) : [];
+  if (oldText?.endsWith("\n") && oldLines.length > 1 && oldLines.at(-1) === "") {
+    oldLines.pop();
+  }
+  const newLines = newText !== undefined ? newText.split(/\r?\n/) : [];
+  if (newText?.endsWith("\n") && newLines.length > 1 && newLines.at(-1) === "") {
+    newLines.pop();
+  }
+
+  const startLineRaw = extractString(record, ["StartLine", "startLine", "start_line"]);
+  const parsedStart = startLineRaw ? parseInt(startLineRaw, 10) : Number.NaN;
+  const startLine = Number.isInteger(parsedStart) && parsedStart > 0 ? parsedStart : 1;
+
+  const body: string[] = [];
+  for (const line of oldLines) {
+    body.push(`-${line}`);
+  }
+  for (const line of newLines) {
+    body.push(`+${line}`);
+  }
+
+  const oldStart = oldLines.length === 0 ? 0 : startLine;
+  const newStart = newLines.length === 0 ? 0 : startLine;
+  const hunkHeader = `@@ -${oldStart},${oldLines.length} +${newStart},${newLines.length} @@`;
+
+  const unifiedDiff = [
+    `diff --git ${aPath} ${bPath}`,
+    `--- ${aPath}`,
+    `+++ ${bPath}`,
+    hunkHeader,
+    ...body,
+    "",
+  ].join("\n");
+
+  return { path: displayed.path, kind: "update", diffScope: "fragment", unifiedDiff };
+}
+
 export function requestAntigravityTrajectorySteps(
   port: number,
   conversationId: string,
   timeoutMs: number,
+  csrfToken?: string,
 ): Promise<AntigravityCodeAction[]> {
+  const token = csrfToken?.trim() || process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
   return new Promise((resolve) => {
     const request = https.request(
       {
@@ -216,7 +345,11 @@ export function requestAntigravityTrajectorySteps(
         method: "POST",
         rejectUnauthorized: false,
         timeout: timeoutMs,
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "connect-protocol-version": "1",
+          ...(token ? { "x-codeium-csrf-token": token } : {}),
+        },
       },
       (response) => {
         let body = "";

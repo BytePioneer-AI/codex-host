@@ -3,6 +3,15 @@ import type {
   PromptResponse,
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
+import {
+  GROK_CLOCK_ELICIT_FIXTURE,
+  GROK_CLOCK_ELICIT_PERSIST_FIXTURE,
+  grokMcpElicitAccept,
+  grokMcpElicitCancel,
+  grokMcpElicitDecline,
+  type GrokMcpElicitFormRequest,
+  type GrokMcpElicitResponse,
+} from "../src/grok-elicitation.js";
 import type { HarnessOutput, HostEvent } from "@codexhost/harness-adapter";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -89,6 +98,8 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   #onEvent: ((event: GrokTransportEvent) => void) | null = null;
   #onPermission: ((request: GrokPermissionRequest) => Promise<RequestPermissionResponse>) | null =
     null;
+  #onElicitation: ((request: GrokMcpElicitFormRequest) => Promise<GrokMcpElicitResponse>) | null =
+    null;
   #resolve: ((response: PromptResponse) => void) | null = null;
   #compactResolve: ((result: GrokCompactResult) => void) | null = null;
   #compactOnEvent: ((event: GrokTransportEvent) => void) | null = null;
@@ -169,12 +180,14 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
+    onElicitation: (request: GrokMcpElicitFormRequest) => Promise<GrokMcpElicitResponse>,
   ): Promise<PromptResponse> {
     this.lastPromptText = text;
     this.#activePromptText = text;
     this.#activePromptEvents = [];
     this.#onEvent = onEvent;
     this.#onPermission = onPermission;
+    this.#onElicitation = onElicitation;
     return new Promise((resolve) => {
       this.#resolve = resolve;
     });
@@ -221,6 +234,13 @@ class FakeGrokTransport implements GrokAcpTransportLike {
       },
       options,
     });
+  }
+
+  elicit(
+    request: GrokMcpElicitFormRequest = { ...GROK_CLOCK_ELICIT_FIXTURE, sessionId: this.sessionId },
+  ): Promise<GrokMcpElicitResponse> {
+    if (!this.#onElicitation) throw new Error("No active Grok Prompt");
+    return this.#onElicitation(request);
   }
 
   finish(response: PromptResponse = { stopReason: "end_turn" }, historyUsage?: unknown): void {
@@ -768,6 +788,208 @@ describe("Grok Adapter ACP projection", () => {
       outcome: { outcome: "selected", optionId: "allow-command" },
     });
 
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
+  it("projects Clock MCP elicitation as allow-once/deny and accepts with empty content", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-elicit-clock");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "open clock" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+
+    const elicit = transport.elicit();
+    const output = await nextOutput(iterator);
+    if (output.kind !== "interaction" || output.interaction.type !== "approval") {
+      throw new Error("Expected Grok MCP elicitation Approval");
+    }
+    expect(output.interaction.actions).toEqual([
+      { id: "allow-once", label: "Allow once", effect: "allowOnce" },
+      { id: "deny", label: "Deny", effect: "deny" },
+    ]);
+    expect(output.interaction.title).toContain("cua_repl");
+    expect(output.interaction.title).toContain("Clock");
+    expect(output.interaction.description).toBe(GROK_CLOCK_ELICIT_FIXTURE.message);
+
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "approval", actionId: "allow-once" },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    await expect(elicit).resolves.toEqual(grokMcpElicitAccept());
+    expect((await nextEvent(iterator)).type).toBe("interaction.closed");
+
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
+  it("maps Always allow of persist-capable MCP elicitation to scalar persist always", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-elicit-always");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "open clock" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    const elicit = transport.elicit({
+      ...GROK_CLOCK_ELICIT_PERSIST_FIXTURE,
+      sessionId: transport.sessionId,
+    });
+    const output = await nextOutput(iterator);
+    if (output.kind !== "interaction" || output.interaction.type !== "approval") {
+      throw new Error("Expected persist-capable Grok MCP elicitation");
+    }
+    expect(output.interaction.actions.map(({ effect }) => effect)).toEqual([
+      "allowOnce",
+      "allowAlways",
+      "deny",
+    ]);
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "approval", actionId: "allow-always" },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    await expect(elicit).resolves.toEqual(grokMcpElicitAccept("always"));
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
+  it("maps Desktop deny of MCP elicitation to native decline", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-elicit-deny");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "open clock" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    const elicit = transport.elicit();
+    const output = await nextOutput(iterator);
+    if (output.kind !== "interaction") throw new Error("Expected Grok MCP elicitation Approval");
+    await session.execute({
+      type: "interaction.respond",
+      interactionId: output.interaction.interactionId,
+      response: { type: "approval", actionId: "deny" },
+    });
+    await expect(elicit).resolves.toEqual(grokMcpElicitDecline());
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
+  it("cancels MCP elicitation on native interaction_resolved and ignores a late Desktop answer", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-elicit-withdraw");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "open clock" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    const elicit = transport.elicit({
+      ...GROK_CLOCK_ELICIT_FIXTURE,
+      sessionId: transport.sessionId,
+      toolCallId: "elicit-clock-withdraw",
+    });
+    const output = await nextOutput(iterator);
+    if (output.kind !== "interaction") throw new Error("Expected Grok MCP elicitation Approval");
+    transport.event({ type: "elicitation.resolved", toolCallId: "elicit-clock-withdraw" });
+    await expect(elicit).resolves.toEqual(grokMcpElicitCancel());
+    expect((await nextEvent(iterator)).type).toBe("interaction.closed");
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "approval", actionId: "allow-once" },
+      }),
+    ).resolves.toMatchObject({ ok: false });
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
+  it("keeps MCP elicitation distinct from tool permission response shape", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-elicit-vs-permission");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "run" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    const elicit = transport.elicit();
+    const elicitOutput = await nextOutput(iterator);
+    if (elicitOutput.kind !== "interaction") throw new Error("Expected elicitation");
+    expect(elicitOutput.interaction).toMatchObject({
+      type: "approval",
+      actions: [
+        { id: "allow-once", effect: "allowOnce" },
+        { id: "deny", effect: "deny" },
+      ],
+    });
+    const permission = transport.permission();
+    const permissionOutput = await nextOutput(iterator);
+    if (
+      permissionOutput.kind !== "interaction" ||
+      permissionOutput.interaction.type !== "approval"
+    ) {
+      throw new Error("Expected tool permission");
+    }
+    expect(permissionOutput.interaction.actions.map(({ effect }) => effect)).toEqual([
+      "allowOnce",
+      "deny",
+    ]);
+    await session.execute({
+      type: "interaction.respond",
+      interactionId: elicitOutput.interaction.interactionId,
+      response: { type: "approval", actionId: "allow-once" },
+    });
+    await expect(elicit).resolves.toEqual(grokMcpElicitAccept());
+    await session.execute({
+      type: "interaction.respond",
+      interactionId: permissionOutput.interaction.interactionId,
+      response: { type: "approval", actionId: "allow-once" },
+    });
+    await expect(permission).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "native-allow" },
+    });
     transport.finish();
     for (;;) {
       if ((await nextEvent(iterator)).type === "turn.completed") break;

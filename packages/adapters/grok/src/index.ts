@@ -44,6 +44,21 @@ export {
 } from "./grok-codexhost-session-rules.js";
 export type { GrokPermissionMode } from "./permission-modes.js";
 export {
+  GROK_CLOCK_ELICIT_FIXTURE,
+  GROK_CLOCK_ELICIT_PERSIST_FIXTURE,
+  GROK_MCP_ELICIT_METHOD,
+  grokMcpElicitAccept,
+  grokMcpElicitCancel,
+  grokMcpElicitDecline,
+  parseGrokMcpElicitParams,
+  projectGrokMcpElicitApproval,
+} from "./grok-elicitation.js";
+export type {
+  GrokMcpElicitFormRequest,
+  GrokMcpElicitParseResult,
+  GrokMcpElicitResponse,
+} from "./grok-elicitation.js";
+export {
   GROK_REWIND_EXECUTE_METHOD,
   GROK_REWIND_POINTS_METHOD,
   buildGrokRewindParams,

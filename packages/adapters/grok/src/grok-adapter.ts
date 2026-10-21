@@ -85,6 +85,13 @@ import {
   type GrokPermissionRequest,
   type GrokTransportEvent,
 } from "./acp-transport.js";
+import {
+  grokMcpElicitCancel,
+  grokMcpElicitResponseForAction,
+  projectGrokMcpElicitApproval,
+  type GrokMcpElicitFormRequest,
+  type GrokMcpElicitResponse,
+} from "./grok-elicitation.js";
 import { GrokSessionImport } from "./session-import.js";
 import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
 import { GrokSubagentLifecycle } from "./grok-subagent-lifecycle.js";
@@ -179,6 +186,7 @@ export interface GrokAcpTransportLike {
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
+    onElicitation: (request: GrokMcpElicitFormRequest) => Promise<GrokMcpElicitResponse>,
   ): Promise<PromptResponse>;
   compact(
     userContext: string | undefined,
@@ -198,9 +206,17 @@ interface ActiveTool {
 }
 
 interface ActiveApproval {
+  kind: "permission";
   interaction: HostApprovalInteraction;
   options: Map<string, PermissionOption>;
   resolve(response: RequestPermissionResponse): void;
+}
+
+interface ActiveElicitation {
+  kind: "elicitation";
+  nativeToolCallId: string;
+  interaction: HostApprovalInteraction;
+  resolve(response: GrokMcpElicitResponse): void;
 }
 
 interface ActiveTurn {
@@ -219,6 +235,7 @@ interface ActiveTurn {
   subagents: GrokSubagentLifecycle;
   completedItems: HostItemSnapshot[];
   approvals: Map<HostInteractionId, ActiveApproval>;
+  elicitations: Map<HostInteractionId, ActiveElicitation>;
   cancellationRequested: boolean;
   beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
@@ -531,6 +548,7 @@ class GrokHarnessSession implements HarnessSession {
       subagents: this.#createSubagents(),
       completedItems: [],
       approvals: new Map(),
+      elicitations: new Map(),
       cancellationRequested: false,
       beforeNativeTurnKeys: new Set(
         this.#snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey),
@@ -545,6 +563,7 @@ class GrokHarnessSession implements HarnessSession {
         text,
         (event) => this.#handleEvent(active, event),
         (request) => this.#requestPermission(active, request),
+        (request) => this.#requestElicitation(active, request),
       )
       .then(
         (response) =>
@@ -652,6 +671,7 @@ class GrokHarnessSession implements HarnessSession {
       subagents: this.#createSubagents(),
       completedItems: [],
       approvals: new Map(),
+      elicitations: new Map(),
       cancellationRequested: false,
       beforeNativeTurnKeys: new Set(),
       completion,
@@ -868,6 +888,7 @@ class GrokHarnessSession implements HarnessSession {
     for (const approval of active.approvals.values()) {
       approval.resolve({ outcome: { outcome: "cancelled" } });
     }
+    this.#cancelActiveElicitations(active);
     try {
       await this.#transport.cancel();
       return { ok: true, value: { cancellationRequested: true } };
@@ -880,8 +901,9 @@ class GrokHarnessSession implements HarnessSession {
     command: InteractionRespondCommand,
   ): Promise<HarnessResult<InteractionRespondAccepted>> {
     const active = this.#active;
-    const pending = active?.approvals.get(command.interactionId);
-    if (!active || !pending)
+    const permission = active?.approvals.get(command.interactionId);
+    const elicitation = active?.elicitations.get(command.interactionId);
+    if (!active || (!permission && !elicitation))
       return { ok: false, error: invalidState("Grok Approval is not pending") };
     if (command.response.type !== "approval") {
       return {
@@ -893,9 +915,34 @@ class GrokHarnessSession implements HarnessSession {
         },
       };
     }
-    const validation = validateHostApprovalResponse(pending.interaction, command.response);
+    const response = command.response;
+    if (elicitation) {
+      const validation = validateHostApprovalResponse(elicitation.interaction, response);
+      if (validation) return { ok: false, error: validation };
+      const action = elicitation.interaction.actions.find(({ id }) => id === response.actionId);
+      if (!action)
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Grok Approval action is unavailable",
+            retryable: false,
+          },
+        };
+      this.#settleElicitation(
+        active,
+        elicitation,
+        grokMcpElicitResponseForAction(
+          action.effect === "allowOnce" || action.effect === "allowAlways" ? action.effect : "deny",
+        ),
+        "responded",
+      );
+      return { ok: true, value: { accepted: true } };
+    }
+    if (!permission) return { ok: false, error: invalidState("Grok Approval is not pending") };
+    const validation = validateHostApprovalResponse(permission.interaction, response);
     if (validation) return { ok: false, error: validation };
-    const option = pending.options.get(command.response.actionId);
+    const option = permission.options.get(response.actionId);
     if (!option)
       return {
         ok: false,
@@ -906,7 +953,7 @@ class GrokHarnessSession implements HarnessSession {
         },
       };
     active.approvals.delete(command.interactionId);
-    pending.resolve({ outcome: { outcome: "selected", optionId: option.optionId } });
+    permission.resolve({ outcome: { outcome: "selected", optionId: option.optionId } });
     this.#event({
       type: "interaction.closed",
       interactionId: command.interactionId,
@@ -939,9 +986,66 @@ class GrokHarnessSession implements HarnessSession {
       actions,
     };
     return new Promise<RequestPermissionResponse>((resolve) => {
-      active.approvals.set(interactionId, { interaction, options, resolve });
+      active.approvals.set(interactionId, {
+        kind: "permission",
+        interaction,
+        options,
+        resolve,
+      });
       this.#channel.emit({ kind: "interaction", interaction });
     });
+  }
+
+  #requestElicitation(
+    active: ActiveTurn,
+    request: GrokMcpElicitFormRequest,
+  ): Promise<GrokMcpElicitResponse> {
+    if (this.#active !== active || this.#phase !== "open" || active.cancellationRequested) {
+      return Promise.resolve(grokMcpElicitCancel());
+    }
+    for (const pending of active.elicitations.values()) {
+      if (pending.nativeToolCallId === request.toolCallId) {
+        return Promise.resolve(grokMcpElicitCancel());
+      }
+    }
+    const interactionId = hostInteractionIdSchema.parse(this.#randomUUID());
+    const interaction = projectGrokMcpElicitApproval({
+      interactionId,
+      turnId: active.command.turnId,
+      request,
+    });
+    return new Promise<GrokMcpElicitResponse>((resolve) => {
+      active.elicitations.set(interactionId, {
+        kind: "elicitation",
+        nativeToolCallId: request.toolCallId,
+        interaction,
+        resolve,
+      });
+      this.#channel.emit({ kind: "interaction", interaction });
+    });
+  }
+
+  #settleElicitation(
+    active: ActiveTurn,
+    pending: ActiveElicitation,
+    response: GrokMcpElicitResponse,
+    reason: "responded" | "cancelled",
+  ): void {
+    if (!active.elicitations.has(pending.interaction.interactionId)) return;
+    active.elicitations.delete(pending.interaction.interactionId);
+    pending.resolve(response);
+    this.#event({
+      type: "interaction.closed",
+      interactionId: pending.interaction.interactionId,
+      turnId: active.command.turnId,
+      reason,
+    });
+  }
+
+  #cancelActiveElicitations(active: ActiveTurn): void {
+    for (const pending of [...active.elicitations.values()]) {
+      this.#settleElicitation(active, pending, grokMcpElicitCancel(), "cancelled");
+    }
   }
 
   #handleEvent(active: ActiveTurn, event: GrokTransportEvent): void {
@@ -970,6 +1074,12 @@ class GrokHarnessSession implements HarnessSession {
     else if (event.type === "compaction.completed") {
       active.compactionTerminal = event;
       this.#completeCompaction(active, event);
+    } else if (event.type === "elicitation.resolved") {
+      for (const pending of [...active.elicitations.values()]) {
+        if (pending.nativeToolCallId === event.toolCallId) {
+          this.#settleElicitation(active, pending, grokMcpElicitCancel(), "cancelled");
+        }
+      }
     } else if (event.type === "usage" || event.type === "turn.completed") return;
   }
 
@@ -1474,6 +1584,7 @@ class GrokHarnessSession implements HarnessSession {
         reason: "cancelled",
       });
     }
+    this.#cancelActiveElicitations(active);
     this.#active = null;
     if (usage || this.#usage)
       this.#publishUsage({ ...usage, ...active.usage?.metrics() }, active.command.turnId, true);
@@ -1515,6 +1626,7 @@ class GrokHarnessSession implements HarnessSession {
       active.cancellationRequested = true;
       for (const approval of active.approvals.values())
         approval.resolve({ outcome: { outcome: "cancelled" } });
+      this.#cancelActiveElicitations(active);
       await this.#transport.cancel().catch(() => undefined);
       await Promise.race([
         active.completion,

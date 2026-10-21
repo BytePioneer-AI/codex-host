@@ -48,6 +48,14 @@ import {
   parseGrokRewindResponse,
   type GrokRewindParams,
 } from "./grok-rewind.js";
+import {
+  GROK_MCP_ELICIT_METHOD,
+  grokElicitationResolvedToolCallId,
+  grokMcpElicitCancel,
+  parseGrokMcpElicitParams,
+  type GrokMcpElicitFormRequest,
+  type GrokMcpElicitResponse,
+} from "./grok-elicitation.js";
 import { grokCodexhostSessionMeta } from "./grok-codexhost-session-rules.js";
 import { decodeGrokPermissionModeId } from "./permission-modes.js";
 
@@ -141,7 +149,8 @@ export type GrokTransportEvent =
       status: "completed" | "failed" | "interrupted";
       resultSummary?: string;
       metadata?: Record<string, unknown>;
-    };
+    }
+  | { type: "elicitation.resolved"; toolCallId: string; metadata?: Record<string, unknown> };
 
 export interface GrokPermissionRequest {
   request: RequestPermissionRequest;
@@ -193,6 +202,7 @@ export interface GrokOpenResult {
 interface ActivePrompt {
   onEvent(event: GrokTransportEvent): void;
   onPermission(request: GrokPermissionRequest): Promise<RequestPermissionResponse>;
+  onElicitation(request: GrokMcpElicitFormRequest): Promise<GrokMcpElicitResponse>;
 }
 
 interface ActiveCompact {
@@ -336,6 +346,14 @@ function transportEvent(
   if (compaction) return compaction;
   const subagent = grokSubagentEventFromUpdate(extension);
   if (subagent) return subagent;
+  const resolvedToolCallId = grokElicitationResolvedToolCallId(extension);
+  if (resolvedToolCallId) {
+    return {
+      type: "elicitation.resolved",
+      toolCallId: resolvedToolCallId,
+      ...(metadata ? { metadata } : {}),
+    };
+  }
   switch (update.sessionUpdate) {
     case "user_message_chunk":
     case "agent_message_chunk":
@@ -827,6 +845,7 @@ export class GrokAcpTransport {
         ({
           sessionUpdate: (params) => this.#handleUpdate(params),
           requestPermission: (params) => this.#handlePermission(params),
+          extMethod: (method, params) => this.#handleExtMethod(method, params),
           extNotification: (method, params) => this.#handleExtensionNotification(method, params),
         }) satisfies Client,
       stream,
@@ -868,13 +887,14 @@ export class GrokAcpTransport {
     text: string,
     onEvent: ActivePrompt["onEvent"],
     onPermission: ActivePrompt["onPermission"],
+    onElicitation: ActivePrompt["onElicitation"],
   ): Promise<PromptResponse> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId || this.#closed || this.#closing) {
       throw new GrokTransportError("unavailable", "Grok ACP Session is unavailable");
     }
     if (this.#activePrompt) throw new Error("Grok ACP Session already has an active Prompt");
-    const active = { onEvent, onPermission };
+    const active = { onEvent, onPermission, onElicitation };
     this.#activePrompt = active;
     try {
       return await connection.prompt({
@@ -1029,6 +1049,33 @@ export class GrokAcpTransport {
       return Promise.resolve({ outcome: { outcome: "cancelled" } });
     }
     return this.#activePrompt.onPermission({ request: params, options: params.options });
+  }
+
+  async #handleExtMethod(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (method !== GROK_MCP_ELICIT_METHOD) {
+      throw RequestError.methodNotFound(method);
+    }
+    const parsed = parseGrokMcpElicitParams(params);
+    if (parsed.status === "invalid") {
+      throw RequestError.invalidParams(undefined, parsed.message);
+    }
+    if (
+      parsed.status === "unsupported" ||
+      this.#closed ||
+      this.#closing ||
+      this.#replay !== null ||
+      this.#activeCompact !== null ||
+      !this.#activePrompt
+    ) {
+      return { ...grokMcpElicitCancel() };
+    }
+    if (parsed.request.sessionId !== this.#sessionId) {
+      return { ...grokMcpElicitCancel() };
+    }
+    return { ...(await this.#activePrompt.onElicitation(parsed.request)) };
   }
 
   #fault(error: GrokTransportError): void {

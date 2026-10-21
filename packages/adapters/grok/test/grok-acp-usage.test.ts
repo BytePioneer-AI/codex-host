@@ -51,6 +51,7 @@ createInterface({input:process.stdin}).on('line', line => {
         "fixture",
         (event) => events.push(event),
         async () => ({ outcome: { outcome: "cancelled" } }),
+        async () => ({ outcome: "cancel" }),
       );
       expect(events).toEqual([
         { type: "tool.input.delta", text: '{"command":' },

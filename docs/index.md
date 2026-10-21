@@ -29,7 +29,7 @@
 
 ## Harness 专项
 
-[能力表边界](harnesses/capability-boundaries.md)记录各 Harness 的接入条件、Kimi 动态 Thinking、Cursor 的单向委派，以及 Pi 权限模式、Antigravity 审批与压缩等剩余缺口。
+[能力表边界](harnesses/capability-boundaries.md)记录各 Harness 的接入条件、Kimi 动态 Thinking、Cursor 的单向委派，Pi 权限模式、Antigravity 审批与压缩，以及 Grok MCP 同意表单等剩余缺口。
 
 ### Antigravity
 
@@ -91,6 +91,8 @@
 | --- | --- |
 | [`harnesses/grok/subagent-status-and-model.md`](harnesses/grok/subagent-status-and-model.md) | Grok Subagent 状态、Model、Transcript 与 Desktop 投影；修改 Grok Subagent 时阅读。 |
 | [`harnesses/grok/generated-images.md`](harnesses/grok/generated-images.md) | Grok Imagine files project to Desktop `imageGeneration`; keep Markdown rewrite for videos and cited paths. |
+| [`harnesses/grok/mcp-elicitation.md`](harnesses/grok/mcp-elicitation.md) | Grok MCP consent forms project to Desktop approval, including offered Always allow; bounded empty forms only. |
+| [`harnesses/grok/computer-use-release.md`](harnesses/grok/computer-use-release.md) | Grok native turn-end Computer Use cleanup, Mac Sky bridge, failure behavior, and runtime limits. |
 
 ### ZCode
 

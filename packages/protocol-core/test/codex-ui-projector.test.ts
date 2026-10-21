@@ -1133,6 +1133,66 @@ describe("Codex UI projector", () => {
         },
       },
     ]);
+    const webSearchId = itemId("web-search-1");
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: webSearchId,
+          toolName: "default_api:search_web",
+          arguments: { query: "Codex Desktop release notes" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            id: webSearchId,
+            type: "commandExecution",
+            command: "search Codex Desktop release notes",
+            commandActions: [
+              {
+                type: "search",
+                command: "search Codex Desktop release notes",
+                query: "Codex Desktop release notes",
+                path: null,
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const mcpId = itemId("mcp-1");
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: mcpId,
+          toolName: "default_api:call_mcp_tool",
+          arguments: {
+            ServerName: "chrome-devtools-mcp",
+            ToolName: "list_pages",
+            Arguments: {},
+          },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            id: mcpId,
+            type: "commandExecution",
+            command: "mcp chrome-devtools-mcp list_pages",
+          },
+        },
+      },
+    ]);
     expect(
       value.project({
         type: "item.updated",

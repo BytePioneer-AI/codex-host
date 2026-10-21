@@ -12,6 +12,21 @@ export interface HarnessSkillsCatalogCapability {
   readonly label?: string;
   /** Every skill the Harness's own skill roots currently hold, plus what could not be read. */
   list(signal: AbortSignal): Promise<HarnessSkillsCatalogRead>;
+  /**
+   * Optional switch: turn one skill on or off the Harness's own way (a config flip, a restore from
+   * an archive directory, …). Capabilities that omit it are read-only and the page shows no switch.
+   */
+  setEnabled?(
+    name: string,
+    enabled: boolean,
+    signal: AbortSignal,
+  ): Promise<HarnessSkillsSetEnabledOutcome>;
+}
+
+export interface HarnessSkillsSetEnabledOutcome {
+  ok: boolean;
+  /** Why the Harness refused; the page shows it next to the switch. */
+  reason?: string;
 }
 
 export interface HarnessSkillsCatalogRead {
@@ -28,6 +43,14 @@ export interface HarnessSkill {
   category?: string;
   /** Absolute directory the SKILL.md lives in. */
   path: string;
+  /** Inside a hidden/archive directory (`.archive`, `.system`, …): not loaded by the Harness. */
+  archived?: boolean;
+  /** Whether the Harness loads this skill now; absent when the Harness exposes no state. */
+  enabled?: boolean;
+  /** The switch the page may offer: `config` flips it in place, `archive` restores it. */
+  toggle?: "config" | "archive";
+  /** The skill root this entry came from; adapter-internal, never sent to the page. */
+  root?: string;
 }
 
 export interface HarnessSkillFailure {
@@ -106,7 +129,12 @@ export function harnessSkillFromDirectory(
   const description = harnessSkillText(fields["description"], MAX_DESCRIPTION_LENGTH);
   if (!name || !description) return undefined;
   const relative = path.relative(root, directory);
-  const parent = relative !== "" && !relative.startsWith("..") ? path.dirname(relative) : "";
+  const inside = relative !== "" && !relative.startsWith("..");
+  const parent = inside ? path.dirname(relative) : "";
+  /** A hidden segment (`.archive`, `.system`, …) means the Harness does not load this skill. */
+  const archived =
+    inside &&
+    relative.split(/[\\/]/u).some((segment) => segment.startsWith(".") && segment !== ".");
   const category =
     harnessSkillText(fields[HARNESS_SKILL_CATEGORY_KEY], MAX_NAME_LENGTH) ??
     harnessSkillText(
@@ -120,6 +148,7 @@ export function harnessSkillFromDirectory(
     description,
     ...(category ? { category } : {}),
     path: directory,
+    ...(archived ? { archived: true } : {}),
   };
 }
 

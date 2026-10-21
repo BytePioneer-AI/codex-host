@@ -6,7 +6,12 @@ import {
   type HarnessSkill,
   type HarnessSkillsCatalogCapability,
 } from "@codexhost/harness-adapter";
-import { harnessSkillsListResultSchema, type HarnessSkillEntry } from "@codexhost/shared-contracts";
+import {
+  harnessSkillsListResultSchema,
+  type HarnessSkillEntry,
+  type HarnessSkillSetEnabledParams,
+  type HarnessSkillsSetEnabledResult,
+} from "@codexhost/shared-contracts";
 import type { HarnessSkillsSource } from "./skills-source.js";
 
 /** How the skills list reaches the UI, parsed and bounded by the shared-contracts schema. */
@@ -35,6 +40,23 @@ export class HarnessSkillsCatalog {
     return harnessSkillsListResultSchema.parse({
       groups: groups.sort((a, b) => a.harness.localeCompare(b.harness)),
     });
+  }
+
+  /**
+   * Flips one skill through the Harness's own switch. A Harness without `setEnabled` — or an
+   * unknown Harness name — refuses instead of pretending, so the page can show why.
+   */
+  async setEnabled(
+    sources: readonly HarnessSkillsSource[],
+    params: HarnessSkillSetEnabledParams,
+  ): Promise<HarnessSkillsSetEnabledResult> {
+    const source = sources.find((entry) => entry.harness === params.harness);
+    if (!source) return { ok: false, reason: `No Harness named ${params.harness}` };
+    const toggle = source.capability.setEnabled;
+    if (typeof toggle !== "function") {
+      return { ok: false, reason: `${params.harness} does not expose a skill switch` };
+    }
+    return toggle.call(source.capability, params.name, params.enabled, AbortSignal.timeout(60_000));
   }
 
   async #readHarness(
@@ -108,6 +130,9 @@ function toEntry(skill: HarnessSkill): HarnessSkillEntry {
     description: skill.description,
     ...(skill.category ? { category: skill.category } : {}),
     path: skill.path,
+    enabled: skill.enabled ?? true,
+    archived: skill.archived ?? false,
+    ...(skill.toggle ? { toggle: skill.toggle } : {}),
   };
 }
 

@@ -3,6 +3,10 @@
  * design tokens (shell.css) so reused settings pages and console pages match.
  */
 
+.console-skills-filters {
+  margin: 0 0 10px;
+}
+
 .console-skills-search {
   width: 100%;
   max-width: 420px;
@@ -15,8 +19,8 @@
   font: inherit;
 }
 
-.console-skills-page .settings-page-description {
-  margin: -8px 0 16px;
+.console-skills-detail {
+  min-height: 18px;
 }
 
 .console-skills-group {
@@ -26,19 +30,6 @@
 .console-skills-group > .settings-section-label {
   padding-bottom: 10px;
   font-size: 15px;
-}
-
-.console-skills-category {
-  margin: 0 0 14px;
-}
-
-.console-skills-category-title {
-  margin: 0 0 6px;
-  color: var(--settings-subtle);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .console-skills-list {
@@ -51,31 +42,111 @@
 
 .console-skills-item {
   display: grid;
-  grid-template-columns: minmax(140px, max-content) 1fr;
-  gap: 2px 12px;
-  padding: 10px 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 12px 14px;
   border: 1px solid var(--settings-border);
   border-radius: 8px;
   background: var(--settings-panel);
+}
+
+.console-skills-item.is-off {
+  background: color-mix(in srgb, var(--settings-panel) 60%, transparent);
+}
+
+.console-skills-item.is-off .console-skills-item-name {
+  color: var(--settings-subtle);
+}
+
+.console-skills-item-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.console-skills-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .console-skills-item-name {
   font-weight: 600;
 }
 
+.console-skills-tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--settings-border) 45%, transparent);
+  color: var(--settings-subtle);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.console-skills-tag.is-archived {
+  background: color-mix(in srgb, #b8860b 18%, transparent);
+  color: #8a6a00;
+}
+
 .console-skills-item-description {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
   color: var(--settings-subtle);
   font-size: 13px;
   line-height: 18px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .console-skills-item-path {
-  grid-column: 1 / -1;
   overflow: hidden;
   color: var(--settings-subtle);
   font-size: 11px;
+  opacity: 0.75;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.console-skills-switch {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  margin-top: 2px;
+  padding: 0;
+  border: 1px solid var(--settings-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--settings-border) 55%, transparent);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.console-skills-switch.is-on {
+  border-color: transparent;
+  background: #2f9e55;
+}
+
+.console-skills-switch:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.console-skills-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 120ms ease;
+}
+
+.console-skills-switch.is-on .console-skills-switch-knob {
+  transform: translateX(16px);
 }
 
 .console-skills-failure {

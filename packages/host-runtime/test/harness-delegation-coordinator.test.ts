@@ -160,10 +160,10 @@ describe("HarnessDelegationCoordinator", () => {
       ).toBe(0);
       const result = JSON.parse(Buffer.concat(chunks).toString()) as { threadId: string };
       expect(await value.repository.find(result.threadId)).toMatchObject({
-        title: "Main project · Protocol review",
+        title: "Protocol review · Main project",
       });
       expect(value.delivered).toEqual(["Full instructions\nwith details"]);
-      expect(value.notifications[0]).toMatchObject({ name: "Main project · Protocol review" });
+      expect(value.notifications[0]).toMatchObject({ name: "Protocol review · Main project" });
     } finally {
       await server.close();
       await value.close();
@@ -192,16 +192,16 @@ describe("HarnessDelegationCoordinator", () => {
       };
       const result = await value.coordinator.start(input);
       expect(await value.repository.find(result.threadId)).toMatchObject({
-        title: "Project review · Protocol review",
+        title: "Protocol review · Project review",
       });
-      expect(value.notifications[0]).toMatchObject({ name: "Project review · Protocol review" });
+      expect(value.notifications[0]).toMatchObject({ name: "Protocol review · Project review" });
       await value.repository.setTitle(parent.hostThreadId, "Renamed parent");
       expect(
         await value.coordinator.start({ ...input, taskName: "Changed display name" }),
       ).toMatchObject({ threadId: result.threadId });
       expect(value.adapter.sessions).toHaveLength(1);
       expect(await value.repository.find(result.threadId)).toMatchObject({
-        title: "Project review · Protocol review",
+        title: "Protocol review · Project review",
       });
       const next = await value.coordinator.start({
         harnessId: input.harnessId,
@@ -210,14 +210,14 @@ describe("HarnessDelegationCoordinator", () => {
         requestId: "next-child",
       });
       expect(await value.repository.find(next.threadId)).toMatchObject({
-        title: "Renamed parent · Next task",
+        title: "Next task · Renamed parent",
       });
     } finally {
       await value.close();
     }
   });
 
-  it("uses native parent metadata and preserves a short suffix for long Unicode titles", async () => {
+  it("uses native parent metadata and keeps the subtask name first for long Unicode titles", async () => {
     const value = await fixture(undefined, async () => ({ title: "🐙".repeat(150) }));
     try {
       const result = await value.coordinator.start({
@@ -227,10 +227,10 @@ describe("HarnessDelegationCoordinator", () => {
         parentThreadId: "native-parent",
       });
       const record = await value.repository.find(result.threadId);
-      expect(record?.title).toMatch(/ · Tool test$/u);
+      expect(record?.title).toMatch(/^Tool test · /u);
       expect(record?.title?.length).toBeLessThanOrEqual(200);
-      expect(record?.title).not.toMatch(/[\uD800-\uDBFF] · /u);
-      expect(record?.title).toBe("🐙".repeat(94) + " · Tool test");
+      expect(record?.title).not.toMatch(/[\uD800-\uDBFF]$/u);
+      expect(record?.title).toBe("Tool test · " + "🐙".repeat(94));
     } finally {
       await value.close();
     }

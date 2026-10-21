@@ -61,6 +61,7 @@ describe("delegation Skill installation", () => {
   it.each([
     ["v4 Skill shipped in v0.4.0-v0.6.0", "codexhost-delegation-v4.md"],
     ["v8 Skill that ran codexhost from PATH", "codexhost-delegation-v8.md"],
+    ["v9 Skill without child-session name guidance", "codexhost-delegation-v9.md"],
   ])("updates the %s", async (_name, fixture) => {
     const root = await home();
     const shipped = await readFile(new URL(`./fixtures/${fixture}`, import.meta.url), "utf8");
@@ -94,10 +95,11 @@ describe("delegation Skill installation", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain("operate on that Thread\ndirectly");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("is ambiguous, ask the user to identify it");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session read-only");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("short task name that tells it apart");
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 9");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 10");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");

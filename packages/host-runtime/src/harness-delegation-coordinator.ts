@@ -63,10 +63,10 @@ function delegationTitle(parentTitle: string | undefined, input: DelegationStart
   const taskName = (input.taskName ?? input.task.trim().split(/\r?\n/u)[0] ?? input.task)
     .replace(/\s+/gu, " ")
     .trim();
-  const suffix = truncateTitle(taskName, 120);
+  const subtask = truncateTitle(taskName, 120);
   const parent = (parentTitle?.trim() || "Untitled Thread").replace(/\s+/gu, " ");
-  // 父标题过长时优先保留子任务后缀。
-  return `${truncateTitle(parent, 200 - suffix.length - 3)} · ${suffix}`;
+  // 子任务名在前：侧边栏从末尾截断，同一父会话的子任务仍能区分；父标题过长时截断父标题。
+  return `${subtask} · ${truncateTitle(parent, 200 - subtask.length - 3)}`;
 }
 
 function delay(milliseconds: number): Promise<void> {

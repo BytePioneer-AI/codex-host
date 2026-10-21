@@ -509,7 +509,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(pending).resolves.toMatchObject({ harnessId: "pi", status: "running" });
     expect(fixture.adapter.sessions[0]?.cwd).toBe(path.resolve("/native-workspace"));
     expect((await fixture.mappingStore.listThreads())[0]?.title).toBe(
-      "Native project · inherit workspace",
+      "inherit workspace · Native project",
     );
     fixture.adapter.sessions[0]?.succeedTurn();
     await stopFixture(fixture);
@@ -1166,7 +1166,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );
-    await answerOfficialChildName(fixture, "Main review · Auth review");
+    await answerOfficialChildName(fixture, "Auth review · Main review");
     const turnStart = await readJsonLine(fixture.official.stdin);
     expect(turnStart).toMatchObject({
       method: "turn/start",
@@ -1246,7 +1246,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("does not deliver a task if the native child title cannot be persisted", async () => {
+  it("still delivers the task with the default title if the native child title cannot be set", async () => {
     let api: DelegationControlApi | undefined;
     const fixture = createFixture({
       onDelegationApi: (registration) => {
@@ -1260,7 +1260,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       task: "Task",
       parentThreadId: "parent-thread",
     });
-    const failure = expect(pending).rejects.toThrow("title could not be set");
     await answerOfficialParentCwd(fixture);
     const start = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
@@ -1271,14 +1270,22 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: name.id, error: { code: -1, message: "name failed" } })}\n`,
     );
-    const deletion = await readJsonLine(fixture.official.stdin);
-    expect(deletion).toMatchObject({
-      method: "thread/delete",
-      params: { threadId: "unnamed-child" },
+    const turnStart = await readJsonLine(fixture.official.stdin);
+    expect(turnStart).toMatchObject({
+      method: "turn/start",
+      params: { threadId: "unnamed-child", input: [{ type: "text", text: "Task" }] },
     });
-    fixture.official.stdout.write(`${JSON.stringify({ id: deletion.id, result: {} })}\n`);
-    await failure;
-    expect(await fixture.mappingStore.listDelegations()).toEqual([]);
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "unnamed-turn" } } })}\n`,
+    );
+    await expect(pending).resolves.toMatchObject({
+      threadId: "unnamed-child",
+      turnId: "unnamed-turn",
+      status: "running",
+    });
+    expect(await fixture.mappingStore.listDelegations()).toEqual([
+      expect.objectContaining({ childHostThreadId: "unnamed-child", status: "running" }),
+    ]);
     expect(fixture.official.stdin.readableLength).toBe(0);
     await stopFixture(fixture);
   });

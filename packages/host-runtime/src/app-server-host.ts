@@ -2574,8 +2574,10 @@ export class AppServerHost {
     this.#pendingOfficialDelegationThreads.add(threadId);
     let turnId: string;
     try {
-      const named = await this.#requestOfficial("thread/name/set", { threadId, name: input.title });
-      if (isRecord(named.error)) throw new Error("Official Thread title could not be set");
+      // The title is presentation only: a failure keeps the default title and still delivers the task.
+      await this.#requestOfficial("thread/name/set", { threadId, name: input.title }).catch(
+        () => undefined,
+      );
       const turn = await this.#requestOfficial("turn/start", {
         threadId,
         input: [{ type: "text", text: input.task }],

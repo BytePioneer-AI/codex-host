@@ -158,17 +158,19 @@ mod tests {
             "0123456789abcdef0123456789abcdef".into(),
         )
         .unwrap();
-        std::fs::write(&descriptor_path, serde_json::to_vec(&descriptor).unwrap()).unwrap();
+        crate::runtime_instance::write_descriptor(&descriptor_path, &descriptor).unwrap();
         let guard = try_acquire_launcher_guard(&guard_path).unwrap().unwrap();
         let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
-        assert!(
+        assert_eq!(
             stop_managed_runtime_at(
                 &descriptor_path,
                 &guard_path,
                 &root.join("other"),
                 Duration::from_secs(1)
             )
-            .is_err()
+            .unwrap_err()
+            .to_string(),
+            "The running Desktop belongs to another codexhost installation"
         );
         let removed = descriptor_path.clone();
         let server = thread::spawn(move || {

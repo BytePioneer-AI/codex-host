@@ -140,6 +140,7 @@ interface ActiveTurn {
   emittedAgentTexts: string[];
   stderr: string;
   cancellationRequested: boolean;
+  cancellationReason: "user" | "session_closed" | null;
   receivedResult: boolean;
   /** agy's own effective permission mode, as reported by the `init` event. */
   nativePermissionMode: string | null;
@@ -230,6 +231,10 @@ function isBrainFile(targetPath: string, conversationId?: string): boolean {
   }
   const defaultBrainRoot = path.resolve(os.homedir(), ".gemini", "antigravity-cli", "brain");
   return resolved.startsWith(defaultBrainRoot);
+}
+
+function cancelledReason(active: ActiveTurn): string {
+  return active.cancellationReason === "session_closed" ? "Session closed" : "Cancelled by user";
 }
 
 export function resolveAntigravityContextWindow(modelId?: string, reportedWindow?: number): number {
@@ -1040,6 +1045,7 @@ class AntigravitySession implements HarnessSession {
       emittedAgentTexts: [],
       stderr: "",
       cancellationRequested: false,
+      cancellationReason: null,
       receivedResult: false,
       nativePermissionMode: null,
       permissionDenial: null,
@@ -1079,7 +1085,7 @@ class AntigravitySession implements HarnessSession {
         else active.subagents.stop();
         if (this.#active !== active || active.receivedResult) return;
         if (active.cancellationRequested) {
-          this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
+          this.#completeTurn(active, { status: "cancelled", reason: cancelledReason(active) });
         } else {
           this.#completeTurn(active, {
             status: "failed",
@@ -1128,6 +1134,7 @@ class AntigravitySession implements HarnessSession {
     if (this.#active) {
       const active = this.#active;
       active.cancellationRequested = true;
+      active.cancellationReason = "session_closed";
       await active.subagents.cancel();
       active.process.kill();
       this.#completeTurn(active, { status: "cancelled", reason: "Session closed" });
@@ -1268,7 +1275,7 @@ class AntigravitySession implements HarnessSession {
     if (active.cancellationRequested) {
       this.#completeTurn(
         active,
-        { status: "cancelled", reason: "Cancelled by user", checkpoint },
+        { status: "cancelled", reason: cancelledReason(active), checkpoint },
         nativeTurnRef,
       );
     } else if (event.result.status === "SUCCESS") {
@@ -1826,6 +1833,7 @@ class AntigravitySession implements HarnessSession {
     }
     const active = this.#active;
     active.cancellationRequested = true;
+    active.cancellationReason = "user";
     active.questions?.stop();
     await active.subagents.cancel();
     active.process.kill();

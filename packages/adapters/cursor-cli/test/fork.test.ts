@@ -34,7 +34,7 @@ async function fixture(count = 1) {
   const source = path.join(config, "acp-sessions", id);
   await mkdir(source, { recursive: true });
   await writeFile(path.join(source, "meta.json"), JSON.stringify({ cwd: root }));
-  const db = new DatabaseSync(path.join(source, "store.db"));
+  let db = new DatabaseSync(path.join(source, "store.db"));
   db.exec(
     "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); CREATE TABLE blobs(id TEXT PRIMARY KEY,data BLOB)",
   );
@@ -47,29 +47,44 @@ async function fixture(count = 1) {
   const anchorRoots = [rootBlob.toString("hex")];
   const ids: string[] = [];
   const refs: Buffer[] = [];
-  for (let index = 0; index < count; index++) {
-    const id = index === 0 ? turnId : randomUUID();
-    ids.push(id);
+  const addTurn = (turn: string) => {
+    ids.push(turn);
     refs.push(
       field(
         8,
         put(
           field(
             1,
-            field(1, put(Buffer.concat([field(1, "hello"), field(2, id), field(10, rootBlob)]))),
+            field(1, put(Buffer.concat([field(1, "hello"), field(2, turn), field(10, rootBlob)]))),
           ),
         ),
       ),
     );
     rootBlob = put(Buffer.concat(refs));
     anchorRoots.push(rootBlob.toString("hex"));
-  }
-  db.prepare("INSERT INTO meta VALUES('0',?)").run(
-    Buffer.from(
-      JSON.stringify({ agentId: id, latestRootBlobId: rootBlob.toString("hex") }),
-    ).toString("hex"),
-  );
+  };
+  for (let index = 0; index < count; index++) addTurn(index === 0 ? turnId : randomUUID());
+  const setRoot = (latestRootBlobId: string) =>
+    db
+      .prepare("INSERT OR REPLACE INTO meta VALUES('0',?)")
+      .run(Buffer.from(JSON.stringify({ agentId: id, latestRootBlobId })).toString("hex"));
+  setRoot(rootBlob.toString("hex"));
   db.close();
+  /** Simulates the live source store changing while a Turn keeps running. */
+  const live = (change: () => void) => {
+    db = new DatabaseSync(path.join(source, "store.db"));
+    try {
+      change();
+    } finally {
+      db.close();
+    }
+  };
+  const append = () =>
+    live(() => {
+      addTurn(randomUUID());
+      setRoot(rootBlob.toString("hex"));
+    });
+  const rewrite = () => live(() => setRoot(anchorRoots[0] ?? ""));
   const sourceRef = nativeSessionRefSchema.parse({
     harnessId: "cursor-cli",
     nativeSessionId: id,
@@ -85,6 +100,8 @@ async function fixture(count = 1) {
     turnId,
     sourceRef,
     options,
+    append,
+    rewrite,
     checkpoint: cursorCheckpoint(id, turnId),
   };
 }
@@ -205,6 +222,64 @@ describe("Cursor native fork transaction", () => {
     ).rejects.toThrow("changed conversation");
     await expect(readdir(staging)).rejects.toThrow();
     expect(await readdir(path.dirname(f.source))).toEqual([f.id]);
+  });
+  it("forks a completed boundary from one snapshot while the running source keeps appending", async () => {
+    const f = await fixture(2);
+    const boundary = f.ids.slice(0, 1);
+    vi.mocked(runCursorForkTerminal).mockImplementation(async (options, id, _signal, rewind) => {
+      f.append();
+      expect(rewind?.steps).toBe(1);
+      await nativeCopy(options, id, false, f.roots[1]);
+      f.append();
+      expect(rewind?.complete()).toBe(true);
+    });
+    const result = await forkCursorSession(
+      f.sourceRef,
+      f.checkpoint,
+      f.options,
+      new AbortController().signal,
+      { sourceRunning: true },
+    );
+    expect(result.sourceTurns.map((turn) => turn.id)).toEqual(f.ids.slice(0, 2));
+    expect(result.expected.map((turn) => turn.id)).toEqual(boundary);
+    expect(
+      readCursorNativeTurns(result.sessionId, f.root, f.options.environment).map((t) => t.id),
+    ).toEqual(boundary);
+    expect(readCursorNativeTurns(f.id, f.root, f.options.environment)).toHaveLength(4);
+    await result.discard();
+  });
+  it("still rejects a changing source unless it is known to be running", async () => {
+    const f = await fixture(2);
+    vi.mocked(runCursorForkTerminal).mockImplementation(async (options, id) => {
+      await nativeCopy(options, id, false, f.roots[1]);
+      f.append();
+    });
+    await expect(
+      forkCursorSession(f.sourceRef, f.checkpoint, f.options, new AbortController().signal),
+    ).rejects.toThrow("Cursor source changed during fork");
+    expect(await readdir(path.dirname(f.source))).toEqual([f.id]);
+  });
+  it("rejects a running source whose retained history changed", async () => {
+    const f = await fixture(2);
+    vi.mocked(runCursorForkTerminal).mockImplementation(async (options, id) => {
+      await nativeCopy(options, id, false, f.roots[1]);
+      f.rewrite();
+    });
+    await expect(
+      forkCursorSession(f.sourceRef, f.checkpoint, f.options, new AbortController().signal, {
+        sourceRunning: true,
+      }),
+    ).rejects.toThrow("Cursor source changed during fork");
+    expect(await readdir(path.dirname(f.source))).toEqual([f.id]);
+  });
+  it("never rolls back a running source", async () => {
+    const f = await fixture(2);
+    await expect(
+      forkCursorSession(f.sourceRef, undefined, f.options, new AbortController().signal, {
+        sourceRunning: true,
+      }),
+    ).rejects.toThrow("idle source");
+    expect(runCursorForkTerminal).not.toHaveBeenCalled();
   });
   it("rejects wrong ownership and stale boundaries before launching CLI", async () => {
     const f = await fixture();

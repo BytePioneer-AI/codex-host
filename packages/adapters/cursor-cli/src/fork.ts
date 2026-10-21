@@ -19,6 +19,7 @@ import {
   cursorConfigDirectory,
   cursorSessionDirectory,
   readCursorNativeTurns,
+  type CursorNativeTurn,
 } from "./native-history.js";
 import { cursorForkAvailable } from "./fork-support.js";
 import { runCursorForkTerminal } from "./fork-terminal.js";
@@ -84,6 +85,22 @@ export function validateCursorFork(source: NativeSessionRef, checkpoint: NativeC
     throw new Error("Invalid Cursor fork checkpoint");
 }
 
+const sameTurns = (left: CursorNativeTurn[], right: CursorNativeTurn[]) =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+/** Whether the native history still begins with the retained derivation prefix. */
+export function cursorTurnsStartWith(turns: CursorNativeTurn[], prefix: CursorNativeTurn[]) {
+  return turns.length >= prefix.length && sameTurns(turns.slice(0, prefix.length), prefix);
+}
+
+export interface CursorForkOptions {
+  /**
+   * The source has a running Turn that may keep appending native history. The fork derives
+   * from one consistent snapshot and only requires the retained completed prefix to persist.
+   */
+  sourceRunning?: boolean;
+}
+
 /** A transaction owns only the new target. No checkpoint means rollback of the last turn.
  * Call commit only after ACP has verified replay. */
 export async function forkCursorSession(
@@ -91,27 +108,16 @@ export async function forkCursorSession(
   checkpoint: NativeCheckpointRef | undefined,
   options: CursorTransportOptions,
   signal: AbortSignal,
+  forkOptions: CursorForkOptions = {},
 ) {
   if (checkpoint) validateCursorFork(source, checkpoint);
   else if (source.harnessId !== "cursor-cli" || source.formatVersion !== 1)
     throw new Error("Invalid Cursor rollback source");
   if (!cursorForkAvailable()) throw new Error("Cursor fork requires the POSIX script utility");
+  if (checkpoint === undefined && forkOptions.sourceRunning)
+    throw new Error("Cursor rollback requires an idle source");
+  signal.throwIfAborted();
   const sourceDirectory = cursorSessionDirectory(source.nativeSessionId, options.environment);
-  const sourceTurns = readCursorNativeTurns(
-    source.nativeSessionId,
-    options.cwd,
-    options.environment,
-  );
-  const retained = checkpoint
-    ? sourceTurns.findIndex((turn) => turn.id === checkpoint.checkpointId) + 1
-    : sourceTurns.length - 1;
-  if (!sourceTurns.length || (checkpoint && retained === 0))
-    throw new Error("Cursor derivation boundary does not exist");
-  const expected = sourceTurns.slice(0, retained);
-  const rewindTurn = sourceTurns[retained];
-  if (rewindTurn && !rewindTurn.rewindRoot)
-    throw new Error("Cursor target has no native rewind checkpoint");
-  const original = storeIdentity(sourceDirectory);
   const temporary = await mkdtemp(path.join(os.tmpdir(), "codexhost-cursor-fork-"));
   let target: string | undefined;
   let committed = false;
@@ -119,6 +125,33 @@ export async function forkCursorSession(
     if (target && !committed) await rm(target, { recursive: true, force: true });
   };
   try {
+    // Derive every boundary from one consistent native snapshot. A running source Turn may keep
+    // writing its live store; the snapshot never changes underneath this transaction.
+    const snapshotConfig = path.join(temporary, "snapshot");
+    const snapshot = path.join(snapshotConfig, "acp-sessions", source.nativeSessionId);
+    await mkdir(snapshot, { recursive: true, mode: 0o700 });
+    await copySnapshot(sourceDirectory, snapshot);
+    const sourceTurns = readCursorNativeTurns(source.nativeSessionId, options.cwd, {
+      ...options.environment,
+      CURSOR_CONFIG_DIR: snapshotConfig,
+    });
+    const retained = checkpoint
+      ? sourceTurns.findIndex((turn) => turn.id === checkpoint.checkpointId) + 1
+      : sourceTurns.length - 1;
+    if (!sourceTurns.length || (checkpoint && retained === 0))
+      throw new Error("Cursor derivation boundary does not exist");
+    const expected = sourceTurns.slice(0, retained);
+    const rewindTurn = sourceTurns[retained];
+    if (rewindTurn && !rewindTurn.rewindRoot)
+      throw new Error("Cursor target has no native rewind checkpoint");
+    const original = storeIdentity(snapshot);
+    const sourceUnchanged = () =>
+      forkOptions.sourceRunning
+        ? cursorTurnsStartWith(
+            readCursorNativeTurns(source.nativeSessionId, options.cwd, options.environment),
+            expected,
+          )
+        : JSON.stringify(storeIdentity(sourceDirectory)) === JSON.stringify(original);
     signal.throwIfAborted();
     const config = path.join(temporary, "config");
     await mkdir(config, { mode: 0o700 });
@@ -149,9 +182,10 @@ export async function forkCursorSession(
     );
     const copy = path.join(chats, source.nativeSessionId);
     await mkdir(copy, { recursive: true });
-    await copySnapshot(sourceDirectory, copy);
+    await copySnapshot(snapshot, copy);
     if (JSON.stringify(storeIdentity(copy)) !== JSON.stringify(original))
       throw new Error("Cursor source changed while preparing fork");
+    if (!sourceUnchanged()) throw new Error("Cursor source changed while preparing fork");
     await runCursorForkTerminal(
       {
         ...options,
@@ -194,16 +228,12 @@ export async function forkCursorSession(
       forked.blobs !== original.blobs
     )
       throw new Error("Cursor native fork changed conversation contents or identity");
-    if (JSON.stringify(storeIdentity(sourceDirectory)) !== JSON.stringify(original))
-      throw new Error("Cursor source changed during fork");
+    if (!sourceUnchanged()) throw new Error("Cursor source changed during fork");
     // Exclusive mkdir: never overwrite an existing native session, including on failure cleanup.
     await mkdir(destination);
     target = destination;
     await copySnapshot(nativeFork, target);
-    if (
-      JSON.stringify(readCursorNativeTurns(sessionId, options.cwd, options.environment)) !==
-      JSON.stringify(expected)
-    )
+    if (!sameTurns(readCursorNativeTurns(sessionId, options.cwd, options.environment), expected))
       throw new Error("Cursor fork history does not match source");
     return {
       sessionId,

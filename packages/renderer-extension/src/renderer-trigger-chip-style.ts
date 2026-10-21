@@ -130,7 +130,7 @@ export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
       overflow: hidden !important;
     }
     [${TRIGGER_CHIP_SQUEEZE_CONTAINER_ATTRIBUTE}] > div {
-      min-width: 0 !important;
+      min-width: 0;
       max-width: 100% !important;
       overflow: hidden !important;
     }

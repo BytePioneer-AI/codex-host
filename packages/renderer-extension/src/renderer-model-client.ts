@@ -1,9 +1,13 @@
 import {
-  WORKBENCH_GET_METHOD,
-  WORKBENCH_SET_METHOD,
-  workbenchConfigSchema,
-  type WorkbenchConfig,
+  SETTINGS_PLUGIN_LIST_METHOD,
+  SETTINGS_PLUGIN_READ_METHOD,
+  settingsPluginListResultSchema,
+  settingsPluginReadParamsSchema,
+  settingsPluginReadResultSchema,
+  type SettingsPluginListResult,
+  type SettingsPluginReadParams,
 } from "@codexhost/shared-contracts";
+
 import {
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
@@ -209,8 +213,8 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
-  getWorkbench?(): Promise<WorkbenchConfig>;
-  setWorkbench?(config: WorkbenchConfig): Promise<WorkbenchConfig>;
+  listSettingsPages?(): Promise<SettingsPluginListResult>;
+  readSettingsPage?(input: SettingsPluginReadParams): Promise<{ html: string }>;
   installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
   getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
   setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
@@ -396,12 +400,17 @@ export function createRendererModelClient(
         ),
       );
     },
-    async getWorkbench() {
-      return workbenchConfigSchema.parse(await manager.sendRequest(WORKBENCH_GET_METHOD, {}));
+    async listSettingsPages() {
+      return settingsPluginListResultSchema.parse(
+        await manager.sendRequest(SETTINGS_PLUGIN_LIST_METHOD, {}),
+      );
     },
-    async setWorkbench(config: WorkbenchConfig) {
-      return workbenchConfigSchema.parse(
-        await manager.sendRequest(WORKBENCH_SET_METHOD, workbenchConfigSchema.parse(config)),
+    async readSettingsPage(input: SettingsPluginReadParams) {
+      return settingsPluginReadResultSchema.parse(
+        await manager.sendRequest(
+          SETTINGS_PLUGIN_READ_METHOD,
+          settingsPluginReadParamsSchema.parse(input),
+        ),
       );
     },
     async getHarnessDisplaySettings() {

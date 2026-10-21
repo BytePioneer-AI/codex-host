@@ -1,0 +1,7 @@
+{
+  "manifestVersion": 1,
+  "id": "example-page",
+  "name": "Example settings plugin",
+  "version": "1.0.0",
+  "pages": [{ "id": "overview", "title": "Example page", "icon": "🧩", "entry": "index.html" }]
+}

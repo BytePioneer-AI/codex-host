@@ -1,10 +1,11 @@
-import { WorkbenchStore } from "./workbench-store.js";
+import { SettingsPlugins } from "./settings-plugins.js";
 import {
-  WORKBENCH_GET_METHOD,
-  WORKBENCH_SET_METHOD,
-  workbenchConfigSchema,
-  workbenchGetParamsSchema,
+  SETTINGS_PLUGIN_LIST_METHOD,
+  SETTINGS_PLUGIN_READ_METHOD,
+  settingsPluginListParamsSchema,
+  settingsPluginReadParamsSchema,
 } from "@codexhost/shared-contracts";
+
 import {
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
@@ -621,7 +622,7 @@ export class AppServerHost {
   #usageOnlyAdapters: HarnessUsageStatisticsAdapter[] = [];
   #plugins: HarnessPluginRegistry | undefined;
   readonly #launchSettings: HarnessLaunchSettingsStore;
-  readonly #workbench: WorkbenchStore;
+  readonly #settingsPlugins: SettingsPlugins;
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
   readonly #executionHosts = new WeakMap<ExternalThread, string>();
@@ -689,7 +690,7 @@ export class AppServerHost {
       return this.#takeConsoleReply(value);
     });
     const environment = this.#options.environment ?? process.env;
-    this.#workbench = new WorkbenchStore(environment);
+    this.#settingsPlugins = new SettingsPlugins(environment);
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
     );
@@ -1607,29 +1608,32 @@ export class AppServerHost {
       this.#dispatchDesktopReply(request, () => this.#openHarnessWebUi(request));
       return;
     }
-    if (request.method === WORKBENCH_GET_METHOD || request.method === WORKBENCH_SET_METHOD) {
+    if (
+      request.method === SETTINGS_PLUGIN_LIST_METHOD ||
+      request.method === SETTINGS_PLUGIN_READ_METHOD
+    ) {
       this.#dispatchDesktopReply(request, async () => {
-        const schema =
-          request.method === WORKBENCH_SET_METHOD
-            ? workbenchConfigSchema
-            : workbenchGetParamsSchema;
-        const parsed = schema.safeParse(request.params);
+        const parsed = (
+          request.method === SETTINGS_PLUGIN_LIST_METHOD
+            ? settingsPluginListParamsSchema
+            : settingsPluginReadParamsSchema
+        ).safeParse(request.params);
         if (!parsed.success) {
-          await this.#writer.json(rpcError(request, -32602, "Invalid workbench configuration"));
+          await this.#writer.json(rpcError(request, -32602, "Invalid settings plugin request"));
           return;
         }
         try {
-          const config =
-            request.method === WORKBENCH_SET_METHOD
-              ? await this.#workbench.set(parsed.data)
-              : await this.#workbench.get();
-          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(config) }));
+          const result =
+            request.method === SETTINGS_PLUGIN_LIST_METHOD
+              ? await this.#settingsPlugins.list()
+              : await this.#settingsPlugins.read(settingsPluginReadParamsSchema.parse(parsed.data));
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
         } catch {
           await this.#writer.json(
             rpcError(
               request,
               -32081,
-              "Could not read or save workbench configuration. Check the local configuration file and its permissions.",
+              "Could not load the settings plugin page. Check its local configuration and files, then reopen settings.",
             ),
           );
         }

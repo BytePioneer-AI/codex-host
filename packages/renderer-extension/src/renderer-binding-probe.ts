@@ -815,12 +815,12 @@ export function installRendererBindingProbe(
     getAccountClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,
     getLoadedSessionsClient: () => modelClientForHost("local"),
-    getWorkbenchClient: () => {
+    getSettingsPageClient: () => {
       const client = modelClientForHost("local");
-      const get = client?.getWorkbench;
-      const set = client?.setWorkbench;
-      return get && set
-        ? { getWorkbench: () => get(), setWorkbench: (config) => set(config) }
+      const list = client?.listSettingsPages;
+      const read = client?.readSettingsPage;
+      return list && read
+        ? { listSettingsPages: () => list(), readSettingsPage: (input) => read(input) }
         : null;
     },
     async requestUsageStatistics(method, params) {

@@ -1,4 +1,6 @@
-import type { WorkbenchClient } from "./settings/workbench-page.js";
+import { loadPluginSettingsPages, type SettingsPageClient } from "./settings/plugin-pages.js";
+import type { RendererSettingsPageDefinition } from "./settings/core.js";
+
 import type { RendererUsageStatisticsRequest } from "./console/pages/usage-statistics.js";
 import type { RemoteConnectionsControl } from "./remote-connections-control.js";
 import type { LoadedSessionsClient } from "./settings/loaded-sessions-table.js";
@@ -28,12 +30,12 @@ const UPDATE_CHECK_TIMEOUT_MS = 5_000;
 const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
 
 export interface RendererSettingsLifecycleOptions {
+  getSettingsPageClient?(): SettingsPageClient | null;
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
   getAccountClient?(): RendererCodexAccountClient | null;
   getSessionImportClient?(): RendererSessionImportClient | null;
   getLoadedSessionsClient?(): LoadedSessionsClient | null;
-  getWorkbenchClient?(): WorkbenchClient | null;
   getRemoteConnections?(): RemoteConnectionsControl | null;
   requestUsageStatistics?: RendererUsageStatisticsRequest;
   openImportedThread?: RendererImportedThreadOpener;
@@ -63,30 +65,33 @@ export function installRendererSettingsLifecycle(
   let updateAvailable = false;
   let openGeneration = 0;
   let disposed = false;
+  let pluginPages: readonly RendererSettingsPageDefinition[] = [];
 
   const mount = (): {
     shell: RendererSettingsShell;
     trigger: RendererSettingsRailTriggerControl;
   } => {
     const messages = rendererSettingsMessages(locale);
-    const definitions = createDefaultRendererSettingsPages(
-      messages,
-      options.getUpdateClient ?? (() => null),
-      options.getConnectionDiagnostics ?? (() => null),
-      options.getAccountClient ?? (() => null),
-      options.getSessionImportClient ?? (() => null),
-      async (threadId, signal) => {
-        if (!options.openImportedThread) {
-          throw new Error("Imported Thread navigation is unavailable");
-        }
-        await options.openImportedThread(threadId, signal);
-        if (!disposed && !signal.aborted) shell?.close();
-      },
-      options.getLoadedSessionsClient ?? (() => null),
-      options.getRemoteConnections ?? (() => null),
-      options.requestUsageStatistics,
-      options.getWorkbenchClient,
-    );
+    const definitions = [
+      ...createDefaultRendererSettingsPages(
+        messages,
+        options.getUpdateClient ?? (() => null),
+        options.getConnectionDiagnostics ?? (() => null),
+        options.getAccountClient ?? (() => null),
+        options.getSessionImportClient ?? (() => null),
+        async (threadId, signal) => {
+          if (!options.openImportedThread) {
+            throw new Error("Imported Thread navigation is unavailable");
+          }
+          await options.openImportedThread(threadId, signal);
+          if (!disposed && !signal.aborted) shell?.close();
+        },
+        options.getLoadedSessionsClient ?? (() => null),
+        options.getRemoteConnections ?? (() => null),
+        options.requestUsageStatistics,
+      ),
+      ...pluginPages,
+    ];
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
       onOpenChange(open) {
         trigger?.setSelected(open);
@@ -100,7 +105,19 @@ export function installRendererSettingsLifecycle(
         // Like a native destination, the current page ignores repeat activation.
         if (shell?.open) return;
         const generation = ++openGeneration;
-        void refreshLocale().then(() => {
+        void refreshLocale().then(async () => {
+          if (disposed || generation !== openGeneration) return;
+          if (options.getSettingsPageClient) {
+            pluginPages = await loadPluginSettingsPages(
+              options.getSettingsPageClient,
+              locale,
+              lifecycleController.signal,
+            );
+            if (disposed || generation !== openGeneration) return;
+            trigger?.dispose();
+            shell?.dispose();
+            mount();
+          }
           if (disposed || generation !== openGeneration) return;
           const currentOpener = opener.isConnected
             ? opener

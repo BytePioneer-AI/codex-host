@@ -1,7 +1,7 @@
 import { isRendererSettingsIconName, type RendererSettingsIconName } from "./icons.js";
 
-const SETTINGS_PAGE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
-const MAX_SETTINGS_PAGE_ID_LENGTH = 48;
+const SETTINGS_PAGE_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._/-][a-z0-9]+)*$/u;
+const MAX_SETTINGS_PAGE_ID_LENGTH = 256;
 const MAX_SETTINGS_PAGE_LABEL_LENGTH = 64;
 
 export interface RendererSettingsAsyncHandlers<T> {
@@ -22,6 +22,7 @@ export interface RendererSettingsPageDefinition {
   readonly id: string;
   readonly label: string;
   readonly icon: RendererSettingsIconName;
+  readonly iconText?: string;
   mount(context: RendererSettingsPageMountContext): (() => void) | undefined;
 }
 
@@ -47,6 +48,9 @@ function normalizedPage(
   }
   if (!isRendererSettingsIconName(page.icon)) {
     throw new Error(`Unknown settings page icon for ${page.id}`);
+  }
+  if (page.iconText !== undefined && (!page.iconText.trim() || page.iconText.length > 16)) {
+    throw new Error(`Invalid settings page text icon for ${page.id}`);
   }
   if (typeof page.mount !== "function") {
     throw new Error(`Settings page ${page.id} has no mount function`);

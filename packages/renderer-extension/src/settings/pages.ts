@@ -1,4 +1,3 @@
-import { createWorkbenchPage, type WorkbenchClient } from "./workbench-page.js";
 import {
   createUsageStatisticsPage,
   type RendererUsageStatisticsRequest,
@@ -81,7 +80,6 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
-  "workbench",
   "remote-connections",
   "accounts",
   "session-import",
@@ -698,11 +696,9 @@ export function createDefaultRendererSettingsPages(
   getRemoteConnections: () => RemoteConnectionsControl | null = () => null,
   requestUsageStatistics: RendererUsageStatisticsRequest = () =>
     Promise.reject(new Error("Local Host connection is unavailable")),
-  getWorkbenchClient: () => WorkbenchClient | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
-    createWorkbenchPage(messages, getWorkbenchClient),
     createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
     createSessionImportSettingsPage(

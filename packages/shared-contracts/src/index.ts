@@ -373,14 +373,18 @@ export {
   type CodexSshConnection,
   type CodexSshDraft,
 } from "./remote-connections.js";
-
 export {
-  WORKBENCH_GET_METHOD,
-  WORKBENCH_SET_METHOD,
-  WORKBENCH_ENTRY_LIMIT,
-  workbenchConfigSchema,
-  workbenchEntrySchema,
-  workbenchGetParamsSchema,
-  type WorkbenchConfig,
-  type WorkbenchEntry,
-} from "./workbench.js";
+  SETTINGS_PLUGIN_LIST_METHOD,
+  SETTINGS_PLUGIN_READ_METHOD,
+  SETTINGS_PLUGIN_HTML_MAX_BYTES,
+  SETTINGS_PLUGIN_PAGE_LIMIT,
+  settingsPluginManifestSchema,
+  settingsPluginPageSchema,
+  settingsPluginListParamsSchema,
+  settingsPluginListResultSchema,
+  settingsPluginReadParamsSchema,
+  settingsPluginReadResultSchema,
+  type SettingsPluginPage,
+  type SettingsPluginListResult,
+  type SettingsPluginReadParams,
+} from "./settings-plugins.js";

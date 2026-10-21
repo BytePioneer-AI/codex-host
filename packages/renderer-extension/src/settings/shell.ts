@@ -203,7 +203,14 @@ export function mountRendererSettingsShell(
     button.type = "button";
     button.className = "settings-nav-button";
     button.dataset.pageId = definition.id;
-    button.append(createRendererSettingsIcon(definition.icon, 17));
+    if (definition.iconText) {
+      const icon = ownerDocument.createElement("span");
+      icon.className =
+        "inline-flex size-[17px] shrink-0 items-center justify-center overflow-hidden text-sm";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = definition.iconText;
+      button.append(icon);
+    } else button.append(createRendererSettingsIcon(definition.icon, 17));
     const label = ownerDocument.createElement("span");
     label.textContent = definition.label;
     button.append(label);

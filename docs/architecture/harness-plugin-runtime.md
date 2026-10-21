@@ -4,6 +4,8 @@
 
 ## 当前范围
 
+设置导航的自定义功能页面使用独立的[设置页插件](../product/settings-plugin-pages.md)入口，安装在本机 `settings-plugins/`。它不要求实现 Harness Adapter，也不改变本文的 Agent 插件 Manifest 或加载契约。
+
 当前源码启动路径可以加载原先不认识的外部 Harness ID，通过 `codexhost/harness/plugins/list` 返回描述，并通过公共 Harness 检查接口和 `thread/start` 调用该插件。
 
 16 个预装 Adapter 通过同样的 `manifest.json` 和 `createHarnessAdapter` 工厂加载；`adapter-composition.ts` 已删除，Host 源码、包依赖和 TypeScript references 不再直接引用具体 Adapter 包。预装集合仅由发行清单 [`scripts/release/harness-plugins.json`](../../scripts/release/harness-plugins.json) 决定。原生构造参数、预取和 Claude Code 的直接/Broker 选择仍由相应插件负责。

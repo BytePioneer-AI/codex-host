@@ -1,0 +1,53 @@
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        margin: 0;
+        padding: 32px;
+        font:
+          14px/1.6 system-ui,
+          sans-serif;
+        color: #202020;
+        background: #fff;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 24px;
+      }
+      p {
+        color: #606060;
+        max-width: 560px;
+      }
+      button {
+        padding: 10px 16px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        background: #f6f6f6;
+        font: inherit;
+        cursor: pointer;
+      }
+      output {
+        display: block;
+        margin: 24px 0;
+        font-size: 36px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Example page</h1>
+    <p>
+      This page is provided by a local settings plugin. Replace this self-contained HTML file with
+      your own interface.
+    </p>
+    <output aria-label="Count">0</output>
+    <button type="button">Increase count</button>
+    <script>
+      let count = 0;
+      document.querySelector("button").addEventListener("click", () => {
+        document.querySelector("output").textContent = String(++count);
+      });
+    </script>
+  </body>
+</html>

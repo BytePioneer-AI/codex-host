@@ -114,6 +114,29 @@ export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
       cursor: not-allowed;
       opacity: 0.4;
     }
+    [class*="_ComposerLayoutFooter"] > [class*="col-start-1"] {
+      min-width: 0 !important;
+      max-width: min(45vw, 320px) !important;
+      max-width: min(45cqi, 320px) !important;
+      overflow: hidden !important;
+    }
+    [class*="_ComposerLayoutFooter"] > [class*="col-start-1"] > div {
+      min-width: 0 !important;
+      max-width: 100% !important;
+      overflow: hidden !important;
+    }
+    [class*="_ComposerLayoutFooter"] > [class*="col-start-3"] {
+      min-width: 0 !important;
+      overflow: hidden !important;
+    }
+    [class*="_ComposerLayoutFooter"] > [class*="col-start-3"] > div {
+      min-width: 0 !important;
+      max-width: 100% !important;
+    }
+    [class*="_ComposerLayoutFooter"] > [class*="col-start-3"] .shrink-0 {
+      flex-shrink: 1 !important;
+      min-width: 0 !important;
+    }
   `;
   (ownerDocument.head ?? ownerDocument.documentElement).append(style);
 }

@@ -71,6 +71,10 @@ describe("Renderer Usage context-summary formatting", () => {
   it("shows the used percentage and the context window", () => {
     expect(formatRendererContextSummary(15_000, 934_500)).toBe("1.6% / 934.5K");
   });
+
+  it("clamps context percentage to 100% when used tokens exceed window tokens", () => {
+    expect(formatRendererContextSummary(1_200_000, 1_000_000)).toBe("100% / 1M");
+  });
 });
 
 describe("Renderer Usage plan-window formatting", () => {

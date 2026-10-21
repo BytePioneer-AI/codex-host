@@ -1,3 +1,4 @@
+import type { WorkbenchClient } from "./settings/workbench-page.js";
 import type { RendererUsageStatisticsRequest } from "./console/pages/usage-statistics.js";
 import type { RemoteConnectionsControl } from "./remote-connections-control.js";
 import type { LoadedSessionsClient } from "./settings/loaded-sessions-table.js";
@@ -32,6 +33,7 @@ export interface RendererSettingsLifecycleOptions {
   getAccountClient?(): RendererCodexAccountClient | null;
   getSessionImportClient?(): RendererSessionImportClient | null;
   getLoadedSessionsClient?(): LoadedSessionsClient | null;
+  getWorkbenchClient?(): WorkbenchClient | null;
   getRemoteConnections?(): RemoteConnectionsControl | null;
   requestUsageStatistics?: RendererUsageStatisticsRequest;
   openImportedThread?: RendererImportedThreadOpener;
@@ -83,6 +85,7 @@ export function installRendererSettingsLifecycle(
       options.getLoadedSessionsClient ?? (() => null),
       options.getRemoteConnections ?? (() => null),
       options.requestUsageStatistics,
+      options.getWorkbenchClient,
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
       onOpenChange(open) {

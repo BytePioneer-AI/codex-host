@@ -373,3 +373,14 @@ export {
   type CodexSshConnection,
   type CodexSshDraft,
 } from "./remote-connections.js";
+
+export {
+  WORKBENCH_GET_METHOD,
+  WORKBENCH_SET_METHOD,
+  WORKBENCH_ENTRY_LIMIT,
+  workbenchConfigSchema,
+  workbenchEntrySchema,
+  workbenchGetParamsSchema,
+  type WorkbenchConfig,
+  type WorkbenchEntry,
+} from "./workbench.js";

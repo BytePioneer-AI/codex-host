@@ -101,6 +101,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`product/workbench.md`](product/workbench.md) | 本地工作台的知识库、项目和群聊入口管理、配置存储与外部链接边界。 |
 | [`product/codex-accounts.md`](product/codex-accounts.md) | 设置页中的原生账号与额度布局、外部 Harness 不受 Codex 额度门限制、手动导入 Pi 及导入记录管理；修改账号 UI、发送额度门、查询或凭证导入链路时阅读。 |
 | [`product/usage-metering.md`](product/usage-metering.md) | 外部 Harness 与官方 Codex 的会话用量、插件可选能力、实时刷新、费用、缓存命中、首字延迟及速度限制；修改计量、价格表或 `pricing.json` 时阅读。 |
 | [`product/usage-statistics.md`](product/usage-statistics.md) | 控制台与 Desktop 内置设置的全局用量统计：独立 Codex 统计插件、各 Harness 原生会话去重、按模型 ID 读时计价与缓存；新增读取器或修改统计口径时阅读。 |

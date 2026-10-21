@@ -1,4 +1,10 @@
 import {
+  WORKBENCH_GET_METHOD,
+  WORKBENCH_SET_METHOD,
+  workbenchConfigSchema,
+  type WorkbenchConfig,
+} from "@codexhost/shared-contracts";
+import {
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
   type DelegationReadParams,
@@ -203,6 +209,8 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  getWorkbench?(): Promise<WorkbenchConfig>;
+  setWorkbench?(config: WorkbenchConfig): Promise<WorkbenchConfig>;
   installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
   getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
   setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
@@ -386,6 +394,14 @@ export function createRendererModelClient(
           harnessInstallationParamsSchema.parse(input),
           { priority: "interactive" },
         ),
+      );
+    },
+    async getWorkbench() {
+      return workbenchConfigSchema.parse(await manager.sendRequest(WORKBENCH_GET_METHOD, {}));
+    },
+    async setWorkbench(config: WorkbenchConfig) {
+      return workbenchConfigSchema.parse(
+        await manager.sendRequest(WORKBENCH_SET_METHOD, workbenchConfigSchema.parse(config)),
       );
     },
     async getHarnessDisplaySettings() {

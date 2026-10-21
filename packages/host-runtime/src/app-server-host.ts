@@ -1,3 +1,10 @@
+import { WorkbenchStore } from "./workbench-store.js";
+import {
+  WORKBENCH_GET_METHOD,
+  WORKBENCH_SET_METHOD,
+  workbenchConfigSchema,
+  workbenchGetParamsSchema,
+} from "@codexhost/shared-contracts";
 import {
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
@@ -614,6 +621,7 @@ export class AppServerHost {
   #usageOnlyAdapters: HarnessUsageStatisticsAdapter[] = [];
   #plugins: HarnessPluginRegistry | undefined;
   readonly #launchSettings: HarnessLaunchSettingsStore;
+  readonly #workbench: WorkbenchStore;
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
   readonly #executionHosts = new WeakMap<ExternalThread, string>();
@@ -681,6 +689,7 @@ export class AppServerHost {
       return this.#takeConsoleReply(value);
     });
     const environment = this.#options.environment ?? process.env;
+    this.#workbench = new WorkbenchStore(environment);
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
     );
@@ -1596,6 +1605,35 @@ export class AppServerHost {
     }
     if (request.method === "codexhost/harness/web-ui/open") {
       this.#dispatchDesktopReply(request, () => this.#openHarnessWebUi(request));
+      return;
+    }
+    if (request.method === WORKBENCH_GET_METHOD || request.method === WORKBENCH_SET_METHOD) {
+      this.#dispatchDesktopReply(request, async () => {
+        const schema =
+          request.method === WORKBENCH_SET_METHOD
+            ? workbenchConfigSchema
+            : workbenchGetParamsSchema;
+        const parsed = schema.safeParse(request.params);
+        if (!parsed.success) {
+          await this.#writer.json(rpcError(request, -32602, "Invalid workbench configuration"));
+          return;
+        }
+        try {
+          const config =
+            request.method === WORKBENCH_SET_METHOD
+              ? await this.#workbench.set(parsed.data)
+              : await this.#workbench.get();
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(config) }));
+        } catch {
+          await this.#writer.json(
+            rpcError(
+              request,
+              -32081,
+              "Could not read or save workbench configuration. Check the local configuration file and its permissions.",
+            ),
+          );
+        }
+      });
       return;
     }
     if (

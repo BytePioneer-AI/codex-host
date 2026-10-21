@@ -26,7 +26,9 @@ export function createGrokComputerUseControls(
 
   let busy = true;
   let loaded = false;
+  let last: GrokComputerUseSettings | undefined;
   const show = (value: GrokComputerUseSettings) => {
+    last = value;
     input.checked = value.enabled;
     input.disabled = busy || !loaded || (!value.available && !value.enabled);
     if (!value.available) {
@@ -42,13 +44,15 @@ export function createGrokComputerUseControls(
     status.textContent = messages.grokComputerUseSaving;
     void settings
       .set(input.checked)
-      .then(show)
-      .catch(() => {
-        status.textContent = messages.grokComputerUseSaveError;
-      })
-      .finally(() => {
+      .then((value) => {
         busy = false;
-        input.disabled = false;
+        show(value);
+      })
+      .catch(() => {
+        busy = false;
+        if (last) show(last);
+        else input.disabled = false;
+        status.textContent = messages.grokComputerUseSaveError;
       });
   });
   status.textContent = messages.grokComputerUseLoading;
@@ -56,13 +60,12 @@ export function createGrokComputerUseControls(
     .get()
     .then((value) => {
       loaded = true;
+      busy = false;
       show(value);
     })
     .catch(() => {
-      status.textContent = messages.grokComputerUseLoadError;
-    })
-    .finally(() => {
       busy = false;
+      status.textContent = messages.grokComputerUseLoadError;
     });
   return section;
 }

@@ -3,6 +3,87 @@
  * design tokens (shell.css) so reused settings pages and console pages match.
  */
 
+.console-skills-search {
+  width: 100%;
+  max-width: 420px;
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+  background: var(--settings-panel);
+  color: var(--settings-text);
+  font: inherit;
+}
+
+.console-skills-page .settings-page-description {
+  margin: -8px 0 16px;
+}
+
+.console-skills-group {
+  margin: 0 0 24px;
+}
+
+.console-skills-group > .settings-section-label {
+  padding-bottom: 10px;
+  font-size: 15px;
+}
+
+.console-skills-category {
+  margin: 0 0 14px;
+}
+
+.console-skills-category-title {
+  margin: 0 0 6px;
+  color: var(--settings-subtle);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.console-skills-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.console-skills-item {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 2px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+  background: var(--settings-panel);
+}
+
+.console-skills-item-name {
+  font-weight: 600;
+}
+
+.console-skills-item-description {
+  color: var(--settings-subtle);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.console-skills-item-path {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--settings-subtle);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-skills-failure {
+  margin: 0 0 10px;
+  color: var(--settings-danger, #c0392b);
+  font-size: 12px;
+}
+
 :host {
   position: fixed;
   inset: 0;

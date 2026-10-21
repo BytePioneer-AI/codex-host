@@ -14,6 +14,7 @@ import {
   applyRendererTriggerChipSqueezeRoot,
   applyRendererTriggerChipSqueezeTrigger,
   ensureRendererTriggerChipStyle,
+  markRendererTriggerChipSqueezeContainer,
   rendererCreditsTriggerMaxWidth,
   TRIGGER_CHIP_CLASS,
 } from "./renderer-trigger-chip-style.js";
@@ -417,11 +418,13 @@ export function mountRendererCreditsControl(composerId: string): RendererCredits
         root.parentElement === parent &&
         root.nextElementSibling === anchor
       ) {
+        markRendererTriggerChipSqueezeContainer(parent);
         return true;
       }
       control.anchor = anchor;
       placementReference = anchor;
       if (root !== anchor) parent.insertBefore(root, anchor);
+      markRendererTriggerChipSqueezeContainer(parent);
       return true;
     },
   };

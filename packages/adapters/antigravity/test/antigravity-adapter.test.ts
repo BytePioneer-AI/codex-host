@@ -1938,6 +1938,57 @@ setTimeout(() => { process.exit(0); }, 50);
       }
     });
 
+    it("does not reuse tool args from older or future planner responses", async () => {
+      const convId = "conv-read-args-bounded";
+      const brainLogsDir = path.join(nativeBrainDirPath(convId), ".system_generated", "logs");
+      await mkdir(brainLogsDir, { recursive: true });
+
+      const transcriptContent = [
+        JSON.stringify({
+          step_index: 1,
+          source: "MODEL",
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            {
+              name: "write_file",
+              args: { Path: "old.ts", Content: "old" },
+            },
+          ],
+        }),
+        JSON.stringify({
+          step_index: 3,
+          source: "MODEL",
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            {
+              name: "edit_file",
+              args: { Path: "current.ts", Target: "a", Replacement: "b" },
+            },
+          ],
+        }),
+        JSON.stringify({
+          step_index: 5,
+          source: "MODEL",
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            {
+              name: "write_file",
+              args: { Path: "future.ts", Content: "future" },
+            },
+          ],
+        }),
+      ].join("\n");
+      await writeFile(path.join(brainLogsDir, "transcript.jsonl"), transcriptContent, "utf8");
+
+      try {
+        expect(await readTranscriptToolArgs(convId, 4, "write_file", "old.ts")).toBeNull();
+        expect(await readTranscriptToolArgs(convId, 4, "write_file", "future.ts")).toBeNull();
+        expect(await readTranscriptToolArgs(convId, 4, "write_file")).toBeNull();
+      } finally {
+        await rm(path.dirname(brainLogsDir), { recursive: true, force: true });
+      }
+    });
+
     it("dynamically switches between Gemini (1M) and Claude (200k) models within the same session", async () => {
       const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-model-switch-"));
       const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-model-switch-cwd-"));

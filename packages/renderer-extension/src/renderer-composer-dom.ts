@@ -50,6 +50,7 @@ import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
+import { markRendererTriggerChipSqueezeContainer } from "./renderer-trigger-chip-style.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -554,6 +555,7 @@ function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
   }
   parent.insertBefore(modelRoot, anchor);
   parent.insertBefore(agentRoot, anchor);
+  markRendererTriggerChipSqueezeContainer(parent);
 }
 
 function refreshUsagePlacement(control: ComposerAgentControl): void {
@@ -597,12 +599,14 @@ function refreshNativePermissionModeControl(control: ComposerAgentControl): void
   if (!candidate) return;
   syncRendererPermissionModeTriggerClass(control.permissionModePicker);
   const parent = candidate.parentElement;
+  if (parent) markRendererTriggerChipSqueezeContainer(parent);
   if (
     parent &&
     (control.permissionModePicker.root.parentElement !== parent ||
       control.permissionModePicker.root.nextElementSibling !== candidate)
   ) {
     parent.insertBefore(control.permissionModePicker.root, candidate);
+    markRendererTriggerChipSqueezeContainer(parent);
   }
 }
 
@@ -702,6 +706,7 @@ export function mountComposerAgentControl(
   const permissionParent = nativePermissionModeControl?.element.parentElement;
   if (permissionParent && nativePermissionModeControl && nativePermissionModeControlVerified) {
     permissionParent.insertBefore(permissionModePicker.root, nativePermissionModeControl.element);
+    markRendererTriggerChipSqueezeContainer(permissionParent);
   } else {
     composer.append(permissionModePicker.root);
   }

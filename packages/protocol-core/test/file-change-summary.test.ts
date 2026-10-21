@@ -277,4 +277,46 @@ describe("external Harness file summaries", () => {
     expect(replaceChange?.[0]?.unifiedDiff).toContain("-console.log('hello');");
     expect(replaceChange?.[0]?.unifiedDiff).toContain("+console.log('world');");
   });
+
+  it("keeps overwrite writes as tool cards and restores replacement chunks", () => {
+    expect(
+      fileChangeFromTool("write_to_file", {
+        TargetFile: "src/main.ts",
+        Overwrite: true,
+        CodeContent: "replacement",
+      }),
+    ).toBeNull();
+
+    const multiReplace = fileChangeFromTool("multi_replace_file_content", {
+      TargetFile: "src/main.ts",
+      ReplacementChunks: [
+        {
+          StartLine: 2,
+          TargetContent: "const first = 1;",
+          ReplacementContent: "const first = 2;",
+        },
+        {
+          StartLine: 8,
+          TargetContent: "const second = 3;",
+          ReplacementContent: "const second = 4;",
+        },
+      ],
+    });
+    expect(multiReplace).toHaveLength(1);
+    expect(multiReplace?.[0]).toMatchObject({
+      path: "src/main.ts",
+      kind: "update",
+      diffScope: "fragment",
+    });
+    expect(multiReplace?.[0]?.unifiedDiff).toContain("-const first = 1;");
+    expect(multiReplace?.[0]?.unifiedDiff).toContain("+const first = 2;");
+    expect(multiReplace?.[0]?.unifiedDiff).toContain("@@ -2,1 +2,1 @@");
+    expect(multiReplace?.[0]?.unifiedDiff).toContain("-const second = 3;");
+    expect(multiReplace?.[0]?.unifiedDiff).toContain("+const second = 4;");
+    expect(multiReplace?.[0]?.unifiedDiff).toContain("@@ -8,1 +8,1 @@");
+    const before = "header\nconst first = 1;\na\nb\nc\nd\ne\nconst second = 3;\nfooter\n";
+    expect(applyPatch(before, multiReplace?.[0]?.unifiedDiff ?? "")).toBe(
+      "header\nconst first = 2;\na\nb\nc\nd\ne\nconst second = 4;\nfooter\n",
+    );
+  });
 });

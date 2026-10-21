@@ -582,28 +582,14 @@ export async function readTranscriptToolArgs(
         }
       }
 
-      // 2. Search anywhere in the closest preceding planner response
-      for (const call of closest.toolCalls) {
-        if (matchesCall(call)) {
-          return call.args;
-        }
-      }
-    }
-
-    // 3. Search earlier planner responses
-    for (const planner of precedingPlanners.slice(1)) {
-      for (const call of planner.toolCalls) {
-        if (matchesCall(call)) {
-          return call.args;
-        }
-      }
-    }
-
-    // 4. Fallback search across all planner responses
-    for (const planner of planners) {
-      for (const call of planner.toolCalls) {
-        if (matchesCall(call)) {
-          return call.args;
+      // 2. Search the closest planner only when the target file can distinguish
+      // multiple calls of the same tool. Older or future planners are not a
+      // valid source for the current step's arguments.
+      if (targetFile) {
+        for (const call of closest.toolCalls) {
+          if (matchesCall(call)) {
+            return call.args;
+          }
         }
       }
     }

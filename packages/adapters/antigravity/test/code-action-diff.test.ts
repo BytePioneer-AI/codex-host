@@ -290,6 +290,53 @@ describe("Antigravity Code Action diffs", () => {
       expect(change?.unifiedDiff).toContain("+new title");
     });
 
+    it("synthesizes updates from ReplacementChunks", () => {
+      const change = fileChangeFromAntigravityParameters(
+        "multi_replace_file_content",
+        {
+          TargetFile: "src/mod.ts",
+          ReplacementChunks: [
+            {
+              StartLine: 2,
+              TargetContent: "const first = 1;",
+              ReplacementContent: "const first = 2;",
+            },
+            {
+              StartLine: 9,
+              TargetContent: "const second = 3;",
+              ReplacementContent: "const second = 4;",
+            },
+          ],
+        },
+        CWD,
+      );
+      expect(change).toMatchObject({
+        path: "src/mod.ts",
+        kind: "update",
+        diffScope: "fragment",
+      });
+      expect(change?.unifiedDiff).toContain("-const first = 1;");
+      expect(change?.unifiedDiff).toContain("+const first = 2;");
+      expect(change?.unifiedDiff).toContain("@@ -2,1 +2,1 @@");
+      expect(change?.unifiedDiff).toContain("-const second = 3;");
+      expect(change?.unifiedDiff).toContain("+const second = 4;");
+      expect(change?.unifiedDiff).toContain("@@ -9,1 +9,1 @@");
+    });
+
+    it("does not present an overwrite as a new file", () => {
+      expect(
+        fileChangeFromAntigravityParameters(
+          "write_to_file",
+          {
+            TargetFile: "src/existing.ts",
+            Overwrite: true,
+            CodeContent: "replacement",
+          },
+          CWD,
+        ),
+      ).toBeNull();
+    });
+
     it("returns null when file mutating content is missing or unmodified", () => {
       expect(
         fileChangeFromAntigravityParameters("write_to_file", { TargetFile: "foo.txt" }, CWD),

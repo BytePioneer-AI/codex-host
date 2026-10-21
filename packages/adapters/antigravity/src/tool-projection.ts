@@ -120,6 +120,37 @@ export function extractString(
   return undefined;
 }
 
+export function extractBoolean(
+  record: Record<string, unknown>,
+  keys: readonly string[],
+): boolean | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "true") return true;
+      if (normalized === "false") return false;
+    }
+  }
+  for (const [key, value] of Object.entries(record)) {
+    if (!keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())) continue;
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "true") return true;
+      if (normalized === "false") return false;
+    }
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
+    if (isRecord(record[wrapper])) {
+      const nested = extractBoolean(record[wrapper] as Record<string, unknown>, keys);
+      if (nested !== undefined) return nested;
+    }
+  }
+  return undefined;
+}
+
 export function compactToolName(toolName: string): string {
   const baseName = toolName.includes(":")
     ? toolName.slice(toolName.lastIndexOf(":") + 1)

@@ -6,6 +6,7 @@ import {
   applyRendererTriggerChipSqueezeRoot,
   applyRendererTriggerChipSqueezeTrigger,
   ensureRendererTriggerChipStyle,
+  markRendererTriggerChipSqueezeContainer,
   rendererUsageTriggerMaxWidth,
   TRIGGER_CHIP_CLASS,
 } from "./renderer-trigger-chip-style.js";
@@ -611,11 +612,13 @@ export function mountRendererUsageControl(
         root.parentElement === container &&
         root.nextElementSibling === anchor
       ) {
+        markRendererTriggerChipSqueezeContainer(container);
         return true;
       }
       control.anchor = anchor;
       placementReference = anchor;
       container.insertBefore(root, anchor);
+      markRendererTriggerChipSqueezeContainer(container);
       return true;
     },
   };

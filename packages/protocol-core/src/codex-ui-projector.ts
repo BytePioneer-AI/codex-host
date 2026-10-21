@@ -137,6 +137,59 @@ function nestedString(
   return undefined;
 }
 
+function nestedArray(value: unknown, keys: readonly string[]): unknown[] | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const key of keys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  for (const [key, field] of Object.entries(value)) {
+    if (
+      Array.isArray(field) &&
+      keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())
+    ) {
+      return field;
+    }
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters", "tool_info"] as const) {
+    const nested = nestedArray(value[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function nestedBoolean(value: unknown, keys: readonly string[]): boolean | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const [key, field] of Object.entries(value)) {
+    if (!keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())) continue;
+    if (typeof field === "boolean") return field;
+    if (typeof field === "string") {
+      const normalized = field.trim().toLowerCase();
+      if (normalized === "true") return true;
+      if (normalized === "false") return false;
+    }
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters", "tool_info"] as const) {
+    const nested = nestedBoolean(value[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function nestedNumber(value: unknown, keys: readonly string[]): number | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const [key, field] of Object.entries(value)) {
+    if (!keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())) continue;
+    const parsed =
+      typeof field === "number" ? field : typeof field === "string" ? Number(field) : Number.NaN;
+    if (Number.isInteger(parsed)) return parsed;
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters", "tool_info"] as const) {
+    const nested = nestedNumber(value[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
 const COMMAND_KEYS = [
   "command",
   "cmd",
@@ -465,6 +518,82 @@ function simpleUnifiedDiff(
     : `${gitHeader}\n${patch}`;
 }
 
+interface ParameterReplacement {
+  oldText: string | undefined;
+  newText: string | undefined;
+  startLine: number;
+}
+
+function replacementStartLine(value: Record<string, unknown>): number {
+  const parsed = nestedNumber(value, ["StartLine", "startLine", "start_line"]);
+  return parsed !== undefined && parsed > 0 ? parsed : 1;
+}
+
+function replacementChunks(value: unknown): ParameterReplacement[] {
+  const chunks = nestedArray(value, [
+    "ReplacementChunks",
+    "replacementChunks",
+    "replacement_chunks",
+  ]);
+  if (!chunks) return [];
+  return chunks.flatMap((chunk) => {
+    if (!isRecord(chunk)) return [];
+    return [
+      {
+        oldText: nestedString(
+          chunk,
+          ["TargetContent", "targetContent", "target_content", "Target", "target"],
+          true,
+        ),
+        newText: nestedString(
+          chunk,
+          [
+            "ReplacementContent",
+            "replacementContent",
+            "replacement_content",
+            "Replacement",
+            "replacement",
+          ],
+          true,
+        ),
+        startLine: replacementStartLine(chunk),
+      },
+    ];
+  });
+}
+
+function textLines(text: string | undefined): string[] {
+  if (text === undefined || text.length === 0) return [];
+  const lines = text.split(/\r?\n/u);
+  if (text.endsWith("\n") && lines.length > 1 && lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+function simpleFragmentDiff(
+  displayedPath: string,
+  replacements: readonly ParameterReplacement[],
+): string | null {
+  const cleanPath = displayedPath.replace(/^\/+/, "");
+  const aPath = `a/${cleanPath}`;
+  const bPath = `b/${cleanPath}`;
+  const hunks: string[] = [];
+  for (const { oldText, newText, startLine } of replacements) {
+    if (oldText === undefined && newText === undefined) continue;
+    if (oldText === newText) continue;
+    const oldLines = textLines(oldText);
+    const newLines = textLines(newText);
+    hunks.push(
+      `@@ -${oldLines.length === 0 ? 0 : startLine},${oldLines.length} +${
+        newLines.length === 0 ? 0 : startLine
+      },${newLines.length} @@`,
+      ...oldLines.map((line) => `-${line}`),
+      ...newLines.map((line) => `+${line}`),
+    );
+  }
+  if (hunks.length === 0) return null;
+  return [`diff --git ${aPath} ${bPath}`, `--- ${aPath}`, `+++ ${bPath}`, ...hunks, ""].join("\n");
+}
+
 export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileChange[] | null {
   if (!isFileMutatingTool(toolName)) return null;
   const displayedPath = nestedString(args, [
@@ -484,6 +613,7 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
   ]);
   if (!displayedPath) return null;
   if (isWriteTool(toolName)) {
+    if (nestedBoolean(args, ["Overwrite", "overwrite"]) === true) return null;
     const content = nestedString(
       args,
       [
@@ -511,47 +641,54 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
       },
     ];
   }
-  const oldText = nestedString(
-    args,
-    [
-      "old_string",
-      "oldString",
-      "oldText",
-      "old_text",
-      "old",
-      "TargetContent",
-      "targetContent",
-      "target_content",
-      "Target",
-      "target",
-    ],
-    true,
-  );
-  const newText = nestedString(
-    args,
-    [
-      "new_string",
-      "newString",
-      "newText",
-      "new_text",
-      "content",
-      "new",
-      "ReplacementContent",
-      "replacementContent",
-      "replacement_content",
-      "Replacement",
-      "replacement",
-      "Content",
-    ],
-    true,
-  );
-  if (oldText === undefined || newText === undefined) return null;
+  const replacements = replacementChunks(args);
+  if (replacements.length === 0) {
+    replacements.push({
+      oldText: nestedString(
+        args,
+        [
+          "old_string",
+          "oldString",
+          "oldText",
+          "old_text",
+          "old",
+          "TargetContent",
+          "targetContent",
+          "target_content",
+          "Target",
+          "target",
+        ],
+        true,
+      ),
+      newText: nestedString(
+        args,
+        [
+          "new_string",
+          "newString",
+          "newText",
+          "new_text",
+          "content",
+          "new",
+          "ReplacementContent",
+          "replacementContent",
+          "replacement_content",
+          "Replacement",
+          "replacement",
+          "Content",
+        ],
+        true,
+      ),
+      startLine: replacementStartLine({ arguments: args }),
+    });
+  }
+  const unifiedDiff = simpleFragmentDiff(displayedPath, replacements);
+  if (!unifiedDiff) return null;
   return [
     {
       path: displayedPath,
       kind: "update",
       diffScope: "fragment",
-      unifiedDiff: simpleUnifiedDiff(displayedPath, oldText, newText, "update"),
+      unifiedDiff,
     },
   ];
 }
@@ -955,7 +1092,6 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
     }
     if (item.type === "toolExecution") {
       if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments)) return [];
-      if (isFileMutatingTool(item.toolName)) return [];
     }
     if (item.type === "reasoning" && !reasoningDisplayText(item.text)) return [];
     return item.type === "reasoning"
@@ -1303,7 +1439,6 @@ export class CodexTurnProjector {
       if (changes) {
         return { messages: this.#fileChangeUpdates(startedAtMs) };
       }
-      if (isFileMutatingTool(event.item.toolName)) return { messages: [] };
     }
     if (event.item.type === "fileChange") return { messages: this.#fileChangeUpdates(startedAtMs) };
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;

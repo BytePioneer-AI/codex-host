@@ -21,6 +21,7 @@ import {
   COMPACT_WRITE_TOOLS,
   compactToolName,
   displayPath,
+  extractBoolean,
   extractString,
   isAntigravityFileMutatingTool,
   toolTargetFile,
@@ -45,6 +46,102 @@ export interface AntigravityCodeAction {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+interface FileReplacement {
+  oldText: string | undefined;
+  newText: string | undefined;
+  startLine: number;
+}
+
+function arrayField(
+  record: Record<string, unknown>,
+  keys: readonly string[],
+): unknown[] | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) return value;
+  }
+  for (const [key, value] of Object.entries(record)) {
+    if (
+      Array.isArray(value) &&
+      keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())
+    ) {
+      return value;
+    }
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
+    if (isRecord(record[wrapper])) {
+      const nested = arrayField(record[wrapper] as Record<string, unknown>, keys);
+      if (nested !== undefined) return nested;
+    }
+  }
+  return undefined;
+}
+
+function startLineField(record: Record<string, unknown>): number {
+  const keys = ["StartLine", "startLine", "start_line"];
+  for (const [key, value] of Object.entries(record)) {
+    if (!keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())) continue;
+    const parsed =
+      typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  return 1;
+}
+
+function replacementChunks(record: Record<string, unknown>): FileReplacement[] {
+  const chunks = arrayField(record, [
+    "ReplacementChunks",
+    "replacementChunks",
+    "replacement_chunks",
+  ]);
+  if (!chunks) return [];
+  const replacements: FileReplacement[] = [];
+  for (const chunk of chunks) {
+    if (!isRecord(chunk)) continue;
+    replacements.push({
+      oldText: extractString(chunk, ["TargetContent", "targetContent", "target_content", "Target"]),
+      newText: extractString(chunk, [
+        "ReplacementContent",
+        "replacementContent",
+        "replacement_content",
+        "Replacement",
+      ]),
+      startLine: startLineField(chunk),
+    });
+  }
+  return replacements;
+}
+
+function textLines(text: string | undefined): string[] {
+  if (text === undefined || text.length === 0) return [];
+  const lines = text.split(/\r?\n/);
+  if (text.endsWith("\n") && lines.length > 1 && lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+function parameterUpdateDiff(
+  aPath: string,
+  bPath: string,
+  replacements: readonly FileReplacement[],
+): string | null {
+  const hunks: string[] = [];
+  for (const { oldText, newText, startLine } of replacements) {
+    if (oldText === undefined && newText === undefined) continue;
+    if (oldText === newText) continue;
+    const oldLines = textLines(oldText);
+    const newLines = textLines(newText);
+    hunks.push(
+      `@@ -${oldLines.length === 0 ? 0 : startLine},${oldLines.length} +${
+        newLines.length === 0 ? 0 : startLine
+      },${newLines.length} @@`,
+      ...oldLines.map((line) => `-${line}`),
+      ...newLines.map((line) => `+${line}`),
+    );
+  }
+  if (hunks.length === 0) return null;
+  return [`diff --git ${aPath} ${bPath}`, `--- ${aPath}`, `+++ ${bPath}`, ...hunks, ""].join("\n");
 }
 
 function lineType(value: unknown): UnifiedDiffLineType | null {
@@ -233,6 +330,9 @@ export function fileChangeFromAntigravityParameters(
   const isWrite = COMPACT_WRITE_TOOLS.has(compact);
 
   if (isWrite) {
+    // An overwrite has no trustworthy old side in the stream parameters. Keep
+    // the ordinary tool card rather than presenting the result as a new file.
+    if (extractBoolean(record, ["Overwrite", "overwrite"]) === true) return null;
     const content = extractString(record, [
       "CodeContent",
       "codeContent",
@@ -265,66 +365,37 @@ export function fileChangeFromAntigravityParameters(
     return { path: displayed.path, kind: "add", unifiedDiff };
   }
 
-  const oldText = extractString(record, [
-    "TargetContent",
-    "targetContent",
-    "target_content",
-    "Target",
-    "target",
-    "old_string",
-    "oldString",
-    "oldText",
-    "old_text",
-  ]);
-  const newText = extractString(record, [
-    "ReplacementContent",
-    "replacementContent",
-    "replacement_content",
-    "Replacement",
-    "replacement",
-    "new_string",
-    "newString",
-    "newText",
-    "new_text",
-    "content",
-  ]);
-
-  if (oldText === undefined && newText === undefined) return null;
-  if (oldText === newText) return null;
-
-  const oldLines = oldText !== undefined ? oldText.split(/\r?\n/) : [];
-  if (oldText?.endsWith("\n") && oldLines.length > 1 && oldLines.at(-1) === "") {
-    oldLines.pop();
+  const replacements = replacementChunks(record);
+  if (replacements.length === 0) {
+    replacements.push({
+      oldText: extractString(record, [
+        "TargetContent",
+        "targetContent",
+        "target_content",
+        "Target",
+        "target",
+        "old_string",
+        "oldString",
+        "oldText",
+        "old_text",
+      ]),
+      newText: extractString(record, [
+        "ReplacementContent",
+        "replacementContent",
+        "replacement_content",
+        "Replacement",
+        "replacement",
+        "new_string",
+        "newString",
+        "newText",
+        "new_text",
+        "content",
+      ]),
+      startLine: startLineField(record),
+    });
   }
-  const newLines = newText !== undefined ? newText.split(/\r?\n/) : [];
-  if (newText?.endsWith("\n") && newLines.length > 1 && newLines.at(-1) === "") {
-    newLines.pop();
-  }
-
-  const startLineRaw = extractString(record, ["StartLine", "startLine", "start_line"]);
-  const parsedStart = startLineRaw ? parseInt(startLineRaw, 10) : Number.NaN;
-  const startLine = Number.isInteger(parsedStart) && parsedStart > 0 ? parsedStart : 1;
-
-  const body: string[] = [];
-  for (const line of oldLines) {
-    body.push(`-${line}`);
-  }
-  for (const line of newLines) {
-    body.push(`+${line}`);
-  }
-
-  const oldStart = oldLines.length === 0 ? 0 : startLine;
-  const newStart = newLines.length === 0 ? 0 : startLine;
-  const hunkHeader = `@@ -${oldStart},${oldLines.length} +${newStart},${newLines.length} @@`;
-
-  const unifiedDiff = [
-    `diff --git ${aPath} ${bPath}`,
-    `--- ${aPath}`,
-    `+++ ${bPath}`,
-    hunkHeader,
-    ...body,
-    "",
-  ].join("\n");
+  const unifiedDiff = parameterUpdateDiff(aPath, bPath, replacements);
+  if (!unifiedDiff) return null;
 
   return { path: displayed.path, kind: "update", diffScope: "fragment", unifiedDiff };
 }

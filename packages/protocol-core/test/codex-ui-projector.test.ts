@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 import type {
   HostCommandExecutionItem,
@@ -1827,12 +1829,13 @@ describe("Codex UI projector", () => {
     });
 
     it("parses legitimate read, search, and directory listing commands", () => {
+      const workspacePath = (...segments: string[]) => path.resolve("/workspace", ...segments);
       expect(parseCommandActions("cat src/main.ts", "/workspace")).toEqual([
         {
           type: "read",
           command: "cat src/main.ts",
           name: "main.ts",
-          path: "/workspace/src/main.ts",
+          path: workspacePath("src", "main.ts"),
         },
       ]);
       expect(parseCommandActions("sed -n '1,10p' src/main.ts", "/workspace")).toEqual([
@@ -1840,14 +1843,14 @@ describe("Codex UI projector", () => {
           type: "read",
           command: "sed -n '1,10p' src/main.ts",
           name: "main.ts",
-          path: "/workspace/src/main.ts",
+          path: workspacePath("src", "main.ts"),
         },
       ]);
       expect(parseCommandActions("ls -la src", "/workspace")).toEqual([
         {
           type: "listFiles",
           command: "ls -la src",
-          path: "/workspace/src",
+          path: workspacePath("src"),
         },
       ]);
       expect(parseCommandActions("ls", "/workspace")).toEqual([
@@ -1862,7 +1865,7 @@ describe("Codex UI projector", () => {
           type: "search",
           command: "rg 'hello' src",
           query: "hello",
-          path: "/workspace/src",
+          path: workspacePath("src"),
         },
       ]);
     });
@@ -1893,7 +1896,7 @@ describe("Codex UI projector", () => {
                 {
                   type: "listFiles",
                   command: "glob src",
-                  path: "/workspace/src",
+                  path: path.resolve("/workspace", "src"),
                 },
               ],
             },
@@ -1946,6 +1949,40 @@ describe("Codex UI projector", () => {
               ],
             },
           },
+        },
+      ]);
+    });
+
+    it("keeps a file tool visible when no trustworthy patch can be reconstructed", () => {
+      const value = projector();
+      value.project({ type: "turn.started", turnId });
+      const writeId = itemId("write-overwrite-1");
+      const item: HostToolExecutionItem = {
+        type: "toolExecution",
+        itemId: writeId,
+        toolName: "write_to_file",
+        arguments: {
+          TargetFile: "src/existing.ts",
+          Overwrite: true,
+          CodeContent: "replacement",
+        },
+      };
+      expect(value.project({ type: "item.started", turnId, item }).messages).toMatchObject([
+        {
+          method: "item/started",
+          params: { item: { id: writeId, type: "dynamicToolCall", tool: "write_to_file" } },
+        },
+      ]);
+      expect(
+        value.project({
+          type: "item.completed",
+          turnId,
+          snapshot: { item, outcome: { status: "succeeded" } },
+        }).messages,
+      ).toMatchObject([
+        {
+          method: "item/completed",
+          params: { item: { id: writeId, type: "dynamicToolCall", tool: "write_to_file" } },
         },
       ]);
     });

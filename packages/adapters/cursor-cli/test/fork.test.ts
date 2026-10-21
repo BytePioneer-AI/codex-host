@@ -7,10 +7,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import { forkCursorSession } from "../src/fork.js";
 import type * as forkSupport from "../src/fork-support.js";
+import type * as Sqlite from "node:sqlite";
 import { cursorCheckpoint } from "../src/fork-support.js";
 import { cursorConfigDirectory, readCursorNativeTurns } from "../src/native-history.js";
 import { runCursorForkTerminal } from "../src/fork-terminal.js";
 
+const sqlite = vi.hoisted(() => ({ busy: 0, calls: 0 }));
+vi.mock("node:sqlite", async (original) => {
+  const actual = await original<typeof Sqlite>();
+  return {
+    ...actual,
+    backup: (...args: Parameters<typeof actual.backup>) => {
+      sqlite.calls++;
+      if (sqlite.busy-- > 0)
+        return Promise.reject(Object.assign(new Error("not an error"), { errcode: 0 }));
+      return actual.backup(...args);
+    },
+  };
+});
 vi.mock("../src/fork-terminal.js", () => ({ runCursorForkTerminal: vi.fn() }));
 vi.mock("../src/fork-support.js", async (original) => ({
   ...(await original<typeof forkSupport>()),
@@ -18,6 +32,8 @@ vi.mock("../src/fork-support.js", async (original) => ({
 }));
 const roots: string[] = [];
 afterEach(async () => {
+  sqlite.busy = 0;
+  sqlite.calls = 0;
   vi.resetAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -271,6 +287,23 @@ describe("Cursor native fork transaction", () => {
       }),
     ).rejects.toThrow("Cursor source changed during fork");
     expect(await readdir(path.dirname(f.source))).toEqual([f.id]);
+  });
+  it("retries a native snapshot that met a concurrent source writer", async () => {
+    const f = await fixture();
+    vi.mocked(runCursorForkTerminal).mockImplementation(async (options, id) => {
+      await nativeCopy(options, id);
+    });
+    sqlite.busy = 2;
+    const result = await forkCursorSession(
+      f.sourceRef,
+      f.checkpoint,
+      f.options,
+      new AbortController().signal,
+      { sourceRunning: true },
+    );
+    expect(sqlite.calls).toBe(5);
+    expect(readCursorNativeTurns(result.sessionId, f.root, f.options.environment)).toHaveLength(1);
+    await result.discard();
   });
   it("never rolls back a running source", async () => {
     const f = await fixture(2);

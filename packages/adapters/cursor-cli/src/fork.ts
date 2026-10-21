@@ -24,13 +24,35 @@ import {
 import { cursorForkAvailable } from "./fork-support.js";
 import { runCursorForkTerminal } from "./fork-terminal.js";
 
-async function copySnapshot(source: string, target: string) {
-  const db = new DatabaseSync(path.join(source, "store.db"), { readOnly: true });
-  try {
-    await backup(db, path.join(target, "store.db"));
-  } finally {
-    db.close();
+const retryableBackupCodes = new Set([0, 5, 6]);
+
+/**
+ * Some Node releases settle a finished backup without draining its promise until the event loop
+ * wakes for another reason (nodejs/node#65666), and reject a first step that met a concurrent
+ * writer with errcode 0 (nodejs/node#66760). Keep the loop awake while the backup runs and retry
+ * those bounded cases; a running source Turn may be writing the live store concurrently.
+ */
+async function backupStore(source: string, target: string) {
+  for (let attempt = 1; ; attempt++) {
+    const db = new DatabaseSync(source, { readOnly: true });
+    const wake = setInterval(() => {}, 10);
+    try {
+      await backup(db, target);
+      return;
+    } catch (error) {
+      const code = error && typeof error === "object" && "errcode" in error ? error.errcode : -1;
+      if (attempt >= 5 || typeof code !== "number" || !retryableBackupCodes.has(code)) throw error;
+    } finally {
+      clearInterval(wake);
+      db.close();
+    }
+    await rm(target, { force: true });
+    await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
   }
+}
+
+async function copySnapshot(source: string, target: string) {
+  await backupStore(path.join(source, "store.db"), path.join(target, "store.db"));
   await copyFile(path.join(source, "meta.json"), path.join(target, "meta.json"));
 }
 

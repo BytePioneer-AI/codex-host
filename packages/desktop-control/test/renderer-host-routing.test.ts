@@ -6,7 +6,7 @@ import {
 } from "../src/renderer-draft-prewarm-policy.js";
 import type { RendererHostRouting as Routing } from "../src/renderer-host-routing.js";
 
-function setup(initialHostId: string) {
+function setup(initialHostId: string, options: { withWaitFor?: boolean } = {}) {
   const manager = (hostId: string) => ({
     getHostId: () => hostId,
     sendRequest: vi.fn(async () => ({})),
@@ -32,7 +32,7 @@ function setup(initialHostId: string) {
   const registry = {
     addManager: vi.fn(),
     getForHostId: vi.fn((hostId: string) => managers.get(hostId)),
-    waitForManagerForHostId: vi.fn(),
+    ...(options.withWaitFor === false ? {} : { waitForManagerForHostId: vi.fn() }),
   };
   const fiber = {
     memoizedProps: { executionTargetHostId: initialHostId },
@@ -79,6 +79,20 @@ it.each(["local", "remote-ssh-discovered:linux"])(
     }
   },
 );
+
+it("resolves a remote Host from a registry without waitForManagerForHostId", async () => {
+  const fixture = setup("remote-ssh-discovered:linux", { withWaitFor: false });
+  await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+  const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+  expect(routing).toBeDefined();
+  try {
+    expect(routing.forComposer()?.manager).toBe(fixture.remote);
+    expect(routing.forHost(fixture.remote.getHostId())?.manager).toBe(fixture.remote);
+    expect(routing.forHost("local")?.manager).toBe(fixture.local);
+  } finally {
+    routing.dispose();
+  }
+});
 
 it("lists both Composer Hosts despite ambiguous routing and retains them in Settings", async () => {
   const fixture = setup("local");

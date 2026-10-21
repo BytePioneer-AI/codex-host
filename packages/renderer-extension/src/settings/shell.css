@@ -1314,6 +1314,64 @@
   gap: 8px;
 }
 
+.settings-grok-computer-use {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 4px;
+  padding: 12px;
+  background: var(--settings-surface);
+  border: 1px solid var(--settings-divider);
+  border-radius: 12px;
+}
+
+.settings-grok-computer-use__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-grok-computer-use__copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-grok-computer-use__title {
+  margin: 0;
+  color: var(--settings-text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.settings-grok-computer-use__description {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.settings-grok-computer-use__help,
+.settings-grok-computer-use__status {
+  margin: 0;
+  color: var(--settings-subtle);
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.settings-grok-computer-use__help {
+  padding-top: 8px;
+  border-top: 1px solid var(--settings-divider);
+}
+
+.settings-grok-computer-use__status[data-state="on"] {
+  color: var(--settings-success);
+}
+
 .settings-connection-install-callout {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);

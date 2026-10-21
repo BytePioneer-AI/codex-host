@@ -68,6 +68,7 @@ class FakeElement {
   value = "";
   tabIndex = 0;
   disabled = false;
+  checked = false;
   focused = false;
   open = false;
   parent: FakeElement | undefined;
@@ -1443,6 +1444,69 @@ describe("Renderer Connections page", () => {
       scope.dispose();
     },
   );
+
+  it("shows a Computer Use card in the Grok inspector", async () => {
+    const messages = rendererSettingsMessages("en");
+    const getGrokComputerUse = vi.fn(async () => ({ enabled: true, available: true }));
+    const setGrokComputerUse = vi.fn(async (enabled: boolean) => ({
+      enabled,
+      available: true,
+    }));
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              {
+                agent: "grok",
+                plugin: pluginDescriptor("grok"),
+                availability: "ready",
+                error: null,
+              },
+            ],
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      getGrokComputerUse,
+      setGrokComputerUse,
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      messages,
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected connections page");
+    const document = new FakeDocument("MacIntel");
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "grok");
+    if (!row) throw new Error("Expected Grok row");
+    row.dispatch("click", { target: null });
+    const card = descendants(content).find(({ dataset }) => dataset.grokComputerUse === "true");
+    if (!card) throw new Error("Expected Grok Computer Use card");
+    expect(visibleText(card)).toContain(messages.grokComputerUseTitle);
+    expect(visibleText(card)).toContain(messages.grokComputerUseDescription);
+    expect(visibleText(card)).toContain(messages.grokComputerUseHelp);
+    const toggle = descendants(card).find(({ tagName }) => tagName === "input");
+    if (!toggle) throw new Error("Expected Computer Use switch");
+    await vi.waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(toggle.checked).toBe(true);
+    expect(visibleText(card)).toContain(messages.grokComputerUseOn);
+    expect(getGrokComputerUse).toHaveBeenCalledWith("local");
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("offers automatic installation only for Harnesses with an install command", () => {
     const installation = vi.fn(async () => {
       throw new Error("not expected");

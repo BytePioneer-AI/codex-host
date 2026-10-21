@@ -6,12 +6,15 @@ export type {
   HarnessSessionUsageObservation,
 } from "./session-usage.js";
 import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
+import type { HarnessSkillsCatalogCapability } from "./skills-catalog.js";
 
 /** A capability-only plugin: no session inspection, creation or native process ownership. */
 export interface HarnessUsageStatisticsAdapter {
   readonly harnessId: HarnessAdapter["harnessId"];
   readonly usageStatistics: HarnessUsageStatisticsCapability;
   readonly sessionUsage?: HarnessSessionUsageCapability;
+  /** Optional read-only local skill catalog for the machine-wide Skills page. */
+  readonly skillsCatalog?: HarnessSkillsCatalogCapability;
   close(): Promise<void>;
 }
 

@@ -264,6 +264,9 @@ import { ModelPriceCatalog } from "./model-prices.js";
 import { ObservedSessionUsage } from "./observed-session-usage.js";
 import type { UsageStatistics, UsageStatisticsSource } from "./usage-statistics.js";
 import { USAGE_STATISTICS_METHOD, usageStatisticsParamsSchema } from "@codexhost/shared-contracts";
+import { HARNESS_SKILLS_METHOD, harnessSkillsListParamsSchema } from "@codexhost/shared-contracts";
+import type { HarnessSkillsCatalog } from "./skills-catalog.js";
+import type { HarnessSkillsSource } from "./skills-source.js";
 import {
   carriesHostThreadListCursor,
   CodexTurnProjector,
@@ -349,6 +352,8 @@ export interface AppServerHostOptions {
   modelPrices?: ModelPriceCatalog;
   /** Machine-wide usage statistics; one per runtime, read from the loaded Harness plugins. */
   usageStatistics?: UsageStatistics;
+  /** Machine-wide skills catalog; one per runtime, read from the loaded Harness plugins. */
+  skillsCatalog?: HarnessSkillsCatalog;
 }
 
 interface TurnProjectionGate {
@@ -896,6 +901,16 @@ export class AppServerHost {
     );
   }
 
+  /** Adapters exposing local skills, enumerated after the plugins have loaded. */
+  #skillsSources(): HarnessSkillsSource[] {
+    return [...new Set([...this.#externalAdapters.values(), ...this.#usageOnlyAdapters])].flatMap(
+      (adapter) =>
+        adapter.skillsCatalog
+          ? [{ harness: adapter.harnessId, capability: adapter.skillsCatalog }]
+          : [],
+    );
+  }
+
   #waitForPlugins(): Promise<void> {
     if (!this.#pluginLoading) {
       const ready = Promise.withResolvers<undefined>();
@@ -1425,6 +1440,27 @@ export class AppServerHost {
         await this.#waitForPlugins();
         this.#attachUsageStatistics();
         const result = await statistics.get(parsed.data);
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch (error) {
+        this.#diagnose(error);
+        await this.#writer.json(rpcError(request, -32000, errorMessage(error)));
+      }
+      return;
+    }
+    if (request.method === HARNESS_SKILLS_METHOD) {
+      const parsed = harnessSkillsListParamsSchema.safeParse(request.params ?? {});
+      const catalog = this.#options.skillsCatalog;
+      if (!parsed.success || !catalog) {
+        await this.#writer.json(
+          parsed.success
+            ? rpcError(request, -32000, "Skills catalog is unavailable on this Host")
+            : rpcError(request, -32602, "Invalid skills catalog request"),
+        );
+        return;
+      }
+      try {
+        await this.#waitForPlugins();
+        const result = await catalog.list(this.#skillsSources());
         await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       } catch (error) {
         this.#diagnose(error);

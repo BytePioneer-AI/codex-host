@@ -277,7 +277,9 @@ export function createSkillsPage(
                 "h2",
                 { className: "settings-section-label" },
                 groupTitle(group),
-                ` · ${format(messages.count, { count: visible.length })}`,
+                ...(visibleGroups.length > 1
+                  ? [` · ${format(messages.count, { count: visible.length })}`]
+                  : []),
               ),
               ...group.failures.map((failure) =>
                 h(

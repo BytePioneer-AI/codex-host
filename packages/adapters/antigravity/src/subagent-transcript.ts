@@ -24,6 +24,7 @@ const transcriptStepSchema = z.object({
   type: z.string(),
   status: z.string(),
   content: z.string().optional(),
+  thinking: z.string().optional(),
   tool_calls: z.array(z.object({ name: z.string(), args: z.unknown().optional() })).optional(),
 });
 
@@ -156,6 +157,18 @@ export function parseSubagentTranscript(
           }
         : { status: "succeeded" };
     if (step.type === "PLANNER_RESPONSE") {
+      if (step.thinking) {
+        current.items.push({
+          item: {
+            type: "reasoning",
+            itemId: hostItemIdSchema.parse(
+              `agy-${parentId}-${childId}-${step.step_index}-reasoning`,
+            ),
+            text: step.thinking.slice(0, outputLimit),
+          },
+          outcome,
+        });
+      }
       if (step.content) {
         current.items.push({
           item: { type: "agentMessage", itemId, text: step.content.slice(0, outputLimit) },

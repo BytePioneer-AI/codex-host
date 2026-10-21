@@ -1,4 +1,5 @@
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -13,6 +14,8 @@ import {
 } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
+import { nativeBrainDirPath } from "../src/fork.js";
+import { AntigravityHistory } from "../src/history.js";
 import {
   ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
   AntigravityAdapter,
@@ -27,6 +30,7 @@ import {
   parseAntigravityStreamLine,
   parseAntigravityUsageCommand,
   permissionDeniedTurnError,
+  readTranscriptContextUsage,
   resolveAntigravityContextWindow,
 } from "../src/index.js";
 
@@ -862,6 +866,151 @@ if (${keepAlive}) {
       }
     });
 
+    it("marks intermediate agent messages as commentary when closed before tool execution", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: "conv-commentary-1",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-commentary-1",
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "agent_response",
+            text_delta: "Checking the code first.",
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-commentary-1",
+            step_index: 2,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "default_api:read_file",
+            tool_info: {
+              name: "read_file",
+              parameters: {
+                Path: "/workspace/src/app.ts",
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-commentary-1",
+            step_index: 2,
+            state: "DONE",
+            step_type: "tool",
+            tool_info: { output: "console.log(1);" },
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-commentary-1",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "Done inspecting.",
+          },
+        }),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const dataDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-test-"));
+      const environment: NodeJS.ProcessEnv = {
+        ...process.env,
+        CODEXHOST_DATA_DIR: dataDirectory,
+        CODEXHOST_THREAD_ID: "thread-commentary",
+      };
+      const adapter = new AntigravityAdapter({ command, environment });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-commentary");
+        const executed = await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "inspect" }],
+        });
+        expect(executed.ok).toBe(true);
+
+        // Event 1: turn.started
+        await nextEvent(iterator);
+        // Event 2: session.state.changed
+        await nextEvent(iterator);
+        // Event 3: item.started for preamble
+        const preambleStarted = await nextEvent(iterator);
+        expect(preambleStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: { type: "agentMessage", text: "Checking the code first." },
+        });
+        // Event 4: item.completed for preamble with commentary phase!
+        const preambleCompleted = await nextEvent(iterator);
+        expect(preambleCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: { type: "agentMessage", text: "Checking the code first.", phase: "commentary" },
+            outcome: { status: "succeeded" },
+          },
+        });
+        // Event 5: item.started for read_file
+        const readStarted = await nextEvent(iterator);
+        expect(readStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: { type: "toolExecution", toolName: "default_api:read_file" },
+        });
+        // Event 6: item.completed for read_file
+        await nextEvent(iterator);
+        // Event 7: item.started for final answer
+        await nextEvent(iterator);
+        // Event 8: item.completed for final answer
+        const finalCompleted = await nextEvent(iterator);
+        expect(finalCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              text: "Done inspecting.",
+              phase: "final_answer",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+        // Event 9: turn.completed
+        await nextEvent(iterator);
+
+        await session.close();
+        await adapter.close();
+
+        const restoredHistory = await AntigravityHistory.findByNativeSessionId(
+          environment,
+          "conv-commentary-1",
+        );
+        expect(restoredHistory).not.toBeNull();
+        const turnSnapshot = restoredHistory?.snapshot()[0];
+        const startedAtMs = turnSnapshot?.startedAtMs ?? -1;
+        const completedAtMs = turnSnapshot?.completedAtMs ?? -2;
+        expect(startedAtMs).toBeGreaterThan(0);
+        expect(completedAtMs).toBeGreaterThanOrEqual(startedAtMs);
+      } finally {
+        await adapter.close();
+        await cleanup();
+        await rm(dataDirectory, { recursive: true, force: true });
+      }
+    });
+
     it.each([
       ["Synthetic native failure detail", true],
       ["UNAVAILABLE (code 503): upstream temporarily unavailable", true],
@@ -1666,6 +1815,330 @@ if (count === 0) {
 
       // Idempotency: does not double-inject if instruction already present
       expect(formatAntigravityTurnPrompt(formatted)).toBe(formatted);
+    });
+
+    it("reads transcript context usage and calculates input plus cached tokens", async () => {
+      const tempHome = await mkdtemp(path.join(os.tmpdir(), "codexhost-transcript-test-"));
+      try {
+        const convId = "test-conv-usage-456";
+        const logsDir = path.join(
+          tempHome,
+          ".gemini",
+          "antigravity-cli",
+          "brain",
+          convId,
+          ".system_generated",
+          "logs",
+        );
+        await mkdir(logsDir, { recursive: true });
+
+        // Non-existent returns null
+        const missing = await readTranscriptContextUsage(
+          "non-existent-conv",
+          "gemini-3.7-flash",
+          tempHome,
+        );
+        expect(missing).toBeNull();
+
+        // Write transcript lines
+        const lines = [
+          JSON.stringify({ step_index: 1, type: "USER_INPUT", content: "hello" }),
+          JSON.stringify({
+            step_index: 2,
+            type: "PLANNER_RESPONSE",
+            input_tokens: 45_000,
+            cache_read_tokens: 15_000,
+            context_window_tokens: 1_048_576,
+          }),
+        ];
+        await writeFile(path.join(logsDir, "transcript.jsonl"), lines.join("\n"), "utf8");
+
+        const usage = await readTranscriptContextUsage(convId, "gemini-3.7-flash", tempHome);
+        expect(usage).not.toBeNull();
+        expect(usage?.contextUsedTokens).toBe(60_000);
+        expect(usage?.contextWindowTokens).toBe(1_048_576);
+      } finally {
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
+    describe("Thinking Projection & Response Deduplication", () => {
+      it("does not re-emit thinking steps from previous turns in the same session", async () => {
+        const convId = `test-thinking-${randomUUID()}`;
+        const brainDir = path.join(nativeBrainDirPath(convId), ".system_generated", "logs");
+        await mkdir(brainDir, { recursive: true });
+        const transcriptPath = path.join(brainDir, "transcript_full.jsonl");
+
+        const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-thinking-test-"));
+        const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-thinking-cwd-"));
+        const runsDir = path.join(directory, "runs");
+        const jsPath = path.join(directory, "agy.cjs");
+
+        const scriptContent = `
+const fs = require('fs');
+const path = require('path');
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (!process.argv.includes("--input-format")) {
+  process.exit(0);
+}
+const runsDir = ${JSON.stringify(runsDir)};
+const transcriptPath = ${JSON.stringify(transcriptPath)};
+fs.mkdirSync(runsDir, { recursive: true });
+const count = fs.readdirSync(runsDir).length;
+fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), "");
+
+if (count === 0) {
+  process.stdout.write(JSON.stringify({ event: "init", conversation_id: ${JSON.stringify(convId)}, init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+  setTimeout(() => {
+    fs.writeFileSync(transcriptPath, JSON.stringify({ source: "MODEL", type: "PLANNER_RESPONSE", step_index: 1, thinking: "Turn 1 Thought" }) + "\\n");
+    process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: ${JSON.stringify(convId)}, step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "Turn 1 answer" } }) + "\\n");
+    process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: ${JSON.stringify(convId)}, status: "SUCCESS", num_turns: 1, response: "Turn 1 answer" } }) + "\\n");
+    setTimeout(() => process.exit(0), 50);
+  }, 30);
+} else {
+  process.stdout.write(JSON.stringify({ event: "init", conversation_id: ${JSON.stringify(convId)}, init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+  setTimeout(() => {
+    fs.appendFileSync(transcriptPath, JSON.stringify({ source: "MODEL", type: "PLANNER_RESPONSE", step_index: 2, thinking: "Turn 2 Thought" }) + "\\n");
+    process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: ${JSON.stringify(convId)}, step_index: 2, state: "DONE", step_type: "agent_response", text_delta: "Turn 2 answer" } }) + "\\n");
+    process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: ${JSON.stringify(convId)}, status: "SUCCESS", num_turns: 2, response: "Turn 2 answer" } }) + "\\n");
+    setTimeout(() => process.exit(0), 50);
+  }, 30);
+}
+`;
+        await writeFile(jsPath, scriptContent);
+        let command: string;
+        if (process.platform === "win32") {
+          command = path.join(directory, "agy.cmd");
+          await writeFile(command, `@node "${jsPath}" %*\r\n`);
+        } else {
+          command = path.join(directory, "agy");
+          await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+          await chmod(command, 0o755);
+        }
+
+        const adapter = new AntigravityAdapter({ command });
+        try {
+          const opened = await adapter.open({ kind: "create", cwd });
+          expect(opened.ok).toBe(true);
+          if (!opened.ok) return;
+          const session = opened.value;
+          const iterator = session.outputs[Symbol.asyncIterator]();
+
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-1"),
+            input: [{ type: "text", text: "turn 1 prompt" }],
+          });
+
+          const turn1Reasoning: string[] = [];
+          while (true) {
+            const ev = await nextEvent(iterator);
+            if (ev.type === "item.completed" && ev.snapshot.item.type === "reasoning") {
+              turn1Reasoning.push(ev.snapshot.item.text);
+            }
+            if (ev.type === "turn.completed") break;
+          }
+          expect(turn1Reasoning).toEqual(["Turn 1 Thought"]);
+
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-2"),
+            input: [{ type: "text", text: "turn 2 prompt" }],
+          });
+
+          const turn2Reasoning: string[] = [];
+          while (true) {
+            const ev = await nextEvent(iterator);
+            if (ev.type === "item.completed" && ev.snapshot.item.type === "reasoning") {
+              turn2Reasoning.push(ev.snapshot.item.text);
+            }
+            if (ev.type === "turn.completed") break;
+          }
+          expect(turn2Reasoning).toEqual(["Turn 2 Thought"]);
+
+          await session.close();
+        } finally {
+          await adapter.close();
+          await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+          await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+          await rm(nativeBrainDirPath(convId), {
+            recursive: true,
+            force: true,
+            maxRetries: 5,
+            retryDelay: 50,
+          });
+        }
+      });
+
+      it("deduplicates preamble agent text when result.response contains full text", async () => {
+        const convId = `test-dedup-${randomUUID()}`;
+        const streamLines = [
+          JSON.stringify({
+            event: "init",
+            conversation_id: convId,
+            init: { permission_mode: "dangerously-skip-permissions" },
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: convId,
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text_delta: "I will inspect the files first.\n",
+            },
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: convId,
+              step_index: 2,
+              state: "DONE",
+              step_type: "tool",
+              tool_name: "read_file",
+              duration_seconds: 0.1,
+              tool_info: {
+                name: "read_file",
+                parameters: { Path: "/test.txt" },
+                output: "file content",
+              },
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: convId,
+              status: "SUCCESS",
+              num_turns: 1,
+              response: "I will inspect the files first.\nHere is what I found in test.txt.",
+            },
+          }),
+        ];
+
+        const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+        const adapter = new AntigravityAdapter({ command });
+        try {
+          const opened = await adapter.open({ kind: "create", cwd });
+          expect(opened.ok).toBe(true);
+          if (!opened.ok) return;
+          const session = opened.value;
+          const iterator = session.outputs[Symbol.asyncIterator]();
+
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-dedup"),
+            input: [{ type: "text", text: "inspect file" }],
+          });
+
+          const agentMessages: string[] = [];
+          while (true) {
+            const ev = await nextEvent(iterator);
+            if (ev.type === "item.completed" && ev.snapshot.item.type === "agentMessage") {
+              agentMessages.push(ev.snapshot.item.text);
+            }
+            if (ev.type === "turn.completed") break;
+          }
+
+          expect(agentMessages.length).toBe(2);
+          expect(agentMessages[0]).toBe("I will inspect the files first.\n");
+          expect(agentMessages[1]).toBe("Here is what I found in test.txt.");
+
+          await session.close();
+        } finally {
+          await adapter.close();
+          await cleanup();
+        }
+      });
+
+      it("pre-populates existing transcript steps so resuming an existing session never re-emits past thoughts", async () => {
+        const convId = `test-resume-${randomUUID()}`;
+        const brainDir = path.join(nativeBrainDirPath(convId), ".system_generated", "logs");
+        await mkdir(brainDir, { recursive: true });
+        const transcriptPath = path.join(brainDir, "transcript_full.jsonl");
+
+        await writeFile(
+          transcriptPath,
+          `${JSON.stringify({
+            source: "MODEL",
+            type: "PLANNER_RESPONSE",
+            step_index: 10,
+            thinking: "Historical past thought 1",
+          })}\n${JSON.stringify({
+            source: "MODEL",
+            type: "PLANNER_RESPONSE",
+            step_index: 11,
+            thinking: "Historical past thought 2",
+          })}\n`,
+        );
+
+        const streamLines = [
+          JSON.stringify({
+            event: "init",
+            conversation_id: convId,
+            init: { permission_mode: "dangerously-skip-permissions" },
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: convId,
+              step_index: 12,
+              state: "DONE",
+              step_type: "agent_response",
+              text_delta: "New turn reply",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: convId,
+              status: "SUCCESS",
+              num_turns: 2,
+              response: "New turn reply",
+            },
+          }),
+        ];
+
+        const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+        const adapter = new AntigravityAdapter({ command });
+        try {
+          const opened = await adapter.open({ kind: "create", cwd });
+          expect(opened.ok).toBe(true);
+          if (!opened.ok) return;
+          const session = opened.value;
+          const iterator = session.outputs[Symbol.asyncIterator]();
+
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-resume"),
+            input: [{ type: "text", text: "hello again" }],
+          });
+
+          const emittedReasoning: string[] = [];
+          while (true) {
+            const ev = await nextEvent(iterator);
+            if (ev.type === "item.completed" && ev.snapshot.item.type === "reasoning") {
+              emittedReasoning.push(ev.snapshot.item.text);
+            }
+            if (ev.type === "turn.completed") break;
+          }
+
+          expect(emittedReasoning).toEqual([]);
+
+          await session.close();
+        } finally {
+          await adapter.close();
+          await cleanup();
+          await rm(nativeBrainDirPath(convId), {
+            recursive: true,
+            force: true,
+            maxRetries: 5,
+            retryDelay: 50,
+          });
+        }
+      });
     });
   });
 });

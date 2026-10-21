@@ -7,6 +7,7 @@ export {
   formatAntigravityTurnPrompt,
   parseAntigravityContextUsage,
   permissionDeniedTurnError,
+  readTranscriptContextUsage,
   resolveAntigravityContextWindow,
 } from "./antigravity-adapter.js";
 export type { AntigravityAdapterOptions } from "./antigravity-adapter.js";

@@ -31,6 +31,7 @@ import {
   type HostItem,
   type HostItemOutcome,
   type HostItemSnapshot,
+  type HostReasoningItem,
   type HostSubagentState,
   type HostThreadSnapshot,
   type HostUsage,
@@ -68,7 +69,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { resolveAntigravityExecutable } from "./command.js";
-import { forkAntigravitySession } from "./fork.js";
+import { forkAntigravitySession, nativeBrainDirPath } from "./fork.js";
 import { AntigravityHistory } from "./history.js";
 import {
   antigravityAvailableThinkingOptions,
@@ -118,6 +119,7 @@ export interface AntigravityAdapterOptions {
 }
 
 interface ActiveTurn {
+  startedAtMs: number;
   command: TurnStartCommand;
   /** Model passed to this CLI invocation, independent of later selections. */
   model: HarnessModelRef | undefined;
@@ -130,6 +132,7 @@ interface ActiveTurn {
   agentText: string;
   tools: Map<number, HostItem>;
   completedItems: HostItemSnapshot[];
+  emittedAgentTexts: string[];
   stderr: string;
   cancellationRequested: boolean;
   receivedResult: boolean;
@@ -278,14 +281,17 @@ function contextWindowMetadata(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   const trajectory = isRecord(value.trajectory) ? value.trajectory : value;
   const generatorMetadata = trajectory.generatorMetadata;
-  if (!Array.isArray(generatorMetadata)) return null;
-  const first = generatorMetadata[0];
-  if (!isRecord(first) || !isRecord(first.chatModel)) return null;
-  const chatStartMetadata = first.chatModel.chatStartMetadata;
-  if (!isRecord(chatStartMetadata) || !isRecord(chatStartMetadata.contextWindowMetadata)) {
-    return null;
+  if (!Array.isArray(generatorMetadata) || generatorMetadata.length === 0) return null;
+  for (let i = generatorMetadata.length - 1; i >= 0; i--) {
+    const entry = generatorMetadata[i];
+    if (isRecord(entry) && isRecord(entry.chatModel)) {
+      const chatStartMetadata = entry.chatModel.chatStartMetadata;
+      if (isRecord(chatStartMetadata) && isRecord(chatStartMetadata.contextWindowMetadata)) {
+        return chatStartMetadata.contextWindowMetadata;
+      }
+    }
   }
-  return chatStartMetadata.contextWindowMetadata;
+  return null;
 }
 
 /** Parses the real context counters exposed by agy's local Language Server. */
@@ -314,6 +320,7 @@ function requestAntigravityContextUsage(
   timeoutMs: number,
   modelId?: string,
 ): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
+  const csrfToken = process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
   return new Promise((resolve) => {
     const request = https.request(
       {
@@ -323,7 +330,11 @@ function requestAntigravityContextUsage(
         method: "POST",
         rejectUnauthorized: false,
         timeout: timeoutMs,
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "connect-protocol-version": "1",
+          ...(csrfToken ? { "x-codeium-csrf-token": csrfToken } : {}),
+        },
       },
       (response) => {
         let body = "";
@@ -353,6 +364,124 @@ function requestAntigravityContextUsage(
   });
 }
 
+export async function readTranscriptContextUsage(
+  conversationId: string,
+  modelId?: string,
+  homedir = os.homedir(),
+): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
+  if (!conversationId) return null;
+  const dir = path.join(nativeBrainDirPath(conversationId, homedir), ".system_generated", "logs");
+  const candidates = [path.join(dir, "transcript.jsonl"), path.join(dir, "transcript_full.jsonl")];
+  let content = "";
+  for (const candidate of candidates) {
+    try {
+      content = await readFile(candidate, "utf8");
+      if (content.length > 0) break;
+    } catch {
+      // Fall through to next candidate.
+    }
+  }
+  if (!content) return null;
+  const lines = content.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (!isRecord(parsed)) continue;
+      const input = safeToken(parsed.input_tokens);
+      if (input !== undefined) {
+        const cached = safeToken(parsed.cache_read_tokens) ?? 0;
+        const used = input + cached;
+        const rawWindow = safeToken(parsed.context_window_tokens ?? parsed.max_context_tokens);
+        const contextWindowTokens = resolveAntigravityContextWindow(modelId, rawWindow);
+        if (contextWindowTokens !== undefined && contextWindowTokens > 0) {
+          return { contextUsedTokens: used, contextWindowTokens };
+        }
+      }
+    } catch {
+      // Skip malformed trailing line.
+    }
+  }
+  return null;
+}
+
+async function readTranscriptThinkingSteps(
+  conversationId: string,
+  seenSteps: Set<number>,
+): Promise<Array<{ stepIndex: number; thinking: string }>> {
+  if (!conversationId) return [];
+  const dir = path.join(nativeBrainDirPath(conversationId), ".system_generated", "logs");
+  const candidates = [path.join(dir, "transcript_full.jsonl"), path.join(dir, "transcript.jsonl")];
+  let content = "";
+  for (const candidate of candidates) {
+    try {
+      content = await readFile(candidate, "utf8");
+      if (content.length > 0) break;
+    } catch {
+      // Fall through to next candidate.
+    }
+  }
+  if (!content) return [];
+  const results: Array<{ stepIndex: number; thinking: string }> = [];
+  const lines = content.split("\n");
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (
+        isRecord(parsed) &&
+        parsed.source === "MODEL" &&
+        parsed.type === "PLANNER_RESPONSE" &&
+        typeof parsed.step_index === "number" &&
+        typeof parsed.thinking === "string" &&
+        parsed.thinking.trim().length > 0
+      ) {
+        if (!seenSteps.has(parsed.step_index)) {
+          results.push({ stepIndex: parsed.step_index, thinking: parsed.thinking });
+        }
+      }
+    } catch {
+      // Skip incomplete trailing line.
+    }
+  }
+  return results;
+}
+
+async function readAllExistingTranscriptSteps(conversationId: string): Promise<Set<number>> {
+  const steps = new Set<number>();
+  if (!conversationId) return steps;
+  const dir = path.join(nativeBrainDirPath(conversationId), ".system_generated", "logs");
+  const candidates = [path.join(dir, "transcript_full.jsonl"), path.join(dir, "transcript.jsonl")];
+  let content = "";
+  for (const candidate of candidates) {
+    try {
+      content = await readFile(candidate, "utf8");
+      if (content.length > 0) break;
+    } catch {
+      // Fall through to next candidate.
+    }
+  }
+  if (!content) return steps;
+  const lines = content.split("\n");
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (
+        isRecord(parsed) &&
+        parsed.source === "MODEL" &&
+        parsed.type === "PLANNER_RESPONSE" &&
+        typeof parsed.step_index === "number"
+      ) {
+        steps.add(parsed.step_index);
+      }
+    } catch {
+      // Skip incomplete trailing line.
+    }
+  }
+  return steps;
+}
 async function antigravityHttpsPort(logPath: string): Promise<number | null> {
   try {
     const log = await readFile(logPath, "utf8");
@@ -374,6 +503,8 @@ async function pollAntigravityContextUsage(
 ): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
   const deadline = Date.now() + CONTEXT_USAGE_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    const transcriptUsage = await readTranscriptContextUsage(conversationId, modelId);
+    if (transcriptUsage) return transcriptUsage;
     const port = await antigravityHttpsPort(logPath);
     if (port !== null) {
       const usage = await requestAntigravityContextUsage(
@@ -387,7 +518,7 @@ async function pollAntigravityContextUsage(
     if (isDone?.()) break;
     await new Promise<void>((resolve) => setTimeout(resolve, CONTEXT_USAGE_RETRY_MS));
   }
-  return null;
+  return await readTranscriptContextUsage(conversationId, modelId);
 }
 
 function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostUsage | null {
@@ -396,12 +527,10 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
   const outputTokens = safeToken(value.output_tokens);
   const reasoningOutputTokens = safeToken(value.thinking_tokens);
   const totalTokens = safeToken(value.total_tokens);
-  const contextUsedTokens = safeToken(
-    value.context_used_tokens ?? value.estimated_tokens_used ?? value.input_tokens,
-  );
+  const contextUsedTokens = safeToken(value.context_used_tokens ?? value.estimated_tokens_used);
   const rawWindow = safeToken(value.context_window_tokens ?? value.max_context_tokens);
   const contextWindowTokens =
-    contextUsedTokens !== undefined || rawWindow !== undefined
+    contextUsedTokens !== undefined || rawWindow !== undefined || modelId !== undefined
       ? resolveAntigravityContextWindow(modelId, rawWindow)
       : undefined;
   const usage: HostUsage = {
@@ -409,10 +538,11 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
-    ...(contextUsedTokens !== undefined &&
-    contextWindowTokens !== undefined &&
-    contextWindowTokens > 0
-      ? { contextUsedTokens, contextWindowTokens }
+    ...(contextWindowTokens !== undefined && contextWindowTokens > 0
+      ? {
+          contextWindowTokens,
+          ...(contextUsedTokens !== undefined ? { contextUsedTokens } : {}),
+        }
       : {}),
   };
   return Object.keys(usage).length > 0 ? usage : null;
@@ -500,6 +630,8 @@ class AntigravitySession implements HarnessSession {
   readonly #subagentObservationTimeoutMs: number;
   readonly #history: AntigravityHistory;
   readonly #subagentObservers = new Set<AntigravitySubagents>();
+  readonly #emittedReasoningSteps = new Set<number>();
+  #initializedTranscriptSteps = false;
   #active: ActiveTurn | null = null;
   #preparingQuestions: Promise<AntigravityQuestionBridge> | null = null;
   #questionCleanup: Promise<void> = Promise.resolve();
@@ -658,9 +790,7 @@ class AntigravitySession implements HarnessSession {
         const active = this.#active;
         if (!active || active.command !== command) return;
         if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
-          this.#completeItem(active, active.agentItem, { status: "succeeded" });
-          active.agentItem = null;
-          active.agentText = "";
+          this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
         }
         if (output.kind === "event" && output.event.type === "item.completed") {
           active.completedItems.push(output.event.snapshot);
@@ -720,6 +850,7 @@ class AntigravitySession implements HarnessSession {
       };
     }
     const active: ActiveTurn = {
+      startedAtMs: Date.now(),
       command,
       model: this.#model,
       process: child,
@@ -754,6 +885,7 @@ class AntigravitySession implements HarnessSession {
       agentText: "",
       tools: new Map(),
       completedItems: [],
+      emittedAgentTexts: [],
       stderr: "",
       cancellationRequested: false,
       receivedResult: false,
@@ -887,6 +1019,11 @@ class AntigravitySession implements HarnessSession {
       });
       this.#history.bindNativeSession(event.conversation_id);
       this.#event({ type: "session.state.changed", state: this.#state() });
+      if (!this.#initializedTranscriptSteps) {
+        this.#initializedTranscriptSteps = true;
+        const existing = await readAllExistingTranscriptSteps(event.conversation_id);
+        for (const step of existing) this.#emittedReasoningSteps.add(step);
+      }
       this.#ensureContextUsage(active, event.conversation_id);
       return;
     }
@@ -924,10 +1061,15 @@ class AntigravitySession implements HarnessSession {
     const usage = hostUsage(event.result.usage, active.model?.id);
     if (usage) this.#publishUsage(active, usage);
     this.#ensureContextUsage(active, event.result.conversation_id);
-    if (active.contextUsagePromise) {
-      const contextUsage = await active.contextUsagePromise;
-      if (contextUsage) this.#publishUsage(active, contextUsage);
-    }
+    const contextUsage =
+      (await readTranscriptContextUsage(
+        resultConversationId ||
+          event.result.conversation_id ||
+          this.#nativeRef?.nativeSessionId ||
+          "",
+        active.model?.id,
+      )) ?? (active.contextUsagePromise ? await active.contextUsagePromise : null);
+    if (contextUsage) this.#publishUsage(active, contextUsage);
     await active.subagents.refresh();
     if (this.#active !== active) return;
     const convId = resultConversationId || this.#nativeRef?.nativeSessionId || "";
@@ -940,6 +1082,9 @@ class AntigravitySession implements HarnessSession {
       });
       this.#history.bindNativeSession(convId);
       this.#event({ type: "session.state.changed", state: this.#state() });
+    }
+    if (convId && !active.agentItem && active.emittedAgentTexts.length === 0) {
+      await this.#syncReasoning(active, convId);
     }
     if (event.result.response) {
       this.#appendOrSyncAgentText(active, event.result.response, false);
@@ -1025,11 +1170,15 @@ class AntigravitySession implements HarnessSession {
     active: ActiveTurn,
     step: AntigravityStepUpdateEvent["step_update"],
   ): Promise<void> {
+    if (
+      step.conversation_id &&
+      (step.step_type === "tool" || step.step_type === "subagent" || !active.agentItem)
+    ) {
+      await this.#syncReasoning(active, step.conversation_id);
+    }
     if (step.step_type === "subagent") {
       if (active.agentItem) {
-        this.#completeItem(active, active.agentItem, { status: "succeeded" });
-        active.agentItem = null;
-        active.agentText = "";
+        this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
       }
       if (active.subagents.handle(step)) return;
       step = { ...step, step_type: "tool" };
@@ -1051,9 +1200,7 @@ class AntigravitySession implements HarnessSession {
     }
     if (step.step_type !== "tool") return;
     if (active.agentItem) {
-      this.#completeItem(active, active.agentItem, { status: "succeeded" });
-      active.agentItem = null;
-      active.agentText = "";
+      this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
     }
     const merged = mergePendingStep(active.pendingSteps.get(step.step_index), step);
     let item = active.tools.get(step.step_index);
@@ -1151,27 +1298,132 @@ class AntigravitySession implements HarnessSession {
     return port;
   }
 
+  async #syncReasoning(active: ActiveTurn, conversationId: string): Promise<void> {
+    const thinkingSteps = await readTranscriptThinkingSteps(
+      conversationId,
+      this.#emittedReasoningSteps,
+    );
+    if (thinkingSteps.length === 0) return;
+    for (const { stepIndex, thinking } of thinkingSteps) {
+      this.#emittedReasoningSteps.add(stepIndex);
+      const itemId = this.#newItemId();
+      const item: HostReasoningItem = {
+        type: "reasoning",
+        itemId,
+        text: thinking,
+      };
+      this.#event({
+        type: "item.started",
+        turnId: active.command.turnId,
+        item: { type: "reasoning", itemId, text: "" },
+      });
+      this.#event({
+        type: "item.updated",
+        turnId: active.command.turnId,
+        itemId,
+        update: { type: "text.append", text: thinking },
+      });
+      this.#completeItem(active, item, { status: "succeeded" });
+    }
+  }
+
+  #closeAgentItem(
+    active: ActiveTurn,
+    outcome: HostItemOutcome = { status: "succeeded" },
+    phase?: "commentary" | "final_answer",
+  ): void {
+    if (!active.agentItem) return;
+    const item = phase ? { ...active.agentItem, phase } : active.agentItem;
+    this.#completeItem(active, item, outcome);
+    const trimmed = active.agentText.trim();
+    if (trimmed.length > 0) {
+      active.emittedAgentTexts.push(active.agentText);
+    }
+    active.agentItem = null;
+    active.agentText = "";
+  }
+
   #appendOrSyncAgentText(active: ActiveTurn, text: string, isExplicitDelta: boolean): void {
     if (!text) return;
-    if (isExplicitDelta || !active.agentItem) {
+    if (isExplicitDelta) {
       this.#appendAgentText(active, text);
       return;
     }
-    if (
-      text === active.agentText ||
-      active.agentText.startsWith(text) ||
-      active.agentText.trim() === text.trim() ||
-      active.agentText.endsWith(text) ||
-      active.agentText.includes(text.trim())
-    ) {
+    const trimmedIncoming = text.trim();
+    if (!trimmedIncoming) return;
+
+    if (active.agentItem) {
+      const trimmedActive = active.agentText.trim();
+      if (
+        text === active.agentText ||
+        trimmedActive === trimmedIncoming ||
+        active.agentText.startsWith(text) ||
+        active.agentText.endsWith(text) ||
+        active.agentText.includes(trimmedIncoming)
+      ) {
+        return;
+      }
+      if (text.startsWith(active.agentText)) {
+        const delta = text.slice(active.agentText.length);
+        if (delta.length > 0) this.#appendAgentText(active, delta);
+        return;
+      }
+    }
+
+    if (active.emittedAgentTexts.length > 0) {
+      if (
+        active.emittedAgentTexts.some((prev) => {
+          const p = prev.trim();
+          return p === trimmedIncoming || p.includes(trimmedIncoming);
+        })
+      ) {
+        return;
+      }
+
+      const concatenated = active.emittedAgentTexts.map((t) => t.trim()).join("\n\n");
+      if (
+        concatenated === trimmedIncoming ||
+        concatenated.replace(/\s+/gu, " ") === trimmedIncoming.replace(/\s+/gu, " ")
+      ) {
+        return;
+      }
+
+      let remaining = trimmedIncoming;
+      for (const prev of active.emittedAgentTexts) {
+        const p = prev.trim();
+        if (p.length > 0 && remaining.startsWith(p)) {
+          remaining = remaining.slice(p.length).trim();
+        }
+      }
+      if (!remaining) return;
+      if (
+        active.emittedAgentTexts.some((prev) => {
+          const p = prev.trim();
+          return p === remaining || p.includes(remaining);
+        })
+      ) {
+        return;
+      }
+
+      if (active.agentItem) {
+        const trimmedActive = active.agentText.trim();
+        if (trimmedActive === remaining || active.agentText.includes(remaining)) {
+          return;
+        }
+        if (remaining.startsWith(active.agentText)) {
+          const delta = remaining.slice(active.agentText.length);
+          if (delta.length > 0) this.#appendAgentText(active, delta);
+          return;
+        }
+      }
+
+      this.#appendAgentText(active, remaining);
       return;
     }
-    if (text.startsWith(active.agentText)) {
-      const delta = text.slice(active.agentText.length);
-      if (delta.length > 0) this.#appendAgentText(active, delta);
-      return;
+
+    if (!active.agentItem) {
+      this.#appendAgentText(active, text);
     }
-    this.#appendAgentText(active, text);
   }
 
   #appendAgentText(active: ActiveTurn, text: string): void {
@@ -1213,7 +1465,6 @@ class AntigravitySession implements HarnessSession {
           ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
           : { status: "succeeded" };
     active.subagents.finish(itemOutcome);
-    if (active.agentItem) this.#completeItem(active, active.agentItem, itemOutcome);
     // A step whose patch never resolved still ran, so an interrupted Turn
     // reports it as a Tool Execution rather than dropping it silently.
     for (const step of active.pendingSteps.values()) {
@@ -1224,6 +1475,13 @@ class AntigravitySession implements HarnessSession {
     active.pendingSteps.clear();
     for (const item of active.tools.values()) this.#completeItem(active, item, itemOutcome);
     active.tools.clear();
+    if (active.agentItem) {
+      this.#closeAgentItem(
+        active,
+        itemOutcome,
+        itemOutcome.status === "succeeded" ? "final_answer" : "commentary",
+      );
+    }
     if (nativeTurnRef) {
       this.#history.append({
         nativeTurnRef,
@@ -1239,6 +1497,8 @@ class AntigravitySession implements HarnessSession {
             : outcome.status === "cancelled"
               ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
               : { status: "succeeded" },
+        startedAtMs: active.startedAtMs,
+        completedAtMs: Date.now(),
         ...(this.#model ? { model: this.#model } : {}),
       });
     }

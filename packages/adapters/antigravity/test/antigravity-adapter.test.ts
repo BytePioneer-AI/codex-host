@@ -1026,6 +1026,105 @@ if (${keepAlive}) {
       }
     });
 
+    it("preserves final answer even when it is a substring of an earlier commentary", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: "conv-substring-1",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-substring-1",
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "agent_response",
+            text_delta: "I am checking tests. All good.",
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-substring-1",
+            step_index: 2,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "default_api:read_file",
+            tool_info: {
+              parameters: { Path: "/test.ts" },
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-substring-1",
+            step_index: 2,
+            state: "DONE",
+            step_type: "tool",
+            tool_info: { output: "pass" },
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-substring-1",
+            status: "SUCCESS",
+            num_turns: 1,
+            // "All good." is a substring of the earlier commentary "I am checking tests. All good."
+            response: "All good.",
+          },
+        }),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const dataDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-test-"));
+      const environment: NodeJS.ProcessEnv = {
+        ...process.env,
+        CODEXHOST_DATA_DIR: dataDirectory,
+        CODEXHOST_THREAD_ID: "thread-substring",
+      };
+      const adapter = new AntigravityAdapter({ command, environment });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-substring");
+        const executed = await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "run check" }],
+        });
+        expect(executed).toEqual({ ok: true, value: { turnId } });
+
+        // Drain until item.completed with final_answer
+        let finalAnswerFound = false;
+        while (true) {
+          const next = await nextEvent(iterator);
+          if (
+            next.type === "item.completed" &&
+            next.snapshot.item.type === "agentMessage" &&
+            next.snapshot.item.phase === "final_answer"
+          ) {
+            expect(next.snapshot.item.text).toBe("All good.");
+            finalAnswerFound = true;
+          }
+          if (next.type === "turn.completed") break;
+        }
+        expect(finalAnswerFound).toBe(true);
+
+        await session.close();
+        await adapter.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+        await rm(dataDirectory, { recursive: true, force: true });
+      }
+    });
+
     it.each([
       ["Synthetic native failure detail", true],
       ["UNAVAILABLE (code 503): upstream temporarily unavailable", true],

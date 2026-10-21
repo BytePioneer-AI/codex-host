@@ -163,6 +163,12 @@ const FILE_PATH_KEYS = [
   "AbsolutePath",
   "absolutePath",
   "absolute_path",
+  "DirectoryPath",
+  "directory_path",
+  "directoryPath",
+  "SearchPath",
+  "search_path",
+  "searchPath",
 ] as const;
 
 const PATTERN_KEYS = [
@@ -238,9 +244,10 @@ export type CodexCommandAction =
 export function parseCommandActions(command: string, cwd: string): CodexCommandAction[] {
   const trimmed = command.trim();
   if (trimmed.length === 0) return [];
+  if (/[|;&<>`]|\$\(/u.test(trimmed)) return [];
 
   // Match synthesized or direct "read <path>"
-  if (trimmed.startsWith("read ") && !trimmed.includes("|") && !trimmed.includes(";")) {
+  if (trimmed.startsWith("read ")) {
     const raw = trimmed
       .slice(5)
       .trim()
@@ -262,7 +269,10 @@ export function parseCommandActions(command: string, cwd: string): CodexCommandA
   }
 
   // Match "sed -n '...' <path>"
-  const sedMatch = trimmed.match(/^sed(?:\s+-[a-zA-Z0-9]+|\s+'[^']*'|\s+"[^"]*")*\s+([^\s|;&]+)$/);
+  const isSedInPlace = /\s(?:-[a-zA-Z]*i|--in-place)\b/u.test(trimmed);
+  const sedMatch = isSedInPlace
+    ? null
+    : trimmed.match(/^sed(?:\s+-[a-zA-Z0-9]+|\s+'[^']*'|\s+"[^"]*")*\s+([^\s|;&]+)$/);
   if (sedMatch && sedMatch[1]) {
     const raw = sedMatch[1].replace(/^["']|["']$/g, "");
     if (raw.length > 0 && !raw.startsWith("-")) {
@@ -293,7 +303,7 @@ export function parseCommandActions(command: string, cwd: string): CodexCommandA
   }
 
   // Match "ls <path>"
-  const lsMatch = trimmed.match(/^ls(?:\s+-[a-zA-Z0-9]+)*\s*([^\s|;&]*)$/);
+  const lsMatch = trimmed.match(/^ls(?:\s+-[a-zA-Z0-9]+)*(?:\s+([^\s|;&]+))?\s*$/);
   if (lsMatch) {
     const raw = lsMatch[1] ? lsMatch[1].replace(/^["']|["']$/g, "") : "";
     const resolved = raw.length > 0 ? (path.isAbsolute(raw) ? raw : path.resolve(cwd, raw)) : cwd;
@@ -785,7 +795,9 @@ function projectItem(
         durationMs: item.durationMs ?? null,
       };
     case "toolExecution": {
-      const command = toolCommandLine(item.toolName, item.arguments);
+      const hasNonTextOutput =
+        item.output?.content.some((content) => content.type !== "text") ?? false;
+      const command = hasNonTextOutput ? undefined : toolCommandLine(item.toolName, item.arguments);
       if (command) {
         const cwd = toolWorkingDirectory(item.arguments, defaultCwd);
         return {

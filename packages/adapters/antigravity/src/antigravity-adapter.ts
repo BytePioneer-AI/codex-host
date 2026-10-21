@@ -1630,9 +1630,7 @@ class AntigravitySession implements HarnessSession {
       if (
         text === active.agentText ||
         trimmedActive === trimmedIncoming ||
-        active.agentText.startsWith(text) ||
-        active.agentText.endsWith(text) ||
-        active.agentText.includes(trimmedIncoming)
+        active.agentText.startsWith(text)
       ) {
         return;
       }
@@ -1641,13 +1639,16 @@ class AntigravitySession implements HarnessSession {
         if (delta.length > 0) this.#appendAgentText(active, delta);
         return;
       }
+      // If the incoming text is neither an existing prefix nor a continuation,
+      // close the existing item as commentary so the new block starts cleanly.
+      this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
     }
 
     if (active.emittedAgentTexts.length > 0) {
       if (
         active.emittedAgentTexts.some((prev) => {
           const p = prev.trim();
-          return p === trimmedIncoming || p.includes(trimmedIncoming);
+          return p === trimmedIncoming;
         })
       ) {
         return;
@@ -1672,31 +1673,17 @@ class AntigravitySession implements HarnessSession {
       if (
         active.emittedAgentTexts.some((prev) => {
           const p = prev.trim();
-          return p === remaining || p.includes(remaining);
+          return p === remaining;
         })
       ) {
         return;
-      }
-
-      if (active.agentItem) {
-        const trimmedActive = active.agentText.trim();
-        if (trimmedActive === remaining || active.agentText.includes(remaining)) {
-          return;
-        }
-        if (remaining.startsWith(active.agentText)) {
-          const delta = remaining.slice(active.agentText.length);
-          if (delta.length > 0) this.#appendAgentText(active, delta);
-          return;
-        }
       }
 
       this.#appendAgentText(active, remaining);
       return;
     }
 
-    if (!active.agentItem) {
-      this.#appendAgentText(active, text);
-    }
+    this.#appendAgentText(active, text);
   }
 
   #appendAgentText(active: ActiveTurn, text: string): void {

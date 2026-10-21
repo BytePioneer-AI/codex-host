@@ -82,9 +82,10 @@ export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
   style.setAttribute(STYLE_ATTRIBUTE, "true");
   style.textContent = `
     .${TRIGGER_CHIP_ROOT_CLASS} {
-      min-width: 0;
-      max-width: 100%;
-      overflow: hidden;
+      min-width: 0 !important;
+      max-width: 100% !important;
+      overflow: hidden !important;
+      flex-shrink: 1 !important;
     }
     .${TRIGGER_CHIP_CLASS} {
       display: inline-flex;
@@ -132,10 +133,6 @@ export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
     [class*="_ComposerLayoutFooter"] > [class*="col-start-3"] > div {
       min-width: 0 !important;
       max-width: 100% !important;
-    }
-    [class*="_ComposerLayoutFooter"] > [class*="col-start-3"] .shrink-0 {
-      flex-shrink: 1 !important;
-      min-width: 0 !important;
     }
   `;
   (ownerDocument.head ?? ownerDocument.documentElement).append(style);

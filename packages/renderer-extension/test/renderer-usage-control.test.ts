@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  clampPercent,
   formatRendererContextSummary,
   formatRendererCacheHitRate,
   formatRendererCost,
@@ -74,6 +75,15 @@ describe("Renderer Usage context-summary formatting", () => {
 
   it("clamps context percentage to 100% when used tokens exceed window tokens", () => {
     expect(formatRendererContextSummary(1_200_000, 1_000_000)).toBe("100% / 1M");
+  });
+
+  it("handles non-finite values safely in clampPercent", () => {
+    expect(clampPercent(50)).toBe(50);
+    expect(clampPercent(-10)).toBe(0);
+    expect(clampPercent(150)).toBe(100);
+    expect(clampPercent(Number.NaN)).toBe(0);
+    expect(clampPercent(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(clampPercent(Number.NEGATIVE_INFINITY)).toBe(0);
   });
 });
 

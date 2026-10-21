@@ -117,11 +117,13 @@
   height: 22px;
   margin-top: 2px;
   padding: 0;
-  border: 1px solid var(--settings-border);
+  border: 1px solid color-mix(in srgb, var(--settings-subtle) 50%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--settings-border) 55%, transparent);
+  background: color-mix(in srgb, var(--settings-subtle) 34%, var(--settings-panel));
   cursor: pointer;
-  transition: background 120ms ease;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
 }
 
 .console-skills-switch.is-on {
@@ -142,6 +144,7 @@
   height: 16px;
   border-radius: 50%;
   background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 28%);
   transition: transform 120ms ease;
 }
 

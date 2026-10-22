@@ -8,8 +8,10 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessSkillsListResultSchema,
+  type HarnessSkillContentParams,
   type HarnessSkillEntry,
   type HarnessSkillSetEnabledParams,
+  type HarnessSkillsContentResult,
   type HarnessSkillsSetEnabledResult,
 } from "@codexhost/shared-contracts";
 import type { HarnessSkillsSource } from "./skills-source.js";
@@ -57,6 +59,38 @@ export class HarnessSkillsCatalog {
       return { ok: false, reason: `${params.harness} does not expose a skill switch` };
     }
     return toggle.call(source.capability, params.name, params.enabled, AbortSignal.timeout(60_000));
+  }
+
+  /** One skill's SKILL.md, straight from its own directory; bounded and root-checked. */
+  async readContent(
+    sources: readonly HarnessSkillsSource[],
+    params: HarnessSkillContentParams,
+  ): Promise<HarnessSkillsContentResult> {
+    const source = sources.find((entry) => entry.harness === params.harness);
+    if (!source) {
+      return {
+        ok: false,
+        content: "",
+        truncated: false,
+        reason: `No Harness named ${params.harness}`,
+      };
+    }
+    const read = source.capability.readContent;
+    if (typeof read !== "function") {
+      return {
+        ok: false,
+        content: "",
+        truncated: false,
+        reason: `${params.harness} does not expose skill content`,
+      };
+    }
+    const result = await read.call(source.capability, params.name, AbortSignal.timeout(30_000));
+    return {
+      ok: result.ok,
+      content: result.content ?? "",
+      truncated: result.truncated ?? false,
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
+    };
   }
 
   async #readHarness(

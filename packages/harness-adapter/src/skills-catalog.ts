@@ -21,6 +21,17 @@ export interface HarnessSkillsCatalogCapability {
     enabled: boolean,
     signal: AbortSignal,
   ): Promise<HarnessSkillsSetEnabledOutcome>;
+  /** Optional: the skill's SKILL.md source for the detail dialog. */
+  readContent?(name: string, signal: AbortSignal): Promise<HarnessSkillsContentRead>;
+}
+
+export interface HarnessSkillsContentRead {
+  ok: boolean;
+  /** Markdown source; absent when the Harness refused. */
+  content?: string;
+  /** The manifest ran past the read ceiling and the tail was dropped. */
+  truncated?: boolean;
+  reason?: string;
 }
 
 export interface HarnessSkillsSetEnabledOutcome {

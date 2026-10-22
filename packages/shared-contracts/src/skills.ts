@@ -87,9 +87,31 @@ export const harnessSkillsSetEnabledResultSchema = z.strictObject({
   reason: z.string().max(512).optional(),
 });
 
+/** One skill's SKILL.md, for the detail dialog. */
+export const HARNESS_SKILL_CONTENT_METHOD = "codexhost/skills/content";
+
+export const harnessSkillContentParamsSchema = z.strictObject({
+  harness: harnessSkillNameSchema,
+  name: harnessSkillNameSchema,
+});
+
+export const harnessSkillContentResultSchema = z.strictObject({
+  ok: z.boolean(),
+  /** Markdown source; empty when the Harness refused or the file could not be read. */
+  content: z
+    .string()
+    .max(512 * 1024)
+    .default(""),
+  /** The manifest ran past the read ceiling and the tail was dropped. */
+  truncated: z.boolean().default(false),
+  reason: z.string().max(512).optional(),
+});
+
 export type HarnessSkillEntry = z.infer<typeof harnessSkillEntrySchema>;
 export type HarnessSkillGroup = z.infer<typeof harnessSkillGroupSchema>;
 export type HarnessSkillsListParams = z.infer<typeof harnessSkillsListParamsSchema>;
 export type HarnessSkillsListResult = z.infer<typeof harnessSkillsListResultSchema>;
 export type HarnessSkillSetEnabledParams = z.infer<typeof harnessSkillSetEnabledParamsSchema>;
 export type HarnessSkillsSetEnabledResult = z.infer<typeof harnessSkillsSetEnabledResultSchema>;
+export type HarnessSkillContentParams = z.infer<typeof harnessSkillContentParamsSchema>;
+export type HarnessSkillsContentResult = z.infer<typeof harnessSkillContentResultSchema>;

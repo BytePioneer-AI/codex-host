@@ -1,0 +1,114 @@
+name: Compat Daily
+
+# Compare public ChatGPT/Codex Desktop Sparkle latest to Renderer voice pins.
+# Opens one GitHub issue per surface when a pin is behind. Does not download the .app.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - tools/compat-daily/**
+      - .github/workflows/compat-daily.yml
+      - packages/renderer-extension/src/renderer-client-owned-voice.ts
+      - packages/renderer-extension/src/renderer-native-chat-voice.ts
+      - packages/renderer-extension/src/renderer-voice-start-capability.ts
+  pull_request:
+    paths:
+      - tools/compat-daily/**
+      - .github/workflows/compat-daily.yml
+      - packages/renderer-extension/src/renderer-client-owned-voice.ts
+      - packages/renderer-extension/src/renderer-native-chat-voice.ts
+      - packages/renderer-extension/src/renderer-voice-start-capability.ts
+
+permissions:
+  contents: read
+
+jobs:
+  pins:
+    name: Desktop voice pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+
+      - name: Unit-test pin parser
+        run: node --test tools/compat-daily/run.test.mjs
+
+      - name: Compare Sparkle latest to voice pins
+        id: compare
+        run: |
+          set -o pipefail
+          node tools/compat-daily/run.mjs | tee compat-daily.json
+
+      - name: Open or update issues on pin drift
+        if: failure() && steps.compare.outcome == 'failure' && github.event_name != 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('compat-daily.json', 'utf8'));
+            const findings = Array.isArray(report.findings) ? report.findings : [];
+            if (findings.length === 0) return;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            for (const name of ['compat-broken', 'bug']) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({
+                  owner,
+                  repo,
+                  name,
+                  color: name === 'bug' ? 'd73a4a' : 'e4e669',
+                  description: name === 'bug' ? 'Something is broken' : 'compat-daily Desktop pin drift',
+                });
+              }
+            }
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              labels: 'compat-broken',
+              per_page: 100,
+            });
+            for (const finding of findings) {
+              const dup = open.find((issue) => issue.title === finding.title);
+              const body = [
+                finding.detail,
+                '',
+                `- Desktop: \`${report.latest?.version ?? 'unknown'}\` build \`${report.latest?.build ?? 'unknown'}\``,
+                `- Event: \`${context.eventName}\``,
+                `- Run: ${runUrl}`,
+                '',
+                'Auto-opened by `.github/workflows/compat-daily.yml` on this repository.',
+              ].join('\n');
+              if (dup) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: dup.number,
+                  body: `Re-failed ${new Date().toISOString().slice(0, 10)} — ${runUrl}`,
+                });
+              } else {
+                await github.rest.issues.create({
+                  owner,
+                  repo,
+                  title: finding.title,
+                  labels: ['compat-broken', 'bug'],
+                  body,
+                });
+              }
+            }

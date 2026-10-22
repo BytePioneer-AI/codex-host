@@ -15,7 +15,10 @@ import {
   loadedAssetNames,
   readCpaLiveVoiceHookConfig,
 } from "./renderer-cpa-live-voice-hook.js";
-import { cpaLiveVoicePreferenceAllowsInstall } from "./renderer-cpa-live-voice-preference.js";
+import {
+  chatLiveVoicePreferenceAllowsOverride,
+  cpaLiveVoicePreferenceAllowsInstall,
+} from "./renderer-cpa-live-voice-preference.js";
 import { isAvatarOverlayHref } from "./renderer-overlay-thread-isolation.js";
 
 const GLOBAL = "__codexhostVoiceStartCapabilityV1";
@@ -26,9 +29,17 @@ type Start = (...args: unknown[]) => unknown;
 type Binding = { dispose(): void; current(): boolean };
 type Attempt = { binding?: Binding };
 
-/** Only explicit local Work starts own the overlay's gateway qualification. */
-export function gatewayVoiceStartRequest(request: unknown, workGateway: boolean): boolean {
-  if (!record(request) || request.productExperience !== "work") return false;
+/** Explicit local Codex starts use their own Chat or Work connection choice. */
+export function gatewayVoiceStartRequest(
+  request: unknown,
+  workGateway: boolean,
+  chatGateway = false,
+): boolean {
+  if (
+    !record(request) ||
+    (request.productExperience !== "work" && request.productExperience !== "chat")
+  )
+    return false;
   if (request.source === "composer_button_existing_thread") {
     if (!record(request.locator) || request.locator.hostId !== "local") return false;
   } else if (
@@ -36,6 +47,7 @@ export function gatewayVoiceStartRequest(request: unknown, workGateway: boolean)
     (request.hostId ?? "local") !== "local"
   )
     return false;
+  if (request.productExperience === "chat") return chatGateway;
   const mode = request.activeCollaborationMode;
   const settings = record(mode) ? mode.settings : undefined;
   const model = record(settings) ? settings.model : undefined;
@@ -175,6 +187,7 @@ export function installVoiceStartCapabilityHook(
                       gatewayVoiceStartRequest(
                         request,
                         cpaLiveVoicePreferenceAllowsInstall(target),
+                        chatLiveVoicePreferenceAllowsOverride(target),
                       ),
                     ready: async () => {
                       const hook = target.__codexhostClientOwnedVoiceV1;

@@ -17,16 +17,14 @@ describe("native Chat lifecycle diagnostics", () => {
       voiceSessionId: "private session ID",
       pendingDisconnect: { error: "private error" },
     };
-    const microphone = {};
-    const get = vi.fn(() => "pending");
+    const get = vi.fn();
     const scope = { get } as unknown as ChatVoiceScope;
     let listener: (() => void) | undefined;
     const unsubscribe = vi.fn(() => {
       listener = undefined;
     });
     const stop = observeNativeChatVoiceState(scope, {
-      sUn: microphone,
-      ejn: () => ({
+      SPn: () => ({
         getState: () => state,
         subscribe: (next: () => void) => {
           listener = next;
@@ -38,7 +36,6 @@ describe("native Chat lifecycle diagnostics", () => {
     expect(chatVoiceDebug).toHaveBeenCalledTimes(1);
     Object.assign(state, { isVoiceModeActive: true, hasConnectedOnce: true });
     state.server.connectionState = "connected";
-    get.mockReturnValue("granted");
     listener?.();
     expect(chatVoiceDebug).toHaveBeenLastCalledWith("native-chat-state", {
       active: true,
@@ -46,7 +43,6 @@ describe("native Chat lifecycle diagnostics", () => {
       sessionStarted: false,
       serverConversationReady: false,
       connection: "connected",
-      microphone: "granted",
     });
     state.earlyServerThreadId = "a7e3282d-f457-4586-9b28-921411364f6b";
     listener?.();
@@ -59,17 +55,15 @@ describe("native Chat lifecycle diagnostics", () => {
     );
     // Unexpected native strings must not enter the persisted diagnostic ring.
     state.server.connectionState = "private transport error";
-    get.mockReturnValue("private permission error");
     listener?.();
     expect(chatVoiceDebug).toHaveBeenLastCalledWith(
       "native-chat-state",
       expect.objectContaining({
         connection: "unknown",
-        microphone: "unknown",
       }),
     );
     expect(JSON.stringify(vi.mocked(chatVoiceDebug).mock.calls)).not.toContain("private");
-    expect(get).toHaveBeenCalledWith(microphone);
+    expect(get).not.toHaveBeenCalled();
     stop();
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(listener).toBeUndefined();

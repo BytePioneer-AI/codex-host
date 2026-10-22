@@ -12,6 +12,7 @@ import {
   readCpaLiveVoiceHookConfig,
 } from "./renderer-cpa-live-voice-hook.js";
 import {
+  chatLiveVoicePreferenceAllowsOverride,
   cpaLiveVoicePreferenceAllowsInstall,
   voiceGatewayIsReady,
 } from "./renderer-cpa-live-voice-preference.js";
@@ -112,14 +113,31 @@ function hooks(fiber: RecordValue): Hook[] {
   return hook == null ? result : [];
 }
 
-function composerFibers(composer: Element): Set<RecordValue> {
+function composerFibers(composer: Element, chat = false): Set<RecordValue> {
   const fibers = new Set<RecordValue>();
   const rootKey = Object.getOwnPropertyNames(composer).find((key) =>
     key.startsWith("__reactFiber$"),
   );
-  const root =
-    rootKey &&
-    committedReactAncestors(Object.getOwnPropertyDescriptor(composer, rootKey)?.value)[0];
+  const ancestors = rootKey
+    ? committedReactAncestors(Object.getOwnPropertyDescriptor(composer, rootKey)?.value)
+    : [];
+  let root = ancestors[0];
+  if (chat) {
+    // Chat's native realtime hook lives on the form's owning component.
+    const owners = ancestors.filter(
+      ({ memoizedProps: props }) =>
+        record(props) &&
+        props.isWorkConversation === false &&
+        props.isTemporaryChat === false &&
+        props.shouldBlockExternalEgress === false &&
+        props.readOnly !== true &&
+        typeof props.conversationId === "string" &&
+        record(props.composerSelectionContext) &&
+        props.composerSelectionContext.conversationId === props.conversationId,
+    );
+    if (owners.length !== 1) return fibers;
+    root = owners[0];
+  }
   if (!root) return fibers;
   for (const element of [composer, ...composer.querySelectorAll("*")].slice(0, 2048)) {
     const key = Object.getOwnPropertyNames(element).find((key) => key.startsWith("__reactFiber$"));
@@ -141,8 +159,14 @@ export function bindComposerVoiceCapability(
   family: Family,
   gates: Family,
   allowed: () => boolean,
+  chat = false,
 ): { dispose(): void; current(): boolean } {
-  return bindVoiceCapabilitySubscriptions(() => composerFibers(composer), family, gates, allowed);
+  return bindVoiceCapabilitySubscriptions(
+    () => composerFibers(composer, chat),
+    family,
+    gates,
+    allowed,
+  );
 }
 
 /** Subscription ownership is supplied by the version-qualified surface owner. */
@@ -347,15 +371,19 @@ export function installVoiceCapabilityProjection(
       return false;
     }
   };
+  const chatGateway = () =>
+    !isWorkComposerSurface(target) && chatLiveVoicePreferenceAllowsOverride(target);
   const allowed = () =>
     !!readCpaLiveVoiceHookConfig(target) &&
-    !!currentRoute() &&
     voiceGatewayIsReady(target) &&
     hookActive("__codexhostClientOwnedVoiceV1") &&
     hookActive("__codexhostExternalVoiceLaunchV1") &&
-    (isWorkComposerSurface(target) ||
-      (external() && target.document?.querySelectorAll("[data-chatgpt-composer]").length === 0)) &&
-    (cpaLiveVoicePreferenceAllowsInstall(target) || external());
+    (chatGateway() ||
+      (!!currentRoute() &&
+        (isWorkComposerSurface(target) ||
+          (external() &&
+            target.document?.querySelectorAll("[data-chatgpt-composer]").length === 0)) &&
+        (cpaLiveVoicePreferenceAllowsInstall(target) || external())));
   const refresh = async () => {
     if (disposed) return;
     try {
@@ -375,7 +403,9 @@ export function installVoiceCapabilityProjection(
         if (typeof module.njr !== "function")
           throw new Error("Voice capability exports unavailable");
         const composers = [
-          ...(target.document?.querySelectorAll("[data-codex-composer-root]") ?? []),
+          ...(target.document?.querySelectorAll(
+            chatGateway() ? "[data-chatgpt-composer]" : "[data-codex-composer-root]",
+          ) ?? []),
         ].filter(
           (element) =>
             element.getBoundingClientRect().width > 0 && !element.closest("[hidden], [inert]"),
@@ -391,6 +421,7 @@ export function installVoiceCapabilityProjection(
             module.tjr as Family,
             module.uBr as Family,
             allowed,
+            chatGateway(),
           );
         }
         handle.status = "active";

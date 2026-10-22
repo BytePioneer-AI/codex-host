@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { evaluate, parseAppcast, readPins } from "./run.mjs";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { evaluate, parseAppcast, readPins, recoveredPinIssues } from "./run.mjs";
 import { describe, it } from "node:test";
 
 const files = {
@@ -17,6 +19,32 @@ const START_ASSET = "start-voice-954090654801.js";
 };
 
 describe("compat-daily pins", () => {
+  it("identifies resolved pin issues without declaring live acceptance", () => {
+    const pins = { ...readPins(files), chatVersion: "26.1016.61520" };
+    const report = evaluate(pins, { version: "26.1016.61520", build: "21421" });
+    const issues = [
+      {
+        number: 4,
+        title: "compat-daily/chat-voice: pin 26.1013.40934 behind desktop 26.1016.61520",
+      },
+      {
+        number: 5,
+        title: "compat-daily/work-voice: pin 26.1016.51333 behind desktop 26.1016.61520",
+      },
+      { number: 6, title: "Chat voice fails to connect" },
+      { number: 7, title: "compat-daily/chat-voice: pin old behind desktop new", pull_request: {} },
+    ];
+    assert.deepEqual(recoveredPinIssues(report, issues), [
+      { number: 4, surface: "chat-voice", version: "26.1016.61520" },
+    ]);
+    assert.deepEqual(
+      recoveredPinIssues(
+        { ...report, latest: { version: "26.1016.62342", build: "21477" } },
+        issues,
+      ),
+      [{ number: 4, surface: "chat-voice", version: "26.1016.61520" }],
+    );
+  });
   it("reads Renderer voice pins from source", () => {
     assert.deepEqual(readPins(files), {
       workVersion: "26.1016.51333",
@@ -84,4 +112,65 @@ describe("compat-daily pins", () => {
     const report = evaluate(readPins(matched), { version: "26.1016.51333", build: "21161" });
     assert.equal(report.findings.length, 0);
   });
+});
+
+// Exercise the actual workflow scripts so moving code across step boundaries
+// cannot leave issue creation or recovery dependent on another step's locals.
+it("runs drift and recovery workflow steps in separate scopes", async () => {
+  const workflow = readFileSync(
+    new URL("../../.github/workflows/compat-daily.yml", import.meta.url),
+    "utf8",
+  );
+  const steps = workflow.split("      - name: ");
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const issue = {
+    number: 4,
+    title: "compat-daily/chat-voice: pin 26.1013.40934 behind desktop 26.1016.61520",
+  };
+  const report = evaluate(
+    { ...readPins(files), chatVersion: "26.1016.61520" },
+    { version: "26.1016.62342", build: "21477" },
+  );
+  const created = [];
+  const comments = [];
+  const github = {
+    rest: {
+      issues: {
+        getLabel: async () => ({}),
+        listForRepo: async () => ({ data: [issue] }),
+        listComments: async () => ({ data: comments }),
+        create: async (args) => created.push(args),
+        createComment: async (args) => comments.push({ ...args, user: { type: "Bot" } }),
+      },
+    },
+    paginate: async (method, args) => (await method(args)).data,
+  };
+  const run = async (name) => {
+    const step = steps.find((step) => step.startsWith(name + "\n"));
+    assert.ok(step, name);
+    const script = step
+      .split("          script: |\n")[1]
+      .split("\n")
+      .map((line) => line.slice(12))
+      .join("\n");
+    await new AsyncFunction("require", "github", "context", "process", script)(
+      () => ({ readFileSync: () => JSON.stringify(report) }),
+      github,
+      {
+        repo: { owner: "karlorz", repo: "codex-host" },
+        serverUrl: "https://github.com",
+        runId: 1,
+        eventName: "push",
+      },
+      { env: { GITHUB_WORKSPACE: fileURLToPath(new URL("../../", import.meta.url)) } },
+    );
+  };
+  await run("Open or update issues on pin drift");
+  assert.equal(created.length, 2);
+  await run("Comment on matching voice pins");
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0].issue_number, 4);
+  assert.match(comments[0].body, /does not verify microphone/);
+  await run("Comment on matching voice pins");
+  assert.equal(comments.length, 1);
 });

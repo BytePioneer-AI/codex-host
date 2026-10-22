@@ -16,27 +16,27 @@ function fixture() {
     server: { connectionState: "connected" },
   };
   const initial = {
-    FFr: {},
-    pZn: {},
-    kZn: {},
-    SZn: {},
-    ejn: () => ({ getState: () => state }),
-    uIr: vi.fn(() => true),
+    Ycr: {},
+    B1n: {},
+    n0n: {},
+    Y1n: {},
+    SPn: () => ({ getState: () => state }),
+    Nir: vi.fn(() => true),
   };
-  const values = new Map<unknown, unknown>([[initial.FFr, origin]]);
+  const values = new Map<unknown, unknown>([[initial.Ycr, origin]]);
   const binding = {
     props: { conversationId: draft },
     backendConversationId: undefined,
     scope: { get: vi.fn((selector) => values.get(selector)), set: vi.fn() },
   } as unknown as NativeChatVoiceBinding;
-  const shared = { xat: vi.fn((id: string) => `/c/${encodeURIComponent(id)}`) };
+  const shared = { Vot: vi.fn((id: string) => `/c/${encodeURIComponent(id)}`) };
   const controller = new AbortController();
   const check = () =>
     nativeChatVoiceDraftSelection(binding, initial, shared, origin, controller.signal);
   const adopt = () => {
-    values.set(initial.pZn, backend);
-    values.set(initial.SZn, "message");
-    values.set(initial.kZn, { message: { message: { author: { role: "user" } } } });
+    values.set(initial.B1n, backend);
+    values.set(initial.Y1n, "message");
+    values.set(initial.n0n, { message: { message: { author: { role: "user" } } } });
   };
   return {
     draft,
@@ -63,22 +63,22 @@ describe("native voice-created Chat selection", () => {
     const f = fixture();
     const select = f.check();
     select();
-    expect(f.initial.uIr).not.toHaveBeenCalled();
-    f.values.set(f.initial.pZn, f.backend);
+    expect(f.initial.Nir).not.toHaveBeenCalled();
+    f.values.set(f.initial.B1n, f.backend);
     select();
-    expect(f.initial.uIr).not.toHaveBeenCalled();
+    expect(f.initial.Nir).not.toHaveBeenCalled();
     f.adopt();
     // Native navigation recognizes the voice client draft and resolves its adopted
     // alias. The backend page is not opened before that mapping and transcript exist.
-    f.initial.uIr.mockImplementation((_scope?: unknown, path?: unknown) => {
+    f.initial.Nir.mockImplementation((_scope?: unknown, path?: unknown) => {
       expect(path).toBe(`/c/${encodeURIComponent(f.draft)}`);
-      expect(f.values.get(f.initial.pZn)).toBe(f.backend);
+      expect(f.values.get(f.initial.B1n)).toBe(f.backend);
       return true;
     });
     select();
     select();
-    expect(f.shared.xat).toHaveBeenCalledExactlyOnceWith(f.draft);
-    expect(f.initial.uIr).toHaveBeenCalledOnce();
+    expect(f.shared.Vot).toHaveBeenCalledExactlyOnceWith(f.draft);
+    expect(f.initial.Nir).toHaveBeenCalledOnce();
     expect(f.state.isVoiceModeActive).toBe(true);
     expect(f.binding.scope.set).not.toHaveBeenCalled();
     await Promise.resolve();
@@ -101,10 +101,10 @@ describe("native voice-created Chat selection", () => {
     f.state.hasVoiceSessionStarted = true;
     f.state.server.connectionState = "connecting";
     select();
-    expect(f.initial.uIr).not.toHaveBeenCalled();
+    expect(f.initial.Nir).not.toHaveBeenCalled();
     f.state.server.connectionState = "connected";
     select();
-    expect(f.initial.uIr).toHaveBeenCalledOnce();
+    expect(f.initial.Nir).toHaveBeenCalledOnce();
   });
 
   it.each(["navigation", "end", "replace", "work", "conversation", "abort"])(
@@ -113,7 +113,7 @@ describe("native voice-created Chat selection", () => {
       const f = fixture();
       const select = f.check();
       select();
-      if (change === "navigation") f.values.set(f.initial.FFr, { pathname: "/", key: "new-home" });
+      if (change === "navigation") f.values.set(f.initial.Ycr, { pathname: "/", key: "new-home" });
       if (change === "end") f.state.isVoiceModeActive = false;
       if (change === "replace") f.state.voiceSessionId = "replacement";
       if (change === "work") f.state.isWorkMode = true;
@@ -121,13 +121,13 @@ describe("native voice-created Chat selection", () => {
       if (change === "abort") f.controller.abort();
       select();
       f.adopt();
-      f.values.set(f.initial.FFr, f.origin);
+      f.values.set(f.initial.Ycr, f.origin);
       f.state.isVoiceModeActive = true;
       f.state.isWorkMode = false;
       f.state.conversationId = f.draft;
       f.state.voiceSessionId = "fixture-session";
       select();
-      expect(f.initial.uIr).not.toHaveBeenCalled();
+      expect(f.initial.Nir).not.toHaveBeenCalled();
     },
   );
 
@@ -136,9 +136,9 @@ describe("native voice-created Chat selection", () => {
     (id) => {
       const f = fixture();
       f.adopt();
-      f.values.set(f.initial.pZn, id);
+      f.values.set(f.initial.B1n, id);
       f.check()();
-      expect(f.initial.uIr).not.toHaveBeenCalled();
+      expect(f.initial.Nir).not.toHaveBeenCalled();
     },
   );
 
@@ -147,14 +147,14 @@ describe("native voice-created Chat selection", () => {
     f.binding.backendConversationId = f.backend;
     f.adopt();
     f.check()();
-    expect(f.initial.uIr).not.toHaveBeenCalled();
+    expect(f.initial.Nir).not.toHaveBeenCalled();
   });
 
   it("skips selection when optional private exports are unavailable", () => {
     const f = fixture();
-    Reflect.deleteProperty(f.initial, "kZn");
+    Reflect.deleteProperty(f.initial, "n0n");
     f.check()();
-    expect(f.initial.uIr).not.toHaveBeenCalled();
+    expect(f.initial.Nir).not.toHaveBeenCalled();
   });
 
   it.each(["throw", "reject", "decline"])(
@@ -163,7 +163,7 @@ describe("native voice-created Chat selection", () => {
       const f = fixture();
       vi.spyOn(console, "info").mockImplementation(() => {});
       f.adopt();
-      f.initial.uIr.mockImplementation(() => {
+      f.initial.Nir.mockImplementation(() => {
         if (failure === "throw") throw new Error("fixture private error");
         if (failure === "reject")
           return Promise.reject(new Error("fixture private error")) as never;
@@ -173,7 +173,7 @@ describe("native voice-created Chat selection", () => {
       expect(() => select()).not.toThrow();
       await Promise.resolve();
       select();
-      expect(f.initial.uIr).toHaveBeenCalledOnce();
+      expect(f.initial.Nir).toHaveBeenCalledOnce();
       expect(f.state.isVoiceModeActive).toBe(true);
       expect(JSON.stringify(Reflect.get(globalThis, "__codexhostChatVoiceDebug"))).not.toContain(
         "private error",

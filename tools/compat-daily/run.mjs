@@ -72,6 +72,21 @@ export function evaluate(pins, latest) {
   return { latest, pins, findings };
 }
 
+/** Matching pins clear version drift, independently of live voice acceptance. */
+export function recoveredPinIssues(report, issues) {
+  return issues.flatMap((issue) => {
+    const match = /^compat-daily\/(chat-voice|work-voice): pin \S+ behind desktop (\S+)$/u.exec(
+      issue.title,
+    );
+    if (!match || issue.pull_request) return [];
+    const surface = match[1];
+    const pin = surface === "chat-voice" ? report.pins.chatVersion : report.pins.workVersion;
+    return pin === report.latest.version || pin === match[2]
+      ? [{ number: issue.number, surface, version: pin }]
+      : [];
+  });
+}
+
 export async function loadPinsFromRepo(root = ROOT) {
   const overlay = path.join(
     root,

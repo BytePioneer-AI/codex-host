@@ -13,7 +13,10 @@ The local command prints JSON containing `latest`, `pins` and `findings`. It exi
 with status 1 when either surface differs from Sparkle latest; fetch or parse
 errors also fail the command. Running it locally does not create GitHub issues.
 The workflow creates or comments on issues in its own repository on failing
-non-PR runs. No command here updates pins or enables a Desktop build.
+non-PR runs. A separate recovery step adds one deduplicated bot comment when a
+voice pin matches an open issue’s tracked Desktop target or Sparkle latest. It
+leaves the issue open for live acceptance and reports newer drift separately.
+No command here updates pins or enables a Desktop build.
 
 ## Audit and re-pin after an upstream sync
 
@@ -36,9 +39,8 @@ Keep this tool, its npm scripts and the workflow when resolving upstream changes
    the same directory. Chat pins/start assets live in `renderer-native-chat-voice.ts`;
    the parser uses Work version/initial pins if separate Chat constants are absent.
    Preserve independent Chat pins when Work advances. The 26.1016.61520 Chat
-   audit found incompatible scope/export bindings and retains the 26.1013.40934
-   pin; see the [native Instant Connect evidence](../../docs/operations/cpa-live-voice-desktop-hook.md#existing-and-new-chatgpt-conversations-native-instant-connect).
-   Keep its drift issue open until the full Chat lifecycle is qualified.
+   binding maps RouteScope ownership and the inner ComposerScope; see the [native Instant Connect evidence](../../docs/operations/cpa-live-voice-desktop-hook.md#existing-and-new-chatgpt-conversations-native-instant-connect).
+   Keep live microphone/audio acceptance separate from a matching pin.
 4. Run `npm run compat:daily:test`, the behavior checks selected by the runbook,
    and `npm run compat:daily` again after any pin changes. Record remaining drift
    explicitly. A matching pin only clears version drift; it does not prove the

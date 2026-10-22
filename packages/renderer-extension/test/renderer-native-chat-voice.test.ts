@@ -12,7 +12,7 @@ import {
 function fixture() {
   const scopeDefinition = { id: Symbol(), __scopeBrand: "AppScope" };
   const backendConversationId = {};
-  const draftConversationId = {};
+  const ownerScopeDefinition = { id: Symbol(), __scopeBrand: "RouteScope" };
   const context = { displayName: "AppScope" };
   const composerScopeDefinition = { id: Symbol(), __scopeBrand: "ComposerScope" };
   const composerContext = { displayName: "ComposerScope" };
@@ -28,13 +28,17 @@ function fixture() {
     [scopeDefinition.id, {}],
     [composerScopeDefinition.id, composerNode],
   ]);
+  const appNode = {};
   const node = {};
-  const chain = new Map([[scopeDefinition.id, node]]);
-  composerChain.set(scopeDefinition.id, node);
+  const chain = new Map<unknown, unknown>([
+    [scopeDefinition.id, appNode],
+    [ownerScopeDefinition.id, node],
+  ]);
+  composerChain.set(scopeDefinition.id, appNode);
   const get = vi.fn<(selector: unknown, argument?: unknown) => unknown>(
     () => "6ad6391c-9a48-83e8-8a22-21548902d6d4",
   );
-  const scope = { scope: scopeDefinition, node, chain, get, set: vi.fn() };
+  const scope = { scope: ownerScopeDefinition, node, chain, get, set: vi.fn() };
   const props = {
     conversationId: "desktop-local-conversation",
     isWorkConversation: false,
@@ -63,7 +67,7 @@ function fixture() {
     composerNode,
     composerChain,
     backendConversationId,
-    draftConversationId,
+    ownerScopeDefinition,
     context,
     scope,
     props,
@@ -74,23 +78,8 @@ function fixture() {
   };
 }
 
-function useNewChatComposer(f: ReturnType<typeof fixture>) {
-  Object.assign(f.composerNode.value, { kind: "new", entrypoint: "home" });
-  const composerScope = {
-    ...f.scope,
-    scope: f.composerScopeDefinition,
-    node: f.composerNode,
-    chain: f.composerChain,
-    get: vi.fn((selector) =>
-      selector === f.draftConversationId ? f.props.conversationId : undefined,
-    ),
-  };
-  f.owner.memoizedState.next = { memoizedState: { current: composerScope }, next: null };
-  return composerScope;
-}
-
 describe("native Chat composer binding", () => {
-  it("reads the backend Chat ID from the owner's AppScope, never its desktop locator", () => {
+  it("reads the backend Chat ID from the owner's RouteScope, never its desktop locator", () => {
     const f = fixture();
     const binding = detectNativeChatVoiceBinding(f.composer, f);
     expect(binding).toMatchObject({ scope: f.scope, props: f.props, context: f.context });
@@ -126,7 +115,6 @@ describe("native Chat composer binding", () => {
     f.props.conversationId = draft;
     f.props.composerSelectionContext.conversationId = draft;
     f.composerNode.value.chatGptSelectionContext.conversationId = draft;
-    useNewChatComposer(f);
     f.get.mockReturnValue(id);
     expect(detectNativeChatVoiceBinding(f.composer, f)).toMatchObject({
       props: f.props,
@@ -136,16 +124,13 @@ describe("native Chat composer binding", () => {
     expect(f.scope.set).not.toHaveBeenCalled();
   });
 
-  it("rejects new-Chat scopes that cannot prove the current native draft ownership", () => {
+  it("rejects an outer new-Chat scope without the inner conversation selection", () => {
     const f = fixture();
     const draft = "local-chatgpt:bf2d4b2f-43ee-49df-b802-b55c9fb345d7";
     f.props.conversationId = draft;
     f.props.composerSelectionContext.conversationId = draft;
     f.get.mockReturnValue(null);
-    const composerScope = useNewChatComposer(f);
-    composerScope.get.mockReturnValue("another-draft");
-    expect(detectNativeChatVoiceBinding(f.composer, f)).toBeUndefined();
-    f.owner.memoizedState.next = null;
+    Object.assign(f.composerNode.value, { kind: "new", entrypoint: "home" });
     expect(detectNativeChatVoiceBinding(f.composer, f)).toBeUndefined();
   });
 
@@ -167,18 +152,31 @@ describe("native Chat composer binding", () => {
     expect(detectNativeChatVoiceBinding(f.composer, f)).toBeUndefined();
   });
 
-  it("deduplicates native scope refs by their owning AppScope node", () => {
+  it("rejects contexts from another AppScope", () => {
+    const f = fixture();
+    f.composerChain.set(f.scopeDefinition.id, {});
+    expect(detectNativeChatVoiceBinding(f.composer, f)).toBeUndefined();
+  });
+
+  it("deduplicates native scope refs by their owning RouteScope node", () => {
     const f = fixture();
     f.owner.memoizedState.next = { memoizedState: { current: { ...f.scope } }, next: null };
     expect(detectNativeChatVoiceBinding(f.composer, f)?.scope.node).toBe(f.scope.node);
   });
 
-  it("rejects competing AppScope nodes and cycles in native hook state", () => {
+  it("rejects competing RouteScope nodes and cycles in native hook state", () => {
     const f = fixture();
     const node = {};
     f.owner.memoizedState.next = {
       memoizedState: {
-        current: { ...f.scope, node, chain: new Map([[f.scopeDefinition.id, node]]) },
+        current: {
+          ...f.scope,
+          node,
+          chain: new Map([
+            [f.scopeDefinition.id, node],
+            [f.ownerScopeDefinition.id, node],
+          ]),
+        },
       },
       next: null,
     };
@@ -305,16 +303,16 @@ function installFixture() {
     querySelectorAll: vi.fn(() => overlayButtons),
   });
   const initial = {
-    pZn: f.backendConversationId,
-    xAt: { scope: f.composerScopeDefinition },
-    lXt: f.draftConversationId,
-    Aw: enabled,
-    jw: vi.fn(),
-    FFr: {},
-    kZn: {},
-    SZn: {},
-    uIr: vi.fn(),
-    ejn: () => ({
+    B1n: f.backendConversationId,
+    CDr: f.composerScopeDefinition,
+    MOr: f.ownerScopeDefinition,
+    aT: enabled,
+    oT: vi.fn(),
+    Ycr: {},
+    n0n: {},
+    Y1n: {},
+    Nir: vi.fn(),
+    SPn: () => ({
       getState: () => ({
         isVoiceModeActive: active,
         hasConnectedOnce: connected,
@@ -334,12 +332,12 @@ function installFixture() {
     }),
   };
   const shared = {
-    Cot: f.scopeDefinition,
-    yzt: () => ({ createElement }),
-    vMt: () => ({ createRoot }),
-    xat: vi.fn((id: string) => `/c/${encodeURIComponent(id)}`),
+    Qst: f.scopeDefinition,
+    FBt: () => ({ createElement }),
+    PNt: () => ({ createRoot }),
+    Vot: vi.fn((id: string) => `/c/${encodeURIComponent(id)}`),
   };
-  const assets = ["app-initial-90eb42395b7d.js", "app-shared-52443cbe9ac4.js"];
+  const assets = ["app-initial-c95ddb62696e.js", "app-shared-2eda13eb7044.js"];
   const doc = {
     body: { append: vi.fn() },
     createElement: createElementDom,
@@ -351,7 +349,7 @@ function installFixture() {
   const target = {
     __codexhostCpaLiveVoiceHookV1: {
       enabled: true,
-      desktopVersion: "26.1013.40934",
+      desktopVersion: "26.1016.61520",
       auditedDesktopVersion: "26.1007.30912",
       auditedAppInitialAsset: "app-initial-6350d04672d0.js",
     },
@@ -409,6 +407,29 @@ function installFixture() {
 
 afterEach(() => vi.useRealTimers());
 describe("native Chat voice lifecycle installation", () => {
+  it("keeps one AppScope runtime when navigation replaces the RouteScope", async () => {
+    vi.useFakeTimers();
+    const f = installFixture();
+    const hook = installNativeChatVoiceHook(f);
+    await vi.advanceTimersByTimeAsync(0);
+    const node = {};
+    const chain = new Map(f.scope.chain);
+    chain.set(f.ownerScopeDefinition.id, node);
+    const next = { ...f.scope, node, chain };
+    f.owner.memoizedState.memoizedState.current = next;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(hook.status).toBe("active");
+    expect(f.createRoot).toHaveBeenCalledOnce();
+    expect(f.unmount).not.toHaveBeenCalled();
+    await hook.start();
+    expect(f.start).toHaveBeenCalledWith(
+      next,
+      f.props,
+      { event_source: "composer" },
+      expect.any(AbortSignal),
+    );
+    hook.dispose();
+  });
   it("selects the adopted voice draft while its composer is hidden without releasing the native runtime", async () => {
     vi.useFakeTimers();
     const f = installFixture();
@@ -416,14 +437,14 @@ describe("native Chat voice lifecycle installation", () => {
     const backend = "a7e3282d-f457-4586-9b28-921411364f6b";
     f.props.conversationId = draft;
     f.props.composerSelectionContext.conversationId = draft;
-    useNewChatComposer(f);
+    f.composerNode.value.chatGptSelectionContext.conversationId = draft;
     let adopted = false;
     const nativeGet = f.scope.get.getMockImplementation();
     if (!nativeGet) throw new Error("Fixture native getter is missing");
     f.scope.get.mockImplementation((selector, argument) => {
-      if (selector === f.initial.pZn) return adopted ? backend : null;
-      if (selector === f.initial.SZn) return adopted ? "message" : null;
-      if (selector === f.initial.kZn)
+      if (selector === f.initial.B1n) return adopted ? backend : null;
+      if (selector === f.initial.Y1n) return adopted ? "message" : null;
+      if (selector === f.initial.n0n)
         return adopted ? { message: { message: { author: { role: "user" } } } } : null;
       return nativeGet(selector, argument);
     });
@@ -437,14 +458,14 @@ describe("native Chat voice lifecycle installation", () => {
       const signal = f.start.mock.calls[0]?.[3] as AbortSignal;
       f.setVisible(false);
       await vi.advanceTimersByTimeAsync(1000);
-      expect(f.initial.uIr).not.toHaveBeenCalled();
+      expect(f.initial.Nir).not.toHaveBeenCalled();
       adopted = true;
       await vi.advanceTimersByTimeAsync(500);
-      expect(f.initial.uIr).toHaveBeenCalledExactlyOnceWith(
+      expect(f.initial.Nir).toHaveBeenCalledExactlyOnceWith(
         f.scope,
         `/c/${encodeURIComponent(draft)}`,
       );
-      expect(f.shared.xat).toHaveBeenCalledExactlyOnceWith(draft);
+      expect(f.shared.Vot).toHaveBeenCalledExactlyOnceWith(draft);
       // Native canonicalization publishes the selected Chat composer in the same AppScope.
       f.props.conversationId = backend;
       f.props.composerSelectionContext.conversationId = backend;
@@ -456,7 +477,7 @@ describe("native Chat voice lifecycle installation", () => {
       expect(f.unmount).not.toHaveBeenCalled();
       expect(signal.aborted).toBe(false);
       expect(hook.activeCall).toBe(true);
-      expect(f.initial.uIr).toHaveBeenCalledOnce();
+      expect(f.initial.Nir).toHaveBeenCalledOnce();
     } finally {
       hook.dispose();
     }
@@ -465,8 +486,8 @@ describe("native Chat voice lifecycle installation", () => {
   it("starts native voice without private page-navigation exports", async () => {
     vi.useFakeTimers();
     const f = installFixture();
-    for (const key of ["uIr", "FFr"]) Reflect.deleteProperty(f.initial, key);
-    Reflect.deleteProperty(f.shared, "xat");
+    for (const key of ["Nir", "Ycr"]) Reflect.deleteProperty(f.initial, key);
+    Reflect.deleteProperty(f.shared, "Vot");
     const hook = installNativeChatVoiceHook(f);
     await vi.advanceTimersByTimeAsync(0);
     expect(hook.status).toBe("active");
@@ -484,7 +505,7 @@ describe("native Chat voice lifecycle installation", () => {
         const draft = "local-chatgpt:bf2d4b2f-43ee-49df-b802-b55c9fb345d7";
         f.props.conversationId = draft;
         f.props.composerSelectionContext.conversationId = draft;
-        useNewChatComposer(f);
+        f.composerNode.value.chatGptSelectionContext.conversationId = draft;
         const nativeGet = f.scope.get.getMockImplementation();
         if (!nativeGet) throw new Error("Fixture native getter is missing");
         f.scope.get.mockImplementation((selector, argument) =>
@@ -498,7 +519,7 @@ describe("native Chat voice lifecycle installation", () => {
         f.setActive(true);
       });
       // The real Desktop failure ends voice during a conversation-page transition.
-      f.initial.uIr.mockImplementation(() => {
+      f.initial.Nir.mockImplementation(() => {
         f.setActive(false);
       });
       const hook = installNativeChatVoiceHook(f);
@@ -518,15 +539,15 @@ describe("native Chat voice lifecycle installation", () => {
         await vi.advanceTimersByTimeAsync(1000);
         expect(hook.activeCall).toBe(true);
         expect(f.unmount).not.toHaveBeenCalled();
-        expect(f.initial.uIr).not.toHaveBeenCalled();
-        expect(f.shared.xat).not.toHaveBeenCalled();
+        expect(f.initial.Nir).not.toHaveBeenCalled();
+        expect(f.shared.Vot).not.toHaveBeenCalled();
         f.setActive(false);
         f.setVisible(true);
         await vi.advanceTimersByTimeAsync(500);
         await hook.start();
         expect(f.start).toHaveBeenCalledTimes(2);
         expect(hook.activeCall).toBe(true);
-        expect(f.initial.uIr).not.toHaveBeenCalled();
+        expect(f.initial.Nir).not.toHaveBeenCalled();
       } finally {
         hook.dispose();
       }
@@ -601,7 +622,6 @@ describe("native Chat voice lifecycle installation", () => {
     f.props.conversationId = draft;
     f.props.composerSelectionContext.conversationId = draft;
     f.composerNode.value.chatGptSelectionContext.conversationId = draft;
-    useNewChatComposer(f);
     const nativeGet = f.scope.get.getMockImplementation();
     if (!nativeGet) throw new Error("Fixture native getter is missing");
     f.scope.get.mockImplementation((selector, argument) =>
@@ -619,8 +639,8 @@ describe("native Chat voice lifecycle installation", () => {
       expect.any(AbortSignal),
     );
     expect(f.props.conversationId).toBe(draft);
-    expect(f.initial.uIr).not.toHaveBeenCalled();
-    expect(f.scope.set).toHaveBeenCalledWith(f.initial.Aw, true);
+    expect(f.initial.Nir).not.toHaveBeenCalled();
+    expect(f.scope.set).toHaveBeenCalledWith(f.initial.aT, true);
     expect(f.scope.set).toHaveBeenCalledTimes(1);
     hook.dispose();
   });
@@ -652,7 +672,7 @@ describe("native Chat voice lifecycle installation", () => {
     });
     await hook.start();
     expect(f.start).toHaveBeenCalledOnce();
-    expect(f.initial.uIr).not.toHaveBeenCalled();
+    expect(f.initial.Nir).not.toHaveBeenCalled();
     hook.dispose();
   });
 
@@ -672,7 +692,7 @@ describe("native Chat voice lifecycle installation", () => {
     hook.dispose();
   });
 
-  it.each(["26.1016.51333", "26.1016.61520"])(
+  it.each(["26.1013.40934", "26.1016.51333"])(
     "rejects unqualified Desktop %s before importing or enabling native Chat",
     async (desktopVersion) => {
       const f = installFixture();
@@ -682,7 +702,7 @@ describe("native Chat voice lifecycle installation", () => {
       expect(hook.status).toBe("unsupported");
       await expect(hook.start()).rejects.toThrow("Native Chat voice is unavailable");
       expect(f.importModule).not.toHaveBeenCalled();
-      expect(f.initial.jw).not.toHaveBeenCalled();
+      expect(f.initial.oT).not.toHaveBeenCalled();
       expect(f.scope.set).not.toHaveBeenCalled();
       expect(f.start).not.toHaveBeenCalled();
       expect(f.createRoot).not.toHaveBeenCalled();
@@ -691,15 +711,15 @@ describe("native Chat voice lifecycle installation", () => {
     },
   );
 
-  it("rejects 61520 assets when the installed Desktop version is unavailable", async () => {
+  it("rejects stale Chat assets when the installed Desktop version is unavailable", async () => {
     vi.useFakeTimers();
     const f = installFixture();
     Reflect.deleteProperty(f.target.__codexhostCpaLiveVoiceHookV1, "desktopVersion");
     f.assets.splice(
       0,
       f.assets.length,
-      "app-initial-c95ddb62696e.js",
-      "app-shared-2eda13eb7044.js",
+      "app-initial-90eb42395b7d.js",
+      "app-shared-52443cbe9ac4.js",
       "app-primary-58a09006cc0c.js",
       "start-voice-18b08f0acdd7.js",
       "voice-prewarm-94271e581c1b.js",
@@ -770,7 +790,7 @@ describe("native Chat voice lifecycle installation", () => {
       { event_source: "composer" },
       expect.any(AbortSignal),
     );
-    expect(f.initial.uIr).not.toHaveBeenCalled();
+    expect(f.initial.Nir).not.toHaveBeenCalled();
     hook.dispose();
     expect(f.unmount).toHaveBeenCalledOnce();
     expect(f.browserEnabled()).toBe(false);

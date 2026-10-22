@@ -58,6 +58,22 @@ describe("gateway start ownership", () => {
       ),
     ).toBe(true);
   });
+  it("qualifies explicit local Codex Chat only when its gateway connection is selected", () => {
+    const chat = { ...request, productExperience: "chat" };
+    expect(gatewayVoiceStartRequest(chat, false, true)).toBe(true);
+    expect(gatewayVoiceStartRequest(chat, true, false)).toBe(false);
+    expect(gatewayVoiceStartRequest({ ...chat, hostId: "remote" }, true, true)).toBe(false);
+    expect(
+      gatewayVoiceStartRequest({ ...chat, source: "global_hotkey_new_thread" }, true, true),
+    ).toBe(false);
+    expect(
+      gatewayVoiceStartRequest(
+        { ...chat, source: "composer_button_existing_thread", locator: { hostId: "local" } },
+        false,
+        true,
+      ),
+    ).toBe(true);
+  });
   it("qualifies the second reader before native start and restores it after existingCall startup", async () => {
     const f = fixture();
     await expect(f.start()).rejects.toThrow("voice_disabled");

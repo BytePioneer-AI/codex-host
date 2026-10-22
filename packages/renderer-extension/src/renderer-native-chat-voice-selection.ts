@@ -15,21 +15,21 @@ export function nativeChatVoiceDraftSelection(
   signal: AbortSignal,
 ): () => void {
   const draft = binding.props.conversationId;
-  const navigate = initial.uIr;
-  const conversationPath = shared.xat;
+  const navigate = initial.Nir;
+  const conversationPath = shared.Vot;
   if (
     binding.backendConversationId !== undefined ||
     !draft.startsWith("local-chatgpt:") ||
     !UUID.test(draft.slice("local-chatgpt:".length)) ||
     origin == null ||
-    initial.FFr == null ||
-    initial.kZn == null ||
-    initial.SZn == null ||
+    initial.Ycr == null ||
+    initial.n0n == null ||
+    initial.Y1n == null ||
     typeof navigate !== "function" ||
     typeof conversationPath !== "function"
   )
     return () => {};
-  const store = Reflect.apply(initial.ejn as (...args: unknown[]) => unknown, undefined, [
+  const store = Reflect.apply(initial.SPn as (...args: unknown[]) => unknown, undefined, [
     binding.scope,
   ]) as {
     getState(): {
@@ -50,7 +50,7 @@ export function nativeChatVoiceDraftSelection(
       const state = store.getState();
       if (
         signal.aborted ||
-        binding.scope.get(initial.FFr) !== origin ||
+        binding.scope.get(initial.Ycr) !== origin ||
         (activeSeen && (!state.isVoiceModeActive || state.voiceSessionId !== session))
       ) {
         finished = true;
@@ -66,10 +66,10 @@ export function nativeChatVoiceDraftSelection(
         return;
       }
       if (!state.hasVoiceSessionStarted || state.server.connectionState !== "connected") return;
-      const backend = binding.scope.get(initial.pZn, draft);
+      const backend = binding.scope.get(initial.B1n, draft);
       if (typeof backend !== "string" || !UUID.test(backend)) return;
-      const mapping = binding.scope.get(initial.kZn, draft);
-      const currentNode = binding.scope.get(initial.SZn, draft);
+      const mapping = binding.scope.get(initial.n0n, draft);
+      const currentNode = binding.scope.get(initial.Y1n, draft);
       if (
         mapping == null ||
         typeof mapping !== "object" ||

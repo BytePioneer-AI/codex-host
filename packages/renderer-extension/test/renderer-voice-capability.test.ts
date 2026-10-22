@@ -201,6 +201,30 @@ describe("owned composer subscription", () => {
     binding.dispose();
   });
 
+  it.each([
+    { isTemporaryChat: true },
+    { shouldBlockExternalEgress: true },
+    { readOnly: true },
+    { composerSelectionContext: { conversationId: "another-chat" } },
+  ])("rejects ineligible Chat owner projection: %j", (overrides) => {
+    const f = fixture();
+    Object.assign(f.owner, {
+      memoizedProps: {
+        isWorkConversation: false,
+        isTemporaryChat: false,
+        shouldBlockExternalEgress: false,
+        conversationId: "chat-fixture",
+        composerSelectionContext: { conversationId: "chat-fixture" },
+        ...overrides,
+      },
+    });
+    Object.assign(f.composer, { __reactFiber$fixture: { return: f.owner, memoizedState: null } });
+    expect(() =>
+      bindComposerVoiceCapability(f.composer, f.family, f.family, () => true, true),
+    ).toThrow();
+    expect(f.subscriber.getSnapshot).toBe(f.original);
+  });
+
   it("does not project a capability on an ancestor outside the Composer", () => {
     const f = fixture();
     Object.assign(f.composer, { __reactFiber$fixture: { return: f.owner, memoizedState: null } });
@@ -312,6 +336,51 @@ describe("version and runtime qualification", () => {
     });
     await vi.advanceTimersByTimeAsync(1000);
     expect(hook.status).toBe("active");
+    hook.dispose();
+  });
+  it("projects the Chat composer only for Codex gateway, without claiming a Work route", async () => {
+    vi.useFakeTimers();
+    const f = target();
+    f.values.set("home-composer-mode-v1", "chat");
+    Object.assign(f.f.owner, {
+      memoizedProps: {
+        isWorkConversation: false,
+        isTemporaryChat: false,
+        shouldBlockExternalEgress: false,
+        conversationId: "chat-fixture",
+        composerSelectionContext: { conversationId: "chat-fixture" },
+      },
+    });
+    Object.assign(f.f.composer, {
+      __reactFiber$fixture: { return: f.f.owner, memoizedState: null },
+    });
+    Reflect.deleteProperty(f.target, "__codexhostHostRoutingV1");
+    f.target.document.querySelectorAll = ((selector: string) =>
+      selector === "[data-chatgpt-composer]"
+        ? [f.f.composer]
+        : []) as unknown as Document["querySelectorAll"];
+    applySharedVoiceRoutes(f.target, {
+      chatExperience: "codex",
+      chatConnection: "gateway",
+      workConnection: "desktop",
+    });
+    const hook = installVoiceCapabilityProjection(f);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hook.status).toBe("active");
+    expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: true });
+    for (const [chatExperience, chatConnection] of [
+      ["codex", "desktop"],
+      ["chatgpt", "gateway"],
+    ] as const) {
+      applySharedVoiceRoutes(f.target, {
+        chatExperience,
+        chatConnection,
+        workConnection: "gateway",
+      });
+      expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: false });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(f.f.instance.getSnapshot).toBe(f.f.original);
+    }
     hook.dispose();
   });
   it("binds the visible Work composer when Desktop retains a hidden composer root", async () => {

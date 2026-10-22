@@ -10,11 +10,11 @@ import { observeNativeChatVoiceState } from "./renderer-native-chat-voice-state.
 import { nativeChatVoiceDraftSelection } from "./renderer-native-chat-voice-selection.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
-const NATIVE_CHAT_VOICE_VERSION = "26.1013.40934";
-const NATIVE_CHAT_INITIAL_ASSET = "app-initial-90eb42395b7d.js";
-const NATIVE_CHAT_SHARED_ASSET = "app-shared-52443cbe9ac4.js";
-const START_ASSET = "start-voice-954090654801.js";
-const PREWARM_ASSET = "voice-prewarm-fb2c91219553.js";
+const NATIVE_CHAT_VOICE_VERSION = "26.1016.61520";
+const NATIVE_CHAT_INITIAL_ASSET = "app-initial-c95ddb62696e.js";
+const NATIVE_CHAT_SHARED_ASSET = "app-shared-2eda13eb7044.js";
+const START_ASSET = "start-voice-18b08f0acdd7.js";
+const PREWARM_ASSET = "voice-prewarm-94271e581c1b.js";
 const BUTTON = "data-codexhost-chat-voice-start";
 const CONVERSATION_UUID = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 type RecordValue = Record<string, unknown>;
@@ -30,6 +30,7 @@ export interface ChatVoiceScope {
 }
 export interface NativeChatVoiceBinding {
   composer: Element;
+  appNode: object;
   props: RecordValue & { conversationId: string };
   scope: ChatVoiceScope;
   context: unknown;
@@ -38,9 +39,9 @@ export interface NativeChatVoiceBinding {
 }
 interface NativeChatVoiceModules {
   scopeDefinition: { id: unknown; __scopeBrand: string };
+  ownerScopeDefinition: { id: unknown; __scopeBrand: string };
   backendConversationId: unknown;
   composerScopeDefinition: { id: unknown; __scopeBrand: string };
-  draftConversationId: unknown;
 }
 
 function scopeRefs(owner: RecordValue, definition: { id: unknown }): Map<unknown, ChatVoiceScope> {
@@ -65,8 +66,8 @@ function scopeRefs(owner: RecordValue, definition: { id: unknown }): Map<unknown
   return hook == null ? scopes : new Map();
 }
 
-/** Resolve the current Chat owner from the committed tree, including the AppScope
- * useRef used by native start-voice. A Codex locator or Thread-Id is never a Chat ID.
+/** Resolve the native RouteScope ref and its AppScope/inner ComposerScope chain.
+ * A Codex locator or Thread-Id is never a Chat ID.
  */
 export function detectNativeChatVoiceBinding(
   composer: Element,
@@ -93,10 +94,12 @@ export function detectNativeChatVoiceBinding(
       props.composerSelectionContext.conversationId !== props.conversationId
     )
       return;
-    const scopes = scopeRefs(owner, native.scopeDefinition);
+    const scopes = scopeRefs(owner, native.ownerScopeDefinition);
     if (scopes.size !== 1) return;
     const scope = [...scopes.values()][0];
     if (!scope) return;
+    const appNode = scope.chain.get(native.scopeDefinition.id);
+    if (!record(appNode)) return;
     const backendId = scope.get(native.backendConversationId, props.conversationId);
     const hasBackendId = typeof backendId === "string" && CONVERSATION_UUID.test(backendId);
     // Native drafts have a local locator until voice or a message creates the Chat.
@@ -106,11 +109,6 @@ export function detectNativeChatVoiceBinding(
       props.conversationId.startsWith("local-chatgpt:") &&
       CONVERSATION_UUID.test(props.conversationId.slice("local-chatgpt:".length));
     if (!hasBackendId && !isDraft) return;
-    const draftScopes = new Map<unknown, ChatVoiceScope>();
-    if (isDraft)
-      for (const fiber of ancestors)
-        for (const [node, ref] of scopeRefs(fiber, native.composerScopeDefinition))
-          if (ref.chain.get(native.scopeDefinition.id) === scope.node) draftScopes.set(node, ref);
     const contexts = new Set<unknown>();
     let composerContext: NativeChatVoiceBinding["composerContext"] | undefined;
     for (const fiber of ancestors) {
@@ -128,7 +126,7 @@ export function detectNativeChatVoiceBinding(
           record(context) &&
           context.displayName === native.scopeDefinition.__scopeBrand &&
           chain instanceof Map &&
-          chain.get(native.scopeDefinition.id) === scope.node
+          chain.get(native.scopeDefinition.id) === appNode
         )
           contexts.add(context);
         if (
@@ -136,19 +134,15 @@ export function detectNativeChatVoiceBinding(
           record(context) &&
           context.displayName === native.composerScopeDefinition.__scopeBrand &&
           chain instanceof Map &&
-          chain.get(native.scopeDefinition.id) === scope.node
+          chain.get(native.scopeDefinition.id) === appNode
         ) {
           const node = chain.get(native.composerScopeDefinition.id);
           if (
             record(node) &&
             record(node.value) &&
-            ((node.value.kind === "chatgpt" &&
-              record(node.value.chatGptSelectionContext) &&
-              node.value.chatGptSelectionContext.conversationId === props.conversationId) ||
-              (isDraft &&
-                node.value.kind === "new" &&
-                native.draftConversationId != null &&
-                draftScopes.get(node)?.get(native.draftConversationId) === props.conversationId))
+            node.value.kind === "chatgpt" &&
+            record(node.value.chatGptSelectionContext) &&
+            node.value.chatGptSelectionContext.conversationId === props.conversationId
           )
             composerContext = { context, chain };
           else return;
@@ -159,6 +153,7 @@ export function detectNativeChatVoiceBinding(
     if (contexts.size !== 1 || !composerContext) return;
     return {
       composer,
+      appNode,
       props: props as NativeChatVoiceBinding["props"],
       scope,
       context: [...contexts][0],
@@ -200,7 +195,7 @@ export function startNativeChatVoiceForRequest(
 }
 
 /** Desktop browser voice owns serialization, authentication, WM, events and cleanup.
- * Aw enables its dormant runtime; kw mounts VoiceRoom in the native app root. The
+ * aT enables its dormant runtime and native VoiceRoom in the app root. The
  * native cache controller is mounted once per AppScope, not once per selection.
  */
 export function installNativeChatVoiceHook(
@@ -270,21 +265,20 @@ export function installNativeChatVoiceHook(
     const form = forms[0];
     if (!form) return;
     return detectNativeChatVoiceBinding(form, {
-      scopeDefinition: modules.shared.Cot as NativeChatVoiceModules["scopeDefinition"],
-      backendConversationId: modules.initial.pZn,
-      draftConversationId: modules.initial.lXt,
-      composerScopeDefinition: (
-        modules.initial.xAt as { scope: NativeChatVoiceModules["composerScopeDefinition"] }
-      ).scope,
+      scopeDefinition: modules.shared.Qst as NativeChatVoiceModules["scopeDefinition"],
+      ownerScopeDefinition: modules.initial.MOr as NativeChatVoiceModules["ownerScopeDefinition"],
+      backendConversationId: modules.initial.B1n,
+      composerScopeDefinition: modules.initial
+        .CDr as NativeChatVoiceModules["composerScopeDefinition"],
     });
   };
   const handle: ChatVoiceHook = {
     get activeCall() {
       if (starting) return true;
-      if (!boundScope || !modules || typeof modules.initial.ejn !== "function") return false;
+      if (!boundScope || !modules || typeof modules.initial.SPn !== "function") return false;
       try {
         return (
-          modules.initial.ejn(boundScope) as { getState(): { isVoiceModeActive: boolean } }
+          modules.initial.SPn(boundScope) as { getState(): { isVoiceModeActive: boolean } }
         ).getState().isVoiceModeActive;
       } catch {
         return false;
@@ -294,14 +288,14 @@ export function installNativeChatVoiceHook(
     async start() {
       if (disposed || starting) return;
       const current = findBinding();
-      if (!current || !modules || current.scope.node !== mounted?.node)
+      if (!current || !modules || current.appNode !== mounted?.node)
         throw new Error("Select a ChatGPT conversation to start Chat voice");
       starting = true;
       controller = new AbortController();
       const signal = controller.signal;
       let origin: unknown;
       try {
-        if (modules.initial.FFr != null) origin = current.scope.get(modules.initial.FFr);
+        if (modules.initial.Ycr != null) origin = current.scope.get(modules.initial.Ycr);
       } catch {
         chatVoiceDebug("native-chat-selection-failed");
       }
@@ -310,8 +304,8 @@ export function installNativeChatVoiceHook(
         hasConversationId: current.backendConversationId !== undefined,
       });
       try {
-        // Xe validates Chat availability, navigation, active sessions and START/RESTART
-        // commands, then reads conversation_id via pZn before dispatching START.
+        // Native start validates availability, navigation, active sessions and START/RESTART
+        // commands, then reads conversation_id via B1n before dispatching START.
         await Reflect.apply(modules.start.n as (...args: unknown[]) => unknown, undefined, [
           current.scope,
           current.props,
@@ -375,22 +369,21 @@ export function installNativeChatVoiceHook(
           !prewarm ||
           typeof start.t !== "function" ||
           typeof start.n !== "function" ||
-          typeof initial.jw !== "function" ||
-          typeof initial.ejn !== "function" ||
-          typeof shared.yzt !== "function" ||
-          typeof shared.vMt !== "function" ||
+          typeof initial.oT !== "function" ||
+          typeof initial.SPn !== "function" ||
+          typeof shared.FBt !== "function" ||
+          typeof shared.PNt !== "function" ||
           typeof prewarm.VoiceInstantConnectCacheController !== "function"
         )
           throw new Error();
-        initial.jw();
+        initial.oT();
         start.t();
         if (
-          !record(shared.Cot) ||
-          !initial.pZn ||
-          !initial.lXt ||
-          !initial.Aw ||
-          !record(initial.xAt) ||
-          !record(initial.xAt.scope)
+          !record(shared.Qst) ||
+          !record(initial.MOr) ||
+          !initial.B1n ||
+          !initial.aT ||
+          !record(initial.CDr)
         )
           throw new Error();
         modules = { shared, initial, start, prewarm };
@@ -403,19 +396,19 @@ export function installNativeChatVoiceHook(
         handle.status = "pending";
         return;
       }
-      if (mounted && current.scope.node !== mounted.node) release();
+      if (mounted && current.appNode !== mounted.node) release();
       boundScope = current.scope;
       if (!mounted) {
         const { scope } = current;
         const initial = modules.initial;
-        const previous = scope.get(initial.Aw);
+        const previous = scope.get(initial.aT);
         const container = doc.createElement("div");
         container.setAttribute("data-codexhost-chat-voice-prewarm", "");
         doc.body.append(container);
-        const react = Reflect.apply(modules.shared.yzt as () => unknown, undefined, []) as {
+        const react = Reflect.apply(modules.shared.FBt as () => unknown, undefined, []) as {
           createElement(type: unknown, props: unknown, ...children: unknown[]): unknown;
         };
-        const reactDom = Reflect.apply(modules.shared.vMt as () => unknown, undefined, []) as {
+        const reactDom = Reflect.apply(modules.shared.PNt as () => unknown, undefined, []) as {
           createRoot(
             container: Element,
             options: { onUncaughtError(): void },
@@ -430,7 +423,7 @@ export function installNativeChatVoiceHook(
         let appChain: Map<unknown, unknown> | undefined;
         let composerChain: Map<unknown, unknown> | undefined;
         mounted = {
-          node: scope.node,
+          node: current.appNode,
           render(next) {
             if (appChain === next.scope.chain && composerChain === next.composerContext.chain)
               return;
@@ -452,11 +445,11 @@ export function installNativeChatVoiceHook(
             stopObserving();
             root.unmount();
             container.remove();
-            if (scope.get(initial.Aw) === true) scope.set(initial.Aw, previous);
+            if (scope.get(initial.aT) === true) scope.set(initial.aT, previous);
             chatVoiceDebug("native-chat-unbound");
           },
         };
-        scope.set(initial.Aw, true);
+        scope.set(initial.aT, true);
         chatVoiceDebug("native-chat-bound", {
           hasConversationId: current.backendConversationId !== undefined,
         });
@@ -501,9 +494,9 @@ export function installNativeChatVoiceHook(
         button.disabled =
           starting ||
           current.props.isStreaming === true ||
-          (modules.initial.ejn instanceof Function &&
+          (modules.initial.SPn instanceof Function &&
             (
-              modules.initial.ejn(current.scope) as { getState(): { isVoiceModeActive: boolean } }
+              modules.initial.SPn(current.scope) as { getState(): { isVoiceModeActive: boolean } }
             ).getState().isVoiceModeActive);
       handle.status = "active";
     } catch {

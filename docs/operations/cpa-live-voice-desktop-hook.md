@@ -33,12 +33,11 @@ and **Desktop gateway voice integration** (the version-qualified gateway transpo
 call connectivity. An unsupported hook means this Desktop build is outside the
 audited allowlist; it does not mean the gateway settings were lost.
 
-Desktop **26.1016.51333** hides native Start voice when Statsig rollout
+Desktop **26.1016.61520** hides native Start voice when Statsig rollout
 `3683713372` is on and `model_provider` is not `openai`. CodexHost leaves
 `model_provider = "custom"` unchanged. Work + gateway (and owned `codexhost/`
 Harness composers) project only that composer’s `voice.realtime` /
-`voice.thread` subscriptions. ChatGPT Chat stays on native Chat voice, which is
-unqualified on this build.
+`voice.thread` subscriptions. ChatGPT Chat stays on its separate native browser-voice stack.
 
 The unaudited-Desktop asset gate still fail-closes. `~/.codex/config.toml` realtime keys stay manual.
 
@@ -53,7 +52,7 @@ experimental_realtime_ws_base_url = "https://<realtime-host>/v1"
 experimental_realtime_webrtc_call_base_url = "https://<realtime-host>/v1"
 ```
 
-## Desktop 26.1016.51333: client-owned calls
+## Desktop 26.1016.61520: client-owned calls
 
 This Desktop build always creates its WebRTC call in the Renderer before asking
 app-server to attach with `transport: { type: "existingCall", callId }`. The old
@@ -108,7 +107,7 @@ selection counts do not establish successful upstream calls.
 
 The audited native capability family requires first-party inference for `voice.realtime` and `voice.thread` when rollout `3683713372` is enabled. A custom provider can therefore hide Start voice even when gateway transport is ready.
 
-`renderer-voice-capability.ts` projects only the owning visible local Work composer's subscriptions to those two capabilities. It requires the exact 26.1016 initial/shared assets, active client-owned and external-launch hooks, enabled injection, a successful live Host gateway-readiness check, and the Work gateway choice or an explicitly owned local external Harness selection. ChatGPT composers, remote Hosts and other capabilities retain native eligibility. Hidden composer roots do not make the visible composer ambiguous; multiple visible roots fail closed.
+`renderer-voice-capability.ts` projects the owning visible local Work composer's subscriptions to those two capabilities. It requires the exact 26.1016 initial/shared assets, active client-owned and external-launch hooks, enabled injection, a successful live Host gateway-readiness check, and the Work gateway choice or an explicitly owned local external Harness selection. ChatGPT voice, remote Hosts and other capabilities retain native eligibility. The explicit Codex Chat gateway option qualifies the owned Chat form and overlay as described below. Hidden composer roots do not make the visible composer ambiguous; multiple visible roots fail closed.
 
 Runtime settings reports return `gatewayReady: null` because the console skips its callback to the requesting Host. The Renderer reads the existing local `codexhost/voice/gateway-status` method directly when readiness is omitted. Transient settings or status request failures retain the last successful readiness; an explicit negative result or disposal revokes it. No successful readiness read means the projection stays pending.
 
@@ -126,7 +125,7 @@ attachment. Showing the composer button alone does not qualify call startup.
 
 `renderer-voice-start-capability.ts` wraps the overlay's native
 `registerRealtimeStarter` callback through the service reference. It accepts
-explicit local Work composer starts using the Work gateway preference, or a
+explicit local Work composer starts using the Work gateway preference, explicit Codex Chat gateway starts, or a
 new-thread request carrying an explicit `codexhost/` model. It requires active
 gateway transport, a successful local Host readiness read, and the exact initial,
 shared and `avatar-overlay-native-page-fcc17283519a.js` assets. Within the exported
@@ -160,102 +159,74 @@ upstream gateway response or a session-history parsing error.
 
 ### Existing and new ChatGPT conversations: native Instant Connect
 
-The primary Renderer installs `renderer-native-chat-voice.ts` only for the exact
-**26.1013.40934** Chat assets. Native Chat on **26.1016.61520** build **21421**
-remains **unsupported**. Its native START call shape is compatible, but the
-AppScope, ComposerScope, backend selector, runtime, store and draft-selection
-bindings are not qualified together. Work/gateway qualification does not enable
-this separate Instant Connect stack. Issue [#4](https://github.com/karlorz/codex-host/issues/4)
-tracks that gap; the Chat pin remains 26.1013.40934 so compat-daily continues to
-report it.
+The primary Renderer pins native Chat to **26.1016.61520** build **21421**:
+`app-initial-c95ddb62696e.js`, `app-shared-2eda13eb7044.js`,
+`start-voice-18b08f0acdd7.js`, and `voice-prewarm-94271e581c1b.js`.
+Native Chat uses Desktop's browser Instant Connect stack. Its authentication,
+account availability, START/RESTART commands, WM requests, microphone, VoiceRoom
+and cleanup remain native. Codex Chat uses the separate Codex overlay and its
+own connection preference. Missing or ambiguous native Chat bindings reject
+without falling through to that overlay.
 
-The 61520 audit used ASAR header offsets to read individual assets. The installed
-`app.asar` SHA-256 was
+The installed ASAR SHA-256 is
 `c9945f821fcbaf48424933a82860beac4dd4ad8b8a5444a75568fa6e38a1ad4b`.
-The references below are line numbers after formatting the extracted JavaScript
-with Prettier 3.9.6 (`parser: "babel"`, default options including `printWidth: 80`);
-they identify native code, not repository source lines.
+Only individual assets were read by ASAR offsets. These native file references
+use Prettier 3.9.6 Babel formatting with default options (printWidth 80):
 
-| Contract | 61520 evidence | Qualification gap |
-| --- | --- | --- |
-| Native Chat START | `start-voice-18b08f0acdd7.js:1119` accepts scope, composer props, metadata and signal; `:1173` reads `B1n`; `:1194` dispatches `START`. Exports `n`/`t` at `:1260`. | Compatible call shape alone does not establish the scopes and lifecycle. `start-voice-d79b450ed9af.js` is a separate starter-prompt action. |
-| AppScope and ComposerScope | `app-shared-2eda13eb7044.js:104178` creates AppScope, exported as `Qst`. `app-initial-c95ddb62696e.js:113117` creates ComposerScope, exported directly as `CDr`. | The existing hook expects `shared.Cot` and `initial.xAt.scope`. Live 61520 exports show both `Cot` and `xAt` are functions, so those ownership checks fail. |
-| Backend and runtime | `app-initial-c95ddb62696e.js:213059` defines backend-ID selector `B1n`; `:256887` defines store accessor `SPn`; `:685662` initializes browser-voice flag `aT` and the runtime; `:685754` mounts native `VoiceRoom`. | The hook consumes the 26.1013 names `pZn`, `ejn`, `Aw` and `jw`. Reusing an export name without tracing its new owner is unsafe. |
-| Composer and draft | `app-primary-58a09006cc0c.js:121074` owns the composer; `:125124` marks Chat forms. `:128921` reads AppScope, RouteScope and ComposerScope; `:129002` creates a local draft ID with `useState`. | Draft binding currently requires the 26.1013 `lXt` selector in a matching ComposerScope. That proof and adopted-draft navigation must be requalified against the new owner. |
-| Instant Connect prewarm | `voice-prewarm-94271e581c1b.js:1` re-exports the controller from `voice-prewarm-de985dbe0490.js`; its imports include `app-primary-58a09006cc0c.js`. | Prewarm and START must share the current native contexts, eligibility, cancellation and lifecycle. Renaming the four pinned assets does not prove this. |
+| Contract | 61520 evidence and binding |
+| --- | --- |
+| Native START | `start-voice-18b08f0acdd7.js:1119` accepts scope, composer props, metadata and signal; `:1173` reads `B1n`; `:1194` dispatches START. Exports `n`/`t` at `:1260`. Native navigation, active-session and availability checks remain authoritative. |
+| Scope ownership | `app-primary-58a09006cc0c.js:121258` holds the composer's RouteScope ref (`initial.MOr`). `app-shared-2eda13eb7044.js:84461` defines that ref's get/set and chain. Its AppScope node must match the native context (`shared.Qst`, defined at `:104176`). |
+| Saved and draft selection | `app-primary-58a09006cc0c.js:121370` builds an inner chatgpt ComposerScope value with the current selection; `:125082` mounts its provider above the form at `:125124`. Draft IDs originate in useState at `:129002`. The inner `initial.CDr` context must carry the same conversation ID, including local-chatgpt drafts. An outer new-Chat scope alone cannot qualify. |
+| Store and runtime | `app-initial-c95ddb62696e.js:256888` exports the native store accessor as SPn. `:685663` initializes browser voice with oT and flag aT; `:685754` mounts native VoiceRoom. `voice-session-7d5ee22a0da4.js:7745` publishes VoiceRoom, START command handling and native cleanup through initializeVoiceSession. |
+| Prewarm | `voice-prewarm-94271e581c1b.js:1` re-exports the controller from `voice-prewarm-de985dbe0490.js`. Its AppScope, ComposerScope, selected-system-hint reads, eligibility, abort watchers and cache ownership stay native. React and createRoot are shared.FBt and shared.PNt, the same React/ReactDOM instance used by Desktop. |
+| Adopted-draft navigation | `initial.Ycr` is the current location; Nir invokes native AppNavigation. B1n resolves the adopted backend ID; n0n and Y1n resolve the transcript mapping/current node. `shared.Vot` constructs the draft page path. Navigation waits for the connected session, adopted ID and current transcript message; an early server ID alone is insufficient. |
 
-A read-only probe of the running primary Renderer on Chrome **155.0.8059.80**
-confirmed these export shapes and the hook's `unsupported` status. No native Chat
-composer was mounted, so microphone, connected Chat voice, transcript adoption,
-and saved/draft navigation were not exercised. The reviewed 26.1013 baseline is
-the hook and its lifecycle tests; the installed 26.1016.51333 backup is only the
-direct predecessor, not a replacement qualification baseline.
+The visible Chat owner must be non-temporary, writable, and allow external
+egress. Its props, selection context, RouteScope chain, AppScope context and
+inner ComposerScope must agree. Saved Chats require a backend ChatGPT UUID;
+unsaved Chats require a valid native local-chatgpt draft locator and no backend
+ID. A Desktop Thread-Id is never converted into a ChatGPT UUID.
 
-The version guard rejects 61520 before importing or enabling any Chat runtime,
-even if old audited assets remain cached. When version metadata is absent, only
-the exact audited initial/shared assets permit imports; 61520 assets time out to
-`unsupported`. Chat service requests remain on the native Chat start boundary
-and reject absent, disabled or unsupported Chat bindings without falling through
-to the Work overlay. Explicit Codex Chat and gateway preferences retain their
-existing service route. `model_provider` stays
-`custom`; Statsig `3683713372` is not globally overridden and Grok IAB remains
-fail-closed.
+For ChatGPT voice, the hook mounts one native prewarm controller per AppScope
+under both native contexts and enables the native browser-voice flag. RouteScope
+replacement during navigation updates the provider chain without replacing the
+AppScope runtime. Starting or active voice retains the runtime while the composer
+is hidden. Leaving Chat after voice ends restores the prior flag and unmounts
+the controller. Native eligibility determines whether a selection can prewarm.
 
-On 26.1013, the hook identifies the visible `data-chatgpt-composer`
-through the committed React owner and its native AppScope. The owner must be a
-non-temporary Chat conversation that permits external egress. Its composer
-selection context must match. For a saved conversation, the native `pZn` selector
-must resolve a backend ChatGPT conversation UUID. A new Chat can instead have a
-native `local-chatgpt:` draft locator and no backend UUID. Its ComposerScope must
-be a native new-Chat scope whose `lXt` draft selector matches the owner's locator.
-A Desktop locator or `Thread-Id` is never used as a backend UUID. Missing or
-ambiguous ownership leaves Start Voice unavailable.
+The Start Voice waveform beside Dictate invokes native START with the current
+RouteScope, props, composer metadata and cancellation signal. While present it
+hides the competing Codex Start voice entry in that Chat composer. Switching to
+Codex voice or leaving Chat restores the original entry. Saved Chats remain
+selected. Draft navigation is attempted once, after adoption, and cancels if the
+user leaves, the session changes or ends, or the binding is released. Missing
+navigation exports leave native voice available with manual transcript selection.
 
-While that Chat is selected and the Chat gateway override is off, the hook enables
-Desktop's native browser-voice runtime (`Aw`) and mounts the native
-`VoiceInstantConnectCacheController` under the native AppScope and ComposerScope
-contexts. Both providers are required: prewarm reads the selected conversation from
-ComposerScope. It preserves one controller across Chat selections and updates the
-ComposerScope provider when its native chain changes. The new-Chat scope is passed
-through unchanged; native eligibility decides whether that draft can prewarm.
-Native eligibility, cache keys,
-cancellation and reuse decide prewarming; the hook never creates a WM call on
-selection itself. Leaving Chat after the call ends unmounts the controller and
-restores the prior browser-voice flag. Startup and an active call retain their
-runtime when the native voice UI hides the composer.
+The native version/asset and scope guards fail closed on unsupported builds.
+Lifecycle tests cover saved and draft starts, prewarm contexts, navigation,
+cancellation, retry, hidden composers and disposal. Native Chat microphone,
+connected WM audio and account eligibility have **not** been exercised on the
+running Desktop: Computer Use refuses access to com.openai.codex. Static source
+qualification and tests do not establish those live results. Issue
+[#4](https://github.com/karlorz/codex-host/issues/4) retains that acceptance limit.
+A matching compat-daily pin clears version drift only.
 
-A separate **Start Voice** waveform button beside **Dictate** invokes the native
-`start-voice` action (`Xe`, exported as `n` by the audited start-voice chunk).
-While that control is installed, the eligible Chat composer's Codex **Start voice
-chat** / **Start new voice chat** entry is hidden. Those entries initialize Codex
-onboarding and optimistic launch state before the service RPC; forwarding that RPC
-alone does not remove the competing screen. Leaving Chat, disposing the hook, or
-enabling the Chat gateway override restores the entry's original inline display.
-The action validates navigation and session state, reads `conversation_id` from
-Chat's store, and dispatches `START`. Native `VoiceRoom`, WebRTC data-channel
-configuration, WM event handling, microphone controls and End Voice remain in
-Desktop's browser-voice lifecycle. Chat service launches are intercepted at
-`realtimeVoiceRuntime.requestRealtimeStart` before the Codex overlay can create a
-new Thread; a failed Chat binding or START does not fall back to that overlay.
-The explicit Chat gateway override keeps the existing gateway launch path.
-For a new Chat, START receives the native draft props with an absent backend
-conversation ID; native voice owns creating and attaching the Chat conversation.
-Existing Chats remain selected. For a new Chat, the hook selects its native draft
-page once the active session has started, the Chat store has adopted the draft's
-backend ID, and the transcript's current message exists. Desktop resolves the
-draft alias and owns the canonical redirect. An early server ID alone never
-triggers navigation. Selection is attempted once and cancelled if the user leaves
-the starting page, the voice session ends or changes, or the binding is released.
-The same AppScope runtime and prewarm root survive the hidden composer and native
-page transition. Missing selection exports leave voice available with manual
-transcript selection from Recents.
+### Codex Chat gateway capability
 
-The hook does not build WM multipart requests, convert Thread IDs, suppress
-`thread/realtime/start`, or copy browser cookies. Work and external Harness voice
-continue through their existing overlay and Host → CPA gateway path.
-The client-owned gateway hook initializes the shared chunk's native WebFetch
-exports (`Oit` on 26.1016.51333) before reading its singleton classes. These exports are lazy at
-document start, so loading the chunk alone does not establish gateway readiness.
+Chat → Codex → Configured gateway qualifies the visible Chat composer's owned
+voice.realtime/voice.thread subscriptions, including the native hooks on the
+form's owning component. The owner must match the form's eligible Chat props and
+selection context; ambiguous owners or multiple visible forms fail closed. Work
+routing state is not required to claim a Chat form. The overlay starter accepts
+explicit local Chat starts only when that Codex gateway preference is active.
+ChatGPT voice and Codex/Desktop default retain native capability checks. Both
+composer and overlay projections preserve non-inference availability checks;
+no global Statsig or provider-name override is used.
+
+The client-owned WebFetch hook initializes shared.Oit before reading its lazy
+singleton exports. Call creation for explicit Codex Chat gateway launches uses
+Host credentials; native ChatGPT voice does not use this /wham transport.
 
 Debug events use `__codexhostChatVoiceDebug` and the bounded localStorage key
 `codexhost.chat-voice-debug.v1`. They contain event names, timestamps and routing
@@ -351,7 +322,7 @@ The hook does not copy OpenAI frontend JavaScript into git. Tests cover the asse
 
 ## Version gate
 
-Audited for Desktop **26.1007.30912** (gate path, primary bundle `app-initial-6350d04672d0.js`), **26.1013.40934** (client-owned path), **26.1016.51333**, and **26.1016.61520** (client-owned WebFetch wrap on `app-initial-c95ddb62696e.js` / `app-shared-2eda13eb7044.js`). Native Chat voice remains 26.1013-only. Re-audit before enabling on another build. Fail closed: no wrap, no ASAR patch, keep `~/Applications/ChatGPT-Voice.app` if that copy is still the working path.
+Audited for Desktop **26.1007.30912** (gate path, primary bundle `app-initial-6350d04672d0.js`), **26.1013.40934** (client-owned path), **26.1016.51333**, and **26.1016.61520** (client-owned WebFetch wrap on `app-initial-c95ddb62696e.js` / `app-shared-2eda13eb7044.js`). Native Chat voice is pinned separately to 26.1016.61520 with live microphone/audio acceptance pending. Re-audit before enabling on another build. Fail closed: no wrap, no ASAR patch, keep `~/Applications/ChatGPT-Voice.app` if that copy is still the working path.
 
 ## Invariants
 

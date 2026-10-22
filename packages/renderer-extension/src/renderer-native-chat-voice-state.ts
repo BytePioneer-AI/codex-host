@@ -6,7 +6,7 @@ export function observeNativeChatVoiceState(
   scope: ChatVoiceScope,
   initial: Record<string, unknown>,
 ): () => void {
-  const store = Reflect.apply(initial.ejn as (...args: unknown[]) => unknown, undefined, [
+  const store = Reflect.apply(initial.SPn as (...args: unknown[]) => unknown, undefined, [
     scope,
   ]) as {
     getState(): {
@@ -22,7 +22,6 @@ export function observeNativeChatVoiceState(
   const report = () => {
     const state = store.getState();
     const connection = state.server?.connectionState;
-    const microphone = initial.sUn == null ? undefined : scope.get(initial.sUn);
     const detail = {
       active: state.isVoiceModeActive === true,
       connectedOnce: state.hasConnectedOnce === true,
@@ -36,11 +35,6 @@ export function observeNativeChatVoiceState(
           connection,
         )
           ? connection
-          : "unknown",
-      microphone:
-        typeof microphone === "string" &&
-        ["unknown", "pending", "granted", "denied"].includes(microphone)
-          ? microphone
           : "unknown",
     };
     const next = JSON.stringify(detail);

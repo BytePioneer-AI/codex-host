@@ -4,6 +4,13 @@ import type { ExternalRendererAgent } from "../agent-selection-state.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import { harnessVersionLabel, harnessVersionNote } from "./harness-version-messages.js";
 
+export interface HarnessVersionPanel {
+  readonly element: HTMLElement;
+  readonly state: HarnessInstallationState | undefined;
+  readonly updating: boolean;
+  update(): void;
+}
+
 /** Owned by one Connections page, reused across diagnostic renders and row switches. */
 export function createHarnessVersionPanel(
   document: Document,
@@ -11,7 +18,8 @@ export function createHarnessVersionPanel(
   signal: AbortSignal,
   agent: ExternalRendererAgent,
   client: { run(action: "check" | "update"): Promise<HarnessInstallationState> },
-): HTMLElement {
+  onChange: () => void = () => undefined,
+): HarnessVersionPanel {
   const panel = document.createElement("section");
   panel.className = "settings-harness-version";
   panel.dataset.harnessVersion = agent;
@@ -37,6 +45,7 @@ export function createHarnessVersionPanel(
   panel.append(heading, versions, status, actions, note);
   let state: HarnessInstallationState | undefined;
   let busy = false;
+  let updating = false;
   let unsupported = false;
   const render = (): void => {
     current.textContent = `${messages.harnessVersionCurrent}: ${state?.currentVersion ?? "—"}`;
@@ -55,6 +64,8 @@ export function createHarnessVersionPanel(
     if (busy || unsupported || signal.aborted) return;
     if (action === "update" && (!state?.canUpdate || !state.updateAvailable)) return;
     busy = true;
+    updating = action === "update";
+    onChange();
     status.textContent =
       action === "check" ? messages.harnessVersionChecking : messages.harnessVersionUpdating;
     render();
@@ -82,7 +93,11 @@ export function createHarnessVersionPanel(
       if (state) state = { ...state, canUpdate: false };
     } finally {
       busy = false;
-      if (!signal.aborted) render();
+      updating = false;
+      if (!signal.aborted) {
+        render();
+        onChange();
+      }
     }
   };
   update.addEventListener("click", () => void run("update"));
@@ -101,7 +116,7 @@ export function createHarnessVersionPanel(
   status.textContent = messages.harnessVersionChecking;
   render();
   // Resolving a native Host can synchronously walk React fibers. Let the
-  // selected inspector paint before doing that work, even when the RPC itself
+  // Connections page paint before doing that work, even when the RPC itself
   // is async. A microtask or work inside the first frame would still block it.
   if (!signal.aborted && owner?.requestAnimationFrame) {
     checkFrame = owner.requestAnimationFrame(() => {
@@ -115,5 +130,14 @@ export function createHarnessVersionPanel(
   } else {
     void run("check");
   }
-  return panel;
+  return {
+    element: panel,
+    get state() {
+      return state;
+    },
+    get updating() {
+      return updating;
+    },
+    update: () => void run("update"),
+  };
 }

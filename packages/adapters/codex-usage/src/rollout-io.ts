@@ -22,73 +22,107 @@
  */
 import { createReadStream } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
-import { promisify } from "node:util";
-import { zstdDecompress } from "node:zlib";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
+import { constants as zstdConstants, createZstdDecompress } from "node:zlib";
 
-const decompress = promisify(zstdDecompress);
-const MAX_FRAME = 64 * 1024 * 1024;
 const MAX_LINE = 128 * 1024 * 1024;
 
-/** A complete Zstandard frame, not a search for magic bytes inside compressed payload. */
-function frameSize(data: Buffer): { size: number; skip: boolean } | null {
-  if (data.length < 8) return null;
-  const magic = data.readUInt32LE(0);
-  if ((magic & 0xfffffff0) === 0x184d2a50) {
-    const size = 8 + data.readUInt32LE(4);
-    if (size > MAX_FRAME) throw new Error("Codex zstd frame exceeds the safety limit");
-    return data.length >= size ? { size, skip: true } : null;
-  }
-  if (magic !== 0xfd2fb528) throw new Error("Invalid Codex zstd frame");
-  const descriptor = data.readUInt8(4);
-  if (descriptor & 8) throw new Error("Reserved Codex zstd frame header");
-  const single = (descriptor >> 5) & 1;
-  let offset =
-    5 +
-    (single ? 0 : 1) +
-    ([0, 1, 2, 4][descriptor & 3] ?? 0) +
-    ([single, 2, 4, 8][descriptor >> 6] ?? 0);
-  for (;;) {
-    if (offset + 3 > data.length) return null;
-    const block = data.readUIntLE(offset, 3);
-    const type = (block >> 1) & 3;
-    if (type === 3) throw new Error("Reserved Codex zstd block");
-    offset += 3 + (type === 1 ? 1 : block >>> 3);
-    if (offset > MAX_FRAME) throw new Error("Codex zstd frame exceeds the safety limit");
-    if (block & 1) break;
-  }
-  if (descriptor & 4) offset += 4;
-  return data.length >= offset ? { size: offset, skip: false } : null;
-}
-
-/** Node's zstd stream/sync APIs stop at the first frame; decode concatenated frames explicitly. */
+/** Stream each frame separately: Node's zstd streams stop at the first frame. */
 export async function* rolloutBytes(file: string, signal: AbortSignal): AsyncGenerator<Buffer> {
   signal.throwIfAborted();
   const stream = createReadStream(file, { signal });
-  let pending = Buffer.alloc(0);
   try {
-    for await (const value of stream) {
-      signal.throwIfAborted();
-      const chunk = value as Buffer;
-      if (!file.endsWith(".zst")) {
+    if (!file.endsWith(".zst")) {
+      for await (const chunk of stream) {
+        signal.throwIfAborted();
         yield chunk;
+      }
+      return;
+    }
+    const input = stream[Symbol.asyncIterator]();
+    let pending: Buffer = Buffer.alloc(0);
+    // Callers only request small headers or a protocol-bounded 128 KiB block.
+    async function readExact(size: number, allowEof = false): Promise<Buffer> {
+      const parts: Buffer[] = [];
+      let length = 0;
+      while (length < size) {
+        signal.throwIfAborted();
+        if (!pending.length) {
+          const next = await input.next();
+          if (next.done) {
+            if (allowEof && !length) return Buffer.alloc(0);
+            throw new Error("Truncated Codex zstd rollout");
+          }
+          pending = next.value as Buffer;
+        }
+        const count = Math.min(size - length, pending.length);
+        parts.push(pending.subarray(0, count));
+        pending = pending.subarray(count);
+        length += count;
+      }
+      return Buffer.concat(parts, length);
+    }
+    for (;;) {
+      const magicBytes = await readExact(4, true);
+      if (!magicBytes.length) break;
+      const magic = magicBytes.readUInt32LE(0);
+      if ((magic & 0xfffffff0) === 0x184d2a50) {
+        let size = (await readExact(4)).readUInt32LE(0);
+        while (size) {
+          const count = Math.min(size, 64 * 1024);
+          await readExact(count);
+          size -= count;
+        }
         continue;
       }
-      pending = Buffer.concat([pending, chunk]);
-      for (;;) {
-        const frame = frameSize(pending);
-        if (!frame) break;
-        if (!frame.skip) {
-          const decoded = await decompress(pending.subarray(0, frame.size), {
-            maxOutputLength: 128 * 1024 * 1024,
-          });
-          signal.throwIfAborted();
-          yield decoded;
+      if (magic !== 0xfd2fb528) throw new Error("Invalid Codex zstd frame");
+      const descriptorBytes = await readExact(1);
+      const descriptor = descriptorBytes.readUInt8(0);
+      if (descriptor & 8) throw new Error("Reserved Codex zstd frame header");
+      const single = (descriptor >> 5) & 1;
+      const headerSize =
+        (single ? 0 : 1) +
+        ([0, 1, 2, 4][descriptor & 3] ?? 0) +
+        ([single, 2, 4, 8][descriptor >> 6] ?? 0);
+      const header = Buffer.concat([magicBytes, descriptorBytes, await readExact(headerSize)]);
+      async function* frameChunks(): AsyncGenerator<Buffer> {
+        yield header;
+        for (;;) {
+          const blockBytes = await readExact(3);
+          const block = blockBytes.readUIntLE(0, 3);
+          const type = (block >> 1) & 3;
+          if (type === 3) throw new Error("Reserved Codex zstd block");
+          const blockSize = block >>> 3;
+          if (blockSize > 128 * 1024) throw new Error("Invalid Codex zstd block size");
+          yield blockBytes;
+          yield await readExact(type === 1 ? 1 : blockSize);
+          if (block & 1) break;
         }
-        pending = pending.subarray(frame.size);
+        if (descriptor & 4) yield await readExact(4);
       }
-      if (pending.length > MAX_FRAME) throw new Error("Codex zstd frame exceeds the safety limit");
+      const frame = Readable.from(frameChunks(), { objectMode: false });
+      const decoder = createZstdDecompress({
+        chunkSize: 64 * 1024,
+        params: { [zstdConstants.ZSTD_d_windowLogMax]: 27 },
+      });
+      const completed = pipeline(frame, decoder, { signal }).then(
+        () => null,
+        (error) => error,
+      );
+      try {
+        for await (const chunk of decoder) {
+          signal.throwIfAborted();
+          yield chunk;
+        }
+        const error = await completed;
+        if (error) throw error;
+      } finally {
+        frame.destroy();
+        decoder.destroy();
+        await completed;
+      }
     }
-    if (pending.length) throw new Error("Truncated Codex zstd rollout");
   } finally {
     stream.destroy();
   }

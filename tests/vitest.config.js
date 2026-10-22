@@ -35,9 +35,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include,
-    ...(platformOnly
-      ? { exclude: [...configDefaults.exclude, ...platformIndependentFiles()] }
-      : {}),
+    exclude: [
+      ...configDefaults.exclude,
+      "tools/compat-daily/**",
+      ...(platformOnly ? platformIndependentFiles() : []),
+    ],
     maxWorkers: 4,
     passWithNoTests: false,
     // Hosted Windows runners have highly variable disk latency (fsync + rename

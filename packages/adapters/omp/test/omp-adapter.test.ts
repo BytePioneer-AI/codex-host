@@ -722,6 +722,173 @@ describe("OMP Adapter inspection", () => {
   });
 });
 
+describe("OMP Adapter availability inspection", () => {
+  const listedModels: OmpNativeModel[] = [
+    { provider: "openai-codex", id: "gpt-5.6-luna", reasoning: true },
+  ];
+
+  it("answers from the Model list without starting a Session or caching the result", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn().mockResolvedValue({ kind: "models", models: listedModels });
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      await expect(
+        adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+      ).resolves.toMatchObject({
+        status: "ready",
+        catalog: { models: [expect.objectContaining({ label: "openai-codex / gpt-5.6-luna" })] },
+      });
+      expect(listModels).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/synthetic" }));
+      expect(createTransport).not.toHaveBeenCalled();
+
+      // A full inspection still starts a Session: the availability result is not its cache.
+      await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+        status: "ready",
+      });
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("reuses a cached full inspection instead of listing Models", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn();
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const full = await adapter.inspect({ cwd: "/synthetic" });
+      await expect(adapter.inspect({ cwd: "/synthetic", purpose: "availability" })).resolves.toBe(
+        full,
+      );
+      expect(listModels).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each([
+    [{ kind: "notInstalled", message: "omp missing" }, "notInstalled", "notInstalled", false],
+    [{ kind: "timedOut" }, "error", "unavailable", true],
+  ] as const)("reports %j without starting a Session", async (listed, status, code, retryable) => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const adapter = new OmpAdapter({}, { createTransport, listModels: async () => listed });
+    try {
+      await expect(
+        adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+      ).resolves.toMatchObject({ status, error: { code, retryable, stage: "model-list" } });
+      expect(createTransport).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("makes an explicit availability re-check drop the cached full catalog", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn().mockResolvedValue({ kind: "models", models: listedModels });
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      await adapter.inspect({ cwd: "/synthetic" });
+      await adapter.inspect({ cwd: "/synthetic", purpose: "availability", refresh: true });
+      expect(listModels).toHaveBeenCalledOnce();
+      await adapter.inspect({ cwd: "/synthetic" });
+      expect(createTransport).toHaveBeenCalledTimes(2);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("stops a pending Model list on close and starts no Session afterwards", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let aborted = false;
+    const listModels = vi.fn(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve({ kind: "unanswered" });
+          });
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    const pending = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+    await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+    await adapter.close();
+
+    await expect(pending).resolves.toMatchObject({
+      status: "unavailable",
+      error: { code: "invalidState" },
+    });
+    expect(aborted).toBe(true);
+    expect(createTransport).not.toHaveBeenCalled();
+  });
+
+  it("shares one Model list and joins the in-flight full inspection on fallback", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let answer: (value: { kind: "unanswered" }) => void = () => undefined;
+    const listModels = vi.fn(
+      () =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const first = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      const second = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+      const full = adapter.inspect({ cwd: "/synthetic" });
+      answer({ kind: "unanswered" });
+
+      const [firstResult, secondResult, fullResult] = await Promise.all([first, second, full]);
+      expect(firstResult).toBe(fullResult);
+      expect(secondResult).toBe(fullResult);
+      expect(listModels).toHaveBeenCalledOnce();
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("reuses a full inspection that finished while the Model list ran", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let answer: (value: { kind: "unanswered" }) => void = () => undefined;
+    const listModels = vi.fn(
+      () =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const availability = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+      const full = await adapter.inspect({ cwd: "/synthetic" });
+      answer({ kind: "unanswered" });
+
+      await expect(availability).resolves.toBe(full);
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each([{ kind: "unanswered" }, { kind: "models", models: [] }] as const)(
+    "falls back to Session inspection for %j",
+    async (listed) => {
+      const createTransport = vi.fn(() => new FakeOmpTransport());
+      const adapter = new OmpAdapter({}, { createTransport, listModels: async () => listed });
+      try {
+        await expect(
+          adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+        ).resolves.toMatchObject({ status: "ready" });
+        expect(createTransport).toHaveBeenCalledOnce();
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+});
+
 describe("OMP Adapter Fork", () => {
   it("forks the requested completed prefix from the next OMP User Entry", async () => {
     const firstTurn = historyTurn({

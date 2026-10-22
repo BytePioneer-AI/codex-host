@@ -1122,7 +1122,7 @@ export class MappingStore {
     }
   }
 
-  /** Atomically writes, or with null removes, a Thread's Desktop metadata file. */
+  /** Atomically patches owned metadata fields, retaining unknown fields on disk. */
   async #writeMetadataFile(
     hostThreadId: HostThreadId,
     metadata: StoredThreadMetadataV1 | null,
@@ -1131,12 +1131,18 @@ export class MappingStore {
     const temp = `${target}.tmp-${randomUUID()}`;
     let handle: FileHandle | null = null;
     try {
-      if (!metadata) {
+      const retained = Object.fromEntries(
+        Object.entries((await this.#readMetadata(hostThreadId)) ?? {}).filter(
+          ([name]) => !["formatVersion", "hostThreadId", ...THREAD_METADATA_FIELDS].includes(name),
+        ),
+      );
+      if (!metadata && Object.keys(retained).length === 0) {
         await rm(target, { force: true });
         return;
       }
+      const next = { ...retained, formatVersion: 1, hostThreadId, ...metadata };
       handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
-      await handle.writeFile(`${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+      await handle.writeFile(`${JSON.stringify(next, null, 2)}\n`, "utf8");
       await handle.sync();
       await handle.close();
       handle = null;

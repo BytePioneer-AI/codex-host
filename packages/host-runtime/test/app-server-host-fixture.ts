@@ -473,13 +473,14 @@ export async function bindOfficialThread(
 export async function answerOfficialParentCwd(
   fixture: ReturnType<typeof createFixture>,
   threadId = "parent-thread",
+  name?: string,
 ): Promise<void> {
   const request = await readJsonLine(fixture.official.stdin);
   expect(request).toMatchObject({ method: "thread/read", params: { threadId } });
   fixture.official.stdout.write(
     `${JSON.stringify({
       id: request.id,
-      result: { thread: { id: threadId, cwd: "/synthetic" } },
+      result: { thread: { id: threadId, cwd: "/synthetic", ...(name ? { name } : {}) } },
     })}\n`,
   );
 }

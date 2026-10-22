@@ -775,7 +775,7 @@ describe("Harness CLI version panel", () => {
       abort.signal,
       "pi",
       { run },
-    ) as unknown as FakeElement;
+    ).element as unknown as FakeElement;
     const button = (action: string) => {
       const element = descendants(panel).find(
         (element) => element.dataset.harnessVersionAction === action,
@@ -929,6 +929,159 @@ describe("Harness installation actions", () => {
 });
 
 describe("Renderer Connections page", () => {
+  it("checks eligible rows automatically, isolates failures, and updates only on an explicit click", async () => {
+    const updated = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const installation = vi.fn(async (_host: string, agent: string, action: string) => {
+      if (action === "update") return updated.promise;
+      if (agent === "grok") throw { code: -32078 };
+      if (agent === "omp") throw new Error("private-native-output");
+      return {
+        currentVersion: "1.0.0",
+        latestVersion: "1.1.0",
+        updateAvailable: agent !== "claude-code",
+        canUpdate: agent !== "kiro-cli",
+      };
+    });
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              ...["pi", "claude-code", "kiro-cli", "grok", "omp"].map((agent) => ({
+                agent,
+                availability: "ready" as const,
+                error: null,
+              })),
+              { agent: "deepseek-harness", availability: "notInstalled", error: null },
+              { agent: "qoder", availability: "checking", error: null },
+            ],
+          },
+        ],
+      }),
+      installation,
+      refresh: async () => undefined,
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    assert(page);
+    const doc = new FakeDocument();
+    const content = doc.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const row = (agent: string) => {
+      const element = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      assert(element);
+      return element;
+    };
+    const updateButton = (agent: string) =>
+      descendants(row(agent)).find(({ dataset }) => dataset.connectionAction === "update");
+    await vi.waitFor(() => expect(updateButton("pi")).toBeDefined());
+    expect(installation.mock.calls).toEqual(
+      ["pi", "claude-code", "kiro-cli", "grok", "omp"].map((agent) => ["local", agent, "check"]),
+    );
+    expect(visibleText(row("pi"))).toContain("Update available: 1.1.0");
+    expect(visibleText(row("kiro-cli"))).toContain("Update available: 1.1.0");
+    for (const agent of ["claude-code", "kiro-cli", "grok", "omp"]) {
+      expect(updateButton(agent)).toBeUndefined();
+    }
+    row("omp").dispatch("click", { target: null });
+    expect(visibleText(content)).toContain("Could not complete");
+    expect(visibleText(content)).not.toContain("private-native-output");
+    const update = updateButton("pi");
+    assert(update);
+    update.dispatch("click", { stopPropagation() {} });
+    update.dispatch("click", { stopPropagation() {} });
+    await vi.waitFor(() => expect(visibleText(row("pi"))).toContain("Updating"));
+    expect(installation.mock.calls.filter(([, , action]) => action === "update")).toEqual([
+      ["local", "pi", "update"],
+    ]);
+    expect(updateButton("pi")?.disabled).toBe(true);
+    updated.resolve({
+      currentVersion: "1.1.0",
+      latestVersion: "1.1.0",
+      updateAvailable: false,
+      canUpdate: true,
+    });
+    await vi.waitFor(() => expect(updateButton("pi")).toBeUndefined());
+    expect(visibleText(row("pi"))).not.toContain("Update available");
+    expect(visibleText(content)).toContain("Current version: 1.1.0");
+    if (typeof cleanup === "function") cleanup();
+    scope.dispose();
+  });
+
+  it("checks Harnesses when diagnostics finish, but ignores late results after closing", async () => {
+    let ready = false;
+    let notify = () => {};
+    const result = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const installation = vi.fn(() => result.promise);
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [{ agent: "pi", availability: ready ? "ready" : "checking", error: null }],
+          },
+        ],
+      }),
+      installation,
+      refresh: async () => undefined,
+      subscribe: (listener) => {
+        notify = listener;
+        return () => {};
+      },
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    assert(page);
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    expect(installation).not.toHaveBeenCalled();
+    ready = true;
+    notify();
+    await vi.waitFor(() => expect(installation).toHaveBeenCalledOnce());
+    if (typeof cleanup === "function") cleanup();
+    scope.dispose();
+    result.resolve({
+      currentVersion: "1.0.0",
+      latestVersion: "1.1.0",
+      updateAvailable: true,
+      canUpdate: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(visibleText(content)).not.toContain("Update available");
+  });
+
   it("places version controls in the selected Host's inspector and preserves them across diagnostics", async () => {
     const installation = vi.fn(async () => ({
       currentVersion: "1.0.0",
@@ -967,10 +1120,12 @@ describe("Renderer Connections page", () => {
       signal: scope.signal,
       runLatest: (op, handlers) => scope.runLatest(op, handlers),
     });
+    await vi.waitFor(() => expect(installation).toHaveBeenCalledWith("local", "pi", "check"));
+    expect(installation).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Update available: 1.1.0"));
     const row = descendants(content).find((element) => element.dataset.connectionItem === "pi");
     if (!row) throw new Error("Expected Pi row");
     row.dispatch("click", { target: null });
-    await vi.waitFor(() => expect(installation).toHaveBeenCalledWith("local", "pi", "check"));
     const first = descendants(content).find((element) => element.dataset.harnessVersion === "pi");
     expect(first).toBeDefined();
     notify();

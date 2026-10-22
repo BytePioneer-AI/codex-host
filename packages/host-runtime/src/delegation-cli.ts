@@ -238,6 +238,7 @@ export async function runDelegationCli(input: {
       rejectUnknown(parsed, [
         "--harness",
         "--task",
+        "--task-name",
         "--cwd",
         "--model",
         "--thinking",
@@ -272,6 +273,9 @@ export async function runDelegationCli(input: {
           body: {
             harnessId,
             task,
+            ...(value(parsed, "--task-name") !== undefined
+              ? { taskName: value(parsed, "--task-name") }
+              : {}),
             ...(value(parsed, "--cwd") ? { cwd: value(parsed, "--cwd") } : {}),
             ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
             ...(value(parsed, "--thinking")

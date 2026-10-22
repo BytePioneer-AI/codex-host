@@ -121,8 +121,13 @@ export function harnessSkillFromDirectory(
   directory: string,
   manifest: string,
 ): HarnessSkill | undefined {
-  if (manifest.length > MAX_MANIFEST_PREFIX_BYTES) return undefined;
-  const fields = harnessSkillFrontmatter(manifest);
+  // Parse only the leading frontmatter window: real SKILL.md files run past 100 kB and the fence
+  // always sits at the top. Truncate the body instead of rejecting the skill.
+  const prefix =
+    manifest.length > MAX_MANIFEST_PREFIX_BYTES
+      ? manifest.slice(0, MAX_MANIFEST_PREFIX_BYTES)
+      : manifest;
+  const fields = harnessSkillFrontmatter(prefix);
   if (!fields) return undefined;
   const directoryName = harnessSkillText(directory.split(/[\\/]/u).at(-1), MAX_NAME_LENGTH);
   const name = harnessSkillText(fields["name"], MAX_NAME_LENGTH) ?? directoryName;

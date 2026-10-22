@@ -11,6 +11,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  margin: 0 0 10px;
+}
+
+/* The shared label carries an 18px bottom padding that would push the icon below the text. */
+.console-skills-head > .settings-section-label {
+  padding-bottom: 0;
 }
 
 .console-skills-refresh {

@@ -6,22 +6,78 @@ Package identity follows the same fork-scope rule as other karlorz forks: a perm
 
 ## Preserve Live Voice when syncing upstream
 
-The fork's [Live Voice integration](cpa-live-voice-desktop-hook.md) is maintained
-alongside upstream. Documentation records its contract; it does not enforce merge
-resolution or guarantee compatibility with a new Desktop build.
+This is the operational runbook for upstream syncs. Preserve fork patches, merge
+upstream on a branch from fork `main`, then verify the fork behavior and Desktop
+pins separately. The fork's [Live Voice integration](cpa-live-voice-desktop-hook.md)
+and [Grok Computer Use / IAB settings](../harnesses/grok/computer-use-settings.md)
+remain fork responsibilities.
+
+An upstream merge cannot by itself qualify Desktop voice. At the 22 October 2026
+baseline (`origin/main` at `10ba06b7`), Work and Chat pins are **26.1013.40934**;
+the reported Sparkle latest is **26.1016.61520** (fork issues
+[#3](https://github.com/karlorz/codex-host/issues/3) and
+[#4](https://github.com/karlorz/codex-host/issues/4)). The dirty Work overlay and
+capability projection target **26.1016.51333** and are not part of that baseline.
+Neither merging upstream nor changing a version string qualifies 26.1016.61520.
+Recheck the live appcast and exact source pins at each sync.
+
+### Protect the dirty tree and authorize the merge
+
+Documentation updates can proceed independently. Before an actual merge, settle
+both attended decisions: how to preserve dirty work, and whether to merge now.
+The recommended preservation is a named backup branch with a WIP commit after
+reviewing the file inventory; do not put an unreviewed bulk feature commit on
+fork `main`. Merely creating a branch does not save dirty files.
+
+1. Record `git status --short --branch`, the fork-main OID, staged changes and
+   untracked files. Inventory the voice overlay/projection and IAB work as well
+   as other local changes. Keep secrets, ignored build outputs and local
+   environment files out of commits.
+2. On the approved backup branch, explicitly stage the intended tracked and
+   untracked source files and create the WIP snapshot. Record its branch and
+   commit OID. Alternatively, park tracked and untracked work in an explicitly
+   named `git stash push --include-untracked` entry, record its OID, and inspect
+   its inventory. Verify that the recovery copy contains the intended files.
+3. Return to fork `main` with a clean tracked/untracked source tree before
+   creating the sync branch. Approved feature work may instead be reviewed and
+   integrated into fork `main` first. Do not discard remaining dirty changes to
+   make this precondition pass.
+4. Obtain Karl's explicit **merge now** decision. A recommendation to document
+   the process, silence, or a saved backup does not authorize the merge.
+
+On a disk-constrained checkout, use Git snapshots and targeted asset reads. Do
+not run Docker or extract the full Desktop ASAR. Run Rust validation only when
+an approved merge affects Rust and the selected checks require it.
+
+### Merge on a fork sync branch
 
 Before an upstream sync:
 
-1. Commit approved fork changes and integrate them into the fork's `main` before
-   creating the sync branch. A feature branch running locally is not part of
-   `main` until merged. Record the starting commit and keep a local backup branch.
-2. Verify `origin` is `karlorz/codex-host` and `upstream` is
-   `BytePioneer-AI/codex-host`. Fetch both, then merge upstream on a separate sync
-   branch based on the fork's current main. Do not reset or replace fork main with
-   upstream main. A conflict-free merge still needs behavioral verification.
-3. Inspect conflicts and overlapping changes by responsibility. Do not apply a
-   blanket choice of either side. Preserve the contracts below, or replace them
-   with an upstream implementation only after equivalent behavior is verified.
+1. Verify `origin` is `karlorz/codex-host` and `upstream` is
+   `BytePioneer-AI/codex-host`, including push URLs. Fetch both. Compare fork
+   `main` with `origin/main`; reconcile unexpected divergence before continuing.
+   Record the fork and upstream OIDs used for this sync.
+2. Create a uniquely named `sync/upstream-YYYY-MM-DD` branch from fork `main`,
+   then merge the recorded `upstream/main` OID there. Never reset or replace fork
+   `main` with upstream. A conflict-free merge still needs behavioral verification.
+3. Resolve conflicts and inspect overlapping changes by responsibility. Do not
+   apply a blanket choice of either side. Preserve the contracts below, or use
+   an upstream implementation only after equivalent behavior is verified.
+4. Restore the intended fork voice, overlay/projection and IAB changes from the
+   backup, reviewed commits or stash as needed. For a stash, apply the saved OID
+   and keep the recovery entry until verification finishes. Inspect each diff;
+   do not blindly replay a mixed WIP snapshot or restore whole upstream files.
+   Preserve fork package/update identity, `tools/compat-daily/`, the
+   `compat:daily` / `compat:daily:test` scripts and
+   `.github/workflows/compat-daily.yml`. IAB preferences must retain their real
+   supported/unsupported binding semantics.
+
+If resolution cannot preserve a contract, stop and record the unresolved
+ownership or behavior. An in-progress merge can be aborted with `git merge --abort`
+before applying saved WIP. Keep the backup/stash; do not use a destructive reset
+on fork `main` as recovery.
+
+### Required fork contracts
 
 Required voice contracts:
 
@@ -48,12 +104,30 @@ Required voice contracts:
 - **Version boundary:** Preserve exact audited asset checks. After a Desktop
   update, re-audit its native exports and call ownership before enabling another
   build; a passing source merge does not qualify new Desktop assets.
+- **Rollout and scope:** Keep `model_provider = "custom"`. Do not globally
+  override Statsig `3683713372`. Work capability/start projection must remain
+  scoped to its audited owner and assets. Chat voice qualification for 26.1016
+  stays deferred; preserve the existing qualified Chat path and fail closed on
+  unqualified builds.
 - **Gateway boundary:** Disabled-account selection and any future automatic
   quota retry belong to CPA. This fork's voice override does not implement
   account failover. Do not edit CPA core or deploy a gateway as part of a routine
   codex-host sync.
 
-After resolving the sync, build the TypeScript packages before dependent tests:
+### Re-audit pins and verify the sync
+
+Run `npm run compat:daily` from the candidate tree and record the report. This
+fetches only the public Sparkle appcast, reads the local pins and exits nonzero
+on drift; it neither updates pins nor qualifies Desktop behavior. Follow
+[the compat-daily audit procedure](../../tools/compat-daily/README.md) to inspect
+the exact assets/exports and change pins only with matching qualification
+evidence. Keep Work and Chat qualification separate. Deferred Chat may continue
+to report drift; record that limitation rather than changing its pin to make
+the check green.
+
+After resolving the sync, select checks for the actual merged diff using the
+repository pre-push guidance. For voice changes, build the TypeScript packages
+before dependent tests:
 
 ```bash
 npm run build:typescript
@@ -72,6 +146,8 @@ npx vitest run --config tests/vitest.config.js \
   packages/host-runtime/test/external-voice-lifecycle.test.ts \
   packages/host-runtime/test/app-server-host.external-voice.test.ts
 npm run test:e2e -- renderer-voice-csp.spec.ts
+npm run compat:daily:test
+npm run compat:daily
 git diff --check
 ```
 
@@ -89,9 +165,19 @@ microphone/conversation acceptance. Record the tested commit, Desktop version,
 checks and remaining limitations in the wiki without credentials, SDP or call
 identities.
 
-Integrate the verified sync branch into fork main. Pushes, releases, upstream PRs
-and production changes remain separate authorized actions. This checklist does
-not install an automatic sync guard or change branch protection.
+### Review and publish to the fork
+
+Record the backup/stash OID, fork/upstream OIDs, candidate commit, Desktop
+version/assets, checks and any deferred qualification in the wiki. Review the
+sync diff and limitations before integrating it into fork `main`; keep the
+recovery snapshot until the intended fork work is accounted for.
+
+Prepare a local commit for review. Push only with explicit authorization, naming
+the remote and branch, for example `git push origin sync/upstream-YYYY-MM-DD`.
+Use `-R karlorz/codex-host` for any authorized PR. Never push to `upstream` or
+force-push `main`. Integrating into fork `main`, releases and production changes
+are separate authorized actions. This runbook does not install an automatic
+sync guard or change branch protection.
 
 ## Tag rule
 

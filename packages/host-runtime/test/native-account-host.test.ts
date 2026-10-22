@@ -81,13 +81,15 @@ function nativeFixture() {
     for (const connection of connections) connection.close();
     exit.resolve({ code: 0, signal: null });
   });
-  vi.mocked(createOwnedLoopbackBackend).mockReturnValue({
+  const backend = {
     closed: exit.promise,
     start: vi.fn(async () => {}),
     connect,
     stop,
-  });
+  };
+  vi.mocked(createOwnedLoopbackBackend).mockReturnValue(backend);
   return {
+    backend,
     requests,
     connect,
     stop,
@@ -98,7 +100,7 @@ function nativeFixture() {
   };
 }
 
-async function startLocal() {
+async function startLocal(options?: { recoveryWaitMs?: number; delaysMs?: readonly number[] }) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-native-account-host-"));
   temporaryDirectories.add(directory);
   const local = await prepareLocalCodex({
@@ -106,6 +108,8 @@ async function startLocal() {
     arguments: ["app-server"],
     environment: { CODEX_HOME: path.join(directory, "missing-codex-home") },
     diagnosticOutput: new PassThrough(),
+    ...(options?.delaysMs ? { recovery: { delaysMs: options.delaysMs } } : {}),
+    ...(options?.recoveryWaitMs !== undefined ? { recoveryWaitMs: options.recoveryWaitMs } : {}),
   });
   prepared.add(local);
   return local;
@@ -157,11 +161,28 @@ describe("local Codex read-only identity startup", () => {
     }
   });
 
-  it("closes the owned backend when identity connection initialization fails", async () => {
+  it("recovers a failed first official start without closing the Scope", async () => {
+    const first = nativeFixture();
+    first.connect.mockRejectedValueOnce(new Error("Synthetic connection failure"));
+    const firstBackend = first.backend;
+    let calls = 0;
+    vi.mocked(createOwnedLoopbackBackend).mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) return firstBackend;
+      return nativeFixture().backend;
+    });
+    const local = await startLocal({ delaysMs: [0], recoveryWaitMs: 2_000 });
+    expect(local.officialRuntimeScope.gate.phase).toBe("ready");
+    expect(local.officialRuntimeScope.owner.generation).toBe(2);
+    expect(first.stop).toHaveBeenCalled();
+    await local.accountControl.refresh?.();
+  });
+
+  it("closes the owned backend when first start and bounded recovery both fail", async () => {
     const f = nativeFixture();
-    f.connect.mockRejectedValueOnce(new Error("Synthetic connection failure"));
-    await expect(startLocal()).rejects.toThrow();
-    expect(f.stop).toHaveBeenCalledOnce();
+    f.connect.mockRejectedValue(new Error("Synthetic connection failure"));
+    await expect(startLocal({ delaysMs: [0], recoveryWaitMs: 30 })).rejects.toThrow("unavailable");
+    expect(f.stop).toHaveBeenCalled();
     expect(f.requests).toEqual([]);
   });
 

@@ -8,7 +8,11 @@ import {
   type CodexAccountControl,
 } from "./account/codex-account-control.js";
 import { officialEnvironment } from "./app-server-host.js";
-import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
+import {
+  OfficialRuntimeScope,
+  type OfficialRuntimeRecoveryOptions,
+} from "./codex-runtime/official-runtime-scope.js";
+import { OfficialAdmissionError } from "./codex-runtime/official-work-gate.js";
 import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backends.js";
 
 export interface PreparedLocalCodex {
@@ -29,11 +33,20 @@ async function canonicalCodexHome(home: string): Promise<string> {
   }
 }
 
+function sanitizedOfficialCause(error: unknown): string {
+  const outer = error instanceof Error ? error.name : "unknown";
+  const cause = error instanceof Error ? error.cause : undefined;
+  const inner = cause instanceof Error ? cause.name : undefined;
+  return inner && inner !== outer ? `${outer}/${inner}` : outer;
+}
+
 export async function prepareLocalCodex(input: {
   stockCodexPath: string;
   arguments: string[];
   environment: NodeJS.ProcessEnv;
   diagnosticOutput: Writable;
+  recovery?: OfficialRuntimeRecoveryOptions;
+  recoveryWaitMs?: number;
 }): Promise<PreparedLocalCodex> {
   const home = await canonicalCodexHome(
     input.environment.CODEX_HOME ?? path.join(homedir(), ".codex"),
@@ -43,7 +56,7 @@ export async function prepareLocalCodex(input: {
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
     // Local Desktop connections outlive a failed official backend generation.
-    recovery: {},
+    recovery: input.recovery ?? {},
     createBackend: () =>
       createOwnedLoopbackBackend({
         stockCodexPath: input.stockCodexPath,
@@ -62,9 +75,22 @@ export async function prepareLocalCodex(input: {
   try {
     await scope.start();
   } catch (error) {
-    await scope.close();
-    identityReader.close();
-    throw error;
+    const waitMs = input.recoveryWaitMs ?? 13_000;
+    input.diagnosticOutput.write(
+      `codexhost: official Codex first start failed stage=start cause=${sanitizedOfficialCause(error)}; waiting ${String(waitMs)}ms for recovery\n`,
+    );
+    try {
+      await scope.awaitReady(waitMs);
+      input.diagnosticOutput.write(
+        "codexhost: official Codex recovered after first start failure\n",
+      );
+    } catch {
+      await scope.close();
+      identityReader.close();
+      throw error instanceof OfficialAdmissionError
+        ? error
+        : new OfficialAdmissionError("unavailable", error);
+    }
   }
   let current: ReturnType<typeof currentCodexAccountFromOfficialRead> = null;
   const snapshot = () => ({

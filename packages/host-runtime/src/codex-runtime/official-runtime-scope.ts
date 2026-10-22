@@ -70,6 +70,24 @@ export class OfficialRuntimeScope {
     return this.#closed;
   }
 
+  /** Wait until this Scope publishes ready, or reject on timeout / close. */
+  awaitReady(timeoutMs: number): Promise<void> {
+    if (this.#closed) return Promise.reject(new OfficialAdmissionError("unavailable"));
+    if (this.gate.phase === "ready") return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        unsub();
+        reject(new OfficialAdmissionError("unavailable"));
+      }, timeoutMs);
+      const unsub = this.gate.subscribe(() => {
+        if (this.gate.phase !== "ready") return;
+        clearTimeout(timer);
+        unsub();
+        resolve();
+      });
+    });
+  }
+
   start(): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Official Codex is unavailable"));
     if (this.#starting) return this.#starting;

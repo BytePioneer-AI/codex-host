@@ -46,11 +46,13 @@ Reuse --request-id for an idempotent retry. Identical recent parent/target/task/
 --ref records where the work came from, such as an issue URL; repeat it for several. Absolute URIs only, at most 16 per Thread; credentials in a URI are removed. A child inherits its parent Thread's references.
 An external client that omits --parent-thread starts the work as itself (parent client:<name>) and must pass --cwd.
 The response confirms cwd and parent. Use its Thread reference with thread read, wait, send, cancel, or watch.`,
-  "thread send": `codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
+  "thread send": `codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--steer true|false] [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
 Start a new Turn in a writable Thread and return after submission.
 --message and --message-file are mutually exclusive. --message-file reads UTF-8 from a file, or stdin for -; maximum 262144 bytes (256 KiB) before removing one final LF or CRLF. Other whitespace and special characters are preserved; empty/whitespace-only input is rejected. Terminal stdin is rejected: use a quoted heredoc (<<'EOF') or a pipe. --message is unchanged.
-Without --interrupt, THREAD_BUSY means the current Turn is still active. Messages are not queued.
+Without --interrupt or --steer true, THREAD_BUSY means the current Turn is still active. Messages are not queued.
 --interrupt cancels an active Turn and confirms it stopped before sending (30 s stop timeout); an idle Thread is sent normally. Cancellation failure/timeout sends nothing. It preserves existing watches, suppressing the temporary stop notification; it never retries or queues a failed send.
+--steer true uses the same adjustment operation as Desktop: native steering where supported, otherwise stop and resend. An idle Thread starts a new Turn. Omitted or false keeps the busy rejection above.
+Success confirms acceptance, not execution in the current Turn or task completion. Use read/wait to observe the result.
 --watch true registers a watch only after sending succeeds, notifying the resolved caller (CODEXHOST_THREAD_ID, then CODEX_THREAD_ID; otherwise the external client itself). The response's watch field has the same shape as delegate start: watching/alreadyTerminal, or notRegistered with a reason, including a missing caller. --watch-timeout-ms requires --watch true and defaults to 1740000 (29 min).`,
   "thread cancel": `codexhost thread cancel <thread> [--format json|compact|text]
 Request cancellation of the active Turn while preserving the Thread and history.
@@ -106,7 +108,7 @@ export const DELEGATION_HELP = `usage:
   codexhost harness list
   codexhost harness inspect <harness>
   codexhost delegate start --harness <id> (--task <text> | --task-file <path|->)
-  codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--watch true]
+  codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--steer true|false] [--watch true]
   codexhost thread cancel <thread>
   codexhost thread read <thread>
   codexhost thread export <thread> (rarely needed)

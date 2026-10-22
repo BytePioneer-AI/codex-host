@@ -410,7 +410,7 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接两种形
 - **AND** 相同请求在 Thread 未变化时 SHALL 返回语义相同的结果
 
 ### Requirement: 调用方可向已有可写 Thread 发送后续消息
-系统 SHALL 提供 `codexhost thread send <thread> --message <text>`，在用户明确指定的普通可写 Thread 中启动新的 Turn 并立即返回。该操作 SHALL 同时支持外部 Harness Thread 与原生 Codex Thread，并接受裸 Thread ID 或 `codex://threads/<id>`。
+系统 SHALL 提供 `codexhost thread send <thread> --message <text> [--steer true|false]`，在用户明确指定的普通可写 Thread 中提交输入并立即返回。该操作 SHALL 同时支持外部 Harness Thread 与原生 Codex Thread，并接受裸 Thread ID 或 `codex://threads/<id>`。省略 `--steer` 或传 `false` SHALL 保留空闲发送、忙时拒绝的行为。
 
 #### Scenario: 向已完成的委派 Thread 发送第二轮消息
 - **WHEN** 调用方对没有活跃 Turn 的委派子 Thread 执行 `thread send`
@@ -424,9 +424,20 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接两种形
 - **AND** 裸 ID SHALL 得到等价结果
 
 #### Scenario: Thread 正在运行
-- **WHEN** 调用方对已有活跃 Turn 的 Thread 执行 `thread send`
+- **WHEN** 调用方对已有活跃 Turn 的 Thread 执行 `thread send`，且没有开启 `--steer true`
 - **THEN** 命令 SHALL 以 `THREAD_BUSY` 失败
 - **AND** MUST NOT 排队、取消旧 Turn 或启动并发 Turn
+
+#### Scenario: 调用方显式调整运行中任务
+- **WHEN** 调用方执行 `thread send --steer true`
+- **THEN** 空闲 Thread SHALL 启动新 Turn；运行中 Thread SHALL 复用 Desktop 的同一个调整方向操作
+- **AND** 原生 Codex SHALL 使用 `turn/steer`；外部 Harness SHALL 按 Session 能力选择原生接受或既有停止后重发
+- **AND** CLI SHALL 只校验和传递参数，不先探测忙碌状态，不新增队列或重试
+- **AND** 成功回执 SHALL 不被解释为已在当前轮执行或任务完成；CLI 不额外暴露送达方式，调用方通过 read/wait 观察后续结果
+
+#### Scenario: steer 参数非法
+- **WHEN** `--steer` 的值不是 `true` 或 `false`
+- **THEN** CLI SHALL 在发送请求前以 `INVALID_ARGUMENT` 失败
 
 ### Requirement: 调用方可取消已有 Thread 的当前 Turn
 系统 SHALL 提供 `codexhost thread cancel <thread>`，请求取消目标 Thread 当前活跃 Turn，同时保留 Thread、既有消息和持久化映射。该操作 SHALL 同时支持外部 Harness Thread 与原生 Codex Thread。

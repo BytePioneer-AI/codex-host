@@ -9,13 +9,19 @@ fn launcher_command() -> Result<std::process::Command, Box<dyn std::error::Error
     use std::env;
     use std::process::Command;
 
-    use codexhost_platform::{canonical_existing_file, configure_background_command};
+    use codexhost_platform::{
+        configure_background_command, existing_file_preserving_links,
+    };
 
     let executable = env::current_exe()?;
     let directory = executable
         .parent()
         .ok_or("codexhost Start Menu executable has no parent directory")?;
-    let launcher = canonical_existing_file(&directory.join("codexhost.exe"))?;
+    // Keep the link intact. The launcher derives every resource path from its own
+    // location, and it re-injects the Shim path into the Desktop. Resolving a
+    // directory junction here would move the whole installation to the link target
+    // and hand the Desktop a path it may not be able to read.
+    let launcher = existing_file_preserving_links(&directory.join("codexhost.exe"))?;
     let mut command = Command::new(launcher);
     configure_background_command(&mut command);
     Ok(command)

@@ -23,7 +23,7 @@ use super::process::{
 };
 use super::{
     CODEX_CLI_PATH_ENV, DesktopInstallation, DesktopLaunchMode, PlatformError,
-    STOCK_CODEX_PATH_ENV, canonical_existing_file,
+    STOCK_CODEX_PATH_ENV, canonical_existing_file, existing_file_preserving_links,
 };
 
 #[cfg(target_os = "windows")]
@@ -56,7 +56,12 @@ fn managed_desktop_environment(
     shim_path: &Path,
     additional_environment: &[(OsString, OsString)],
 ) -> Result<Vec<(OsString, OsString)>, PlatformError> {
-    let shim_path = canonical_existing_file(shim_path)?;
+    // Keep the caller-visible path. A packaged Desktop validates this value itself
+    // and some hosts cannot read a path whose target lives on another volume, which
+    // is exactly the case when the installation sits behind a directory junction.
+    // Canonicalizing here would rewrite the link target into the injected value and
+    // the host would reject it again.
+    let shim_path = existing_file_preserving_links(shim_path)?;
     let mut environment = vec![
         (
             OsString::from(CODEX_CLI_PATH_ENV),

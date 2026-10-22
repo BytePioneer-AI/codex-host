@@ -113,9 +113,11 @@ pub(super) fn wait_for_host_chain(
 ) -> Result<bool, Box<dyn Error>> {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if descendant_executable_exists(desktop_pid, &options.shim)?
-            && descendant_executable_exists(desktop_pid, &options.node)?
-        {
+        // The codexhost runtime node can only appear in the Desktop tree through
+        // the shim's host-runtime spawn (the controller runs under the Launcher).
+        // Checking the shim executable path alone is unreliable on Windows, where
+        // the Desktop-managed CLI image may host the shim.
+        if descendant_executable_exists(desktop_pid, &options.node)? {
             return Ok(true);
         }
         thread::sleep(Duration::from_millis(100));

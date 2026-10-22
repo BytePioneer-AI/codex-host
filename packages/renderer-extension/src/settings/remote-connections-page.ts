@@ -23,6 +23,7 @@ import {
 } from "./remote-connections-dialogs.js";
 
 const POLL_INTERVAL_MS = 5_000;
+const STABLE_POLL_INTERVAL_MS = 30_000;
 const SUCCESS_NOTICE_MS = 6_000;
 /** A failed SSH inspection is retried, but not on every poll: repeated logins can trip host bans. */
 const INSPECT_RETRY_MS = 60_000;
@@ -42,6 +43,7 @@ export function createRemoteConnectionsPage(
     icon: "gateway",
     mount({ content, signal }) {
       const document = content.ownerDocument;
+      let disposed = false;
       const el = <K extends keyof HTMLElementTagNameMap>(
         tag: K,
         className = "",
@@ -119,13 +121,44 @@ export function createRemoteConnectionsPage(
       let loaded = false;
       let loadError: string | null = null;
       let order: string[] = [];
-      let polling = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let polling: Promise<void> | undefined;
       const rows = new Map<string, RemoteConnectionRow>();
       const cards = new Map<string, { element: HTMLElement; signature: string }>();
       const installations = new Map<string, "installed" | "not-installed" | "unknown">();
       const probeTokens = new Map<string, number>();
       const inspectFailures = new Map<string, number>();
       const restarting = new Map<string, number>();
+
+      function schedule(): void {
+        clearTimeout(timer);
+        if (disposed || signal.aborted || document.visibilityState === "hidden") return;
+        const fast =
+          !loaded ||
+          !local ||
+          Boolean(loadError) ||
+          [...rows.values()].some(
+            (row) =>
+              row.pending ||
+              row.probing ||
+              row.state === "connecting" ||
+              row.stateError ||
+              row.remoteIssue ||
+              remoteBusy(row.remote),
+          );
+        timer = setTimeout(() => void poll(), fast ? POLL_INTERVAL_MS : STABLE_POLL_INTERVAL_MS);
+      }
+
+      function poll(): Promise<void> {
+        if (polling) return polling;
+        if (disposed || signal.aborted) return Promise.resolve();
+        clearTimeout(timer);
+        polling = refresh(undefined, "all").finally(() => {
+          polling = undefined;
+          schedule();
+        });
+        return polling;
+      }
 
       const focusedElement = (): HTMLElement | null => {
         const active = (root.getRootNode() as Document | ShadowRoot).activeElement;
@@ -162,7 +195,7 @@ export function createRemoteConnectionsPage(
 
       /** Replaces only the cards whose content changed, so focus survives background polling. */
       function render(): void {
-        if (signal.aborted) return;
+        if (disposed || signal.aborted) return;
         localVersion.textContent = localLoaded
           ? `${t("本机 codexhost", "Local codexhost")} ${local?.runningVersion ?? t("版本暂时无法读取", "version is temporarily unavailable")}`
           : "";
@@ -219,7 +252,13 @@ export function createRemoteConnectionsPage(
             remoteIssue = remoteVersionIssue(error);
             return null;
           });
-        if (signal.aborted || rows.get(hostId) !== row || probeTokens.get(hostId) !== token) return;
+        if (
+          disposed ||
+          signal.aborted ||
+          rows.get(hostId) !== row ||
+          probeTokens.get(hostId) !== token
+        )
+          return;
         // An update restarts the service, so it drops off for a moment. Keep showing the
         // update as in progress instead of offering troubleshooting for an expected gap.
         let expectedGap = false;
@@ -236,13 +275,24 @@ export function createRemoteConnectionsPage(
           Date.now() - (inspectFailures.get(hostId) ?? -INSPECT_RETRY_MS) >= INSPECT_RETRY_MS
         ) {
           const inspected = await control.setup(row.connection, "inspect").catch(() => null);
-          if (signal.aborted || rows.get(hostId) !== row || probeTokens.get(hostId) !== token)
+          if (
+            disposed ||
+            signal.aborted ||
+            rows.get(hostId) !== row ||
+            probeTokens.get(hostId) !== token
+          )
             return;
           if (inspected) installations.set(hostId, inspected.state);
           else inspectFailures.set(hostId, Date.now());
         }
         // A newer probe of the same host owns the row; drop this answer.
-        if (signal.aborted || rows.get(hostId) !== row || probeTokens.get(hostId) !== token) return;
+        if (
+          disposed ||
+          signal.aborted ||
+          rows.get(hostId) !== row ||
+          probeTokens.get(hostId) !== token
+        )
+          return;
         row.probing = false;
         row.state = expectedGap ? "connecting" : state.state;
         row.stateError = expectedGap ? null : state.error;
@@ -261,12 +311,12 @@ export function createRemoteConnectionsPage(
         actingHostId?: string,
         wait: "all" | "acting" = "acting",
       ): Promise<void> {
-        if (signal.aborted) return;
+        if (disposed || signal.aborted) return;
         const localTask = control
           .runtime("local")
           .catch(() => null)
           .then((status) => {
-            if (signal.aborted) return;
+            if (disposed || signal.aborted) return;
             local = status;
             localLoaded = true;
             render();
@@ -275,12 +325,12 @@ export function createRemoteConnectionsPage(
         try {
           connections = await control.ssh.list(signal);
         } catch (error) {
-          if (signal.aborted) return;
+          if (disposed || signal.aborted) return;
           loadError = remoteErrorMessage(error);
           render();
           return;
         }
-        if (signal.aborted) return;
+        if (disposed || signal.aborted) return;
         loadError = null;
         loaded = true;
         order = connections.map((connection) => connection.hostId);
@@ -330,6 +380,7 @@ export function createRemoteConnectionsPage(
         row.pending = label;
         row.notice = null;
         render();
+        schedule();
         try {
           const done = await operation();
           await refresh(hostId);
@@ -352,8 +403,9 @@ export function createRemoteConnectionsPage(
           if (rethrow) throw error;
         } finally {
           row.pending = null;
-          if (!signal.aborted) {
+          if (!disposed && !signal.aborted) {
             render();
+            schedule();
             // Disabling the buttons during the action dropped focus; hand it back.
             const card = cards.get(hostId)?.element;
             if (card && !focusedElement()) focusAction(card, action);
@@ -551,24 +603,33 @@ export function createRemoteConnectionsPage(
       const reload = (): void => {
         if (refreshButton.getAttribute("aria-busy") === "true") return;
         refreshButton.setAttribute("aria-busy", "true");
-        installations.clear();
-        inspectFailures.clear();
-        void refresh(undefined, "all").finally(() => refreshButton.removeAttribute("aria-busy"));
+        void (polling ?? Promise.resolve())
+          .then(() => {
+            installations.clear();
+            inspectFailures.clear();
+            return poll();
+          })
+          .finally(() => refreshButton.removeAttribute("aria-busy"));
       };
       refreshButton.addEventListener("click", reload);
       retry.addEventListener("click", reload);
       addButton.addEventListener("click", () => edit(null));
 
       render();
-      void refresh();
-      const timer = setInterval(() => {
-        if (polling) return;
-        polling = true;
-        void refresh(undefined, "all").finally(() => {
-          polling = false;
-        });
-      }, POLL_INTERVAL_MS);
-      return () => clearInterval(timer);
+      void poll();
+      const visible = (): void => {
+        if (document.visibilityState === "hidden") clearTimeout(timer);
+        else void poll();
+      };
+      const dispose = (): void => {
+        disposed = true;
+        clearTimeout(timer);
+        document.removeEventListener("visibilitychange", visible);
+        signal.removeEventListener("abort", dispose);
+      };
+      document.addEventListener("visibilitychange", visible);
+      signal.addEventListener("abort", dispose, { once: true });
+      return dispose;
     },
   });
 }

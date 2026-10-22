@@ -163,12 +163,6 @@
   color: var(--settings-text);
 }
 
-.settings-brand__mark .codexhost-settings-icon {
-  width: 24px;
-  height: 24px;
-  object-fit: contain;
-}
-
 .settings-brand__copy {
   display: flex;
   min-width: 0;

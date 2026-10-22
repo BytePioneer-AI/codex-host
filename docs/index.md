@@ -21,6 +21,9 @@
 | [`architecture/harness-executable-discovery.md`](architecture/harness-executable-discovery.md) | Harness CLI 的跨平台发现、连接页安装指引和 DSH 特殊连接范围；修改安装指引、发现或启动逻辑时阅读。 |
 | [`architecture/harness-session-import.md`](architecture/harness-session-import.md) | Claude Code、Pi、Hermes、DSH 与 Cursor ACP 本地会话导入契约和恢复边界；扩展导入能力时阅读。 |
 | [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 取消旧 Turn 后启动新 Turn 的“调整方向”语义；修改 steering 时阅读。 |
+| [`architecture/host-client-channel.md`](architecture/host-client-channel.md) | GUI、Web 与 App 按需连接独立后台的生命周期、认证通道、事件驱动快照、交互仲裁及恢复边界。 |
+| [OpenSpec：状态刷新与轮询优化](../openspec/changes/reduce-redundant-state-polling/proposal.md) | Web 目录与组织状态分别校验，远程设置页和 Console 按可见性降频；查看方案、实现进度与验收边界时阅读。 |
+| [`architecture/gui-web-shared-state-design.md`](architecture/gui-web-shared-state-design.md) | 当前所有权概览：共享 Host 的外部 Thread、Codex CLI 的 Web-only 界面声明、存储分区、启动发现及简化后的生命周期边界；不提供旧 standalone 迁移。 |
 | [`architecture/delegation-titles.md`](architecture/delegation-titles.md) | 委派子会话标题、子任务显示名、创建快照与重试边界。 |
 | [`architecture/thread-watch.md`](architecture/thread-watch.md) | 一次性 Thread 停下通知（`thread watch`）的模型、结果、送达与边界；修改委派跟进或通知时阅读。 |
 | [`architecture/official-traffic-ownership.md`](architecture/official-traffic-ownership.md) | Host 只截获自身流量、其余原样转发官方的归属判别与例外；修改请求路由或参数校验时阅读。 |
@@ -97,6 +100,13 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/zcode/zcode-harness-integration.md`](harnesses/zcode/zcode-harness-integration.md) | 直连已装 ZCode Desktop 的 Agent CLI、Start Plan／个人 Coding Plan 账号接入、自定义 Provider、常驻验证页与验证边界；安装或维护 ZCode Adapter 时阅读。 |
+
+## 独立 Web 应用
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、GUI/Web 共享偏好、作为普通外部 Harness 的 Codex CLI、原生项目归组、历史分页、源码构建、启动隔离及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
+| [`proposals/web-remote-relay-architecture.md`](proposals/web-remote-relay-architecture.md) | 未实施的手机公网远程架构：电脑出站中继、独立设备网址、扫码授权、端到端加密、三端代码边界及分阶段验收。 |
 
 ## 账号与 Desktop 产品接入
 

@@ -735,6 +735,7 @@ function diffText(changes: HostFileChange[]): string {
 export class CodexTurnProjector {
   readonly #cwd: string;
   readonly #input: HostTurnSnapshot["input"];
+  readonly #snapshotInput: HostTurnSnapshot["input"];
   readonly #clientUserMessageId: string | null;
   readonly #interactions = new Map<HostInteractionId, ProjectedInteraction>();
   readonly #items = new Map<HostItemId, ProjectedItem>();
@@ -755,12 +756,15 @@ export class CodexTurnProjector {
     cwd: string;
     startedAtMs: number;
     initialInput?: HostTurnSnapshot["input"];
+    /** Accepted input for independent viewers, without altering Desktop's optimistic echo. */
+    snapshotInput?: HostTurnSnapshot["input"];
     clientUserMessageId?: string;
   }) {
     this.#threadId = input.threadId;
     this.#turnId = input.turnId;
     this.#cwd = input.cwd;
     this.#input = input.initialInput ?? [];
+    this.#snapshotInput = input.snapshotInput ?? this.#input;
     this.#clientUserMessageId = input.clientUserMessageId ?? null;
     this.#startedAtMs = input.startedAtMs;
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
@@ -812,6 +816,31 @@ export class CodexTurnProjector {
       completedAt: null,
       durationMs: null,
       itemsView: "full",
+    };
+  }
+
+  /** Complete materialized state for snapshot clients. pendingTurn() remains
+   * the Desktop-specific wire shape; it deliberately omits several live Items.
+   */
+  snapshotTurn(base: JsonObject = this.pendingTurn()): JsonObject {
+    return {
+      ...base,
+      items: [
+        ...this.#projectInput(this.#snapshotInput),
+        ...this.#wireItemOrder.flatMap((itemId) => {
+          const projected = this.#items.get(itemId);
+          if (!projected?.wireStarted) return [];
+          return [
+            projectItem(
+              itemId === this.#fileItemId ? this.#fileSummary() : projected.item,
+              projected.outcome,
+              this.#cwd,
+              true,
+              this.#threadId,
+            ),
+          ];
+        }),
+      ],
     };
   }
 
@@ -1330,15 +1359,15 @@ export class CodexTurnProjector {
     };
   }
 
-  #projectInput(): JsonObject[] {
-    return this.#input.length === 0
+  #projectInput(input = this.#input): JsonObject[] {
+    return input.length === 0
       ? []
       : [
           {
             id: `${this.#turnId}-user`,
             type: "userMessage",
             clientId: this.#clientUserMessageId,
-            content: this.#input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+            content: input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
           },
         ];
   }

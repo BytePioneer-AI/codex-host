@@ -3295,6 +3295,41 @@ describe("Pi HarnessAdapter Session", () => {
     await session.close();
   });
 
+  it("treats a rejected native Turn as cancelled after Abort was accepted", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("cancelled rejection"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+
+    await expect(session.execute(cancelTurn("cancelled rejection"))).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    transport?.fail(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "cancelled" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+
+    await expect(session.execute(textTurn("continued after cancellation"))).resolves.toMatchObject({
+      ok: true,
+    });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport?.succeed("continued");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
   it("fails the Turn and faults the Session when Abort is rejected", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

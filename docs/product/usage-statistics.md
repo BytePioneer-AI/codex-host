@@ -47,7 +47,7 @@
 
 ## Codex 统计插件
 
-- 插件位于 `packages/adapters/codex-usage`，Manifest 使用 `kind: "usage"`，只提供 `createUsageStatisticsAdapter` 工厂与可选统计契约，不需要 `inspect/open`，不启动 Codex 或 app-server。Host 不包含 rollout 解析或按 Codex 名称分支。
+- 插件位于 `packages/adapters/codex-usage`，Manifest 使用 `kind: "usage"`，只提供 `createUsageStatisticsAdapter` 工厂与可选统计契约，不需要 `inspect/open`，不启动 Codex 或 app-server。它与 `packages/adapters/codex-cli` 执行插件平行、互不依赖；Host 不包含 rollout 解析或按 Codex 名称分支。
 - 只读配置的 `CODEX_HOME`（默认 `~/.codex`）下 `sessions/` 和 `archived_sessions/`；包括该目录内未经 CodexHost 创建的会话。不扫描其他账户目录或任意项目，不跟随目录内部符号链接。
 - 新版 `token_usage_record` 以原生 Session ID + Response ID 去重；旧版 `token_count` 以累计差额还原，处理重复检查点和计数器重置。相邻请求记录与检查点按模型请求配对，不把两种观测重复计入。
 - 压缩的明确 Response ID 只计一次，识别 `compacted` 内嵌记录；不能直接比较包含压缩用量的 Thread 累计值与不含压缩的旧计数器。分页子代理的恢复快照作为边界处理，不把已继承的整段累计值当成一次新请求。

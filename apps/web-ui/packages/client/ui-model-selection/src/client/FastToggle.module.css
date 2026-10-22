@@ -1,0 +1,42 @@
+/* Compact sibling of the Model trigger: outlined caption-tone bolt when off,
+   filled bolt in the Model text tone when on. */
+.toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-caption);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.toggle[data-enabled] {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.toggle:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.toggle:focus-visible {
+  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
+.toggle:disabled {
+  color: var(--dsw-alias-label-dimmed);
+  cursor: default;
+}
+
+@media (max-width: 600px), (pointer: coarse) {
+  .toggle {
+    width: 36px;
+    height: 44px;
+  }
+}

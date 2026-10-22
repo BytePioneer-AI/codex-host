@@ -1630,7 +1630,7 @@ describe("Pi RPC Turn aggregation", () => {
     const complete = session("stats-full");
     await complete.start();
     await expect(complete.getSessionUsage()).resolves.toEqual({
-      inputTokens: 10,
+      inputTokens: 13,
       cachedInputTokens: 2,
       cacheWriteInputTokens: 1,
       outputTokens: 5,

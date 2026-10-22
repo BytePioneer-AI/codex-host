@@ -1,0 +1,24 @@
+/* Shared inline reference treatment; hover does not change text metrics. */
+.reference {
+  padding: 0 4px;
+  border-radius: var(--dsw-radius-sm);
+  line-height: inherit;
+  vertical-align: baseline;
+  color: var(--dsw-alias-state-business-primary);
+  background: transparent;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.reference:hover {
+  background: var(--dsw-alias-state-business-tertiary);
+}
+
+.openable {
+  cursor: pointer;
+}
+
+.textRef {
+  display: inline-block;
+  max-width: 100%;
+}

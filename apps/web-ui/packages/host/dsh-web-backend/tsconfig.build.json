@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    "paths": {
+      "@deepseek-ai/cordis": ["./types/cordis.d.ts"],
+      "@deepseek-ai/dsh-api-gateway": ["./types/gateway.d.ts"],
+      "@deepseek-ai/dsh-api-workspace-files": ["./types/workspace-files.d.ts"],
+      "@deepseek-ai/dsh-api-workspace-files/typert": ["./types/workspace-files-typert.d.ts"],
+      "@deepseek-ai/dsh-client-connection/src/rpc-host.ts": ["./types/rpc-host.d.ts"],
+      "@deepseek-ai/dsh-fs-local": ["./types/fs-local.d.ts"],
+      "@deepseek-ai/dsh-typert-registry": ["./types/typert-registry.d.ts"],
+      "@deepseek-ai/dsh-sandbox-policy": ["./types/sandbox-policy.d.ts"],
+      "@deepseek-ai/dsh-office-to-pdf": ["./types/office-to-pdf.d.ts"],
+      "@deepseek-ai/dsh-office-to-pdf/typert": ["./types/office-to-pdf-typert.d.ts"],
+      "@deepseek-ai/dsh-api-terminal-controller": ["./types/terminal-controller.d.ts"],
+      "@deepseek-ai/dsh-api-terminal-controller/typert": [
+        "./types/terminal-controller-typert.d.ts"
+      ],
+      "@deepseek-ai/dsh-subprocess-local": ["./types/subprocess-local.d.ts"]
+    },
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "lib",
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "tsBuildInfoFile": "lib/tsconfig.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"]
+}

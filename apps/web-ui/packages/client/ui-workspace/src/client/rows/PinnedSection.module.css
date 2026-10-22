@@ -1,0 +1,7 @@
+.section {
+  margin-bottom: 8px;
+}
+
+.section > [data-row-key] + [data-row-key] {
+  margin-top: 2px;
+}

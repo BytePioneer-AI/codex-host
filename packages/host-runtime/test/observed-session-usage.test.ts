@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -8,6 +8,7 @@ import type {
   HarnessSessionUsageObservation,
 } from "@codexhost/harness-adapter/plugin";
 import { ModelPriceCatalog } from "../src/model-prices.js";
+import { UsageMeasurementsStore } from "../src/usage-measurements-store.js";
 import { ObservedSessionUsage } from "../src/observed-session-usage.js";
 
 let directory: string;
@@ -35,15 +36,20 @@ const history = (): HarnessSessionUsageHistory => ({
     },
   ],
 });
-function setup() {
+function setup(measurementScope?: string) {
   let observation: HarnessSessionUsageObservation | null = null;
   const read = vi.fn<HarnessSessionUsageCapability["read"]>().mockResolvedValue(history());
-  const provider: HarnessSessionUsageCapability = { observe: () => observation, read };
+  const provider: HarnessSessionUsageCapability = {
+    observe: () => observation,
+    read,
+    ...(measurementScope ? { measurementScope } : {}),
+  };
   const diagnose = vi.fn();
   const bridge = new ObservedSessionUsage(
     () => [provider],
     new ModelPriceCatalog({ directory }),
     diagnose,
+    measurementScope ? new UsageMeasurementsStore(directory, diagnose) : undefined,
   );
   return {
     bridge,
@@ -270,4 +276,135 @@ it("works without a plugin", async () => {
   expect(bridge.observe({})).toEqual([]);
   expect(await bridge.read("s")).toBeNull();
   bridge.close();
+});
+
+it("restores measured speed and latency after restart without reviving in-flight timing", async () => {
+  const first = setup("home-a");
+  first.read.mockResolvedValue({ ...history(), retainedTurnIds: ["t"] });
+  first.observe({ sessionId: "s", turn: { id: "t", phase: "started" } }, 1000);
+  first.observe({ sessionId: "s", turn: { id: "t", phase: "output" } }, 1100);
+  first.observe(
+    {
+      sessionId: "s",
+      requestTiming: {
+        turnId: "t",
+        requestId: "r1",
+        outputTokens: 100,
+        startedAtMs: 1100,
+        completedAtMs: 2100,
+      },
+    },
+    2100,
+  );
+  await first.bridge.close();
+  const restored = setup("home-a");
+  const isolated = setup("home-b");
+  try {
+    restored.read.mockResolvedValue({ ...history(), retainedTurnIds: ["t"] });
+    isolated.read.mockResolvedValue({ ...history(), retainedTurnIds: ["t"] });
+    expect(await restored.bridge.read("s")).toMatchObject({
+      outputTokensPerSecond: 100,
+      timeToFirstOutputMs: 100,
+    });
+    expect(await isolated.bridge.read("s")).not.toHaveProperty("outputTokensPerSecond");
+    restored.observe({ sessionId: "s", turn: { id: "next", phase: "started" } }, 5000);
+    restored.observe({ sessionId: "s", turn: { id: "next", phase: "output" } }, 5150);
+    restored.observe(
+      {
+        sessionId: "s",
+        requestTiming: {
+          turnId: "next",
+          requestId: "r2",
+          outputTokens: 50,
+          startedAtMs: 6000,
+          completedAtMs: 8000,
+        },
+      },
+      8000,
+    );
+    restored.read.mockResolvedValue({
+      ...history(),
+      retainedTurnIds: ["t", "next"],
+      lastTurnTiming: { turnId: "next", timeToFirstOutputMs: 999, at: 9000 },
+    });
+    expect(await restored.bridge.read("s")).toMatchObject({
+      outputTokensPerSecond: 25,
+      timeToFirstOutputMs: 150,
+    });
+  } finally {
+    await restored.bridge.close();
+    await isolated.bridge.close();
+  }
+});
+
+it("drops restored measurements for removed turns and recovers native TTFT independently", async () => {
+  const writer = new UsageMeasurementsStore(directory, () => {});
+  writer.record("home", "s", "removed", 1000, {
+    outputTokensPerSecond: 80,
+    timeToFirstOutputMs: 10,
+  });
+  await writer.close();
+  const { bridge, read } = setup("home");
+  try {
+    read.mockResolvedValue({ ...history(), retainedTurnIds: ["removed"] });
+    expect((await bridge.read("s"))?.outputTokensPerSecond).toBe(80);
+    read.mockResolvedValue({
+      ...history(),
+      retainedTurnIds: ["kept"],
+      lastTurnTiming: { turnId: "kept", timeToFirstOutputMs: 120, at: 2000 },
+    });
+    const result = await bridge.read("s");
+    expect(result).not.toHaveProperty("outputTokensPerSecond");
+    expect(result?.timeToFirstOutputMs).toBe(120);
+    read.mockResolvedValue({
+      ...history(),
+      retainedTurnIds: ["kept", "later"],
+      lastTurnTiming: { turnId: "later", timeToFirstOutputMs: 0, at: 3000 },
+    });
+    expect((await bridge.read("s"))?.timeToFirstOutputMs).toBe(0);
+  } finally {
+    await bridge.close();
+  }
+});
+
+it("publishes native measurements in memory but writes only when the Turn ends", async () => {
+  const { bridge, observe } = setup("scope");
+  try {
+    observe({ sessionId: "s", turn: { id: "t", phase: "started" } }, 0);
+    observe({ sessionId: "s", turn: { id: "t", phase: "output" } }, 10);
+    for (let n = 0; n < 10; n++)
+      observe(
+        {
+          sessionId: "s",
+          requestTiming: {
+            turnId: "t",
+            requestId: `r${n}`,
+            outputTokens: 10,
+            startedAtMs: 100 + n * 100,
+            completedAtMs: 150 + n * 100,
+          },
+        },
+        150 + n * 100,
+      );
+    await expect(readdir(path.join(directory, "usage-measurements-v1"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    observe({ sessionId: "s", turn: { id: "t", phase: "completed" } }, 2000);
+    let files: string[] = [];
+    await vi.waitFor(async () => {
+      files = await readdir(path.join(directory, "usage-measurements-v1"));
+      expect(files.filter((file) => file.endsWith(".json"))).toHaveLength(1);
+    });
+    const file = files.find((file) => file.endsWith(".json"));
+    if (!file) throw new Error("Missing snapshot");
+    const saved = JSON.parse(
+      await readFile(path.join(directory, "usage-measurements-v1", file), "utf8"),
+    );
+    expect(saved.values).toMatchObject({
+      outputTokensPerSecond: { value: 200 },
+      timeToFirstOutputMs: { value: 10 },
+    });
+  } finally {
+    await bridge.close();
+  }
 });

@@ -62,6 +62,10 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
   <img width="90%" src="docs/imgs/codexhost-native-overview.png" alt="Claude Code, Pi, Grok Build, and Oh My Pi sessions running in Codex Desktop, with Diff review, Fork, Worktree, and Agent switching">
 </div>
 
+## Standalone Web development
+
+This checkout also contains a Web/PWA application. Run `npm ci`, `npm run build:web`, then `npm start web` for an authenticated Web client. The development command restarts the shared Host and this checkout's Web service on the selected port, interrupting running Host tasks. Web and Desktop can each be used alone, share canonical external Threads when both are open, and close without stopping the other or its tasks. Existing saved GUI project metadata remains read-only; no GUI projects are created. This does not launch or restart Desktop. A running older Desktop-owned Host is not taken over; update/restart it separately to transition. `-- --session-source standalone` explicitly selects the independent Harness plugin mode. See [the Web guide](docs/product/standalone-web.md) for connection requirements, plugin distribution and current limitations.
+
 ## Quick Start
 
 **Option 1: npm** (macOS / Windows / Linux)
@@ -84,7 +88,7 @@ Run `codexhost update` to check for the latest release and prepare an upgrade fr
 
 **codexhost does not start, or Codex opens without codexhost features**
 
-Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:4399/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open it in your browser, and terminal launches print its address.
+Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:4399/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open it in your browser only when startup or Codex UI integration fails, and terminal launches print its address only when startup fails.
 
 **macOS: "App can't be verified" on first launch**
 
@@ -295,6 +299,8 @@ cd codex-host
 npm ci
 npm start
 ```
+
+`npm start` rebuilds and restarts the shared Host and Desktop; `npm start web` rebuilds and restarts the shared Host and Web. Both interrupt running Host tasks. `--no-build` skips building but still restarts the selected interface and Host.
 
 To run the current source with a specific runtime version, use `npm start 0.12.0` (prereleases such as `0.13.0-rc.1` are also accepted). Host status, console version and update-check version reporting use this value. Without a version argument the version remains `<workspace-version>-dev`; `npm start 0.12.0 -- --no-build` reuses artifacts after building once. The override lasts for this launch and does not modify version files or publish packages. Source installations still lack packaged self-update resources; remote npm installation downloads the published package with that version, not the local source.
 

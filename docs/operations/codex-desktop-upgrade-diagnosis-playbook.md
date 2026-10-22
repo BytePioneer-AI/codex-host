@@ -14,6 +14,19 @@
 
 ## 一、先建立分层模型
 
+### 打开 External Thread 后侧栏行消失，但详情仍在
+
+先区分存储记录、Desktop 目录条目和行组件订阅。记录未归档、目录仍含 Thread，
+并不保证侧栏的 `listState` 订阅有效。Desktop 的只读状态选择器可能保留空缓存，
+而重新执行同一选择器、读取当前依赖时已能得到完整状态。
+
+`renderer-sidebar-thread-state.ts` 仅处理经过上述对比确认的 External Thread：
+按侧栏语义属性和已提交的 React 树定位行组件，校验 Thread ID、Host ID 与
+`modelProvider: codexhost`，为唯一匹配的空订阅建立新的只读选择器缓存。
+新订阅继续执行原生查询，真实的空状态、移除和后续更新仍由 Desktop 决定。
+组件卸载或 Renderer 注入释放时取消附加订阅并恢复 getter；不写入 Atom、会话记录或列表顺序。
+该兼容路径依赖只读 signal 与 `useSyncExternalStore` hook 结构，更新 Desktop 后需复核。
+
 ### 历史原生会话不能拖入引用或通过 `@` 搜索会话
 
 Desktop 可根据 `thread-reference-capability:<threadId>` 决定是否注册原生会话引用接收区。

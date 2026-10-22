@@ -83,7 +83,7 @@ Existing Harness integration and Desktop update audit skills remain applicable t
 ## Testing & Completion
 
 - Choose build and validation commands from `package.json`, not a copied command catalog. For focused tests, use the repository configuration in `tests/vitest.config.js` or `tests/e2e/playwright.config.js`, and the owning `Cargo.toml` for Rust test features.
-- To build and launch from source, run `npm start` at the repository root; `npm start -- --no-build` reuses existing artifacts. On macOS/Windows this stops running Codex Desktop processes before launch. Use it when launching is intended, not as a routine validation command; implementation is in `tools/dev-desktop/run.mjs`.
+- To build and launch from source, run `npm start` at the repository root for Desktop or `npm start web` for Web; both restart the shared Host and the corresponding interface, interrupting Host tasks. `--no-build` reuses existing artifacts but still restarts. On macOS/Windows the Desktop command stops running Codex Desktop processes before launch. Use it when launching is intended, not as a routine validation command; implementation is in `tools/dev-desktop/run.mjs`.
 - Small, low-risk changes do not require tests. For high-risk or cross-package changes, or when explicitly requested, add focused tests for changed behavior and boundary conditions; do not run full test suites by default.
 - Do not claim a check passed unless it was executed. Report skipped or blocked checks and the reason.
 - A change is complete only when implementation, contracts, tests, and affected documentation agree.

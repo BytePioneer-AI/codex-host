@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/session-runtime/tsconfig.json" },
     { "path": "./packages/shared-contracts/tsconfig.json" },
     { "path": "./packages/harness-adapter/tsconfig.json" },
     { "path": "./packages/harness-broker/tsconfig.json" },
@@ -28,7 +29,9 @@
     { "path": "./packages/adapters/kimi-code/tsconfig.json" },
     { "path": "./packages/adapters/zcode/tsconfig.json" },
     { "path": "./packages/adapters/codex-usage/tsconfig.json" },
+    { "path": "./packages/adapters/codex-cli/tsconfig.json" },
     { "path": "./packages/host-runtime/tsconfig.json" },
+    { "path": "./packages/web-server/tsconfig.json" },
     { "path": "./packages/renderer-extension/tsconfig.json" }
   ]
 }

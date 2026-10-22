@@ -143,6 +143,79 @@ describe("Pi active-branch history", () => {
     expect(mapPiSnapshot(history, state)).toEqual(snapshot);
   });
 
+  it("restores durable compaction entries in native order with stable IDs", () => {
+    const compactedHistory: PiSessionHistory = {
+      entries: [
+        {
+          id: "user-before-compact",
+          parentId: null,
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "work" }] },
+        },
+        {
+          id: "assistant-before-compact",
+          parentId: "user-before-compact",
+          type: "message",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: "done" }],
+          },
+        },
+        {
+          id: "native-compact",
+          parentId: "assistant-before-compact",
+          type: "compaction",
+          summary: "native summary",
+          firstKeptEntryId: "user-before-compact",
+          tokensBefore: 120_000,
+        },
+        {
+          id: "user-after-compact",
+          parentId: "native-compact",
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "continue" }] },
+        },
+        {
+          id: "assistant-after-compact",
+          parentId: "user-after-compact",
+          type: "message",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: "continued" }],
+          },
+        },
+      ],
+      leafId: "assistant-after-compact",
+    };
+
+    const snapshot = mapPiSnapshot(compactedHistory, state);
+
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns[0]?.items).toEqual([
+      {
+        item: {
+          type: "agentMessage",
+          itemId: "pi-item-v1-assistant-before-compact-assistant-0",
+          text: "done",
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "contextCompaction",
+          itemId: "pi-item-v1-native-compact-compaction-0",
+        },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+    expect(snapshot.turns[1]?.items).toEqual([
+      expect.objectContaining({ item: expect.objectContaining({ text: "continued" }) }),
+    ]);
+    expect(mapPiSnapshot(compactedHistory, state)).toEqual(snapshot);
+  });
+
   it("replays interleaved Assistant messages and Tools in native order", () => {
     const ids = ["user", "assistant-1", "tool-1", "assistant-2", "tool-2", "assistant-3"];
     const messages = [

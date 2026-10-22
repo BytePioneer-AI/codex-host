@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import {
+  harnessIdSchema,
   harnessPluginDescriptorSchema,
   harnessPluginManifestSchema,
 } from "@codexhost/shared-contracts";
@@ -405,6 +406,73 @@ describe("Harness plugin discovery and loading", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("records declared surfaces, defaults to every surface and rejects an invalid declaration", async () => {
+    const directory = await root(["web-only", "default-surfaces", "invalid-surfaces"]);
+    await plugin(directory, "web-only", { manifest: { surfaces: ["web"] } });
+    await plugin(directory, "default-surfaces");
+    await plugin(directory, "invalid-surfaces", { manifest: { surfaces: [] } });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    try {
+      expect([...registry.adapters.keys()].sort()).toEqual(["default-surfaces", "web-only"]);
+      expect(registry.surfaces().get(harnessIdSchema.parse("web-only"))).toEqual(new Set(["web"]));
+      expect(registry.surfaces().get(harnessIdSchema.parse("default-surfaces"))).toEqual(
+        new Set(["desktop", "web"]),
+      );
+      expect(registry.surfaces().has(harnessIdSchema.parse("invalid-surfaces"))).toBe(false);
+      expect(diagnose).toHaveBeenCalledWith({ code: "invalidManifest" });
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it("keeps declared surfaces of session plugins a forwarding Desktop Host does not mount", async () => {
+    const directory = await root(["web-only", "default-surfaces"]);
+    await plugin(directory, "web-only", { manifest: { surfaces: ["web"] } });
+    await plugin(directory, "default-surfaces");
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      sessionPlugins: false,
+    });
+    try {
+      expect(registry.adapters.size).toBe(0);
+      expect(registry.list()).toEqual([]);
+      expect(registry.surfaces().get(harnessIdSchema.parse("web-only"))).toEqual(new Set(["web"]));
+      expect(registry.surfaces().get(harnessIdSchema.parse("default-surfaces"))).toEqual(
+        new Set(["desktop", "web"]),
+      );
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it("publishes declared surfaces before importing any plugin module", async () => {
+    const directory = await root(["web-only"]);
+    await plugin(directory, "web-only", {
+      manifest: { surfaces: ["web"] },
+      code: `globalThis.__surfacePluginImported = true;
+      export function createHarnessAdapter() { throw new Error("not needed"); }`,
+    });
+    const observed: Array<{ imported: boolean; surfaces: unknown }> = [];
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      onSurfacesDeclared: (surfaces) =>
+        observed.push({
+          imported: Boolean((globalThis as Record<string, unknown>).__surfacePluginImported),
+          surfaces: surfaces.get(harnessIdSchema.parse("web-only")),
+        }),
+    });
+    try {
+      expect(observed).toEqual([{ imported: false, surfaces: new Set(["web"]) }]);
+      expect((globalThis as Record<string, unknown>).__surfacePluginImported).toBe(true);
+    } finally {
+      delete (globalThis as Record<string, unknown>).__surfacePluginImported;
+      await registry.close();
+    }
+  });
+
   it("does not execute an unenabled module or a project-relative root", async () => {
     const directory = await root();
     const location = await plugin(directory, "sample-agent", {
@@ -454,7 +522,7 @@ describe("Harness plugin discovery and loading", () => {
     expect(diagnose).toHaveBeenCalledExactlyOnceWith({ id: "duplicate", code: "duplicateId" });
   });
 
-  it("does not shadow a transitional built-in and rejects the official identity", async () => {
+  it("does not shadow a transitional built-in or register the official identity", async () => {
     const directory = await root(["sample-agent"]);
     await plugin(directory, "sample-agent");
     await plugin(directory, "codex");
@@ -466,10 +534,7 @@ describe("Harness plugin discovery and loading", () => {
       diagnose,
     });
     expect(registry.list()).toEqual([]);
-    expect(diagnose.mock.calls.map(([entry]) => entry.code)).toEqual([
-      "invalidManifest",
-      "duplicateId",
-    ]);
+    expect(diagnose.mock.calls.map(([entry]) => entry.code)).toEqual(["duplicateId"]);
   });
 
   it("keeps an incompatible plugin visible but never imports its entry", async () => {

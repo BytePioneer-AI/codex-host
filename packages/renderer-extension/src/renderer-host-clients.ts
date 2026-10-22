@@ -3,6 +3,10 @@ import type {
   RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
 import {
+  HARNESS_PREFERENCES_CHANGED_METHOD,
+  HARNESS_DISPLAY_CHANGED_METHOD,
+} from "@codexhost/shared-contracts";
+import {
   createRendererModelClient,
   THREAD_USAGE_UPDATED_METHOD,
   type RendererModelClient,
@@ -70,8 +74,12 @@ export function createRendererHostClients(
                 const unsubscribe = target.addNotificationCallback?.(methods, listener);
                 if (
                   !messages ||
-                  !(typeof methods === "string" ? [methods] : methods).includes(
-                    THREAD_USAGE_UPDATED_METHOD,
+                  !(typeof methods === "string" ? [methods] : methods).some((method) =>
+                    [
+                      THREAD_USAGE_UPDATED_METHOD,
+                      HARNESS_PREFERENCES_CHANGED_METHOD,
+                      HARNESS_DISPLAY_CHANGED_METHOD,
+                    ].includes(method),
                   )
                 )
                   return () => unsubscribe?.();
@@ -91,7 +99,14 @@ export function createRendererHostClients(
                     !("hostId" in message) ||
                     message.hostId !== route.hostId ||
                     !("method" in message) ||
-                    message.method !== THREAD_USAGE_UPDATED_METHOD ||
+                    ![
+                      THREAD_USAGE_UPDATED_METHOD,
+                      HARNESS_PREFERENCES_CHANGED_METHOD,
+                      HARNESS_DISPLAY_CHANGED_METHOD,
+                    ].includes(String(message.method)) ||
+                    !(typeof methods === "string" ? [methods] : methods).includes(
+                      String(message.method),
+                    ) ||
                     readRouting()?.forHost(route.hostId) !== route
                   )
                     return;

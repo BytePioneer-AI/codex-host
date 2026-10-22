@@ -1,5 +1,6 @@
 import type {
   HostAgentMessageItem,
+  HostContextCompactionItem,
   HostFileChangeItem,
   HostItemOutcome,
   HostItemSnapshot,
@@ -207,6 +208,17 @@ function snapshotItems(
     { entryId: string; ordinal: number; name: string; arguments: JsonValue }
   >();
   for (const entry of entries) {
+    if (entry.type === "compaction") {
+      const item: HostContextCompactionItem = {
+        type: "contextCompaction",
+        itemId: itemId(entry.id, "compaction", 0),
+      };
+      // Pi writes this Entry only after the native summary has landed. Both
+      // manual and automatic compaction use the same durable Entry shape, so
+      // history recovery preserves the confirmed event without guessing its source.
+      snapshots.push({ item, outcome: { status: "succeeded" } });
+      continue;
+    }
     const nativeMessage = message(entry);
     if (!nativeMessage) continue;
     const content = Array.isArray(nativeMessage.content) ? nativeMessage.content : [];

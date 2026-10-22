@@ -1,7 +1,9 @@
 import { z } from "zod";
+export * from "./client-channel.js";
 export * from "./delegation-read.js";
 export * from "./credential-imports.js";
 export * from "./harness-display-settings.js";
+export * from "./harness-preferences.js";
 export * from "./harness-presentation.js";
 export * from "./account-credits-presentation.js";
 export * from "./model-price-overrides.js";
@@ -72,6 +74,7 @@ export {
   HARNESS_PLUGIN_ICON_MAX_BYTES,
   HARNESS_PLUGIN_LIMIT,
   HARNESS_PLUGIN_MANIFEST_MAX_BYTES,
+  HARNESS_PLUGIN_SURFACES,
   harnessPluginConfigurationSchema,
   harnessPluginDescriptorSchema,
   harnessPluginIconSchema,
@@ -79,12 +82,18 @@ export {
   harnessPluginListParamsSchema,
   harnessPluginListResultSchema,
   harnessPluginManifestSchema,
+  harnessPluginSurfaceSchema,
+  harnessPluginSurfacesSchema,
+  installedHarnessPluginIdSchema,
+  isHarnessPluginInScope,
 } from "./harness-plugins.js";
 export type {
   HarnessPluginConfiguration,
   HarnessPluginDescriptor,
   HarnessPluginListResult,
   HarnessPluginManifest,
+  HarnessPluginScope,
+  HarnessPluginSurface,
 } from "./harness-plugins.js";
 export * from "./harness-launch-settings.js";
 export * from "./harness-installation.js";
@@ -373,3 +382,5 @@ export {
   type CodexSshConnection,
   type CodexSshDraft,
 } from "./remote-connections.js";
+
+export { usageMeasurementsSchema, type UsageMeasurementsSnapshot } from "./thread-usage.js";

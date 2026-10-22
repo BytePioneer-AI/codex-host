@@ -525,6 +525,33 @@ describe("npm package release", () => {
     expect(source).not.toContain("runtime/node");
   });
 
+  it.each(["ensure", "stop"])(
+    "supplies native resources for independent host %s without launching Desktop",
+    async (command) => {
+      const data = path.resolve("isolated-host-data");
+      const { result, calls } = await runGeneratedWrapperLifecycle(
+        "darwin",
+        ["host", command, "--data", data],
+        [0],
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args).toEqual([
+        "host",
+        command,
+        "--node",
+        process.execPath,
+        "--host-runtime",
+        expect.stringMatching(/host-runtime\.mjs$/u),
+        "--data",
+        expect.any(String),
+        "--data",
+        data,
+      ]);
+      expect(calls[0].args).not.toContain("launch");
+    },
+  );
+
   const brokerTail = [
     "--node",
     process.execPath,
@@ -849,15 +876,38 @@ describe("npm package release", () => {
     }
   });
 
-  it("rejects npm packages that still point at a private Node runtime", async () => {
+  it.each([
+    "runtime/node",
+    "/opt/codexhost/runtime/node",
+    "runtime/node.exe",
+    String.raw`runtime\node.exe`,
+    String.raw`runtime\\node.exe`,
+  ])("rejects a private Node runtime reference: %s", async (reference) => {
     const root = await temporaryDirectory();
     const target = releaseTarget("macos-arm64");
     try {
       await createNpmPackageFixture(root, target);
-      await writeFile(path.join(root, "README.md"), "uses runtime/node for the private runtime\n");
+      await writeFile(path.join(root, "README.md"), `uses ${reference} for the private runtime\n`);
       await expect(
         validateNpmPackage({ packageRoot: root, target, root: "/repo/source" }),
       ).rejects.toThrow("must not embed a private Node runtime");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows nested Host dependency source labels without confusing node_modules with Node", async () => {
+    const root = await temporaryDirectory();
+    const target = releaseTarget("linux-x64");
+    try {
+      await createNpmPackageFixture(root, target);
+      await writeFile(
+        path.join(root, "app", "host-runtime.mjs"),
+        "// packages/host-runtime/node_modules/@deepseek-ai/cordis/lib/index.js\n",
+      );
+      expect(await validateNpmPackage({ packageRoot: root, target, root: "/repo/source" })).toEqual(
+        expectedNpmPackagePaths(target),
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

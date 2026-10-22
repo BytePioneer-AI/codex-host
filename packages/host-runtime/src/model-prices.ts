@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { bundledModelPrices } from "./model-prices.generated.js";
 import { suggestModelPrices } from "./model-price-suggestions.js";
+import type { ModelPrice } from "@codexhost/session-runtime/usage-metering";
+export { cacheWrite1hPrice, type ModelPrice } from "@codexhost/session-runtime/usage-metering";
 
 /**
  * USD per million Tokens: [input, output, cacheRead, cacheWrite, canonical]. Cache prices are
@@ -19,24 +21,6 @@ export type ModelPriceEntry =
 export interface ModelPriceTableData {
   fetchedAtMs: number;
   providers: Record<string, Record<string, ModelPriceEntry>>;
-}
-
-export interface ModelPrice {
-  input: number;
-  output: number;
-  cacheRead?: number;
-  /** Default (five-minute) cache writes. */
-  cacheWrite?: number;
-  /** One-hour cache writes; only user overrides set it, see `cacheWrite1hPrice`. */
-  cacheWrite1h?: number;
-}
-
-/**
- * One-hour cache writes cost twice the base input price, as in Claude Code's built-in list
- * prices (`promptCacheWrite1hTokens`); models.dev publishes only the five-minute price.
- */
-export function cacheWrite1hPrice(price: ModelPrice): number {
-  return price.cacheWrite1h ?? price.input * 2;
 }
 
 export const MODELS_DEV_URL = "https://models.dev/api.json";

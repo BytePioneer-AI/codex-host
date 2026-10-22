@@ -1,6 +1,8 @@
 import { readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
+import { harnessInstallationRequestTimeoutMs } from "@codexhost/shared-contracts";
+
 import { processIsAlive } from "./diagnostics.js";
 
 const DESCRIPTOR_PATTERN = /^host-\d{1,10}\.json$/u;
@@ -70,6 +72,7 @@ export async function findHost(
 }
 
 export interface ConsoleHostClient {
+  displayEvents?(signal: AbortSignal): Promise<Response>;
   available(): Promise<boolean>;
   request(method: string, params: unknown): Promise<HostReply>;
 }
@@ -80,6 +83,14 @@ export function createConsoleHostClient(
 ): ConsoleHostClient {
   const timeoutMs = options.timeoutMs ?? 150_000;
   return {
+    async displayEvents(signal) {
+      const host = await findHost(descriptorDirectory, options.isAlive);
+      if (!host) throw new HostUnavailableError();
+      return fetch(`http://127.0.0.1:${host.port}/display-events`, {
+        headers: { authorization: `Bearer ${host.token}` },
+        signal,
+      });
+    },
     async available() {
       return (await findHost(descriptorDirectory, options.isAlive)) !== null;
     },
@@ -91,7 +102,11 @@ export function createConsoleHostClient(
         headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" },
         body: JSON.stringify({ method, params: params ?? {} }),
         signal: AbortSignal.timeout(
-          method === "codexhost/remote/ssh-setup" ? Math.max(timeoutMs, 330_000) : timeoutMs,
+          Math.max(
+            timeoutMs,
+            method === "codexhost/remote/ssh-setup" ? 330_000 : 0,
+            harnessInstallationRequestTimeoutMs(method, params) ?? 0,
+          ),
         ),
       });
       const body = (await response.json().catch(() => null)) as HostReply | null;

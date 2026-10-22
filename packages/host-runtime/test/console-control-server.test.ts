@@ -64,3 +64,36 @@ describe("Host console channel", () => {
     await expect(stat(server.descriptorPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
+
+it("streams authenticated display invalidations and cleans up on disconnect", async () => {
+  const { ClientChannelEvents } = await import("../src/client-channel-events.js");
+  const events = new ClientChannelEvents();
+  const server = await startConsoleControlServer({
+    environment: { CODEXHOST_DATA_DIR: dataDirectory },
+    target: { clientEvents: events, handleConsoleRequest: async () => ({ result: {} }) },
+  });
+  const controller = new AbortController();
+  try {
+    const descriptor = JSON.parse(
+      await readFile(server.descriptorPath, "utf8"),
+    ) as ConsoleHostDescriptor;
+    const url = `http://127.0.0.1:${descriptor.port}/display-events`;
+    expect((await fetch(url)).status).toBe(401);
+    const response = await fetch(url, {
+      headers: { authorization: `Bearer ${descriptor.token}` },
+      signal: controller.signal,
+    });
+    if (!response.body) throw new Error("Missing event stream");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    expect(decoder.decode((await reader.read()).value)).toContain('"type":"hello"');
+    events.displaySettingsChanged();
+    expect(decoder.decode((await reader.read()).value)).toContain(
+      '"type":"display-settings-changed"',
+    );
+    controller.abort();
+  } finally {
+    controller.abort();
+    await server.close();
+  }
+});

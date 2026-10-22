@@ -92,6 +92,10 @@ jobs:
           --exclude 'packages/renderer-extension/test/**'
           --exclude 'tools/gate-claude-code/run.test.mjs'
 
+      # Real Launcher + Node service, with isolated HOME/data and fake Harnesses.
+      - name: Test independent Host lifecycle
+        run: npm run test:shared-host
+
       # Rust formatting is already covered by the Linux x64 formatting step.
       - name: Check Rust
         run: >
@@ -146,6 +150,8 @@ jobs:
         run: npm ci --prefer-offline
 
       # Linux x64 owns TS tests; ARM64 verifies native code and the installed package.
+      - name: Test independent Host lifecycle
+        run: npm run test:shared-host
 
       - name: Check Rust
         run: >

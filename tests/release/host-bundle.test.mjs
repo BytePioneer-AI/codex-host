@@ -183,7 +183,12 @@ describe("release Host and independent plugin Bundles", () => {
         repositoryRoot,
         outputDirectory: path.join(app, "plugins"),
       });
-      const expectedIds = preinstalledHarnessPlugins().configuration.enabled;
+      const preinstalled = preinstalledHarnessPlugins();
+      const expectedIds = preinstalled.configuration.enabled;
+      // Desktop hides Web-only Harnesses; the client channel would still list them.
+      const desktopIds = preinstalled.plugins
+        .filter(({ manifest }) => manifest.surfaces?.includes("desktop") ?? true)
+        .map(({ manifest }) => manifest.id);
       expect(pluginAudits.map(({ id }) => id)).toEqual(expectedIds);
       expect(pluginAudits.find(({ id }) => id === "claude-code").runtimePackages).toContain(
         "@anthropic-ai/claude-agent-sdk",
@@ -219,7 +224,7 @@ describe("release Host and independent plugin Bundles", () => {
           .find(({ id }) => id === 1)
           .result.plugins.map(({ id }) => id)
           .sort(),
-      ).toEqual([...expectedIds].sort());
+      ).toEqual([...desktopIds].sort());
       expect(first.lines.find(({ id }) => id === 2)).toMatchObject({ result: { official: true } });
       expect(first.stderr).not.toMatch(/loadFailed|loadTimeout|Dynamic require/u);
 
@@ -259,7 +264,7 @@ describe("release Host and independent plugin Bundles", () => {
           .find(({ id }) => id === 1)
           .result.plugins.map(({ id }) => id)
           .sort(),
-      ).toEqual([...expectedIds, "unknown-agent"].sort());
+      ).toEqual([...desktopIds, "unknown-agent"].sort());
 
       await rm(path.join(relocated, "plugins"), { recursive: true });
       await rm(userRoot, { recursive: true });

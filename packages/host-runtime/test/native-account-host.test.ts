@@ -100,6 +100,24 @@ function nativeFixture() {
   };
 }
 
+async function withUnhandledRejections<T>(run: () => Promise<T>): Promise<{
+  value: T;
+  rejections: string[];
+}> {
+  const rejections: string[] = [];
+  const onRejection = (reason: unknown) => {
+    rejections.push(reason instanceof Error ? reason.name : String(reason));
+  };
+  process.on("unhandledRejection", onRejection);
+  try {
+    const value = await run();
+    await Promise.resolve();
+    return { value, rejections };
+  } finally {
+    process.off("unhandledRejection", onRejection);
+  }
+}
+
 async function startLocal(options?: { recoveryWaitMs?: number; delaysMs?: readonly number[] }) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-native-account-host-"));
   temporaryDirectories.add(directory);
@@ -171,17 +189,47 @@ describe("local Codex read-only identity startup", () => {
       if (calls === 1) return firstBackend;
       return nativeFixture().backend;
     });
-    const local = await startLocal({ delaysMs: [0], recoveryWaitMs: 2_000 });
+    const { value: local, rejections } = await withUnhandledRejections(() =>
+      startLocal({ delaysMs: [0], recoveryWaitMs: 2_000 }),
+    );
+    expect(rejections).toEqual([]);
     expect(local.officialRuntimeScope.gate.phase).toBe("ready");
     expect(local.officialRuntimeScope.owner.generation).toBe(2);
     expect(first.stop).toHaveBeenCalled();
     await local.accountControl.refresh?.();
   });
 
+  it("recovers a delayed second generation without unhandledRejection", async () => {
+    const first = nativeFixture();
+    first.connect.mockRejectedValueOnce(new Error("Synthetic connection failure"));
+    const firstBackend = first.backend;
+    let calls = 0;
+    vi.mocked(createOwnedLoopbackBackend).mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) return firstBackend;
+      const second = nativeFixture();
+      second.backend.start = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+      });
+      return second.backend;
+    });
+    const { value: local, rejections } = await withUnhandledRejections(() =>
+      startLocal({ delaysMs: [20], recoveryWaitMs: 1_000 }),
+    );
+    expect(rejections).toEqual([]);
+    expect(local.officialRuntimeScope.gate.phase).toBe("ready");
+    expect(local.officialRuntimeScope.owner.generation).toBe(2);
+  });
+
   it("closes the owned backend when first start and bounded recovery both fail", async () => {
     const f = nativeFixture();
     f.connect.mockRejectedValue(new Error("Synthetic connection failure"));
-    await expect(startLocal({ delaysMs: [0], recoveryWaitMs: 30 })).rejects.toThrow("unavailable");
+    const { rejections } = await withUnhandledRejections(async () => {
+      await expect(startLocal({ delaysMs: [0], recoveryWaitMs: 30 })).rejects.toThrow(
+        "unavailable",
+      );
+    });
+    expect(rejections).toEqual([]);
     expect(f.stop).toHaveBeenCalled();
     expect(f.requests).toEqual([]);
   });

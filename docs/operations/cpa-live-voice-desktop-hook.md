@@ -44,6 +44,8 @@ The unaudited-Desktop asset gate still fail-closes. `~/.codex/config.toml` realt
 
 Daily CI (`npm run compat:daily`, `.github/workflows/compat-daily.yml`) compares the public Sparkle appcast to the Work/gateway and Chat voice pins. It does not download ChatGPT.app. A pin behind Sparkle latest opens or comments on a `compat-broken` issue on this repository.
 
+First-start official-backend recovery is covered by `packages/host-runtime/test/native-account-host.test.ts` (failed first generation, delayed second generation, no `unhandledRejection`). Manual cold-start UAT: fully quit ChatGPT and CodexHost, start **CodexHost 0.13.3** from the menu bar, wait ~15s. Pass: no 无法载入组织设定, console 总览 stays 启动成功, Work + Grok still shows Start voice. Fail: org-settings dialog on first launch only, then OK after 重试 — that is the remaining Host-wait gap, not Chat voice.
+
 The hook only changes Desktop call ownership. Point Codex at the realtime host in `~/.codex/config.toml` as well, then relaunch:
 
 ```toml

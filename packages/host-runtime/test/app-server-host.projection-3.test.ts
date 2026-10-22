@@ -1888,6 +1888,44 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("reverts an earlier Turn of an untouched paginated Fork-derived Thread", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const sourceThreadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+    await completePiTurn(fixture, sourceThreadId, 4);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    const forkedThread = (forkResponse.result as JsonObject).thread as JsonObject;
+    const derivedId = forkedThread.id;
+    const derivedTurns = forkedThread.turns as JsonObject[];
+    if (typeof derivedId !== "string") throw new Error("Fork response has no Thread ID");
+    expect(derivedTurns).toHaveLength(3);
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/revert",
+      params: { threadId: derivedId, beforeTurnId: derivedTurns[1]?.id },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ result: { thread: { id: derivedId } } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedId)),
+    ).resolves.toMatchObject({
+      turnMappings: [{ hostTurnId: derivedTurns[0]?.id }],
+    });
+    await stopFixture(fixture);
+  });
+
   it("rejects rollback of every Turn when no native Checkpoint precedes the first", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

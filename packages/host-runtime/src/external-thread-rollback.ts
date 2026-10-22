@@ -359,8 +359,7 @@ export async function executeExternalThreadRollback(input: {
   }
   const excludedActiveTurnCount =
     source.running || sourceRecord.turnMappings.length > derivedRecord.turnMappings.length ? 1 : 0;
-  const retainedCount =
-    derivedRecord.turnMappings.length - rollback.numTurns + excludedActiveTurnCount;
+  const retainedCount = derivedRecord.turnMappings.length - numTurns + excludedActiveTurnCount;
   if (retainedCount === derivedRecord.turnMappings.length) {
     return { ok: true, thread: derived.thread };
   }

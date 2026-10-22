@@ -74,6 +74,13 @@ still takes precedence. Safe bootstrap diagnostics report the selected
 `desktop` or `gateway` route without model names, identifiers or credentials.
 No global fetch, message transport or application archive is replaced.
 
+Explicit Work launch ownership selects the Work connection preference in the
+avatar overlay, where no primary Composer is present. It applies even when the
+backend model name has no `codex` marker (for example, `gpt-6.1-sol`) or call
+metadata omits the model. Model-name and visible-Composer detection remain
+fallbacks for launches without an explicit product experience. Explicit Chat
+ownership still selects the Chat connection preference.
+
 The Host reads the configured realtime URLs and selected provider's
 `experimental_bearer_token` or `env_key`. Both URLs must use HTTPS and share an
 origin. Header forwarding is allowlisted twice: the Renderer bridge drops every

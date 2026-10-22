@@ -9,7 +9,8 @@ if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecut
 const { outputFiles } = await build({
   stdin: {
     contents: `
-      import { wrapClientOwnedVoiceFetch } from "./packages/renderer-extension/src/renderer-client-owned-voice.ts";
+      import { rememberVoiceProductExperience, wrapClientOwnedVoiceFetch } from "./packages/renderer-extension/src/renderer-client-owned-voice.ts";
+      rememberVoiceProductExperience({ productExperience: "work" });
       globalThis.cspViolations = [];
       addEventListener("securitypolicyviolation", (event) => {
         globalThis.cspViolations.push(event.violatedDirective);
@@ -32,7 +33,7 @@ const { outputFiles } = await build({
             method: "POST",
             body: JSON.stringify({ sdp: "offer", session: { model: "gpt-live-1-codex" } }),
             headers: {
-              "x-codex-turn-metadata": JSON.stringify({ backend_model_name: "gpt-5.3-codex" }),
+              "x-codex-turn-metadata": JSON.stringify({ backend_model_name: "gpt-6.1-sol" }),
             },
           });
           document.querySelector("output").textContent = response.status + ":" + await response.text();

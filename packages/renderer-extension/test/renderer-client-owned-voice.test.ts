@@ -11,6 +11,7 @@ import {
   type NativeVoiceBridge,
 } from "../src/renderer-client-owned-voice.js";
 import { CPA_LIVE_VOICE_HOOK_GLOBAL } from "../src/renderer-cpa-live-voice-hook.js";
+import { wrapGatewayVoiceStarter } from "../src/renderer-voice-start-capability.js";
 import {
   CHAT_LIVE_VOICE_STORAGE_KEY,
   CPA_LIVE_VOICE_STORAGE_KEY,
@@ -224,6 +225,63 @@ describe("client-owned voice gateway", () => {
     const f = fixture();
     wrapClientOwnedVoiceFetch(f.client, f.bridge, () => false, f.responseError);
     await f.client.fetch(url, workOptions());
+    expect(f.original).toHaveBeenCalledOnce();
+    expect(f.dispatch).not.toHaveBeenCalled();
+  });
+  it.each(["gpt-6.1-sol", undefined])(
+    "routes an explicit Work overlay start through Host without a Work composer: %s",
+    async (model) => {
+      const f = fixture();
+      wrapClientOwnedVoiceFetch(
+        f.client,
+        f.bridge,
+        () => true,
+        f.responseError,
+        () => false,
+        () => false,
+        () => false,
+      );
+      const starter = wrapGatewayVoiceStarter(
+        () =>
+          f.client.fetch(
+            url,
+            options(
+              speechBody(),
+              model
+                ? { "x-codex-turn-metadata": JSON.stringify({ backend_model_name: model }) }
+                : undefined,
+            ),
+          ),
+        {
+          qualifies: () => true,
+          ready: async () => true,
+          prepare: async () => ({ current: () => true, dispose() {} }),
+          committed: async () => {},
+        },
+      );
+      const response = (await starter.start({
+        productExperience: "work",
+        source: "composer_button_new_thread",
+        hostId: "local",
+      })) as Response;
+      expect(response.status).toBe(201);
+      expect(f.dispatch).toHaveBeenCalledOnce();
+      expect(f.original).not.toHaveBeenCalled();
+    },
+  );
+  it("uses the Work preference for an explicit Work overlay start when Chat uses gateway", async () => {
+    const f = fixture();
+    rememberVoiceProductExperience({ productExperience: "work" });
+    wrapClientOwnedVoiceFetch(
+      f.client,
+      f.bridge,
+      () => false,
+      f.responseError,
+      () => true,
+      () => false,
+      () => false,
+    );
+    await f.client.fetch(url, options(speechBody()));
     expect(f.original).toHaveBeenCalledOnce();
     expect(f.dispatch).not.toHaveBeenCalled();
   });

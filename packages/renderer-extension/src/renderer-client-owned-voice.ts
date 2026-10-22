@@ -223,9 +223,12 @@ export function wrapClientOwnedVoiceFetch(
       options?.method !== "POST"
     )
       return original.call(this, url, options);
-    const chat = lastVoiceLaunchProductExperience() === "chat";
+    const experience = lastVoiceLaunchProductExperience();
+    const chat = experience === "chat";
     const model = backendModelName(options.headers);
-    const work = !chat && (isWorkBackendModel(model) || workSurface());
+    // The overlay has no Composer; explicit launch ownership also covers Work
+    // models without "codex" in their name and starts without model metadata.
+    const work = !chat && (experience === "work" || isWorkBackendModel(model) || workSurface());
     // The avatar overlay has no primary Composer routing state. The native
     // request's explicit Harness model still owns its gateway bootstrap there.
     const external = !chat && (model.startsWith("codexhost/") || externalHarness());
@@ -234,7 +237,7 @@ export function wrapClientOwnedVoiceFetch(
       work,
       external,
       route: gateway ? "gateway" : "desktop",
-      productExperience: lastVoiceLaunchProductExperience() ?? "unset",
+      productExperience: experience ?? "unset",
     });
     if (!gateway) {
       if (!external && !work)

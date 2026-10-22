@@ -50,6 +50,7 @@ import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js"
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
 import { UsageStatistics } from "./usage-statistics.js";
+import { HarnessSkillsCatalog } from "./skills-catalog.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
@@ -231,6 +232,9 @@ export async function runHostRuntime(input: {
     diagnose: (message) => process.stderr.write(`codexhost Host Runtime: ${message}\n`),
   });
   void modelPrices.start();
+  const skillsCatalog = new HarnessSkillsCatalog({
+    environment: input.environment,
+  });
   const usageStatistics = new UsageStatistics({
     directory: path.join(defaultModelPriceDirectory(input.environment), "usage-statistics"),
     prices: modelPrices,
@@ -287,6 +291,7 @@ export async function runHostRuntime(input: {
               ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
               modelPrices,
               usageStatistics,
+              skillsCatalog,
               ...(process.platform !== "win32"
                 ? {
                     sharedThreads: new SharedThreadBridge({
@@ -333,6 +338,7 @@ export async function runHostRuntime(input: {
             ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
             modelPrices,
             usageStatistics,
+            skillsCatalog,
             ...common,
             arguments: input.arguments,
             onDelegationApi,
@@ -345,6 +351,7 @@ export async function runHostRuntime(input: {
                 ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
                 modelPrices,
                 usageStatistics,
+                skillsCatalog,
                 ...common,
                 arguments: [],
                 desktopInput,
@@ -419,6 +426,7 @@ export async function runHostRuntime(input: {
         ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
         modelPrices,
         usageStatistics,
+        skillsCatalog,
         stockCodexPath,
         arguments: [],
         environment: delegationEnvironment,
@@ -450,6 +458,7 @@ export async function runHostRuntime(input: {
             ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
             modelPrices,
             usageStatistics,
+            skillsCatalog,
             ...(sharedDelegation ? { sharedDelegation } : {}),
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),

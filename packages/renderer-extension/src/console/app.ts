@@ -4,6 +4,7 @@ import { startAgentGroupSync } from "../agent-group-sync.js";
 import { getSharedAgentGroupPreferenceStore } from "../agent-group-preference.js";
 import { createConsoleConnectionDiagnostics } from "./connection-diagnostics.js";
 import consoleCss from "./console.css";
+import skillsCss from "./skills.css";
 import consoleComponentsCss from "./components.css";
 import usageCss from "./usage/usage.css";
 import { h } from "./dom.js";
@@ -142,6 +143,7 @@ export function startConsoleApp(document: Document): void {
     () => null,
     () => remoteConnections,
     (method, params) => manager.sendRequest(method, params),
+    (method, params) => manager.sendRequest(method, params),
   );
   const navigate = (pageId: string): void => {
     window.location.hash = pageId;
@@ -168,6 +170,7 @@ export function startConsoleApp(document: Document): void {
         hostPage(required(settingsPages, "accounts"), messages, state),
         hostPage(required(settingsPages, "session-import"), messages, state),
         hostPage(required(settingsPages, "usage-statistics"), messages, state),
+        hostPage(required(settingsPages, "skills"), messages, state),
         required(settingsPages, "updates"),
       ],
     },
@@ -184,7 +187,7 @@ export function startConsoleApp(document: Document): void {
   // Constructable sheets: the page CSP forbids inline style elements.
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(
-    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${consoleCss}`,
+    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${skillsCss}\n${consoleCss}`,
   );
   shadow.adoptedStyleSheets = [sheet];
 

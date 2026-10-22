@@ -1,4 +1,5 @@
 import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
+import type { HarnessSkillsCatalogCapability } from "./skills-catalog.js";
 import type {
   HarnessAccountSnapshot,
   AccountCreditsSnapshot,
@@ -637,6 +638,8 @@ export interface HarnessAdapter {
   readonly sessionImport?: HarnessSessionImportCapability;
   /** Read-only local usage for the machine-wide statistics; never starts a native process. */
   readonly usageStatistics?: HarnessUsageStatisticsCapability;
+  /** Read-only local skill catalog for the machine-wide Skills page; never starts a process. */
+  readonly skillsCatalog?: HarnessSkillsCatalogCapability;
   /** Optional read-only usage for sessions on an already-owned native connection. */
   readonly sessionUsage?: HarnessSessionUsageCapability;
   readonly subagents?: HarnessSubagentCapability;

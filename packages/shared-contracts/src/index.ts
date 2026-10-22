@@ -6,6 +6,7 @@ export * from "./harness-presentation.js";
 export * from "./account-credits-presentation.js";
 export * from "./model-price-overrides.js";
 export * from "./usage-statistics.js";
+export * from "./skills.js";
 export * from "./thread-prewarm.js";
 export {
   CONSOLE_HOST_METHODS,

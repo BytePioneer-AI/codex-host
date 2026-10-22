@@ -214,12 +214,14 @@ export async function scanHarnessSkillsRoot(
     }
     for (const entry of entries) {
       if (signal.aborted || skills.length >= SKILLS_PER_ROOT_LIMIT) return;
-      const child = `${directory}/${entry}`;
+      // path.join, not `${directory}/${entry}`: a literal slash yields mixed separators on Windows
+      // (`C:\...\skills/broken-skill`), which no longer matches anything downstream.
+      const child = path.join(directory, entry);
       if (visited.has(child)) continue;
       visited.add(child);
       let manifest: string | undefined;
       try {
-        manifest = await options.readFile(`${child}/${HARNESS_SKILL_MANIFEST}`);
+        manifest = await options.readFile(path.join(child, HARNESS_SKILL_MANIFEST));
       } catch {
         manifest = undefined;
       }

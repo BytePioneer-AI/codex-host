@@ -70,6 +70,7 @@ import {
 import { resolveAntigravityExecutable } from "./command.js";
 import { forkAntigravitySession } from "./fork.js";
 import { AntigravityHistory } from "./history.js";
+import { captureNativeTurnBoundary, isHistoricalNativeError } from "./native-result.js";
 import {
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
@@ -133,6 +134,7 @@ interface ActiveTurn {
   stderr: string;
   cancellationRequested: boolean;
   receivedResult: boolean;
+  nativeBoundary: Awaited<ReturnType<typeof captureNativeTurnBoundary>>;
   /** agy's own effective permission mode, as reported by the `init` event. */
   nativePermissionMode: string | null;
   /** First tool denial of the Turn, kept to explain an otherwise empty result. */
@@ -644,6 +646,13 @@ class AntigravitySession implements HarnessSession {
     }
 
     let questions: AntigravityQuestionBridge;
+    let nativeBoundary: Awaited<ReturnType<typeof captureNativeTurnBoundary>> = null;
+    const nativeBoundaryPromise = this.#nativeRef
+      ? captureNativeTurnBoundary(
+          this.#nativeRef.nativeSessionId,
+          process.platform === "win32" ? this.#environment.USERPROFILE : this.#environment.HOME,
+        )
+      : Promise.resolve(null);
     this.#preparingQuestions = AntigravityQuestionBridge.create({
       turnId: command.turnId,
       nativeSessionId: () =>
@@ -670,6 +679,7 @@ class AntigravitySession implements HarnessSession {
     });
     try {
       questions = await this.#preparingQuestions;
+      nativeBoundary = await nativeBoundaryPromise;
     } catch (error) {
       return {
         ok: false,
@@ -757,6 +767,7 @@ class AntigravitySession implements HarnessSession {
       stderr: "",
       cancellationRequested: false,
       receivedResult: false,
+      nativeBoundary,
       nativePermissionMode: null,
       permissionDenial: null,
       latestUsage: null,
@@ -930,6 +941,13 @@ class AntigravitySession implements HarnessSession {
     }
     await active.subagents.refresh();
     if (this.#active !== active) return;
+    const historicalError = await isHistoricalNativeError(
+      event.result,
+      active.nativeBoundary,
+      active.agentText,
+      process.platform === "win32" ? this.#environment.USERPROFILE : this.#environment.HOME,
+    );
+    if (this.#active !== active) return;
     const convId = resultConversationId || this.#nativeRef?.nativeSessionId || "";
 
     if (!this.#nativeRef && convId) {
@@ -941,7 +959,7 @@ class AntigravitySession implements HarnessSession {
       this.#history.bindNativeSession(convId);
       this.#event({ type: "session.state.changed", state: this.#state() });
     }
-    if (event.result.response) {
+    if (event.result.response && !historicalError) {
       this.#appendOrSyncAgentText(active, event.result.response, false);
     }
     const safeTurnId =
@@ -968,7 +986,7 @@ class AntigravitySession implements HarnessSession {
         { status: "cancelled", reason: "Cancelled by user", checkpoint },
         nativeTurnRef,
       );
-    } else if (event.result.status === "SUCCESS") {
+    } else if (event.result.status === "SUCCESS" || historicalError) {
       if (active.permissionDenial !== null && !active.agentItem) {
         this.#completeTurn(
           active,

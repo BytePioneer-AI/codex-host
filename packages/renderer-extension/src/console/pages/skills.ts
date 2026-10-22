@@ -34,7 +34,8 @@ const ARCHIVED = "\u0000archived";
 const NONE = 0;
 /** Category the adapters stamp on skills mounted from the cross-Harness shared root. */
 const SHARED_CATEGORY = "shared";
-const SHARED_ROOT_FRAGMENT = "/.agents/skills/";
+/** Matches the shared root with either separator, so Windows paths classify too. */
+const SHARED_ROOT_PATTERN = /[/\\]\.agents[/\\]skills[/\\]/u;
 
 interface SkillRow {
   group: HarnessSkillGroup;
@@ -190,7 +191,7 @@ export function createSkillsPage(
 
       /** A copy of a skill that lives in the shared root; the Shared tab already lists it once. */
       const isSharedCopy = (skill: HarnessSkillEntry): boolean =>
-        skill.category === SHARED_CATEGORY && skill.path.includes(SHARED_ROOT_FRAGMENT);
+        skill.category === SHARED_CATEGORY && SHARED_ROOT_PATTERN.test(skill.path);
 
       const inCategory = (skill: HarnessSkillEntry): boolean => {
         if (category === ARCHIVED) return skill.archived === true;

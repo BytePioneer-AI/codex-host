@@ -121,15 +121,121 @@ function nestedString(
     if (typeof field === "string" && (preserveText || field.trim().length > 0))
       return preserveText ? field : field.trim();
   }
-  for (const wrapper of ["input", "arguments", "params"] as const) {
+  for (const [k, field] of Object.entries(value)) {
+    if (
+      typeof field === "string" &&
+      (preserveText || field.trim().length > 0) &&
+      keys.some((targetKey) => targetKey.toLowerCase() === k.toLowerCase())
+    ) {
+      return preserveText ? field : field.trim();
+    }
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters", "tool_info"] as const) {
     const nested = nestedString(value[wrapper], keys, preserveText);
     if (nested !== undefined) return nested;
   }
   return undefined;
 }
 
+function nestedArray(value: unknown, keys: readonly string[]): unknown[] | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const key of keys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  for (const [key, field] of Object.entries(value)) {
+    if (
+      Array.isArray(field) &&
+      keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())
+    ) {
+      return field;
+    }
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters", "tool_info"] as const) {
+    const nested = nestedArray(value[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function nestedBoolean(value: unknown, keys: readonly string[]): boolean | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const [key, field] of Object.entries(value)) {
+    if (!keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())) continue;
+    if (typeof field === "boolean") return field;
+    if (typeof field === "string") {
+      const normalized = field.trim().toLowerCase();
+      if (normalized === "true") return true;
+      if (normalized === "false") return false;
+    }
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters", "tool_info"] as const) {
+    const nested = nestedBoolean(value[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function nestedNumber(value: unknown, keys: readonly string[]): number | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const [key, field] of Object.entries(value)) {
+    if (!keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())) continue;
+    const parsed =
+      typeof field === "number" ? field : typeof field === "string" ? Number(field) : Number.NaN;
+    if (Number.isInteger(parsed)) return parsed;
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters", "tool_info"] as const) {
+    const nested = nestedNumber(value[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+const COMMAND_KEYS = [
+  "command",
+  "cmd",
+  "script",
+  "commandLine",
+  "command_line",
+  "CommandLine",
+  "Command",
+] as const;
+
+const FILE_PATH_KEYS = [
+  "path",
+  "file_path",
+  "filePath",
+  "file",
+  "filename",
+  "target",
+  "uri",
+  "Path",
+  "FilePath",
+  "TargetFile",
+  "targetFile",
+  "target_file",
+  "AbsolutePath",
+  "absolutePath",
+  "absolute_path",
+  "DirectoryPath",
+  "directory_path",
+  "directoryPath",
+  "SearchPath",
+  "search_path",
+  "searchPath",
+] as const;
+
+const PATTERN_KEYS = [
+  "pattern",
+  "glob",
+  "glob_pattern",
+  "query",
+  "regex",
+  "Pattern",
+  "Query",
+] as const;
+
 function toolWorkingDirectory(args: JsonValue, defaultCwd: string): string {
-  const workdir = nestedString(args, ["workdir"]);
+  const workdir = nestedString(args, ["workdir", "workingDirectory", "cwd", "Cwd"]);
   if (workdir === undefined) return defaultCwd;
   const windows = /^(?:[a-z]:[/\\]|\\\\)/iu;
   const paths = windows.test(defaultCwd) || windows.test(workdir) ? path.win32 : path.posix;
@@ -148,6 +254,176 @@ function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): str
   return text.length > 0 ? text : null;
 }
 
+export function compactToolName(toolName: string): string {
+  const baseName = toolName.includes(":")
+    ? toolName.slice(toolName.lastIndexOf(":") + 1)
+    : toolName.includes(".")
+      ? toolName.slice(toolName.lastIndexOf(".") + 1)
+      : toolName;
+  return baseName.toLowerCase().replaceAll(/[_-]/g, "");
+}
+
+export type CodexCommandActionRead = {
+  type: "read";
+  command: string;
+  name: string;
+  path: string;
+};
+
+export type CodexCommandActionSearch = {
+  type: "search";
+  command: string;
+  query: string | null;
+  path: string | null;
+};
+
+export type CodexCommandActionListFiles = {
+  type: "listFiles";
+  command: string;
+  path: string | null;
+};
+
+export type CodexCommandActionUnknown = {
+  type: "unknown";
+  command: string;
+};
+
+export type CodexCommandAction =
+  | CodexCommandActionRead
+  | CodexCommandActionSearch
+  | CodexCommandActionListFiles
+  | CodexCommandActionUnknown;
+
+export function parseCommandActions(command: string, cwd: string): CodexCommandAction[] {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) return [];
+  if (/[|;&<>`]|\$\(/u.test(trimmed)) return [];
+
+  // Match synthesized or direct "read <path>"
+  if (trimmed.startsWith("read ")) {
+    const raw = trimmed
+      .slice(5)
+      .trim()
+      .replace(/^["']|["']$/g, "");
+    if (raw.length > 0) {
+      const resolved = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+      return [{ type: "read", command, name: path.basename(raw), path: resolved }];
+    }
+  }
+
+  // Match "cat <path>" or "cat -n <path>"
+  const catMatch = trimmed.match(/^cat(?:\s+-[a-zA-Z]+)*\s+([^\s|;&]+)$/);
+  if (catMatch && catMatch[1]) {
+    const raw = catMatch[1].replace(/^["']|["']$/g, "");
+    if (raw.length > 0 && !raw.startsWith("-")) {
+      const resolved = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+      return [{ type: "read", command, name: path.basename(raw), path: resolved }];
+    }
+  }
+
+  // Match "sed -n '...' <path>"
+  const isSedInPlace = /\s(?:-[a-zA-Z]*i|--in-place)\b/u.test(trimmed);
+  const sedMatch = isSedInPlace
+    ? null
+    : trimmed.match(/^sed(?:\s+-[a-zA-Z0-9]+|\s+'[^']*'|\s+"[^"]*")*\s+([^\s|;&]+)$/);
+  if (sedMatch && sedMatch[1]) {
+    const raw = sedMatch[1].replace(/^["']|["']$/g, "");
+    if (raw.length > 0 && !raw.startsWith("-")) {
+      const resolved = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+      return [{ type: "read", command, name: path.basename(raw), path: resolved }];
+    }
+  }
+
+  // Match "head <path>" / "tail <path>"
+  const headTailMatch = trimmed.match(/^(?:head|tail)(?:\s+-[a-zA-Z0-9]+)*\s+([^\s|;&]+)$/);
+  if (headTailMatch && headTailMatch[1]) {
+    const raw = headTailMatch[1].replace(/^["']|["']$/g, "");
+    if (raw.length > 0 && !raw.startsWith("-")) {
+      const resolved = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+      return [{ type: "read", command, name: path.basename(raw), path: resolved }];
+    }
+  }
+
+  // Match "grep ... <path>" / "rg ... <path>"
+  const searchMatch = trimmed.match(
+    /^(?:grep|rg)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^'"]+)['"]?\s+([^\s|;&]+)$/,
+  );
+  if (searchMatch && searchMatch[1] && searchMatch[2]) {
+    const query = searchMatch[1];
+    const raw = searchMatch[2].replace(/^["']|["']$/g, "");
+    const resolved = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+    return [{ type: "search", command, query, path: resolved }];
+  }
+
+  // Match "ls <path>"
+  const lsMatch = trimmed.match(/^ls(?:\s+-[a-zA-Z0-9]+)*(?:\s+([^\s|;&]+))?\s*$/);
+  if (lsMatch) {
+    const raw = lsMatch[1] ? lsMatch[1].replace(/^["']|["']$/g, "") : "";
+    const resolved = raw.length > 0 ? (path.isAbsolute(raw) ? raw : path.resolve(cwd, raw)) : cwd;
+    return [{ type: "listFiles", command, path: resolved }];
+  }
+
+  return [];
+}
+
+export function toolCommandActions(
+  toolName: string,
+  args: JsonValue,
+  command: string,
+  cwd: string,
+): CodexCommandAction[] {
+  const lower = compactToolName(toolName);
+  const filePath = nestedString(args, FILE_PATH_KEYS);
+  const pattern = nestedString(args, PATTERN_KEYS);
+
+  if (["read", "readfile", "fileread", "view"].includes(lower)) {
+    if (filePath) {
+      const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+      return [
+        {
+          type: "read",
+          command,
+          name: path.basename(filePath),
+          path: resolvedPath,
+        },
+      ];
+    }
+  }
+
+  if (["grep", "grepsearch", "search", "searchweb", "websearch"].includes(lower)) {
+    const resolvedPath = filePath
+      ? path.isAbsolute(filePath)
+        ? filePath
+        : path.resolve(cwd, filePath)
+      : null;
+    return [
+      {
+        type: "search",
+        command,
+        query: pattern ?? null,
+        path: resolvedPath,
+      },
+    ];
+  }
+
+  if (["glob", "find", "findfiles", "listdir", "listdirectory"].includes(lower)) {
+    const resolvedPath = filePath
+      ? path.isAbsolute(filePath)
+        ? filePath
+        : path.resolve(cwd, filePath)
+      : null;
+    return [
+      {
+        type: "listFiles",
+        command,
+        path: resolvedPath,
+      },
+    ];
+  }
+
+  return parseCommandActions(command, cwd);
+}
+
 /**
  * Codex Desktop only renders a detailed, expandable card for Command Execution.
  * Generic `dynamicToolCall` items show the tool name with no path, pattern, or
@@ -155,40 +431,47 @@ function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): str
  * can be reconstructed from the native arguments.
  */
 export function toolCommandLine(toolName: string, args: JsonValue): string | undefined {
-  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
-  const command = nestedString(args, ["command", "cmd", "script", "commandLine", "command_line"]);
+  const lower = compactToolName(toolName);
+  const command = nestedString(args, COMMAND_KEYS);
   if (
     command &&
-    ["bash", "exec", "terminal", "run", "shell", "powershell", "pwsh", "command"].includes(lower)
+    [
+      "bash",
+      "exec",
+      "terminal",
+      "run",
+      "shell",
+      "powershell",
+      "pwsh",
+      "command",
+      "runcommand",
+    ].includes(lower)
   ) {
     return command;
   }
-  const filePath = nestedString(args, [
-    "path",
-    "file_path",
-    "filePath",
-    "file",
-    "filename",
-    "target",
-    "uri",
-  ]);
-  const pattern = nestedString(args, ["pattern", "glob", "glob_pattern", "query", "regex"]);
+  const filePath = nestedString(args, FILE_PATH_KEYS);
+  const pattern = nestedString(args, PATTERN_KEYS);
   if (["read", "readfile", "fileread", "view"].includes(lower)) {
     return filePath ? `read ${filePath}` : undefined;
   }
-  if (["glob", "find", "findfiles"].includes(lower)) {
+  if (["glob", "find", "findfiles", "listdir", "listdirectory"].includes(lower)) {
     const target = pattern ?? filePath;
     return target ? `glob ${target}` : undefined;
   }
-  if (["grep", "grepsearch"].includes(lower)) {
+  if (["grep", "grepsearch", "search", "searchweb", "websearch"].includes(lower)) {
     if (!pattern) return undefined;
+    if (["searchweb", "websearch"].includes(lower)) return `search ${pattern}`;
     return filePath ? `grep ${pattern} ${filePath}` : `grep ${pattern}`;
   }
+  if (lower === "callmcptool") {
+    const server = nestedString(args, ["ServerName", "serverName", "server"]);
+    const tool = nestedString(args, ["ToolName", "toolName", "tool"]);
+    return `mcp ${server ?? "server"} ${tool ?? "tool"}`;
+  }
+  if (lower.startsWith("mcp")) {
+    return toolName.replace(/[:_]/g, " ");
+  }
   return undefined;
-}
-
-function compactToolName(toolName: string): string {
-  return toolName.toLowerCase().replaceAll(/[_-]/g, "");
 }
 
 function isFileMutatingTool(toolName: string): boolean {
@@ -206,11 +489,14 @@ function isFileMutatingTool(toolName: string): boolean {
     "filewrite",
     "create",
     "createfile",
+    "writetofile",
+    "replacefilecontent",
+    "multireplacefilecontent",
   ].includes(compactToolName(toolName));
 }
 
 function isWriteTool(toolName: string): boolean {
-  return ["write", "writefile", "filewrite", "create", "createfile"].includes(
+  return ["write", "writefile", "filewrite", "create", "createfile", "writetofile"].includes(
     compactToolName(toolName),
   );
 }
@@ -221,22 +507,128 @@ function simpleUnifiedDiff(
   newText: string,
   kind: "add" | "update",
 ): string {
-  return createTwoFilesPatch(
-    kind === "add" ? "/dev/null" : `a/${displayedPath}`,
-    `b/${displayedPath}`,
-    oldText,
-    newText,
-  );
+  const cleanPath = displayedPath.replace(/^\/+/, "");
+  const aPath = kind === "add" ? "/dev/null" : `a/${cleanPath}`;
+  const bPath = `b/${cleanPath}`;
+  const gitHeader = `diff --git a/${cleanPath} ${bPath}`;
+  const patch = createTwoFilesPatch(aPath, bPath, oldText, newText);
+  const patchLines = patch.split("\n");
+  return patchLines[0]?.startsWith("===")
+    ? [gitHeader, ...patchLines.slice(1)].join("\n")
+    : `${gitHeader}\n${patch}`;
+}
+
+interface ParameterReplacement {
+  oldText: string | undefined;
+  newText: string | undefined;
+  startLine: number;
+}
+
+function replacementStartLine(value: Record<string, unknown>): number {
+  const parsed = nestedNumber(value, ["StartLine", "startLine", "start_line"]);
+  return parsed !== undefined && parsed > 0 ? parsed : 1;
+}
+
+function replacementChunks(value: unknown): ParameterReplacement[] {
+  const chunks = nestedArray(value, [
+    "ReplacementChunks",
+    "replacementChunks",
+    "replacement_chunks",
+  ]);
+  if (!chunks) return [];
+  return chunks.flatMap((chunk) => {
+    if (!isRecord(chunk)) return [];
+    return [
+      {
+        oldText: nestedString(
+          chunk,
+          ["TargetContent", "targetContent", "target_content", "Target", "target"],
+          true,
+        ),
+        newText: nestedString(
+          chunk,
+          [
+            "ReplacementContent",
+            "replacementContent",
+            "replacement_content",
+            "Replacement",
+            "replacement",
+          ],
+          true,
+        ),
+        startLine: replacementStartLine(chunk),
+      },
+    ];
+  });
+}
+
+function textLines(text: string | undefined): string[] {
+  if (text === undefined || text.length === 0) return [];
+  const lines = text.split(/\r?\n/u);
+  if (text.endsWith("\n") && lines.length > 1 && lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+function simpleFragmentDiff(
+  displayedPath: string,
+  replacements: readonly ParameterReplacement[],
+): string | null {
+  const cleanPath = displayedPath.replace(/^\/+/, "");
+  const aPath = `a/${cleanPath}`;
+  const bPath = `b/${cleanPath}`;
+  const hunks: string[] = [];
+  for (const { oldText, newText, startLine } of replacements) {
+    if (oldText === undefined && newText === undefined) continue;
+    if (oldText === newText) continue;
+    const oldLines = textLines(oldText);
+    const newLines = textLines(newText);
+    hunks.push(
+      `@@ -${oldLines.length === 0 ? 0 : startLine},${oldLines.length} +${
+        newLines.length === 0 ? 0 : startLine
+      },${newLines.length} @@`,
+      ...oldLines.map((line) => `-${line}`),
+      ...newLines.map((line) => `+${line}`),
+    );
+  }
+  if (hunks.length === 0) return null;
+  return [`diff --git ${aPath} ${bPath}`, `--- ${aPath}`, `+++ ${bPath}`, ...hunks, ""].join("\n");
 }
 
 export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileChange[] | null {
   if (!isFileMutatingTool(toolName)) return null;
-  const displayedPath = nestedString(args, ["path", "file_path", "filePath", "file"]);
+  const displayedPath = nestedString(args, [
+    "path",
+    "file_path",
+    "filePath",
+    "file",
+    "TargetFile",
+    "targetFile",
+    "target_file",
+    "AbsolutePath",
+    "absolutePath",
+    "absolute_path",
+    "Path",
+    "FilePath",
+    "File",
+  ]);
   if (!displayedPath) return null;
   if (isWriteTool(toolName)) {
+    if (nestedBoolean(args, ["Overwrite", "overwrite"]) === true) return null;
     const content = nestedString(
       args,
-      ["content", "new_string", "newString", "newText", "file_text", "text", "new"],
+      [
+        "content",
+        "new_string",
+        "newString",
+        "newText",
+        "file_text",
+        "text",
+        "new",
+        "CodeContent",
+        "codeContent",
+        "code_content",
+        "Content",
+      ],
       true,
     );
     if (content === undefined) return null;
@@ -249,23 +641,54 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
       },
     ];
   }
-  const oldText = nestedString(
-    args,
-    ["old_string", "oldString", "oldText", "old_text", "old"],
-    true,
-  );
-  const newText = nestedString(
-    args,
-    ["new_string", "newString", "newText", "new_text", "content", "new"],
-    true,
-  );
-  if (oldText === undefined || newText === undefined) return null;
+  const replacements = replacementChunks(args);
+  if (replacements.length === 0) {
+    replacements.push({
+      oldText: nestedString(
+        args,
+        [
+          "old_string",
+          "oldString",
+          "oldText",
+          "old_text",
+          "old",
+          "TargetContent",
+          "targetContent",
+          "target_content",
+          "Target",
+          "target",
+        ],
+        true,
+      ),
+      newText: nestedString(
+        args,
+        [
+          "new_string",
+          "newString",
+          "newText",
+          "new_text",
+          "content",
+          "new",
+          "ReplacementContent",
+          "replacementContent",
+          "replacement_content",
+          "Replacement",
+          "replacement",
+          "Content",
+        ],
+        true,
+      ),
+      startLine: replacementStartLine({ arguments: args }),
+    });
+  }
+  const unifiedDiff = simpleFragmentDiff(displayedPath, replacements);
+  if (!unifiedDiff) return null;
   return [
     {
       path: displayedPath,
       kind: "update",
       diffScope: "fragment",
-      unifiedDiff: simpleUnifiedDiff(displayedPath, oldText, newText, "update"),
+      unifiedDiff,
     },
   ];
 }
@@ -503,23 +926,26 @@ function projectItem(
         processId: null,
         source: "agent",
         status: itemStatus(outcome),
-        commandActions: [],
+        commandActions: parseCommandActions(item.command, item.cwd ?? defaultCwd),
         aggregatedOutput: includeCommandOutput ? (item.output ?? null) : null,
         exitCode: item.exitCode ?? null,
         durationMs: item.durationMs ?? null,
       };
     case "toolExecution": {
-      const command = toolCommandLine(item.toolName, item.arguments);
+      const hasNonTextOutput =
+        item.output?.content.some((content) => content.type !== "text") ?? false;
+      const command = hasNonTextOutput ? undefined : toolCommandLine(item.toolName, item.arguments);
       if (command) {
+        const cwd = toolWorkingDirectory(item.arguments, defaultCwd);
         return {
           id: item.itemId,
           type: "commandExecution",
           command,
-          cwd: toolWorkingDirectory(item.arguments, defaultCwd),
+          cwd,
           processId: null,
           source: "agent",
           status: itemStatus(outcome),
-          commandActions: [],
+          commandActions: toolCommandActions(item.toolName, item.arguments, command, cwd),
           aggregatedOutput: includeCommandOutput ? toolOutputText(item) : null,
           exitCode: null,
           durationMs: item.durationMs ?? null,
@@ -666,7 +1092,6 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
     }
     if (item.type === "toolExecution") {
       if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments)) return [];
-      if (isFileMutatingTool(item.toolName)) return [];
     }
     if (item.type === "reasoning" && !reasoningDisplayText(item.text)) return [];
     return item.type === "reasoning"
@@ -1014,7 +1439,6 @@ export class CodexTurnProjector {
       if (changes) {
         return { messages: this.#fileChangeUpdates(startedAtMs) };
       }
-      if (isFileMutatingTool(event.item.toolName)) return { messages: [] };
     }
     if (event.item.type === "fileChange") return { messages: this.#fileChangeUpdates(startedAtMs) };
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
@@ -1447,6 +1871,7 @@ export class CodexTurnProjector {
     return this.#fileItemId ? { ...summary, itemId: this.#fileItemId } : summary;
   }
 
+  /** `sourceItemIds` only deduplicates Host previews and never reaches the wire. */
   #fileChangeUpdates(emittedAtMs: number): JsonObject[] {
     const summary = this.#fileSummary();
     const messages: JsonObject[] = [];

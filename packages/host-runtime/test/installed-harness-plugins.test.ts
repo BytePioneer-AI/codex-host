@@ -112,6 +112,7 @@ describe("installed Harness composition", () => {
       omp: ["/compact"],
       antigravity: [
         "/plan",
+        "/compact",
         "/goal",
         "/browser",
         "/grill-me",

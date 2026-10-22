@@ -45,7 +45,12 @@ const imageContentSchema = z.strictObject({
   base64Data: z.string(),
 });
 const hostItemSchema = z.discriminatedUnion("type", [
-  z.strictObject({ type: z.literal("agentMessage"), itemId: hostItemIdSchema, text: z.string() }),
+  z.strictObject({
+    type: z.literal("agentMessage"),
+    itemId: hostItemIdSchema,
+    text: z.string(),
+    phase: z.enum(["commentary", "final_answer"]).optional(),
+  }),
   z.strictObject({ type: z.literal("reasoning"), itemId: hostItemIdSchema, text: z.string() }),
   z.strictObject({ type: z.literal("contextCompaction"), itemId: hostItemIdSchema }),
   z.strictObject({
@@ -116,6 +121,8 @@ const turnSchema = z.strictObject({
   items: z.array(z.strictObject({ item: hostItemSchema, outcome: itemOutcomeSchema })),
   outcome: turnOutcomeSchema,
   model: harnessModelRefSchema.optional(),
+  startedAtMs: z.number().int().nonnegative().optional(),
+  completedAtMs: z.number().int().nonnegative().optional(),
 });
 
 const historySchema = z.strictObject({
@@ -324,6 +331,8 @@ export class AntigravityHistory {
     items: AntigravityTurn["items"];
     outcome: AntigravityTurn["outcome"];
     model?: HarnessModelRef;
+    startedAtMs?: number;
+    completedAtMs?: number;
   }): void {
     const turn: AntigravityTurn = {
       nativeTurnRef: input.nativeTurnRef,
@@ -332,6 +341,8 @@ export class AntigravityHistory {
       items: input.items,
       outcome: input.outcome,
       ...(input.model ? { model: input.model } : {}),
+      ...(input.startedAtMs !== undefined ? { startedAtMs: input.startedAtMs } : {}),
+      ...(input.completedAtMs !== undefined ? { completedAtMs: input.completedAtMs } : {}),
     };
     const index = this.#turns.findIndex(
       ({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey === input.nativeTurnRef.nativeTurnKey,

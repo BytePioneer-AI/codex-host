@@ -7,8 +7,10 @@ import {
   rendererModelTriggerMaxWidth,
   rendererPermissionModeTriggerMaxWidth,
   rendererUsageTriggerMaxWidth,
+  markRendererTriggerChipSqueezeContainer,
   TRIGGER_CHIP_CLASS,
   TRIGGER_CHIP_ROOT_CLASS,
+  TRIGGER_CHIP_SQUEEZE_CONTAINER_ATTRIBUTE,
   TRIGGER_CHIP_SQUEEZE_MIN_WIDTH,
 } from "../src/renderer-trigger-chip-style.js";
 
@@ -58,5 +60,14 @@ describe("Renderer trigger chip squeeze layout", () => {
       applyRendererTriggerChipSqueezeRoot({} as HTMLElement, rendererModelTriggerMaxWidth()),
     ).not.toThrow();
     expect(() => applyRendererTriggerChipSqueezeTrigger({} as HTMLElement)).not.toThrow();
+  });
+
+  it("marks composer containers with renderer-owned squeeze attributes", () => {
+    const attributes = new Map<string, string>();
+    const container = {
+      setAttribute: (name: string, value: string) => attributes.set(name, value),
+    } as unknown as Element;
+    markRendererTriggerChipSqueezeContainer(container);
+    expect(attributes.get(TRIGGER_CHIP_SQUEEZE_CONTAINER_ATTRIBUTE)).toBe("true");
   });
 });

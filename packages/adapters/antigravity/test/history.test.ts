@@ -46,6 +46,8 @@ describe("Antigravity history sidecar", () => {
         ],
         outcome: { status: "succeeded" },
         model,
+        startedAtMs: 1_700_000_000_000,
+        completedAtMs: 1_700_000_050_000,
       });
       await history.flush();
 
@@ -72,6 +74,8 @@ describe("Antigravity history sidecar", () => {
           ],
           outcome: { status: "succeeded" },
           model,
+          startedAtMs: 1_700_000_000_000,
+          completedAtMs: 1_700_000_050_000,
         },
       ]);
     } finally {

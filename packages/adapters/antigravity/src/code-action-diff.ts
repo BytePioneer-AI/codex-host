@@ -17,7 +17,16 @@ import https from "node:https";
 
 import type { HostFileChange } from "@codexhost/harness-adapter";
 
-import { displayPath } from "./tool-projection.js";
+import {
+  COMPACT_WRITE_TOOLS,
+  compactToolName,
+  displayPath,
+  extractBoolean,
+  extractString,
+  isAntigravityFileMutatingTool,
+  toolTargetFile,
+  unwrapParameters,
+} from "./tool-projection.js";
 
 const DIFF_CONTEXT_LINES = 3;
 
@@ -37,6 +46,102 @@ export interface AntigravityCodeAction {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+interface FileReplacement {
+  oldText: string | undefined;
+  newText: string | undefined;
+  startLine: number;
+}
+
+function arrayField(
+  record: Record<string, unknown>,
+  keys: readonly string[],
+): unknown[] | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) return value;
+  }
+  for (const [key, value] of Object.entries(record)) {
+    if (
+      Array.isArray(value) &&
+      keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())
+    ) {
+      return value;
+    }
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
+    if (isRecord(record[wrapper])) {
+      const nested = arrayField(record[wrapper] as Record<string, unknown>, keys);
+      if (nested !== undefined) return nested;
+    }
+  }
+  return undefined;
+}
+
+function startLineField(record: Record<string, unknown>): number {
+  const keys = ["StartLine", "startLine", "start_line"];
+  for (const [key, value] of Object.entries(record)) {
+    if (!keys.some((targetKey) => targetKey.toLowerCase() === key.toLowerCase())) continue;
+    const parsed =
+      typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  return 1;
+}
+
+function replacementChunks(record: Record<string, unknown>): FileReplacement[] {
+  const chunks = arrayField(record, [
+    "ReplacementChunks",
+    "replacementChunks",
+    "replacement_chunks",
+  ]);
+  if (!chunks) return [];
+  const replacements: FileReplacement[] = [];
+  for (const chunk of chunks) {
+    if (!isRecord(chunk)) continue;
+    replacements.push({
+      oldText: extractString(chunk, ["TargetContent", "targetContent", "target_content", "Target"]),
+      newText: extractString(chunk, [
+        "ReplacementContent",
+        "replacementContent",
+        "replacement_content",
+        "Replacement",
+      ]),
+      startLine: startLineField(chunk),
+    });
+  }
+  return replacements;
+}
+
+function textLines(text: string | undefined): string[] {
+  if (text === undefined || text.length === 0) return [];
+  const lines = text.split(/\r?\n/);
+  if (text.endsWith("\n") && lines.length > 1 && lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+function parameterUpdateDiff(
+  aPath: string,
+  bPath: string,
+  replacements: readonly FileReplacement[],
+): string | null {
+  const hunks: string[] = [];
+  for (const { oldText, newText, startLine } of replacements) {
+    if (oldText === undefined && newText === undefined) continue;
+    if (oldText === newText) continue;
+    const oldLines = textLines(oldText);
+    const newLines = textLines(newText);
+    hunks.push(
+      `@@ -${oldLines.length === 0 ? 0 : startLine},${oldLines.length} +${
+        newLines.length === 0 ? 0 : startLine
+      },${newLines.length} @@`,
+      ...oldLines.map((line) => `-${line}`),
+      ...newLines.map((line) => `+${line}`),
+    );
+  }
+  if (hunks.length === 0) return null;
+  return [`diff --git ${aPath} ${bPath}`, `--- ${aPath}`, `+++ ${bPath}`, ...hunks, ""].join("\n");
 }
 
 function lineType(value: unknown): UnifiedDiffLineType | null {
@@ -185,8 +290,9 @@ export function codeActionFileChange(
   if (!displayed) return null;
   const hunks = buildHunks(action.lines);
   if (hunks.length === 0) return null;
-  const aPath = displayed.absolute ? displayed.path : `a/${displayed.path}`;
-  const bPath = displayed.absolute ? displayed.path : `b/${displayed.path}`;
+  const cleanPath = displayed.path.replace(/^\/+/, "");
+  const aPath = `a/${cleanPath}`;
+  const bPath = `b/${cleanPath}`;
   const kind = action.createFile ? "add" : "update";
   const body = hunks.flatMap((hunk) => [
     `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`,
@@ -202,11 +308,105 @@ export function codeActionFileChange(
   return { path: displayed.path, kind, unifiedDiff };
 }
 
+export function fileChangeFromAntigravityParameters(
+  toolName: string,
+  params: unknown,
+  cwd: string,
+): HostFileChange | null {
+  if (!isAntigravityFileMutatingTool(toolName)) return null;
+  const rawPath = toolTargetFile(toolName, params);
+  if (!rawPath) return null;
+  const displayed = displayPath(rawPath, cwd);
+  if (!displayed) return null;
+
+  const record = unwrapParameters(params);
+  if (!record) return null;
+
+  const cleanPath = displayed.path.replace(/^\/+/, "");
+  const aPath = `a/${cleanPath}`;
+  const bPath = `b/${cleanPath}`;
+
+  const compact = compactToolName(toolName);
+  const isWrite = COMPACT_WRITE_TOOLS.has(compact);
+
+  if (isWrite) {
+    // An overwrite has no trustworthy old side in the stream parameters. Keep
+    // the ordinary tool card rather than presenting the result as a new file.
+    if (extractBoolean(record, ["Overwrite", "overwrite"]) === true) return null;
+    const content = extractString(record, [
+      "CodeContent",
+      "codeContent",
+      "code_content",
+      "Content",
+      "content",
+      "new_string",
+      "newString",
+      "newText",
+      "text",
+    ]);
+    if (content === undefined) return null;
+    const rawLines = content.split(/\r?\n/);
+    if (content.endsWith("\n") && rawLines.length > 1 && rawLines.at(-1) === "") {
+      rawLines.pop();
+    }
+    const hunks = buildHunks(rawLines.map((text) => ({ text, type: "insert" })));
+    if (hunks.length === 0) return null;
+    const body = hunks.flatMap((hunk) => [
+      `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`,
+      ...hunk.body,
+    ]);
+    const unifiedDiff = [
+      `diff --git ${aPath} ${bPath}`,
+      "--- /dev/null",
+      `+++ ${bPath}`,
+      ...body,
+      "",
+    ].join("\n");
+    return { path: displayed.path, kind: "add", unifiedDiff };
+  }
+
+  const replacements = replacementChunks(record);
+  if (replacements.length === 0) {
+    replacements.push({
+      oldText: extractString(record, [
+        "TargetContent",
+        "targetContent",
+        "target_content",
+        "Target",
+        "target",
+        "old_string",
+        "oldString",
+        "oldText",
+        "old_text",
+      ]),
+      newText: extractString(record, [
+        "ReplacementContent",
+        "replacementContent",
+        "replacement_content",
+        "Replacement",
+        "replacement",
+        "new_string",
+        "newString",
+        "newText",
+        "new_text",
+        "content",
+      ]),
+      startLine: startLineField(record),
+    });
+  }
+  const unifiedDiff = parameterUpdateDiff(aPath, bPath, replacements);
+  if (!unifiedDiff) return null;
+
+  return { path: displayed.path, kind: "update", diffScope: "fragment", unifiedDiff };
+}
+
 export function requestAntigravityTrajectorySteps(
   port: number,
   conversationId: string,
   timeoutMs: number,
+  csrfToken?: string,
 ): Promise<AntigravityCodeAction[]> {
+  const token = csrfToken?.trim() || process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
   return new Promise((resolve) => {
     const request = https.request(
       {
@@ -216,7 +416,11 @@ export function requestAntigravityTrajectorySteps(
         method: "POST",
         rejectUnauthorized: false,
         timeout: timeoutMs,
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "connect-protocol-version": "1",
+          ...(token ? { "x-codeium-csrf-token": token } : {}),
+        },
       },
       (response) => {
         let body = "";

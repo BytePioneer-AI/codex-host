@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 import type {
   HostCommandExecutionItem,
@@ -15,7 +17,7 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
+import { CodexTurnProjector, parseCommandActions, projectHistoricalTurn } from "../src/index.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -1133,6 +1135,66 @@ describe("Codex UI projector", () => {
         },
       },
     ]);
+    const webSearchId = itemId("web-search-1");
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: webSearchId,
+          toolName: "default_api:search_web",
+          arguments: { query: "Codex Desktop release notes" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            id: webSearchId,
+            type: "commandExecution",
+            command: "search Codex Desktop release notes",
+            commandActions: [
+              {
+                type: "search",
+                command: "search Codex Desktop release notes",
+                query: "Codex Desktop release notes",
+                path: null,
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const mcpId = itemId("mcp-1");
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: mcpId,
+          toolName: "default_api:call_mcp_tool",
+          arguments: {
+            ServerName: "chrome-devtools-mcp",
+            ToolName: "list_pages",
+            Arguments: {},
+          },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            id: mcpId,
+            type: "commandExecution",
+            command: "mcp chrome-devtools-mcp list_pages",
+          },
+        },
+      },
+    ]);
     expect(
       value.project({
         type: "item.updated",
@@ -1749,5 +1811,180 @@ describe("Codex UI projector", () => {
     expect(() =>
       value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } }),
     ).toThrow("follows the Turn terminal");
+  });
+
+  describe("parseCommandActions and native tool action cards", () => {
+    it("rejects compound commands, pipelines, redirects, and in-place sed edits", () => {
+      expect(parseCommandActions("grep foo src && rm -rf build", "/workspace")).toEqual([]);
+      expect(parseCommandActions("cat file.txt | head -n 5", "/workspace")).toEqual([]);
+      expect(parseCommandActions("cat file.txt > out.txt", "/workspace")).toEqual([]);
+      expect(parseCommandActions("head < file.txt", "/workspace")).toEqual([]);
+      expect(parseCommandActions("sed -i 's/a/b/' file.txt", "/workspace")).toEqual([]);
+      expect(parseCommandActions("sed --in-place 's/a/b/' file.txt", "/workspace")).toEqual([]);
+      expect(parseCommandActions("sed -i.bak 's/a/b/' file.txt", "/workspace")).toEqual([]);
+      expect(parseCommandActions("lsof -i:8080", "/workspace")).toEqual([]);
+      expect(parseCommandActions("lsblk", "/workspace")).toEqual([]);
+      expect(parseCommandActions("echo `cat file.txt`", "/workspace")).toEqual([]);
+      expect(parseCommandActions("echo $(cat file.txt)", "/workspace")).toEqual([]);
+    });
+
+    it("parses legitimate read, search, and directory listing commands", () => {
+      const workspacePath = (...segments: string[]) => path.resolve("/workspace", ...segments);
+      expect(parseCommandActions("cat src/main.ts", "/workspace")).toEqual([
+        {
+          type: "read",
+          command: "cat src/main.ts",
+          name: "main.ts",
+          path: workspacePath("src", "main.ts"),
+        },
+      ]);
+      expect(parseCommandActions("sed -n '1,10p' src/main.ts", "/workspace")).toEqual([
+        {
+          type: "read",
+          command: "sed -n '1,10p' src/main.ts",
+          name: "main.ts",
+          path: workspacePath("src", "main.ts"),
+        },
+      ]);
+      expect(parseCommandActions("ls -la src", "/workspace")).toEqual([
+        {
+          type: "listFiles",
+          command: "ls -la src",
+          path: workspacePath("src"),
+        },
+      ]);
+      expect(parseCommandActions("ls", "/workspace")).toEqual([
+        {
+          type: "listFiles",
+          command: "ls",
+          path: "/workspace",
+        },
+      ]);
+      expect(parseCommandActions("rg 'hello' src", "/workspace")).toEqual([
+        {
+          type: "search",
+          command: "rg 'hello' src",
+          query: "hello",
+          path: workspacePath("src"),
+        },
+      ]);
+    });
+
+    it("recognizes DirectoryPath and projects list_dir with listFiles action card", () => {
+      const value = projector();
+      value.project({ type: "turn.started", turnId });
+      const dirId = itemId("list-dir-1");
+      const projected = value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: dirId,
+          toolName: "default_api:list_dir",
+          arguments: { DirectoryPath: "src" },
+        },
+      });
+      expect(projected.messages).toMatchObject([
+        {
+          method: "item/started",
+          params: {
+            item: {
+              id: dirId,
+              type: "commandExecution",
+              command: "glob src",
+              commandActions: [
+                {
+                  type: "listFiles",
+                  command: "glob src",
+                  path: path.resolve("/workspace", "src"),
+                },
+              ],
+            },
+          },
+        },
+      ]);
+    });
+
+    it("falls back to dynamicToolCall when toolExecution output contains non-text content (e.g. images)", () => {
+      const value = projector();
+      value.project({ type: "turn.started", turnId });
+      const mcpScreenshotId = itemId("mcp-screenshot-1");
+      const projected = value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: mcpScreenshotId,
+          toolName: "default_api:call_mcp_tool",
+          arguments: {
+            ServerName: "chrome-devtools-mcp",
+            ToolName: "take_screenshot",
+            Arguments: {},
+          },
+          output: {
+            content: [
+              {
+                type: "image",
+                mimeType: "image/png",
+                base64Data:
+                  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+              },
+            ],
+          },
+        },
+      });
+      expect(projected.messages).toMatchObject([
+        {
+          method: "item/started",
+          params: {
+            item: {
+              id: mcpScreenshotId,
+              type: "dynamicToolCall",
+              tool: "default_api:call_mcp_tool",
+              contentItems: [
+                {
+                  type: "inputImage",
+                  imageUrl: expect.stringContaining("data:image/png;base64,"),
+                },
+              ],
+            },
+          },
+        },
+      ]);
+    });
+
+    it("keeps a file tool visible when no trustworthy patch can be reconstructed", () => {
+      const value = projector();
+      value.project({ type: "turn.started", turnId });
+      const writeId = itemId("write-overwrite-1");
+      const item: HostToolExecutionItem = {
+        type: "toolExecution",
+        itemId: writeId,
+        toolName: "write_to_file",
+        arguments: {
+          TargetFile: "src/existing.ts",
+          Overwrite: true,
+          CodeContent: "replacement",
+        },
+      };
+      expect(value.project({ type: "item.started", turnId, item }).messages).toMatchObject([
+        {
+          method: "item/started",
+          params: { item: { id: writeId, type: "dynamicToolCall", tool: "write_to_file" } },
+        },
+      ]);
+      expect(
+        value.project({
+          type: "item.completed",
+          turnId,
+          snapshot: { item, outcome: { status: "succeeded" } },
+        }).messages,
+      ).toMatchObject([
+        {
+          method: "item/completed",
+          params: { item: { id: writeId, type: "dynamicToolCall", tool: "write_to_file" } },
+        },
+      ]);
+    });
   });
 });

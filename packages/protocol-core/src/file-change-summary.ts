@@ -102,19 +102,26 @@ export function summarizeFileChanges(changes: HostFileChange[], cwd: string): Ho
     const last = group.at(-1) ?? first;
     const hunks = composePatches(group);
     const kind = last.kind === "delete" ? "delete" : first.kind === "add" ? "add" : "update";
+    const cleanPath = first.path.replace(/^\/+/, "");
+    const gitHeader = `diff --git a/${cleanPath} b/${cleanPath}`;
     if (hunks) {
       if (hunks.length === 0 && (first.kind !== "add") === (last.kind !== "delete")) return [];
+      const rawPatch = formatPatch({
+        oldFileName: first.kind === "add" ? "/dev/null" : `a/${cleanPath}`,
+        newFileName: last.kind === "delete" ? "/dev/null" : `b/${cleanPath}`,
+        oldHeader: "",
+        newHeader: "",
+        hunks,
+      });
+      const patchLines = rawPatch.split("\n");
+      const unifiedDiff = patchLines[0]?.startsWith("===")
+        ? [gitHeader, ...patchLines.slice(1)].join("\n")
+        : `${gitHeader}\n${rawPatch}`;
       return [
         {
           path: first.path,
           kind,
-          unifiedDiff: formatPatch({
-            oldFileName: first.kind === "add" ? "/dev/null" : `a/${first.path}`,
-            newFileName: last.kind === "delete" ? "/dev/null" : `b/${first.path}`,
-            oldHeader: "",
-            newHeader: "",
-            hunks,
-          }),
+          unifiedDiff,
         },
       ];
     }
@@ -125,7 +132,8 @@ export function summarizeFileChanges(changes: HostFileChange[], cwd: string): Ho
       return start < 0 ? unifiedDiff : unifiedDiff.slice(start);
     });
     const headerEnd = first.unifiedDiff.indexOf("@@");
-    const header = headerEnd < 0 ? "" : first.unifiedDiff.slice(0, headerEnd);
+    const rawHeader = headerEnd < 0 ? "" : first.unifiedDiff.slice(0, headerEnd);
+    const header = rawHeader.startsWith("diff --git ") ? rawHeader : `${gitHeader}\n${rawHeader}`;
     return [
       {
         path: first.path,

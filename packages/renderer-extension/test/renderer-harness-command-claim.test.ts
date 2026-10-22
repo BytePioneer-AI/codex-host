@@ -140,6 +140,7 @@ describe("Renderer Harness command Composer claims", () => {
     ["grok.compact", "text"],
     ["opencode.compact", "none"],
     ["dsh.compact", "none"],
+    ["antigravity.compact", "text"],
   ] as const)("executes %s directly without changing the draft", (id, argumentMode) => {
     const editor = new FakeTextarea();
     const execute = vi.fn();

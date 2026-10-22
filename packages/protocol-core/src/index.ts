@@ -16,9 +16,14 @@ export {
   projectCodexRateLimitsToCredits,
 } from "./codex-native-usage.js";
 export type { CodexRateLimitResetCredits } from "./codex-native-usage.js";
-export { CodexTurnProjector, projectHistoricalTurn } from "./codex-ui-projector.js";
+export {
+  CodexTurnProjector,
+  parseCommandActions,
+  projectHistoricalTurn,
+} from "./codex-ui-projector.js";
 export type {
   CodexApprovalProjection,
+  CodexCommandAction,
   CodexQuestionProjection,
   CodexTurnProjection,
   HistoricalTurnProjectionInput,

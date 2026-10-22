@@ -26,11 +26,13 @@ import {
   type InspectHarnessInput,
   type HostAgentMessageItem,
   type HostCommand,
+  type HostContextCompactionItem,
   type HostEvent,
   type HostFileChange,
   type HostItem,
   type HostItemOutcome,
   type HostItemSnapshot,
+  type HostReasoningItem,
   type HostSubagentState,
   type HostThreadSnapshot,
   type HostUsage,
@@ -68,7 +70,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { resolveAntigravityExecutable } from "./command.js";
-import { forkAntigravitySession } from "./fork.js";
+import { forkAntigravitySession, nativeBrainDirPath } from "./fork.js";
 import { AntigravityHistory } from "./history.js";
 import {
   antigravityAvailableThinkingOptions,
@@ -84,6 +86,7 @@ import { rollbackAntigravityLastTurn } from "./rollback.js";
 import { ANTIGRAVITY_COMMAND_CATALOG, parseAndFormatAntigravityCommand } from "./slash-commands.js";
 import {
   codeActionFileChange,
+  fileChangeFromAntigravityParameters,
   requestAntigravityTrajectorySteps,
   type AntigravityCodeAction,
 } from "./code-action-diff.js";
@@ -102,6 +105,7 @@ import {
   type AntigravityUsage,
 } from "./stream-events.js";
 import {
+  compactToolName,
   completeAntigravityToolItem,
   isAntigravityFileMutatingTool,
   startAntigravityToolItem,
@@ -118,20 +122,25 @@ export interface AntigravityAdapterOptions {
 }
 
 interface ActiveTurn {
+  startedAtMs: number;
   command: TurnStartCommand;
+  /** Compaction item active during explicit /compact or automatic checkpoint. */
+  compactionItem: HostContextCompactionItem | null;
   /** Model passed to this CLI invocation, independent of later selections. */
   model: HarnessModelRef | undefined;
   process: ChildProcessByStdio<Writable, Readable, Readable>;
   exited: Promise<void>;
-  questions: AntigravityQuestionBridge;
+  questions: AntigravityQuestionBridge | null;
   subagents: AntigravitySubagents;
   logPath: string;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
   tools: Map<number, HostItem>;
   completedItems: HostItemSnapshot[];
+  emittedAgentTexts: string[];
   stderr: string;
   cancellationRequested: boolean;
+  cancellationReason: "user" | "session_closed" | null;
   receivedResult: boolean;
   /** agy's own effective permission mode, as reported by the `init` event. */
   nativePermissionMode: string | null;
@@ -206,10 +215,33 @@ function mergePendingStep(
  * trajectory reports a `file://` URI, so the two only compare after both are
  * resolved — case-insensitively where the filesystem is.
  */
-function sameFile(left: string, right: string): boolean {
+function sameFile(left: string | null | undefined, right: string | null | undefined): boolean {
+  if (!left || !right) return false;
   const a = path.resolve(left);
   const b = path.resolve(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function pathWithinDirectory(targetPath: string, directory: string): boolean {
+  const normalize = (value: string) =>
+    process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+  const target = normalize(targetPath);
+  const root = normalize(directory);
+  return target === root || target.startsWith(`${root}${path.sep}`);
+}
+
+export function isAntigravityBrainFile(targetPath: string, conversationId?: string): boolean {
+  if (!targetPath) return false;
+  if (conversationId) {
+    const brainDir = nativeBrainDirPath(conversationId);
+    if (pathWithinDirectory(targetPath, brainDir)) return true;
+  }
+  const defaultBrainRoot = path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
+  return pathWithinDirectory(targetPath, defaultBrainRoot);
+}
+
+function cancelledReason(active: ActiveTurn): string {
+  return active.cancellationReason === "session_closed" ? "Session closed" : "Cancelled by user";
 }
 
 export function resolveAntigravityContextWindow(modelId?: string, reportedWindow?: number): number {
@@ -278,14 +310,17 @@ function contextWindowMetadata(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   const trajectory = isRecord(value.trajectory) ? value.trajectory : value;
   const generatorMetadata = trajectory.generatorMetadata;
-  if (!Array.isArray(generatorMetadata)) return null;
-  const first = generatorMetadata[0];
-  if (!isRecord(first) || !isRecord(first.chatModel)) return null;
-  const chatStartMetadata = first.chatModel.chatStartMetadata;
-  if (!isRecord(chatStartMetadata) || !isRecord(chatStartMetadata.contextWindowMetadata)) {
-    return null;
+  if (!Array.isArray(generatorMetadata) || generatorMetadata.length === 0) return null;
+  for (let i = generatorMetadata.length - 1; i >= 0; i--) {
+    const entry = generatorMetadata[i];
+    if (isRecord(entry) && isRecord(entry.chatModel)) {
+      const chatStartMetadata = entry.chatModel.chatStartMetadata;
+      if (isRecord(chatStartMetadata) && isRecord(chatStartMetadata.contextWindowMetadata)) {
+        return chatStartMetadata.contextWindowMetadata;
+      }
+    }
   }
-  return chatStartMetadata.contextWindowMetadata;
+  return null;
 }
 
 /** Parses the real context counters exposed by agy's local Language Server. */
@@ -312,8 +347,11 @@ function requestAntigravityContextUsage(
   port: number,
   conversationId: string,
   timeoutMs: number,
+  environment: NodeJS.ProcessEnv,
   modelId?: string,
 ): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
+  const csrfToken =
+    environment.ANTIGRAVITY_CSRF_TOKEN?.trim() || process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
   return new Promise((resolve) => {
     const request = https.request(
       {
@@ -323,7 +361,11 @@ function requestAntigravityContextUsage(
         method: "POST",
         rejectUnauthorized: false,
         timeout: timeoutMs,
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "connect-protocol-version": "1",
+          ...(csrfToken ? { "x-codeium-csrf-token": csrfToken } : {}),
+        },
       },
       (response) => {
         let body = "";
@@ -353,6 +395,223 @@ function requestAntigravityContextUsage(
   });
 }
 
+export async function readTranscriptContextUsage(
+  conversationId: string,
+  modelId?: string,
+  homedir = os.homedir(),
+): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
+  if (!conversationId) return null;
+  const dir = path.join(nativeBrainDirPath(conversationId, homedir), ".system_generated", "logs");
+  const candidates = [path.join(dir, "transcript.jsonl"), path.join(dir, "transcript_full.jsonl")];
+  let content = "";
+  for (const candidate of candidates) {
+    try {
+      content = await readFile(candidate, "utf8");
+      if (content.length > 0) break;
+    } catch {
+      // Fall through to next candidate.
+    }
+  }
+  if (!content) return null;
+  const lines = content.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (!isRecord(parsed)) continue;
+      const input = safeToken(parsed.input_tokens);
+      if (input !== undefined) {
+        const cached = safeToken(parsed.cache_read_tokens) ?? 0;
+        const used = input + cached;
+        const rawWindow = safeToken(parsed.context_window_tokens ?? parsed.max_context_tokens);
+        const contextWindowTokens = resolveAntigravityContextWindow(modelId, rawWindow);
+        if (contextWindowTokens !== undefined && contextWindowTokens > 0) {
+          return { contextUsedTokens: used, contextWindowTokens };
+        }
+      }
+    } catch {
+      // Skip malformed trailing line.
+    }
+  }
+  return null;
+}
+
+async function readTranscriptThinkingSteps(
+  conversationId: string,
+  seenSteps: Set<number>,
+): Promise<Array<{ stepIndex: number; thinking: string }>> {
+  if (!conversationId) return [];
+  const dir = path.join(nativeBrainDirPath(conversationId), ".system_generated", "logs");
+  const candidates = [path.join(dir, "transcript_full.jsonl"), path.join(dir, "transcript.jsonl")];
+  let content = "";
+  for (const candidate of candidates) {
+    try {
+      content = await readFile(candidate, "utf8");
+      if (content.length > 0) break;
+    } catch {
+      // Fall through to next candidate.
+    }
+  }
+  if (!content) return [];
+  const results: Array<{ stepIndex: number; thinking: string }> = [];
+  const lines = content.split("\n");
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (
+        isRecord(parsed) &&
+        parsed.source === "MODEL" &&
+        parsed.type === "PLANNER_RESPONSE" &&
+        typeof parsed.step_index === "number" &&
+        typeof parsed.thinking === "string" &&
+        parsed.thinking.trim().length > 0
+      ) {
+        if (!seenSteps.has(parsed.step_index)) {
+          results.push({ stepIndex: parsed.step_index, thinking: parsed.thinking });
+        }
+      }
+    } catch {
+      // Skip incomplete trailing line.
+    }
+  }
+  return results;
+}
+
+async function readAllExistingTranscriptSteps(conversationId: string): Promise<Set<number>> {
+  const steps = new Set<number>();
+  if (!conversationId) return steps;
+  const dir = path.join(nativeBrainDirPath(conversationId), ".system_generated", "logs");
+  const candidates = [path.join(dir, "transcript_full.jsonl"), path.join(dir, "transcript.jsonl")];
+  let content = "";
+  for (const candidate of candidates) {
+    try {
+      content = await readFile(candidate, "utf8");
+      if (content.length > 0) break;
+    } catch {
+      // Fall through to next candidate.
+    }
+  }
+  if (!content) return steps;
+  const lines = content.split("\n");
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (
+        isRecord(parsed) &&
+        parsed.source === "MODEL" &&
+        parsed.type === "PLANNER_RESPONSE" &&
+        typeof parsed.step_index === "number"
+      ) {
+        steps.add(parsed.step_index);
+      }
+    } catch {
+      // Skip incomplete trailing line.
+    }
+  }
+  return steps;
+}
+
+export async function readTranscriptToolArgs(
+  conversationId: string,
+  stepIndex: number,
+  toolName?: string,
+  targetFile?: string,
+): Promise<Record<string, unknown> | null> {
+  if (!conversationId) return null;
+  const dir = path.join(nativeBrainDirPath(conversationId), ".system_generated", "logs");
+  const candidates = [path.join(dir, "transcript.jsonl"), path.join(dir, "transcript_full.jsonl")];
+
+  interface ParsedPlanner {
+    stepIndex: number;
+    toolCalls: Array<{ name: string; args: Record<string, unknown> }>;
+  }
+
+  for (const candidate of candidates) {
+    let content = "";
+    try {
+      content = await readFile(candidate, "utf8");
+    } catch {
+      continue;
+    }
+    if (!content.trim()) continue;
+
+    const planners: ParsedPlanner[] = [];
+    const lines = content.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (
+          isRecord(parsed) &&
+          parsed.source === "MODEL" &&
+          parsed.type === "PLANNER_RESPONSE" &&
+          typeof parsed.step_index === "number" &&
+          Array.isArray(parsed.tool_calls)
+        ) {
+          const toolCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+          for (const tc of parsed.tool_calls) {
+            if (isRecord(tc) && typeof tc.name === "string") {
+              const args = isRecord(tc.args) ? (tc.args as Record<string, unknown>) : {};
+              toolCalls.push({ name: tc.name, args });
+            }
+          }
+          if (toolCalls.length > 0) {
+            planners.push({ stepIndex: parsed.step_index, toolCalls });
+          }
+        }
+      } catch {
+        // Skip incomplete trailing line.
+      }
+    }
+
+    if (planners.length === 0) continue;
+
+    const compactTarget = toolName ? compactToolName(toolName) : undefined;
+    const precedingPlanners = planners
+      .filter((p) => p.stepIndex < stepIndex)
+      .sort((a, b) => b.stepIndex - a.stepIndex);
+
+    const matchesCall = (cand: { name: string; args: Record<string, unknown> }): boolean => {
+      if (compactTarget && compactToolName(cand.name) !== compactTarget) {
+        return false;
+      }
+      if (targetFile) {
+        const candFile = toolTargetFile(cand.name, cand.args);
+        if (!sameFile(candFile, targetFile)) return false;
+      }
+      return true;
+    };
+
+    // 1. Try the closest preceding planner response by offset
+    const closest = precedingPlanners[0];
+    if (closest) {
+      const offset = stepIndex - closest.stepIndex - 1;
+      if (offset >= 0 && offset < closest.toolCalls.length) {
+        const candidateCall = closest.toolCalls[offset];
+        if (candidateCall && matchesCall(candidateCall)) {
+          return candidateCall.args;
+        }
+      }
+
+      // 2. Search the closest planner only when the target file can distinguish
+      // multiple calls of the same tool. Older or future planners are not a
+      // valid source for the current step's arguments.
+      if (targetFile) {
+        for (const call of closest.toolCalls) {
+          if (matchesCall(call)) {
+            return call.args;
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 async function antigravityHttpsPort(logPath: string): Promise<number | null> {
   try {
     const log = await readFile(logPath, "utf8");
@@ -369,17 +628,21 @@ async function antigravityHttpsPort(logPath: string): Promise<number | null> {
 async function pollAntigravityContextUsage(
   logPath: string,
   conversationId: string,
+  environment: NodeJS.ProcessEnv,
   modelId?: string,
   isDone?: () => boolean,
 ): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
   const deadline = Date.now() + CONTEXT_USAGE_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    const transcriptUsage = await readTranscriptContextUsage(conversationId, modelId);
+    if (transcriptUsage) return transcriptUsage;
     const port = await antigravityHttpsPort(logPath);
     if (port !== null) {
       const usage = await requestAntigravityContextUsage(
         port,
         conversationId,
         CONTEXT_USAGE_RETRY_MS,
+        environment,
         modelId,
       );
       if (usage) return usage;
@@ -387,7 +650,7 @@ async function pollAntigravityContextUsage(
     if (isDone?.()) break;
     await new Promise<void>((resolve) => setTimeout(resolve, CONTEXT_USAGE_RETRY_MS));
   }
-  return null;
+  return await readTranscriptContextUsage(conversationId, modelId);
 }
 
 function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostUsage | null {
@@ -396,12 +659,10 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
   const outputTokens = safeToken(value.output_tokens);
   const reasoningOutputTokens = safeToken(value.thinking_tokens);
   const totalTokens = safeToken(value.total_tokens);
-  const contextUsedTokens = safeToken(
-    value.context_used_tokens ?? value.estimated_tokens_used ?? value.input_tokens,
-  );
+  const contextUsedTokens = safeToken(value.context_used_tokens ?? value.estimated_tokens_used);
   const rawWindow = safeToken(value.context_window_tokens ?? value.max_context_tokens);
   const contextWindowTokens =
-    contextUsedTokens !== undefined || rawWindow !== undefined
+    contextUsedTokens !== undefined || rawWindow !== undefined || modelId !== undefined
       ? resolveAntigravityContextWindow(modelId, rawWindow)
       : undefined;
   const usage: HostUsage = {
@@ -409,10 +670,11 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
-    ...(contextUsedTokens !== undefined &&
-    contextWindowTokens !== undefined &&
-    contextWindowTokens > 0
-      ? { contextUsedTokens, contextWindowTokens }
+    ...(contextWindowTokens !== undefined && contextWindowTokens > 0
+      ? {
+          contextWindowTokens,
+          ...(contextUsedTokens !== undefined ? { contextUsedTokens } : {}),
+        }
       : {}),
   };
   return Object.keys(usage).length > 0 ? usage : null;
@@ -500,6 +762,8 @@ class AntigravitySession implements HarnessSession {
   readonly #subagentObservationTimeoutMs: number;
   readonly #history: AntigravityHistory;
   readonly #subagentObservers = new Set<AntigravitySubagents>();
+  readonly #emittedReasoningSteps = new Set<number>();
+  #initializedTranscriptSteps = false;
   #active: ActiveTurn | null = null;
   #preparingQuestions: Promise<AntigravityQuestionBridge> | null = null;
   #questionCleanup: Promise<void> = Promise.resolve();
@@ -616,7 +880,7 @@ class AntigravitySession implements HarnessSession {
     if (command.type === "thinking.select") return this.#selectThinking(command);
     if (command.type === "interaction.respond") {
       return (
-        this.#active?.questions.respond(command) ?? {
+        this.#active?.questions?.respond(command) ?? {
           ok: false,
           error: invalidState("Antigravity Question is not active"),
         }
@@ -642,65 +906,91 @@ class AntigravitySession implements HarnessSession {
         error: { code: "invalidRequest", message: "Antigravity Turn is empty", retryable: false },
       };
     }
-
-    let questions: AntigravityQuestionBridge;
-    this.#preparingQuestions = AntigravityQuestionBridge.create({
-      turnId: command.turnId,
-      nativeSessionId: () =>
-        this.#active?.command === command && !this.#active.cancellationRequested
-          ? this.#nativeRef?.nativeSessionId
-          : undefined,
-      schedule: (action) => {
-        if (this.#active?.command === command) this.#enqueue(this.#active, action);
-        else action();
-      },
-      emit: (output) => {
-        const active = this.#active;
-        if (!active || active.command !== command) return;
-        if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
-          this.#completeItem(active, active.agentItem, { status: "succeeded" });
-          active.agentItem = null;
-          active.agentText = "";
-        }
-        if (output.kind === "event" && output.event.type === "item.completed") {
-          active.completedItems.push(output.event.snapshot);
-        }
-        this.#channel.emit(output);
-      },
-    });
-    try {
-      questions = await this.#preparingQuestions;
-    } catch (error) {
+    const isCompact = text === "/compact" || text.startsWith("/compact ");
+    const nativeConversationId = this.#nativeRef?.nativeSessionId;
+    if (isCompact && !nativeConversationId) {
       return {
         ok: false,
         error: {
-          code: "nativeFailure",
-          message: `Question bridge setup failed: ${errorMessage(error)}`,
-          retryable: true,
+          code: "invalidState",
+          message: "Antigravity context compaction requires an active conversation",
+          retryable: false,
         },
       };
-    } finally {
-      this.#preparingQuestions = null;
     }
-    if (this.#closed) {
-      await questions.dispose();
+
+    let questions: AntigravityQuestionBridge | null = null;
+    let environment = this.#environment;
+    if (!isCompact) {
+      this.#preparingQuestions = AntigravityQuestionBridge.create({
+        turnId: command.turnId,
+        nativeSessionId: () =>
+          this.#active?.command === command && !this.#active.cancellationRequested
+            ? this.#nativeRef?.nativeSessionId
+            : undefined,
+        schedule: (action) => {
+          if (this.#active?.command === command) this.#enqueue(this.#active, action);
+          else action();
+        },
+        emit: (output) => {
+          const active = this.#active;
+          if (!active || active.command !== command) return;
+          if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
+            this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
+          }
+          if (output.kind === "event" && output.event.type === "item.completed") {
+            active.completedItems.push(output.event.snapshot);
+          }
+          this.#channel.emit(output);
+        },
+      });
+      try {
+        questions = await this.#preparingQuestions;
+        environment = { ...this.#environment, ...questions.environment };
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message: `Question bridge setup failed: ${errorMessage(error)}`,
+            retryable: true,
+          },
+        };
+      } finally {
+        this.#preparingQuestions = null;
+      }
+      if (this.#closed) {
+        await questions.dispose();
+        return { ok: false, error: invalidState("Antigravity Session is closed") };
+      }
+    } else if (this.#closed) {
       return { ok: false, error: invalidState("Antigravity Session is closed") };
     }
-    const environment = { ...this.#environment, ...questions.environment };
     const logPath = path.join(os.tmpdir(), `codexhost-antigravity-${randomUUID()}.log`);
-    const arguments_ = [
-      "--input-format",
-      "stream-json",
-      "--output-format",
-      "stream-json",
-      "--print-timeout",
-      this.#printTimeout,
-    ];
-    if (this.#nativeRef) arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
+    const arguments_ = isCompact
+      ? [
+          "--conversation",
+          nativeConversationId ?? "",
+          `--print=${text}`,
+          "--output-format",
+          "stream-json",
+          "--print-timeout",
+          this.#printTimeout,
+        ]
+      : [
+          "--input-format",
+          "stream-json",
+          "--output-format",
+          "stream-json",
+          "--print-timeout",
+          this.#printTimeout,
+        ];
+    if (!isCompact && this.#nativeRef)
+      arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
     arguments_.push(...antigravityModelArguments(this.#model, this.#thinkingOptionId));
     arguments_.push("--dangerously-skip-permissions");
     arguments_.push("--add-dir", this.#cwd);
-    arguments_.push("--add-dir", questions.directory);
+    if (!isCompact && questions) arguments_.push("--add-dir", questions.directory);
     arguments_.push("--log-file", logPath);
     const invocation = commandInvocation(this.#executable, arguments_, environment);
     let child: ChildProcessByStdio<Writable, Readable, Readable>;
@@ -713,14 +1003,23 @@ class AntigravitySession implements HarnessSession {
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
-      await questions.dispose();
+      await questions?.dispose();
       return {
         ok: false,
         error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
       };
     }
+    let compactionItem: HostContextCompactionItem | null = null;
+    if (isCompact) {
+      compactionItem = {
+        type: "contextCompaction",
+        itemId: this.#newItemId(),
+      };
+    }
     const active: ActiveTurn = {
+      startedAtMs: Date.now(),
       command,
+      compactionItem,
       model: this.#model,
       process: child,
       exited: new Promise<void>((resolve) => child.once("close", () => resolve())),
@@ -754,8 +1053,10 @@ class AntigravitySession implements HarnessSession {
       agentText: "",
       tools: new Map(),
       completedItems: [],
+      emittedAgentTexts: [],
       stderr: "",
       cancellationRequested: false,
+      cancellationReason: null,
       receivedResult: false,
       nativePermissionMode: null,
       permissionDenial: null,
@@ -795,7 +1096,7 @@ class AntigravitySession implements HarnessSession {
         else active.subagents.stop();
         if (this.#active !== active || active.receivedResult) return;
         if (active.cancellationRequested) {
-          this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
+          this.#completeTurn(active, { status: "cancelled", reason: cancelledReason(active) });
         } else {
           this.#completeTurn(active, {
             status: "failed",
@@ -807,6 +1108,12 @@ class AntigravitySession implements HarnessSession {
         }
       });
     });
+    if (isCompact && compactionItem) {
+      child.stdin.end();
+      this.#event({ type: "turn.started", turnId: command.turnId });
+      this.#event({ type: "item.started", turnId: command.turnId, item: compactionItem });
+      return { ok: true, value: { turnId: command.turnId } };
+    }
     try {
       const turnPrompt = formatAntigravityTurnPrompt(text);
       if (child.stdin.writable) {
@@ -838,6 +1145,7 @@ class AntigravitySession implements HarnessSession {
     if (this.#active) {
       const active = this.#active;
       active.cancellationRequested = true;
+      active.cancellationReason = "session_closed";
       await active.subagents.cancel();
       active.process.kill();
       this.#completeTurn(active, { status: "cancelled", reason: "Session closed" });
@@ -887,15 +1195,24 @@ class AntigravitySession implements HarnessSession {
       });
       this.#history.bindNativeSession(event.conversation_id);
       this.#event({ type: "session.state.changed", state: this.#state() });
+      if (!this.#initializedTranscriptSteps) {
+        this.#initializedTranscriptSteps = true;
+        const existing = await readAllExistingTranscriptSteps(event.conversation_id);
+        if (this.#active !== active) return;
+        for (const step of existing) this.#emittedReasoningSteps.add(step);
+      }
       this.#ensureContextUsage(active, event.conversation_id);
       return;
     }
     if (event.event === "step_update") {
-      if (event.step_update.conversation_id !== this.#nativeRef?.nativeSessionId) return;
+      const conversationId =
+        event.step_update.conversation_id.trim() || this.#nativeRef?.nativeSessionId;
+      if (!conversationId || conversationId !== this.#nativeRef?.nativeSessionId) return;
       await this.#handleStep(active, event.step_update);
+      if (this.#active !== active) return;
       const usage = hostUsage(event.step_update.usage, active.model?.id);
       if (usage) this.#publishUsage(active, usage);
-      this.#ensureContextUsage(active, event.step_update.conversation_id);
+      this.#ensureContextUsage(active, conversationId);
       return;
     }
     if (event.event !== "result") return;
@@ -924,10 +1241,16 @@ class AntigravitySession implements HarnessSession {
     const usage = hostUsage(event.result.usage, active.model?.id);
     if (usage) this.#publishUsage(active, usage);
     this.#ensureContextUsage(active, event.result.conversation_id);
-    if (active.contextUsagePromise) {
-      const contextUsage = await active.contextUsagePromise;
-      if (contextUsage) this.#publishUsage(active, contextUsage);
-    }
+    const contextUsage =
+      (await readTranscriptContextUsage(
+        resultConversationId ||
+          event.result.conversation_id ||
+          this.#nativeRef?.nativeSessionId ||
+          "",
+        active.model?.id,
+      )) ?? (active.contextUsagePromise ? await active.contextUsagePromise : null);
+    if (this.#active !== active) return;
+    if (contextUsage) this.#publishUsage(active, contextUsage);
     await active.subagents.refresh();
     if (this.#active !== active) return;
     const convId = resultConversationId || this.#nativeRef?.nativeSessionId || "";
@@ -940,6 +1263,9 @@ class AntigravitySession implements HarnessSession {
       });
       this.#history.bindNativeSession(convId);
       this.#event({ type: "session.state.changed", state: this.#state() });
+    }
+    if (convId && !active.agentItem && active.emittedAgentTexts.length === 0) {
+      await this.#syncReasoning(active, convId);
     }
     if (event.result.response) {
       this.#appendOrSyncAgentText(active, event.result.response, false);
@@ -965,10 +1291,13 @@ class AntigravitySession implements HarnessSession {
     if (active.cancellationRequested) {
       this.#completeTurn(
         active,
-        { status: "cancelled", reason: "Cancelled by user", checkpoint },
+        { status: "cancelled", reason: cancelledReason(active), checkpoint },
         nativeTurnRef,
       );
     } else if (event.result.status === "SUCCESS") {
+      if (active.compactionItem) {
+        this.#completeCompactionItem(active, { status: "succeeded" });
+      }
       if (active.permissionDenial !== null && !active.agentItem) {
         this.#completeTurn(
           active,
@@ -983,6 +1312,16 @@ class AntigravitySession implements HarnessSession {
         this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
       }
     } else {
+      if (active.compactionItem) {
+        this.#completeCompactionItem(active, {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message: "Antigravity context compaction failed",
+            retryable: false,
+          },
+        });
+      }
       const nativeError = event.result.error?.trim();
       const errorDetail = nativeError || active.stderr;
       this.#completeTurn(
@@ -1002,6 +1341,7 @@ class AntigravitySession implements HarnessSession {
   }
 
   #publishUsage(active: ActiveTurn, usage: HostUsage): void {
+    if (this.#active !== active) return;
     active.latestUsage = { ...(active.latestUsage ?? {}), ...usage };
     this.#event({
       type: "session.usage.changed",
@@ -1015,6 +1355,7 @@ class AntigravitySession implements HarnessSession {
     active.contextUsagePromise = pollAntigravityContextUsage(
       active.logPath,
       conversationId,
+      this.#environment,
       active.model?.id,
       () =>
         active.receivedResult || active.cancellationRequested || active.process.exitCode !== null,
@@ -1025,11 +1366,15 @@ class AntigravitySession implements HarnessSession {
     active: ActiveTurn,
     step: AntigravityStepUpdateEvent["step_update"],
   ): Promise<void> {
+    if (
+      step.conversation_id &&
+      (step.step_type === "tool" || step.step_type === "subagent" || !active.agentItem)
+    ) {
+      await this.#syncReasoning(active, step.conversation_id);
+    }
     if (step.step_type === "subagent") {
       if (active.agentItem) {
-        this.#completeItem(active, active.agentItem, { status: "succeeded" });
-        active.agentItem = null;
-        active.agentText = "";
+        this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
       }
       if (active.subagents.handle(step)) return;
       step = { ...step, step_type: "tool" };
@@ -1049,16 +1394,48 @@ class AntigravitySession implements HarnessSession {
       }
       return;
     }
+    if (step.step_type === "checkpoint") {
+      if (active.agentItem) {
+        this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
+      }
+      if (!active.compactionItem) {
+        const item: HostContextCompactionItem = {
+          type: "contextCompaction",
+          itemId: this.#newItemId(),
+        };
+        active.compactionItem = item;
+        this.#event({ type: "item.started", turnId: active.command.turnId, item });
+      }
+      if (step.state === "DONE") {
+        this.#completeCompactionItem(active, { status: "succeeded" });
+        void readTranscriptContextUsage(step.conversation_id, active.model?.id).then(
+          (contextUsage) => {
+            if (contextUsage && this.#active === active) {
+              this.#publishUsage(active, contextUsage);
+            }
+          },
+        );
+      } else if (step.state === "ERROR") {
+        this.#completeCompactionItem(active, {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message: "Antigravity context compaction failed",
+            retryable: false,
+          },
+        });
+      }
+      return;
+    }
     if (step.step_type !== "tool") return;
     if (active.agentItem) {
-      this.#completeItem(active, active.agentItem, { status: "succeeded" });
-      active.agentItem = null;
-      active.agentText = "";
+      this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
     }
     const merged = mergePendingStep(active.pendingSteps.get(step.step_index), step);
     let item = active.tools.get(step.step_index);
     if (!item) {
       const started = await this.#startToolItem(active, merged);
+      if (this.#active !== active) return;
       if (!started) {
         active.pendingSteps.set(step.step_index, merged);
         return;
@@ -1093,6 +1470,25 @@ class AntigravitySession implements HarnessSession {
           }
         : { status: "succeeded" };
     this.#completeItem(active, completed, itemOutcome);
+
+    if (
+      itemOutcome.status === "succeeded" &&
+      item.type !== "fileChange" &&
+      isAntigravityFileMutatingTool(toolName)
+    ) {
+      const change = await this.#claimFileChange(active, merged, toolName);
+      if (this.#active !== active) return;
+      if (change) {
+        const fileItem: HostItem = {
+          type: "fileChange",
+          itemId: this.#newItemId(),
+          sourceItemIds: [completed.itemId],
+          changes: [change],
+        };
+        this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
+        this.#completeItem(active, fileItem, { status: "succeeded" });
+      }
+    }
   }
 
   /**
@@ -1108,6 +1504,7 @@ class AntigravitySession implements HarnessSession {
     const toolName = step.tool_name ?? step.tool_info?.name ?? "antigravity.tool";
     if (isAntigravityFileMutatingTool(toolName)) {
       const change = await this.#claimFileChange(active, step, toolName);
+      if (this.#active !== active) return null;
       if (change) {
         return { type: "fileChange", itemId: this.#newItemId(), changes: [change] };
       }
@@ -1123,25 +1520,68 @@ class AntigravitySession implements HarnessSession {
   ): Promise<HostFileChange | null> {
     const claimed = active.fileChanges.get(step.step_index);
     if (claimed) return claimed;
+    const conversationId =
+      step.conversation_id.trim() || this.#nativeRef?.nativeSessionId || undefined;
     const target = toolTargetFile(toolName, step.tool_info?.parameters);
-    if (!target) return null;
+    if (target && isAntigravityBrainFile(target, conversationId)) return null;
+
     const port = await this.#languageServerPort(active);
-    if (port === null) return null;
-    const actions = await requestAntigravityTrajectorySteps(
-      port,
-      step.conversation_id,
-      TRAJECTORY_TIMEOUT_MS,
+    if (this.#active !== active) return null;
+    if (port !== null && target) {
+      const actions = await requestAntigravityTrajectorySteps(
+        port,
+        conversationId ?? "",
+        TRAJECTORY_TIMEOUT_MS,
+        this.#environment.ANTIGRAVITY_CSRF_TOKEN,
+      );
+      if (this.#active !== active) return null;
+      const index = actions.findIndex(
+        (action, at) => at >= active.codeActionCursor && sameFile(action.absolutePath, target),
+      );
+      const action: AntigravityCodeAction | undefined = index === -1 ? undefined : actions[index];
+      if (action) {
+        const change = codeActionFileChange(action, this.#cwd);
+        if (change) {
+          active.codeActionCursor = index + 1;
+          active.fileChanges.set(step.step_index, change);
+          return change;
+        }
+      }
+    }
+    const fallback = fileChangeFromAntigravityParameters(
+      toolName,
+      step.tool_info?.parameters,
+      this.#cwd,
     );
-    const index = actions.findIndex(
-      (action, at) => at >= active.codeActionCursor && sameFile(action.absolutePath, target),
-    );
-    const action: AntigravityCodeAction | undefined = index === -1 ? undefined : actions[index];
-    if (!action) return null;
-    const change = codeActionFileChange(action, this.#cwd);
-    if (!change) return null;
-    active.codeActionCursor = index + 1;
-    active.fileChanges.set(step.step_index, change);
-    return change;
+    if (fallback) {
+      active.fileChanges.set(step.step_index, fallback);
+      return fallback;
+    }
+    if (conversationId) {
+      const transcriptArgs = await readTranscriptToolArgs(
+        conversationId,
+        step.step_index,
+        toolName,
+        target ?? undefined,
+      );
+      if (this.#active !== active) return null;
+      if (transcriptArgs) {
+        const resolvedTarget = target ?? toolTargetFile(toolName, transcriptArgs);
+        if (resolvedTarget && isAntigravityBrainFile(resolvedTarget, conversationId)) {
+          return null;
+        }
+        const fromTranscript = fileChangeFromAntigravityParameters(
+          toolName,
+          transcriptArgs,
+          this.#cwd,
+        );
+        if (fromTranscript) {
+          active.fileChanges.set(step.step_index, fromTranscript);
+          return fromTranscript;
+        }
+      }
+    }
+    return null;
   }
 
   async #languageServerPort(active: ActiveTurn): Promise<number | null> {
@@ -1151,26 +1591,119 @@ class AntigravitySession implements HarnessSession {
     return port;
   }
 
+  async #syncReasoning(active: ActiveTurn, conversationId: string): Promise<void> {
+    const thinkingSteps = await readTranscriptThinkingSteps(
+      conversationId,
+      this.#emittedReasoningSteps,
+    );
+    if (thinkingSteps.length === 0 || this.#active !== active) return;
+    for (const { stepIndex, thinking } of thinkingSteps) {
+      if (this.#active !== active) return;
+      this.#emittedReasoningSteps.add(stepIndex);
+      const itemId = this.#newItemId();
+      const item: HostReasoningItem = {
+        type: "reasoning",
+        itemId,
+        text: thinking,
+      };
+      this.#event({
+        type: "item.started",
+        turnId: active.command.turnId,
+        item: { type: "reasoning", itemId, text: "" },
+      });
+      this.#event({
+        type: "item.updated",
+        turnId: active.command.turnId,
+        itemId,
+        update: { type: "text.append", text: thinking },
+      });
+      this.#completeItem(active, item, { status: "succeeded" });
+    }
+  }
+
+  #closeAgentItem(
+    active: ActiveTurn,
+    outcome: HostItemOutcome = { status: "succeeded" },
+    phase?: "commentary" | "final_answer",
+  ): void {
+    if (!active.agentItem) return;
+    const item = phase ? { ...active.agentItem, phase } : active.agentItem;
+    this.#completeItem(active, item, outcome);
+    const trimmed = active.agentText.trim();
+    if (trimmed.length > 0) {
+      active.emittedAgentTexts.push(active.agentText);
+    }
+    active.agentItem = null;
+    active.agentText = "";
+  }
+
   #appendOrSyncAgentText(active: ActiveTurn, text: string, isExplicitDelta: boolean): void {
     if (!text) return;
-    if (isExplicitDelta || !active.agentItem) {
+    if (isExplicitDelta) {
       this.#appendAgentText(active, text);
       return;
     }
-    if (
-      text === active.agentText ||
-      active.agentText.startsWith(text) ||
-      active.agentText.trim() === text.trim() ||
-      active.agentText.endsWith(text) ||
-      active.agentText.includes(text.trim())
-    ) {
+    const trimmedIncoming = text.trim();
+    if (!trimmedIncoming) return;
+
+    if (active.agentItem) {
+      const trimmedActive = active.agentText.trim();
+      if (
+        text === active.agentText ||
+        trimmedActive === trimmedIncoming ||
+        active.agentText.startsWith(text)
+      ) {
+        return;
+      }
+      if (text.startsWith(active.agentText)) {
+        const delta = text.slice(active.agentText.length);
+        if (delta.length > 0) this.#appendAgentText(active, delta);
+        return;
+      }
+      // If the incoming text is neither an existing prefix nor a continuation,
+      // close the existing item as commentary so the new block starts cleanly.
+      this.#closeAgentItem(active, { status: "succeeded" }, "commentary");
+    }
+
+    if (active.emittedAgentTexts.length > 0) {
+      if (
+        active.emittedAgentTexts.some((prev) => {
+          const p = prev.trim();
+          return p === trimmedIncoming;
+        })
+      ) {
+        return;
+      }
+
+      const concatenated = active.emittedAgentTexts.map((t) => t.trim()).join("\n\n");
+      if (
+        concatenated === trimmedIncoming ||
+        concatenated.replace(/\s+/gu, " ") === trimmedIncoming.replace(/\s+/gu, " ")
+      ) {
+        return;
+      }
+
+      let remaining = trimmedIncoming;
+      for (const prev of active.emittedAgentTexts) {
+        const p = prev.trim();
+        if (p.length > 0 && remaining.startsWith(p)) {
+          remaining = remaining.slice(p.length).trim();
+        }
+      }
+      if (!remaining) return;
+      if (
+        active.emittedAgentTexts.some((prev) => {
+          const p = prev.trim();
+          return p === remaining;
+        })
+      ) {
+        return;
+      }
+
+      this.#appendAgentText(active, remaining);
       return;
     }
-    if (text.startsWith(active.agentText)) {
-      const delta = text.slice(active.agentText.length);
-      if (delta.length > 0) this.#appendAgentText(active, delta);
-      return;
-    }
+
     this.#appendAgentText(active, text);
   }
 
@@ -1193,7 +1726,7 @@ class AntigravitySession implements HarnessSession {
 
   #completeTurn(active: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (this.#active !== active) return;
-    active.questions.stop();
+    active.questions?.stop();
     this.#questionCleanup = this.#questionCleanup
       .then(async () => {
         if (outcome.status !== "succeeded") await active.subagents.cancel();
@@ -1201,7 +1734,7 @@ class AntigravitySession implements HarnessSession {
         if (active.process.stdin.writable) active.process.stdin.end();
         const timer = setTimeout(() => active.process.kill(), 2_000);
         await active.exited.finally(() => clearTimeout(timer));
-        await active.questions.dispose();
+        await active.questions?.dispose();
         this.#subagentObservers.delete(active.subagents);
       })
       .catch(() => undefined);
@@ -1213,7 +1746,9 @@ class AntigravitySession implements HarnessSession {
           ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
           : { status: "succeeded" };
     active.subagents.finish(itemOutcome);
-    if (active.agentItem) this.#completeItem(active, active.agentItem, itemOutcome);
+    if (active.compactionItem) {
+      this.#completeCompactionItem(active, itemOutcome);
+    }
     // A step whose patch never resolved still ran, so an interrupted Turn
     // reports it as a Tool Execution rather than dropping it silently.
     for (const step of active.pendingSteps.values()) {
@@ -1224,6 +1759,13 @@ class AntigravitySession implements HarnessSession {
     active.pendingSteps.clear();
     for (const item of active.tools.values()) this.#completeItem(active, item, itemOutcome);
     active.tools.clear();
+    if (active.agentItem) {
+      this.#closeAgentItem(
+        active,
+        itemOutcome,
+        itemOutcome.status === "succeeded" ? "final_answer" : "commentary",
+      );
+    }
     if (nativeTurnRef) {
       this.#history.append({
         nativeTurnRef,
@@ -1239,6 +1781,8 @@ class AntigravitySession implements HarnessSession {
             : outcome.status === "cancelled"
               ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
               : { status: "succeeded" },
+        startedAtMs: active.startedAtMs,
+        completedAtMs: Date.now(),
         ...(this.#model ? { model: this.#model } : {}),
       });
     }
@@ -1248,6 +1792,13 @@ class AntigravitySession implements HarnessSession {
       outcome,
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
     });
+  }
+
+  #completeCompactionItem(active: ActiveTurn, outcome: HostItemOutcome): void {
+    const item = active.compactionItem;
+    if (!item) return;
+    active.compactionItem = null;
+    this.#completeItem(active, item, outcome);
   }
 
   #completeItem(active: ActiveTurn, item: HostItem, outcome: HostItemOutcome): void {
@@ -1276,6 +1827,16 @@ class AntigravitySession implements HarnessSession {
     if (!formatted.ok) {
       return formatted;
     }
+    if (formatted.value.descriptor.invocation === "/compact" && !this.#nativeRef) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidState",
+          message: "Antigravity context compaction requires an active conversation",
+          retryable: false,
+        },
+      };
+    }
     const started = await this.execute({
       type: "turn.start",
       turnId: command.turnId,
@@ -1300,7 +1861,8 @@ class AntigravitySession implements HarnessSession {
     }
     const active = this.#active;
     active.cancellationRequested = true;
-    active.questions.stop();
+    active.cancellationReason = "user";
+    active.questions?.stop();
     await active.subagents.cancel();
     active.process.kill();
     return { ok: true, value: { cancellationRequested: true } };

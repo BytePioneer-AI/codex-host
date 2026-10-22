@@ -16,6 +16,14 @@ export const ANTIGRAVITY_COMMAND_CATALOG: HarnessCommandCatalog = harnessCommand
         argumentMode: "text",
       },
       {
+        id: "antigravity.compact",
+        invocation: "/compact",
+        label: "Compact context",
+        localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
+        description: "Compact the current conversation context",
+        argumentMode: "text",
+      },
+      {
         id: "antigravity.goal",
         invocation: "/goal",
         label: "Goal",

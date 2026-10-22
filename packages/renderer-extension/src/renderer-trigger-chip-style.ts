@@ -23,6 +23,8 @@
 const STYLE_ATTRIBUTE = "data-codexhost-trigger-chip-style";
 export const TRIGGER_CHIP_CLASS = "codexhost-trigger-chip";
 export const TRIGGER_CHIP_ROOT_CLASS = "codexhost-trigger-chip-root";
+export const TRIGGER_CHIP_SQUEEZE_CONTAINER_ATTRIBUTE =
+  "data-codexhost-trigger-chip-squeeze-container";
 
 /** Floor so a squeezed chip remains clickable. */
 export const TRIGGER_CHIP_SQUEEZE_MIN_WIDTH = "48px";
@@ -63,6 +65,12 @@ export function applyRendererTriggerChipSqueezeRoot(
   root.style.overflow = "hidden";
 }
 
+export function markRendererTriggerChipSqueezeContainer(element: Element | null | undefined): void {
+  if (typeof element?.setAttribute === "function") {
+    element.setAttribute(TRIGGER_CHIP_SQUEEZE_CONTAINER_ATTRIBUTE, "true");
+  }
+}
+
 /**
  * Size the trigger to the squeezed root so `truncate` / ellipsis on the label
  * can activate. Call after (re)applying `TRIGGER_CHIP_CLASS`.
@@ -84,7 +92,8 @@ export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
     .${TRIGGER_CHIP_ROOT_CLASS} {
       min-width: 0;
       max-width: 100%;
-      overflow: hidden;
+      overflow: hidden !important;
+      flex-shrink: 1 !important;
     }
     .${TRIGGER_CHIP_CLASS} {
       display: inline-flex;
@@ -113,6 +122,17 @@ export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
     .${TRIGGER_CHIP_CLASS}:disabled {
       cursor: not-allowed;
       opacity: 0.4;
+    }
+    [${TRIGGER_CHIP_SQUEEZE_CONTAINER_ATTRIBUTE}] {
+      min-width: 0 !important;
+      max-width: min(45vw, 320px) !important;
+      max-width: min(45cqi, 320px) !important;
+      overflow: hidden !important;
+    }
+    [${TRIGGER_CHIP_SQUEEZE_CONTAINER_ATTRIBUTE}] > div {
+      min-width: 0;
+      max-width: 100% !important;
+      overflow: hidden !important;
     }
   `;
   (ownerDocument.head ?? ownerDocument.documentElement).append(style);

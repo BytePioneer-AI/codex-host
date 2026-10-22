@@ -809,17 +809,20 @@ export function installRendererBindingProbe(
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
+  /** Every Settings page that talks to the Host goes through this one route. */
+  const requestLocalHost = async (method: string, params: unknown): Promise<unknown> => {
+    const route = window.__codexhostHostRoutingV1?.forHost("local");
+    if (disposed || !route) throw new Error("Local Host connection is unavailable");
+    return route.manager.sendRequest(method, params);
+  };
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getRemoteConnections: () => remoteConnections,
     getUpdateClient: () => modelControl,
     getAccountClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,
     getLoadedSessionsClient: () => modelClientForHost("local"),
-    async requestUsageStatistics(method, params) {
-      const route = window.__codexhostHostRoutingV1?.forHost("local");
-      if (disposed || !route) throw new Error("Local Host connection is unavailable");
-      return route.manager.sendRequest(method, params);
-    },
+    requestUsageStatistics: requestLocalHost,
+    requestSkills: requestLocalHost,
     getSessionImportClient: () => {
       const client = modelClientForHost("local");
       const sources = client?.listSessionImportSources;

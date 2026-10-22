@@ -15,8 +15,9 @@ export const WORKBUDDY_CREDENTIAL_PRELOAD = String.raw`
     return;
   }
   const policy = env.WORKBUDDY_AT_REST_ENCRYPTION?.trim();
-  // Other explicit policies remain owned by the native CLI.
-  if (policy && policy !== "fields") return;
+  // "disabled" stays owned by the native CLI; "required" is the legacy name
+  // for the same field-encryption bootstrap.
+  if (policy && policy !== "fields" && policy !== "required") return;
 
   let provider;
   try {
@@ -42,6 +43,33 @@ export const WORKBUDDY_CREDENTIAL_PRELOAD = String.raw`
   const key = crypto.createHash("sha256").update(secret, "utf8").digest();
   secret = undefined;
   payload = undefined;
+  // The bundled CLI changed its credential-bootstrap wire format: before 2.156
+  // it reads bootstrap.mode and answers with a space-terminated {ok,mode}; from
+  // 2.156 it reads bootstrap.policy and answers with a newline-terminated
+  // {ok,policy}. The receiver accepts one connection only, so choose the format
+  // before connecting instead of retrying.
+  let legacyBootstrap = false;
+  const cliEntry = process.argv[1];
+  if (cliEntry) {
+    try {
+      const metadata = JSON.parse(
+        fs.readFileSync(path.resolve(path.dirname(cliEntry), "..", "package.json"), "utf8"),
+      );
+      const version = String(
+        metadata.publishConfig?.customPackage?.version || metadata.version || "",
+      );
+      const [major, minor] = version.split("-")[0].split(".").map(Number);
+      // 0.x is the placeholder version in development packages; keep the
+      // format this adapter shipped with.
+      if (Number.isInteger(major) && Number.isInteger(minor) && major > 0) {
+        legacyBootstrap = major < 2 || (major === 2 && minor < 156);
+      }
+    } catch {
+      // Unreadable package metadata keeps the newer format.
+    }
+  }
+  const protectionMode = legacyBootstrap ? "required" : "fields";
+  const bootstrapField = legacyBootstrap ? "mode" : "policy";
   const token = crypto.randomBytes(24).toString("hex");
   const sessionId = crypto.randomUUID();
   let directory;
@@ -60,17 +88,21 @@ export const WORKBUDDY_CREDENTIAL_PRELOAD = String.raw`
   };
   process.once("exit", cleanup);
   Object.assign(env, {
-    WORKBUDDY_AT_REST_ENCRYPTION: "fields",
+    WORKBUDDY_AT_REST_ENCRYPTION: protectionMode,
     CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET: socketPath,
     CODEBUDDY_SIDECAR_READY_SOCKET: socketPath + "-ready",
     CODEBUDDY_SIDECAR_READY_TOKEN: token,
     CODEBUDDY_SIDECAR_READY_SESSION_ID: sessionId,
   });
-  let message = JSON.stringify({version:1,sessionId,token,pid:process.pid,bootstrap:{
-    version:1,policy:"fields",
+  const bootstrapPayload = {
+    version:1,
     symmetricKey:{keyId:crypto.createHash("sha256").update(key).digest("hex").slice(0,16),keyBase64:key.toString("base64")},
     asymmetricUnavailable:"missing-key",
-  }}) + "\n";
+  };
+  // Legacy receivers reject the newer key name and vice versa; exactly one may
+  // be present.
+  bootstrapPayload[bootstrapField] = protectionMode;
+  let message = JSON.stringify({version:1,sessionId,token,pid:process.pid,bootstrap:bootstrapPayload}) + "\n";
   key.fill(0);
   let done = false;
   let socket;
@@ -93,16 +125,29 @@ export const WORKBUDDY_CREDENTIAL_PRELOAD = String.raw`
     socket = net.createConnection(socketPath);
     let reply = "";
     socket.once("connect", () => socket.end(message, () => { message = ""; }));
+    // Newer CLIs answer with a newline-terminated {ok,policy} frame; legacy
+    // ones answer with a space-terminated {ok,mode} and close immediately.
+    const acceptReply = raw => {
+      const text = String(raw || "").trim();
+      if (!text) return false;
+      try {
+        const result = JSON.parse(text);
+        // The legacy receiver was only validated to acknowledge with ok:true;
+        // the newer one echoes the policy it applied.
+        if (result && result.ok === true && (legacyBootstrap || result.policy === protectionMode)) {
+          finish(true);
+          return true;
+        }
+      } catch {}
+      return false;
+    };
     socket.on("data", chunk => {
       reply += chunk;
       if (reply.length > 1024) return finish(false);
       if (!reply.includes("\n")) return;
-      try {
-        const result = JSON.parse(reply.slice(0, reply.indexOf("\n")));
-        finish(result.ok === true && result.policy === "fields");
-      } catch { finish(false); }
+      if (!acceptReply(reply.slice(0, reply.indexOf("\n")))) finish(false);
     });
-    socket.once("end", () => { if (!done) finish(false); });
+    socket.once("end", () => { if (!done && !acceptReply(reply)) finish(false); });
     socket.once("error", error => {
       socket.destroy();
       if (error.code === "ENOENT" || error.code === "ECONNREFUSED") setTimeout(connect, 20);

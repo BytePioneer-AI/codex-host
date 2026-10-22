@@ -19,7 +19,7 @@ import { cpaLiveVoicePreferenceAllowsInstall } from "./renderer-cpa-live-voice-p
 import { isAvatarOverlayHref } from "./renderer-overlay-thread-isolation.js";
 
 const GLOBAL = "__codexhostVoiceStartCapabilityV1";
-export const VOICE_START_OVERLAY_ASSET = "avatar-overlay-native-page-48cbc35fadc8.js";
+export const VOICE_START_OVERLAY_ASSET = "avatar-overlay-native-page-fcc17283519a.js";
 type RecordValue = Record<string, unknown>;
 const record = (v: unknown): v is RecordValue => v !== null && typeof v === "object";
 type Start = (...args: unknown[]) => unknown;

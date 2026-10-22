@@ -17,7 +17,7 @@ baseline (`origin/main` at `10ba06b7`), Work and Chat pins are **26.1013.40934**
 the reported Sparkle latest is **26.1016.61520** (fork issues
 [#3](https://github.com/karlorz/codex-host/issues/3) and
 [#4](https://github.com/karlorz/codex-host/issues/4)). The dirty Work overlay and
-capability projection target **26.1016.51333** and are not part of that baseline.
+capability projection target **26.1016.61520** and are not part of that baseline.
 Neither merging upstream nor changing a version string qualifies 26.1016.61520.
 Recheck the live appcast and exact source pins at each sync.
 

@@ -17,9 +17,9 @@ import {
 } from "./renderer-cpa-live-voice-preference.js";
 import { RENDERER_NEW_THREAD_PREFERENCE_KEY } from "./renderer-new-thread-preference.js";
 
-export const CLIENT_OWNED_VOICE_VERSION = "26.1016.51333";
-export const CLIENT_OWNED_VOICE_INITIAL_ASSET = "app-initial-f3e281fb9a71.js";
-export const CLIENT_OWNED_VOICE_SHARED_ASSET = "app-shared-60f4bb85435f.js";
+export const CLIENT_OWNED_VOICE_VERSION = "26.1016.61520";
+export const CLIENT_OWNED_VOICE_INITIAL_ASSET = "app-initial-c95ddb62696e.js";
+export const CLIENT_OWNED_VOICE_SHARED_ASSET = "app-shared-2eda13eb7044.js";
 export const CLIENT_OWNED_VOICE_SERVICES = "ist";
 const SHARED_INIT = "Oit";
 const SHARED_FETCH = "Eit";

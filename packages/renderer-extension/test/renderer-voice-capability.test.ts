@@ -216,7 +216,7 @@ describe("version and runtime qualification", () => {
     const target = {
       __codexhostCpaLiveVoiceHookV1: {
         enabled: true,
-        desktopVersion: "26.1016.51333",
+        desktopVersion: "26.1016.61520",
         auditedDesktopVersion: "26.1007.30912",
         auditedAppInitialAsset: "app-initial-6350d04672d0.js",
       },
@@ -337,7 +337,7 @@ describe("version and runtime qualification", () => {
     const f = target();
     f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = "unknown";
     expect(installVoiceCapabilityProjection(f).status).toBe("unsupported");
-    f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = "26.1016.51333";
+    f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = "26.1016.61520";
     f.target.performance.getEntriesByType = () => [];
     const hook = installVoiceCapabilityProjection(f);
     await vi.advanceTimersByTimeAsync(1);

@@ -675,12 +675,12 @@ describe("native Chat voice lifecycle installation", () => {
   it("keeps 26.1016 native Chat unavailable despite recognized start/prewarm filenames", async () => {
     vi.useFakeTimers();
     const f = installFixture();
-    f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = "26.1016.51333";
+    f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = "26.1016.61520";
     f.assets.splice(
       0,
       f.assets.length,
-      "app-initial-f3e281fb9a71.js",
-      "app-shared-60f4bb85435f.js",
+      "app-initial-c95ddb62696e.js",
+      "app-shared-2eda13eb7044.js",
     );
     const hook = installNativeChatVoiceHook(f);
     expect(hook.status).toBe("unsupported");

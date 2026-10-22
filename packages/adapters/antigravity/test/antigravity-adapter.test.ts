@@ -1565,6 +1565,7 @@ process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id
         const session = opened.value;
         const iterator = session.outputs[Symbol.asyncIterator]();
         const outcomes: unknown[] = [];
+        const agentMessageTurns: string[] = [];
         for (const [index, text] of ["fails", "print:1", "print:2", "fails again"].entries()) {
           await session.execute({
             type: "turn.start",
@@ -1573,12 +1574,17 @@ process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id
           });
           while (true) {
             const event = await nextEvent(iterator);
+            if (event.type === "item.started" && event.item.type === "agentMessage") {
+              agentMessageTurns.push(event.turnId);
+            }
             if (event.type === "turn.completed") {
               outcomes.push(event.outcome);
               break;
             }
           }
         }
+        // the fourth Turn added no reply, so it must not get an agent message
+        expect(agentMessageTurns).toEqual(["turn-sticky-2", "turn-sticky-3"]);
         expect(outcomes[0]).toMatchObject({
           status: "failed",
           error: { message: `Antigravity Turn ended with status ERROR: ${stale}` },

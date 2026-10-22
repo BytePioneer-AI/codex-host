@@ -946,16 +946,12 @@ class AntigravitySession implements HarnessSession {
     const response = event.result.response ?? "";
     // agy's result.response also carries earlier Turns' replies, so only the
     // text after the previous result's response is this Turn's own reply.
-    const repliedThisTurn =
-      Boolean(active.agentItem) ||
-      (response.startsWith(this.#lastResultResponse)
-        ? response.slice(this.#lastResultResponse.length)
-        : response
-      ).trim() !== "";
-    if (response) {
-      this.#lastResultResponse = response;
-      this.#appendOrSyncAgentText(active, response, false);
-    }
+    const turnReply = response.startsWith(this.#lastResultResponse)
+      ? response.slice(this.#lastResultResponse.length)
+      : response;
+    const repliedThisTurn = Boolean(active.agentItem) || turnReply.trim() !== "";
+    if (response) this.#lastResultResponse = response;
+    if (turnReply.trim() !== "") this.#appendOrSyncAgentText(active, turnReply, false);
     const safeTurnId =
       event.result.num_turns !== undefined && event.result.num_turns !== null
         ? `turn:${event.result.num_turns}`

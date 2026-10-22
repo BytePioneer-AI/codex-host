@@ -53,6 +53,16 @@
   border: 1px solid var(--settings-border);
   border-radius: 8px;
   background: var(--settings-panel);
+  cursor: pointer;
+}
+
+.console-skills-item:hover {
+  border-color: color-mix(in srgb, var(--settings-subtle) 45%, transparent);
+}
+
+.console-skills-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--settings-subtle) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .console-skills-item.is-off {
@@ -160,6 +170,166 @@
   margin: 0 0 10px;
   color: var(--settings-danger, #c0392b);
   font-size: 12px;
+}
+
+/* Skill detail dialog: name + description in the header, SKILL.md rendered below. */
+.console-skill-dialog {
+  width: min(860px, 92vw);
+  max-height: 82vh;
+  padding: 0;
+  border: 1px solid var(--settings-border);
+  border-radius: 16px;
+  background: var(--settings-panel);
+  color: var(--settings-text);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 22%);
+}
+
+.console-skill-dialog::backdrop {
+  background: rgb(0 0 0 / 38%);
+}
+
+.console-skill-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 22px 26px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--settings-border) 70%, transparent);
+}
+
+.console-skill-dialog-title {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.console-skill-dialog-name {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.console-skill-dialog-description {
+  margin: 0;
+  color: var(--settings-subtle);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.console-skill-dialog-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--settings-subtle);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.console-skill-dialog-close:hover {
+  background: color-mix(in srgb, var(--settings-subtle) 14%, transparent);
+}
+
+.console-skill-dialog-body {
+  max-height: calc(82vh - 96px);
+  overflow: auto;
+  padding: 18px 26px 26px;
+  scrollbar-width: thin;
+}
+
+.console-skill-dialog-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.console-skill-dialog-body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--settings-subtle) 35%, transparent);
+}
+
+.console-skill-md {
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+
+.console-skill-md h2,
+.console-skill-md h3,
+.console-skill-md h4,
+.console-skill-md h5,
+.console-skill-md h6 {
+  margin: 20px 0 8px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.console-skill-md h2 {
+  font-size: 17px;
+}
+
+.console-skill-md h3 {
+  font-size: 15px;
+}
+
+.console-skill-md h4,
+.console-skill-md h5,
+.console-skill-md h6 {
+  font-size: 14px;
+}
+
+.console-skill-md p {
+  margin: 0 0 10px;
+}
+
+.console-skill-md ul,
+.console-skill-md ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.console-skill-md li {
+  margin: 2px 0;
+}
+
+.console-skill-md code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--settings-subtle) 16%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  /* Long JSON blobs are used inline in some manifests; break them instead of overflowing. */
+  overflow-wrap: anywhere;
+}
+
+.console-skill-md pre {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  overflow: auto;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--settings-subtle) 12%, transparent);
+}
+
+.console-skill-md pre code {
+  padding: 0;
+  background: none;
+  font-size: 12px;
+}
+
+.console-skill-md hr {
+  margin: 18px 0;
+  border: none;
+  border-top: 1px solid var(--settings-border);
+}
+
+.console-skill-md a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.console-skill-md strong {
+  font-weight: 650;
 }
 
 :host {

@@ -1,15 +1,19 @@
 import {
   HARNESS_SKILLS_METHOD,
   HARNESS_SKILL_SET_ENABLED_METHOD,
+  HARNESS_SKILL_CONTENT_METHOD,
   harnessSkillSetEnabledParamsSchema,
+  harnessSkillContentParamsSchema,
   harnessSkillsListParamsSchema,
   harnessSkillsSetEnabledResultSchema,
+  harnessSkillContentResultSchema,
   type HarnessSkillEntry,
   type HarnessSkillGroup,
   type HarnessSkillsListResult,
 } from "@codexhost/shared-contracts";
 
 import { h } from "../dom.js";
+import { renderSkillMarkdown } from "../skill-markdown.js";
 import type { ConsoleMessages } from "../messages.js";
 import type {
   RendererSettingsPageDefinition,
@@ -70,6 +74,47 @@ export function createSkillsPage(
       );
       content.append(shell);
 
+      const dialog = h(document, "dialog", {
+        className: "console-skill-dialog",
+      }) as HTMLDialogElement;
+      const dialogName = h(document, "h2", { className: "console-skill-dialog-name" });
+      const dialogDescription = h(document, "p", {
+        className: "console-skill-dialog-description",
+      });
+      const dialogBody = h(document, "div", { className: "console-skill-dialog-body" });
+      const dialogClose = h(
+        document,
+        "button",
+        {
+          type: "button",
+          className: "console-skill-dialog-close",
+          "aria-label": messages.close,
+          title: messages.close,
+        },
+        "✕",
+      );
+      dialog.append(
+        h(
+          document,
+          "header",
+          { className: "console-skill-dialog-head" },
+          h(
+            document,
+            "div",
+            { className: "console-skill-dialog-title" },
+            dialogName,
+            dialogDescription,
+          ),
+          dialogClose,
+        ),
+        dialogBody,
+      );
+      content.append(dialog);
+      dialogClose.addEventListener("click", () => dialog.close());
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) dialog.close();
+      });
+
       let all: HarnessSkillGroup[] = [];
       /** Selected Harness id, `ALL`, or `shared`. */
       let harness = ALL;
@@ -116,6 +161,53 @@ export function createSkillsPage(
         return !skill.archived && skill.category === category;
       };
 
+      /** Opens the detail dialog and fills it with the skill's own SKILL.md. */
+      const openDetail = async (row: SkillRow): Promise<void> => {
+        dialogName.textContent = row.skill.name;
+        dialogDescription.textContent = row.skill.description;
+        dialogBody.replaceChildren(
+          h(document, "p", { className: "settings-hint" }, messages.loading),
+        );
+        dialog.showModal();
+        // showModal focuses the first button; drop that ring so the close X stays quiet.
+        dialogClose.blur();
+        try {
+          const params = harnessSkillContentParamsSchema.parse({
+            harness: row.group.harness,
+            name: row.skill.name,
+          });
+          const result = harnessSkillContentResultSchema.parse(
+            await request(HARNESS_SKILL_CONTENT_METHOD, params),
+          );
+          if (!result.ok) {
+            dialogBody.replaceChildren(
+              h(
+                document,
+                "p",
+                { className: "settings-hint" },
+                result.reason ?? messages.contentFailed,
+              ),
+            );
+            return;
+          }
+          dialogBody.replaceChildren(renderSkillMarkdown(document, result.content));
+          if (result.truncated) {
+            dialogBody.append(
+              h(document, "p", { className: "settings-hint" }, messages.contentTruncated),
+            );
+          }
+        } catch (error) {
+          dialogBody.replaceChildren(
+            h(
+              document,
+              "p",
+              { className: "settings-hint" },
+              error instanceof Error ? error.message : String(error),
+            ),
+          );
+        }
+      };
+
       const toggleSwitch = async (row: SkillRow, button: HTMLButtonElement): Promise<void> => {
         const next = row.skill.enabled === false;
         button.disabled = true;
@@ -158,16 +250,23 @@ export function createSkillsPage(
           },
           h(document, "span", { className: "console-skills-switch-knob" }),
         ) as HTMLButtonElement;
-        button.addEventListener("click", () => void toggleSwitch(row, button));
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          void toggleSwitch(row, button);
+        });
         return button;
       };
 
       const rowItem = (row: SkillRow): HTMLElement => {
         const switchControl = switchFor(row);
-        return h(
+        const item = h(
           document,
           "li",
-          { className: `console-skills-item${row.skill.enabled === false ? " is-off" : ""}` },
+          {
+            className: `console-skills-item${row.skill.enabled === false ? " is-off" : ""}`,
+            tabindex: "0",
+            title: messages.openDetail,
+          },
           h(
             document,
             "div",
@@ -201,6 +300,13 @@ export function createSkillsPage(
           ),
           ...(switchControl ? [switchControl] : []),
         );
+        item.addEventListener("click", () => void openDetail(row));
+        item.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          void openDetail(row);
+        });
+        return item;
       };
 
       const renderFilters = (): void => {
@@ -275,9 +381,7 @@ export function createSkillsPage(
                 "h2",
                 { className: "settings-section-label" },
                 groupTitle(group),
-                ...(visibleGroups.length > 1
-                  ? [` · ${format(messages.count, { count: visible.length })}`]
-                  : []),
+                ` · ${format(messages.count, { count: visible.length })}`,
               ),
               ...group.failures.map((failure) =>
                 h(

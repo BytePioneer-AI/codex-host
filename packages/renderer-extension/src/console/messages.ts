@@ -180,6 +180,10 @@ const ENGLISH = {
     turnOff: "Turn off",
     switching: "Updating the skill…",
     toggleFailed: "The Harness refused that change.",
+    openDetail: "Show SKILL.md",
+    close: "Close",
+    contentFailed: "This SKILL.md could not be read.",
+    contentTruncated: "Truncated: the file is longer than this dialog shows.",
   },
   modelPrices: {
     label: "Model prices",
@@ -396,6 +400,10 @@ const CHINESE: ConsoleMessages = {
     turnOff: "停用",
     switching: "正在更新…",
     toggleFailed: "Harness 拒绝了这次修改。",
+    openDetail: "查看 SKILL.md",
+    close: "关闭",
+    contentFailed: "这个 SKILL.md 读不出来。",
+    contentTruncated: "已截断：文件比这里显示的长。",
   },
   modelPrices: {
     label: "模型价格",

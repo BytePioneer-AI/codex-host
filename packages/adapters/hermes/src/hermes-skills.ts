@@ -60,6 +60,10 @@ export function createHermesSkillsCatalog(
   return Object.freeze({
     ...(base.label === undefined ? {} : { label: base.label }),
     list: read,
+    readContent: (name: string, signal: AbortSignal) =>
+      base.readContent === undefined
+        ? Promise.resolve({ ok: false, reason: "Hermes skills are not readable here" })
+        : base.readContent(name, signal),
     async setEnabled(
       name: string,
       enabled: boolean,

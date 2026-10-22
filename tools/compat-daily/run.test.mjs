@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { evaluate, parseAppcast, readPins, recoveredPinIssues } from "./run.mjs";
 import { describe, it } from "node:test";
 
@@ -162,7 +161,7 @@ it("runs drift and recovery workflow steps in separate scopes", async () => {
         runId: 1,
         eventName: "push",
       },
-      { env: { GITHUB_WORKSPACE: fileURLToPath(new URL("../../", import.meta.url)) } },
+      { env: { GITHUB_WORKSPACE: new URL("../..", import.meta.url).href } },
     );
   };
   await run("Open or update issues on pin drift");

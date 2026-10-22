@@ -5,6 +5,7 @@ import {
   CLIENT_OWNED_VOICE_SHARED_ASSET,
   installClientOwnedVoiceHook,
   isExternalHarnessComposer,
+  isWorkComposerSurface,
   rememberVoiceProductExperience,
   wrapClientOwnedVoiceFetch,
   type NativeVoiceBridge,
@@ -492,5 +493,58 @@ describe("explicit Chat launch ownership", () => {
     await f.client.fetch(url, workOptions());
     expect(f.original).not.toHaveBeenCalled();
     expect(f.dispatch).toHaveBeenCalledOnce();
+  });
+});
+
+describe("isWorkComposerSurface", () => {
+  function owner(mode: string | null, tabs: { name: string; selected?: boolean }[]) {
+    const storage = {
+      getItem: (key: string) => (key === "home-composer-mode-v1" ? mode : null),
+    };
+    const nodes = tabs.map((tab) => ({
+      textContent: tab.name,
+      getAttribute: (name: string) =>
+        name === "aria-selected" ? (tab.selected ? "true" : "false") : "",
+    }));
+    return {
+      localStorage: storage,
+      document: { querySelectorAll: () => nodes },
+    };
+  }
+
+  it("treats a selected Work tab as Work when composer-mode storage is empty", () => {
+    expect(
+      isWorkComposerSurface(owner(null, [{ name: "Chat" }, { name: "Work", selected: true }])),
+    ).toBe(true);
+  });
+
+  it("treats a visible official Work composer as Work when storage is empty", () => {
+    const composer = {
+      getBoundingClientRect: () => ({ width: 800 }),
+      closest: () => null,
+    };
+    expect(
+      isWorkComposerSurface({
+        localStorage: { getItem: () => null },
+        document: {
+          querySelectorAll: (selector: string) =>
+            selector === "[data-codex-composer-root]"
+              ? [composer]
+              : selector === "[data-chatgpt-composer]"
+                ? []
+                : [],
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not treat official Chat as Work", () => {
+    expect(
+      isWorkComposerSurface(owner(null, [{ name: "Chat", selected: true }, { name: "Work" }])),
+    ).toBe(false);
+  });
+
+  it("keeps explicit chat storage off Work even if a Work tab is selected", () => {
+    expect(isWorkComposerSurface(owner("chat", [{ name: "Work", selected: true }]))).toBe(false);
   });
 });

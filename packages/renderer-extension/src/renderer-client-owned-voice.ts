@@ -102,24 +102,57 @@ function isWorkBackendModel(name: string): boolean {
   return model.includes("codex") && !model.includes("gpt-live");
 }
 
+function visibleWorkComposer(owner: object): boolean {
+  const document = (owner as { document?: Document }).document;
+  if (!document?.querySelectorAll) return false;
+  const work = [...document.querySelectorAll("[data-codex-composer-root]")].some((element) => {
+    const box = element.getBoundingClientRect?.() ?? { width: 0 };
+    return box.width > 0 && !element.closest?.("[hidden], [inert]");
+  });
+  return work && document.querySelectorAll("[data-chatgpt-composer]").length === 0;
+}
+
+function selectedWorkTab(owner: object): boolean {
+  const document = (owner as { document?: Document }).document;
+  if (!document?.querySelectorAll) return false;
+  const controls = document.querySelectorAll("button, [role='tab'], a");
+  let workSelected = false;
+  let chatSelected = false;
+  for (const element of controls) {
+    const name = (element.textContent ?? "").replace(/\s+/gu, " ").trim();
+    if (name !== "Chat" && name !== "Work") continue;
+    const selected =
+      element.getAttribute("aria-selected") === "true" ||
+      element.getAttribute("aria-pressed") === "true" ||
+      element.getAttribute("data-state") === "active" ||
+      element.getAttribute("data-state") === "on";
+    if (!selected) continue;
+    if (name === "Work") workSelected = true;
+    if (name === "Chat") chatSelected = true;
+  }
+  return workSelected && !chatSelected;
+}
+
 export function isWorkComposerSurface(owner: object = globalThis): boolean {
   const storage = (owner as { localStorage?: Storage }).localStorage;
-  if (!storage) return false;
   try {
-    const raw = storage.getItem(HOME_COMPOSER_MODE_STORAGE_KEY);
-    if (raw == null || raw === "") return false;
-    let value: unknown = raw;
-    if (raw.startsWith("{") || raw.startsWith('"') || raw.startsWith("[")) {
-      try {
-        value = JSON.parse(raw) as unknown;
-      } catch {
-        value = raw;
+    const raw = storage?.getItem(HOME_COMPOSER_MODE_STORAGE_KEY);
+    if (raw != null && raw !== "") {
+      let value: unknown = raw;
+      if (raw.startsWith("{") || raw.startsWith('"') || raw.startsWith("[")) {
+        try {
+          value = JSON.parse(raw) as unknown;
+        } catch {
+          value = raw;
+        }
       }
+      if (value === "work") return true;
+      if (value === "chat") return false;
     }
-    return value === "work";
   } catch {
-    return false;
+    /* Fall through to the visible Work/Chat control. */
   }
+  return selectedWorkTab(owner) || visibleWorkComposer(owner);
 }
 
 function selectedComposerModel(owner: object): string {

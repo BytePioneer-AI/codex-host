@@ -267,6 +267,34 @@ describe("version and runtime qualification", () => {
     expect(f.f.instance.getSnapshot).toBe(f.f.original);
     hook.dispose();
   });
+  it("projects official Codex Work when the Work tab is selected and composer-mode storage is empty", async () => {
+    vi.useFakeTimers();
+    const f = target();
+    f.values.delete("home-composer-mode-v1");
+    const work = {
+      textContent: "Work",
+      getAttribute: (name: string) => (name === "aria-selected" ? "true" : ""),
+    };
+    const chat = {
+      textContent: "Chat",
+      getAttribute: (name: string) => (name === "aria-selected" ? "false" : ""),
+    };
+    const document = f.target.document as unknown as {
+      querySelectorAll: (selector: string) => unknown;
+    };
+    const composers = document.querySelectorAll;
+    document.querySelectorAll = (selector: string) => {
+      if (selector === "[data-codex-composer-root]") return composers.call(document, selector);
+      if (selector === "[data-chatgpt-composer]") return [];
+      return [chat, work];
+    };
+    const hook = installVoiceCapabilityProjection(f);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hook.status).toBe("active");
+    expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: true });
+    hook.dispose();
+  });
+
   it("keeps Work Desktop default native, but permits an explicitly owned local external Harness", async () => {
     vi.useFakeTimers();
     const f = target();

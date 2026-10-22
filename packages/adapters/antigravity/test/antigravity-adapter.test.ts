@@ -1526,6 +1526,8 @@ setTimeout(() => { process.exit(0); }, 50);
         { status: "ERROR", error: stale, num_turns: 1 },
         { status: "ERROR", error: stale, num_turns: 2, response: "1\n" },
         { status: "ERROR", error: "Individual quota reached.", num_turns: 3, response: "2\n" },
+        // no new reply: the response only carries the earlier Turn's
+        { status: "ERROR", error: stale, num_turns: 4, response: "2\n" },
       ];
       const scriptContent = `
 const fs = require('fs');
@@ -1563,7 +1565,7 @@ process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id
         const session = opened.value;
         const iterator = session.outputs[Symbol.asyncIterator]();
         const outcomes: unknown[] = [];
-        for (const [index, text] of ["fails", "print:1", "print:2"].entries()) {
+        for (const [index, text] of ["fails", "print:1", "print:2", "fails again"].entries()) {
           await session.execute({
             type: "turn.start",
             turnId: hostTurnIdSchema.parse(`turn-sticky-${String(index + 1)}`),
@@ -1585,6 +1587,10 @@ process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id
         expect(outcomes[2]).toMatchObject({
           status: "failed",
           error: { message: "Antigravity Turn ended with status ERROR: Individual quota reached." },
+        });
+        expect(outcomes[3]).toMatchObject({
+          status: "failed",
+          error: { message: `Antigravity Turn ended with status ERROR: ${stale}` },
         });
         await session.close();
       } finally {

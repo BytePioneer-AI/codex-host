@@ -506,6 +506,8 @@ class AntigravitySession implements HarnessSession {
   #closed = false;
   #model: HarnessModelRef | undefined;
   #nativeRef: NativeSessionRef | undefined;
+  /** The last result's `response`: agy carries earlier Turns' replies in it. */
+  #lastResultResponse = "";
   #permissionMode: AntigravityPermissionMode;
   #thinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #catalog: HarnessModelCatalog | undefined;
@@ -941,8 +943,18 @@ class AntigravitySession implements HarnessSession {
       this.#history.bindNativeSession(convId);
       this.#event({ type: "session.state.changed", state: this.#state() });
     }
-    if (event.result.response) {
-      this.#appendOrSyncAgentText(active, event.result.response, false);
+    const response = event.result.response ?? "";
+    // agy's result.response also carries earlier Turns' replies, so only the
+    // text after the previous result's response is this Turn's own reply.
+    const repliedThisTurn =
+      Boolean(active.agentItem) ||
+      (response.startsWith(this.#lastResultResponse)
+        ? response.slice(this.#lastResultResponse.length)
+        : response
+      ).trim() !== "";
+    if (response) {
+      this.#lastResultResponse = response;
+      this.#appendOrSyncAgentText(active, response, false);
     }
     const safeTurnId =
       event.result.num_turns !== undefined && event.result.num_turns !== null
@@ -990,7 +1002,7 @@ class AntigravitySession implements HarnessSession {
         `Antigravity Turn ended with status ${event.result.status}`,
         nativeError !== undefined,
       );
-      if (active.agentItem && nativeError && this.#reportedEarlier(error)) {
+      if (repliedThisTurn && nativeError && this.#reportedEarlier(error)) {
         // agy keeps a Conversation's first failure and repeats it in the result
         // of every later Turn, even when that Turn answered without error. A
         // Turn that replied and only repeats an error an earlier Turn of this

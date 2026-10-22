@@ -24,6 +24,9 @@ export type RendererSkillsRequest = (method: string, params: unknown) => Promise
 const ALL = "";
 const ARCHIVED = "\u0000archived";
 const NONE = 0;
+/** Category the adapters stamp on skills mounted from the cross-Harness shared root. */
+const SHARED_CATEGORY = "shared";
+const SHARED_ROOT_FRAGMENT = "/.agents/skills/";
 
 interface SkillRow {
   group: HarnessSkillGroup;
@@ -87,11 +90,12 @@ export function createSkillsPage(
       const rows = (): SkillRow[] =>
         selectedGroups().flatMap((group) => group.skills.map((skill) => ({ group, skill })));
 
-      /** Categories of the selected Harness; archived skills keep their own bucket. */
+      /** Categories of the selected Harness; archived skills and shared copies keep their own places. */
       const categoriesOf = (): string[] => {
         const names = new Set<string>();
         for (const { skill } of rows()) {
-          if (!skill.archived && skill.category) names.add(skill.category);
+          if (skill.archived || !skill.category || skill.category === SHARED_CATEGORY) continue;
+          names.add(skill.category);
         }
         return [...names].sort((a, b) => a.localeCompare(b));
       };
@@ -101,9 +105,14 @@ export function createSkillsPage(
           .toLowerCase()
           .includes(query);
 
+      /** A copy of a skill that lives in the shared root; the Shared tab already lists it once. */
+      const isSharedCopy = (skill: HarnessSkillEntry): boolean =>
+        skill.category === SHARED_CATEGORY && skill.path.includes(SHARED_ROOT_FRAGMENT);
+
       const inCategory = (skill: HarnessSkillEntry): boolean => {
-        if (category === ALL) return true;
         if (category === ARCHIVED) return skill.archived === true;
+        // Everything is on by default: archived skills stay behind their own filter.
+        if (category === ALL) return !skill.archived;
         return !skill.archived && skill.category === category;
       };
 
@@ -246,7 +255,10 @@ export function createSkillsPage(
           .map((group) => ({
             group,
             visible: group.skills.filter(
-              (skill) => inCategory(skill) && (!query || matchesQuery(skill, query)),
+              (skill) =>
+                inCategory(skill) &&
+                !(harness === ALL && isSharedCopy(skill)) &&
+                (!query || matchesQuery(skill, query)),
             ),
           }))
           .filter((entry) => entry.visible.length > NONE || entry.group.failures.length > NONE);

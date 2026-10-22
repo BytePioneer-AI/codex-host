@@ -1,9 +1,4 @@
 import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
-import {
-  CLIENT_OWNED_VOICE_INITIAL_ASSET,
-  CLIENT_OWNED_VOICE_SHARED_ASSET,
-  CLIENT_OWNED_VOICE_VERSION,
-} from "./renderer-client-owned-voice.js";
 import { chatVoiceDebug } from "./renderer-chat-voice-debug.js";
 import {
   auditedAppInitialAssetPresent,
@@ -15,6 +10,9 @@ import { observeNativeChatVoiceState } from "./renderer-native-chat-voice-state.
 import { nativeChatVoiceDraftSelection } from "./renderer-native-chat-voice-selection.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
+const NATIVE_CHAT_VOICE_VERSION = "26.1013.40934";
+const NATIVE_CHAT_INITIAL_ASSET = "app-initial-90eb42395b7d.js";
+const NATIVE_CHAT_SHARED_ASSET = "app-shared-52443cbe9ac4.js";
 const START_ASSET = "start-voice-954090654801.js";
 const PREWARM_ASSET = "voice-prewarm-fb2c91219553.js";
 const BUTTON = "data-codexhost-chat-voice-start";
@@ -222,7 +220,7 @@ export function installNativeChatVoiceHook(
     },
   });
   if (!config) return unavailable("disabled");
-  if (config.desktopVersion !== undefined && config.desktopVersion !== CLIENT_OWNED_VOICE_VERSION)
+  if (config.desktopVersion !== undefined && config.desktopVersion !== NATIVE_CHAT_VOICE_VERSION)
     return unavailable("unsupported");
   const doc = target.document;
   if (!doc) return unavailable("unsupported");
@@ -354,8 +352,8 @@ export function installNativeChatVoiceHook(
       if (!modules) {
         const names = loadedAssetNames(doc, target.performance);
         if (
-          !auditedAppInitialAssetPresent(names, CLIENT_OWNED_VOICE_INITIAL_ASSET) ||
-          !auditedAppInitialAssetPresent(names, CLIENT_OWNED_VOICE_SHARED_ASSET)
+          !auditedAppInitialAssetPresent(names, NATIVE_CHAT_INITIAL_ASSET) ||
+          !auditedAppInitialAssetPresent(names, NATIVE_CHAT_SHARED_ASSET)
         ) {
           if (Date.now() - started >= 60_000) {
             handle.status = "unsupported";
@@ -364,12 +362,9 @@ export function installNativeChatVoiceHook(
           return;
         }
         const [shared, initial, start, prewarm] = await Promise.all(
-          [
-            CLIENT_OWNED_VOICE_SHARED_ASSET,
-            CLIENT_OWNED_VOICE_INITIAL_ASSET,
-            START_ASSET,
-            PREWARM_ASSET,
-          ].map((asset) => importModule(`app://-/assets/${asset}`)),
+          [NATIVE_CHAT_SHARED_ASSET, NATIVE_CHAT_INITIAL_ASSET, START_ASSET, PREWARM_ASSET].map(
+            (asset) => importModule(`app://-/assets/${asset}`),
+          ),
         );
         if (disposed) return;
         if (

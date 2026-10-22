@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import {
   isConsoleHostMethod,
+  grokComputerUseSetSchema,
   voiceSettingsRequestSchema,
   VOICE_GATEWAY_STATUS_METHOD,
   type ConsoleAnnouncement,
@@ -520,12 +521,13 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       return;
     }
     if (route === "POST /api/harnesses/grok-computer-use") {
-      if (typeof body.enabled !== "boolean") {
-        sendJson(response, 400, { error: "Expected { enabled }" });
+      const parsed = grokComputerUseSetSchema.safeParse(body);
+      if (!parsed.success) {
+        sendJson(response, 400, { error: "Expected { enabled } or { browser }" });
         return;
       }
       try {
-        const harness = await options.harnesses.setGrokComputerUse(body.enabled);
+        const harness = await options.harnesses.setGrokComputerUse(parsed.data);
         sendJson(response, 200, { harness });
       } catch (error) {
         sendJson(response, error instanceof ConsoleHarnessError ? error.status : 500, {

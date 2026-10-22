@@ -17,9 +17,14 @@ import {
 } from "./renderer-cpa-live-voice-preference.js";
 import { RENDERER_NEW_THREAD_PREFERENCE_KEY } from "./renderer-new-thread-preference.js";
 
-export const CLIENT_OWNED_VOICE_VERSION = "26.1013.40934";
-export const CLIENT_OWNED_VOICE_INITIAL_ASSET = "app-initial-90eb42395b7d.js";
-export const CLIENT_OWNED_VOICE_SHARED_ASSET = "app-shared-52443cbe9ac4.js";
+export const CLIENT_OWNED_VOICE_VERSION = "26.1016.51333";
+export const CLIENT_OWNED_VOICE_INITIAL_ASSET = "app-initial-f3e281fb9a71.js";
+export const CLIENT_OWNED_VOICE_SHARED_ASSET = "app-shared-60f4bb85435f.js";
+export const CLIENT_OWNED_VOICE_SERVICES = "ist";
+const SHARED_INIT = "Oit";
+const SHARED_FETCH = "Eit";
+const SHARED_BRIDGE = "AFt";
+const SHARED_RESPONSE_ERROR = "Mit";
 const HOOK_GLOBAL = "__codexhostClientOwnedVoiceV1";
 type RecordValue = Record<string, unknown>;
 function object(value: unknown): value is RecordValue {
@@ -31,7 +36,11 @@ export interface NativeVoiceBridge {
   subscribe(type: string, listener: (message: unknown) => void): () => void;
 }
 
-function requestHost(bridge: NativeVoiceBridge, params: RecordValue): Promise<unknown> {
+export function requestVoiceHost(
+  bridge: NativeVoiceBridge,
+  params: RecordValue,
+  method: string = REALTIME_CALL_METHOD,
+): Promise<unknown> {
   const id = `codexhost-voice:${crypto.randomUUID()}`;
   return new Promise((resolve, reject) => {
     let unsubscribe = () => {};
@@ -58,7 +67,7 @@ function requestHost(bridge: NativeVoiceBridge, params: RecordValue): Promise<un
     try {
       bridge.dispatchMessage("mcp-request", {
         hostId: "local",
-        request: { id, method: REALTIME_CALL_METHOD, params },
+        request: { id, method, params },
       });
     } catch {
       done();
@@ -210,12 +219,12 @@ export function wrapClientOwnedVoiceFetch(
     const cancel = () => {
       if (cancelled) return;
       cancelled = true;
-      void requestHost(bridge, { operation: "cancel", requestId }).catch(() => undefined);
+      void requestVoiceHost(bridge, { operation: "cancel", requestId }).catch(() => undefined);
     };
     options.signal?.addEventListener("abort", cancel, { once: true });
     try {
       const result = realtimeCallResponseSchema.parse(
-        await requestHost(bridge, {
+        await requestVoiceHost(bridge, {
           operation: "create",
           requestId,
           body: options.body,
@@ -227,7 +236,7 @@ export function wrapClientOwnedVoiceFetch(
       if (options.signal?.aborted) {
         const callId = realtimeCallIdFromLocation(result.headers.location ?? "");
         if (result.status >= 200 && result.status < 300 && isRealtimeCallId(callId))
-          await requestHost(bridge, { operation: "hangup", callId });
+          await requestVoiceHost(bridge, { operation: "hangup", callId });
         options.signal.throwIfAborted();
       }
       const response = new Response(result.status === 204 ? null : result.body, {
@@ -261,7 +270,7 @@ interface VoiceHook {
   dispose(): void;
 }
 
-/** Desktop 26.1013 always creates calls in the Renderer. Its native WebFetch
+/** Desktop 26.1016 always creates calls in the Renderer. Its native WebFetch
  * singleton and message bridge are audited exports of the loaded shared module.
  */
 export function installClientOwnedVoiceHook(
@@ -304,10 +313,10 @@ export function installClientOwnedVoiceHook(
         if (disposed) return;
         // The shared chunk exports lazy bindings. Initialize WebFetch and its
         // message bridge before reading their singleton classes on document start.
-        if (typeof module.frt !== "function") throw new Error();
-        module.frt();
-        const fetchClass = module.urt;
-        const bridgeClass = module.mPt;
+        if (typeof module[SHARED_INIT] !== "function") throw new Error();
+        (module[SHARED_INIT] as () => void)();
+        const fetchClass = module[SHARED_FETCH];
+        const bridgeClass = module[SHARED_BRIDGE];
         if (!object(fetchClass) && typeof fetchClass !== "function") throw new Error();
         if (!object(bridgeClass) && typeof bridgeClass !== "function") throw new Error();
         const client = Reflect.get(fetchClass, "getInstance").call(fetchClass);
@@ -316,14 +325,14 @@ export function installClientOwnedVoiceHook(
           typeof client?.fetch !== "function" ||
           typeof bridge?.dispatchMessage !== "function" ||
           typeof bridge?.subscribe !== "function" ||
-          typeof module.grt !== "function"
+          typeof module[SHARED_RESPONSE_ERROR] !== "function"
         )
           throw new Error();
         restore = wrapClientOwnedVoiceFetch(
           client,
           bridge,
           () => cpaLiveVoicePreferenceAllowsInstall(target),
-          module.grt as (response: Response, url: string) => Promise<unknown>,
+          module[SHARED_RESPONSE_ERROR] as (response: Response, url: string) => Promise<unknown>,
           () => chatLiveVoicePreferenceAllowsOverride(target),
           () => isWorkComposerSurface(target),
           () => isExternalHarnessComposer(target),

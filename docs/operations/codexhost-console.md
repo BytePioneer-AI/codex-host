@@ -137,7 +137,7 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 ## 连接页（codexhost 未运行时）
 
-codexhost 未运行时，“连接”页列出已安装的插件（读取 `manifest.json`，不执行插件代码）及是否启用，并可修改接受自定义安装路径的插件的路径。路径与 Codex 设置页共用 `<数据目录>/harness-launch-settings/<插件>.json`；codexhost 运行中修改时，在重新启动 codexhost 后生效。Grok 另有 Computer Use 开关，与设置页共用 `<数据目录>/grok-computer-use.json`，并写入 `~/.grok/config.toml` 的 `cua_repl`；新的 Grok 线程生效。插件目录与 Host Runtime 一致：发布包的 `app/plugins`，以及 `CODEXHOST_PLUGIN_DIRECTORY` 或 `<数据目录>/plugins`。
+codexhost 未运行时，“连接”页列出已安装的插件（读取 `manifest.json`，不执行插件代码）及是否启用，并可修改接受自定义安装路径的插件的路径。路径与 Codex 设置页共用 `<数据目录>/harness-launch-settings/<插件>.json`；codexhost 运行中修改时，在重新启动 codexhost 后生效。Grok 另有 Computer Use 与 In-app browser 两个开关，与设置页共用 `<数据目录>/grok-computer-use.json`，并写入 `~/.grok/config.toml` 的 `cua_repl`；新的 Grok 线程生效。插件目录与 Host Runtime 一致：发布包的 `app/plugins`，以及 `CODEXHOST_PLUGIN_DIRECTORY` 或 `<数据目录>/plugins`。
 
 ## 诊断包与 Issue
 

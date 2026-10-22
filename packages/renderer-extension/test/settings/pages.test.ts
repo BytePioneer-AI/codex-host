@@ -1447,11 +1447,22 @@ describe("Renderer Connections page", () => {
 
   it("shows a Computer Use card in the Grok inspector", async () => {
     const messages = rendererSettingsMessages("en");
-    const getGrokComputerUse = vi.fn(async () => ({ enabled: true, available: true }));
-    const setGrokComputerUse = vi.fn(async (enabled: boolean) => ({
-      enabled,
+    const getGrokComputerUse = vi.fn(async () => ({
+      enabled: true,
       available: true,
+      browser: false,
+      browserFilesPresent: true,
+      browserAvailable: false,
     }));
+    const setGrokComputerUse = vi.fn(
+      async (_hostId: string, update: { enabled?: boolean; browser?: boolean }) => ({
+        enabled: update.enabled ?? true,
+        available: true,
+        browser: update.browser ?? false,
+        browserFilesPresent: true,
+        browserAvailable: false,
+      }),
+    );
     const diagnostics: RendererConnectionDiagnostics = {
       snapshot: () => ({
         adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
@@ -1502,6 +1513,17 @@ describe("Renderer Connections page", () => {
     await vi.waitFor(() => expect(toggle.disabled).toBe(false));
     expect(toggle.checked).toBe(true);
     expect(visibleText(card)).toContain(messages.grokComputerUseOn);
+    expect(visibleText(card)).toContain(messages.grokBrowserTitle);
+    expect(visibleText(card)).toContain(messages.grokBrowserOff);
+    const browserToggle = descendants(card).filter(({ tagName }) => tagName === "input")[1];
+    if (!browserToggle) throw new Error("Expected in-app browser switch");
+    expect(browserToggle.checked).toBe(false);
+    browserToggle.checked = true;
+    browserToggle.dispatch("change", {});
+    await vi.waitFor(() =>
+      expect(setGrokComputerUse).toHaveBeenCalledWith("local", { browser: true }),
+    );
+    await vi.waitFor(() => expect(visibleText(card)).toContain(messages.grokBrowserBlocked));
     expect(getGrokComputerUse).toHaveBeenCalledWith("local");
     cleanup?.();
     scope.dispose();

@@ -366,10 +366,10 @@ describe("client-owned voice gateway", () => {
       clearTimeout,
     };
     const importModule = vi.fn(async () => ({
-      frt: vi.fn(),
-      urt: { getInstance: () => f.client },
-      mPt: { getInstance: () => f.bridge },
-      grt: f.responseError,
+      Oit: vi.fn(),
+      Eit: { getInstance: () => f.client },
+      AFt: { getInstance: () => f.bridge },
+      Mit: f.responseError,
     }));
     const hook = installClientOwnedVoiceHook({ target, importModule });
     expect(importModule).not.toHaveBeenCalled();
@@ -400,15 +400,15 @@ describe("client-owned voice gateway", () => {
       clearTimeout,
     };
     const module: Record<string, unknown> = {
-      frt: vi.fn(() => {
-        module.urt = { getInstance: () => f.client };
-        module.mPt = { getInstance: () => f.bridge };
-        module.grt = f.responseError;
+      Oit: vi.fn(() => {
+        module.Eit = { getInstance: () => f.client };
+        module.AFt = { getInstance: () => f.bridge };
+        module.Mit = f.responseError;
       }),
     };
     const hook = installClientOwnedVoiceHook({ target, importModule: async () => module });
     await vi.advanceTimersByTimeAsync(0);
-    expect(module.frt).toHaveBeenCalledOnce();
+    expect(module.Oit).toHaveBeenCalledOnce();
     expect(hook.status).toBe("active");
     await f.client.fetch(url, workOptions());
     expect(f.dispatch).toHaveBeenCalledOnce();
@@ -440,10 +440,10 @@ describe("client-owned voice gateway", () => {
       clearTimeout,
     };
     const importModule = vi.fn(async () => ({
-      frt: vi.fn(),
-      urt: { getInstance: () => f.client },
-      mPt: { getInstance: () => f.bridge },
-      grt: f.responseError,
+      Oit: vi.fn(),
+      Eit: { getInstance: () => f.client },
+      AFt: { getInstance: () => f.bridge },
+      Mit: f.responseError,
     }));
     const hook = installClientOwnedVoiceHook({ target, importModule });
     await vi.advanceTimersByTimeAsync(0);

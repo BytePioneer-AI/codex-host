@@ -1368,6 +1368,11 @@
   border-top: 1px solid var(--settings-divider);
 }
 
+.settings-grok-computer-use__browser {
+  padding-top: 8px;
+  border-top: 1px solid var(--settings-divider);
+}
+
 .settings-grok-computer-use__status[data-state="on"] {
   color: var(--settings-success);
 }
@@ -2621,6 +2626,19 @@
   border-top: 1px solid var(--settings-divider);
   font-size: 13px;
 }
+.settings-voice__health {
+  display: grid;
+  gap: 4px;
+  margin: 8px 12px 12px;
+  color: var(--settings-subtle);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.settings-voice__health p {
+  margin: 0;
+}
+
 .settings-voice__footer p,
 .settings-voice__hint {
   margin: 4px 0 0;

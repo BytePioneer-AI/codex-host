@@ -6,6 +6,10 @@ import {
   CPA_LIVE_VOICE_HOOK_GLOBAL,
 } from "../src/renderer-cpa-live-voice-hook.js";
 import {
+  CLIENT_OWNED_VOICE_INITIAL_ASSET,
+  CLIENT_OWNED_VOICE_SHARED_ASSET,
+} from "../src/renderer-client-owned-voice.js";
+import {
   installExternalVoiceLaunchHook,
   routeExternalVoiceLaunch,
 } from "../src/renderer-external-voice-launch.js";
@@ -78,10 +82,15 @@ afterEach(() => vi.useRealTimers());
 describe("native new-voice selection", () => {
   it("keeps the selected Harness on the client-owned-call Desktop build", async () => {
     const f = hookFixture();
-    f.names.splice(0, f.names.length, "app-initial-90eb42395b7d.js", "app-shared-52443cbe9ac4.js");
+    f.names.splice(
+      0,
+      f.names.length,
+      CLIENT_OWNED_VOICE_INITIAL_ASSET,
+      CLIENT_OWNED_VOICE_SHARED_ASSET,
+    );
     const hook = installExternalVoiceLaunchHook({
       target: f.target,
-      importModule: async () => ({ Kat: f.services }),
+      importModule: async () => ({ ist: f.services }),
     });
     await settle();
     expect(hook.status).toBe("active");

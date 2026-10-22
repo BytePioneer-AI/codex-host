@@ -93,7 +93,7 @@
 | [`harnesses/grok/generated-images.md`](harnesses/grok/generated-images.md) | Grok Imagine files project to Desktop `imageGeneration`; keep Markdown rewrite for videos and cited paths. |
 | [`harnesses/grok/mcp-elicitation.md`](harnesses/grok/mcp-elicitation.md) | Grok MCP consent forms project to Desktop approval, including offered Always allow; bounded empty forms only. |
 | [`harnesses/grok/computer-use-release.md`](harnesses/grok/computer-use-release.md) | Grok native turn-end Computer Use cleanup, Mac Sky bridge, failure behavior, and runtime limits. |
-| [`harnesses/grok/computer-use-settings.md`](harnesses/grok/computer-use-settings.md) | CodexHost Connections toggle for Grok `cua_repl`; ChatGPT Computer use / Browser stay official Codex. |
+| [`harnesses/grok/computer-use-settings.md`](harnesses/grok/computer-use-settings.md) | Grok `cua_repl` Computer Use and in-app browser (IAB) switches, surface matrix, IAB vs Computer Use vs Chrome extension, fail-closed binding. |
 
 ### ZCode
 
@@ -111,7 +111,7 @@
 | [`product/codex-native-account-switching-design.md`](product/codex-native-account-switching-design.md) | 移除 Codex 多账号切换后的只读边界；修改 Codex 认证或账号路由时阅读。 |
 | [`architecture/renderer-settings-styling.md`](architecture/renderer-settings-styling.md) | 设置页 Tailwind CSS 使用边界、构建方式与编写规则；新增或改版设置页界面时阅读。 |
 | [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常，以及输入性能的诊断流程；兼容性与交互性能回归时阅读。 |
-| [`operations/cpa-live-voice-desktop-hook.md`](operations/cpa-live-voice-desktop-hook.md) | Shared Desktop/console Voice settings, audited native Chat lifecycle and external Harness voice: new-chat selection, shared task routing, configured gateway, lifecycle limits, focused smoke tests, and attended voice verification. |
+| [`operations/cpa-live-voice-desktop-hook.md`](operations/cpa-live-voice-desktop-hook.md) | Shared Desktop/console Voice settings, audited native Chat lifecycle and external Harness voice: new-chat selection, shared task routing, configured gateway, lifecycle limits, focused smoke tests, attended voice verification, and daily Sparkle pin drift (`.github/workflows/compat-daily.yml`). |
 
 ## 平台、进程与远程运行
 

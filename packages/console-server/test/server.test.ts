@@ -78,6 +78,15 @@ function fakeHarnesses(): ConsoleHarnesses {
       ...harness,
       launchPath: value,
     })),
+    setGrokComputerUse: vi.fn(async (update: { enabled?: boolean; browser?: boolean }) => ({
+      ...harness,
+      computerUse: {
+        enabled: update.enabled ?? false,
+        available: true,
+        browser: update.browser ?? false,
+        browserAvailable: true,
+      },
+    })),
   };
 }
 
@@ -467,6 +476,26 @@ describe("console server", () => {
       body: "not json",
     });
     expect(invalid.status).toBe(400);
+  });
+
+  it("saves the Grok in-app browser switch independently and rejects an empty body", async () => {
+    const { base } = await start();
+    const headers = { origin: base, ...CHANGE, "content-type": "application/json" };
+    const saved = await fetch(`${base}/api/harnesses/grok-computer-use`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ browser: true }),
+    });
+    expect(
+      ((await saved.json()) as { harness: { computerUse: { browser: boolean; enabled: boolean } } })
+        .harness.computerUse,
+    ).toMatchObject({ browser: true, enabled: false });
+    const empty = await fetch(`${base}/api/harnesses/grok-computer-use`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({}),
+    });
+    expect(empty.status).toBe(400);
   });
 
   it("forwards only console Host methods and reports a missing Host", async () => {

@@ -1,4 +1,4 @@
-import type { GrokComputerUseSettings } from "@codexhost/shared-contracts";
+import type { GrokComputerUseSet, GrokComputerUseSettings } from "@codexhost/shared-contracts";
 import type { RendererSettingsMessages } from "./localization.js";
 import { createPreferenceSwitch } from "./preference-ui.js";
 
@@ -7,7 +7,7 @@ export function createGrokComputerUseControls(
   messages: RendererSettingsMessages,
   settings: {
     get(): Promise<GrokComputerUseSettings>;
-    set(enabled: boolean): Promise<GrokComputerUseSettings>;
+    set(update: GrokComputerUseSet): Promise<GrokComputerUseSettings>;
   },
 ): HTMLElement {
   const section = document.createElement("section");
@@ -46,7 +46,39 @@ export function createGrokComputerUseControls(
   status.id = "grok-computer-use-status";
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
-  section.append(header, help, status);
+
+  const browserHeader = document.createElement("div");
+  browserHeader.className =
+    "settings-grok-computer-use__header settings-grok-computer-use__browser";
+  const browserCopy = document.createElement("div");
+  browserCopy.className = "settings-grok-computer-use__copy";
+  const browserTitle = document.createElement("h3");
+  browserTitle.className = "settings-grok-computer-use__title";
+  browserTitle.id = "grok-browser-title";
+  browserTitle.textContent = messages.grokBrowserTitle;
+  const browserDescription = document.createElement("p");
+  browserDescription.className = "settings-grok-computer-use__description";
+  browserDescription.id = "grok-browser-description";
+  browserDescription.textContent = messages.grokBrowserDescription;
+  browserCopy.append(browserTitle, browserDescription);
+  const browserInput = createPreferenceSwitch(
+    document,
+    "grok-browser-enabled",
+    "grok-browser-description grok-browser-help grok-browser-status",
+  );
+  browserInput.setAttribute("aria-labelledby", browserTitle.id);
+  browserInput.setAttribute("aria-label", messages.grokBrowserLabel);
+  browserHeader.append(browserCopy, browserInput);
+  const browserHelp = document.createElement("p");
+  browserHelp.className = "settings-grok-computer-use__help";
+  browserHelp.id = "grok-browser-help";
+  browserHelp.textContent = messages.grokBrowserHelp;
+  const browserStatus = document.createElement("p");
+  browserStatus.className = "settings-grok-computer-use__status";
+  browserStatus.id = "grok-browser-status";
+  browserStatus.setAttribute("role", "status");
+  browserStatus.setAttribute("aria-live", "polite");
+  section.append(header, help, status, browserHeader, browserHelp, browserStatus);
 
   let busy = true;
   let loaded = false;
@@ -55,6 +87,27 @@ export function createGrokComputerUseControls(
     last = value;
     input.checked = value.enabled;
     input.disabled = busy || !loaded || (!value.available && !value.enabled);
+    const browserOn = value.browser === true;
+    const browserFiles = value.browserFilesPresent === true;
+    browserInput.checked = browserOn;
+    browserInput.disabled = busy || !loaded || (!browserFiles && !browserOn);
+    if (!browserFiles) {
+      browserStatus.dataset.state = "unavailable";
+      browserStatus.textContent = value.browserUnavailableReason ?? messages.grokBrowserUnavailable;
+    } else if (value.browserAvailable !== true) {
+      browserStatus.dataset.state = browserOn ? "unavailable" : "off";
+      browserStatus.textContent = browserOn
+        ? (value.browserUnavailableReason ?? messages.grokBrowserBlocked)
+        : messages.grokBrowserOff;
+    } else {
+      browserStatus.dataset.state = browserOn ? "on" : "off";
+      browserStatus.textContent = browserOn ? messages.grokBrowserOn : messages.grokBrowserOff;
+    }
+    if (value.applyFailed) {
+      status.dataset.state = "unavailable";
+      status.textContent = value.applyError ?? messages.grokComputerUseApplyFailed;
+      return;
+    }
     if (!value.available) {
       status.dataset.state = "unavailable";
       status.textContent = value.unavailableReason ?? messages.grokComputerUseUnavailable;
@@ -63,13 +116,14 @@ export function createGrokComputerUseControls(
     status.dataset.state = value.enabled ? "on" : "off";
     status.textContent = value.enabled ? messages.grokComputerUseOn : messages.grokComputerUseOff;
   };
-  input.addEventListener("change", () => {
+  const save = (update: GrokComputerUseSet, target: HTMLElement) => {
     if (busy || !loaded) return;
     busy = true;
     input.disabled = true;
-    status.textContent = messages.grokComputerUseSaving;
+    browserInput.disabled = true;
+    target.textContent = messages.grokComputerUseSaving;
     void settings
-      .set(input.checked)
+      .set(update)
       .then((value) => {
         busy = false;
         show(value);
@@ -77,11 +131,19 @@ export function createGrokComputerUseControls(
       .catch(() => {
         busy = false;
         if (last) show(last);
-        else input.disabled = false;
-        status.textContent = messages.grokComputerUseSaveError;
+        else {
+          input.disabled = false;
+          browserInput.disabled = false;
+        }
+        target.textContent = messages.grokComputerUseSaveError;
       });
-  });
+  };
+  input.addEventListener("change", () => save({ enabled: input.checked }, status));
+  browserInput.addEventListener("change", () =>
+    save({ browser: browserInput.checked }, browserStatus),
+  );
   status.textContent = messages.grokComputerUseLoading;
+  browserStatus.textContent = messages.grokBrowserOff;
   void settings
     .get()
     .then((value) => {
@@ -92,6 +154,7 @@ export function createGrokComputerUseControls(
     .catch(() => {
       busy = false;
       status.textContent = messages.grokComputerUseLoadError;
+      browserStatus.textContent = messages.grokComputerUseLoadError;
     });
   return section;
 }

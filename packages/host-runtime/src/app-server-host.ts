@@ -33,7 +33,7 @@ import {
   GrokComputerUseError,
   HarnessLaunchSettingsStore,
   getGrokComputerUseSettings,
-  setGrokComputerUseEnabled,
+  setGrokComputerUse,
 } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
@@ -1688,8 +1688,8 @@ export class AppServerHost {
         try {
           const result =
             request.method === GROK_COMPUTER_USE_SET_METHOD
-              ? await setGrokComputerUseEnabled(
-                  grokComputerUseSetSchema.parse(request.params).enabled,
+              ? await setGrokComputerUse(
+                  grokComputerUseSetSchema.parse(request.params),
                   process.env,
                 )
               : await getGrokComputerUseSettings(process.env);

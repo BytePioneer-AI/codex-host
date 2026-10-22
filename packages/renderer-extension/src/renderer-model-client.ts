@@ -33,6 +33,7 @@ import {
   GROK_COMPUTER_USE_SET_METHOD,
   grokComputerUseSetSchema,
   grokComputerUseSettingsSchema,
+  type GrokComputerUseSet,
   type GrokComputerUseSettings,
   harnessLaunchSettingsGetSchema,
   harnessLaunchSettingsSetSchema,
@@ -214,7 +215,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
   setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   getGrokComputerUse?(): Promise<GrokComputerUseSettings>;
-  setGrokComputerUse?(enabled: boolean): Promise<GrokComputerUseSettings>;
+  setGrokComputerUse?(update: GrokComputerUseSet): Promise<GrokComputerUseSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
   listLoadedSessions?(): Promise<LoadedSession[]>;
   currentHostId?(composer?: Element): string | null;
@@ -430,11 +431,11 @@ export function createRendererModelClient(
         await manager.sendRequest(GROK_COMPUTER_USE_GET_METHOD, {}),
       );
     },
-    async setGrokComputerUse(enabled: boolean): Promise<GrokComputerUseSettings> {
+    async setGrokComputerUse(update: GrokComputerUseSet): Promise<GrokComputerUseSettings> {
       return grokComputerUseSettingsSchema.parse(
         await manager.sendRequest(
           GROK_COMPUTER_USE_SET_METHOD,
-          grokComputerUseSetSchema.parse({ enabled }),
+          grokComputerUseSetSchema.parse(update),
         ),
       );
     },

@@ -672,6 +672,24 @@ describe("native Chat voice lifecycle installation", () => {
     hook.dispose();
   });
 
+  it("keeps 26.1016 native Chat unavailable despite recognized start/prewarm filenames", async () => {
+    vi.useFakeTimers();
+    const f = installFixture();
+    f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = "26.1016.51333";
+    f.assets.splice(
+      0,
+      f.assets.length,
+      "app-initial-f3e281fb9a71.js",
+      "app-shared-60f4bb85435f.js",
+    );
+    const hook = installNativeChatVoiceHook(f);
+    expect(hook.status).toBe("unsupported");
+    expect(f.importModule).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.createRoot).not.toHaveBeenCalled();
+    hook.dispose();
+  });
+
   it("supplies the native prewarm controller with both AppScope and ComposerScope", async () => {
     vi.useFakeTimers();
     const f = installFixture();

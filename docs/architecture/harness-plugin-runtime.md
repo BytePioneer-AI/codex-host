@@ -142,7 +142,7 @@ Codex 的会话用量解析已从公共协议层迁入 `codex-usage`，账户配
 
 ## Grok Computer Use 设置
 
-本地 Host 的 Grok 连接详情和未运行时的控制台连接页提供 Computer Use 开关。`codexhost/harness/grok-computer-use/get·set` 读写 `~/.codexhost/grok-computer-use.json`，并维护 `~/.grok/config.toml` 中的 `[mcp_servers.cua_repl]`（仅 `computer` 表面）。ChatGPT 设置中的 Computer use / Browser 仍只作用于官方 Codex。新的 Grok 线程读取该开关；已打开的线程不热加载 MCP。
+本地 Host 的 Grok 连接详情和未运行时的控制台连接页提供 Computer Use 开关。`codexhost/harness/grok-computer-use/get·set` 读写 `~/.codexhost/grok-computer-use.json`，（`enabled` 与 `browser` 两个独立开关）。Computer Use 需要 `cua_node` 与 Sky；In-app browser 需要 `cua_node` 与 `@oai/browser-desktop`，不依赖 Sky。在 Desktop 为外部 Harness 提供授权与会话绑定之前，`browser` 只保存意向，不写入 `browser` 表面。写入先改 Grok config，再写 preference；失败时返回 `applyFailed`。ChatGPT 设置中的 Computer use / Browser 仍只作用于官方 Codex。新的 Grok 线程读取该开关；已打开的线程不热加载 MCP。
 
 ## Harness CLI 版本与更新
 

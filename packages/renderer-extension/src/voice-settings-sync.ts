@@ -1,5 +1,13 @@
-import { VOICE_SETTINGS_METHOD, voiceSettingsStateSchema } from "@codexhost/shared-contracts";
-import { applySharedVoiceRoutes, legacyVoiceRoutes } from "./renderer-cpa-live-voice-preference.js";
+import {
+  VOICE_GATEWAY_STATUS_METHOD,
+  VOICE_SETTINGS_METHOD,
+  voiceSettingsStateSchema,
+} from "@codexhost/shared-contracts";
+import {
+  applySharedVoiceRoutes,
+  applyVoiceGatewayReadiness,
+  legacyVoiceRoutes,
+} from "./renderer-cpa-live-voice-preference.js";
 
 export function desktopVoiceCallActive(owner: Window): boolean {
   const hook = Reflect.get(owner, "__codexhostNativeChatVoiceV1") as
@@ -26,13 +34,19 @@ export function startVoiceSettingsSync(
     if (busy || disposed) return;
     busy = true;
     try {
+      const activeCall = desktopVoiceCallActive(owner);
       let state = voiceSettingsStateSchema.parse(
         await request(VOICE_SETTINGS_METHOD, {
           operation: "get",
-          runtime: { id, revision, activeCall: desktopVoiceCallActive(owner) },
+          runtime: { id, revision, activeCall },
         }),
       );
       if (disposed) return;
+      // Runtime reports omit the console's Host callback. Query the local Host
+      // directly so an omitted result is not mistaken for an unconfigured gateway.
+      const ready = state.gatewayReady ?? (await request(VOICE_GATEWAY_STATUS_METHOD, {}));
+      if (disposed) return;
+      applyVoiceGatewayReadiness(owner, ready === true);
       if (!state.initialized)
         state = voiceSettingsStateSchema.parse(
           await request(VOICE_SETTINGS_METHOD, {
@@ -40,12 +54,12 @@ export function startVoiceSettingsSync(
             routes: legacyVoiceRoutes(owner),
           }),
         );
-      if (!disposed && !desktopVoiceCallActive(owner)) {
+      if (!disposed && !activeCall) {
         applySharedVoiceRoutes(owner, state.settings);
         revision = state.revision;
       }
     } catch {
-      /* Retain the last applied route while the local Host reconnects. */
+      /* Keep the last gateway readiness and route while the local Host reconnects. */
     } finally {
       busy = false;
     }
@@ -54,6 +68,7 @@ export function startVoiceSettingsSync(
   const timer = owner.setInterval(() => void refresh(), intervalMs);
   return () => {
     disposed = true;
+    applyVoiceGatewayReadiness(owner, false);
     owner.clearInterval(timer);
   };
 }

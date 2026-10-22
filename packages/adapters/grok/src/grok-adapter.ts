@@ -1865,7 +1865,19 @@ export class GrokAdapter implements HarnessAdapter {
         },
       };
     }
-    await applyGrokComputerUsePreference(this.#environment ?? process.env).catch(() => undefined);
+    try {
+      await applyGrokComputerUsePreference(this.#environment ?? process.env);
+    } catch {
+      console.warn("Could not apply Grok Computer Use settings");
+      return {
+        ok: false,
+        error: {
+          code: "unavailable",
+          message: "Could not apply Grok Computer Use settings. Retry after fixing Grok config.",
+          retryable: true,
+        },
+      };
+    }
     const cwd = path.resolve(input.cwd);
     const parsedRef =
       input.kind === "resume" ? nativeSessionRefSchema.safeParse(input.nativeRef) : null;

@@ -97,12 +97,18 @@ describe("console Harnesses", () => {
       CODEXHOST_DATA_DIR: path.join(root, "data"),
       GROK_HOME: grokHome,
       HOME: path.join(root, "home"),
+      CODEXHOST_CHATGPT_APP: path.join(root, "missing-chatgpt.app"),
     };
     const harnesses = createConsoleHarnesses([pluginsRoot], environment);
     const listed = await harnesses.list();
     expect(listed[0]?.computerUse).toMatchObject({ enabled: false, available: false });
-    await expect(harnesses.setGrokComputerUse(true)).rejects.toMatchObject({ status: 400 });
-    await expect(harnesses.setGrokComputerUse(false)).resolves.toMatchObject({
+    await expect(harnesses.setGrokComputerUse({ enabled: true })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(harnesses.setGrokComputerUse({ browser: true })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(harnesses.setGrokComputerUse({ enabled: false })).resolves.toMatchObject({
       id: "grok",
       computerUse: { enabled: false },
     });

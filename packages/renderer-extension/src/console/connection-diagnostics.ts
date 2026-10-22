@@ -138,9 +138,9 @@ export function createConsoleConnectionDiagnostics(
       if (!client.getGrokComputerUse) throw new Error("Grok Computer Use settings are unavailable");
       return client.getGrokComputerUse();
     },
-    async setGrokComputerUse(_hostId, enabled) {
+    async setGrokComputerUse(_hostId, update) {
       if (!client.setGrokComputerUse) throw new Error("Grok Computer Use settings are unavailable");
-      return client.setGrokComputerUse(enabled);
+      return client.setGrokComputerUse(update);
     },
     subscribe(listener) {
       listeners.add(listener);

@@ -1,5 +1,6 @@
 import type {
   CodexhostError,
+  GrokComputerUseSet,
   GrokComputerUseSettings,
   HarnessInstallationState,
   HarnessLaunchSettings,
@@ -64,7 +65,7 @@ export interface RendererConnectionDiagnostics {
     path: string | null,
   ): Promise<HarnessLaunchSettings>;
   getGrokComputerUse?(hostId: string): Promise<GrokComputerUseSettings>;
-  setGrokComputerUse?(hostId: string, enabled: boolean): Promise<GrokComputerUseSettings>;
+  setGrokComputerUse?(hostId: string, update: GrokComputerUseSet): Promise<GrokComputerUseSettings>;
   subscribe(listener: () => void): () => void;
 }
 
@@ -614,7 +615,7 @@ function renderConnectionInspector(
     body.append(
       createGrokComputerUseControls(document, messages, {
         get: () => getGrokComputerUse(hostId),
-        set: (enabled) => setGrokComputerUse(hostId, enabled),
+        set: (update) => setGrokComputerUse(hostId, update),
       }),
     );
   }

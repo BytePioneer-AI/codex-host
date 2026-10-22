@@ -3,8 +3,11 @@ import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises
 import os from "node:os";
 import path from "node:path";
 import type { GrokComputerUseSettings } from "@codexhost/shared-contracts";
+import { withGrokComputerUseLock } from "./grok-computer-use-lock.js";
 
 export const GROK_CUA_REPL_SERVER = "cua_repl";
+/** ChatGPT Desktop does not authorize a Grok-spawned cua_repl for IAB. */
+export const GROK_BROWSER_BINDING_SUPPORTED = false;
 const PREFERENCE_FILE = "grok-computer-use.json";
 const TABLE = "[mcp_servers.cua_repl]";
 const ENV_TABLE = "[mcp_servers.cua_repl.env]";
@@ -17,7 +20,27 @@ export interface GrokComputerUseLaunch {
   codexCli: string;
   skyApp: string;
   codexHome: string;
+  browserDesktop: string;
 }
+
+interface Preference {
+  enabled?: boolean;
+  browser?: boolean;
+  applyError?: string;
+}
+
+export interface GrokComputerUseUpdate {
+  enabled?: boolean | undefined;
+  browser?: boolean | undefined;
+}
+
+const COMPUTER_UNAVAILABLE =
+  "ChatGPT Desktop Computer Use files were not found. Install ChatGPT.app with Computer Use, then try again.";
+const BROWSER_FILES_UNAVAILABLE =
+  "ChatGPT Desktop in-app browser files were not found. Update ChatGPT.app, then try again.";
+const BROWSER_UNSUPPORTED =
+  "ChatGPT Desktop does not authorize Grok to use the in-app browser. The preference is saved as intent until Desktop supports an external Harness.";
+const APPLY_FAILED = "Could not apply Grok Computer Use settings to Grok config.";
 
 export class GrokComputerUseError extends Error {
   constructor(message: string) {
@@ -53,15 +76,15 @@ async function isFile(target: string): Promise<boolean> {
   }
 }
 
-export async function discoverGrokComputerUseLaunch(
-  environment: NodeJS.ProcessEnv = process.env,
-  platform: string = process.platform,
-): Promise<GrokComputerUseLaunch | undefined> {
+function launchPaths(
+  environment: NodeJS.ProcessEnv,
+  platform: string,
+): GrokComputerUseLaunch | undefined {
   const app = chatgptApp(environment, platform);
   if (!app) return undefined;
   const resources = path.join(app, "Contents", "Resources");
   const cuaNode = path.join(resources, "cua_node");
-  const launch: GrokComputerUseLaunch = {
+  return {
     node: path.join(cuaNode, "bin", "node"),
     cuaRepl: path.join(cuaNode, "lib", "node_modules", "@oai", "cua-repl", "bin", "cua-repl.mjs"),
     nodeRepl: path.join(cuaNode, "bin", "node_repl"),
@@ -74,11 +97,32 @@ export async function discoverGrokComputerUseLaunch(
       "Codex Computer Use.app",
     ),
     codexHome: path.join(environment.HOME ?? os.homedir(), ".codex"),
+    browserDesktop: path.join(cuaNode, "lib", "node_modules", "@oai", "browser-desktop"),
   };
-  const required = [launch.node, launch.cuaRepl, launch.nodeRepl, launch.codexCli, launch.skyApp];
-  for (const file of required) {
-    if (!(await isFile(file))) return undefined;
+}
+
+async function sharedRuntimePresent(launch: GrokComputerUseLaunch): Promise<boolean> {
+  for (const file of [launch.node, launch.cuaRepl, launch.nodeRepl]) {
+    if (!(await isFile(file))) return false;
   }
+  return true;
+}
+
+async function computerFilesPresent(launch: GrokComputerUseLaunch): Promise<boolean> {
+  return (await isFile(launch.skyApp)) && (await isFile(launch.codexCli));
+}
+
+async function browserFilesPresent(launch: GrokComputerUseLaunch): Promise<boolean> {
+  return isFile(path.join(launch.browserDesktop, "package.json"));
+}
+
+/** Shared cua_node runtime. Sky and browser-desktop are checked separately. */
+export async function discoverGrokComputerUseLaunch(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: string = process.platform,
+): Promise<GrokComputerUseLaunch | undefined> {
+  const launch = launchPaths(environment, platform);
+  if (!launch || !(await sharedRuntimePresent(launch))) return undefined;
   return launch;
 }
 
@@ -126,16 +170,37 @@ function cuaReplEnabledInToml(text: string): boolean {
   return true;
 }
 
-function stanza(launch: GrokComputerUseLaunch, enabled: boolean): string {
+function inferredSurfaces(text: string): { enabled: boolean; browser: boolean } {
+  if (!cuaReplEnabledInToml(text)) return { enabled: false, browser: false };
+  const range = tableRange(text, ENV_TABLE);
+  const body = range ? text.split(/\n/).slice(range.start, range.end).join("\n") : "";
+  const literal = /^CUA_REPL_ENABLED_SURFACES\s*=\s*(["'])([^"']*)\1\s*(?:#.*)?$/mu.exec(body);
+  if (!literal) return { enabled: true, browser: false };
+  const surfaces = new Set(literal[2]?.split(",").map((surface) => surface.trim()));
+  return { enabled: surfaces.has("computer"), browser: surfaces.has("browser") };
+}
+
+function stanza(
+  launch: GrokComputerUseLaunch,
+  state: Required<Pick<Preference, "enabled" | "browser">>,
+): string {
   const trusted = `${launch.codexHome}:${launch.nodeModules}`;
+  const services: Record<string, string> = {};
+  if (state.browser) services.browser = "@oai/browser-desktop/service";
+  if (state.enabled) services.sky = "@oai/sky/service";
+  const surfaces = [state.browser ? "browser" : "", state.enabled ? "computer" : ""]
+    .filter(Boolean)
+    .join(",");
+  const backends = state.browser ? 'BROWSER_USE_AVAILABLE_BACKENDS = "iab"\n' : "";
+  const active = state.enabled || state.browser;
   return `${TABLE}
 command = ${JSON.stringify(launch.node)}
 args = [${JSON.stringify(launch.cuaRepl)}]
-enabled = ${enabled ? "true" : "false"}
+enabled = ${active ? "true" : "false"}
 startup_timeout_sec = 120
 
 ${ENV_TABLE}
-NODE_REPL_TRUSTED_SERVICES = ${JSON.stringify('{"sky":"@oai/sky/service"}')}
+NODE_REPL_TRUSTED_SERVICES = ${JSON.stringify(JSON.stringify(services))}
 NODE_REPL_TRUSTED_CODE_PATHS = ${JSON.stringify(trusted)}
 NODE_REPL_NODE_PATH = ${JSON.stringify(launch.node)}
 CODEX_HOME = ${JSON.stringify(launch.codexHome)}
@@ -144,16 +209,22 @@ NODE_REPL_NODE_MODULE_DIRS = ${JSON.stringify(launch.nodeModules)}
 NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
 SKY_CUA_SERVICE_PATH = ${JSON.stringify(launch.skyApp)}
 CODEX_CLI_PATH = ${JSON.stringify(launch.codexCli)}
-CUA_REPL_ENABLED_SURFACES = "computer"
+${backends}CUA_REPL_ENABLED_SURFACES = ${JSON.stringify(surfaces)}
 `;
 }
 
-async function readPreference(environment: NodeJS.ProcessEnv): Promise<boolean | undefined> {
+async function readPreference(environment: NodeJS.ProcessEnv): Promise<Preference | undefined> {
   try {
     const document = JSON.parse(
       await readFile(path.join(dataDirectory(environment), PREFERENCE_FILE), "utf8"),
-    ) as { enabled?: unknown };
-    return typeof document.enabled === "boolean" ? document.enabled : undefined;
+    ) as { enabled?: unknown; browser?: unknown; applyError?: unknown };
+    return {
+      ...(typeof document.enabled === "boolean" ? { enabled: document.enabled } : {}),
+      ...(typeof document.browser === "boolean" ? { browser: document.browser } : {}),
+      ...(typeof document.applyError === "string" && document.applyError
+        ? { applyError: document.applyError }
+        : {}),
+    };
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
       return undefined;
@@ -162,13 +233,18 @@ async function readPreference(environment: NodeJS.ProcessEnv): Promise<boolean |
   }
 }
 
-async function writePreference(environment: NodeJS.ProcessEnv, enabled: boolean): Promise<void> {
+async function writePreference(environment: NodeJS.ProcessEnv, state: Preference): Promise<void> {
   const directory = dataDirectory(environment);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, PREFERENCE_FILE);
   const temporary = `${file}.${randomUUID()}.tmp`;
+  const document: Preference = {
+    ...(typeof state.enabled === "boolean" ? { enabled: state.enabled } : {}),
+    ...(typeof state.browser === "boolean" ? { browser: state.browser } : {}),
+    ...(state.applyError ? { applyError: state.applyError } : {}),
+  };
   try {
-    await writeFile(temporary, `${JSON.stringify({ enabled })}\n`, { mode: 0o600, flag: "wx" });
+    await writeFile(temporary, `${JSON.stringify(document)}\n`, { mode: 0o600, flag: "wx" });
     await rename(temporary, file);
   } finally {
     await rm(temporary, { force: true });
@@ -200,41 +276,77 @@ async function writeGrokConfig(environment: NodeJS.ProcessEnv, text: string): Pr
   }
 }
 
+async function currentState(environment: NodeJS.ProcessEnv): Promise<{
+  enabled: boolean;
+  browser: boolean;
+  applyError?: string;
+}> {
+  const preference = await readPreference(environment);
+  const inferred =
+    preference?.enabled === undefined
+      ? inferredSurfaces(await readGrokConfig(environment))
+      : undefined;
+  return {
+    enabled: preference?.enabled ?? inferred?.enabled ?? false,
+    browser: preference ? (preference.browser ?? false) : (inferred?.browser ?? false),
+    ...(preference?.applyError ? { applyError: preference.applyError } : {}),
+  };
+}
+
+function settingsFrom(
+  state: { enabled: boolean; browser: boolean; applyError?: string },
+  files: { computer: boolean; browser: boolean },
+): GrokComputerUseSettings {
+  const bindable = files.browser && GROK_BROWSER_BINDING_SUPPORTED;
+  return {
+    enabled: state.enabled,
+    available: files.computer,
+    ...(files.computer ? {} : { unavailableReason: COMPUTER_UNAVAILABLE }),
+    browser: state.browser,
+    browserFilesPresent: files.browser,
+    browserAvailable: bindable,
+    ...(bindable
+      ? {}
+      : {
+          browserUnavailableReason: files.browser ? BROWSER_UNSUPPORTED : BROWSER_FILES_UNAVAILABLE,
+        }),
+    ...(state.applyError ? { applyFailed: true, applyError: state.applyError } : {}),
+  };
+}
+
+async function surfaceFiles(
+  launch: GrokComputerUseLaunch | undefined,
+): Promise<{ computer: boolean; browser: boolean }> {
+  if (!launch) return { computer: false, browser: false };
+  return {
+    computer: await computerFilesPresent(launch),
+    browser: await browserFilesPresent(launch),
+  };
+}
+
 export async function getGrokComputerUseSettings(
   environment: NodeJS.ProcessEnv = process.env,
   platform: string = process.platform,
 ): Promise<GrokComputerUseSettings> {
   const launch = await discoverGrokComputerUseLaunch(environment, platform);
-  const preference = await readPreference(environment);
-  const toml = await readGrokConfig(environment);
-  const enabled = preference ?? cuaReplEnabledInToml(toml);
-  if (launch) return { enabled, available: true };
-  return {
-    enabled,
-    available: false,
-    unavailableReason:
-      "ChatGPT Desktop Computer Use files were not found. Install ChatGPT.app with Computer Use, then try again.",
-  };
+  return settingsFrom(await currentState(environment), await surfaceFiles(launch));
 }
 
-export async function setGrokComputerUseEnabled(
-  enabled: boolean,
-  environment: NodeJS.ProcessEnv = process.env,
-  platform: string = process.platform,
-): Promise<GrokComputerUseSettings> {
-  const launch = await discoverGrokComputerUseLaunch(environment, platform);
-  if (enabled && !launch) {
-    throw new GrokComputerUseError(
-      "ChatGPT Desktop Computer Use files were not found. Install ChatGPT.app with Computer Use, then try again.",
-    );
-  }
-  await writePreference(environment, enabled);
+async function writeConfigForState(
+  state: { enabled: boolean; browser: boolean },
+  launch: GrokComputerUseLaunch | undefined,
+  files: { computer: boolean; browser: boolean },
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
   const current = await readGrokConfig(environment);
-  const had = tableRange(current, TABLE) !== undefined;
-  if (!enabled && !had) return getGrokComputerUseSettings(environment, platform);
+  const range = tableRange(current, TABLE);
+  const effective = {
+    enabled: state.enabled && files.computer,
+    browser: state.browser && files.browser && GROK_BROWSER_BINDING_SUPPORTED,
+  };
+  if (!effective.enabled && !effective.browser && !range) return;
   if (!launch) {
-    const range = tableRange(current, TABLE);
-    if (!range) return getGrokComputerUseSettings(environment, platform);
+    if (!range) return;
     const lines = current.split(/\n/);
     const body = lines.slice(range.start, range.end);
     const replaced = body.map((line) => (/^enabled\s*=/u.test(line) ? "enabled = false" : line));
@@ -243,19 +355,76 @@ export async function setGrokComputerUseEnabled(
     }
     lines.splice(range.start, range.end - range.start, ...replaced);
     await writeGrokConfig(environment, lines.join("\n"));
-    return getGrokComputerUseSettings(environment, platform);
+    return;
   }
   const stripped = removeTables(current, [ENV_TABLE, TABLE]).replace(/\s+$/u, "\n");
-  await writeGrokConfig(environment, `${stripped.trimEnd()}\n\n${stanza(launch, enabled)}`);
-  return getGrokComputerUseSettings(environment, platform);
+  await writeGrokConfig(environment, `${stripped.trimEnd()}\n\n${stanza(launch, effective)}`);
 }
 
-/** Apply the CodexHost preference to Grok config for a new session. Missing preference is a no-op. */
+export async function setGrokComputerUse(
+  update: GrokComputerUseUpdate,
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: string = process.platform,
+): Promise<GrokComputerUseSettings> {
+  return withGrokComputerUseLock(dataDirectory(environment), grokHome(environment), async () => {
+    const launch = await discoverGrokComputerUseLaunch(environment, platform);
+    const files = await surfaceFiles(launch);
+    if (update.enabled && !files.computer) {
+      throw new GrokComputerUseError(COMPUTER_UNAVAILABLE);
+    }
+    if (update.browser && !files.browser) {
+      throw new GrokComputerUseError(BROWSER_FILES_UNAVAILABLE);
+    }
+    const previous = await currentState(environment);
+    const state = {
+      enabled: update.enabled ?? previous.enabled,
+      browser: update.browser ?? previous.browser,
+    };
+    try {
+      await writeConfigForState(state, launch, files, environment);
+      await writePreference(environment, state);
+    } catch (error) {
+      await writeConfigForState(previous, launch, files, environment).catch(() => undefined);
+      const applyError = error instanceof GrokComputerUseError ? error.message : APPLY_FAILED;
+      await writePreference(environment, { ...previous, applyError }).catch(() => undefined);
+      if (error instanceof GrokComputerUseError) throw error;
+      throw new GrokComputerUseError(APPLY_FAILED);
+    }
+    return settingsFrom(state, files);
+  });
+}
+
+export function setGrokComputerUseEnabled(
+  enabled: boolean,
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: string = process.platform,
+): Promise<GrokComputerUseSettings> {
+  return setGrokComputerUse({ enabled }, environment, platform);
+}
+
+/** Apply the saved CodexHost preference to Grok config for a new session. Missing preference is a no-op. */
 export async function applyGrokComputerUsePreference(
   environment: NodeJS.ProcessEnv = process.env,
   platform: string = process.platform,
 ): Promise<void> {
-  const preference = await readPreference(environment);
-  if (preference === undefined) return;
-  await setGrokComputerUseEnabled(preference, environment, platform);
+  await withGrokComputerUseLock(dataDirectory(environment), grokHome(environment), async () => {
+    const preference = await readPreference(environment);
+    if (preference === undefined) return;
+    const launch = await discoverGrokComputerUseLaunch(environment, platform);
+    const files = await surfaceFiles(launch);
+    const state = await currentState(environment);
+    try {
+      await writeConfigForState(state, launch, files, environment);
+      if (state.applyError)
+        await writePreference(environment, { enabled: state.enabled, browser: state.browser });
+    } catch (error) {
+      const applyError = error instanceof GrokComputerUseError ? error.message : APPLY_FAILED;
+      await writePreference(environment, {
+        enabled: state.enabled,
+        browser: state.browser,
+        applyError,
+      }).catch(() => undefined);
+      throw error instanceof GrokComputerUseError ? error : new GrokComputerUseError(APPLY_FAILED);
+    }
+  });
 }

@@ -3,6 +3,7 @@ import {
   CLIENT_OWNED_VOICE_VERSION,
   CLIENT_OWNED_VOICE_INITIAL_ASSET,
   CLIENT_OWNED_VOICE_SHARED_ASSET,
+  CLIENT_OWNED_VOICE_SERVICES,
   rememberVoiceProductExperience,
 } from "./renderer-client-owned-voice.js";
 import type { RendererHostRouting } from "@codexhost/desktop-control/renderer-bindings";
@@ -123,7 +124,7 @@ export function installExternalVoiceLaunchHook(options: InstallOptions = {}): La
           `app://-/assets/${clientOwned ? CLIENT_OWNED_VOICE_SHARED_ASSET : SHARED_ASSET}`,
         );
         if (disposed) return;
-        const services = clientOwned ? module?.Kat : module?.fN;
+        const services = clientOwned ? module?.[CLIENT_OWNED_VOICE_SERVICES] : module?.fN;
         if (isRecord(services)) {
           const original = services.realtimeVoiceRuntime;
           if (typeof original === "function" || isRecord(original)) {

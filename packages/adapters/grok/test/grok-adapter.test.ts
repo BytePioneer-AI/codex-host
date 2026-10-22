@@ -315,6 +315,38 @@ async function nextEvent(
 }
 
 describe("Grok Adapter ACP projection", () => {
+  it("does not spawn a session with stale Computer Use config after an apply failure", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "grok-cua-apply-"));
+    try {
+      const data = path.join(root, "data");
+      await mkdir(data);
+      await writeFile(path.join(data, "grok-computer-use.json"), "invalid-json");
+      const createTransport = vi.fn(() => new FakeGrokTransport());
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const adapter = new GrokAdapter(
+          { environment: { CODEXHOST_DATA_DIR: data, GROK_HOME: path.join(root, "grok") } },
+          {
+            randomUUID: () => "grok-apply-failure",
+            createTransport,
+            fetchCredits: async () => null,
+          },
+        );
+        await expect(adapter.open({ kind: "create", cwd: root })).resolves.toMatchObject({
+          ok: false,
+          error: { code: "unavailable", retryable: true },
+        });
+        expect(createTransport).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledWith("Could not apply Grok Computer Use settings");
+        await adapter.close();
+      } finally {
+        warn.mockRestore();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("passes per-Session delegation environment to the ACP transport", async () => {
     const transport = new FakeGrokTransport();
     const createTransport = vi.fn(() => transport);

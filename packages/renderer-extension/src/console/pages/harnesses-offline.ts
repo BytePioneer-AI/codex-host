@@ -1,3 +1,4 @@
+import type { GrokComputerUseSettings } from "@codexhost/shared-contracts";
 import { consoleGet, consolePost } from "../api.js";
 import { button, h } from "../dom.js";
 import type { ConsoleMessages } from "../messages.js";
@@ -16,7 +17,7 @@ interface ConsoleHarness {
   links: { documentation?: string; installation?: string } | null;
   icon: string | null;
   launchPath: string | null;
-  computerUse?: { enabled: boolean; available: boolean; unavailableReason?: string };
+  computerUse?: GrokComputerUseSettings;
 }
 
 /**
@@ -36,6 +37,7 @@ export function createOfflineHarnessesPage(
       const document = context.content.ownerDocument;
       const list = h(document, "div", { className: "console-harness-list" });
       const status = new Map<string, string>();
+      const busy = new Set<string>();
       let harnesses: ConsoleHarness[] = [];
       const render = (): void => {
         if (harnesses.length === 0) {
@@ -120,16 +122,16 @@ export function createOfflineHarnessesPage(
               }
             }
             if (harness.computerUse) {
-              const toggle = h(document, "input", {
-                type: "checkbox",
-                "aria-label": messages.grokComputerUse,
-              });
-              toggle.checked = harness.computerUse.enabled;
-              toggle.disabled = !harness.computerUse.available && !harness.computerUse.enabled;
-              toggle.addEventListener("change", () => {
-                void consolePost<{ harness: ConsoleHarness }>("/api/harnesses/grok-computer-use", {
-                  enabled: toggle.checked,
-                })
+              const computerUse = harness.computerUse;
+              const pending = busy.has(harness.id);
+              const post = (update: { enabled: boolean } | { browser: boolean }) => {
+                busy.add(harness.id);
+                toggle.disabled = true;
+                browserToggle.disabled = true;
+                void consolePost<{ harness: ConsoleHarness }>(
+                  "/api/harnesses/grok-computer-use",
+                  update,
+                )
                   .then(({ harness: saved }) => {
                     harnesses = harnesses.map((entry) => (entry.id === saved.id ? saved : entry));
                     status.set(harness.id, messages.saved);
@@ -137,8 +139,29 @@ export function createOfflineHarnessesPage(
                   .catch((error: unknown) =>
                     status.set(harness.id, error instanceof Error ? error.message : String(error)),
                   )
-                  .finally(render);
+                  .finally(() => {
+                    busy.delete(harness.id);
+                    render();
+                  });
+              };
+              const toggle = h(document, "input", {
+                type: "checkbox",
+                "aria-label": messages.grokComputerUse,
               });
+              toggle.checked = computerUse.enabled;
+              toggle.disabled = pending || (!computerUse.available && !computerUse.enabled);
+              toggle.addEventListener("change", () => post({ enabled: toggle.checked }));
+              const browserToggle = h(document, "input", {
+                type: "checkbox",
+                "aria-label": messages.grokBrowser,
+              });
+              browserToggle.checked = computerUse.browser === true;
+              browserToggle.disabled =
+                pending ||
+                (computerUse.browserFilesPresent !== true && computerUse.browser !== true);
+              browserToggle.addEventListener("change", () =>
+                post({ browser: browserToggle.checked }),
+              );
               row.append(
                 h(
                   document,
@@ -152,8 +175,23 @@ export function createOfflineHarnessesPage(
                   { className: "console-muted" },
                   harness.computerUse.available
                     ? messages.grokComputerUseHelp
-                    : (harness.computerUse.unavailableReason ??
-                        messages.grokComputerUseUnavailable),
+                    : (computerUse.unavailableReason ?? messages.grokComputerUseUnavailable),
+                ),
+                h(
+                  document,
+                  "div",
+                  { className: "console-harness__path" },
+                  h(document, "label", {}, browserToggle, ` ${messages.grokBrowser}`),
+                ),
+                h(
+                  document,
+                  "div",
+                  { className: "console-muted" },
+                  computerUse.browserAvailable === true
+                    ? messages.grokBrowserHelp
+                    : computerUse.browserFilesPresent === true
+                      ? (computerUse.browserUnavailableReason ?? messages.grokBrowserBlocked)
+                      : (computerUse.browserUnavailableReason ?? messages.grokBrowserUnavailable),
                 ),
               );
               if (status.has(harness.id)) {

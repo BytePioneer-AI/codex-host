@@ -1,8 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { startVoiceSettingsSync } from "../src/voice-settings-sync.js";
+import { VOICE_GATEWAY_STATUS_METHOD } from "@codexhost/shared-contracts";
 import {
   nativeChatVoicePreferenceAllowsStart,
   chatLiveVoicePreferenceAllowsOverride,
+  voiceGatewayIsReady,
 } from "../src/renderer-cpa-live-voice-preference.js";
 
 afterEach(() => {
@@ -34,7 +36,7 @@ function fixture() {
     activeEnvOverride: null,
     routesActive: false,
     activeCall: false,
-    gatewayReady: null,
+    gatewayReady: false as boolean | null,
     restartAvailable: true,
     restart: { phase: "idle", error: null },
   };
@@ -103,4 +105,63 @@ it("defers route changes during a native voice call", async () => {
   await vi.advanceTimersByTimeAsync(100);
   expect(nativeChatVoicePreferenceAllowsStart(owner)).toBe(false);
   stop();
+});
+
+it("qualifies gateway capability only from a successful live settings read", async () => {
+  const { owner, state } = fixture();
+  const request = vi.fn(async () => ({ ...state, gatewayReady: true }));
+  const stop = startVoiceSettingsSync(owner, request, 100);
+  expect(voiceGatewayIsReady(owner)).toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(voiceGatewayIsReady(owner)).toBe(true);
+  request.mockRejectedValueOnce(new Error("Host disconnected"));
+  await vi.advanceTimersByTimeAsync(100);
+  expect(voiceGatewayIsReady(owner)).toBe(true);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(voiceGatewayIsReady(owner)).toBe(true);
+  stop();
+  expect(voiceGatewayIsReady(owner)).toBe(false);
+});
+
+it("reads readiness directly from Host when runtime settings omit the console callback", async () => {
+  const { owner, state } = fixture();
+  state.gatewayReady = null;
+  let ready = true;
+  const request = vi.fn(async (method: string) =>
+    method === VOICE_GATEWAY_STATUS_METHOD ? ready : state,
+  );
+  const stop = startVoiceSettingsSync(owner, request, 100);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(voiceGatewayIsReady(owner)).toBe(true);
+  expect(request).toHaveBeenCalledWith(VOICE_GATEWAY_STATUS_METHOD, {});
+  request.mockRejectedValueOnce(new Error("Host reconnecting"));
+  await vi.advanceTimersByTimeAsync(100);
+  expect(voiceGatewayIsReady(owner)).toBe(true);
+  request.mockImplementationOnce(async () => state);
+  request.mockRejectedValueOnce(new Error("Gateway status unavailable"));
+  await vi.advanceTimersByTimeAsync(100);
+  expect(voiceGatewayIsReady(owner)).toBe(true);
+  ready = false;
+  await vi.advanceTimersByTimeAsync(100);
+  expect(voiceGatewayIsReady(owner)).toBe(false);
+  stop();
+});
+
+it("does not apply a gateway status that arrives after disposal", async () => {
+  const { owner, state } = fixture();
+  state.gatewayReady = null;
+  let resolveStatus!: (value: boolean) => void;
+  const request = vi.fn(async (method: string) =>
+    method === VOICE_GATEWAY_STATUS_METHOD
+      ? new Promise<boolean>((resolve) => {
+          resolveStatus = resolve;
+        })
+      : state,
+  );
+  const stop = startVoiceSettingsSync(owner, request, 100);
+  await vi.advanceTimersByTimeAsync(1);
+  stop();
+  resolveStatus(true);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(voiceGatewayIsReady(owner)).toBe(false);
 });

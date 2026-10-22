@@ -2646,11 +2646,11 @@ export function installRendererBindingProbe(
         throw new Error("Grok Computer Use settings are unavailable");
       return client.getGrokComputerUse();
     },
-    async setGrokComputerUse(hostId, enabled) {
+    async setGrokComputerUse(hostId, update) {
       const client = hostId === "local" ? modelClientForHost(hostId) : null;
       if (!client?.setGrokComputerUse)
         throw new Error("Grok Computer Use settings are unavailable");
-      return client.setGrokComputerUse(enabled);
+      return client.setGrokComputerUse(update);
     },
     async openWebUi(hostId: string, agent: ExternalRendererAgent): Promise<void> {
       const state = hostHarnessAvailabilityState(hostId);

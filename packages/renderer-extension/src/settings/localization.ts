@@ -204,6 +204,15 @@ export interface RendererSettingsMessages {
   readonly grokComputerUseLoadError: string;
   readonly grokComputerUseSaveError: string;
   readonly grokComputerUseUnavailable: string;
+  readonly grokBrowserLabel: string;
+  readonly grokBrowserTitle: string;
+  readonly grokBrowserDescription: string;
+  readonly grokBrowserHelp: string;
+  readonly grokBrowserOn: string;
+  readonly grokBrowserOff: string;
+  readonly grokBrowserUnavailable: string;
+  readonly grokBrowserBlocked: string;
+  readonly grokComputerUseApplyFailed: string;
   readonly connectionOfficialWebsite: string;
   readonly connectionOpenHarnessWeb: string;
   readonly connectionDeepSeekTestedVersions: string;
@@ -504,6 +513,18 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   grokComputerUseSaveError:
     "Could not save. Install ChatGPT.app with Computer Use, then try again.",
   grokComputerUseUnavailable: "ChatGPT Desktop Computer Use files were not found on this Mac.",
+  grokBrowserLabel: "Grok in-app browser",
+  grokBrowserTitle: "In-app browser",
+  grokBrowserDescription:
+    "Let Grok use ChatGPT's built-in browser (Browser Use) through cua_repl. Independent of Computer Use.",
+  grokBrowserHelp:
+    "Official Codex Browser Use is unchanged. Grok fails closed when ChatGPT does not authorize the connection or no in-app browser tab can be bound. The Chrome extension is a separate path.",
+  grokBrowserOn: "On · browser surface enabled",
+  grokBrowserOff: "Off",
+  grokBrowserUnavailable: "ChatGPT Desktop in-app browser files were not found on this Mac.",
+  grokBrowserBlocked:
+    "Saved as intent. ChatGPT Desktop does not authorize Grok to use the in-app browser.",
+  grokComputerUseApplyFailed: "Could not apply the saved setting to Grok config.",
   connectionOfficialWebsite: "Visit official website",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
@@ -822,6 +843,17 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   grokComputerUseLoadError: "无法读取 Grok Computer Use，请重新打开此面板重试。",
   grokComputerUseSaveError: "保存失败。请先安装带 Computer Use 的 ChatGPT.app。",
   grokComputerUseUnavailable: "本机未找到 ChatGPT Desktop 的 Computer Use 文件。",
+  grokBrowserLabel: "Grok 内置浏览器",
+  grokBrowserTitle: "内置浏览器",
+  grokBrowserDescription:
+    "让 Grok 通过 cua_repl 使用 ChatGPT 内置浏览器（Browser Use）。与 Computer Use 相互独立。",
+  grokBrowserHelp:
+    "官方 Codex Browser Use 不受影响。ChatGPT 不授权连接或无法绑定内置浏览器标签页时，Grok 会直接失败。Chrome 扩展是另一条路径。",
+  grokBrowserOn: "已开启 · 浏览器能力已启用",
+  grokBrowserOff: "已关闭",
+  grokBrowserUnavailable: "本机未找到 ChatGPT Desktop 的内置浏览器文件。",
+  grokBrowserBlocked: "已保存为意向。ChatGPT Desktop 尚未授权 Grok 使用内置浏览器。",
+  grokComputerUseApplyFailed: "无法将已保存的设置写入 Grok 配置。",
   connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:

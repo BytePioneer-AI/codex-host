@@ -1,6 +1,13 @@
 import { voiceRoutesSchema, type VoiceRoutes } from "@codexhost/shared-contracts";
 
 const sharedRoutes = new WeakMap<object, VoiceRoutes>();
+const gatewayReady = new WeakMap<object, boolean>();
+export function applyVoiceGatewayReadiness(owner: object, ready: boolean): void {
+  gatewayReady.set(owner, ready);
+}
+export function voiceGatewayIsReady(owner: object): boolean {
+  return gatewayReady.get(owner) === true;
+}
 const SHARED_VOICE_CACHE = "codexhost.voice-routes-cache.v1";
 function cachedRoutes(owner: object): VoiceRoutes | undefined {
   const memory = sharedRoutes.get(owner);
@@ -39,9 +46,10 @@ export function nativeChatVoicePreferenceAllowsStart(owner: object): boolean {
     : !readFlag(owner, CHAT_LIVE_VOICE_STORAGE_KEY, false);
 }
 export function legacyVoiceRoutes(owner: Window): VoiceRoutes {
+  const chatLegacy = readFlag(owner, CHAT_LIVE_VOICE_STORAGE_KEY, false);
   return {
-    chatExperience: readFlag(owner, CHAT_LIVE_VOICE_STORAGE_KEY, false) ? "codex" : "chatgpt",
-    chatConnection: readFlag(owner, CHAT_LIVE_VOICE_STORAGE_KEY, false) ? "gateway" : "desktop",
+    chatExperience: chatLegacy ? "codex" : "chatgpt",
+    chatConnection: chatLegacy ? "gateway" : "desktop",
     workConnection: readFlag(owner, CPA_LIVE_VOICE_STORAGE_KEY, true) ? "gateway" : "desktop",
   };
 }

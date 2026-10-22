@@ -3,11 +3,13 @@ import { installCpaLiveVoiceHook } from "./renderer-cpa-live-voice-hook.js";
 import { installClientOwnedVoiceHook } from "./renderer-client-owned-voice.js";
 import { installRendererBinding } from "./install-renderer-binding.js";
 import { installExternalVoiceLaunchHook } from "./renderer-external-voice-launch.js";
+import { installVoiceCapabilityProjection } from "./renderer-voice-capability.js";
 
 installCpaLiveVoiceHook();
 installClientOwnedVoiceHook();
 installExternalVoiceLaunchHook();
 installNativeChatVoiceHook();
+installVoiceCapabilityProjection();
 
 const installBinding = (): void => {
   installRendererBinding();

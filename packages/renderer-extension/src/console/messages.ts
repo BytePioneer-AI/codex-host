@@ -82,6 +82,12 @@ const ENGLISH = {
   grokComputerUseHelp:
     "Lets Grok control Mac apps through ChatGPT’s Computer Use helper. ChatGPT Settings → Computer use still applies only to official Codex. New Grok threads pick up this switch.",
   grokComputerUseUnavailable: "ChatGPT Desktop Computer Use files were not found.",
+  grokBrowser: "Grok in-app browser",
+  grokBrowserHelp:
+    "Lets Grok use ChatGPT’s built-in browser (Browser Use) through cua_repl. Independent of Computer Use; official Codex Browser Use is unchanged. Grok fails closed when the in-app tab cannot be bound.",
+  grokBrowserUnavailable: "ChatGPT Desktop in-app browser files were not found.",
+  grokBrowserBlocked:
+    "Saved as intent. ChatGPT Desktop does not authorize Grok to use the in-app browser.",
   installGuide: "Install guide",
   noHarness: "No Harness plugins are installed.",
   consoleOffline: "The console is not running",
@@ -286,6 +292,11 @@ const CHINESE: ConsoleMessages = {
   grokComputerUseHelp:
     "让 Grok 通过 ChatGPT 的 Computer Use 助手控制 Mac 应用。ChatGPT 设置 → Computer use 仍只作用于官方 Codex。新的 Grok 线程会读取此开关。",
   grokComputerUseUnavailable: "未找到 ChatGPT Desktop 的 Computer Use 文件。",
+  grokBrowser: "Grok 内置浏览器",
+  grokBrowserHelp:
+    "让 Grok 通过 cua_repl 使用 ChatGPT 内置浏览器（Browser Use）。与 Computer Use 相互独立，官方 Codex Browser Use 不受影响。无法绑定内置标签页时 Grok 会直接失败。",
+  grokBrowserUnavailable: "未找到 ChatGPT Desktop 的内置浏览器文件。",
+  grokBrowserBlocked: "已保存为意向。ChatGPT Desktop 尚未授权 Grok 使用内置浏览器。",
   installGuide: "安装说明",
   noHarness: "没有已安装的 Harness 插件。",
   consoleOffline: "控制台未运行",

@@ -219,6 +219,46 @@ export function createVoiceSettingsPage(
         );
         gateway.item.append(gatewayActions);
         config.card.append(gateway.item);
+        const hook = options.desktop ? desktopVoiceHookStatus(doc.defaultView) : "unknown";
+        const hookLabel =
+          hook === "active"
+            ? m.hookSupported
+            : hook === "pending"
+              ? m.hookPending
+              : hook === "unsupported"
+                ? m.hookUnsupported
+                : hook === "disabled"
+                  ? m.hookDisabled
+                  : m.unknown;
+        const health = h(doc, "div", { className: "settings-voice__health" });
+        health.append(
+          h(
+            doc,
+            "p",
+            {},
+            `${m.gatewayStatus}: ${
+              state.gatewayReady === null
+                ? m.unknown
+                : state.gatewayReady
+                  ? m.configured
+                  : m.needsSetup
+            }`,
+          ),
+          h(
+            doc,
+            "p",
+            {},
+            `${m.preferencesStatus}: ${
+              state.routesActive === true
+                ? m.preferencesOn
+                : state.routesActive === false
+                  ? m.preferencesOff
+                  : m.unknown
+            }`,
+          ),
+          h(doc, "p", {}, `${m.hookStatus}: ${hookLabel}`),
+        );
+        config.card.append(health);
         if (setup) {
           const details = h(
             doc,
@@ -374,4 +414,21 @@ export function createVoiceSettingsPage(
       };
     },
   });
+}
+
+function desktopVoiceHookStatus(
+  win: Window | null,
+): "active" | "pending" | "unsupported" | "disabled" | "unknown" {
+  if (!win) return "unknown";
+  const value = (win as unknown as Record<string, unknown>).__codexhostClientOwnedVoiceV1;
+  if (!value || typeof value !== "object") return "unknown";
+  const status = (value as { status?: unknown }).status;
+  if (
+    status === "active" ||
+    status === "pending" ||
+    status === "unsupported" ||
+    status === "disabled"
+  )
+    return status;
+  return "unknown";
 }

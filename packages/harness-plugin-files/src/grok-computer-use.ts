@@ -76,6 +76,21 @@ async function isFile(target: string): Promise<boolean> {
   }
 }
 
+function isNotFound(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
+
+async function writeAtomically(file: string, content: string): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, content, { mode: 0o600, flag: "wx" });
+    await rename(temporary, file);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
 function launchPaths(
   environment: NodeJS.ProcessEnv,
   platform: string,
@@ -102,14 +117,13 @@ function launchPaths(
 }
 
 async function sharedRuntimePresent(launch: GrokComputerUseLaunch): Promise<boolean> {
-  for (const file of [launch.node, launch.cuaRepl, launch.nodeRepl]) {
-    if (!(await isFile(file))) return false;
-  }
-  return true;
+  const present = await Promise.all([launch.node, launch.cuaRepl, launch.nodeRepl].map(isFile));
+  return present.every(Boolean);
 }
 
 async function computerFilesPresent(launch: GrokComputerUseLaunch): Promise<boolean> {
-  return (await isFile(launch.skyApp)) && (await isFile(launch.codexCli));
+  const present = await Promise.all([isFile(launch.skyApp), isFile(launch.codexCli)]);
+  return present.every(Boolean);
 }
 
 async function browserFilesPresent(launch: GrokComputerUseLaunch): Promise<boolean> {
@@ -226,70 +240,56 @@ async function readPreference(environment: NodeJS.ProcessEnv): Promise<Preferenc
         : {}),
     };
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return undefined;
-    }
+    if (isNotFound(error)) return undefined;
     throw new GrokComputerUseError("Could not read Grok Computer Use settings");
   }
 }
 
 async function writePreference(environment: NodeJS.ProcessEnv, state: Preference): Promise<void> {
-  const directory = dataDirectory(environment);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const file = path.join(directory, PREFERENCE_FILE);
-  const temporary = `${file}.${randomUUID()}.tmp`;
   const document: Preference = {
     ...(typeof state.enabled === "boolean" ? { enabled: state.enabled } : {}),
     ...(typeof state.browser === "boolean" ? { browser: state.browser } : {}),
     ...(state.applyError ? { applyError: state.applyError } : {}),
   };
-  try {
-    await writeFile(temporary, `${JSON.stringify(document)}\n`, { mode: 0o600, flag: "wx" });
-    await rename(temporary, file);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await writeAtomically(
+    path.join(dataDirectory(environment), PREFERENCE_FILE),
+    `${JSON.stringify(document)}\n`,
+  );
 }
 
 async function readGrokConfig(environment: NodeJS.ProcessEnv): Promise<string> {
   try {
     return await readFile(path.join(grokHome(environment), "config.toml"), "utf8");
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return "";
+    if (isNotFound(error)) return "";
     throw new GrokComputerUseError("Could not read Grok config");
   }
 }
 
 async function writeGrokConfig(environment: NodeJS.ProcessEnv, text: string): Promise<void> {
-  const home = grokHome(environment);
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  const file = path.join(home, "config.toml");
-  const temporary = `${file}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, text.endsWith("\n") ? text : `${text}\n`, {
-      mode: 0o600,
-      flag: "wx",
-    });
-    await rename(temporary, file);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await writeAtomically(
+    path.join(grokHome(environment), "config.toml"),
+    text.endsWith("\n") ? text : `${text}\n`,
+  );
 }
 
-async function currentState(environment: NodeJS.ProcessEnv): Promise<{
+async function currentState(
+  environment: NodeJS.ProcessEnv,
+  preference?: Preference,
+): Promise<{
   enabled: boolean;
   browser: boolean;
   applyError?: string;
 }> {
-  const preference = await readPreference(environment);
+  const resolved = preference ?? (await readPreference(environment));
   const inferred =
-    preference?.enabled === undefined
+    resolved?.enabled === undefined
       ? inferredSurfaces(await readGrokConfig(environment))
       : undefined;
   return {
-    enabled: preference?.enabled ?? inferred?.enabled ?? false,
-    browser: preference ? (preference.browser ?? false) : (inferred?.browser ?? false),
-    ...(preference?.applyError ? { applyError: preference.applyError } : {}),
+    enabled: resolved?.enabled ?? inferred?.enabled ?? false,
+    browser: resolved ? (resolved.browser ?? false) : (inferred?.browser ?? false),
+    ...(resolved?.applyError ? { applyError: resolved.applyError } : {}),
   };
 }
 
@@ -318,10 +318,11 @@ async function surfaceFiles(
   launch: GrokComputerUseLaunch | undefined,
 ): Promise<{ computer: boolean; browser: boolean }> {
   if (!launch) return { computer: false, browser: false };
-  return {
-    computer: await computerFilesPresent(launch),
-    browser: await browserFilesPresent(launch),
-  };
+  const [computer, browser] = await Promise.all([
+    computerFilesPresent(launch),
+    browserFilesPresent(launch),
+  ]);
+  return { computer, browser };
 }
 
 export async function getGrokComputerUseSettings(
@@ -412,7 +413,7 @@ export async function applyGrokComputerUsePreference(
     if (preference === undefined) return;
     const launch = await discoverGrokComputerUseLaunch(environment, platform);
     const files = await surfaceFiles(launch);
-    const state = await currentState(environment);
+    const state = await currentState(environment, preference);
     try {
       await writeConfigForState(state, launch, files, environment);
       if (state.applyError)

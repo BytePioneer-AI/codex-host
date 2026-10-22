@@ -54,7 +54,7 @@ export function startVoiceSettingsSync(
             routes: legacyVoiceRoutes(owner),
           }),
         );
-      if (!disposed && !activeCall) {
+      if (!disposed && !activeCall && state.revision !== revision) {
         applySharedVoiceRoutes(owner, state.settings);
         revision = state.revision;
       }

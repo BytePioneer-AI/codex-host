@@ -201,20 +201,17 @@ export function createVoiceSettingsPage(
         });
         configure.id = gateway.item.querySelector("label")?.htmlFor ?? "";
         configure.setAttribute("aria-expanded", String(setup));
+        const gatewayReadyLabel =
+          state.gatewayReady === null
+            ? m.unknown
+            : state.gatewayReady
+              ? m.configured
+              : m.needsSetup;
         const gatewayActions = h(
           doc,
           "div",
           { className: "settings-voice__gateway-actions" },
-          h(
-            doc,
-            "span",
-            {},
-            state.gatewayReady === null
-              ? m.unknown
-              : state.gatewayReady
-                ? m.configured
-                : m.needsSetup,
-          ),
+          h(doc, "span", {}, gatewayReadyLabel),
           configure,
         );
         gateway.item.append(gatewayActions);
@@ -232,18 +229,7 @@ export function createVoiceSettingsPage(
                   : m.unknown;
         const health = h(doc, "div", { className: "settings-voice__health" });
         health.append(
-          h(
-            doc,
-            "p",
-            {},
-            `${m.gatewayStatus}: ${
-              state.gatewayReady === null
-                ? m.unknown
-                : state.gatewayReady
-                  ? m.configured
-                  : m.needsSetup
-            }`,
-          ),
+          h(doc, "p", {}, `${m.gatewayStatus}: ${gatewayReadyLabel}`),
           h(
             doc,
             "p",

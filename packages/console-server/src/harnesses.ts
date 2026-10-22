@@ -1,7 +1,6 @@
 import path from "node:path";
 
 import {
-  GrokComputerUseError,
   HarnessLaunchSettingsStore,
   discoverHarnessPlugins,
   getGrokComputerUseSettings,
@@ -131,14 +130,7 @@ export function createConsoleHarnesses(
         const computerUse = await setGrokComputerUse(update, environment);
         return { ...harness, computerUse };
       } catch (error) {
-        throw new ConsoleHarnessError(
-          400,
-          error instanceof GrokComputerUseError
-            ? error.message
-            : error instanceof Error
-              ? error.message
-              : String(error),
-        );
+        throw new ConsoleHarnessError(400, error instanceof Error ? error.message : String(error));
       }
     },
   };

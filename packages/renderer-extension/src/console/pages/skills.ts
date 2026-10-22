@@ -43,12 +43,6 @@ export function createSkillsPage(
       const document = context.content.ownerDocument;
       const content = context.content;
 
-      const status = h(
-        document,
-        "p",
-        { className: "settings-section-label" },
-        messages.loading,
-      ) as HTMLParagraphElement;
       const detail = h(document, "p", { className: "settings-hint console-skills-detail" });
       const search = h(document, "input", {
         type: "search",
@@ -65,11 +59,9 @@ export function createSkillsPage(
         "div",
         { className: "console-skills-page" },
         h(document, "h1", { className: "settings-section-label" }, messages.label),
-        h(document, "p", { className: "settings-hint" }, messages.description),
         harnessSlot,
         categorySlot,
         search,
-        status,
         detail,
         groupsHost,
       );
@@ -259,13 +251,7 @@ export function createSkillsPage(
           }))
           .filter((entry) => entry.visible.length > NONE || entry.group.failures.length > NONE);
         const shown = visibleGroups.reduce((sum, entry) => sum + entry.visible.length, NONE);
-        const total = rows().filter((row) => inCategory(row.skill)).length;
-        status.textContent =
-          total === NONE
-            ? messages.empty
-            : query && shown === NONE
-              ? messages.noMatches
-              : format(messages.count, { count: shown });
+        detail.textContent = shown === NONE ? (query ? messages.noMatches : messages.empty) : ALL;
         groupsHost.replaceChildren(
           ...visibleGroups.map(({ group, visible }) =>
             h(
@@ -323,7 +309,7 @@ export function createSkillsPage(
 
       void load().catch((error: unknown) => {
         if (context.signal.aborted) return;
-        status.textContent = error instanceof Error ? error.message : String(error);
+        detail.textContent = error instanceof Error ? error.message : String(error);
       });
 
       return () => {

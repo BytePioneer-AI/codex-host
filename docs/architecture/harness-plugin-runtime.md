@@ -87,6 +87,7 @@ plugins/
 - `links.website/documentation/installation` 只接受不带用户凭据的 HTTPS 地址。
 - `installation` 提供展示用命令、下载链接和前后提示；`notice` 提供插件兼容性说明。文本以 `en` 为必需回退、`zh-CN` 为可选翻译。Renderer 仅展示/复制这些数据，绝不从元数据执行命令，自动安装仍走 Adapter 的公共原生能力。
 - 能力继续由 `HarnessAdapter.inspect()`、Session 能力和公共可选接口提供，不在 Manifest 复制第二份运行时能力真相。
+- `codexhost/harness/inspect` 可带 `purpose: "availability"`，表示调用方只使用状态和错误。Renderer 启动时对所有已注册 Harness 的后台可用性检测使用该标记；用户选中 Harness 后加载 Model 目录仍做完整 inspection。Adapter 可据此不启动原生 Session 回答，避免用户未选用的 Harness 执行 Session 启动副作用；这种结果可以缺少原生默认 Model 和 Thinking 选项，不得写入完整 inspection 的缓存。未处理该标记的 Adapter 照常做完整 inspection。旧版 Host 按未知参数以 -32602 拒绝时，Renderer 去掉该标记重试一次。目前 OMP 用 `omp models --json` 回答（不创建 Session，因此不触发 OMP 的 Provider 连接预热）；命令不可用、输出无法识别或列表为空时回到 Session inspection，由原生启动报告原因。
 - 命令目录由可选的静态 `HarnessAdapter.commandCatalog` 声明，通过 `codexhost/harness/commands/inspect` 查询；读取目录不检查原生运行时、不连接原生服务、不创建或恢复 Session。未声明时返回空目录，不通过启动会话回退发现。执行仍走 `session.commands`。
 
 入口导出 [`HarnessPluginModule`](../../packages/harness-adapter/src/plugin.ts) 定义的工厂，不通过模块全局副作用注册：
@@ -146,7 +147,7 @@ Codex 的会话用量解析已从公共协议层迁入 `codex-usage`，账户配
 
 ## Harness CLI 版本与更新
 
-设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。首次选择详情时自动检查一次，不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。所选 Harness 的详情卡片标题旁提供官网外链图标，列表行及详情正文不重复提供通用官网或安装说明链接。未安装且有自动安装入口时显示下载图标；点击显式发起 CLI 安装，点击行本身查看手动安装命令、复制按钮、接入提示和「重新检测」，正文不提供额外的通用安装指南跳转入口。WorkBuddy 在详情正文提供一个「下载」按钮，跳转官网首页，并提示下载安装桌面应用，不提供分系统的安装指南链接。未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用，不回退更新本机的另一份安装。
+设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。进入连接页或切换 Host 时，自动检查当前 Host 列表中已安装且不在安装、检测中的 Harness，无须先选择详情；诊断完成后符合条件的 Harness 也会自动检查。有新版本时，列表显示最新版本；支持自动更新时同时提供更新按钮，点击后才调用该 Host 的原生更新能力，更新期间禁用重复操作。仅支持手动更新的安装显示新版本及详情中的原安装方式提示。不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。所选 Harness 的详情卡片标题旁提供官网外链图标，列表行及详情正文不重复提供通用官网或安装说明链接。未安装且有自动安装入口时显示下载图标；点击显式发起 CLI 安装，点击行本身查看手动安装命令、复制按钮、接入提示和「重新检测」，正文不提供额外的通用安装指南跳转入口。WorkBuddy 在详情正文提供一个「下载」按钮，跳转官网首页，并提示下载安装桌面应用，不提供分系统的安装指南链接。未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用，不回退更新本机的另一份安装。
 
 可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message?, messageCode?, notice?, latestVersionKind? }`。`message` 保留为 Adapter 诊断文本，不在界面原样拼接；专属更新限制与渠道说明由插件通过 `notice: { en, "zh-CN"?, ... }` 提供，Renderer 按当前语言选择，缺少翻译回退到英文。`messageCode` 仅保留通用 `original-installer` 的旧客户端文案路径，不再维护 Harness 专属提示码翻译表。`latestVersionKind` 可标识 `unknown` / `tracking-branch`，避免将非版本状态当成英文版本号展示；真实版本号及提交标识保持原样。旧插件的 `Unknown` / `Tracking branch (new commits)` 仍按当前语言展示，缺少或无法识别提示码时仅显示通用本地化说明，不展示未翻译的诊断文本。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
 
@@ -195,6 +196,8 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 每个 Host 连接有独立 Registry/Runtime；没有进程单例，也不将将来的进程级服务重复实例化到每个连接。只有 Harness 桥接层在本次接入；通知、诊断等插件尚未迁移。Host 先排空请求并关闭 Session/输出消费，再释放插件作用域。关闭幂等，失败收集为 Registry 清理错误。发现、显式信任、超时、迟到资源清理仍由加载器负责，Cordis 不是安全沙箱或包管理器。安装和升级需要重启，不热替换活动 Session。
 
 恢复时，Host 将旧映射解码为 Model、Thinking、Permission Mode 提示并传给 `open({ kind: "resume" })`。Adapter 决定恢复提示还是保留权威原生配置；Host 不再按 Harness ID 补发配置命令。OMP、DSH 在各自 Adapter 内恢复权限；OpenCode 保留原生确认的权限状态。成功读到原生配置后，Host 用共享载体保存确认值，旧映射仍可读取。
+
+Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶层字段：当前版本不使用它们，更新文件时原样保留，不因新增字段隔离会话。已知字段的类型、必填要求及身份和映射约束仍照常校验；已知元数据字段的清除不影响同文件中的未知字段。
 
 ## 加载与关闭行为
 

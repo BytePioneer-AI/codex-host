@@ -57,7 +57,11 @@ async function childHistory(
       entries.push(parsed.data);
     }
     const history: PiSessionHistory = { entries, leafId: String(entries.at(-1)?.id ?? "") || null };
-    const snapshot = mapPiSnapshot(history, { sessionId: parentSessionId, model: null });
+    const snapshot = mapPiSnapshot(history, {
+      sessionId: parentSessionId,
+      model: null,
+      ...(typeof header.cwd === "string" ? { cwd: header.cwd } : {}),
+    });
     const prefix = createHash("sha256").update(identity).digest("hex");
     return {
       turns: snapshot.turns.map((turn) => {

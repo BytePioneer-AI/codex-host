@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { usageStatisticsSessionSchema } from "@codexhost/shared-contracts";
 
 import {
   jsonlHeader,
@@ -9,6 +10,7 @@ import {
   jsonlUsageSources,
   nativeTimeMs,
   parseHarnessUsageEntry,
+  usageSessionTitle,
   withUsageSession,
 } from "../src/usage-statistics.js";
 
@@ -94,6 +96,25 @@ it("validates entries and native times", () => {
 
 describe("usage session attribution", () => {
   const entry = { id: "r", occurredAtMs: 1, inputTokens: 1, outputTokens: 1 };
+
+  it.each([
+    ["200 ASCII units", "a".repeat(200), "a".repeat(200)],
+    ["201 ASCII units", "a".repeat(201), `${"a".repeat(199)}…`],
+    ["an emoji within the limit", `${"a".repeat(198)}😀`, `${"a".repeat(198)}😀`],
+    ["an emoji exceeding the limit", `${"a".repeat(199)}😀`, `${"a".repeat(199)}…`],
+    ["a surrogate pair crossing the cut", `${"a".repeat(198)}😀b`, `${"a".repeat(198)}…`],
+    ["200 emoji", "😀".repeat(200), `${"😀".repeat(99)}…`],
+    ["201 emoji", "😀".repeat(201), `${"😀".repeat(99)}…`],
+  ])("keeps %s compatible with the statistics title schema", (_name, raw, expected) => {
+    const title = usageSessionTitle(raw);
+    expect(title).toBe(expected);
+    expect(title?.isWellFormed()).toBe(true);
+    expect(usageStatisticsSessionSchema.shape.title.safeParse(title).success).toBe(true);
+    expect(withUsageSession(entry, { sessionId: "s", title: raw }).sessionTitle).toBe(expected);
+    expect(
+      parseHarnessUsageEntry({ ...entry, sessionId: "s", sessionTitle: raw })?.sessionTitle,
+    ).toBe(expected);
+  });
 
   it("keeps valid session IDs and absolute directories and drops the rest", () => {
     expect(withUsageSession(entry, { sessionId: "s", cwd: "/work" })).toEqual({

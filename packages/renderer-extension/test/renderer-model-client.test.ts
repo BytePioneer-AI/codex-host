@@ -907,4 +907,36 @@ describe("Renderer fixed Model request client", () => {
 
     await expect(client.inspectHarness({ harnessId: piHarnessId })).rejects.toThrow();
   });
+
+  it("retries an availability inspection without `purpose` on a Host that rejects it", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Invalid Harness inspection params"), { code: -32602 }),
+      )
+      .mockResolvedValueOnce(inspection);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Model client was not created");
+
+    await expect(
+      client.inspectHarness({ harnessId: piHarnessId, purpose: "availability" }),
+    ).resolves.toEqual(inspection);
+    expect(sendRequest.mock.calls.map(([, params]) => params)).toEqual([
+      { harnessId: piHarnessId, purpose: "availability" },
+      { harnessId: piHarnessId },
+    ]);
+  });
+
+  it("does not retry a full inspection rejected for its params", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("Invalid params"), { code: -32602 }));
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Model client was not created");
+
+    await expect(client.inspectHarness({ harnessId: piHarnessId })).rejects.toThrow(
+      "Invalid params",
+    );
+    expect(sendRequest).toHaveBeenCalledOnce();
+  });
 });

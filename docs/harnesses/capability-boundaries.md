@@ -7,7 +7,7 @@
 - **OMP**：现有原生提问与工具审批已接入。选择题使用原生逐项说明，超时与主动取消分别回传 `timedOut` / `cancelled`，详见 [OMP 交互](omp/omp-interactions.md)。子代理投影依赖 OMP RPC 的 `set_subagent_subscription` 订阅（服务端默认 `off`）：Host 启动连接时请求 `events` 级别；不支持该命令的旧版 OMP 优雅降级为无子代理投影，不阻塞会话。子代理转写读取优先直接读父会话文件旁的 `<子代理ID>.jsonl`（OMP RPC 的子代理注册表仅存于内存，冷启动进程无法按 ID 解析已完成的子代理）；文件不存在时回退 RPC 读取。
   OMP 的 `/context` 及原生明确报告未调用 Agent 的动态命令使用非持久化完成语义，显示原生文本后释放当前轮次，不合成历史身份；普通轮次的终结与取消检查保持不变。首次本地命令不产生历史文件时，以原生空消息确认下一轮可继续。详见 [本地命令边界](omp/omp-interactions.md#不调用-agent-的本地命令)。
 - **CodeBuddy**：从 ACP 动态目录读取斜杠命令，按原生压缩事件及持久化结果确认上下文压缩；通过原生附加系统提示让会话发现 Host 委派 CLI。Fork 和修订通过无模型的原生复制、原生 `/fork` 与仅作用于新副本的 rollback 完成，校验完整历史前缀与源会话不变；派生配置随原生引用恢复。成功派生后通过同一临时 ACP 进程的原生 HTTP 接口删除中间副本；早期失败或强杀仍可能残留，详见专属文档。详见 [CodeBuddy 接入](codebuddy/codebuddy-harness-integration.md)。
-- **Cursor**：参数化模型目录提供 Thinking 组合；ACP 原生命令目录提供命令；每会话的原生 HTTP MCP 连接提供向外委派。详见 [Cursor 接入](cursor/cursor-cli-experimental.md)。
+- **Cursor**：参数化模型目录提供 Thinking 组合；ACP 原生命令目录提供命令；原生 shell 通过 Host 安装的 `codexhost-delegation` skill 调用 CLI 向外委派。详见 [Cursor 接入](cursor/cursor-cli-experimental.md)。
 - **Hermes**：会话统一使用官方 Gateway，不以版本数值差异阻断，接入提问、Thinking、命令、压缩、原生 Diff，以及未压缩历史的独立 Fork/修订；通过进程内注册的私有临时 Skill 发现 Host CLI 并保留父任务环境，不向共享技能目录写入临时 Skill。不再保留 ACP 实现或 SDK 依赖；历史发现和导入使用原生 SessionDB 只读查询，导入的原生身份通过 Gateway 恢复。详见 [Hermes 能力与边界](hermes/hermes-capabilities.md)。
 - **Grok**：MCP 同意表单通过 `_x.ai/mcp/elicit` 投影为 Desktop 审批（Allow once / Deny）。当请求携带已核验的 `persist: ["always"]` 时增加 Always allow。Allow this conversation 在原生 session 生命周期核实前不提供。仅支持无字段或已核验的空 object schema；URL elicitation、任意输入表单和原生 TUI elicitation 卡片均不提供。工具 `requestPermission` 仍走独立路径。CodexHost 连接页可分别开关 Grok `cua_repl` 的 Computer Use 与 In-app browser（IAB）意向；在 Desktop 授权外部 Harness 之前 IAB 表面保持关闭；ChatGPT 设置中的 Computer use / Browser 仍只作用于官方 Codex。详见 [Grok MCP elicitation](grok/mcp-elicitation.md) 与 [Grok Computer Use setting](grok/computer-use-settings.md)。
 
@@ -25,7 +25,7 @@ Kimi 通过 ACP `configOptions` 提供当前会话、当前 Model 的 Thinking �
 
 Cursor 当前 ACP 没有 Usage、Fork、回滚或上下文压缩出口。macOS/Linux 的 Fork 通过隔离的 CLI 会话副本执行原生 `/fork`，历史位置再用 `/rewind` 的“仅恢复对话”选项回退，最后由 ACP 恢复；修订上一条复用这条路径，包括单轮回退为空会话。会话内容不做格式转换，目标边界必须有原生回退点。Windows Fork/修订和跨工作区 Fork 仍不支持。插件不重写原生消息来合成回滚，也不把普通 `/compact` Prompt 计为压缩。
 
-Agent 间任务协作目前是单向的：正常 Cursor Session 可以通过原生 MCP 向其他 Harness 委派、查询及跟进任务。无人值守入站需要确认原生 Full Access 已生效，但 Cursor 的 `--force` 可能被团队策略静默降级，而 ACP 只公布 Agent/Plan/Ask，不能确认最终审批策略，因此仍返回 `unsupported`。这不同于缺少向外委派能力，能力表分别标明。
+Agent 间任务协作目前是单向的：正常 Cursor Session 可以在原生 shell 中通过 `codexhost-delegation` skill 调用 Host CLI，向其他 Harness 委派、查询及跟进任务。无人值守入站需要确认原生 Full Access 已生效，但 Cursor 的 `--force` 可能被团队策略静默降级，而 ACP 只公布 Agent/Plan/Ask，不能确认最终审批策略，因此仍返回 `unsupported`。这不同于缺少向外委派能力，能力表分别标明。
 
 ## Pi subagent 插件
 

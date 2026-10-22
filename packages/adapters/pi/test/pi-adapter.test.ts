@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -660,32 +660,25 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
-  it.each([false, true])("supports alias Fast (uncached cwd: %s)", async (liveSelection) => {
+  it.each(
+    ["openai-codex-responses", "openai-responses"].flatMap((api) =>
+      [false, true].map((liveSelection) => ({ api, liveSelection })),
+    ),
+  )("supports Fast ($api, uncached: $liveSelection)", async ({ api, liveSelection }) => {
     const home = await mkdtemp(path.join(os.tmpdir(), "pi-fast-adapter-"));
-    await mkdir(path.join(home, ".pi/agent"), { recursive: true });
-    await mkdir(path.join(home, ".codex"));
-    const claims = Buffer.from(
-      JSON.stringify({ iss: "https://auth.openai.com", client_id: "app_EMoamEEZ73f0CkXaXp7hrann" }),
-    ).toString("base64url");
-    await writeFile(
-      path.join(home, ".pi/agent/auth.json"),
-      JSON.stringify({
-        "synthetic-provider": { type: "oauth", access: `header.${claims}.signature` },
-      }),
-    );
-    await writeFile(
-      path.join(home, ".codex/models_cache.json"),
-      JSON.stringify({
-        models: [{ slug: "synthetic-model", service_tiers: [{ id: "priority" }] }],
-      }),
-    );
+    let fastAvailable = true;
     const transports: FakePiTransport[] = [];
     const adapter = new PiAdapter(
       { environment: { HOME: home } },
       {
         createTransport: () => {
           const transport = new FakePiTransport();
-          transport.supportsFastMode.mockResolvedValue(true);
+          transport.state.modelId = "synthetic-GPT-model";
+          transport.getAvailableModels.mockResolvedValue([
+            { provider: "synthetic-provider", id: "synthetic-GPT-model", reasoning: true, api },
+            { provider: "synthetic-provider", id: "alternate-model", reasoning: false, api },
+          ]);
+          transport.supportsFastMode.mockImplementation(async () => fastAvailable);
           transport.getCommands.mockResolvedValue([
             {
               name: "codexhost-fast-mode",
@@ -701,7 +694,10 @@ describe("Pi HarnessAdapter Session", () => {
     try {
       const inspection = await adapter.inspect({ cwd: home });
       if (inspection.status !== "ready") throw new Error("Inspection failed");
-      const base = encodePiModelRef({ provider: "synthetic-provider", id: "synthetic-model" });
+      const base = encodePiModelRef({
+        provider: "synthetic-provider",
+        id: "synthetic-GPT-model",
+      });
       const fast = inspection.catalog.models.find((model) => model.ref.id === base.id)?.fastModel;
       if (!fast) throw new Error("Missing Fast choice");
       expect(
@@ -807,7 +803,7 @@ describe("Pi HarnessAdapter Session", () => {
         ok: true,
         value: { initialState: { effectiveModel: fast } },
       });
-      await rm(path.join(home, ".codex/models_cache.json"));
+      fastAvailable = false;
       await adapter.inspect({ cwd: home, refresh: true });
       const restoredWithoutSupport = await adapter.open({
         kind: "resume",

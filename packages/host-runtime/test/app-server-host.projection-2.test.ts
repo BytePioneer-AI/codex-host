@@ -45,6 +45,16 @@ import {
   answerOfficialParentCwd,
 } from "./app-server-host-fixture.js";
 
+async function answerOfficialChildName(
+  fixture: ReturnType<typeof createFixture>,
+  name?: string,
+): Promise<void> {
+  const request = await readJsonLine(fixture.official.stdin);
+  expect(request).toMatchObject({ method: "thread/name/set" });
+  expect(request.params).toHaveProperty("name", name ?? expect.stringContaining(" · "));
+  fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+}
+
 async function nativeSendFixture(): Promise<{
   fixture: ReturnType<typeof createFixture>;
   api: DelegationControlApi;
@@ -93,6 +103,17 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({ result: { status: "ready" } });
     expect(claude.inspectionCalls).toBe(1);
     expect(pi.inspectionCalls).toBe(0);
+
+    const inspect = vi.spyOn(pi, "inspect");
+    writeRequest(fixture.desktopInput, {
+      id: 33,
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "pi", refresh: true, purpose: "availability" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 33)),
+    ).resolves.toMatchObject({ result: { status: "ready" } });
+    expect(inspect).toHaveBeenCalledWith({ refresh: true, purpose: "availability" });
 
     writeRequest(fixture.desktopInput, {
       id: 32,
@@ -480,17 +501,27 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const read = await readJsonLine(fixture.official.stdin);
     expect(read).toMatchObject({
       method: "thread/read",
-      params: { threadId: "native-parent" },
+      params: { threadId: "native-parent", includeTurns: false },
     });
     fixture.official.stdout.write(
       `${JSON.stringify({
         id: read.id,
-        result: { thread: { id: "native-parent", cwd: "/native-workspace" } },
+        result: {
+          thread: {
+            id: "native-parent",
+            cwd: "/native-workspace",
+            name: "Native project",
+            preview: "Original task text",
+          },
+        },
       })}\n`,
     );
 
     await expect(pending).resolves.toMatchObject({ harnessId: "pi", status: "running" });
     expect(fixture.adapter.sessions[0]?.cwd).toBe(path.resolve("/native-workspace"));
+    expect((await fixture.mappingStore.listThreads())[0]?.title).toBe(
+      "inherit workspace · Native project",
+    );
     fixture.adapter.sessions[0]?.succeedTurn();
     await stopFixture(fixture);
   });
@@ -1029,6 +1060,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const turnStart = await readJsonLine(fixture.official.stdin);
     expect(turnStart).toMatchObject({
       method: "turn/start",
@@ -1094,6 +1126,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const turnStart = await readJsonLine(fixture.official.stdin);
     expect(turnStart).toMatchObject({
       method: "turn/start",
@@ -1126,11 +1159,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const pending = delegationApi.start({
       harnessId: "codex",
       task: "review auth",
+      taskName: "Auth review",
       cwd: "/synthetic",
       parentThreadId: "parent-thread",
       requestId: "native-request-1",
     });
-    await answerOfficialParentCwd(fixture);
+    await answerOfficialParentCwd(fixture, "parent-thread", "Main review");
     const threadStart = await readJsonLine(fixture.official.stdin);
     expect(threadStart).toMatchObject({
       method: "thread/start",
@@ -1143,6 +1177,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );
+    await answerOfficialChildName(fixture, "Auth review · Main review");
     const turnStart = await readJsonLine(fixture.official.stdin);
     expect(turnStart).toMatchObject({
       method: "turn/start",
@@ -1189,7 +1224,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       parentThreadId: "parent-thread",
       requestId: "native-request-1",
     });
-    await answerOfficialParentCwd(fixture);
+    await answerOfficialParentCwd(fixture, "parent-thread", "Renamed parent");
     await expect(duplicate).resolves.toMatchObject({ threadId: "native-child" });
     expect(fixture.official.stdin.readableLength).toBe(0);
 
@@ -1204,6 +1239,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: implicitThreadStart.id, result: { thread: { id: "implicit-child" } } })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const implicitTurnStart = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
       `${JSON.stringify({ id: implicitTurnStart.id, result: { turn: { id: "implicit-turn" } } })}\n`,
@@ -1217,6 +1253,50 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await answerOfficialParentCwd(fixture);
     await expect(implicitDuplicate).resolves.toMatchObject({ threadId: "implicit-child" });
+    expect(fixture.official.stdin.readableLength).toBe(0);
+    await stopFixture(fixture);
+  });
+
+  it("still delivers the task with the default title if the native child title cannot be set", async () => {
+    let api: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (registration) => {
+        api = registration;
+      },
+    });
+    await fixture.ready;
+    if (!api) throw new Error("Delegation API was not registered");
+    const pending = api.start({
+      harnessId: "codex",
+      task: "Task",
+      parentThreadId: "parent-thread",
+    });
+    await answerOfficialParentCwd(fixture);
+    const start = await readJsonLine(fixture.official.stdin);
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: start.id, result: { thread: { id: "unnamed-child" } } })}\n`,
+    );
+    const name = await readJsonLine(fixture.official.stdin);
+    expect(name).toMatchObject({ method: "thread/name/set" });
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: name.id, error: { code: -1, message: "name failed" } })}\n`,
+    );
+    const turnStart = await readJsonLine(fixture.official.stdin);
+    expect(turnStart).toMatchObject({
+      method: "turn/start",
+      params: { threadId: "unnamed-child", input: [{ type: "text", text: "Task" }] },
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "unnamed-turn" } } })}\n`,
+    );
+    await expect(pending).resolves.toMatchObject({
+      threadId: "unnamed-child",
+      turnId: "unnamed-turn",
+      status: "running",
+    });
+    expect(await fixture.mappingStore.listDelegations()).toEqual([
+      expect.objectContaining({ childHostThreadId: "unnamed-child", status: "running" }),
+    ]);
     expect(fixture.official.stdin.readableLength).toBe(0);
     await stopFixture(fixture);
   });
@@ -1246,6 +1326,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const turnStart = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
       `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn" } } })}\n`,
@@ -1283,6 +1364,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "fast-child" } } })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const turnStart = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
       `${JSON.stringify({
@@ -1374,6 +1456,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const turnStart = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
       `${JSON.stringify({ id: turnStart.id, error: { code: -1, message: "delivery failed" } })}\n`,

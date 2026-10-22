@@ -333,7 +333,16 @@ export function createRendererModelClient(
     options?: RendererRequestOptions,
   ): Promise<HarnessInspection> => {
     const params = harnessInspectParamsSchema.parse(input);
-    const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    let result: unknown;
+    try {
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    } catch (error) {
+      // Hosts that predate `purpose` reject it as an unknown param; they only run full inspection.
+      if (!params.purpose || !isInvalidParams(error)) throw error;
+      const full = { ...params };
+      delete full.purpose;
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, full, options);
+    }
     return harnessInspectionSchema.parse(result);
   };
   const inspectHarnessCommands = async (
@@ -648,4 +657,8 @@ export function createRendererModelClient(
       });
     },
   });
+}
+
+function isInvalidParams(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === -32602;
 }

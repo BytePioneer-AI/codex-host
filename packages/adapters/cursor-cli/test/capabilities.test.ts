@@ -210,6 +210,97 @@ describe("Cursor parameterized Thinking", () => {
   });
 });
 
+describe("Cursor Auto Optimize For", () => {
+  // Shape reported by cursor-agent 2026.10.01 for its Auto model.
+  const optimizeFor: SessionConfigOption & { type: "select" } = {
+    id: "optimize_for",
+    name: "Optimize For",
+    description: "How Cursor Router picks a model for each request. Cost uses classic Auto.",
+    category: "model_config",
+    type: "select",
+    currentValue: "balanced",
+    options: [
+      { value: "intelligence", name: "Intelligence" },
+      { value: "balanced", name: "Balance" },
+      { value: "cost", name: "Cost" },
+    ],
+  };
+  const autoModel = select("model", "auto-smart", ["auto-smart", "alpha"], "model");
+  const autoInfo: CursorSessionInfo = {
+    sessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    configOptions: [autoModel, optimizeFor],
+    nativeModels: [
+      { value: "auto-smart", name: "Auto", configOptions: [optimizeFor] },
+      { value: "alpha", name: "Alpha", configOptions: [thinking, effort, context] },
+    ],
+  };
+  const choice = (value: string) =>
+    required(
+      cursorThinking(autoInfo.configOptions).find(({ values }) =>
+        values.some(([id, entry]) => id === "optimize_for" && entry === value),
+      ),
+    );
+
+  it("offers Optimize For as Auto's Thinking and keeps it out of the Model Ref", () => {
+    const catalog = cursorCatalog(autoInfo);
+    const auto = required(
+      catalog.models.find(({ ref }) => ref.id === cursorModelRef("auto-smart").id),
+    );
+    expect(auto.ref).toEqual(cursorModelRef("auto-smart"));
+    expect(
+      (auto.supportedThinkingOptionIds ?? []).map(
+        (id) => catalog.thinkingOptions.find((option) => option.id === id)?.label,
+      ),
+    ).toEqual(["Intelligence", "Balance", "Cost"]);
+    expect(catalog.defaultModel).toEqual(cursorModelRef("auto-smart"));
+    expect(catalog.defaultThinkingOptionId).toBe(choice("balanced").id);
+    // Other model_config parameters still travel in the Ref.
+    expect(cursorCatalog(info).defaultModel).toEqual(cursorModelRef("alpha[context=200k]"));
+  });
+
+  it("applies an Optimize For choice and keeps the confirmed Model selectable", async () => {
+    const transport = new CursorTransport({ cwd: process.cwd(), environment: {} });
+    transport.sessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    let options = structuredClone(autoInfo.configOptions ?? []);
+    const configure = vi.spyOn(transport, "configure").mockImplementation(async (id, value) => {
+      options = options.map((option) =>
+        option.id === id ? ({ ...option, currentValue: value } as SessionConfigOption) : option,
+      );
+      return { configOptions: structuredClone(options) };
+    });
+    vi.spyOn(transport, "close").mockResolvedValue();
+    const session = new CursorSession(transport, structuredClone(autoInfo), () => {});
+    const done = (async () => {
+      for await (const output of session.outputs) void output;
+    })();
+    try {
+      const intelligence = choice("intelligence");
+      expect(
+        await session.execute({ type: "thinking.select", thinkingOptionId: intelligence.id }),
+      ).toEqual({ ok: true, value: { completed: true } });
+      expect(configure).toHaveBeenCalledWith("optimize_for", "intelligence");
+      expect(session.initialState.effectiveThinkingOptionId).toBe(intelligence.id);
+      expect(session.initialState.effectiveModel).toEqual(cursorModelRef("auto-smart"));
+      const catalog = cursorCatalog(session.info);
+      expect(
+        catalog.models.some(({ ref }) => ref.id === session.initialState.effectiveModel?.id),
+      ).toBe(true);
+    } finally {
+      await session.close();
+      await done;
+    }
+  });
+
+  it("still accepts a legacy Auto Ref that carried Optimize For", () => {
+    expect(
+      cursorModelSelection(autoInfo, cursorModelRef("auto-smart[optimize_for=cost]").id),
+    ).toEqual([
+      ["model", "auto-smart"],
+      ["optimize_for", "cost"],
+    ]);
+  });
+});
+
 describe("Cursor advertised slash commands", () => {
   const native = [
     { name: "review", description: "Review changes" },

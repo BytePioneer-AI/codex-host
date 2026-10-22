@@ -2389,8 +2389,9 @@ export function installRendererBindingProbe(
           try {
             // Bulk discovery must not occupy the native interactive slots needed
             // to identify the visible Thread and load its selected configuration.
+            // Availability only: the selected Harness loads its catalog through full inspection.
             const inspection = await client.inspectHarness(
-              { harnessId: harnessIdSchema.parse(agent), refresh },
+              { harnessId: harnessIdSchema.parse(agent), refresh, purpose: "availability" },
               { priority: "background" },
             );
             status = inspection.status === "ready" ? "ready" : inspection.status;

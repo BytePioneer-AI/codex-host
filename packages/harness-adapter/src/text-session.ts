@@ -71,6 +71,13 @@ export type HarnessResult<T> = { ok: true; value: T } | { ok: false; error: Harn
 export interface InspectHarnessInput {
   cwd?: string;
   refresh?: boolean;
+  /**
+   * `availability`: the caller uses only the status and error. An Adapter may then answer
+   * without starting a native Session, so Harnesses the user has not chosen incur no Session
+   * startup work. Its catalog may omit the native default Model and Thinking option, so it must
+   * not stand in for a full inspection.
+   */
+  purpose?: "availability";
 }
 
 export type HarnessExecutionPolicy = "default" | "unattended-full-access";

@@ -971,6 +971,17 @@
   line-height: 18px;
 }
 
+.settings-connection-row__status:has(.settings-connection-version-available) {
+  flex-wrap: wrap;
+  max-width: 160px;
+}
+
+.settings-connection-version-available {
+  flex-basis: 100%;
+  color: var(--settings-focus);
+  overflow-wrap: anywhere;
+}
+
 .settings-connection-row__status::before {
   width: 6px;
   height: 6px;

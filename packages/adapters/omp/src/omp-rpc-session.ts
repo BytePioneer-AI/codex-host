@@ -428,7 +428,11 @@ function assistantFailure(value: unknown): Error | null | undefined {
   return new Error(nonBlankString(value.errorMessage) ? value.errorMessage : fallback);
 }
 
-function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+/** Signals the whole process tree; on Windows this also reaches OMP behind a `.cmd` shim. */
+export function signalProcessTree(
+  child: { readonly pid?: number | undefined },
+  signal: NodeJS.Signals,
+): void {
   if (!child.pid) return;
   if (process.platform === "win32") {
     spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {

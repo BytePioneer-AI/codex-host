@@ -51,6 +51,18 @@ describe("skill manifest parsing", () => {
     ).toBeUndefined();
   });
 
+  it("reads the frontmatter of a manifest whose body runs past the parse window", () => {
+    const root = "/home/demo/skills";
+    const body = "x".repeat(200 * 1024);
+    const skill = harnessSkillFromDirectory(
+      root,
+      path.join(root, "big-skill"),
+      `---\nname: big-skill\ndescription: survives a long body\n---\n\n${body}\n`,
+    );
+    expect(skill?.name).toBe("big-skill");
+    expect(skill?.description).toBe("survives a long body");
+  });
+
   it("takes the category from frontmatter, else the category directory, else nothing", () => {
     expect(
       harnessSkillFromDirectory(

@@ -1909,11 +1909,14 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const derivedTurns = forkedThread.turns as JsonObject[];
     if (typeof derivedId !== "string") throw new Error("Fork response has no Thread ID");
     expect(derivedTurns).toHaveLength(3);
+    const revertBeforeTurnId = derivedTurns[1]?.id;
+    if (typeof revertBeforeTurnId !== "string")
+      throw new Error("Fork response has no second Turn ID");
 
     writeRequest(fixture.desktopInput, {
       id: 11,
       method: "thread/revert",
-      params: { threadId: derivedId, beforeTurnId: derivedTurns[1]?.id },
+      params: { threadId: derivedId, beforeTurnId: revertBeforeTurnId },
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 11)),

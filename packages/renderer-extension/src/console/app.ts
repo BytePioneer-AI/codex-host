@@ -4,6 +4,7 @@ import { startAgentGroupSync } from "../agent-group-sync.js";
 import { getSharedAgentGroupPreferenceStore } from "../agent-group-preference.js";
 import { createConsoleConnectionDiagnostics } from "./connection-diagnostics.js";
 import consoleCss from "./console.css";
+import skillsCss from "./skills.css";
 import consoleComponentsCss from "./components.css";
 import usageCss from "./usage/usage.css";
 import { h } from "./dom.js";
@@ -186,7 +187,7 @@ export function startConsoleApp(document: Document): void {
   // Constructable sheets: the page CSP forbids inline style elements.
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(
-    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${consoleCss}`,
+    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${skillsCss}\n${consoleCss}`,
   );
   shadow.adoptedStyleSheets = [sheet];
 

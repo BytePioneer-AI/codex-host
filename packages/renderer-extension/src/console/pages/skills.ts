@@ -2,11 +2,14 @@ import {
   HARNESS_SKILLS_METHOD,
   HARNESS_SKILL_SET_ENABLED_METHOD,
   HARNESS_SKILL_CONTENT_METHOD,
+  HARNESS_SKILL_UNINSTALL_METHOD,
   harnessSkillSetEnabledParamsSchema,
   harnessSkillContentParamsSchema,
+  harnessSkillUninstallParamsSchema,
   harnessSkillsListParamsSchema,
   harnessSkillsSetEnabledResultSchema,
   harnessSkillContentResultSchema,
+  harnessSkillUninstallResultSchema,
   type HarnessSkillEntry,
   type HarnessSkillGroup,
   type HarnessSkillsListResult,
@@ -14,6 +17,7 @@ import {
 
 import { h } from "../dom.js";
 import { renderSkillMarkdown } from "../skill-markdown.js";
+import { createRendererSettingsIcon } from "../../settings/icons.js";
 import type { ConsoleMessages } from "../messages.js";
 import type {
   RendererSettingsPageDefinition,
@@ -60,12 +64,29 @@ export function createSkillsPage(
       const harnessSlot = h(document, "div", { className: "console-skills-filters" });
       const categorySlot = h(document, "div", { className: "console-skills-filters" });
       const groupsHost = h(document, "div", { className: "console-skills-groups" });
+      const refresh = h(
+        document,
+        "button",
+        {
+          type: "button",
+          className: "console-skills-refresh",
+          "aria-label": messages.refresh,
+          title: messages.refresh,
+        },
+        createRendererSettingsIcon("refresh", 16),
+      ) as HTMLButtonElement;
 
       const shell = h(
         document,
         "div",
         { className: "console-skills-page" },
-        h(document, "h1", { className: "settings-section-label" }, messages.label),
+        h(
+          document,
+          "div",
+          { className: "console-skills-head" },
+          h(document, "h1", { className: "settings-section-label" }, messages.label),
+          refresh,
+        ),
         harnessSlot,
         categorySlot,
         search,
@@ -82,6 +103,17 @@ export function createSkillsPage(
         className: "console-skill-dialog-description",
       });
       const dialogBody = h(document, "div", { className: "console-skill-dialog-body" });
+      const dialogRemove = h(
+        document,
+        "button",
+        {
+          type: "button",
+          className: "console-skill-dialog-action is-danger",
+          "aria-label": messages.uninstall,
+          title: messages.uninstall,
+        },
+        createRendererSettingsIcon("trash", 16),
+      ) as HTMLButtonElement;
       const dialogClose = h(
         document,
         "button",
@@ -105,7 +137,13 @@ export function createSkillsPage(
             dialogName,
             dialogDescription,
           ),
-          dialogClose,
+          h(
+            document,
+            "div",
+            { className: "console-skill-dialog-actions" },
+            dialogRemove,
+            dialogClose,
+          ),
         ),
         dialogBody,
       );
@@ -161,10 +199,16 @@ export function createSkillsPage(
         return !skill.archived && skill.category === category;
       };
 
+      /** The row the dialog currently shows; the remove button acts on it. */
+      let detailRow: SkillRow | undefined;
+
       /** Opens the detail dialog and fills it with the skill's own SKILL.md. */
       const openDetail = async (row: SkillRow): Promise<void> => {
+        detailRow = row;
         dialogName.textContent = row.skill.name;
         dialogDescription.textContent = row.skill.description;
+        // A shared copy would come back on the next read: the shared root is not ours to edit.
+        dialogRemove.hidden = isSharedCopy(row.skill);
         dialogBody.replaceChildren(
           h(document, "p", { className: "settings-hint" }, messages.loading),
         );
@@ -207,6 +251,81 @@ export function createSkillsPage(
           );
         }
       };
+
+      /** Second step for a destructive action: a confirm view inside the same dialog. */
+      const showConfirm = (row: SkillRow): void => {
+        const cancel = h(
+          document,
+          "button",
+          {
+            type: "button",
+            className: "settings-command-button settings-command-button--secondary",
+          },
+          messages.cancel,
+        ) as HTMLButtonElement;
+        cancel.addEventListener("click", () => void openDetail(row));
+        const confirm = h(
+          document,
+          "button",
+          { type: "button", className: "settings-command-button console-skill-danger" },
+          messages.uninstallConfirm,
+        ) as HTMLButtonElement;
+        confirm.addEventListener("click", () => void runUninstall(row, confirm));
+        dialogBody.replaceChildren(
+          h(
+            document,
+            "div",
+            { className: "console-skill-confirm" },
+            h(document, "p", {}, format(messages.uninstallQuestion, { name: row.skill.name })),
+            h(document, "code", { className: "console-skill-confirm-path" }, row.skill.path),
+            h(document, "p", { className: "settings-hint" }, messages.uninstallWarning),
+            h(document, "div", { className: "console-skill-confirm-actions" }, cancel, confirm),
+          ),
+        );
+      };
+
+      const runUninstall = async (row: SkillRow, button: HTMLButtonElement): Promise<void> => {
+        button.disabled = true;
+        try {
+          const params = harnessSkillUninstallParamsSchema.parse({
+            harness: row.group.harness,
+            name: row.skill.name,
+          });
+          const result = harnessSkillUninstallResultSchema.parse(
+            await request(HARNESS_SKILL_UNINSTALL_METHOD, params),
+          );
+          if (!result.ok) {
+            dialogBody.append(
+              h(
+                document,
+                "p",
+                { className: "settings-hint console-skills-failure" },
+                result.reason ?? messages.uninstallFailed,
+              ),
+            );
+            return;
+          }
+          dialog.close();
+          detailRow = undefined;
+          await load();
+          detail.textContent = format(messages.uninstalled, { name: row.skill.name });
+        } catch (error) {
+          dialogBody.append(
+            h(
+              document,
+              "p",
+              { className: "settings-hint console-skills-failure" },
+              error instanceof Error ? error.message : String(error),
+            ),
+          );
+        } finally {
+          button.disabled = false;
+        }
+      };
+
+      dialogRemove.addEventListener("click", () => {
+        if (detailRow) showConfirm(detailRow);
+      });
 
       const toggleSwitch = async (row: SkillRow, button: HTMLButtonElement): Promise<void> => {
         const next = row.skill.enabled === false;
@@ -413,6 +532,22 @@ export function createSkillsPage(
         renderFilters();
         renderList();
       }
+
+      /** Re-reads every Harness: skills get installed and removed outside this page all the time. */
+      const reload = async (): Promise<void> => {
+        refresh.disabled = true;
+        refresh.classList.add("is-spinning");
+        detail.textContent = messages.loading;
+        try {
+          await load();
+        } catch (error) {
+          detail.textContent = error instanceof Error ? error.message : String(error);
+        } finally {
+          refresh.disabled = false;
+          refresh.classList.remove("is-spinning");
+        }
+      };
+      refresh.addEventListener("click", () => void reload());
 
       search.addEventListener("input", renderList);
       context.signal.addEventListener(

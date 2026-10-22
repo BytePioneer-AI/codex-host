@@ -1,4 +1,4 @@
-import { rm, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { rm, mkdtemp, mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -11,6 +11,7 @@ import {
   readDirectories,
   scanHarnessSkillsRoot,
 } from "../src/skills-catalog.js";
+import { createHarnessSkillsCatalog } from "../src/skills-catalog-helper.js";
 
 async function temporaryRoot(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "codexhost-skills-"));
@@ -160,6 +161,57 @@ describe("scanHarnessSkillsRoot", () => {
       const byName = new Map(scan.skills.map((skill) => [skill.name, skill]));
       expect(byName.get("retired")?.archived).toBe(true);
       expect(byName.get("live")?.archived).toBeUndefined();
+    } finally {
+      await removeTree(root);
+    }
+  });
+});
+
+describe("skill removal guard rails", () => {
+  it("removes a real skill directory and refuses everything else", async () => {
+    const root = await temporaryRoot();
+    try {
+      const live = path.join(root, "creative", "temp-skill");
+      const archived = path.join(root, ".archive", "old-skill");
+      const nested = path.join(root, "a", "b", "c");
+      const notASkill = path.join(root, "creative", "not-a-skill");
+      for (const directory of [live, archived, nested, notASkill]) {
+        await mkdir(directory, { recursive: true });
+      }
+      await writeFile(
+        path.join(live, "SKILL.md"),
+        "---\nname: temp-skill\ndescription: removable\n---\n",
+      );
+      await writeFile(
+        path.join(archived, "SKILL.md"),
+        "---\nname: old-skill\ndescription: parked\n---\n",
+      );
+      await writeFile(
+        path.join(nested, "SKILL.md"),
+        "---\nname: deep-skill\ndescription: buried\n---\n",
+      );
+
+      const catalog = createHarnessSkillsCatalog({
+        environment: {},
+        roots: () => [{ directory: root }],
+        label: "Test",
+      });
+      const signal = AbortSignal.timeout(5000);
+
+      expect((await catalog.uninstall?.("temp-skill", signal))?.ok).toBe(true);
+      await expect(access(live)).rejects.toThrow();
+
+      const hidden = await catalog.uninstall?.("old-skill", signal);
+      expect(hidden?.ok).toBe(false);
+      expect(hidden?.reason).toContain("hidden");
+
+      const tooDeep = await catalog.uninstall?.("deep-skill", signal);
+      expect(tooDeep?.ok).toBe(false);
+      expect(tooDeep?.reason).toContain("nested too deep");
+
+      expect((await catalog.uninstall?.("missing-skill", signal))?.ok).toBe(false);
+      // A plain directory that holds no SKILL.md is not a skill the catalog may remove.
+      expect((await catalog.uninstall?.("not-a-skill", signal))?.ok).toBe(false);
     } finally {
       await removeTree(root);
     }

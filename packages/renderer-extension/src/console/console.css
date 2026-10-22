@@ -7,6 +7,46 @@
   margin: 0 0 10px;
 }
 
+.console-skills-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.console-skills-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--settings-subtle);
+  cursor: pointer;
+}
+
+.console-skills-refresh:hover {
+  background: color-mix(in srgb, var(--settings-subtle) 14%, transparent);
+  color: var(--settings-text);
+}
+
+.console-skills-refresh:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.console-skills-refresh.is-spinning svg {
+  animation: console-skills-spin 900ms linear infinite;
+}
+
+@keyframes console-skills-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .console-skills-search {
   width: 100%;
   max-width: 420px;
@@ -220,7 +260,6 @@
   flex: none;
   width: 28px;
   height: 28px;
-  margin-left: auto;
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -228,6 +267,68 @@
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
+}
+
+.console-skill-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.console-skill-dialog-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--settings-subtle);
+  cursor: pointer;
+}
+
+.console-skill-dialog-action:hover {
+  background: color-mix(in srgb, var(--settings-subtle) 14%, transparent);
+  color: var(--settings-text);
+}
+
+.console-skill-dialog-action.is-danger:hover {
+  background: color-mix(in srgb, #c0392b 14%, transparent);
+  color: #c0392b;
+}
+
+.console-skill-confirm {
+  display: grid;
+  gap: 10px;
+}
+
+.console-skill-confirm p {
+  margin: 0;
+}
+
+.console-skill-confirm-path {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--settings-subtle) 12%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.console-skill-confirm-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.console-skill-danger {
+  background: #c0392b;
+  border-color: transparent;
+  color: #fff;
 }
 
 .console-skill-dialog-close:hover {

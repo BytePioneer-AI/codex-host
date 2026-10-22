@@ -13,6 +13,8 @@ import {
   type HarnessSkillSetEnabledParams,
   type HarnessSkillsContentResult,
   type HarnessSkillsSetEnabledResult,
+  type HarnessSkillUninstallParams,
+  type HarnessSkillsUninstallResult,
 } from "@codexhost/shared-contracts";
 import type { HarnessSkillsSource } from "./skills-source.js";
 
@@ -89,6 +91,25 @@ export class HarnessSkillsCatalog {
       ok: result.ok,
       content: result.content ?? "",
       truncated: result.truncated ?? false,
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
+    };
+  }
+
+  /** Deletes one skill directory through the Harness's own capability. Destructive. */
+  async uninstall(
+    sources: readonly HarnessSkillsSource[],
+    params: HarnessSkillUninstallParams,
+  ): Promise<HarnessSkillsUninstallResult> {
+    const source = sources.find((entry) => entry.harness === params.harness);
+    if (!source) return { ok: false, reason: `No Harness named ${params.harness}` };
+    const remove = source.capability.uninstall;
+    if (typeof remove !== "function") {
+      return { ok: false, reason: `${params.harness} does not allow removing skills` };
+    }
+    const result = await remove.call(source.capability, params.name, AbortSignal.timeout(30_000));
+    return {
+      ok: result.ok,
+      ...(result.path === undefined ? {} : { path: result.path }),
       ...(result.reason === undefined ? {} : { reason: result.reason }),
     };
   }

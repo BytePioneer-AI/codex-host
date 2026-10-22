@@ -107,6 +107,21 @@ export const harnessSkillContentResultSchema = z.strictObject({
   reason: z.string().max(512).optional(),
 });
 
+/** Deletes one skill directory from disk. Destructive: the page confirms before calling it. */
+export const HARNESS_SKILL_UNINSTALL_METHOD = "codexhost/skills/uninstall";
+
+export const harnessSkillUninstallParamsSchema = z.strictObject({
+  harness: harnessSkillNameSchema,
+  name: harnessSkillNameSchema,
+});
+
+export const harnessSkillUninstallResultSchema = z.strictObject({
+  ok: z.boolean(),
+  /** Absolute directory that was removed, echoed back so the page can report it. */
+  path: z.string().max(4096).optional(),
+  reason: z.string().max(512).optional(),
+});
+
 export type HarnessSkillEntry = z.infer<typeof harnessSkillEntrySchema>;
 export type HarnessSkillGroup = z.infer<typeof harnessSkillGroupSchema>;
 export type HarnessSkillsListParams = z.infer<typeof harnessSkillsListParamsSchema>;
@@ -115,3 +130,5 @@ export type HarnessSkillSetEnabledParams = z.infer<typeof harnessSkillSetEnabled
 export type HarnessSkillsSetEnabledResult = z.infer<typeof harnessSkillsSetEnabledResultSchema>;
 export type HarnessSkillContentParams = z.infer<typeof harnessSkillContentParamsSchema>;
 export type HarnessSkillsContentResult = z.infer<typeof harnessSkillContentResultSchema>;
+export type HarnessSkillUninstallParams = z.infer<typeof harnessSkillUninstallParamsSchema>;
+export type HarnessSkillsUninstallResult = z.infer<typeof harnessSkillUninstallResultSchema>;

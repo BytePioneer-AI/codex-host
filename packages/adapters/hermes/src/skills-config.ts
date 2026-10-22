@@ -11,6 +11,11 @@ import json, sys
 from hermes_cli.config import load_config
 from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
 
+if sys.argv[1] == "essential":
+    from agent.skill_utils import ESSENTIAL_SKILLS
+    print(json.dumps(sorted(ESSENTIAL_SKILLS)))
+    raise SystemExit(0)
+
 config = load_config()
 disabled = set(get_disabled_skills(config))
 if sys.argv[1] == "set":
@@ -116,5 +121,24 @@ export async function setSkillDisabled(
     );
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Skill names Hermes marks as essential (`hermes-agent`): it refuses to disable them, and they must
+ * never be deleted either. An unreadable list yields an empty set, so removal still defers to the
+ * other guard rails rather than silently allowing everything.
+ */
+export async function readEssentialSkills(environment: NodeJS.ProcessEnv): Promise<Set<string>> {
+  const interpreter = await hermesAgentPython(environment);
+  if (!interpreter) return new Set();
+  try {
+    return (
+      parseDisabled(
+        await run(interpreter.python, interpreter.agentDirectory, environment, ["essential"]),
+      ) ?? new Set()
+    );
+  } catch {
+    return new Set();
   }
 }

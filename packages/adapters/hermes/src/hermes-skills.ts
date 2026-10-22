@@ -11,7 +11,7 @@ import {
   type HarnessSkillsRoot,
 } from "@codexhost/harness-adapter";
 
-import { readDisabledSkills, setSkillDisabled } from "./skills-config.js";
+import { readDisabledSkills, readEssentialSkills, setSkillDisabled } from "./skills-config.js";
 
 const MANIFEST = "SKILL.md";
 
@@ -64,6 +64,20 @@ export function createHermesSkillsCatalog(
       base.readContent === undefined
         ? Promise.resolve({ ok: false, reason: "Hermes skills are not readable here" })
         : base.readContent(name, signal),
+    uninstall: async (name: string, signal: AbortSignal) => {
+      const listing = await read(signal);
+      const skill = listing.skills.find((entry) => entry.name === name);
+      if (!skill) return { ok: false, reason: `No Hermes skill named ${name}` };
+      if (shared && skill.root === shared) {
+        return { ok: false, reason: "Shared skills are read-only in this page" };
+      }
+      if ((await readEssentialSkills(environment)).has(name)) {
+        return { ok: false, reason: `${name} is an essential Hermes skill` };
+      }
+      return base.uninstall === undefined
+        ? { ok: false, reason: "Hermes skills are not removable here" }
+        : base.uninstall(name, signal);
+    },
     async setEnabled(
       name: string,
       enabled: boolean,

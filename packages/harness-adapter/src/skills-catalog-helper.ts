@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -10,6 +10,7 @@ import {
   type HarnessSkillsCatalogCapability,
   type HarnessSkillsCatalogRead,
   type HarnessSkillsContentRead,
+  type HarnessSkillsUninstallOutcome,
 } from "./skills-catalog.js";
 
 /** One skill root the Harness itself loads skills from. */
@@ -62,6 +63,8 @@ export function createHarnessSkillsCatalog(options: {
     list,
     readContent: (name: string, signal: AbortSignal) =>
       readSkillContent(environment, options.roots, list, name, signal),
+    uninstall: (name: string, signal: AbortSignal) =>
+      uninstallSkill(environment, options.roots, list, name, signal),
   });
 }
 
@@ -93,4 +96,45 @@ async function readSkillContent(
 function isInside(root: string, candidate: string): boolean {
   const parent = path.resolve(root) + path.sep;
   return path.resolve(candidate).startsWith(parent);
+}
+
+/**
+ * Deletes one skill directory. Guard rails, because this is the only destructive path in the
+ * catalog: the target must come from the scanner, sit inside a declared root, be one or two
+ * segments deep (never the root itself), not sit under a hidden/system directory, and still hold
+ * a SKILL.md. Anything else is refused with a reason the page can show.
+ */
+async function uninstallSkill(
+  environment: NodeJS.ProcessEnv,
+  roots: (environment: NodeJS.ProcessEnv) => readonly HarnessSkillsRoot[],
+  list: (signal: AbortSignal) => Promise<HarnessSkillsCatalogRead>,
+  name: string,
+  signal: AbortSignal,
+): Promise<HarnessSkillsUninstallOutcome> {
+  const read = await list(signal);
+  const skill = (read.skills ?? []).find((entry) => entry.name === name);
+  if (!skill) return { ok: false, reason: `No skill named ${name}` };
+  const root = roots(environment).find((entry) => isInside(entry.directory, skill.path));
+  if (!root) return { ok: false, reason: `${name} sits outside every skill root` };
+  const segments = path
+    .relative(root.directory, skill.path)
+    .split(path.sep)
+    .filter((segment) => segment.length > 0);
+  if (segments.length === 0 || segments.length > 2) {
+    return { ok: false, reason: `${name} is nested too deep to remove safely` };
+  }
+  if (segments.some((segment) => segment.startsWith("."))) {
+    return { ok: false, reason: `${name} lives in a hidden or system directory` };
+  }
+  try {
+    await access(path.join(skill.path, HARNESS_SKILL_MANIFEST));
+  } catch {
+    return { ok: false, reason: `${name} is not a skill directory` };
+  }
+  try {
+    await rm(skill.path, { recursive: true });
+    return { ok: true, path: skill.path };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
 }

@@ -23,6 +23,18 @@ export interface HarnessSkillsCatalogCapability {
   ): Promise<HarnessSkillsSetEnabledOutcome>;
   /** Optional: the skill's SKILL.md source for the detail dialog. */
   readContent?(name: string, signal: AbortSignal): Promise<HarnessSkillsContentRead>;
+  /**
+   * Optional: delete the skill's own directory. Destructive and irreversible — the page asks for
+   * confirmation first, and implementations must re-check that the target really is a skill.
+   */
+  uninstall?(name: string, signal: AbortSignal): Promise<HarnessSkillsUninstallOutcome>;
+}
+
+export interface HarnessSkillsUninstallOutcome {
+  ok: boolean;
+  /** Absolute directory that was removed. */
+  path?: string;
+  reason?: string;
 }
 
 export interface HarnessSkillsContentRead {

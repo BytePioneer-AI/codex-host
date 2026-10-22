@@ -63,6 +63,7 @@ export const CONSOLE_HOST_METHODS = Object.freeze([
   "codexhost/skills/list",
   "codexhost/skills/setEnabled",
   "codexhost/skills/content",
+  "codexhost/skills/uninstall",
   "codexhost/update/check",
   "codexhost/update/start",
   "codexhost/update/status",

@@ -33,6 +33,7 @@ export type {
   HarnessSkillsRootScan,
   HarnessSkillsSetEnabledOutcome,
   HarnessSkillsContentRead,
+  HarnessSkillsUninstallOutcome,
 } from "./skills-catalog.js";
 export type { HarnessSkillsRoot } from "./skills-catalog-helper.js";
 export type {

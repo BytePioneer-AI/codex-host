@@ -291,9 +291,11 @@ import {
   HARNESS_SKILLS_METHOD,
   HARNESS_SKILL_SET_ENABLED_METHOD,
   HARNESS_SKILL_CONTENT_METHOD,
+  HARNESS_SKILL_UNINSTALL_METHOD,
   harnessSkillsListParamsSchema,
   harnessSkillSetEnabledParamsSchema,
   harnessSkillContentParamsSchema,
+  harnessSkillUninstallParamsSchema,
 } from "@codexhost/shared-contracts";
 import type { HarnessSkillsCatalog } from "./skills-catalog.js";
 import type { HarnessSkillsSource } from "./skills-source.js";
@@ -1531,6 +1533,27 @@ export class AppServerHost {
       try {
         await this.#waitForPlugins();
         const result = await catalog.readContent(this.#skillsSources(), parsed.data);
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch (error) {
+        this.#diagnose(error);
+        await this.#writer.json(rpcError(request, -32000, errorMessage(error)));
+      }
+      return;
+    }
+    if (request.method === HARNESS_SKILL_UNINSTALL_METHOD) {
+      const parsed = harnessSkillUninstallParamsSchema.safeParse(request.params ?? {});
+      const catalog = this.#options.skillsCatalog;
+      if (!parsed.success || !catalog) {
+        await this.#writer.json(
+          parsed.success
+            ? rpcError(request, -32000, "Skills catalog is unavailable on this Host")
+            : rpcError(request, -32602, "Invalid skill removal request"),
+        );
+        return;
+      }
+      try {
+        await this.#waitForPlugins();
+        const result = await catalog.uninstall(this.#skillsSources(), parsed.data);
         await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       } catch (error) {
         this.#diagnose(error);

@@ -35,8 +35,10 @@ Keep this tool, its npm scripts and the workflow when resolving upstream changes
    the optional overlay pin is read from `renderer-voice-start-capability.ts` in
    the same directory. Chat pins/start assets live in `renderer-native-chat-voice.ts`;
    the parser uses Work version/initial pins if separate Chat constants are absent.
-   Preserve independent Chat pins when Work advances. Chat qualification for
-   26.1016 remains deferred; do not move its pin to silence an issue.
+   Preserve independent Chat pins when Work advances. The 26.1016.61520 Chat
+   audit found incompatible scope/export bindings and retains the 26.1013.40934
+   pin; see the [native Instant Connect evidence](../../docs/operations/cpa-live-voice-desktop-hook.md#existing-and-new-chatgpt-conversations-native-instant-connect).
+   Keep its drift issue open until the full Chat lifecycle is qualified.
 4. Run `npm run compat:daily:test`, the behavior checks selected by the runbook,
    and `npm run compat:daily` again after any pin changes. Record remaining drift
    explicitly. A matching pin only clears version drift; it does not prove the

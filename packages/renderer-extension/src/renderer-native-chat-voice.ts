@@ -194,7 +194,8 @@ export function startNativeChatVoiceForRequest(
   )
     return;
   const hook = (target as RecordValue)[HOOK_GLOBAL] as ChatVoiceHook | undefined;
-  if (!hook || hook.status === "disabled") return;
+  if (!hook || hook.status === "disabled" || hook.status === "unsupported")
+    return Promise.reject(new Error("Native Chat voice is unavailable"));
   return hook.start();
 }
 

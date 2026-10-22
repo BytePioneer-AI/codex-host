@@ -672,21 +672,48 @@ describe("native Chat voice lifecycle installation", () => {
     hook.dispose();
   });
 
-  it("keeps 26.1016 native Chat unavailable despite recognized start/prewarm filenames", async () => {
+  it.each(["26.1016.51333", "26.1016.61520"])(
+    "rejects unqualified Desktop %s before importing or enabling native Chat",
+    async (desktopVersion) => {
+      const f = installFixture();
+      f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = desktopVersion;
+      // Even cached audited assets must not bypass the installed-version guard.
+      const hook = installNativeChatVoiceHook(f);
+      expect(hook.status).toBe("unsupported");
+      await expect(hook.start()).rejects.toThrow("Native Chat voice is unavailable");
+      expect(f.importModule).not.toHaveBeenCalled();
+      expect(f.initial.jw).not.toHaveBeenCalled();
+      expect(f.scope.set).not.toHaveBeenCalled();
+      expect(f.start).not.toHaveBeenCalled();
+      expect(f.createRoot).not.toHaveBeenCalled();
+      expect(f.parent.append).not.toHaveBeenCalled();
+      hook.dispose();
+    },
+  );
+
+  it("rejects 61520 assets when the installed Desktop version is unavailable", async () => {
     vi.useFakeTimers();
     const f = installFixture();
-    f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = "26.1016.61520";
+    Reflect.deleteProperty(f.target.__codexhostCpaLiveVoiceHookV1, "desktopVersion");
     f.assets.splice(
       0,
       f.assets.length,
       "app-initial-c95ddb62696e.js",
       "app-shared-2eda13eb7044.js",
+      "app-primary-58a09006cc0c.js",
+      "start-voice-18b08f0acdd7.js",
+      "voice-prewarm-94271e581c1b.js",
     );
     const hook = installNativeChatVoiceHook(f);
+    expect(hook.status).toBe("pending");
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(hook.status).toBe("unsupported");
+    await expect(hook.start()).rejects.toThrow("Select a ChatGPT conversation");
     expect(f.importModule).not.toHaveBeenCalled();
+    expect(f.scope.set).not.toHaveBeenCalled();
     expect(f.start).not.toHaveBeenCalled();
     expect(f.createRoot).not.toHaveBeenCalled();
+    expect(f.parent.append).not.toHaveBeenCalled();
     hook.dispose();
   });
 

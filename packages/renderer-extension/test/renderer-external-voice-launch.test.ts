@@ -13,6 +13,7 @@ import {
   installExternalVoiceLaunchHook,
   routeExternalVoiceLaunch,
 } from "../src/renderer-external-voice-launch.js";
+import { applySharedVoiceRoutes } from "../src/renderer-cpa-live-voice-preference.js";
 
 const carrier = "codexhost/plugin-v1@grok-test-model-permission";
 const source = "composer_button_new_thread";
@@ -299,6 +300,60 @@ describe("native Chat service interception", () => {
     });
     hook.dispose();
   });
+
+  it.each(["absent", "disabled", "unsupported"])(
+    "rejects native Chat when its binding is %s before the overlay can launch",
+    async (status) => {
+      const f = hookFixture();
+      const chatStart = vi.fn();
+      if (status !== "absent")
+        Object.assign(f.target, {
+          __codexhostNativeChatVoiceV1: { status, start: chatStart },
+        });
+      const hook = installExternalVoiceLaunchHook(f);
+      try {
+        await settle();
+        await expect(
+          f.services.realtimeVoiceRuntime.requestRealtimeStart({
+            ...request(),
+            productExperience: "chat",
+          }),
+        ).rejects.toThrow("Native Chat voice is unavailable");
+        expect(chatStart).not.toHaveBeenCalled();
+        expect(f.start).not.toHaveBeenCalled();
+        await f.services.realtimeVoiceRuntime.requestRealtimeStart({
+          ...request(),
+          productExperience: "work",
+        });
+        expect(f.start).toHaveBeenCalledOnce();
+      } finally {
+        hook.dispose();
+      }
+    },
+  );
+
+  it.each(["desktop", "gateway"] as const)(
+    "preserves explicit Codex Chat on %s without a native Chat binding",
+    async (chatConnection) => {
+      const f = hookFixture();
+      applySharedVoiceRoutes(f.target, {
+        chatExperience: "codex",
+        chatConnection,
+        workConnection: "gateway",
+      });
+      const hook = installExternalVoiceLaunchHook(f);
+      try {
+        await settle();
+        await f.services.realtimeVoiceRuntime.requestRealtimeStart({
+          ...request(),
+          productExperience: "chat",
+        });
+        expect(f.start).toHaveBeenCalledOnce();
+      } finally {
+        hook.dispose();
+      }
+    },
+  );
 
   it("does not fall back to a Grok/Codex overlay when native Chat START rejects", async () => {
     const f = hookFixture();

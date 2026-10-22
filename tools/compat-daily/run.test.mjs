@@ -51,6 +51,20 @@ describe("compat-daily pins", () => {
     assert.match(report.findings[1]?.title ?? "", /chat-voice/);
   });
 
+  it("keeps Chat drift visible when Work already matches 61520", () => {
+    const pins = readPins({
+      ...files,
+      clientOwned: files.clientOwned.replaceAll("26.1016.51333", "26.1016.61520"),
+    });
+    const report = evaluate(pins, { version: "26.1016.61520", build: "21421" });
+    assert.deepEqual(
+      report.findings.map((finding) => finding.surface),
+      ["chat-voice"],
+    );
+    assert.match(report.findings[0].detail, /26\.1013\.40934/);
+    assert.match(report.findings[0].detail, /unqualified/);
+  });
+
   it("falls back Chat pins to Work when Chat reuses CLIENT_OWNED_*", () => {
     const pins = readPins({
       ...files,

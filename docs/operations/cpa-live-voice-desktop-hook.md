@@ -154,8 +154,47 @@ upstream gateway response or a session-history parsing error.
 ### Existing and new ChatGPT conversations: native Instant Connect
 
 The primary Renderer installs `renderer-native-chat-voice.ts` only for the exact
-26.1013.40934 Chat assets. Desktop **26.1016.61520** leaves native Chat voice
-unsupported: individual-file inspection identifies composer start `start-voice-94a5b9fbf613.js` (`n`/`t`), the separate starter-prompt action `start-voice-de4c62bad45d.js`, and the `voice-prewarm-c95ccb6d68c5.js` entry over `voice-prewarm-2a13ee90e72c.js`. The old AppScope, backend-conversation, store, selection and lifecycle export mapping does not carry over, and the current prewarm also imports `app-primary`. That full ownership mapping and a live Chat composer have not been qualified, so changing filenames alone cannot enable native Chat safely. On 26.1013, it identifies the visible `data-chatgpt-composer`
+**26.1013.40934** Chat assets. Native Chat on **26.1016.61520** build **21421**
+remains **unsupported**. Its native START call shape is compatible, but the
+AppScope, ComposerScope, backend selector, runtime, store and draft-selection
+bindings are not qualified together. Work/gateway qualification does not enable
+this separate Instant Connect stack. Issue [#4](https://github.com/karlorz/codex-host/issues/4)
+tracks that gap; the Chat pin remains 26.1013.40934 so compat-daily continues to
+report it.
+
+The 61520 audit used ASAR header offsets to read individual assets. The installed
+`app.asar` SHA-256 was
+`c9945f821fcbaf48424933a82860beac4dd4ad8b8a5444a75568fa6e38a1ad4b`.
+The references below are line numbers after formatting the extracted JavaScript
+with Prettier 3.9.6 (`parser: "babel"`, default options including `printWidth: 80`);
+they identify native code, not repository source lines.
+
+| Contract | 61520 evidence | Qualification gap |
+| --- | --- | --- |
+| Native Chat START | `start-voice-18b08f0acdd7.js:1119` accepts scope, composer props, metadata and signal; `:1173` reads `B1n`; `:1194` dispatches `START`. Exports `n`/`t` at `:1260`. | Compatible call shape alone does not establish the scopes and lifecycle. `start-voice-d79b450ed9af.js` is a separate starter-prompt action. |
+| AppScope and ComposerScope | `app-shared-2eda13eb7044.js:104178` creates AppScope, exported as `Qst`. `app-initial-c95ddb62696e.js:113117` creates ComposerScope, exported directly as `CDr`. | The existing hook expects `shared.Cot` and `initial.xAt.scope`. Live 61520 exports show both `Cot` and `xAt` are functions, so those ownership checks fail. |
+| Backend and runtime | `app-initial-c95ddb62696e.js:213059` defines backend-ID selector `B1n`; `:256887` defines store accessor `SPn`; `:685662` initializes browser-voice flag `aT` and the runtime; `:685754` mounts native `VoiceRoom`. | The hook consumes the 26.1013 names `pZn`, `ejn`, `Aw` and `jw`. Reusing an export name without tracing its new owner is unsafe. |
+| Composer and draft | `app-primary-58a09006cc0c.js:121074` owns the composer; `:125124` marks Chat forms. `:128921` reads AppScope, RouteScope and ComposerScope; `:129002` creates a local draft ID with `useState`. | Draft binding currently requires the 26.1013 `lXt` selector in a matching ComposerScope. That proof and adopted-draft navigation must be requalified against the new owner. |
+| Instant Connect prewarm | `voice-prewarm-94271e581c1b.js:1` re-exports the controller from `voice-prewarm-de985dbe0490.js`; its imports include `app-primary-58a09006cc0c.js`. | Prewarm and START must share the current native contexts, eligibility, cancellation and lifecycle. Renaming the four pinned assets does not prove this. |
+
+A read-only probe of the running primary Renderer on Chrome **155.0.8059.80**
+confirmed these export shapes and the hook's `unsupported` status. No native Chat
+composer was mounted, so microphone, connected Chat voice, transcript adoption,
+and saved/draft navigation were not exercised. The reviewed 26.1013 baseline is
+the hook and its lifecycle tests; the installed 26.1016.51333 backup is only the
+direct predecessor, not a replacement qualification baseline.
+
+The version guard rejects 61520 before importing or enabling any Chat runtime,
+even if old audited assets remain cached. When version metadata is absent, only
+the exact audited initial/shared assets permit imports; 61520 assets time out to
+`unsupported`. Chat service requests remain on the native Chat start boundary
+and reject absent, disabled or unsupported Chat bindings without falling through
+to the Work overlay. Explicit Codex Chat and gateway preferences retain their
+existing service route. `model_provider` stays
+`custom`; Statsig `3683713372` is not globally overridden and Grok IAB remains
+fail-closed.
+
+On 26.1013, the hook identifies the visible `data-chatgpt-composer`
 through the committed React owner and its native AppScope. The owner must be a
 non-temporary Chat conversation that permits external egress. Its composer
 selection context must match. For a saved conversation, the native `pZn` selector

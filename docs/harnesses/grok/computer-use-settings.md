@@ -22,6 +22,8 @@ Computer-only users keep the computer-only stanza. The in-app browser switch sto
 
 Availability is three separate facts: saved intent (`enabled` / `browser`), installed files (`available` / `browserFilesPresent`), and usable binding (`browserAvailable`). File presence is not IAB success.
 
+The current implementation sets `GROK_BROWSER_BINDING_SUPPORTED = false`. Both `browserAvailable` and the generated Grok configuration use that policy flag. The console's authorization explanation describes the known unsupported integration; reading settings does not perform a live Desktop authorization check. Restarting Desktop or creating a new Grok thread does not change this policy.
+
 Computer Use needs the shared `cua_node` runtime, the packaged Codex CLI, and `Codex Computer Use.app`. The browser switch needs that same runtime plus `@oai/browser-desktop`; it does not need Sky.
 
 Saves and session applies acquire filesystem locks for both the preference directory and Grok config directory, so separate Host and console processes re-read intent inside the same critical section. Grok config is written first, then the preference file. A failed publication attempts to restore the previous config and records `applyFailed` without accepting the new intent. New Grok threads stop before transport startup if applying settings fails. Locks time out after five seconds without stealing another writer’s lock; an abandoned `.grok-computer-use.lock` or `.codexhost-cua.lock` directory requires removal after confirming that its writer has stopped.
@@ -59,6 +61,16 @@ A real Grok ACP session invoked a read-only diagnostic MCP tool and its own brow
 In an official Codex thread, the official Browser Use tool successfully bound IAB, opened a blank test tab, read its state and closed it. The Grok probe’s before/after snapshot found `~/.codex/config.toml`, `auth.json` and `AGENTS.md` byte-identical. No official Browser Use helper was intercepted or reconfigured. Computer Use remains an independent surface.
 
 `browserAvailable` stays false, including when `CODEXHOST_GROK_IAB_BINDING` is inherited. There is no environment override that qualifies the blocked binding. Sanitized evidence is retained under ignored `.codexhost/update-impact/26.1016.51333/`.
+
+## Qualification on Desktop 26.1016.62342
+
+On macOS, Grok `1.0.45` (`2bdd1d6a6369`) sends `x-codex-turn-metadata` on model tool calls when the MCP server is named `cua_repl`. A real ACP session using a read-only, session-local diagnostic confirmed nonempty session, turn and call identities. The session identity matched the native Grok session, and the awaited `turn_ended` call matched the same session and turn. A diagnostic registered under a different server name does not establish the metadata behavior of `cua_repl`.
+
+A separate real ACP session supplied the installed browser-only `cua_repl` through its session MCP configuration, without changing global browser preferences or removing native authorization. Browser APIs were exposed, but selecting IAB returned `Browser is not available: iab`. During that probe window Desktop logged six native socket rejections with reason `missing-code-signing-identity`. The installed `cua_node` Node and `node_repl` executables have OpenAI signatures; the installed Grok executable is unsigned. The rejection reason does not identify the exact failed ancestry check.
+
+This establishes a native authorization blocker after the Host configuration gate is removed for a bounded diagnostic. It does not establish an authorized browser route for the Grok session. Desktop's current bundle retains separate peer authorization and session-route ownership checks; metadata forwarding alone cannot satisfy either check. A supported external caller authorization and session-registration contract is still required before enabling normal Grok browser sessions.
+
+Sanitized metadata and browser-probe summaries are retained under ignored `.codexhost/update-impact/26.1016.62342/`. They contain presence/equality booleans and rejection reasons rather than raw session identities or transcripts. Actual Grok navigation, turn cleanup of browser resources, and isolation between two browser-enabled Grok sessions remain unverified because binding failed.
 
 ## Limits
 

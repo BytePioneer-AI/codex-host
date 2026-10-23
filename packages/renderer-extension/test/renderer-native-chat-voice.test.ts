@@ -283,8 +283,18 @@ function installFixture() {
     return el;
   };
   let visible = true;
-  const parent = { append: vi.fn() };
-  const dictate = { className: "native-button", parentElement: parent };
+  const parent = {
+    insertBefore: vi.fn((element: Record<string, unknown>, anchor: unknown) => {
+      Object.assign(element, { nextElementSibling: anchor });
+    }),
+  };
+  const send = {
+    type: "submit",
+    className: "native-send-button",
+    parentElement: parent,
+    getBoundingClientRect: () => ({ width: 28 }),
+    closest: () => null,
+  };
   const styleValues = new Map<string, [string, string]>([["display", ["inline-flex", ""]]]);
   const overlayButton = {
     style: {
@@ -299,8 +309,10 @@ function installFixture() {
     getBoundingClientRect: () => ({ width: visible ? 500 : 0 }),
     closest: () => null,
     contains: () => true,
-    querySelector: () => dictate,
-    querySelectorAll: vi.fn(() => overlayButtons),
+    querySelector: () => null,
+    querySelectorAll: vi.fn((selector: string) =>
+      selector === 'button[type="submit"]' ? [send] : overlayButtons,
+    ),
   });
   const initial = {
     B1n: f.backendConversationId,
@@ -378,6 +390,7 @@ function installFixture() {
     shared,
     assets,
     parent,
+    send,
     overlayButton,
     overlayButtons,
     browserEnabled: () => browserEnabled,
@@ -576,12 +589,41 @@ describe("native Chat voice lifecycle installation", () => {
     hook.dispose();
   });
 
+  it("places native Voice immediately before Send when Dictate is absent", async () => {
+    vi.useFakeTimers();
+    const f = installFixture();
+    Object.assign(f.composer, { querySelector: () => null });
+    const hook = installNativeChatVoiceHook(f);
+    await vi.advanceTimersByTimeAsync(0);
+    const voice = f.elements.find((element) => element.title === "Start Voice");
+    expect(voice).toBeDefined();
+    expect(f.parent.insertBefore).toHaveBeenCalledWith(voice, f.send);
+    expect(voice?.type).toBe("button");
+    await hook.start();
+    expect(f.start).toHaveBeenCalledOnce();
+    hook.dispose();
+  });
+
+  it("does not place Voice when Send ownership is ambiguous", async () => {
+    vi.useFakeTimers();
+    const f = installFixture();
+    Object.assign(f.composer, {
+      querySelectorAll: (selector: string) =>
+        selector === 'button[type="submit"]' ? [f.send, { ...f.send }] : f.overlayButtons,
+    });
+    const hook = installNativeChatVoiceHook(f);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.parent.insertBefore).not.toHaveBeenCalled();
+    expect(f.overlayButton.style.getPropertyValue("display")).toBe("inline-flex");
+    hook.dispose();
+  });
+
   it("shows only native Chat START and restores the overlay control on Work or gateway override", async () => {
     vi.useFakeTimers();
     const f = installFixture();
     const hook = installNativeChatVoiceHook(f);
     await vi.advanceTimersByTimeAsync(0);
-    expect(f.parent.append).toHaveBeenCalledOnce();
+    expect(f.parent.insertBefore).toHaveBeenCalledOnce();
     expect(f.overlayButton.style.getPropertyValue("display")).toBe("none");
     expect(f.overlayButton.style.getPropertyPriority("display")).toBe("important");
     expect(f.composer.querySelectorAll).toHaveBeenCalledWith(
@@ -608,10 +650,10 @@ describe("native Chat voice lifecycle installation", () => {
   it("keeps the native control visible when the replacement cannot be inserted", async () => {
     vi.useFakeTimers();
     const f = installFixture();
-    Object.assign(f.composer, { querySelector: () => null });
+    Object.assign(f.composer, { querySelectorAll: () => [] });
     const hook = installNativeChatVoiceHook(f);
     await vi.advanceTimersByTimeAsync(0);
-    expect(f.parent.append).not.toHaveBeenCalled();
+    expect(f.parent.insertBefore).not.toHaveBeenCalled();
     expect(f.overlayButton.style.getPropertyValue("display")).toBe("inline-flex");
     hook.dispose();
   });
@@ -630,7 +672,7 @@ describe("native Chat voice lifecycle installation", () => {
     const hook = installNativeChatVoiceHook(f);
     await vi.advanceTimersByTimeAsync(0);
     expect(hook.status).toBe("active");
-    expect(f.parent.append).toHaveBeenCalledOnce();
+    expect(f.parent.insertBefore).toHaveBeenCalledOnce();
     await hook.start();
     expect(f.start).toHaveBeenCalledWith(
       f.scope,
@@ -650,7 +692,8 @@ describe("native Chat voice lifecycle installation", () => {
     const f = installFixture();
     const hook = installNativeChatVoiceHook(f);
     await vi.advanceTimersByTimeAsync(0);
-    const firstButton = f.parent.append.mock.calls[0]?.[0];
+    const firstButton = f.parent.insertBefore.mock.calls[0]?.[0];
+    if (!firstButton) throw new Error("Native voice button was not inserted");
     f.props.isWorkConversation = true;
     await vi.advanceTimersByTimeAsync(500);
     expect(hook.status).toBe("pending");
@@ -660,10 +703,10 @@ describe("native Chat voice lifecycle installation", () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(hook.status).toBe("active");
     expect(f.browserEnabled()).toBe(true);
-    expect(f.parent.append).toHaveBeenCalledTimes(2);
+    expect(f.parent.insertBefore).toHaveBeenCalledTimes(2);
     Object.assign(f.composer, { contains: () => false });
     await vi.advanceTimersByTimeAsync(500);
-    expect(f.parent.append).toHaveBeenCalledTimes(3);
+    expect(f.parent.insertBefore).toHaveBeenCalledTimes(3);
     expect(f.createRoot).toHaveBeenCalledTimes(2);
     expect(f.start).not.toHaveBeenCalled();
     f.start.mockImplementation(async () => {
@@ -688,7 +731,7 @@ describe("native Chat voice lifecycle installation", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(hook.status).toBe("active");
     expect(next.browserEnabled()).toBe(true);
-    expect(next.parent.append).toHaveBeenCalledOnce();
+    expect(next.parent.insertBefore).toHaveBeenCalledOnce();
     hook.dispose();
   });
 
@@ -706,7 +749,7 @@ describe("native Chat voice lifecycle installation", () => {
       expect(f.scope.set).not.toHaveBeenCalled();
       expect(f.start).not.toHaveBeenCalled();
       expect(f.createRoot).not.toHaveBeenCalled();
-      expect(f.parent.append).not.toHaveBeenCalled();
+      expect(f.parent.insertBefore).not.toHaveBeenCalled();
       hook.dispose();
     },
   );
@@ -733,7 +776,7 @@ describe("native Chat voice lifecycle installation", () => {
     expect(f.scope.set).not.toHaveBeenCalled();
     expect(f.start).not.toHaveBeenCalled();
     expect(f.createRoot).not.toHaveBeenCalled();
-    expect(f.parent.append).not.toHaveBeenCalled();
+    expect(f.parent.insertBefore).not.toHaveBeenCalled();
     hook.dispose();
   });
 

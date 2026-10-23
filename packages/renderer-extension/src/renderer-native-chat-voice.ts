@@ -239,12 +239,6 @@ export function installNativeChatVoiceHook(
   const removeButton = () => {
     button?.remove();
     button = undefined;
-  };
-  const release = () => {
-    selectDraft = undefined;
-    controller?.abort();
-    controller = undefined;
-    removeButton();
     for (const [control, [display, priority]] of overlayButtons)
       if (
         control.style.getPropertyValue("display") === "none" &&
@@ -252,6 +246,12 @@ export function installNativeChatVoiceHook(
       )
         control.style.setProperty("display", display, priority);
     overlayButtons.clear();
+  };
+  const release = () => {
+    selectDraft = undefined;
+    controller?.abort();
+    controller = undefined;
+    removeButton();
     mounted?.dispose();
     mounted = undefined;
     boundScope = undefined;
@@ -455,15 +455,20 @@ export function installNativeChatVoiceHook(
         });
       }
       mounted.render(current);
-      if (!button || !current.composer.contains(button)) {
-        removeButton();
-        const dictate = current.composer.querySelector<HTMLButtonElement>(
-          'button[aria-label="Dictate"]',
-        );
-        if (dictate?.parentElement) {
+      const sends = [
+        ...current.composer.querySelectorAll<HTMLButtonElement>('button[type="submit"]'),
+      ].filter(
+        (control) =>
+          control.getBoundingClientRect().width > 0 && !control.closest("[hidden], [inert]"),
+      );
+      const send = sends.length === 1 ? sends[0] : undefined;
+      if (!send?.parentElement) removeButton();
+      else {
+        if (!button || !current.composer.contains(button)) {
+          removeButton();
           button = doc.createElement("button");
           button.type = "button";
-          button.className = dictate.className;
+          button.className = send.className;
           button.setAttribute(BUTTON, "");
           button.setAttribute("aria-label", "Start Voice");
           button.title = "Start Voice";
@@ -474,8 +479,8 @@ export function installNativeChatVoiceHook(
               if (button) button.title = "Chat voice could not start. Try again.";
             });
           });
-          dictate.parentElement.append(button);
         }
+        if (button.nextElementSibling !== send) send.parentElement.insertBefore(button, send);
       }
       if (button)
         // The Codex entry opens onboarding/optimistic launch state before its

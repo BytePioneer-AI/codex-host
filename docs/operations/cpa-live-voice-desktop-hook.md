@@ -195,7 +195,10 @@ AppScope runtime. Starting or active voice retains the runtime while the compose
 is hidden. Leaving Chat after voice ends restores the prior flag and unmounts
 the controller. Native eligibility determines whether a selection can prewarm.
 
-The Start Voice waveform beside Dictate invokes native START with the current
+The Start Voice waveform sits immediately before the visible native Send button,
+including compact Chat home composers without Dictate. It follows Send when its
+wrapper changes and is removed while the form has no unique visible submit
+action (such as during Stop). It invokes native START with the current
 RouteScope, props, composer metadata and cancellation signal. While present it
 hides the competing Codex Start voice entry in that Chat composer. Switching to
 Codex voice or leaving Chat restores the original entry. Saved Chats remain

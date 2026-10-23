@@ -402,7 +402,9 @@ function installFixture() {
     querySelectorAll: (selector: string) =>
       selector === "[data-chatgpt-composer]"
         ? [f.composer]
-        : assets.map((name) => ({ getAttribute: () => `app://-/assets/${name}` })),
+        : selector === '[style*="--vt-splash-screen-headline"]'
+          ? []
+          : assets.map((name) => ({ getAttribute: () => `app://-/assets/${name}` })),
   } as unknown as Document;
   const target = {
     __codexhostCpaLiveVoiceHookV1: {

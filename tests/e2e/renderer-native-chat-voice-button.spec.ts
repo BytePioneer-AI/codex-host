@@ -47,9 +47,10 @@ const { outputFiles } = await build({
       form.__reactFiber$fixture = { return: provider };
       globalThis.chatProvider = provider;
       globalThis.chatComposerChain = composerChain;
+      globalThis.nativeVoiceState = { isVoiceModeActive: false, isWorkMode: false, conversationId };
       const initial = { B1n: backend, CDr: composerScope, MOr: route, aT: enabled,
         oT() {}, SPn: () => ({
-          getState: () => ({ isVoiceModeActive: false }), subscribe: () => () => {},
+          getState: () => globalThis.nativeVoiceState, subscribe: () => () => {},
         }),
       };
       const shared = { Qst: app, FBt: () => ({ createElement() {} }),
@@ -76,8 +77,10 @@ const { outputFiles } = await build({
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Chat voice button fixture was not generated");
 
-for (const dictate of [false, true]) {
-  test(`places Chat Voice to the left of Send ${dictate ? "with" : "without"} Dictate`, async ({
+for (const { theme, dictate } of ["light", "dark"].flatMap((theme) =>
+  [false, true].map((dictate) => ({ theme, dictate })),
+)) {
+  test(`places Chat Voice to the left of Send ${dictate ? "with" : "without"} Dictate in ${theme}`, async ({
     page,
   }) => {
     await page.route("http://codexhost.test/", (route) =>
@@ -85,21 +88,29 @@ for (const dictate of [false, true]) {
         contentType: "text/html",
         body: `<!doctype html><meta charset="utf-8">
         <style>
-          body { margin: 40px; background: #181818; color: white; }
-          form { display: flex; align-items: center; gap: 8px; width: 640px; padding: 8px; border-radius: 24px; background: #303030; }
+          body { margin: 40px; background: ${theme === "dark" ? "#181818" : "#fafafa"}; color: ${theme === "dark" ? "#eeeeee" : "#111111"}; }
+          form { display: flex; align-items: center; gap: 8px; width: 640px; padding: 8px; border-radius: 24px; background: ${theme === "dark" ? "#303030" : "#eeeeee"}; }
           [role=textbox] { flex: 1; }
           .actions { display: flex; align-items: center; gap: 8px; }
           .native-action { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 0; border-radius: 50%; }
+          /* Native primary actions put the contrasting foreground on the icon. */
+          .native-action { color: inherit; background: ${theme === "dark" ? "#eeeeee" : "#111111"}; cursor: pointer; }
+          .text-composer-primary { color: ${theme === "dark" ? "#111111" : "#eeeeee"}; }
+          .opacity-50 { opacity: .5; }
+          .cursor-default { cursor: default; }
         </style>
         <script type="application/json" src="app://-/assets/app-initial-c95ddb62696e.js"></script>
         <script type="application/json" src="app://-/assets/app-shared-2eda13eb7044.js"></script>
+        <div style="view-transition-name: var(--vt-splash-screen-headline)">
+          <h1><span data-headline="readyWhenYouAre">Ready when you are.</span></h1>
+        </div>
         <form data-chatgpt-composer>
           <button type="submit" hidden aria-label="Hidden submit">Hidden</button>
           <div contenteditable="true" role="textbox">Ask ChatGPT</div>
           <div class="actions">
             <button type="button">Instant</button>
             ${dictate ? '<button type="button" aria-label="Dictate" class="native-action">Mic</button>' : ""}
-            <button type="submit" aria-label="Send" class="native-action">↑</button>
+            <button type="submit" aria-label="Send" class="native-action cursor-default opacity-50" disabled><span class="text-composer-primary">↑</span></button>
           </div>
         </form><output>0</output>`,
       }),
@@ -120,6 +131,17 @@ for (const dictate of [false, true]) {
     await page.addScriptTag({ content: browserBundle });
     const voice = page.getByRole("button", { name: "Start Voice", exact: true });
     await expect(voice).toHaveCount(1);
+    await expect(voice).toBeEnabled();
+    await expect(voice).toHaveCSS("opacity", "1");
+    await expect(voice).toHaveCSS("cursor", "pointer");
+    await expect(voice.locator("svg")).toHaveCSS(
+      "color",
+      theme === "dark" ? "rgb(17, 17, 17)" : "rgb(238, 238, 238)",
+    );
+    await expect(voice.locator("svg path")).toHaveCSS(
+      "stroke",
+      theme === "dark" ? "rgb(17, 17, 17)" : "rgb(238, 238, 238)",
+    );
     const position = await voice.evaluate((button) => {
       const send = button.nextElementSibling;
       if (!send) throw new Error("Voice is not followed by Send");
@@ -138,11 +160,44 @@ for (const dictate of [false, true]) {
     expect(position.gap).toBeLessThanOrEqual(8);
     expect(position.centerDelta).toBeLessThan(1);
     await page.screenshot({
-      path: `.codexhost/update-impact/26.1016.61520/chat-voice-button-${dictate ? "with" : "without"}-dictate.png`,
+      path: `.codexhost/update-impact/26.1016.61520/chat-voice-button-${theme}-${dictate ? "with" : "without"}-dictate.png`,
     });
     await voice.click();
     await expect.poll(() => page.evaluate(() => Reflect.get(globalThis, "voiceStarts"))).toBe(1);
     await expect(page.locator("output")).toHaveText("0");
+
+    const headline = page.locator("[data-headline]");
+    const composerBox = await page.locator("form").boundingBox();
+    await expect(headline).toBeVisible();
+    await page.evaluate(() => {
+      Object.assign(Reflect.get(globalThis, "nativeVoiceState"), {
+        isVoiceModeActive: true,
+        isWorkMode: true,
+      });
+    });
+    await expect(voice).toBeDisabled();
+    await expect(headline).toBeVisible();
+    await page.evaluate(() => {
+      Reflect.get(globalThis, "nativeVoiceState").isWorkMode = false;
+    });
+    await expect(headline).toBeHidden();
+    expect(await page.locator("form").boundingBox()).toEqual(composerBox);
+    await expect(voice).toBeDisabled();
+    await expect(voice).toHaveCSS("opacity", "0.5");
+    // Leaving the composer restores the greeting even while native voice is active.
+    await page.locator("form").evaluate((form) => {
+      form.setAttribute("hidden", "");
+    });
+    await expect(headline).toBeVisible();
+    await page.locator("form").evaluate((form) => {
+      form.removeAttribute("hidden");
+    });
+    await expect(headline).toBeHidden();
+    await page.evaluate(() => {
+      Reflect.get(globalThis, "nativeVoiceState").isVoiceModeActive = false;
+    });
+    await expect(headline).toBeVisible();
+    await expect(voice).toBeEnabled();
 
     // An empty nearer provider must hide Voice rather than reuse the outer selection.
     await page.evaluate(() => {
@@ -168,6 +223,9 @@ for (const dictate of [false, true]) {
       .poll(() => voice.evaluate((button) => button.nextElementSibling?.getAttribute("aria-label")))
       .toBe("Send");
     await expect(voice).toHaveCount(1);
+    await page.getByRole("button", { name: "Send", exact: true }).evaluate((send) => {
+      (send as HTMLButtonElement).disabled = false;
+    });
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.locator("output")).toHaveText("submitted");
 
@@ -182,7 +240,12 @@ for (const dictate of [false, true]) {
       stop.setAttribute("aria-label", "Send");
     });
     await expect(voice).toHaveCount(1);
+    await page.evaluate(() => {
+      Reflect.get(globalThis, "nativeVoiceState").isVoiceModeActive = true;
+    });
+    await expect(headline).toBeHidden();
     await page.evaluate(() => Reflect.get(globalThis, "voiceHook").dispose());
     await expect(voice).toHaveCount(0);
+    await expect(headline).toBeVisible();
   });
 }

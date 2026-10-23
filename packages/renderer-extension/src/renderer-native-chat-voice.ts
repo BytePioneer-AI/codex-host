@@ -8,6 +8,7 @@ import {
 import { nativeChatVoicePreferenceAllowsStart } from "./renderer-cpa-live-voice-preference.js";
 import { observeNativeChatVoiceState } from "./renderer-native-chat-voice-state.js";
 import { nativeChatVoiceDraftSelection } from "./renderer-native-chat-voice-selection.js";
+import { hideNativeChatVoiceHomeHeadline } from "./renderer-native-chat-voice-presentation.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
 const NATIVE_CHAT_VOICE_VERSION = "26.1016.61520";
@@ -244,8 +245,13 @@ export function installNativeChatVoiceHook(
   let controller: AbortController | undefined;
   let starting = false;
   let selectDraft: (() => void) | undefined;
+  let restoreHeadline: (() => void) | undefined;
   let renderFailed = false;
   const started = Date.now();
+  const showHeadline = () => {
+    restoreHeadline?.();
+    restoreHeadline = undefined;
+  };
   const removeButton = () => {
     button?.remove();
     button = undefined;
@@ -258,6 +264,7 @@ export function installNativeChatVoiceHook(
     overlayButtons.clear();
   };
   const release = () => {
+    showHeadline();
     selectDraft = undefined;
     controller?.abort();
     controller = undefined;
@@ -401,6 +408,7 @@ export function installNativeChatVoiceHook(
       const current = findBinding();
       selectDraft?.();
       if (!current) {
+        showHeadline();
         if (handle.activeCall) return;
         release();
         handle.status = "pending";
@@ -465,6 +473,25 @@ export function installNativeChatVoiceHook(
         });
       }
       mounted.render(current);
+      const voiceState = (
+        Reflect.apply(modules.initial.SPn as (...args: unknown[]) => unknown, undefined, [
+          current.scope,
+        ]) as {
+          getState(): {
+            isVoiceModeActive: boolean;
+            isWorkMode: boolean;
+            conversationId: unknown;
+          };
+        }
+      ).getState();
+      if (
+        current.props.conversationId.startsWith("local-chatgpt:") &&
+        voiceState.isVoiceModeActive &&
+        voiceState.isWorkMode === false &&
+        voiceState.conversationId === current.props.conversationId
+      )
+        restoreHeadline ??= hideNativeChatVoiceHomeHeadline(doc);
+      else showHeadline();
       const sends = [
         ...current.composer.querySelectorAll<HTMLButtonElement>('button[type="submit"]'),
       ].filter(
@@ -478,12 +505,11 @@ export function installNativeChatVoiceHook(
           removeButton();
           button = doc.createElement("button");
           button.type = "button";
-          button.className = send.className;
           button.setAttribute(BUTTON, "");
           button.setAttribute("aria-label", "Start Voice");
           button.title = "Start Voice";
           button.innerHTML =
-            '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 8v4m4-7v10m6-12v14m4-9v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+            '<svg class="icon-primary-action text-composer-primary" width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 8v4m4-7v10m6-12v14m4-9v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
           button.addEventListener("click", () => {
             void handle.start().catch(() => {
               if (button) button.title = "Chat voice could not start. Try again.";
@@ -505,14 +531,18 @@ export function installNativeChatVoiceHook(
             ]);
           control.style.setProperty("display", "none", "important");
         }
-      if (button)
+      if (button && send) {
         button.disabled =
-          starting ||
-          current.props.isStreaming === true ||
-          (modules.initial.SPn instanceof Function &&
-            (
-              modules.initial.SPn(current.scope) as { getState(): { isVoiceModeActive: boolean } }
-            ).getState().isVoiceModeActive);
+          starting || current.props.isStreaming === true || voiceState.isVoiceModeActive;
+        // Empty Send is disabled independently of whether voice can start.
+        const className = [
+          ...send.className
+            .split(/\s+/)
+            .filter((name) => name !== "opacity-50" && name !== "cursor-default"),
+          ...(button.disabled ? ["opacity-50", "cursor-default"] : []),
+        ].join(" ");
+        if (button.className !== className) button.className = className;
+      }
       handle.status = "active";
     } catch {
       release();

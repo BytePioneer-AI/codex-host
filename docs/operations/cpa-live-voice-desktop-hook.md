@@ -184,6 +184,8 @@ use Prettier 3.9.6 Babel formatting with default options (printWidth 80):
 | Store and runtime | `app-initial-c95ddb62696e.js:256888` exports the native store accessor as SPn. `:685663` initializes browser voice with oT and flag aT; `:685754` mounts native VoiceRoom. `voice-session-7d5ee22a0da4.js:7745` publishes VoiceRoom, START command handling and native cleanup through initializeVoiceSession. |
 | Prewarm | `voice-prewarm-94271e581c1b.js:1` re-exports the controller from `voice-prewarm-de985dbe0490.js`. Its AppScope, ComposerScope, selected-system-hint reads, eligibility, abort watchers and cache ownership stay native. React and createRoot are shared.FBt and shared.PNt, the same React/ReactDOM instance used by Desktop. |
 | Adopted-draft navigation | `initial.Ycr` is the current location; Nir invokes native AppNavigation. B1n resolves the adopted backend ID; n0n and Y1n resolve the transcript mapping/current node. `shared.Vot` constructs the draft page path. Navigation waits for the connected session, adopted ID and current transcript message; an early server ID alone is insufficient. |
+| Primary action presentation | `app-initial-c95ddb62696e.js:202194` places `icon-primary-action text-composer-primary` on the icon, while `:202249` applies disabled opacity/cursor classes to the button. Voice reuses Send geometry and colors, with its own disabled state. |
+| Home headline | `app-primary-58a09006cc0c.js:140384` marks the rotating headline with data-headline; `:140770` puts it in the --vt-splash-screen-headline container. During active native voice on that same Chat draft, the unique visible headline container is hidden with visibility to preserve layout and leave room for the native orb. Ending, leaving the eligible composer or disposal restores its prior visibility. Work voice does not suppress the headline. |
 
 The visible Chat owner must be non-temporary, writable, and allow external
 egress. Its props, selection context, RouteScope chain, AppScope context and
@@ -201,13 +203,24 @@ the controller. Native eligibility determines whether a selection can prewarm.
 The Start Voice waveform sits immediately before the visible native Send button,
 including compact Chat home composers without Dictate. It follows Send when its
 wrapper changes and is removed while the form has no unique visible submit
-action (such as during Stop). It invokes native START with the current
+action (such as during Stop).
+The waveform uses the native contrasting icon foreground and stays enabled
+when an empty message disables Send. Its dimming follows voice startup,
+streaming and active-call state independently of Send.
+It invokes native START with the current
 RouteScope, props, composer metadata and cancellation signal. While present it
 hides the competing Codex Start voice entry in that Chat composer. Switching to
 Codex voice or leaving Chat restores the original entry. Saved Chats remain
 selected. Draft navigation is attempted once, after adoption, and cancels if the
 user leaves, the session changes or ends, or the binding is released. Missing
 navigation exports leave native voice available with manual transcript selection.
+
+Home stays selected until native voice has connected, adopted the Chat and
+published the current transcript message. Starting while muted or without
+microphone input does not by itself satisfy those conditions. The orb and
+microphone/end controls alone do not establish transcript readiness. Early page
+navigation can interrupt native voice; no timer or early server ID bypasses
+the adoption and transcript guards.
 
 The native version/asset and scope guards fail closed on unsupported builds.
 Lifecycle tests cover saved and draft starts, prewarm contexts, navigation,

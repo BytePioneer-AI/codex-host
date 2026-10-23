@@ -19,6 +19,7 @@ async function fixture(
   provider: string,
   cli: string,
   extraEnvironment: NodeJS.ProcessEnv = {},
+  argumentsOverride?: string[],
   cliVersion?: string,
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "wb-bootstrap-"));
@@ -60,6 +61,7 @@ async function fixture(
     { ...environment, CODEXHOST_WORKBUDDY_COMMAND: bundle },
     false,
     { platform, isExecutable: () => true, isDirectory: () => false },
+    argumentsOverride,
   );
   // Node simulates the selected Electron runtime; its native binding is the only mocked boundary.
   return run(process.execPath, ["--require", preload, ...invocation.arguments], {
@@ -70,6 +72,55 @@ async function fixture(
 }
 
 describe("WorkBuddy bundled credential startup", () => {
+  it("authenticates runtime readiness before removing the bootstrap directory", async () => {
+    const secret = Buffer.alloc(32, 7).toString("base64");
+    const { stdout, stderr } = await fixture(
+      `return { loggerGet: () => ${JSON.stringify(JSON.stringify({ version: 1, atRestSecretKey: secret }))} };`,
+      `
+      const assert = require('node:assert/strict');
+      const net = require('node:net');
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const env = process.env;
+      const readyPath = env.CODEBUDDY_SIDECAR_READY_SOCKET;
+      const readyParams = { protocolVersion:1, sessionId:env.CODEBUDDY_SIDECAR_READY_SESSION_ID, token:env.CODEBUDDY_SIDECAR_READY_TOKEN, pid:process.pid, port:12345 };
+      const report = overrides => new Promise((resolve, reject) => {
+        const socket = net.createConnection(readyPath);
+        let output = '';
+        socket.on('error', reject);
+        socket.on('connect', () => socket.write(JSON.stringify({jsonrpc:'2.0',id:'native-ready',method:'session.ready',params:{...readyParams,...overrides}})+'\\n'));
+        socket.on('data', data => { output += data; });
+        socket.on('close', () => resolve(output));
+      });
+      const server = net.createServer(socket => {
+        let input = '';
+        socket.on('data', chunk => {
+          input += chunk;
+          if (!input.includes('\\n')) return;
+          socket.end(JSON.stringify({ok:true,policy:'fields'})+'\\n');
+          server.close();
+        });
+        socket.on('close', async () => {
+          if (process.platform !== 'win32') assert.equal(fs.existsSync(path.dirname(readyPath)), true);
+          for (const invalid of [{token:'wrong'}, {pid:process.pid+1}, {port:0}, {sessionId:'wrong'}, {protocolVersion:2}]) assert.equal(await report(invalid), '');
+          const reply = JSON.parse(await report({}));
+          assert.deepEqual(reply, {jsonrpc:'2.0',id:'native-ready',result:{ok:true}});
+          setImmediate(() => {
+            if (process.platform !== 'win32') assert.equal(fs.existsSync(path.dirname(readyPath)), false);
+            console.log('ready-accepted');
+          });
+        });
+      });
+      server.listen(env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);
+      `,
+      {},
+      ["--acp", "--serve"],
+    );
+    expect(stdout.trim()).toBe("ready-accepted");
+    expect(stderr).toBe("");
+    expect(stdout + stderr).not.toContain(secret);
+  });
+
   it.each([
     ["unset", undefined],
     ["fields", "fields"],
@@ -164,12 +215,27 @@ describe("WorkBuddy bundled credential startup", () => {
         server.listen(env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);
         `,
         requestedPolicy === undefined ? {} : { WORKBUDDY_AT_REST_ENCRYPTION: requestedPolicy },
+        undefined,
         version,
       );
       expect(stdout.trim()).toBe("protocol");
       expect(stderr).toBe("");
     },
   );
+
+  it("fails closed when the native server never reports readiness", async () => {
+    const secret = Buffer.alloc(32, 7).toString("base64");
+    await expect(
+      fixture(
+        `const timer = global.setTimeout; global.setTimeout = (callback, delay, ...args) => timer(callback, delay === 15000 ? 50 : delay, ...args); return {loggerGet: () => ${JSON.stringify(JSON.stringify({ version: 1, atRestSecretKey: secret }))}};`,
+        `const net = require('node:net'); const server = net.createServer(socket => {
+        socket.once('data', () => { socket.end(JSON.stringify({ok:true,policy:'fields'})+'\\n'); server.close(); });
+      }); server.listen(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);`,
+        {},
+        ["--acp", "--serve"],
+      ),
+    ).rejects.toMatchObject({ code: 1, stderr: "WorkBuddy runtime readiness timed out\n" });
+  });
 
   it("keeps older Electron runtimes without the key provider usable", async () => {
     const { stdout } = await fixture(

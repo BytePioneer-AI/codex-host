@@ -84,8 +84,57 @@ export const WORKBUDDY_CREDENTIAL_PRELOAD = String.raw`
     socketPath = path.join(directory, "c");
   }
   const cleanup = () => {
+    clearTimeout(readyTimer);
+    readyServer && readyServer.close();
+    for (const connection of readyConnections) connection.destroy();
     if (directory) try { fs.rmSync(directory, {recursive:true,force:true}); } catch {}
   };
+  const needsReady = process.argv.includes("--serve");
+  let credentialReady = false;
+  let runtimeReady = !needsReady;
+  let readyTimer;
+  let readyServer;
+  const readyConnections = new Set();
+  const cleanupWhenReady = () => {
+    if (!credentialReady || !runtimeReady) return;
+    cleanup();
+    process.removeListener("exit", cleanup);
+  };
+  if (needsReady) {
+    readyServer = net.createServer(connection => {
+      readyConnections.add(connection);
+      connection.once("close", () => readyConnections.delete(connection));
+      connection.on("error", () => connection.destroy());
+      let input = "";
+      connection.on("data", chunk => {
+        input += chunk;
+        if (input.length > 4096) return connection.destroy();
+        if (!input.includes("\n")) return;
+        try {
+          const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+          const params = request.params;
+          if (request.jsonrpc !== "2.0" || request.method !== "session.ready" ||
+              typeof request.id !== "string" || params?.protocolVersion !== 1 ||
+              params.token !== token || params.sessionId !== sessionId || params.pid !== process.pid ||
+              !Number.isInteger(params.port) || params.port < 1 || params.port > 65535) {
+            connection.destroy();
+            return;
+          }
+          runtimeReady = true;
+          connection.end(JSON.stringify({jsonrpc:"2.0",id:request.id,result:{ok:true}}) + "\n", cleanupWhenReady);
+        } catch { connection.destroy(); }
+      });
+    });
+    readyServer.once("error", () => {
+      process.stderr.write("WorkBuddy runtime readiness listener failed\n");
+      process.exit(1);
+    });
+    readyServer.listen(socketPath + "-ready");
+    readyTimer = setTimeout(() => {
+      process.stderr.write("WorkBuddy runtime readiness timed out\n");
+      process.exit(1);
+    }, 15000);
+  }
   process.once("exit", cleanup);
   Object.assign(env, {
     WORKBUDDY_AT_REST_ENCRYPTION: protectionMode,
@@ -112,8 +161,8 @@ export const WORKBUDDY_CREDENTIAL_PRELOAD = String.raw`
     clearTimeout(timer);
     socket && socket.destroy();
     message = "";
-    cleanup();
-    process.removeListener("exit", cleanup);
+    credentialReady = success;
+    if (success) cleanupWhenReady();
     if (!success) {
       process.stderr.write("WorkBuddy credential bootstrap failed\n");
       process.exit(1);

@@ -36,7 +36,7 @@ Host 汇总本机全局用量时 MUST NOT 把各会话的累计结果直接相�
 
 ### Requirement: 全局统计必须覆盖本机全部原生会话并以原生时间归日
 
-全局统计 MUST 覆盖本机官方 Codex 与实现了用量读取能力的 Harness 的全部原生会话，不论其是否经 CodexHost 创建或导入。每条用量 MUST 按其原生记录自带的时间戳归入本地日期。子代理的用量 MUST 计入其父会话。
+全局统计 MUST 覆盖本机官方 Codex 与实现了用量读取能力的 Harness 的全部原生会话，不论其是否经 CodexHost 创建或导入。每条用量 MUST 按其原生记录自带的时间戳归入查看页面本机时区的日期、星期与小时。页面 MUST 在请求中传入 `timeZone`，所选 Host MUST 在该时区计算“今天”、时间范围和日期筛选，并应用时间戳对应的夏令时规则。未指定 `timeZone` 的协议调用 MUST 保持 Host 本地时区口径；无效时区 MUST 被拒绝，MUST NOT 静默回退。子代理的用量 MUST 计入其父会话。
 
 #### Scenario: 未经 CodexHost 的原生会话
 
@@ -95,9 +95,36 @@ Codex 统计插件读取 rollout 时 MUST 优先使用原生明确请求记录�
 - **WHEN** 同一 rollout 同时存在于 `sessions` 与 `archived_sessions`，且一份是另一份的前缀
 - **THEN** 该会话的请求 MUST 只计一次，以较长的一份为准
 
+### Requirement: 用量统计必须按机器读取
+
+用量统计属于产生它的机器：一个 Host 只统计自己所在机器，页面 MUST 一次只读取一个 Host，MUST NOT 把多台机器的数字相加。Desktop 设置页 MUST 提供机器选择，列出本机与 Desktop 已连接的远程 Host，并 MUST 通过 Desktop 已有的 Host 连接请求所选机器的统计与价格，MUST NOT 新建跨机传输或 SSH 通道。所选机器 MUST 被记住；所选机器不可用时 MUST 明确报错，MUST NOT 回退到其他机器。切换机器时 Harness、模型、项目与日期筛选 MUST 重置，时间范围、度量、粒度与自动刷新间隔保持。只统计本机 Host 的入口（本地控制台）MUST NOT 显示机器选择。
+
+#### Scenario: 选择远程 Host
+
+- **WHEN** Desktop 设置页的用量统计选择一台已连接的远程 Host
+- **THEN** 页面 MUST 通过该 Host 的连接请求 `codexhost/usage/statistics/get` 与该 Host 的价格表
+- **AND** 页面 MUST 显示该机器的统计，MUST NOT 混入本机或其他机器的数字
+
+#### Scenario: 远端 Host 与 Desktop 时区不同
+
+- **WHEN** Desktop 本机时区为 `Asia/Shanghai`，所选远端 Host 时区为 UTC，原生请求发生于 `2026-09-17T18:15:00Z`
+- **THEN** 页面 MUST 将该请求统计到本机日期 `2026-09-18` 的 02 点，而非远端日期 `2026-09-17` 的 18 点
+- **AND** 页面 MUST 标注 `Asia/Shanghai`，日期范围与日期筛选 MUST 使用同一时区
+- **AND** 切换机器 MUST NOT 改变页面的展示时区
+
+#### Scenario: 所选 Host 不可用
+
+- **WHEN** 所选 Host 的连接不存在或已断开
+- **THEN** 页面 MUST 显示明确错误，MUST NOT 展示其他机器的统计
+
+#### Scenario: 只有本机时
+
+- **WHEN** 入口只能读取本机 Host（本地控制台），或没有其他机器可选
+- **THEN** 页面 MUST NOT 显示机器选择，MUST 直接展示本机统计
+
 ### Requirement: 设置页必须展示全局用量统计
 
-设置中 MUST 提供“用量统计”页面，供本地控制台与 Desktop 设置共用，展示所在 Host 本机的统计。页面 MUST 支持今天、7 天、30 天、90 天与全部时间范围；MUST 显示总览（Token、缓存命中率、费用）、按日趋势（可按 Harness 与模型筛选）、按 Harness 与按模型的分解、最耗会话与最近会话。存在未计价请求时，页面 MUST 标明费用为下限、列出未计价模型，并 MUST 能在当前页面直接为该模型 ID 设置价格。价格操作 MUST 仅在有模型 ID 的模型行提供，以弹窗编辑该模型的价格；页头 MUST NOT 提供价格入口，MUST NOT 提供常驻价格区域或独立导航页。弹窗 MUST 支持添加、编辑和确认移除该模型的自定义价格，保存或移除成功后 MUST 关闭弹窗、自动刷新统计且保留筛选条件。取消或 Esc MUST 不保存；写入期间 MUST 阻止关闭与重复提交，写入失败 MUST 保留草稿。统计轮询 MUST NOT 清除未保存的价格编辑草稿。
+设置中 MUST 提供“用量统计”页面，供本地控制台与 Desktop 设置共用，展示所选 Host 本机的统计。页面 MUST 支持今天、7 天、30 天、90 天与全部时间范围；MUST 显示总览（Token、缓存命中率、费用）、按日趋势（可按 Harness 与模型筛选）、按 Harness 与按模型的分解、最耗会话与最近会话。存在未计价请求时，页面 MUST 标明费用为下限、列出未计价模型，并 MUST 能在当前页面直接为该模型 ID 设置价格。价格操作 MUST 仅在有模型 ID 的模型行提供，以弹窗编辑该模型的价格；页头 MUST NOT 提供价格入口，MUST NOT 提供常驻价格区域或独立导航页。弹窗 MUST 支持添加、编辑和确认移除该模型的自定义价格，保存或移除成功后 MUST 关闭弹窗、自动刷新统计且保留筛选条件。取消或 Esc MUST 不保存；写入期间 MUST 阻止关闭与重复提交，写入失败 MUST 保留草稿。统计轮询 MUST NOT 清除未保存的价格编辑草稿。
 
 #### Scenario: 最近会话按最后活跃时间列出
 

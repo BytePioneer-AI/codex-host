@@ -1,11 +1,13 @@
+import { randomBytes } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setImmediate as setImmediatePromise } from "node:timers/promises";
 import { zstdCompressSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCodexUsageStatistics, readCodexRollouts } from "../src/usage-statistics.js";
 import { createUsageStatisticsAdapter } from "../src/plugin.js";
-import { copyRelation } from "../src/rollout-io.js";
+import { copyRelation, rolloutBytes, rolloutLines } from "../src/rollout-io.js";
 
 const THREAD = "00000000-0000-4000-8000-000000000001";
 const CHILD = "00000000-0000-4000-8000-000000000002";
@@ -439,6 +441,84 @@ describe("Codex read-only storage", () => {
     await writeFile(compressed, (await readFile(compressed)).subarray(0, -1));
     await expect(readCodexRollouts([compressed], THREAD, signal)).rejects.toThrow();
     await expect(copyRelation(original, compressed, signal)).rejects.toThrow();
+  });
+
+  it(
+    "decodes a frame larger than the former compressed-frame limit",
+    { timeout: 120_000 },
+    async () => {
+      // Incompressible bytes: the frame itself is larger than the old 64 MiB cap.
+      const original = randomBytes(66 * 1024 * 1024);
+      const compressed = path.join(root, `${filename()}.zst`);
+      await writeFile(compressed, zstdCompressSync(original));
+      expect((await stat(compressed)).size).toBeGreaterThan(64 * 1024 * 1024);
+      let decoded = 0;
+      for await (const chunk of rolloutBytes(compressed, signal)) decoded += chunk.length;
+      expect(decoded).toBe(original.length);
+    },
+  );
+
+  it(
+    "decodes a frame larger than the former single-shot output limit",
+    { timeout: 120_000 },
+    async () => {
+      // Repetitive text keeps the file small while the decoded frame exceeds the old 128 MiB cap.
+      const line = Buffer.from(`${"x".repeat(1023)}\n`);
+      const original = Buffer.concat(Array.from({ length: 130 * 1024 }, () => line));
+      const compressed = path.join(root, `${filename()}.zst`);
+      await writeFile(compressed, zstdCompressSync(original));
+      let lines = 0;
+      for await (const decoded of rolloutLines(compressed, signal)) {
+        if (decoded.length !== 1023) throw new Error("unexpected decoded line");
+        lines += 1;
+      }
+      expect(lines).toBe(130 * 1024);
+    },
+  );
+
+  it("drops skippable frames between decoded frames", async () => {
+    const first = Buffer.from('{"a":1}\n'),
+      second = Buffer.from('{"b":2}\n'),
+      payload = Buffer.from("ignored");
+    const skippable = Buffer.alloc(8 + payload.length);
+    skippable.writeUInt32LE(0x184d2a50, 0);
+    skippable.writeUInt32LE(payload.length, 4);
+    payload.copy(skippable, 8);
+    const compressed = path.join(root, `${filename()}.zst`);
+    await writeFile(
+      compressed,
+      Buffer.concat([zstdCompressSync(first), skippable, zstdCompressSync(second)]),
+    );
+    const lines: string[] = [];
+    for await (const line of rolloutLines(compressed, signal)) lines.push(line);
+    expect(lines).toEqual(['{"a":1}', '{"b":2}']);
+  });
+
+  it("stops a decoded stream without an unhandled pipeline rejection", async () => {
+    const compressed = path.join(root, `${filename()}.zst`);
+    // A frame large enough that the consumer stops while it is still being decoded.
+    const payload = Buffer.alloc(4 * 1024 * 1024, "x");
+    await writeFile(
+      compressed,
+      Buffer.concat([zstdCompressSync(payload), zstdCompressSync(Buffer.from("tail\n"))]),
+    );
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const reader = rolloutBytes(compressed, signal);
+      expect(await reader.next()).toMatchObject({ done: false });
+      // A consumer may stop mid-frame: `copyRelation` does on the first differing byte.
+      await reader.return(undefined);
+      // Unhandled rejections are reported once the microtask queue drains, so one event-loop turn
+      // is enough; no guessed duration is involved.
+      await setImmediatePromise();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("rejects corrupt compressed input and cancels reads", async () => {

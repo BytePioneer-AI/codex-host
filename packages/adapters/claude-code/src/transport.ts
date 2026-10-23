@@ -101,6 +101,8 @@ export type ClaudeTurnEvent =
   | {
       type: "message.completed";
       messageId: string;
+      /** Local slash-command output is not an assistant response. */
+      localCommand?: true;
       checkpointId?: string;
       lastRequestUsage?: ClaudeLastRequestUsage;
     }

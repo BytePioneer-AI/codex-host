@@ -1,5 +1,6 @@
 /** Fixed native Codex SSH operations. Configuration stays owned by Codex. */
 import type { CodexSshConnection, CodexSshDraft } from "@codexhost/shared-contracts";
+import { loadCodexSshServices, type CodexSshServices } from "./codex-ssh-services.js";
 export type { CodexSshConnection, CodexSshDraft } from "@codexhost/shared-contracts";
 export interface CodexSshClient {
   list(signal?: AbortSignal): Promise<CodexSshConnection[]>;
@@ -22,7 +23,25 @@ const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 export function createCodexSshClient(ownerWindow: Window): CodexSshClient {
-  function request(operation: Operation, params: unknown, signal?: AbortSignal): Promise<unknown> {
+  let nativeServices: Promise<CodexSshServices | null> | undefined;
+  function services(): Promise<CodexSshServices | null> {
+    nativeServices ??= loadCodexSshServices(ownerWindow).then(
+      (value) => {
+        if (!value) nativeServices = undefined;
+        return value;
+      },
+      (error: unknown) => {
+        nativeServices = undefined;
+        throw error;
+      },
+    );
+    return nativeServices;
+  }
+  function request(
+    operation: Operation,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const bridge = (
       ownerWindow as Window & {
         electronBridge?: { sendMessageFromView(message: unknown): unknown };
@@ -33,7 +52,10 @@ export function createCodexSshClient(ownerWindow: Window): CodexSshClient {
     if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
     return new Promise((resolve, reject) => {
       const requestId = ownerWindow.crypto.randomUUID();
+      let settled = false;
       const finish = (error: unknown, value?: unknown): void => {
+        if (settled) return;
+        settled = true;
         ownerWindow.clearTimeout(timer);
         ownerWindow.removeEventListener("message", receive);
         signal?.removeEventListener("abort", abort);
@@ -56,7 +78,10 @@ export function createCodexSshClient(ownerWindow: Window): CodexSshClient {
           message.status >= 300 ||
           typeof message.bodyJsonString !== "string"
         ) {
-          finish(new Error("Codex SSH request failed; check the native Connections settings"));
+          const detail = typeof message.error === "string" ? `: ${message.error}` : "";
+          finish(
+            new Error(`Codex SSH request failed; check the native Connections settings${detail}`),
+          );
           return;
         }
         try {
@@ -71,20 +96,37 @@ export function createCodexSshClient(ownerWindow: Window): CodexSshClient {
       );
       ownerWindow.addEventListener("message", receive);
       signal?.addEventListener("abort", abort, { once: true });
-      try {
-        Promise.resolve(
-          bridge.sendMessageFromView({
+      void (async () => {
+        const native = await services();
+        if (settled) return;
+        if (native) {
+          let result: unknown;
+          switch (operation) {
+            case "refresh-remote-connections":
+              result = await native.sshConnections.refresh();
+              break;
+            case "save-codex-managed-remote-ssh-connections":
+              result = await native.sshConnections.save(params);
+              break;
+            case "set-remote-connection-auto-connect":
+              result = await native.remoteConnections.setAutoConnect(params);
+              break;
+            case "app-server-connection-state":
+              result = await native.remoteConnections.getState(String(params.hostId));
+              break;
+          }
+          finish(null, result);
+        } else {
+          await bridge.sendMessageFromView({
             type: "fetch",
             requestId,
             method: "POST",
             url: `vscode://codex/${operation}`,
             body: JSON.stringify(params),
             reportUploadProgress: false,
-          }),
-        ).catch((error: unknown) => finish(error));
-      } catch (error) {
-        finish(error);
-      }
+          });
+        }
+      })().catch((error: unknown) => finish(error));
     });
   }
   async function list(signal?: AbortSignal): Promise<CodexSshConnection[]> {

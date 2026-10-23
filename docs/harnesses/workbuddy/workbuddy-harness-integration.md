@@ -4,7 +4,7 @@ WorkBuddy 作为独立的 `workbuddy` Harness 运行 WorkBuddy AI 随应用分�
 
 ## 接口选择与已确认版本
 
-本集成在 macOS 上检查了 **WorkBuddy AI 5.5.2**。应用内置 CLI 的包版本为 **CodeBuddy 2.137.1**，路径为：
+本集成在 macOS 上检查了 **WorkBuddy AI 5.5.2**（内置 CodeBuddy 2.137.1）和 **WorkBuddy AI 5.8.4**（内置 CodeBuddy 2.161.0，仅精简包）。应用内置 CLI 的入口路径为：
 
 ```text
 /Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy
@@ -30,6 +30,14 @@ ELECTRON_RUN_AS_NODE=1 "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron" 
 
 这是 macOS 应用内置入口的运行时与脚本配对；插件在加载内置脚本前通过 Electron 的 `--eval` 执行下述凭据引导，保持原生 CLI 的 `process.argv` 与参数。显式原生 CLI 覆盖直接追加公开的 `--acp` 参数，不注入应用内置引导；显式 Desktop 入口沿用内置启动路径。每个可写 Host Session 拥有一个 stdio ACP 子进程。普通 Prompt 不进入 Shell 参数，Host 只通过 ACP 请求发送内容。
 
+### 仅包含精简 CLI 的发行
+
+WorkBuddy AI 5.8.4 的 macOS 安装包仅包含 `dist/codebuddy-lite-wb.mjs`，不包含完整的 `codebuddy.js` 或 `codebuddy-headless.js`。插件按所选安装的实际文件选择原生精简入口，通过 `CODEBUDDY_FORCE_LITE_WB_BUNDLE=1` 交给内置 `bin/codebuddy` 分派；不会复制其他产品的 CLI。包含完整 Bundle 的安装仍使用原有独立 `--acp` 入口。
+
+精简入口通过 `--acp --serve --host 127.0.0.1 --port 0 --auth password` 启动 stdio ACP。原生 Server 同时拥有随机本地 HTTP 端口，插件为每次启动生成独立密码，仅通过子进程环境传递；普通对话仍走 stdio，不开放远程监听。临时历史清理进程已拥有自己的端口和密码时保留该进程的参数与凭据。原生启动 Banner 含密码，由共享 CodeBuddy Transport 过滤，只将 JSON 帧传给 ACP SDK，不保存或转发 Banner。进程关闭沿用现有的 EOF、进程组终止与超时清理。
+
+`--serve` 的原生启动还要求 `session.ready` 通知。凭据引导为同一子进程保留随机本地就绪通道，校验协议版本、随机 Token、Session ID、PID 与端口范围，确认后回复 `{ ok: true }`。凭据引导和就绪通知均完成后清理通道；就绪超时停止启动。该通知仅确认本次子进程已启动，不激活 Desktop owner runtime、签发任务准入或接管 Desktop Session。这些打包与就绪接口不属于 ACP 标准，WorkBuddy 升级后仍需复核。
+
 ## 认证与数据隔离
 
 直接运行内置 CLI 时，其内部默认值可能回退到 `~/.codebuddy`。插件不会沿用这一跨产品默认值：它只把 `WORKBUDDY_CONFIG_DIR` 视为用户选择；没有该值时使用 `~/.workbuddy-ai`，随后强制传给子进程的 `WORKBUDDY_CONFIG_DIR` 与 `CODEBUDDY_CONFIG_DIR` 指向同一 WorkBuddy 根。这样即使普通 CodeBuddy 配置了自己的 `CODEBUDDY_CONFIG_DIR`，WorkBuddy 的历史、认证和设置也不会泄漏到该目录。WorkBuddy CLI 负责认证、原生设置、工具和 MCP 配置；codexhost 不保存、复制或推断其凭据。
@@ -43,7 +51,7 @@ ELECTRON_RUN_AS_NODE=1 "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron" 
 | `< 2.156` | `bootstrap.mode: "required"` | `{ok,mode}` + 空格，无换行 |
 | `>= 2.156` | `bootstrap.policy: "fields"` | `{ok,policy}` + 换行 |
 
-此接入使用 WorkBuddy 自带的实现接口，不属于 ACP 标准：字段加密策略已在 Windows WorkBuddy AI 5.7.6 / CLI 2.156.0 与 WorkBuddy 5.5.6 / CLI 2.137.1（旧版 `mode` 协议）上验证；2.138–2.155 未逐版验证，2.156 阈值由 2.137.1 与 2.156.0/2.161.0 的实测界定。升级后须复核原生绑定、密钥格式和接收器。失败时停止启动，不关闭加密或写回明文凭据。POSIX 临时 socket 使用独立的 `0700` 目录，Windows 使用随机命名管道；收到原生确认后清理引导资源。若独立 CLI 仍要求认证，应在 Host 外启动相同产品配置和数据根的内置 TUI，然后执行官方 [`/login`](https://cloud.tencent.com/document/product/1831/137046)：
+此接入使用 WorkBuddy 自带的实现接口，不属于 ACP 标准：字段加密策略已在 Windows WorkBuddy AI 5.7.6 / CLI 2.156.0、macOS WorkBuddy AI 5.8.4 / CLI 2.161.0 与 Windows WorkBuddy 5.5.6 / CLI 2.137.1（旧版 `mode` 协议）上验证；2.138–2.155 未逐版验证，2.156 阈值由 2.137.1 与 2.156.0/2.161.0 的实测界定。升级后须复核原生绑定、密钥格式和接收器。失败时停止启动，不关闭加密或写回明文凭据。POSIX 临时 socket 使用独立的 `0700` 目录，Windows 使用随机命名管道；收到原生确认后清理引导资源。若独立 CLI 仍要求认证，包含 TUI 的发行可在 Host 外启动相同产品配置和数据根的内置 TUI，然后执行官方 [`/login`](https://cloud.tencent.com/document/product/1831/137046)：
 
 ```sh
 CODEBUDDY_CONFIG_DIR="$HOME/.workbuddy-ai" \
@@ -53,7 +61,7 @@ ELECTRON_RUN_AS_NODE=1 \
 "/Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"
 ```
 
-进入 TUI 后输入 `/login`，完成浏览器认证再重试 Harness。这里使用的仍是 App 内置 CLI，不表示需要另装一个 CLI。不要使用 Desktop owner runtime 的凭据，也不要发明 `codebuddy auth login` 命令。
+仅包含精简 CLI 的发行不提供该 TUI 入口，应通过 WorkBuddy 应用自身的官方登录流程完成认证。包含 TUI 的发行进入后输入 `/login`，完成浏览器认证再重试 Harness。这里使用的仍是 App 内置 CLI，不表示需要另装一个 CLI。不要使用 Desktop owner runtime 的凭据，也不要发明 `codebuddy auth login` 命令。
 
 若 `session/new` 成功而首个 Turn 返回 `refusal`，应检查 ACP 终态 `_meta["codebuddy.ai/errorMessage"]`。共享 CodeBuddy Session 会提取其中的 `data.details` 或 `message`，经诊断脱敏后显示；`data.category="auth"` 映射为 `authenticationRequired`，而不是仅显示 `FAILED_MODEL_REQUEST`。JSON-RPC `-32000` 本身不区分认证与其他原生拒绝。缺少可读诊断时保留原有的 stop reason / outcome 提示。
 
@@ -135,6 +143,14 @@ WorkBuddy 2.137.1 对标准 ACP `session/fork` 返回 `Method not found`，所�
 
 WorkBuddy 原生 Agent 工具创建的是同一 Native Session 体系内的子 Agent，Adapter 只读投影它们的状态和 Transcript。它们不是 CodexHost 跨 Harness Thread，也不会自动获得其他 Harness 的身份或能力。
 
+## 应用版本与手动更新
+
+WorkBuddy 插件通过公共 `installation("check")` 能力查询所选安装的版本，不依赖 ACP 连接成功或登录状态。应用内置 CLI 的 `product.json` 中 `genieVersion` 为桌面应用版本；更新查询复用启动时的安装选择规则，保存的安装路径优先于环境变量与自动发现，不检查另一份默认安装。
+
+标准 WorkBuddy AI 与 WorkBuddy 中国版分别使用其产品元数据声明的官方公共站点 `/v2/update?platform=workbuddy-<target>` 查询发布版本。支持 macOS arm64/x64 和 Windows x64 用户安装包；不发送账号、租户或凭据。公开 Feed 版本末尾的第四段数字是构建标识，显示与比较使用桌面应用的三段版本；同一应用版本的构建差异不提示升级。私有/企业更新渠道、其他平台与无法查询的 Feed 保留当前版本、将最新版本标为未知，并提示使用应用内更新器。自定义独立 CLI 仅查询其 `--version`，不把桌面发布版本视为该 CLI 的最新版本。
+
+有新版本时，详情卡片提供「下载更新」，使用 Feed 指向的同产品、同平台、同发行区域的官方安装包。macOS 按官网下载逻辑将 ZIP 地址切换为 DMG；Windows 使用 EXE。该入口只打开官方安装包下载，不执行安装器、不替换文件、不关闭 WorkBuddy，也不报告更新成功。用户完成安装后重新打开连接页回读版本；已有会话保持原进程，新会话使用更新后的内置 CLI。插件保持 `canUpdate: false`，不参与「全部更新」，显式调用 `installation("update")` 会返回手动安装提示。Broker 路径不提供本机版本管理能力。
+
 ## 插件、路由与发行
 
 插件源码位于 `packages/adapters/workbuddy`，Manifest、Adapter、Session 和 Native Ref 都使用 `workbuddy` 身份。新 Thread 使用共享 `encodeHarnessPluginRoute` 路由，不新增 WorkBuddy 专用 Host codec 或回退分支。
@@ -151,6 +167,8 @@ codexhost broker status --harness workbuddy
 本集成的产品身份不改变原生所有权：WorkBuddy 认证、数据保留、网络访问和计费仍由 WorkBuddy CLI 负责，codexhost 负责 Thread 映射、公共事件投影和插件生命周期。
 
 ## 验证状态
+
+2026-10-22 在 macOS WorkBuddy AI 5.8.4 的精简 CLI 上验证了真实 ACP initialize、临时 Session 检查、创建会话、Auto 模型的流式回复，以及关闭进程后恢复同一 Session 并继续对话。测试只请求复述随机字符串，没有使用工具或修改项目文件；恢复后的回复正确保留前一轮字符串，两个 Turn 均成功并持久化原生身份。本次覆盖连接与基本对话/恢复；Fork、修订、工具交互和 Windows 精简包尚未完成真实在线回归，Windows 启动参数与就绪校验仅通过模拟验证。
 
 初始接入完成了以下无模型请求探测：
 

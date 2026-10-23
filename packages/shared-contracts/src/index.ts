@@ -248,6 +248,7 @@ export {
   accountCreditsProductUsageSchema,
   accountResetCreditsSchema,
   accountCreditsSnapshotSchema,
+  composerIndicatorsSchema,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
   threadUsageSnapshotSchema,

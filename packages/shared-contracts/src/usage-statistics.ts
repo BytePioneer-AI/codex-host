@@ -22,10 +22,24 @@ const project = z.string().min(1).max(4096);
  */
 export const usageStatisticsParamsSchema = z.strictObject({
   range: z.enum(USAGE_STATISTICS_RANGES),
+  /** Display timezone for ranges, dates and hourly buckets; omitted means the Host's local zone. */
+  timeZone: z
+    .string()
+    .min(1)
+    .max(128)
+    .refine((value) => {
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: value });
+        return true;
+      } catch {
+        return false;
+      }
+    }, "Unsupported usage statistics timezone")
+    .optional(),
   harness: harness.optional(),
   model: model.nullable().optional(),
   project: project.nullable().optional(),
-  /** One local date inside the range. */
+  /** One date in the query timezone inside the range. */
   date: localDate.optional(),
 });
 
@@ -71,7 +85,7 @@ export const usageStatisticsSessionSchema = z.strictObject({
 
 export const usageStatisticsResultSchema = z.strictObject({
   range: z.enum(USAGE_STATISTICS_RANGES),
-  /** First local date of the range; null for all time. */
+  /** First date in the query timezone (Host local when omitted); null for all time. */
   from: localDate.nullable(),
   to: localDate,
   /** The filters these figures apply, echoed so a late answer to older filters is recognised. */
@@ -119,7 +133,7 @@ export const usageStatisticsResultSchema = z.strictObject({
   totals: usageStatisticsTotalsSchema,
   /** Each date and Harness of the range: every filter except the day. */
   daily: z.array(z.strictObject({ date: localDate, harness, ...totals })).max(200_000),
-  /** Local weekday (0 = Sunday) and hour, all filters applied. */
+  /** Weekday (0 = Sunday) and hour in the query timezone, all filters applied. */
   hourly: z
     .array(
       z.strictObject({

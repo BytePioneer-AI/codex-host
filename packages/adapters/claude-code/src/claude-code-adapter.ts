@@ -1,5 +1,9 @@
 import { claudeUsageHistory, type ClaudeUsageRecord } from "./claude-usage.js";
 import { createClaudeUsageStatistics } from "./claude-usage-statistics.js";
+import {
+  claudePromptCacheIndicators,
+  lastClaudeAssistantResponseUnix,
+} from "./claude-prompt-cache.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -57,6 +61,7 @@ import {
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
+  accountCreditsSnapshotSchema,
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
   harnessIdSchema,
@@ -575,7 +580,7 @@ class ClaudeHarnessSession implements HarnessSession {
   };
   readonly commands: HarnessCommandCapability;
   readonly initialState: HarnessSessionState;
-  readonly initialUsage = null;
+  readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #cancelTimeoutMs: number;
@@ -614,6 +619,8 @@ class ClaudeHarnessSession implements HarnessSession {
   #hardCancelTask: Promise<void> | null = null;
   #usageGeneration = 0;
   #latestUsage: HostUsage | null = null;
+  #lastAssistantResponseAtUnix: number | undefined;
+  #accountCreditsSupported: boolean;
   #minimumContextUsedTokens: number | null = null;
   #calibratedInputTokens = 0;
   #calibratedOutputTokens = 0;
@@ -652,10 +659,23 @@ class ClaudeHarnessSession implements HarnessSession {
       cancelTimeoutMs: number;
       continuationQuiescenceMs: number;
       /** Native requests already in the transcript, replayed for Host usage metering. */
-      usageHistory: { requests: HostUsageRequest[]; complete: boolean };
+      usageHistory: {
+        requests: HostUsageRequest[];
+        complete: boolean;
+        lastResponseAtUnix?: number;
+      };
+      accountCreditsSupported: boolean;
     },
   ) {
     this.#cwd = cwd;
+    this.#lastAssistantResponseAtUnix = options.usageHistory.lastResponseAtUnix;
+    this.#accountCreditsSupported = options.accountCreditsSupported;
+    const composerIndicators = claudePromptCacheIndicators(
+      this.#accountCreditsSupported,
+      this.#lastAssistantResponseAtUnix,
+    );
+    this.initialUsage = composerIndicators.length ? { composerIndicators } : null;
+    this.#latestUsage = this.initialUsage;
     this.#pendingSessions = options.pendingSessions;
     const environment = options.environment;
     this.#createTransport = environment
@@ -1832,6 +1852,10 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#completeReasoning(active, event.messageId, { status: "succeeded" });
         return;
       case "message.completed": {
+        if (!event.localCommand) {
+          this.#lastAssistantResponseAtUnix = Math.floor(Date.now() / 1000);
+          this.publishAccountCreditsSupport(this.#accountCreditsSupported);
+        }
         // A continuation may complete its message without emitting text (for example
         // after a tool or interaction). Keep the quiescence timer from closing the
         // held Turn until the native result confirms this Segment is done.
@@ -2610,6 +2634,21 @@ class ClaudeHarnessSession implements HarnessSession {
     if (effective) this.publishPlanLimit(effective);
   }
 
+  publishAccountCreditsSupport(supported: boolean): void {
+    if (this.#phase !== "open") return;
+    this.#accountCreditsSupported = supported;
+    const composerIndicators = claudePromptCacheIndicators(
+      supported,
+      this.#lastAssistantResponseAtUnix,
+    );
+    if (
+      composerIndicators[0]?.expiresAtUnix ===
+      this.#latestUsage?.composerIndicators?.[0]?.expiresAtUnix
+    )
+      return;
+    this.#mergeAndPublishUsage({ composerIndicators }, this.#active?.command.turnId);
+  }
+
   publishPlanLimit(planLimit: ClaudePlanLimitEvent): void {
     if (this.#phase !== "open") return;
     const delta: Partial<HostUsage> = {};
@@ -2936,6 +2975,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   #closePromise: Promise<void> | null = null;
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
   #accountInspection: Promise<HarnessAccountSnapshot | null> | null = null;
+  #accountCreditsSupported = false;
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     const environment = options.environment ?? process.env;
@@ -3055,12 +3095,21 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   }
 
   async #readAccount(): Promise<HarnessAccountSnapshot | null> {
+    const planLimitAtStart = this.#latestPlanLimit;
     let inspector: ClaudeModelInspector | undefined;
     try {
       this.#dependencies.inspectInstallation();
       inspector = this.#dependencies.createInspector({ cwd: process.cwd() });
       this.#inspectors.add(inspector);
-      return (await inspector.inspectAccount?.()) ?? null;
+      const account = (await inspector.inspectAccount?.()) ?? null;
+      // A native quota push received during inspection is newer evidence than this result.
+      if (this.#latestPlanLimit === planLimitAtStart) {
+        this.#accountCreditsSupported = account?.credits !== undefined;
+        for (const session of this.#sessions) {
+          session.publishAccountCreditsSupport(this.#accountCreditsSupported);
+        }
+      }
+      return account;
     } catch {
       return null;
     } finally {
@@ -3366,6 +3415,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         ...(durableRef ? { nativeRef: durableRef } : {}),
         sessionId,
         usageHistory,
+        accountCreditsSupported: this.#accountCreditsSupported,
         ...(requestedModel ? { requestedModel } : {}),
         requestedPermissionModeId,
         requestedThinkingOptionId,
@@ -3386,11 +3436,16 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     cwd: string,
     sessionId: string,
     openMode: "create" | "resume",
-  ): Promise<{ requests: HostUsageRequest[]; complete: boolean }> {
+  ): Promise<{ requests: HostUsageRequest[]; complete: boolean; lastResponseAtUnix?: number }> {
     if (openMode === "create") return { requests: [], complete: true };
     try {
       const messages = await this.#dependencies.readSessionMessages({ cwd, sessionId });
-      return messages === null ? { requests: [], complete: false } : claudeUsageHistory(messages);
+      if (messages === null) return { requests: [], complete: false };
+      const lastResponseAtUnix = lastClaudeAssistantResponseUnix(messages);
+      return {
+        ...claudeUsageHistory(messages),
+        ...(lastResponseAtUnix !== undefined ? { lastResponseAtUnix } : {}),
+      };
     } catch {
       return { requests: [], complete: false };
     }
@@ -3404,9 +3459,18 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     const next: ClaudePlanLimitEvent = { ...(this.#latestPlanLimit ?? {}) };
     if (planLimit.fiveHour) next.fiveHour = planLimit.fiveHour;
     if (planLimit.sevenDay) next.sevenDay = planLimit.sevenDay;
+    try {
+      if (!accountCreditsSnapshotSchema.safeParse(projectClaudePlanLimitToCredits(next)).success)
+        return null;
+    } catch {
+      // Optional quota observations must not fault the Session when native timestamps are invalid.
+      return null;
+    }
     this.#latestPlanLimit = next.fiveHour || next.sevenDay ? next : null;
     if (this.#latestPlanLimit) {
+      this.#accountCreditsSupported = true;
       for (const session of this.#sessions) {
+        session.publishAccountCreditsSupport(true);
         if (session !== origin) session.publishPlanLimit(this.#latestPlanLimit);
       }
     }

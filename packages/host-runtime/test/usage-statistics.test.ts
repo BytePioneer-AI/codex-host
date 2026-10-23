@@ -661,6 +661,18 @@ it("serves statistics through the Host from Adapters that expose local usage", a
     expect(
       await fixture.host.handleConsoleRequest(USAGE_STATISTICS_METHOD, { range: "1y" }),
     ).toMatchObject({ error: { code: -32602 } });
+    expect(
+      await fixture.host.handleConsoleRequest(USAGE_STATISTICS_METHOD, {
+        range: "today",
+        timeZone: "invalid/zone",
+      }),
+    ).toMatchObject({ error: { code: -32602 } });
+    await fixture.ready;
+    const params = { range: "today" as const, timeZone: "Asia/Shanghai" };
+    writeRequest(fixture.desktopInput, { id: 92, method: USAGE_STATISTICS_METHOD, params });
+    expect(await fixture.collector.waitFor((message) => message.id === 92)).toMatchObject({
+      result: await usageStatistics.get(params),
+    });
   } finally {
     usageStatistics.close();
     await stopFixture(fixture);

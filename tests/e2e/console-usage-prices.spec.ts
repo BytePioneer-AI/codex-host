@@ -24,20 +24,18 @@ const { outputFiles } = await build({
     contents: `import { startConsoleApp } from "./packages/renderer-extension/src/console/app.ts";
       import { installRendererBindingProbe } from "./packages/renderer-extension/src/renderer-binding-probe.ts";
       if (location.pathname === "/desktop") {
-        const local = { hostId: "local", manager: {
+        const route = (hostId) => ({ hostId, manager: {
           async sendRequest(method, params) {
             const response = await fetch("/api/host/request", {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ method, params }),
+              body: JSON.stringify({ method, params, hostId }),
             });
             const value = await response.json();
             if (value.error) throw new Error(value.error.message);
             return value.result;
           },
-        } };
-        const remote = { hostId: "remote", manager: {
-          sendRequest() { throw new Error("Statistics must not use the active remote Host"); },
-        } };
+        } });
+        const local = route("local"), remote = route("remote");
         window.__codexhostHostRoutingV1 = {
           forHost: (id) => id === "local" ? local : remote,
           current: () => remote,
@@ -103,6 +101,8 @@ async function setup(page: Page, surface: "console" | "desktop" = "console") {
     entries: new Map<string, HarnessUsageEntry[]>([["test-harness", [request("r1")]]]),
     modelLabels: new Map<string, Record<string, string>>(),
     statisticsReads: 0,
+    now: NOW,
+    lastHostId: "local",
     lastParams: {} as Record<string, unknown>,
     priceReads: 0,
     writes: 0,
@@ -119,7 +119,7 @@ async function setup(page: Page, surface: "console" | "desktop" = "console") {
   };
   const statistics = new UsageStatistics({
     directory: cacheRoot,
-    now: () => NOW,
+    now: () => state.now,
     prices: {
       missing: () => undefined,
       lookup: async () => ({
@@ -180,10 +180,11 @@ async function setup(page: Page, surface: "console" | "desktop" = "console") {
     } else if (url.pathname === "/api/announcement") {
       value = null;
     } else if (url.pathname === "/api/host/request") {
-      const { method, params } = route.request().postDataJSON();
+      const { method, params, hostId } = route.request().postDataJSON();
       let result: unknown = {};
       if (method === "codexhost/usage/statistics/get") {
         state.statisticsReads++;
+        state.lastHostId = hostId ?? "local";
         state.lastParams = params;
         await statistics.get(params);
         await statistics.settled();
@@ -315,6 +316,8 @@ test("built-in settings reuse statistics, filters and prices through the local H
   await openStatistics(page);
   await expect(tileValue(page, "cost")).toHaveText("—");
   await expect(tileValue(page, "tokens")).toHaveText("3,000,000 ≈ 300 万");
+  expect(state.lastHostId).toBe("local");
+  expect(state.lastParams.timeZone).toBe("Asia/Shanghai");
   await page.screenshot({ path: info.outputPath("desktop-statistics.png") });
 
   await group(page, "用量统计").getByRole("button", { name: "7 天", exact: true }).click();
@@ -340,6 +343,37 @@ test("built-in settings reuse statistics, filters and prices through the local H
   ).toHaveAttribute("aria-pressed", "true");
   await page.screenshot({ path: info.outputPath("desktop-statistics-return.png") });
   expect(errors).toEqual([]);
+});
+
+test("remote statistics use the Desktop timezone for the day range and hour buckets", async ({
+  page,
+}) => {
+  const state = await setup(page, "desktop");
+  state.now = Date.parse("2026-09-18T12:00:00Z");
+  state.prices.set("custom-model", { input: 1, output: 2 });
+  state.entries.set("test-harness", [
+    request("remote-request", {
+      occurredAtMs: Date.parse("2026-09-17T18:15:00Z"),
+      sessionId: "remote-session",
+    }),
+  ]);
+  await page.locator("[data-codexhost-settings-trigger] button").click();
+  await openStatistics(page);
+  const machine = page.getByRole("button", { name: "机器", exact: true });
+  await machine.click();
+  await page.getByRole("option", { name: "remote", exact: true }).click();
+  await expect(machine).toHaveText("机器 · remote");
+  await group(page, "用量统计").getByRole("button", { name: "今天", exact: true }).click();
+  await expect.poll(() => state.lastHostId).toBe("remote");
+  await expect
+    .poll(() => state.lastParams)
+    .toMatchObject({ range: "today", timeZone: "Asia/Shanghai" });
+  await expect(tileValue(page, "tokens")).toHaveText("3,000,000 ≈ 300 万");
+  await expect(page.locator(".console-usage-zone")).toHaveText("Asia/Shanghai");
+  const bars = table(page, "按小时").locator(".console-usage-hours__bar");
+  await expect(bars).toHaveCount(24);
+  await expect(bars.nth(2)).toHaveAttribute("style", /height: [1-9]/);
+  await expect(bars.nth(18)).toHaveAttribute("style", "height: 0%;");
 });
 
 test("row dialog saves prices without a header entry and preserves filters and a polling draft", async ({
@@ -388,7 +422,12 @@ test("row dialog saves prices without a header entry and preserves filters and a
   await expect(
     group(page, "Harness").getByRole("button", { name: "test-harness" }),
   ).toHaveAttribute("aria-pressed", "true");
-  expect(state.lastParams).toEqual({ range: "7d", harness: "test-harness", model: "custom-model" });
+  expect(state.lastParams).toEqual({
+    range: "7d",
+    timeZone: "Asia/Shanghai",
+    harness: "test-harness",
+    model: "custom-model",
+  });
   expect(page.url()).toBe(url);
   expect(state.prices.get("custom-model")).toEqual({ input: 2, output: 3 });
 });

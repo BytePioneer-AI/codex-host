@@ -203,6 +203,7 @@ export function createUsageStatisticsPage(
     mount(context: RendererSettingsPageMountContext) {
       const document = context.content.ownerDocument;
       const locale = pageLocale ?? (document.documentElement.lang || "en");
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
       const count = (value: number): string => formatCount(value, locale);
       const tokenCount = (totals: Totals, value: number): string =>
         formatTokenCount(totals, value, locale);
@@ -246,7 +247,7 @@ export function createUsageStatisticsPage(
       const measureLabel = (measure: Measure): string =>
         measure === "cost" ? messages.cost : messages.tokens;
       const dateFormat = (options: Intl.DateTimeFormatOptions) =>
-        new Intl.DateTimeFormat(locale, options);
+        new Intl.DateTimeFormat(locale, { ...options, timeZone });
       const shortDate = dateFormat({ month: "short", day: "numeric" });
       const longDate = dateFormat({
         year: "numeric",
@@ -1129,7 +1130,6 @@ export function createUsageStatisticsPage(
 
       function hourlyPanel(data: UsageStatisticsResult): HTMLElement {
         const singleDay = data.filters.date !== null || data.range === "today";
-        const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
         return panel(
           singleDay ? messages.hourlyDay : messages.hourly,
           hourlyChart(document, {
@@ -1144,7 +1144,7 @@ export function createUsageStatisticsPage(
             weekStartsOnMonday: !locale.startsWith("en"),
             labels: { cost: messages.cost, tokens: messages.tokens },
           }),
-          h(document, "span", { className: "console-muted console-usage-zone" }, zone),
+          h(document, "span", { className: "console-muted console-usage-zone" }, timeZone),
         );
       }
 
@@ -1316,6 +1316,7 @@ export function createUsageStatisticsPage(
         const project = filterValue(view.project);
         return {
           range: view.range,
+          timeZone,
           ...(view.harness ? { harness: view.harness } : {}),
           ...(model !== undefined ? { model } : {}),
           ...(project !== undefined ? { project } : {}),

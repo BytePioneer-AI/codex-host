@@ -36,7 +36,7 @@ Host 汇总本机全局用量时 MUST NOT 把各会话的累计结果直接相�
 
 ### Requirement: 全局统计必须覆盖本机全部原生会话并以原生时间归日
 
-全局统计 MUST 覆盖本机官方 Codex 与实现了用量读取能力的 Harness 的全部原生会话，不论其是否经 CodexHost 创建或导入。每条用量 MUST 按其原生记录自带的时间戳归入本地日期。子代理的用量 MUST 计入其父会话。
+全局统计 MUST 覆盖本机官方 Codex 与实现了用量读取能力的 Harness 的全部原生会话，不论其是否经 CodexHost 创建或导入。每条用量 MUST 按其原生记录自带的时间戳归入查看页面本机时区的日期、星期与小时。页面 MUST 在请求中传入 `timeZone`，所选 Host MUST 在该时区计算“今天”、时间范围和日期筛选，并应用时间戳对应的夏令时规则。未指定 `timeZone` 的协议调用 MUST 保持 Host 本地时区口径；无效时区 MUST 被拒绝，MUST NOT 静默回退。子代理的用量 MUST 计入其父会话。
 
 #### Scenario: 未经 CodexHost 的原生会话
 
@@ -104,6 +104,13 @@ Codex 统计插件读取 rollout 时 MUST 优先使用原生明确请求记录�
 - **WHEN** Desktop 设置页的用量统计选择一台已连接的远程 Host
 - **THEN** 页面 MUST 通过该 Host 的连接请求 `codexhost/usage/statistics/get` 与该 Host 的价格表
 - **AND** 页面 MUST 显示该机器的统计，MUST NOT 混入本机或其他机器的数字
+
+#### Scenario: 远端 Host 与 Desktop 时区不同
+
+- **WHEN** Desktop 本机时区为 `Asia/Shanghai`，所选远端 Host 时区为 UTC，原生请求发生于 `2026-09-17T18:15:00Z`
+- **THEN** 页面 MUST 将该请求统计到本机日期 `2026-09-18` 的 02 点，而非远端日期 `2026-09-17` 的 18 点
+- **AND** 页面 MUST 标注 `Asia/Shanghai`，日期范围与日期筛选 MUST 使用同一时区
+- **AND** 切换机器 MUST NOT 改变页面的展示时区
 
 #### Scenario: 所选 Host 不可用
 

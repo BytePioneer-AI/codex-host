@@ -17,6 +17,11 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import { withHostSessionTitles, type UsageSessionTitleRecord } from "./usage-session-titles.js";
+import {
+  createUsageStatisticsCalendar,
+  shiftUsageDate,
+  type UsageStatisticsCalendar,
+} from "./usage-statistics-calendar.js";
 
 import {
   cacheWrite1hPrice,
@@ -134,21 +139,7 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function localDate(ms: number): string {
-  const date = new Date(ms);
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${date.getFullYear()}-${month}-${day}`;
-}
-
-/** Calendar days before or after `date` (a local date), as a local date. */
-function shiftDate(date: string, days: number): string {
-  const value = new Date(`${date}T12:00:00`);
-  value.setDate(value.getDate() + days);
-  return localDate(value.getTime());
-}
-
-/** A request once deduplicated, with its local calendar position worked out once. */
+/** A request once deduplicated, with its query-timezone calendar position worked out once. */
 interface IndexedEntry {
   harness: string;
   entry: HarnessUsageEntry;
@@ -284,7 +275,7 @@ export class UsageStatistics {
   #warmTimer: NodeJS.Timeout | undefined;
   /** Bumped whenever a cached parse is added, replaced or removed. */
   #generation = 0;
-  #index: { generation: number; entries: IndexedEntry[] } | null = null;
+  #index: { generation: number; timeZone: string; entries: IndexedEntry[] } | null = null;
 
   constructor(options: UsageStatisticsOptions) {
     this.#options = options;
@@ -526,9 +517,10 @@ export class UsageStatistics {
     }
   }
 
-  /** Every request once, per Harness in source order, with its local date and hour. */
-  #indexed(): IndexedEntry[] {
-    if (this.#index?.generation === this.#generation) return this.#index.entries;
+  /** Every request once, per Harness in source order, in the requested calendar. */
+  #indexed(calendar: UsageStatisticsCalendar): IndexedEntry[] {
+    if (this.#index?.generation === this.#generation && this.#index.timeZone === calendar.timeZone)
+      return this.#index.entries;
     const entries: IndexedEntry[] = [];
     for (const [harness, cache] of this.#caches) {
       const seen = new Set<string>();
@@ -536,18 +528,11 @@ export class UsageStatistics {
         for (const entry of parsed) {
           if (seen.has(entry.id)) continue;
           seen.add(entry.id);
-          const at = new Date(entry.occurredAtMs);
-          entries.push({
-            harness,
-            entry,
-            date: localDate(entry.occurredAtMs),
-            weekday: at.getDay(),
-            hour: at.getHours(),
-          });
+          entries.push({ harness, entry, ...calendar.at(entry.occurredAtMs) });
         }
       }
     }
-    this.#index = { generation: this.#generation, entries };
+    this.#index = { generation: this.#generation, timeZone: calendar.timeZone, entries };
     return entries;
   }
 
@@ -558,9 +543,10 @@ export class UsageStatistics {
   ): UsageStatisticsResult {
     const { range } = params;
     const days = RANGE_DAYS[range];
-    const to = localDate(now);
+    const calendar = createUsageStatisticsCalendar(params.timeZone);
+    const to = calendar.at(now).date;
     let from: string | null = null;
-    if (days !== null) from = shiftDate(to, -days + 1);
+    if (days !== null) from = shiftUsageDate(to, -days + 1);
     const inRange = (date: string): boolean => (from === null || date >= from) && date <= to;
     const day = params.date !== undefined && inRange(params.date) ? params.date : null;
     const harnessFilter = params.harness ?? null;
@@ -619,7 +605,7 @@ export class UsageStatistics {
       }
     >();
 
-    for (const indexed of this.#indexed()) {
+    for (const indexed of this.#indexed(calendar)) {
       const { harness, entry, date } = indexed;
       if (!inRange(date)) continue;
       const model = entry.model ?? null;

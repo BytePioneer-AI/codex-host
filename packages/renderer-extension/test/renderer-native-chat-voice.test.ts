@@ -321,6 +321,7 @@ function installFixture() {
       className: "",
       title: "",
       disabled: false,
+      style: {},
       setAttribute: vi.fn(),
       remove: vi.fn(),
       addEventListener: vi.fn(),

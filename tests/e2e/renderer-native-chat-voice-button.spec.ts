@@ -91,7 +91,8 @@ for (const { theme, dictate } of ["light", "dark"].flatMap((theme) =>
           body { margin: 40px; background: ${theme === "dark" ? "#181818" : "#fafafa"}; color: ${theme === "dark" ? "#eeeeee" : "#111111"}; }
           form { display: flex; align-items: center; gap: 8px; width: 640px; padding: 8px; border-radius: 24px; background: ${theme === "dark" ? "#303030" : "#eeeeee"}; }
           [role=textbox] { flex: 1; }
-          .actions { display: flex; align-items: center; gap: 8px; }
+          .actions { display: flex; align-items: center; gap: ${dictate ? 8 : 0}px; }
+          .voice-reference { display: flex; align-items: center; gap: 8px; margin-top: 24px; }
           .native-action { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 0; border-radius: 50%; }
           /* Native primary actions put the contrasting foreground on the icon. */
           .native-action { color: inherit; background: ${theme === "dark" ? "#eeeeee" : "#111111"}; cursor: pointer; }
@@ -112,7 +113,11 @@ for (const { theme, dictate } of ["light", "dark"].flatMap((theme) =>
             ${dictate ? '<button type="button" aria-label="Dictate" class="native-action">Mic</button>' : ""}
             <button type="submit" aria-label="Send" class="native-action cursor-default opacity-50" disabled><span class="text-composer-primary">↑</span></button>
           </div>
-        </form><output>0</output>`,
+        </form><output>0</output>
+        <div class="voice-reference" aria-label="Native voice spacing reference">
+          <button type="button" class="native-action" aria-label="Reference microphone">Mic</button>
+          <button type="button" class="native-action" aria-label="Reference end">×</button>
+        </div>`,
       }),
     );
     await page.route("http://codexhost.test/assets/**", (route) =>
@@ -156,8 +161,14 @@ for (const { theme, dictate } of ["light", "dark"].flatMap((theme) =>
     });
     expect(position.send).toBe("Send");
     expect(position.sameParent).toBe(true);
-    expect(position.gap).toBeGreaterThanOrEqual(0);
-    expect(position.gap).toBeLessThanOrEqual(8);
+    const referenceGap = await page
+      .getByRole("button", { name: "Reference microphone" })
+      .evaluate((mic) => {
+        const end = mic.nextElementSibling;
+        if (!end) throw new Error("Reference end control is missing");
+        return end.getBoundingClientRect().left - mic.getBoundingClientRect().right;
+      });
+    expect(position.gap).toBeCloseTo(referenceGap, 1);
     expect(position.centerDelta).toBeLessThan(1);
     await page.screenshot({
       path: `.codexhost/update-impact/26.1016.61520/chat-voice-button-${theme}-${dictate ? "with" : "without"}-dictate.png`,
@@ -223,6 +234,18 @@ for (const { theme, dictate } of ["light", "dark"].flatMap((theme) =>
       .poll(() => voice.evaluate((button) => button.nextElementSibling?.getAttribute("aria-label")))
       .toBe("Send");
     await expect(voice).toHaveCount(1);
+    await voice.evaluate((button) => {
+      if (button.parentElement) button.parentElement.style.gap = "8px";
+    });
+    await expect
+      .poll(() =>
+        voice.evaluate((button) => {
+          const send = button.nextElementSibling;
+          if (!send) throw new Error("Send is missing after replacement");
+          return send.getBoundingClientRect().left - button.getBoundingClientRect().right;
+        }),
+      )
+      .toBeCloseTo(referenceGap, 1);
     await page.getByRole("button", { name: "Send", exact: true }).evaluate((send) => {
       (send as HTMLButtonElement).disabled = false;
     });

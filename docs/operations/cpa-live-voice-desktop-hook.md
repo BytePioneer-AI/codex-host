@@ -204,6 +204,10 @@ The Start Voice waveform sits immediately before the visible native Send button,
 including compact Chat home composers without Dictate. It follows Send when its
 wrapper changes and is removed while the form has no unique visible submit
 action (such as during Stop).
+It matches the native voice control row's gap-2 spacing (normally 8px),
+supplementing only the spacing missing from its parent and centering the action.
+Native voice's microphone/end row uses flex items-center gap-2 in
+voice-session-7d5ee22a0da4.js:7563. Existing parent spacing is not doubled.
 The waveform uses the native contrasting icon foreground and stays enabled
 when an empty message disables Send. Its dimming follows voice startup,
 streaming and active-call state independently of Send.

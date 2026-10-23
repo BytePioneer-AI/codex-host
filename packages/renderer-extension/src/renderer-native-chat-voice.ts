@@ -8,7 +8,10 @@ import {
 import { nativeChatVoicePreferenceAllowsStart } from "./renderer-cpa-live-voice-preference.js";
 import { observeNativeChatVoiceState } from "./renderer-native-chat-voice-state.js";
 import { nativeChatVoiceDraftSelection } from "./renderer-native-chat-voice-selection.js";
-import { hideNativeChatVoiceHomeHeadline } from "./renderer-native-chat-voice-presentation.js";
+import {
+  alignNativeChatVoiceButton,
+  hideNativeChatVoiceHomeHeadline,
+} from "./renderer-native-chat-voice-presentation.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
 const NATIVE_CHAT_VOICE_VERSION = "26.1016.61520";
@@ -517,6 +520,7 @@ export function installNativeChatVoiceHook(
           });
         }
         if (button.nextElementSibling !== send) send.parentElement.insertBefore(button, send);
+        alignNativeChatVoiceButton(button, send, doc);
       }
       if (button)
         // The Codex entry opens onboarding/optimistic launch state before its

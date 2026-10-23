@@ -1,7 +1,17 @@
 import { voiceRoutesSchema, type VoiceRoutes } from "@codexhost/shared-contracts";
 
-const sharedRoutes = new WeakMap<object, VoiceRoutes>();
-const gatewayReady = new WeakMap<object, boolean>();
+// Voice hook globals survive binding-probe replacement and bundle reinjection.
+// Keep their settings in the document realm so each bundle reads the same state.
+const voiceStateOwner = globalThis as typeof globalThis & {
+  __codexhostVoicePreferenceStateV1?: {
+    sharedRoutes: WeakMap<object, VoiceRoutes>;
+    gatewayReady: WeakMap<object, boolean>;
+  };
+};
+const { sharedRoutes, gatewayReady } = (voiceStateOwner.__codexhostVoicePreferenceStateV1 ??= {
+  sharedRoutes: new WeakMap<object, VoiceRoutes>(),
+  gatewayReady: new WeakMap<object, boolean>(),
+});
 export function applyVoiceGatewayReadiness(owner: object, ready: boolean): void {
   gatewayReady.set(owner, ready);
 }

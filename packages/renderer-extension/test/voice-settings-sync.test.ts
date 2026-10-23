@@ -165,3 +165,31 @@ it("does not apply a gateway status that arrives after disposal", async () => {
   await vi.advanceTimersByTimeAsync(1);
   expect(voiceGatewayIsReady(owner)).toBe(false);
 });
+
+it("updates retained voice hooks after a separately evaluated Renderer bundle replaces settings sync", async () => {
+  const { owner, state } = fixture();
+  state.gatewayReady = true;
+  const request = vi.fn(async () => state);
+  const stopFirst = startVoiceSettingsSync(owner, request, 100);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(voiceGatewayIsReady(owner)).toBe(true);
+  stopFirst();
+  expect(voiceGatewayIsReady(owner)).toBe(false);
+
+  // Hook globals outlive the binding probe. A reinjected production bundle has
+  // new module instances but must update the state read by those retained hooks.
+  vi.resetModules();
+  const next = await import("../src/voice-settings-sync.js");
+  const stopNext = next.startVoiceSettingsSync(owner, request, 100);
+  try {
+    await vi.advanceTimersByTimeAsync(1);
+    expect(voiceGatewayIsReady(owner)).toBe(true);
+    state.settings.chatConnection = "gateway";
+    state.revision = "updated";
+    await vi.advanceTimersByTimeAsync(100);
+    expect(chatLiveVoicePreferenceAllowsOverride(owner)).toBe(true);
+  } finally {
+    stopNext();
+  }
+  expect(voiceGatewayIsReady(owner)).toBe(false);
+});

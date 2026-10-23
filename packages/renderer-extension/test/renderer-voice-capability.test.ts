@@ -291,6 +291,42 @@ describe("version and runtime qualification", () => {
     expect(f.f.instance.getSnapshot).toBe(f.f.original);
     hook.dispose();
   });
+  it("recovers retained Work subscriptions when a new bundle applies gateway readiness and routes", async () => {
+    vi.useFakeTimers();
+    const f = target();
+    applySharedVoiceRoutes(f.target, {
+      chatExperience: "chatgpt",
+      chatConnection: "desktop",
+      workConnection: "gateway",
+    });
+    const hook = installVoiceCapabilityProjection(f);
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: true });
+      applyVoiceGatewayReadiness(f.target, false);
+      expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: false });
+
+      vi.resetModules();
+      const next = await import("../src/renderer-cpa-live-voice-preference.js");
+      next.applyVoiceGatewayReadiness(f.target, true);
+      expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: true });
+      next.applySharedVoiceRoutes(f.target, {
+        chatExperience: "chatgpt",
+        chatConnection: "desktop",
+        workConnection: "desktop",
+      });
+      expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: false });
+      next.applySharedVoiceRoutes(f.target, {
+        chatExperience: "chatgpt",
+        chatConnection: "desktop",
+        workConnection: "gateway",
+      });
+      expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: true });
+    } finally {
+      hook.dispose();
+    }
+  });
+
   it("projects official Codex Work when the Work tab is selected and composer-mode storage is empty", async () => {
     vi.useFakeTimers();
     const f = target();

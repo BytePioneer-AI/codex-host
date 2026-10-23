@@ -17,6 +17,7 @@ function fixture() {
   const composerScopeDefinition = { id: Symbol(), __scopeBrand: "ComposerScope" };
   const composerContext = { displayName: "ComposerScope" };
   const composerNode = {
+    token: composerScopeDefinition,
     value: {
       kind: "chatgpt",
       chatGptSelectionContext: {
@@ -35,6 +36,11 @@ function fixture() {
     [ownerScopeDefinition.id, node],
   ]);
   composerChain.set(scopeDefinition.id, appNode);
+  composerChain.set(ownerScopeDefinition.id, node);
+  const outerComposerChain = new Map(composerChain);
+  outerComposerChain.set(composerScopeDefinition.id, {
+    value: { kind: "new", entrypoint: "home" },
+  });
   const get = vi.fn<(selector: unknown, argument?: unknown) => unknown>(
     () => "6ad6391c-9a48-83e8-8a22-21548902d6d4",
   );
@@ -53,12 +59,18 @@ function fixture() {
       firstContext: {
         context,
         memoizedValue: chain,
-        next: { context: composerContext, memoizedValue: composerChain, next: null },
+        next: { context: composerContext, memoizedValue: outerComposerChain, next: null },
       },
     },
     return: null as unknown,
   };
-  const fiber = { return: owner };
+  const provider = {
+    tag: 10,
+    type: composerContext,
+    memoizedProps: { value: composerChain },
+    return: owner,
+  };
+  const fiber = { return: provider };
   const composer = { __reactFiber$fixture: fiber } as unknown as Element;
   return {
     scopeDefinition,
@@ -72,6 +84,7 @@ function fixture() {
     scope,
     props,
     owner,
+    provider,
     fiber,
     composer,
     get,
@@ -134,6 +147,38 @@ describe("native Chat composer binding", () => {
     expect(detectNativeChatVoiceBinding(f.composer, f)).toBeUndefined();
   });
 
+  it("reads the inner provider below an owner that consumes the outer new-Chat scope", () => {
+    const f = fixture();
+    expect(detectNativeChatVoiceBinding(f.composer, f)?.composerContext).toEqual({
+      context: f.composerContext,
+      chain: f.composerChain,
+    });
+  });
+
+  it("rejects a consumed ComposerScope without a provider between the form and owner", () => {
+    const f = fixture();
+    f.owner.dependencies.firstContext.next.memoizedValue = f.composerChain;
+    Object.assign(f.fiber, { return: f.owner });
+    expect(detectNativeChatVoiceBinding(f.composer, f)).toBeUndefined();
+  });
+
+  it("rejects a provider with a different native scope token or RouteScope node", () => {
+    const f = fixture();
+    Object.assign(f.composerNode, { token: { ...f.composerScopeDefinition } });
+    expect(detectNativeChatVoiceBinding(f.composer, f)).toBeUndefined();
+    f.composerNode.token = f.composerScopeDefinition;
+    f.composerChain.set(f.ownerScopeDefinition.id, {});
+    expect(detectNativeChatVoiceBinding(f.composer, f)).toBeUndefined();
+  });
+
+  it("does not skip a nearer empty provider to accept a more distant valid scope", () => {
+    const f = fixture();
+    Object.assign(f.fiber, {
+      return: { ...f.provider, memoizedProps: { value: new Map() }, return: f.provider },
+    });
+    expect(detectNativeChatVoiceBinding(f.composer, f)).toBeUndefined();
+  });
+
   it("rejects an unrecognized draft locator even when its backend ID is absent", () => {
     const f = fixture();
     const draft = "local-chatgpt:draft";
@@ -190,7 +235,8 @@ describe("native Chat composer binding", () => {
     const staleOwner = { ...f.owner, memoizedProps: { ...f.props, isWorkConversation: true } };
     const stale = { return: staleOwner, alternate: f.fiber };
     const root = { child: f.owner, stateNode: { current: null as unknown } };
-    Object.assign(f.owner, { return: root, child: f.fiber });
+    Object.assign(f.owner, { return: root, child: f.provider });
+    Object.assign(f.provider, { child: f.fiber });
     root.stateNode.current = root;
     staleOwner.return = root;
     Object.assign(f.composer, { __reactFiber$fixture: stale });
@@ -430,6 +476,7 @@ describe("native Chat voice lifecycle installation", () => {
     chain.set(f.ownerScopeDefinition.id, node);
     const next = { ...f.scope, node, chain };
     f.owner.memoizedState.memoizedState.current = next;
+    f.composerChain.set(f.ownerScopeDefinition.id, node);
     await vi.advanceTimersByTimeAsync(500);
     expect(hook.status).toBe("active");
     expect(f.createRoot).toHaveBeenCalledOnce();
@@ -800,7 +847,7 @@ describe("native Chat voice lifecycle installation", () => {
     const hook = installNativeChatVoiceHook(f);
     await vi.advanceTimersByTimeAsync(0);
     const nextChain = new Map(f.composerChain);
-    f.owner.dependencies.firstContext.next.memoizedValue = nextChain;
+    f.provider.memoizedProps.value = nextChain;
     await vi.advanceTimersByTimeAsync(500);
     expect(f.createRoot).toHaveBeenCalledOnce();
     expect(f.render).toHaveBeenCalledTimes(2);

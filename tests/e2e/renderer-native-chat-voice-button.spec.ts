@@ -17,9 +17,13 @@ const { outputFiles } = await build({
       const conversationId = "local-chatgpt:bf2d4b2f-43ee-49df-b802-b55c9fb345d7";
       const selection = { conversationId };
       const chain = new Map([[app.id, appNode], [route.id, routeNode]]);
-      const composerChain = new Map([[app.id, appNode], [composerScope.id, {
+      const composerChain = new Map([[app.id, appNode], [route.id, routeNode], [composerScope.id, {
+        token: composerScope,
         value: { kind: "chatgpt", chatGptSelectionContext: selection },
       }]]);
+      const composerContext = { displayName: "ComposerScope" };
+      const outerChain = new Map(chain);
+      outerChain.set(composerScope.id, { token: composerScope, value: { kind: "new", entrypoint: "home" } });
       const backend = {};
       const enabled = {};
       let runtime = false;
@@ -28,16 +32,21 @@ const { outputFiles } = await build({
         set: (selector, value) => { if (selector === enabled) runtime = value; },
       };
       const form = document.querySelector("form");
-      form.__reactFiber$fixture = { return: {
+      const owner = {
         memoizedProps: { conversationId, composerSelectionContext: selection,
           isWorkConversation: false, isTemporaryChat: false, shouldBlockExternalEgress: false },
         memoizedState: { memoizedState: { current: scope }, next: null },
         dependencies: { firstContext: {
           context: { displayName: "AppScope" }, memoizedValue: chain, next: {
-            context: { displayName: "ComposerScope" }, memoizedValue: composerChain, next: null,
+            context: composerContext, memoizedValue: outerChain, next: null,
           },
         } }, return: null,
-      } };
+      };
+      const provider = { tag: 10, type: composerContext,
+        memoizedProps: { value: composerChain }, return: owner };
+      form.__reactFiber$fixture = { return: provider };
+      globalThis.chatProvider = provider;
+      globalThis.chatComposerChain = composerChain;
       const initial = { B1n: backend, CDr: composerScope, MOr: route, aT: enabled,
         oT() {}, SPn: () => ({
           getState: () => ({ isVoiceModeActive: false }), subscribe: () => () => {},
@@ -134,6 +143,19 @@ for (const dictate of [false, true]) {
     await voice.click();
     await expect.poll(() => page.evaluate(() => Reflect.get(globalThis, "voiceStarts"))).toBe(1);
     await expect(page.locator("output")).toHaveText("0");
+
+    // An empty nearer provider must hide Voice rather than reuse the outer selection.
+    await page.evaluate(() => {
+      Reflect.get(globalThis, "chatProvider").memoizedProps.value = new Map();
+    });
+    await expect(voice).toHaveCount(0);
+    await page.evaluate(() => {
+      Reflect.get(globalThis, "chatProvider").memoizedProps.value = Reflect.get(
+        globalThis,
+        "chatComposerChain",
+      );
+    });
+    await expect(voice).toHaveCount(1);
 
     // Native draft updates can replace the action wrapper while retaining the form.
     await page.getByRole("button", { name: "Send", exact: true }).evaluate((send) => {

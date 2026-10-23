@@ -109,8 +109,36 @@ export function detectNativeChatVoiceBinding(
       props.conversationId.startsWith("local-chatgpt:") &&
       CONVERSATION_UUID.test(props.conversationId.slice("local-chatgpt:".length));
     if (!hasBackendId && !isDraft) return;
+    // The owner creates this provider below itself. Its own subscriptions can
+    // still consume the outer home/new ComposerScope, which does not own the form.
+    const provider = ancestors
+      .slice(0, ancestors.indexOf(owner))
+      .find(
+        (fiber) =>
+          fiber.tag === 10 &&
+          record(fiber.type) &&
+          fiber.type.displayName === native.composerScopeDefinition.__scopeBrand,
+      );
+    if (!provider) return;
+    const composerChain = record(provider.memoizedProps) ? provider.memoizedProps.value : undefined;
+    const composerNode =
+      composerChain instanceof Map
+        ? composerChain.get(native.composerScopeDefinition.id)
+        : undefined;
+    if (
+      !(composerChain instanceof Map) ||
+      composerChain.get(native.scopeDefinition.id) !== appNode ||
+      composerChain.get(native.ownerScopeDefinition.id) !== scope.node ||
+      !record(composerNode) ||
+      composerNode.token !== native.composerScopeDefinition ||
+      !record(composerNode.value) ||
+      composerNode.value.kind !== "chatgpt" ||
+      !record(composerNode.value.chatGptSelectionContext) ||
+      composerNode.value.chatGptSelectionContext.conversationId !== props.conversationId
+    )
+      return;
+    const composerContext = { context: provider.type, chain: composerChain };
     const contexts = new Set<unknown>();
-    let composerContext: NativeChatVoiceBinding["composerContext"] | undefined;
     for (const fiber of ancestors) {
       let dependency = record(fiber.dependencies) ? fiber.dependencies.firstContext : undefined;
       const seenDependencies = new Set<unknown>();
@@ -129,28 +157,10 @@ export function detectNativeChatVoiceBinding(
           chain.get(native.scopeDefinition.id) === appNode
         )
           contexts.add(context);
-        if (
-          !composerContext &&
-          record(context) &&
-          context.displayName === native.composerScopeDefinition.__scopeBrand &&
-          chain instanceof Map &&
-          chain.get(native.scopeDefinition.id) === appNode
-        ) {
-          const node = chain.get(native.composerScopeDefinition.id);
-          if (
-            record(node) &&
-            record(node.value) &&
-            node.value.kind === "chatgpt" &&
-            record(node.value.chatGptSelectionContext) &&
-            node.value.chatGptSelectionContext.conversationId === props.conversationId
-          )
-            composerContext = { context, chain };
-          else return;
-        }
         dependency = dependency.next;
       }
     }
-    if (contexts.size !== 1 || !composerContext) return;
+    if (contexts.size !== 1) return;
     return {
       composer,
       appNode,

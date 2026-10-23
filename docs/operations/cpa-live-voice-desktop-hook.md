@@ -285,6 +285,14 @@ microphone/end controls alone do not establish transcript readiness. Early page
 navigation can interrupt native voice; no timer or early server ID bypasses
 the adoption and transcript guards.
 
+Instant Connect may adopt a prewarmed voice-session ID during startup. The
+native `initial.HJt` request-generation counter remains unchanged for that
+adoption and advances for a new voice intent. Draft selection tolerates the
+startup ID change only with the same proven generation; it still cancels on
+a new intent, an established session ID change, navigation, abort or voice end.
+If the optional generation reader is absent or invalid, session ID changes
+continue to cancel selection. Native START remains available independently.
+
 The native version/asset and scope guards fail closed on unsupported builds.
 Lifecycle tests cover saved and draft starts, prewarm contexts, navigation,
 cancellation, retry, hidden composers and disposal. Native Chat microphone,

@@ -41,8 +41,20 @@ export function nativeChatVoiceDraftSelection(
       server: { connectionState: unknown };
     };
   };
-  let session = store.getState().voiceSessionId;
-  let activeSeen = store.getState().isVoiceModeActive;
+  const stateAtStart = store.getState();
+  const readIntentVersion =
+    typeof initial.HJt === "function"
+      ? () =>
+          Reflect.apply(initial.HJt as (...args: unknown[]) => unknown, undefined, [binding.scope])
+      : undefined;
+  const version = readIntentVersion?.();
+  const intentVersion =
+    typeof version === "number" && Number.isSafeInteger(version) && version > 0
+      ? version
+      : undefined;
+  let session = stateAtStart.voiceSessionId;
+  let activeSeen = stateAtStart.isVoiceModeActive;
+  let sessionStartedSeen = stateAtStart.hasVoiceSessionStarted;
   let finished = false;
   return () => {
     if (finished) return;
@@ -51,7 +63,11 @@ export function nativeChatVoiceDraftSelection(
       if (
         signal.aborted ||
         binding.scope.get(initial.Ycr) !== origin ||
-        (activeSeen && (!state.isVoiceModeActive || state.voiceSessionId !== session))
+        (intentVersion !== undefined && readIntentVersion?.() !== intentVersion) ||
+        (activeSeen &&
+          (!state.isVoiceModeActive ||
+            (state.voiceSessionId !== session &&
+              (sessionStartedSeen || intentVersion === undefined))))
       ) {
         finished = true;
         return;
@@ -61,6 +77,13 @@ export function nativeChatVoiceDraftSelection(
         session = state.voiceSessionId;
         activeSeen = true;
       }
+      if (session !== state.voiceSessionId) {
+        // Native prewarm adopts its cached ID within the same voice intent before
+        // session startup. A new START increments HJt; established IDs stay fixed.
+        session = state.voiceSessionId;
+        chatVoiceDebug("native-chat-selection-startup-id-adopted");
+      }
+      sessionStartedSeen ||= state.hasVoiceSessionStarted;
       if (state.isWorkMode !== false || state.conversationId !== draft) {
         finished = true;
         return;

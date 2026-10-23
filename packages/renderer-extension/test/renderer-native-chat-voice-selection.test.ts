@@ -22,6 +22,7 @@ function fixture() {
     Y1n: {},
     SPn: () => ({ getState: () => state }),
     Nir: vi.fn(() => true),
+    HJt: vi.fn(() => 1),
   };
   const values = new Map<unknown, unknown>([[initial.Ycr, origin]]);
   const binding = {
@@ -106,6 +107,75 @@ describe("native voice-created Chat selection", () => {
     select();
     expect(f.initial.Nir).toHaveBeenCalledOnce();
   });
+
+  it.each([false, true])(
+    "keeps a cached native session when its first poll is connected: %s",
+    (connected) => {
+      const f = fixture();
+      f.state.hasVoiceSessionStarted = false;
+      f.state.server.connectionState = "connecting";
+      const select = f.check();
+      select();
+      // Native Instant Connect adopts the cached ID without issuing a new voice intent.
+      f.state.voiceSessionId = "cached-session";
+      f.state.hasVoiceSessionStarted = connected;
+      f.state.server.connectionState = connected ? "connected" : "connecting";
+      select();
+      expect(f.initial.Nir).not.toHaveBeenCalled();
+      f.state.hasVoiceSessionStarted = true;
+      f.state.server.connectionState = "connected";
+      select();
+      expect(f.initial.Nir).not.toHaveBeenCalled();
+      f.adopt();
+      select();
+      select();
+      expect(f.initial.Nir).toHaveBeenCalledExactlyOnceWith(
+        f.binding.scope,
+        `/c/${encodeURIComponent(f.draft)}`,
+      );
+    },
+  );
+
+  it("rejects an established session ID changing after startup in the same voice intent", () => {
+    const f = fixture();
+    f.state.hasVoiceSessionStarted = false;
+    const select = f.check();
+    f.state.hasVoiceSessionStarted = true;
+    select();
+    f.state.voiceSessionId = "replacement-session";
+    f.adopt();
+    select();
+    expect(f.initial.Nir).not.toHaveBeenCalled();
+  });
+
+  it("cancels a new native voice intent even if it starts the same draft between polls", () => {
+    const f = fixture();
+    f.state.hasVoiceSessionStarted = false;
+    const select = f.check();
+    f.initial.HJt.mockReturnValue(2);
+    f.state.hasVoiceSessionStarted = true;
+    f.adopt();
+    select();
+    f.initial.HJt.mockReturnValue(1);
+    select();
+    expect(f.initial.Nir).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null, 0, NaN, "1"])(
+    "rejects startup session ID changes without a proven native intent version: %s",
+    (version) => {
+      const f = fixture();
+      f.state.hasVoiceSessionStarted = false;
+      Reflect.set(f.initial, "HJt", version === undefined ? undefined : () => version);
+      const select = f.check();
+      f.state.voiceSessionId = "replacement-session";
+      select();
+      f.state.hasVoiceSessionStarted = true;
+      f.adopt();
+      select();
+      expect(f.initial.Nir).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["navigation", "end", "replace", "work", "conversation", "abort"])(
     "cancels rather than selecting a stale Chat after %s",

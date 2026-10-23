@@ -33,6 +33,8 @@ describe("remote SSH Host CLI", () => {
       }),
     ).resolves.toBe(0);
     expect(stdout.text()).toContain("codexhost remote install");
+    expect(stdout.text()).toContain("--share-local-data");
+    expect(stdout.text()).toContain("--data-dir");
     expect(stdout.text()).toContain("codexhost remote start");
     expect(stdout.text()).toContain("codexhost remote stop");
     expect(stdout.text()).toContain("codexhost remote uninstall");
@@ -102,5 +104,32 @@ describe("remote SSH Host CLI", () => {
     ).resolves.toBe(1);
     expect(stdout.text()).toBe("");
     expect(stderr.text()).toContain(`Unknown remote option '${option}'`);
+  });
+
+  it("rejects combining --share-local-data with --data-dir", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-cli-share-"));
+    const stdout = textSink();
+    const stderr = textSink();
+    try {
+      await expect(
+        runRemoteHostCli({
+          arguments: [
+            "install",
+            "--share-local-data",
+            "--data-dir",
+            path.join(home, "custom"),
+            "--stock-codex",
+            path.join(home, "missing-codex"),
+          ],
+          environment: { HOME: home, SHELL: "/bin/zsh" },
+          output: stdout.output,
+          diagnosticOutput: stderr.output,
+        }),
+      ).resolves.toBe(1);
+      expect(stdout.text()).toBe("");
+      expect(stderr.text()).toContain("Pass either dataDirectory or shareLocalData, not both");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });

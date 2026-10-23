@@ -115,13 +115,21 @@ If the remote computer also has Codex Desktop, launch it through codexhost there
 
 External Harness conversations created in an SSH project appear on the other computer automatically. This may take a few seconds initially. Both computers can show messages, replies as they arrive, and tool activity. You can also send messages, interrupt tasks, or answer approvals from either computer.
 
+By default, Remote SSH Host stores its data under `~/.codexhost/remote/data`, while local Desktop uses `~/.codexhost`. That split means harness sessions and pins created on the local Desktop do not appear over SSH until you share a data directory. To list the same local harness threads and pins remotely, reinstall the remote service with a shared data directory:
+
+```bash
+codexhost remote install --share-local-data
+```
+
+Or set an explicit path with `--data-dir PATH` (for example the same custom directory you already use for Desktop). Reinstall keeps a previously chosen shared path unless you pass a new `--data-dir` / `--share-local-data`. Uninstall never deletes a shared Desktop data directory outside `~/.codexhost/remote`.
+
 Keep these points in mind:
 
 - Use the insert-message feature to add input during a running task. Starting a separate task may return a busy message.
 - If both computers answer the same approval or question, the first processed answer applies.
 - After disconnecting, reopen the conversation to see what happened while you were away. If you are unsure whether a message was sent, check the conversation before resending it.
 
-This applies to external Harness conversations created in SSH projects. Other local conversations and built-in Codex conversations continue to work as before.
+With the default isolated data directory, dual visibility applies to external Harness conversations created in SSH projects. Other local conversations and built-in Codex conversations continue to work as before. With `--share-local-data` (or a matching `--data-dir`), local Desktop harness conversations on that host are visible over Remote SSH as well.
 
 ## Troubleshooting
 
@@ -132,7 +140,7 @@ This applies to external Harness conversations created in SSH projects. Other lo
 | A Harness is missing | Confirm the tool is installed and signed in on the remote computer, then click **Run connection diagnostics** on codexhost's **Connections** page. |
 | Remote version information is missing or the service is outdated | Choose **Update remote service**. If it is unavailable or fails, follow **When you need to update manually** above. |
 | An update fails | Check the remote computer's internet connection and retry. If it still fails, follow the manual update steps. |
-| The other computer does not show the same conversation | Check that both computers launched Desktop through codexhost, use the same version, and use the same remote user account. If you use a custom data directory, use the same directory for both launch methods. |
+| The other computer does not show the same conversation | Check that both computers launched Desktop through codexhost, use the same version, and use the same remote user account. If you use a custom data directory, use the same directory for both launch methods. To see local Desktop harness sessions/pins over SSH, reinstall with `codexhost remote install --share-local-data` (or `--data-dir` pointing at the Desktop data directory). |
 | Installation fails on a Mac | Make sure the remote Mac's desktop user is logged in, then run `codexhost remote install` again. |
 
 ## Stop or uninstall

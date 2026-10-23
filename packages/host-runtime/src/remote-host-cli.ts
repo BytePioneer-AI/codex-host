@@ -34,6 +34,10 @@ function parseRemoteCliArguments(arguments_: readonly string[]): {
   const resources: RemoteCliResources = {};
   for (let index = 1; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
+    if (argument === "--share-local-data") {
+      options.shareLocalData = true;
+      continue;
+    }
     const value = arguments_[index + 1];
     if (!value) throw new Error(`${argument} requires a value`);
     switch (argument) {
@@ -45,6 +49,9 @@ function parseRemoteCliArguments(arguments_: readonly string[]): {
         break;
       case "--stock-codex":
         options.stockCodexPath = value;
+        break;
+      case "--data-dir":
+        options.dataDirectory = value;
         break;
       case "--node":
         resources.nodePath = value;
@@ -78,13 +85,15 @@ export async function runRemoteHostCli(input: {
       output.write(
         [
           "usage:",
-          "  codexhost remote install [--stock-codex PATH]",
+          "  codexhost remote install [--stock-codex PATH] [--share-local-data | --data-dir PATH]",
           "  codexhost remote start",
           "  codexhost remote stop",
           "  codexhost remote status",
           "  codexhost remote uninstall",
           "",
           "Installs and manages a headless codexhost Remote Host for SSH sessions.",
+          "Use --share-local-data so Remote SSH lists the same harness threads/pins as local Desktop (~/.codexhost).",
+          "Use --data-dir PATH to set CODEXHOST_DATA_DIR explicitly. Default remains ~/.codexhost/remote/data.",
         ].join("\n") + "\n",
       );
       return 0;

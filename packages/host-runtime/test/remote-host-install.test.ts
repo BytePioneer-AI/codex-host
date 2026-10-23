@@ -828,4 +828,76 @@ describe("remote SSH Host installation", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("shares ~/.codexhost when shareLocalData is set", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-share-local-"));
+    const localData = path.join(home, ".codexhost");
+    await mkdir(path.join(localData, "mapping-store"), { recursive: true });
+    await writeFile(path.join(localData, "mapping-store", "placements.json"), "[]\n", "utf8");
+    const options = {
+      home,
+      shareLocalData: true,
+      stockCodexPath: await executable(path.join(home, "stock-codex")),
+      nodePath: await executable(path.join(home, "node")),
+      shimPath: await executable(path.join(home, "codexhost-shim")),
+      hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+      platform: "darwin" as const,
+      environment: { HOME: home, SHELL: "/bin/zsh" },
+    };
+    try {
+      const installed = await installRemoteHost(options);
+      expect(installed.dataDirectory).toBe(localData);
+      const profile = await readFile(installed.profilePath, "utf8");
+      expect(profile).toContain(`CODEXHOST_DATA_DIR='${localData}'`);
+      expect(profile).not.toContain(path.join(home, ".codexhost", "remote", "data"));
+      expect(await readFile(path.join(localData, "mapping-store", "placements.json"), "utf8")).toBe(
+        "[]\n",
+      );
+
+      const withoutFlag = {
+        home,
+        stockCodexPath: options.stockCodexPath,
+        nodePath: options.nodePath,
+        shimPath: options.shimPath,
+        hostRuntimePath: options.hostRuntimePath,
+        platform: "darwin" as const,
+        environment: { HOME: home, SHELL: "/bin/zsh" },
+      };
+      const reinstalled = await installRemoteHost(withoutFlag);
+      expect(reinstalled.dataDirectory).toBe(localData);
+
+      await uninstallRemoteHost(withoutFlag);
+      expect(await readFile(path.join(localData, "mapping-store", "placements.json"), "utf8")).toBe(
+        "[]\n",
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts an explicit dataDirectory override", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-data-dir-"));
+    const customData = path.join(home, "shared-codexhost-data");
+    const options = {
+      home,
+      dataDirectory: customData,
+      stockCodexPath: await executable(path.join(home, "stock-codex")),
+      nodePath: await executable(path.join(home, "node")),
+      shimPath: await executable(path.join(home, "codexhost-shim")),
+      hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+      platform: "linux" as const,
+      environment: { HOME: home, SHELL: "/bin/bash" },
+    };
+    try {
+      const installed = await installRemoteHost(options);
+      expect(installed.dataDirectory).toBe(customData);
+      const profile = await readFile(installed.profilePath, "utf8");
+      expect(profile).toContain(`CODEXHOST_DATA_DIR='${customData}'`);
+      await expect(installRemoteHost({ ...options, shareLocalData: true })).rejects.toThrow(
+        "Pass either dataDirectory or shareLocalData, not both",
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });

@@ -1000,6 +1000,7 @@ describe("Claude native Turn interpretation", () => {
       {
         type: "message.completed",
         messageId: "recap-output",
+        localCommand: true,
         checkpointId: "recap-output",
       },
     ]);

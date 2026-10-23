@@ -451,6 +451,7 @@ describe("ClaudeSdkTransport text reconciliation", () => {
         type: "message.completed",
         messageId: "00000000-0000-4000-8000-000000000042",
         checkpointId: "00000000-0000-4000-8000-000000000042",
+        localCommand: true,
       },
     ]);
     expect(value.onFault).not.toHaveBeenCalled();

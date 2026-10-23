@@ -1,5 +1,5 @@
 import {
-  HARNESS_INSTALLATION_METHOD,
+  HARNESS_INSTALLATION_START_METHOD,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
   harnessIdSchema,
@@ -85,16 +85,25 @@ describe("Renderer fixed Model request client", () => {
         updateAvailable: true,
         canUpdate: true,
       };
-      const sendRequest = vi.fn().mockResolvedValue(result);
+      const task = { taskId: "00000000-0000-4000-8000-000000000001", status: "succeeded", result };
+      const sendRequest = vi.fn().mockResolvedValue(task);
       const client = createRendererModelClient([{ sendRequest }]);
       if (!client?.installation) throw new Error("Missing installation client");
       await expect(client.installation(params)).resolves.toEqual(result);
-      expect(sendRequest).toHaveBeenCalledExactlyOnceWith(HARNESS_INSTALLATION_METHOD, params, {
-        priority: "interactive",
-      });
-      sendRequest.mockResolvedValueOnce({ ...result, currentVersion: 42 });
+      expect(sendRequest).toHaveBeenCalledExactlyOnceWith(
+        HARNESS_INSTALLATION_START_METHOD,
+        params,
+        {
+          priority: "background",
+          timeoutMs: 15_000,
+        },
+      );
+      sendRequest.mockResolvedValueOnce({ ...task, result: { ...result, currentVersion: 42 } });
       await expect(client.installation(params)).rejects.toThrow();
-      sendRequest.mockResolvedValueOnce({ ...result, command: "private-command" });
+      sendRequest.mockResolvedValueOnce({
+        ...task,
+        result: { ...result, command: "private-command" },
+      });
       await expect(client.installation(params)).rejects.toThrow();
     },
   );

@@ -953,7 +953,32 @@ fn desktop_environment(
     }
     environment.extend(npm_update_runtime_environment(env::vars_os()));
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
+    #[cfg(target_os = "linux")]
+    environment.extend(linux_wayland_runtime_environment(env::vars_os()));
     environment
+}
+
+#[cfg(target_os = "linux")]
+const LINUX_WAYLAND_FORWARD_ENV: [&str; 3] = [
+    "WAYLAND_DISPLAY",
+    "XDG_SESSION_TYPE",
+    "CODEXHOST_DISABLE_WAYLAND",
+];
+
+#[cfg(target_os = "linux")]
+fn linux_wayland_runtime_environment(
+    variables: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    let variables = variables.into_iter().collect::<Vec<_>>();
+    LINUX_WAYLAND_FORWARD_ENV
+        .iter()
+        .filter_map(|name| {
+            variables.iter().find_map(|(candidate, value)| {
+                (candidate == name && !value.is_empty())
+                    .then(|| (OsString::from(*name), value.clone()))
+            })
+        })
+        .collect()
 }
 
 /// Forward absolute npm update paths. AppX and LaunchServices do not inherit
@@ -1397,6 +1422,8 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     use super::PI_COMMAND_ENV;
+    #[cfg(target_os = "linux")]
+    use super::linux_wayland_runtime_environment;
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     use super::stop_desktop_controller;
     #[cfg(target_os = "macos")]
@@ -1867,6 +1894,41 @@ mod tests {
             );
         }
         assert!(!environment.iter().any(|(name, _)| name == "OPENAI_API_KEY"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_wayland_runtime_environment_filters_active_wayland_variables() {
+        let variables = [
+            (
+                OsString::from("WAYLAND_DISPLAY"),
+                OsString::from("wayland-0"),
+            ),
+            (
+                OsString::from("XDG_SESSION_TYPE"),
+                OsString::from("wayland"),
+            ),
+            (
+                OsString::from("CODEXHOST_DISABLE_WAYLAND"),
+                OsString::from(""),
+            ),
+            (OsString::from("DISPLAY"), OsString::from(":0")),
+            (OsString::from("SOME_SECRET"), OsString::from("secret")),
+        ];
+        let forwarded = linux_wayland_runtime_environment(variables);
+        assert_eq!(
+            forwarded,
+            [
+                (
+                    OsString::from("WAYLAND_DISPLAY"),
+                    OsString::from("wayland-0"),
+                ),
+                (
+                    OsString::from("XDG_SESSION_TYPE"),
+                    OsString::from("wayland"),
+                ),
+            ]
+        );
     }
 
     #[test]

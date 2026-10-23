@@ -160,13 +160,11 @@ import {
   installVoiceStartCapabilityHook,
   overlayVoiceStarterFibers,
 } from "../src/renderer-voice-start-capability.js";
-import {
-  CLIENT_OWNED_VOICE_INITIAL_ASSET,
-  CLIENT_OWNED_VOICE_SHARED_ASSET,
-} from "../src/renderer-client-owned-voice.js";
+import { CLIENT_OWNED_VOICE_ASSETS } from "../src/renderer-client-owned-voice.js";
 
 describe("overlay starter registration", () => {
-  function registration() {
+  function registration(assets = CLIENT_OWNED_VOICE_ASSETS[0]) {
+    if (!assets) throw new Error("Missing fixture profile");
     const register = vi.fn();
     const unregister = vi.fn();
     const native = new Proxy(
@@ -178,10 +176,11 @@ describe("overlay starter registration", () => {
       },
     );
     const services = { realtimeVoiceRuntime: native };
-    const names = [CLIENT_OWNED_VOICE_INITIAL_ASSET, CLIENT_OWNED_VOICE_SHARED_ASSET];
+    const names = [assets.initial, assets.shared];
     const target = {
       __codexhostCpaLiveVoiceHookV1: {
         enabled: true,
+        desktopVersion: assets.version,
         auditedDesktopVersion: "26.1007.30912",
         auditedAppInitialAsset: "app-initial-6350d04672d0.js",
       },
@@ -196,27 +195,30 @@ describe("overlay starter registration", () => {
     const importModule = vi.fn(async () => ({ Oit() {}, ist: services }));
     return { register, unregister, native, services, target, importModule };
   }
-  it("wraps the registered callback without modifying RPC stubs or registration readiness", async () => {
-    const f = registration();
-    const handle = installVoiceStartCapabilityHook(f);
-    await vi.waitFor(() => expect(handle.status).toBe("active"));
-    const start = vi.fn().mockResolvedValue("native-chat");
-    const cancel = vi.fn();
-    f.services.realtimeVoiceRuntime.registerRealtimeStarter(start, cancel, true);
-    const [wrappedStart, wrappedCancel, workspaceReady] = f.register.mock.calls[0] ?? [];
-    expect(workspaceReady).toBe(true);
-    expect(wrappedStart).not.toBe(start);
-    await wrappedStart({ ...request, productExperience: "chat" });
-    expect(start).toHaveBeenCalledOnce();
-    await expect(wrappedStart(request)).rejects.toThrow(/gateway/u);
-    expect(start).toHaveBeenCalledOnce();
-    wrappedCancel("user_cancelled");
-    expect(cancel).toHaveBeenCalledWith("user_cancelled");
-    f.services.realtimeVoiceRuntime.unregisterRealtimeStarter();
-    expect(f.unregister).toHaveBeenCalledOnce();
-    handle.dispose();
-    expect(f.services.realtimeVoiceRuntime).toBe(f.native);
-  });
+  it.each(CLIENT_OWNED_VOICE_ASSETS)(
+    "wraps the $version callback without modifying RPC stubs or registration readiness",
+    async (assets) => {
+      const f = registration(assets);
+      const handle = installVoiceStartCapabilityHook(f);
+      await vi.waitFor(() => expect(handle.status).toBe("active"));
+      const start = vi.fn().mockResolvedValue("native-chat");
+      const cancel = vi.fn();
+      f.services.realtimeVoiceRuntime.registerRealtimeStarter(start, cancel, true);
+      const [wrappedStart, wrappedCancel, workspaceReady] = f.register.mock.calls[0] ?? [];
+      expect(workspaceReady).toBe(true);
+      expect(wrappedStart).not.toBe(start);
+      await wrappedStart({ ...request, productExperience: "chat" });
+      expect(start).toHaveBeenCalledOnce();
+      await expect(wrappedStart(request)).rejects.toThrow(/gateway/u);
+      expect(start).toHaveBeenCalledOnce();
+      wrappedCancel("user_cancelled");
+      expect(cancel).toHaveBeenCalledWith("user_cancelled");
+      f.services.realtimeVoiceRuntime.unregisterRealtimeStarter();
+      expect(f.unregister).toHaveBeenCalledOnce();
+      handle.dispose();
+      expect(f.services.realtimeVoiceRuntime).toBe(f.native);
+    },
+  );
   it("does not install on the primary page or an unknown version", () => {
     const f = registration();
     f.target.location.href = "app://-/index.html";

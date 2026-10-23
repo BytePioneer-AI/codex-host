@@ -35,7 +35,9 @@ export function readPins(files) {
     workVersion,
     workInitial,
     workShared: capture(work, /CLIENT_OWNED_VOICE_SHARED_ASSET = "([^"]+)"/u, "work shared"),
-    overlayAsset: optionalCapture(start, /VOICE_START_OVERLAY_ASSET = "([^"]+)"/u),
+    overlayAsset:
+      optionalCapture(work, /CLIENT_OWNED_VOICE_OVERLAY_ASSET = "([^"]+)"/u) ??
+      optionalCapture(start, /VOICE_START_OVERLAY_ASSET = "([^"]+)"/u),
     chatVersion: optionalCapture(chat, /NATIVE_CHAT_VOICE_VERSION = "([^"]+)"/u) ?? workVersion,
     chatInitial: optionalCapture(chat, /NATIVE_CHAT_INITIAL_ASSET = "([^"]+)"/u) ?? workInitial,
     chatStart: capture(chat, /START_ASSET = "([^"]+)"/u, "chat start"),

@@ -439,6 +439,52 @@ describe("client-owned voice gateway", () => {
     hook.dispose();
     expect(f.client.fetch).toBe(f.original);
   });
+  it.each([
+    ["26.1016.62342", "app-initial-dddef47d6ef6.js", "app-shared-fc3316d48427.js"],
+    ["26.1016.61520", "app-initial-c95ddb62696e.js", "app-shared-2eda13eb7044.js"],
+  ])(
+    "routes explicit Work through its qualified %s WebFetch",
+    async (desktopVersion, initial, shared) => {
+      vi.useFakeTimers();
+      const f = fixture();
+      const target = {
+        [CPA_LIVE_VOICE_HOOK_GLOBAL]: {
+          enabled: true,
+          desktopVersion,
+          auditedDesktopVersion: "26.1007.30912",
+          auditedAppInitialAsset: "app-initial-6350d04672d0.js",
+        },
+        document: {
+          querySelectorAll: () =>
+            [initial, shared].map((name) => ({ getAttribute: () => `app://-/assets/${name}` })),
+        } as unknown as ParentNode,
+        setTimeout,
+        clearTimeout,
+      };
+      const importModule = vi.fn(async () => ({
+        Oit() {},
+        Eit: { getInstance: () => f.client },
+        AFt: { getInstance: () => f.bridge },
+        Mit: f.responseError,
+      }));
+      const hook = installClientOwnedVoiceHook({ target, importModule });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hook.status).toBe("active");
+      expect(importModule).toHaveBeenCalledWith(`app://-/assets/${shared}`);
+      rememberVoiceProductExperience({ productExperience: "work" });
+      await f.client.fetch(
+        url,
+        options(speechBody(), {
+          "x-codex-turn-metadata": JSON.stringify({ backend_model_name: "gpt-6.1-sol" }),
+        }),
+      );
+      expect(f.dispatch).toHaveBeenCalledOnce();
+      expect(f.original).not.toHaveBeenCalled();
+      hook.dispose();
+      expect(f.client.fetch).toBe(f.original);
+    },
+  );
+
   it("initializes lazy native WebFetch exports before installing on a cold document", async () => {
     vi.useFakeTimers();
     const f = fixture();

@@ -1,16 +1,8 @@
+import { selectVoiceAssets, supportsVoiceVersion } from "./renderer-voice-assets.js";
 import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
 import type { RendererHostRouting } from "@codexhost/desktop-control/renderer-bindings";
-import {
-  CLIENT_OWNED_VOICE_INITIAL_ASSET,
-  CLIENT_OWNED_VOICE_SHARED_ASSET,
-  CLIENT_OWNED_VOICE_VERSION,
-  isWorkComposerSurface,
-} from "./renderer-client-owned-voice.js";
-import {
-  auditedAppInitialAssetPresent,
-  loadedAssetNames,
-  readCpaLiveVoiceHookConfig,
-} from "./renderer-cpa-live-voice-hook.js";
+import { CLIENT_OWNED_VOICE_ASSETS, isWorkComposerSurface } from "./renderer-client-owned-voice.js";
+import { loadedAssetNames, readCpaLiveVoiceHookConfig } from "./renderer-cpa-live-voice-hook.js";
 import {
   chatLiveVoicePreferenceAllowsOverride,
   cpaLiveVoicePreferenceAllowsInstall,
@@ -335,7 +327,7 @@ export function installVoiceCapabilityProjection(
   if (target[GLOBAL]) return target[GLOBAL] as { status: string; dispose(): void };
   const config = readCpaLiveVoiceHookConfig(target);
   if (!config) return { status: "disabled", dispose() {} };
-  if (config.desktopVersion !== undefined && config.desktopVersion !== CLIENT_OWNED_VOICE_VERSION)
+  if (!supportsVoiceVersion(CLIENT_OWNED_VOICE_ASSETS, config.desktopVersion))
     return { status: "unsupported", dispose() {} };
   let timer: ReturnType<typeof setTimeout>;
   let binding: ReturnType<typeof bindComposerVoiceCapability> | undefined;
@@ -388,16 +380,13 @@ export function installVoiceCapabilityProjection(
     if (disposed) return;
     try {
       const names = loadedAssetNames(target.document, target.performance);
-      if (
-        ![CLIENT_OWNED_VOICE_INITIAL_ASSET, CLIENT_OWNED_VOICE_SHARED_ASSET].every((asset) =>
-          auditedAppInitialAssetPresent(names, asset),
-        )
-      ) {
+      const assets = selectVoiceAssets(CLIENT_OWNED_VOICE_ASSETS, names, config.desktopVersion);
+      if (!assets) {
         handle.status = "unsupported";
       } else if (!allowed()) handle.status = "pending";
       else {
         const module = await (options.importModule ?? ((url) => import(url)))(
-          `app://-/assets/${CLIENT_OWNED_VOICE_INITIAL_ASSET}`,
+          `app://-/assets/${assets.initial}`,
         );
         if (disposed) return;
         if (typeof module.njr !== "function")

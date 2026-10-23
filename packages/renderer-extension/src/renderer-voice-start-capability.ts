@@ -1,10 +1,9 @@
+import { selectVoiceAssets, supportsVoiceVersion } from "./renderer-voice-assets.js";
 import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
 import { VOICE_GATEWAY_STATUS_METHOD } from "@codexhost/shared-contracts";
 import {
-  CLIENT_OWNED_VOICE_INITIAL_ASSET,
-  CLIENT_OWNED_VOICE_SHARED_ASSET,
   CLIENT_OWNED_VOICE_SERVICES,
-  CLIENT_OWNED_VOICE_VERSION,
+  CLIENT_OWNED_VOICE_ASSETS,
   rememberVoiceProductExperience,
   requestVoiceHost,
   type NativeVoiceBridge,
@@ -22,7 +21,6 @@ import {
 import { isAvatarOverlayHref } from "./renderer-overlay-thread-isolation.js";
 
 const GLOBAL = "__codexhostVoiceStartCapabilityV1";
-export const VOICE_START_OVERLAY_ASSET = "avatar-overlay-native-page-fcc17283519a.js";
 type RecordValue = Record<string, unknown>;
 const record = (v: unknown): v is RecordValue => v !== null && typeof v === "object";
 type Start = (...args: unknown[]) => unknown;
@@ -134,7 +132,7 @@ export function installVoiceStartCapabilityHook(
   const config = readCpaLiveVoiceHookConfig(target);
   if (!config || !isAvatarOverlayHref(target.location?.href ?? ""))
     return { status: "disabled", dispose() {} };
-  if (config.desktopVersion !== undefined && config.desktopVersion !== CLIENT_OWNED_VOICE_VERSION)
+  if (!supportsVoiceVersion(CLIENT_OWNED_VOICE_ASSETS, config.desktopVersion))
     return { status: "unsupported", dispose() {} };
   const importModule = options.importModule ?? ((url: string) => import(url));
   let disposed = false;
@@ -157,12 +155,9 @@ export function installVoiceStartCapabilityHook(
     if (disposed) return;
     try {
       const names = loadedAssetNames(target.document, target.performance);
-      if (
-        [CLIENT_OWNED_VOICE_INITIAL_ASSET, CLIENT_OWNED_VOICE_SHARED_ASSET].every((asset) =>
-          auditedAppInitialAssetPresent(names, asset),
-        )
-      ) {
-        const shared = await importModule(`app://-/assets/${CLIENT_OWNED_VOICE_SHARED_ASSET}`);
+      const assets = selectVoiceAssets(CLIENT_OWNED_VOICE_ASSETS, names, config.desktopVersion);
+      if (assets) {
+        const shared = await importModule(`app://-/assets/${assets.shared}`);
         if (typeof shared.Oit !== "function") throw new Error("Voice bridge unavailable");
         shared.Oit();
         const services = shared[CLIENT_OWNED_VOICE_SERVICES];
@@ -202,11 +197,11 @@ export function installVoiceStartCapabilityHook(
                     },
                     prepare: async (allowed) => {
                       const names = loadedAssetNames(target.document, target.performance);
-                      if (!auditedAppInitialAssetPresent(names, VOICE_START_OVERLAY_ASSET))
+                      if (!auditedAppInitialAssetPresent(names, assets.overlay))
                         throw new Error("Unaudited voice starter");
                       const [initial, overlay] = await Promise.all([
-                        importModule(`app://-/assets/${CLIENT_OWNED_VOICE_INITIAL_ASSET}`),
-                        importModule(`app://-/assets/${VOICE_START_OVERLAY_ASSET}`),
+                        importModule(`app://-/assets/${assets.initial}`),
+                        importModule(`app://-/assets/${assets.overlay}`),
                       ]);
                       if (
                         typeof initial.njr !== "function" ||

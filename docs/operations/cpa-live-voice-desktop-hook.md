@@ -1,6 +1,6 @@
 # CPA live-voice Desktop hook
 
-CodexHost routes native live-voice call creation through the configured realtime gateway without rewriting `app.asar` or replacing `/Applications/ChatGPT.app`. Desktop **26.1007.30912** uses a call-ownership gate override. Desktop **26.1013.40934**, **26.1016.51333**, and **26.1016.61520** use the native client-owned-call flow described below.
+CodexHost routes native live-voice call creation through the configured realtime gateway without rewriting `app.asar` or replacing `/Applications/ChatGPT.app`. Desktop **26.1007.30912** uses a call-ownership gate override. Desktop **26.1013.40934**, **26.1016.51333**, **26.1016.61520**, and **26.1016.62342** use the native client-owned-call flow described below.
 
 For upstream merges, follow the [Live Voice preservation checklist](fork-versioning.md#preserve-live-voice-when-syncing-upstream), including regression checks and separate Desktop-version qualification.
 
@@ -51,6 +51,65 @@ The hook only changes Desktop call ownership. Point Codex at the realtime host i
 experimental_realtime_ws_base_url = "https://<realtime-host>/v1"
 experimental_realtime_webrtc_call_base_url = "https://<realtime-host>/v1"
 ```
+
+## Desktop 26.1016.62342 qualification
+
+Work/gateway and native Chat have independently audited **26.1016.62342** build
+**21477** profiles. The exact **61520** profiles remain supported, so installing
+the host before upgrading Desktop preserves the working baseline. Unknown
+versions, version/asset mismatches, incomplete pairs and mixed audited assets
+fail closed before native imports. Without version metadata, exactly one
+complete audited initial/shared pair is required. The selected profile also
+owns its overlay or native Chat START/prewarm imports.
+
+| Asset | 61520 baseline | 62342 target |
+| --- | --- | --- |
+| Initial | app-initial-c95ddb62696e.js | app-initial-dddef47d6ef6.js |
+| Shared | app-shared-2eda13eb7044.js | app-shared-fc3316d48427.js |
+| Primary Chat owner | app-primary-58a09006cc0c.js | app-primary-10e84ec314b8.js |
+| Work overlay | avatar-overlay-native-page-fcc17283519a.js | avatar-overlay-native-page-ef8332c6a2fb.js |
+| Native Chat START | start-voice-18b08f0acdd7.js | start-voice-7cbf0a39d53b.js |
+| Native prewarm entry | voice-prewarm-94271e581c1b.js | voice-prewarm-5d107129ac1c.js |
+| Native prewarm controller | voice-prewarm-de985dbe0490.js | voice-prewarm-9695e173952c.js |
+| Voice session | voice-session-7d5ee22a0da4.js | voice-session-c6b0f08e69a2.js |
+
+The 62342 ASAR SHA-256 is
+`5b5cf52887cfd4de19cb5862155a8ef6cf58830c0a2fc592b72060cfcc3be869`.
+Acquisition reads selected entries through ZIP ranges, then individual ASAR
+header offsets; it does not install Desktop or extract the full ASAR.
+
+After replacing imported asset hash suffixes, the primary owner, overlay, START,
+prewarm and voice-session sources equal 61520 byte for byte. Initial/shared
+also differ in the embedded build commit:
+`d7acb7a1b13f5e0f32a1e399e3fce368b08bd754` becomes
+`293b23553a2ef1949121cc87c52983472a85ea23`.
+The relevant CSS is byte-identical. Thus the 61520 contract table below also
+applies to the corresponding 62342 files at the same formatted line numbers
+(Prettier 3.9.6, Babel defaults, printWidth 80).
+
+Work evidence includes initial:111047/111148 (capability and inference gate),
+:682702/682778 (existingCall and WebFetch bootstrap), overlay:4084 (owned realtime
+subscription) and :4693 (starter registration). Native Chat evidence includes
+START:1119/1173/1194/1260; primary:121258/121370/125082/125124 (RouteScope and
+inner ComposerScope/form); shared:84170/84202/84461/104176 (provider chain,
+node token, scope ref and AppScope); initial:256888/685663/685754 (store,
+runtime flag and VoiceRoom). Export names and the guarded transcript adoption
+contract remain unchanged.
+
+A broader offset comparison covers all 15,305 Renderer JS/CSS files. Aside from
+asset references/build metadata, changes are CSS module identifiers in control
+and placement UI, and the automation dialog's model-list client version changing
+from 0.163.0-alpha.11.1 to .11.2. The consumed composer, routing, usage-gate and
+voice contracts have no source change requiring additional integration.
+
+This is source qualification plus isolated regression coverage. The installed
+upstream app remains 61520 until an explicit upgrade. No 62342 live Desktop,
+physical microphone, audible reply, transcript adoption or cleanup acceptance is
+claimed. Issues [#7](https://github.com/karlorz/codex-host/issues/7) and
+[#8](https://github.com/karlorz/codex-host/issues/8) retain functional acceptance;
+[#4](https://github.com/karlorz/codex-host/issues/4) retains the original Chat
+acceptance limits. A matching compat-daily pin warrants a recovery comment,
+independently of those live checks.
 
 ## Desktop 26.1016.61520: client-owned calls
 
@@ -162,7 +221,7 @@ upstream gateway response or a session-history parsing error.
 
 ### Existing and new ChatGPT conversations: native Instant Connect
 
-The primary Renderer pins native Chat to **26.1016.61520** build **21421**:
+The retained native Chat baseline is **26.1016.61520** build **21421**:
 `app-initial-c95ddb62696e.js`, `app-shared-2eda13eb7044.js`,
 `start-voice-18b08f0acdd7.js`, and `voice-prewarm-94271e581c1b.js`.
 Native Chat uses Desktop's browser Instant Connect stack. Its authentication,
@@ -171,7 +230,7 @@ and cleanup remain native. Codex Chat uses the separate Codex overlay and its
 own connection preference. Missing or ambiguous native Chat bindings reject
 without falling through to that overlay.
 
-The installed ASAR SHA-256 is
+The audited 61520 baseline ASAR SHA-256 is
 `c9945f821fcbaf48424933a82860beac4dd4ad8b8a5444a75568fa6e38a1ad4b`.
 Only individual assets were read by ASAR offsets. These native file references
 use Prettier 3.9.6 Babel formatting with default options (printWidth 80):

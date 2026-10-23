@@ -1,3 +1,4 @@
+import { selectVoiceAssets, supportsVoiceVersion } from "./renderer-voice-assets.js";
 import { chatVoiceDebug } from "./renderer-chat-voice-debug.js";
 import {
   REALTIME_CALL_METHOD,
@@ -6,21 +7,32 @@ import {
   realtimeCallIdFromLocation,
   realtimeCallResponseSchema,
 } from "@codexhost/shared-contracts";
-import {
-  auditedAppInitialAssetPresent,
-  loadedAssetNames,
-  readCpaLiveVoiceHookConfig,
-} from "./renderer-cpa-live-voice-hook.js";
+import { loadedAssetNames, readCpaLiveVoiceHookConfig } from "./renderer-cpa-live-voice-hook.js";
 import {
   chatLiveVoicePreferenceAllowsOverride,
   cpaLiveVoicePreferenceAllowsInstall,
 } from "./renderer-cpa-live-voice-preference.js";
 import { RENDERER_NEW_THREAD_PREFERENCE_KEY } from "./renderer-new-thread-preference.js";
 
-export const CLIENT_OWNED_VOICE_VERSION = "26.1016.61520";
-export const CLIENT_OWNED_VOICE_INITIAL_ASSET = "app-initial-c95ddb62696e.js";
-export const CLIENT_OWNED_VOICE_SHARED_ASSET = "app-shared-2eda13eb7044.js";
+export const CLIENT_OWNED_VOICE_VERSION = "26.1016.62342";
+export const CLIENT_OWNED_VOICE_INITIAL_ASSET = "app-initial-dddef47d6ef6.js";
+export const CLIENT_OWNED_VOICE_SHARED_ASSET = "app-shared-fc3316d48427.js";
 export const CLIENT_OWNED_VOICE_SERVICES = "ist";
+export const CLIENT_OWNED_VOICE_OVERLAY_ASSET = "avatar-overlay-native-page-ef8332c6a2fb.js";
+export const CLIENT_OWNED_VOICE_ASSETS = [
+  {
+    version: CLIENT_OWNED_VOICE_VERSION,
+    initial: CLIENT_OWNED_VOICE_INITIAL_ASSET,
+    shared: CLIENT_OWNED_VOICE_SHARED_ASSET,
+    overlay: CLIENT_OWNED_VOICE_OVERLAY_ASSET,
+  },
+  {
+    version: "26.1016.61520",
+    initial: "app-initial-c95ddb62696e.js",
+    shared: "app-shared-2eda13eb7044.js",
+    overlay: "avatar-overlay-native-page-fcc17283519a.js",
+  },
+];
 const SHARED_INIT = "Oit";
 const SHARED_FETCH = "Eit";
 const SHARED_BRIDGE = "AFt";
@@ -320,7 +332,7 @@ export function installClientOwnedVoiceHook(
   if (existing) return existing;
   const config = readCpaLiveVoiceHookConfig(target);
   if (!config) return { status: "disabled", dispose() {} };
-  if (config.desktopVersion !== undefined && config.desktopVersion !== CLIENT_OWNED_VOICE_VERSION)
+  if (!supportsVoiceVersion(CLIENT_OWNED_VOICE_ASSETS, config.desktopVersion))
     return { status: "unsupported", dispose() {} };
   const importModule = options.importModule ?? ((url: string) => import(url));
   let disposed = false;
@@ -340,12 +352,10 @@ export function installClientOwnedVoiceHook(
   const attempt = async (): Promise<void> => {
     if (disposed) return;
     const names = loadedAssetNames(target.document, target.performance);
-    if (
-      auditedAppInitialAssetPresent(names, CLIENT_OWNED_VOICE_INITIAL_ASSET) &&
-      auditedAppInitialAssetPresent(names, CLIENT_OWNED_VOICE_SHARED_ASSET)
-    ) {
+    const assets = selectVoiceAssets(CLIENT_OWNED_VOICE_ASSETS, names, config.desktopVersion);
+    if (assets) {
       try {
-        const module = await importModule(`app://-/assets/${CLIENT_OWNED_VOICE_SHARED_ASSET}`);
+        const module = await importModule(`app://-/assets/${assets.shared}`);
         if (disposed) return;
         // The shared chunk exports lazy bindings. Initialize WebFetch and its
         // message bridge before reading their singleton classes on document start.

@@ -1,10 +1,7 @@
+import { selectVoiceAssets, supportsVoiceVersion } from "./renderer-voice-assets.js";
 import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
 import { chatVoiceDebug } from "./renderer-chat-voice-debug.js";
-import {
-  auditedAppInitialAssetPresent,
-  loadedAssetNames,
-  readCpaLiveVoiceHookConfig,
-} from "./renderer-cpa-live-voice-hook.js";
+import { loadedAssetNames, readCpaLiveVoiceHookConfig } from "./renderer-cpa-live-voice-hook.js";
 import { nativeChatVoicePreferenceAllowsStart } from "./renderer-cpa-live-voice-preference.js";
 import { observeNativeChatVoiceState } from "./renderer-native-chat-voice-state.js";
 import { nativeChatVoiceDraftSelection } from "./renderer-native-chat-voice-selection.js";
@@ -14,11 +11,27 @@ import {
 } from "./renderer-native-chat-voice-presentation.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
-const NATIVE_CHAT_VOICE_VERSION = "26.1016.61520";
-const NATIVE_CHAT_INITIAL_ASSET = "app-initial-c95ddb62696e.js";
-const NATIVE_CHAT_SHARED_ASSET = "app-shared-2eda13eb7044.js";
-const START_ASSET = "start-voice-18b08f0acdd7.js";
-const PREWARM_ASSET = "voice-prewarm-94271e581c1b.js";
+const NATIVE_CHAT_VOICE_VERSION = "26.1016.62342";
+const NATIVE_CHAT_INITIAL_ASSET = "app-initial-dddef47d6ef6.js";
+const NATIVE_CHAT_SHARED_ASSET = "app-shared-fc3316d48427.js";
+const START_ASSET = "start-voice-7cbf0a39d53b.js";
+const PREWARM_ASSET = "voice-prewarm-5d107129ac1c.js";
+const NATIVE_CHAT_VOICE_ASSETS = [
+  {
+    version: NATIVE_CHAT_VOICE_VERSION,
+    initial: NATIVE_CHAT_INITIAL_ASSET,
+    shared: NATIVE_CHAT_SHARED_ASSET,
+    start: START_ASSET,
+    prewarm: PREWARM_ASSET,
+  },
+  {
+    version: "26.1016.61520",
+    initial: "app-initial-c95ddb62696e.js",
+    shared: "app-shared-2eda13eb7044.js",
+    start: "start-voice-18b08f0acdd7.js",
+    prewarm: "voice-prewarm-94271e581c1b.js",
+  },
+];
 const BUTTON = "data-codexhost-chat-voice-start";
 const CONVERSATION_UUID = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 type RecordValue = Record<string, unknown>;
@@ -230,7 +243,7 @@ export function installNativeChatVoiceHook(
     },
   });
   if (!config) return unavailable("disabled");
-  if (config.desktopVersion !== undefined && config.desktopVersion !== NATIVE_CHAT_VOICE_VERSION)
+  if (!supportsVoiceVersion(NATIVE_CHAT_VOICE_ASSETS, config.desktopVersion))
     return unavailable("unsupported");
   const doc = target.document;
   if (!doc) return unavailable("unsupported");
@@ -366,10 +379,8 @@ export function installNativeChatVoiceHook(
       if (renderFailed) throw new Error();
       if (!modules) {
         const names = loadedAssetNames(doc, target.performance);
-        if (
-          !auditedAppInitialAssetPresent(names, NATIVE_CHAT_INITIAL_ASSET) ||
-          !auditedAppInitialAssetPresent(names, NATIVE_CHAT_SHARED_ASSET)
-        ) {
+        const assets = selectVoiceAssets(NATIVE_CHAT_VOICE_ASSETS, names, config.desktopVersion);
+        if (!assets) {
           if (Date.now() - started >= 60_000) {
             handle.status = "unsupported";
             return;
@@ -377,8 +388,8 @@ export function installNativeChatVoiceHook(
           return;
         }
         const [shared, initial, start, prewarm] = await Promise.all(
-          [NATIVE_CHAT_SHARED_ASSET, NATIVE_CHAT_INITIAL_ASSET, START_ASSET, PREWARM_ASSET].map(
-            (asset) => importModule(`app://-/assets/${asset}`),
+          [assets.shared, assets.initial, assets.start, assets.prewarm].map((asset) =>
+            importModule(`app://-/assets/${asset}`),
           ),
         );
         if (disposed) return;

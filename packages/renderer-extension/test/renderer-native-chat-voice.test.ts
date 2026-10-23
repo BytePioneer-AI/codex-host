@@ -396,7 +396,7 @@ function installFixture() {
     PNt: () => ({ createRoot }),
     Vot: vi.fn((id: string) => `/c/${encodeURIComponent(id)}`),
   };
-  const assets = ["app-initial-c95ddb62696e.js", "app-shared-2eda13eb7044.js"];
+  const assets = ["app-initial-dddef47d6ef6.js", "app-shared-fc3316d48427.js"];
   const doc = {
     body: { append: vi.fn() },
     createElement: createElementDom,
@@ -410,7 +410,7 @@ function installFixture() {
   const target = {
     __codexhostCpaLiveVoiceHookV1: {
       enabled: true,
-      desktopVersion: "26.1016.61520",
+      desktopVersion: "26.1016.62342",
       auditedDesktopVersion: "26.1007.30912",
       auditedAppInitialAsset: "app-initial-6350d04672d0.js",
     },
@@ -785,7 +785,7 @@ describe("native Chat voice lifecycle installation", () => {
     hook.dispose();
   });
 
-  it.each(["26.1013.40934", "26.1016.51333"])(
+  it.each(["26.1013.40934", "26.1016.51333", "26.1016.62343"])(
     "rejects unqualified Desktop %s before importing or enabling native Chat",
     async (desktopVersion) => {
       const f = installFixture();
@@ -803,6 +803,68 @@ describe("native Chat voice lifecycle installation", () => {
       hook.dispose();
     },
   );
+
+  it.each([
+    [
+      "26.1016.62342",
+      "app-initial-dddef47d6ef6.js",
+      "app-shared-fc3316d48427.js",
+      "start-voice-7cbf0a39d53b.js",
+      "voice-prewarm-5d107129ac1c.js",
+    ],
+    [
+      "26.1016.61520",
+      "app-initial-c95ddb62696e.js",
+      "app-shared-2eda13eb7044.js",
+      "start-voice-18b08f0acdd7.js",
+      "voice-prewarm-94271e581c1b.js",
+    ],
+  ])(
+    "starts native Chat on %s using only its qualified modules",
+    async (version, initial, shared, start, prewarm) => {
+      vi.useFakeTimers();
+      const f = installFixture();
+      f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = version;
+      f.assets.splice(0, f.assets.length, initial, shared);
+      const hook = installNativeChatVoiceHook(f);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hook.status).toBe("active");
+      expect(f.importModule.mock.calls.map(([url]) => url)).toEqual(
+        [shared, initial, start, prewarm].map((asset) => `app://-/assets/${asset}`),
+      );
+      await hook.start();
+      expect(f.start).toHaveBeenCalledWith(
+        f.scope,
+        f.props,
+        { event_source: "composer" },
+        expect.any(AbortSignal),
+      );
+      hook.dispose();
+    },
+  );
+
+  it.each([
+    ["26.1016.62342", ["app-initial-c95ddb62696e.js", "app-shared-2eda13eb7044.js"]],
+    ["26.1016.62342", ["app-initial-dddef47d6ef6.js", "app-shared-2eda13eb7044.js"]],
+    [
+      undefined,
+      ["app-initial-dddef47d6ef6.js", "app-shared-fc3316d48427.js", "app-initial-c95ddb62696e.js"],
+    ],
+  ])("rejects mismatched or ambiguous Chat assets (%s, %j)", async (version, names) => {
+    vi.useFakeTimers();
+    const f = installFixture();
+    if (version === undefined)
+      Reflect.deleteProperty(f.target.__codexhostCpaLiveVoiceHookV1, "desktopVersion");
+    else f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = version;
+    f.assets.splice(0, f.assets.length, ...names);
+    const hook = installNativeChatVoiceHook(f);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(hook.status).toBe("unsupported");
+    expect(f.importModule).not.toHaveBeenCalled();
+    expect(f.initial.oT).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled();
+    hook.dispose();
+  });
 
   it("rejects stale Chat assets when the installed Desktop version is unavailable", async () => {
     vi.useFakeTimers();

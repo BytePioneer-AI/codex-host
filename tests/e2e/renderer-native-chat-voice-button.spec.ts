@@ -56,7 +56,7 @@ const { outputFiles } = await build({
       const shared = { Qst: app, FBt: () => ({ createElement() {} }),
         PNt: () => ({ createRoot: () => ({ render() {}, unmount() {} }) }),
       };
-      globalThis.__codexhostCpaLiveVoiceHookV1 = { enabled: true, desktopVersion: "26.1016.61520", auditedDesktopVersion: "26.1016.61520", auditedAppInitialAsset: "app-initial-c95ddb62696e.js" };
+      globalThis.__codexhostCpaLiveVoiceHookV1 = { enabled: true, desktopVersion: "26.1016.62342", auditedDesktopVersion: "26.1016.62342", auditedAppInitialAsset: "app-initial-dddef47d6ef6.js" };
       globalThis.voiceStarts = 0;
       globalThis.voiceHook = installNativeChatVoiceHook({ importModule: async (url) =>
         url.includes("app-initial") ? initial : url.includes("app-shared") ? shared :
@@ -100,8 +100,8 @@ for (const { theme, dictate } of ["light", "dark"].flatMap((theme) =>
           .opacity-50 { opacity: .5; }
           .cursor-default { cursor: default; }
         </style>
-        <script type="application/json" src="app://-/assets/app-initial-c95ddb62696e.js"></script>
-        <script type="application/json" src="app://-/assets/app-shared-2eda13eb7044.js"></script>
+        <script type="application/json" src="app://-/assets/app-initial-dddef47d6ef6.js"></script>
+        <script type="application/json" src="app://-/assets/app-shared-fc3316d48427.js"></script>
         <div style="view-transition-name: var(--vt-splash-screen-headline)">
           <h1><span data-headline="readyWhenYouAre">Ready when you are.</span></h1>
         </div>
@@ -171,7 +171,7 @@ for (const { theme, dictate } of ["light", "dark"].flatMap((theme) =>
     expect(position.gap).toBeCloseTo(referenceGap, 1);
     expect(position.centerDelta).toBeLessThan(1);
     await page.screenshot({
-      path: `.codexhost/update-impact/26.1016.61520/chat-voice-button-${theme}-${dictate ? "with" : "without"}-dictate.png`,
+      path: `.codexhost/update-impact/26.1016.62342/chat-voice-button-${theme}-${dictate ? "with" : "without"}-dictate.png`,
     });
     await voice.click();
     await expect.poll(() => page.evaluate(() => Reflect.get(globalThis, "voiceStarts"))).toBe(1);

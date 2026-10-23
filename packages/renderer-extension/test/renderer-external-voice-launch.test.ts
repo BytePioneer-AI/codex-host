@@ -5,10 +5,7 @@ import {
   AUDITED_CPA_LIVE_VOICE_DESKTOP_VERSION,
   CPA_LIVE_VOICE_HOOK_GLOBAL,
 } from "../src/renderer-cpa-live-voice-hook.js";
-import {
-  CLIENT_OWNED_VOICE_INITIAL_ASSET,
-  CLIENT_OWNED_VOICE_SHARED_ASSET,
-} from "../src/renderer-client-owned-voice.js";
+import { CLIENT_OWNED_VOICE_ASSETS } from "../src/renderer-client-owned-voice.js";
 import {
   installExternalVoiceLaunchHook,
   routeExternalVoiceLaunch,
@@ -81,28 +78,39 @@ const settle = async () => {
 afterEach(() => vi.useRealTimers());
 
 describe("native new-voice selection", () => {
-  it("keeps the selected Harness on the client-owned-call Desktop build", async () => {
+  it.each(CLIENT_OWNED_VOICE_ASSETS)(
+    "keeps the selected Harness on Desktop $version",
+    async (assets) => {
+      const f = hookFixture();
+      f.names.splice(0, f.names.length, assets.initial, assets.shared);
+      Reflect.set(f.target[CPA_LIVE_VOICE_HOOK_GLOBAL], "desktopVersion", assets.version);
+      const hook = installExternalVoiceLaunchHook({
+        target: f.target,
+        importModule: async () => ({ ist: f.services }),
+      });
+      await settle();
+      expect(hook.status).toBe("active");
+      const routed = f.services.realtimeVoiceRuntime.requestRealtimeStart(request()) as {
+        args: unknown[];
+      };
+      expect(routed.args[0]).toMatchObject({
+        activeCollaborationMode: { settings: { model: carrier } },
+      });
+      hook.dispose();
+    },
+  );
+  it("does not fall back to legacy launch assets when modern ownership is mixed", async () => {
+    vi.useFakeTimers();
     const f = hookFixture();
-    f.names.splice(
-      0,
-      f.names.length,
-      CLIENT_OWNED_VOICE_INITIAL_ASSET,
-      CLIENT_OWNED_VOICE_SHARED_ASSET,
-    );
-    const hook = installExternalVoiceLaunchHook({
-      target: f.target,
-      importModule: async () => ({ ist: f.services }),
-    });
-    await settle();
-    expect(hook.status).toBe("active");
-    const routed = f.services.realtimeVoiceRuntime.requestRealtimeStart(request()) as {
-      args: unknown[];
-    };
-    expect(routed.args[0]).toMatchObject({
-      activeCollaborationMode: { settings: { model: carrier } },
-    });
+    f.names.push("app-initial-dddef47d6ef6.js", "app-shared-2eda13eb7044.js");
+    const hook = installExternalVoiceLaunchHook(f);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(hook.status).toBe("unsupported");
+    expect(f.importModule).not.toHaveBeenCalled();
+    expect(f.services.realtimeVoiceRuntime).toBe(f.runtime);
     hook.dispose();
   });
+
   it("does not move Chat-mode Start Voice onto the selected Harness", () => {
     const { routing } = routingFixture();
     const original = { ...request(), productExperience: "chat" };

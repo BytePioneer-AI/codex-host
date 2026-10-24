@@ -78,6 +78,12 @@ When a supporting Harness provides a stable native Subagent identity and transcr
 ### Requirement: Harness-generated autonomous continuations have Host Turn lifecycles
 A supporting Harness SHALL emit an autonomous Turn start when native work resumes and produces Root output without a new desktop Turn request. Host Runtime SHALL create and persist one normal Host Turn projection for that continuation.
 
+#### Scenario: Subagent lifecycle notification has no Root execution
+
+- **WHEN** a Harness reports only Subagent lifecycle, progress, or transcript changes while no Root Turn is active
+- **THEN** the Adapter SHALL emit Session-scoped Subagent state or transcript notifications
+- **AND** it SHALL NOT manufacture an autonomous Root Turn or a Fork boundary for those notifications
+
 #### Scenario: Background task completion resumes Root Agent
 
 - **WHEN** a background Subagent completion notification causes the native Root Agent to generate a follow-up answer while the requested Host Turn is still held

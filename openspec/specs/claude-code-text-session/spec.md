@@ -77,7 +77,7 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **AND** each caller-assigned User UUID is submitted once
 
 ### Requirement: Claude Native history maps deterministically
-`readSnapshot()` SHALL read only the identified Native Session through the official Claude SDK history API and SHALL deterministically map each human User message and its following supported Assistant text and explicit visible thinking into one Host Turn. The caller-assigned User UUID SHALL remain the Native Turn identity. Claude Tool-result User messages, synthetic or metadata User records, local-command output or caveat records, native Model-selection and Compact command envelopes, and background task-notification records SHALL NOT become human Host Turns. Other genuine human slash-command prompts SHALL remain eligible for projection. codexhost SHALL NOT persist a second Transcript.
+`readSnapshot()` SHALL read only the identified Native Session and SHALL deterministically preserve the live execution boundaries, including independent task-notification continuations. A requested Turn SHALL use its caller-assigned User UUID; an autonomous continuation SHALL use its triggering notification User UUID, matching the live Adapter. Claude Tool-result User messages, synthetic or metadata User records, local-command output or caveat records, native Model-selection and Compact command envelopes, and background task-notification records SHALL NOT become human Host Turns. Other genuine human slash-command prompts SHALL remain eligible for projection. codexhost SHALL NOT persist a second Transcript.
 
 #### Scenario: Completed Claude history is read repeatedly
 - **WHEN** a Claude Session containing completed text Turns and visible Assistant thinking is read more than once
@@ -107,8 +107,10 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 
 #### Scenario: Native history contains background task-notification records
 - **WHEN** Claude history contains a User record whose origin is `task-notification` or whose text is a complete `<task-notification>` wrapper
-- **THEN** that native control record SHALL NOT create a Host Turn or appear as User input
-- **AND** following Assistant continuations SHALL remain on the preceding human Turn
+- **THEN** a notification that triggers independent Root execution SHALL start a historical Turn with empty User input and its own notification UUID as Native Turn identity
+- **AND** each Turn's Checkpoint SHALL be its last Root message UUID, so the preceding Turn's Checkpoint stays before the independent notification
+- **AND** notifications and continuations owned by a Turn held for background Agent or Workflow occupancy SHALL stay on that same Turn, using the same native delegation and settlement evidence as the live Adapter
+- **AND** nested Subagent messages SHALL NOT advance a Root Checkpoint
 - **AND** ordinary human text that only mentions these tags SHALL remain eligible for projection
 
 #### Scenario: Native history contains another human slash command

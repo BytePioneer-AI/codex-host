@@ -23,18 +23,19 @@ import {
   claudeBypassPermissionsAvailable,
   type ClaudePermissionMode,
 } from "../src/permission-modes.js";
-import type {
-  ClaudeAdapterDependencies,
-  ClaudeApprovalRequest,
-  ClaudeAutonomousTurnHandler,
-  ClaudeIdleTurnHandler,
-  ClaudeInteractionResponse,
-  ClaudePlanLimitEvent,
-  ClaudeQuestionRequest,
-  ClaudeTransportContextUsage,
-  ClaudeTransportTurnResult,
-  ClaudeTurnEvent,
-  ClaudeTurnTransport,
+import {
+  ClaudeSteerMissedTurnError,
+  type ClaudeAdapterDependencies,
+  type ClaudeApprovalRequest,
+  type ClaudeAutonomousTurnHandler,
+  type ClaudeIdleTurnHandler,
+  type ClaudeInteractionResponse,
+  type ClaudePlanLimitEvent,
+  type ClaudeQuestionRequest,
+  type ClaudeTransportContextUsage,
+  type ClaudeTransportTurnResult,
+  type ClaudeTurnEvent,
+  type ClaudeTurnTransport,
 } from "../src/transport.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -112,6 +113,15 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly initCalls: string[] = [];
   readonly recapCalls: string[] = [];
   readonly turns: Array<{ text: string; userMessageId: string }> = [];
+  readonly steers: Array<{ text: string; messageId: string; priority: "next" }> = [];
+  /** Whether the fake CLI reported `msg_lifecycle_v1` in its init capabilities. */
+  nativeSteer = true;
+  /** Whether the fake requested Turn currently runs a root tool call. */
+  rootToolRunning = true;
+  readonly #pendingSteers = new Map<
+    string,
+    { resolve(): void; reject(error: ClaudeSteerMissedTurnError): void }
+  >();
   #assistantMessageId: string | null = null;
   #active:
     | {
@@ -188,6 +198,35 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     });
   }
 
+  supportsNativeSteer(): boolean {
+    return this.nativeSteer;
+  }
+
+  canSteerActiveTurn(): boolean {
+    return this.nativeSteer && this.#active !== undefined && this.rootToolRunning;
+  }
+
+  steer(text: string, messageId: string): Promise<void> {
+    if (!this.#active) return Promise.reject(new ClaudeSteerMissedTurnError());
+    this.steers.push({ text, messageId, priority: "next" });
+    return new Promise((resolve, reject) => {
+      this.#pendingSteers.set(messageId, { resolve, reject });
+    });
+  }
+
+  recordSteer(messageId: string): void {
+    const pending = this.#pendingSteers.get(messageId);
+    if (!pending) throw new Error(`No pending Claude steer ${messageId}`);
+    this.#pendingSteers.delete(messageId);
+    pending.resolve();
+  }
+
+  #rejectPendingSteers(): void {
+    const error = new ClaudeSteerMissedTurnError();
+    for (const pending of this.#pendingSteers.values()) pending.reject(error);
+    this.#pendingSteers.clear();
+  }
+
   event(event: ClaudeTurnEvent): void {
     if (this.#active) {
       this.#active.onEvent(event);
@@ -228,6 +267,7 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
 
   finish(result: ClaudeTransportTurnResult): void {
     if (this.#active) {
+      // A written steer stays Claude's to deliver after the Turn ends, like the SDK transport.
       this.#active.resolve(result);
       this.#active = undefined;
       this.#assistantMessageId = null;
@@ -242,6 +282,7 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }
 
   fault(error: unknown): void {
+    this.#rejectPendingSteers();
     this.#active?.reject(error);
     this.#active = undefined;
     this.#assistantMessageId = null;
@@ -250,7 +291,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
 
 function fixture(
   options: ClaudeCodeAdapterOptions = {},
-  { bypassPermissionsAvailable = true }: { bypassPermissionsAvailable?: boolean } = {},
+  {
+    bypassPermissionsAvailable = true,
+    accountCreditsSupported = false,
+  }: { bypassPermissionsAvailable?: boolean; accountCreditsSupported?: boolean } = {},
 ) {
   const history: unknown[] = [];
   const transports: FakeClaudeTransport[] = [];
@@ -266,6 +310,11 @@ function fixture(
     inspectInstallation,
     createInspector: vi.fn(() => {
       const inspector = {
+        inspectAccount: vi.fn(async () =>
+          accountCreditsSupported
+            ? { credits: { usedPercent: 10, periodType: "five_hour" as const } }
+            : null,
+        ),
         close: vi.fn(async () => undefined),
         inspect: vi.fn(async () => ({
           models: [
@@ -357,6 +406,14 @@ async function nextOutput(iterator: AsyncIterator<HarnessOutput>) {
   }
 }
 
+function hasUserMessageItem(output: HarnessOutput): boolean {
+  if (output.kind !== "event") return false;
+  if (output.event.type === "item.started") return output.event.item.type === "userMessage";
+  if (output.event.type === "item.completed")
+    return output.event.snapshot.item.type === "userMessage";
+  return false;
+}
+
 async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
   const output = await nextOutput(iterator);
   if (output.done) throw new Error("Harness output ended unexpectedly");
@@ -370,6 +427,199 @@ async function nextInteraction(iterator: AsyncIterator<HarnessOutput>) {
   if (output.value.kind !== "interaction") throw new Error("Expected a Harness Interaction");
   return output.value.interaction;
 }
+
+describe("Claude Code Composer cache countdown", () => {
+  it.each([true, false])(
+    "publishes only for native subscription quota (supported: %s)",
+    async (accountCreditsSupported) => {
+      const { adapter, transports } = fixture({}, { accountCreditsSupported });
+      await adapter.inspectAccount();
+      const session = await openSession(adapter);
+      const outputs: HarnessOutput[] = [];
+      const collecting = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      try {
+        await session.execute(textTurn("cache-countdown"));
+        const transport = transports[0];
+        if (!transport) throw new Error("Expected a Claude transport");
+        const before = Math.floor(Date.now() / 1000);
+        transport.event({ type: "message.completed", messageId: "reply" });
+        transport.finish({ status: "succeeded" });
+        await vi.waitFor(() =>
+          expect(
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "turn.completed",
+            ),
+          ).toBe(true),
+        );
+        const usages = outputs.flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? [output.event.usage]
+            : [],
+        );
+        if (accountCreditsSupported) {
+          expect(usages).toContainEqual(
+            expect.objectContaining({
+              composerIndicators: [
+                {
+                  kind: "countdown",
+                  id: "prompt-cache",
+                  expiresAtUnix: expect.any(Number),
+                  label: { en: "Prompt cache", "zh-CN": "提示词缓存" },
+                },
+              ],
+            }),
+          );
+          const expiry = usages.find((usage) => usage?.composerIndicators?.length)
+            ?.composerIndicators?.[0]?.expiresAtUnix;
+          expect(expiry).toBeGreaterThanOrEqual(before + 3600);
+          expect(expiry).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 3600);
+        } else {
+          expect(usages.every((usage) => !usage?.composerIndicators?.length)).toBe(true);
+        }
+      } finally {
+        await adapter.close();
+        await collecting;
+      }
+    },
+  );
+
+  it("uses the recorded response time when subscription quota arrives later, excluding local output", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    try {
+      await session.execute(textTurn("cache-late-quota"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Expected a Claude transport");
+      transport.event({ type: "message.completed", messageId: "local", localCommand: true });
+      transport.planLimit({ fiveHour: { utilizationPercent: 10 } });
+      await vi.waitFor(() =>
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "session.usage.changed",
+          ),
+        ).toBe(true),
+      );
+      expect(
+        outputs.some(
+          (output) =>
+            output.kind === "event" &&
+            output.event.type === "session.usage.changed" &&
+            output.event.usage?.composerIndicators?.length,
+        ),
+      ).toBe(false);
+      // Account inspection can establish that the current authentication has no quota.
+      await adapter.inspectAccount();
+      const clock = vi.spyOn(Date, "now").mockReturnValueOnce(1_800_000_000_000);
+      try {
+        transport.event({ type: "message.completed", messageId: "reply" });
+      } finally {
+        clock.mockRestore();
+      }
+      transport.planLimit({ fiveHour: { utilizationPercent: 11 } });
+      await vi.waitFor(() =>
+        expect(outputs).toContainEqual({
+          kind: "event",
+          event: expect.objectContaining({
+            type: "session.usage.changed",
+            usage: expect.objectContaining({
+              composerIndicators: [expect.objectContaining({ expiresAtUnix: 1_800_003_600 })],
+            }),
+          }),
+        }),
+      );
+      transport.finish({ status: "succeeded" });
+    } finally {
+      await adapter.close();
+      await collecting;
+    }
+  });
+
+  it.each([true, false])(
+    "uses the latest quota evidence when account inspection completes (native push during inspection: %s)",
+    async (pushDuringInspection) => {
+      const { adapter, dependencies, transports } = fixture();
+      const accountResult = deferred<null>();
+      const createInspector = dependencies.createInspector;
+      dependencies.createInspector = (input) => ({
+        ...createInspector(input),
+        inspectAccount: () => accountResult.promise,
+      });
+      const session = await openSession(adapter);
+      const outputs: HarnessOutput[] = [];
+      const collecting = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      try {
+        await session.execute(textTurn("cache-account-race"));
+        const transport = transports[0];
+        if (!transport) throw new Error("Expected a Claude transport");
+        transport.event({ type: "message.completed", messageId: "reply" });
+        const planLimit = { fiveHour: { utilizationPercent: 10 } };
+        if (!pushDuringInspection) transport.planLimit(planLimit);
+        const inspection = adapter.inspectAccount();
+        if (pushDuringInspection) transport.planLimit(planLimit);
+        accountResult.resolve(null);
+        await expect(inspection).resolves.toBeNull();
+        transport.finish({ status: "succeeded" });
+        await vi.waitFor(() =>
+          expect(
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "turn.completed",
+            ),
+          ).toBe(true),
+        );
+        const usages = outputs.flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? [output.event.usage]
+            : [],
+        );
+        expect(usages.at(-1)?.composerIndicators).toHaveLength(pushDuringInspection ? 1 : 0);
+        if (pushDuringInspection) {
+          expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
+        }
+      } finally {
+        accountResult.resolve(null);
+        await adapter.close();
+        await collecting;
+      }
+    },
+  );
+
+  it("restores the last main assistant response from native history without restarting the clock", async () => {
+    const { adapter, history } = fixture({}, { accountCreditsSupported: true });
+    await adapter.inspectAccount();
+    history.push(
+      { type: "assistant", timestamp: "2026-08-01T10:00:00Z" },
+      { type: "user", timestamp: "2026-08-01T10:10:00Z" },
+      { type: "assistant", isSidechain: true, timestamp: "2026-08-01T10:20:00Z" },
+      { type: "assistant", parent_tool_use_id: "tool", timestamp: "2026-08-01T10:30:00Z" },
+      { type: "assistant", timestamp: "invalid" },
+    );
+    try {
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd: "/synthetic",
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "claude-code",
+          nativeSessionId: "cache-history",
+          formatVersion: 1,
+        }),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialUsage?.composerIndicators?.[0]?.expiresAtUnix).toBe(
+        Date.parse("2026-08-01T11:00:00Z") / 1000,
+      );
+    } finally {
+      await adapter.close();
+    }
+  });
+});
 
 describe("Claude Code usage metering", () => {
   const usage = {
@@ -883,6 +1133,8 @@ describe("Claude Code HarnessAdapter", () => {
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
+      // No CLI has reported its init capabilities yet.
+      steer: false,
     });
     const iterator = session.outputs[Symbol.asyncIterator]();
     await expect(
@@ -917,6 +1169,115 @@ describe("Claude Code HarnessAdapter", () => {
     if (configured.ok) await configured.value.close();
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     await session.close();
+  });
+
+  it("declares and accepts native steering only when the CLI confirms steers", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const consuming = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    await session.execute(textTurn("turn-1"));
+    await vi.waitFor(() => expect(transports[0]?.turns).toHaveLength(1));
+    expect(session.capabilities.steer).toBe(true);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+    // Without a running root tool call the steer could run as the next Turn instead.
+    transport.rootToolRunning = false;
+    expect(session.capabilities.steer).toBe(false);
+    transport.rootToolRunning = true;
+    transport.nativeSteer = false;
+    expect(session.capabilities.steer).toBe(false);
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("turn-1"),
+        input: [{ type: "text", text: "not confirmed" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(transport.steers).toHaveLength(0);
+    transport.finish({ status: "succeeded" });
+    await session.close();
+    await consuming;
+    await adapter.close();
+  });
+
+  it("inserts a steer into the active Turn and does not emit a userMessage item", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const consuming = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const started = session.execute(textTurn("turn-1"));
+    await vi.waitFor(() => expect(transports[0]?.turns).toHaveLength(1));
+    await started;
+    const steer = session.execute({
+      type: "turn.steer",
+      turnId: hostTurnIdSchema.parse("turn-1"),
+      input: [{ type: "text", text: "steer this" }],
+    });
+    await vi.waitFor(() => expect(transports[0]?.steers).toHaveLength(1));
+    expect(transports[0]?.steers).toEqual([
+      { text: "steer this", messageId: "claude-id-3", priority: "next" },
+    ]);
+    transports[0]?.recordSteer("claude-id-3");
+    await expect(steer).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(outputs.some(hasUserMessageItem)).toBe(false);
+    await expect(session.execute(textTurn("turn-2"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    expect(transports[0]?.turns).toHaveLength(1);
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("turn-2"),
+        input: [{ type: "text", text: "other" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("turn-1"),
+        input: [{ type: "text", text: "" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    expect(transports[0]?.steers).toHaveLength(1);
+    const late = session.execute({
+      type: "turn.steer",
+      turnId: hostTurnIdSchema.parse("turn-1"),
+      input: [{ type: "text", text: "late" }],
+    });
+    await vi.waitFor(() => expect(transports[0]?.steers).toHaveLength(2));
+    transports[0]?.finish({ status: "succeeded" });
+    // Claude already holds the written input and runs it next, so it is still accepted.
+    transports[0]?.recordSteer("claude-id-4");
+    await expect(late).resolves.toEqual({ ok: true, value: { accepted: true } });
+    await vi.waitFor(() =>
+      expect(
+        outputs.some((output) => output.kind === "event" && output.event.type === "turn.completed"),
+      ).toBe(true),
+    );
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("turn-1"),
+        input: [{ type: "text", text: "idle" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    await session.close();
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("turn-1"),
+        input: [{ type: "text", text: "closed" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    expect(outputs.some(hasUserMessageItem)).toBe(false);
+    await consuming;
+    await adapter.close();
   });
 
   it("omits Auto when no runtime Model explicitly supports it", async () => {
@@ -4178,6 +4539,70 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("holds the Root Turn for an Agent that Claude runs asynchronously without run_in_background", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("launch default async agent"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "subagent.started",
+      operation: "spawn",
+      callId: "call_default_async",
+      description: "Explore",
+      background: false,
+    });
+    await nextEvent(iterator);
+    transport.event({
+      type: "subagent.completed",
+      callId: "call_default_async",
+      isError: false,
+      continuesInBackground: true,
+      nativeSubagentId: "native-default-async",
+      resultSummary: "Async agent launched successfully",
+    });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.delta("started", "root-1");
+    await nextEvent(iterator);
+    transport.event({ type: "message.completed", messageId: "root-1", checkpointId: "root-1" });
+    await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+    await expect(session.execute(textTurn("follow-up"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+
+    transport.event({
+      type: "subagent.settled",
+      nativeSubagentId: "native-default-async",
+      callId: "call_default_async",
+      status: "completed",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.state.changed",
+      nativeSubagentId: "native-default-async",
+      status: "completed",
+    });
+    transport.delta("report", "root-2");
+    expect(await nextEvent(iterator)).toMatchObject({ type: "item.started" });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "item.updated" });
+    transport.event({ type: "message.completed", messageId: "root-2", checkpointId: "root-2" });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "item.completed" });
+    transport.finish({ status: "succeeded" });
+    // The continuation stays on the requested Turn, so its Fork Checkpoint is the report.
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded", checkpoint: { checkpointId: "root-2" } },
+    });
+    await session.close();
+  });
+
   it("emits a reliable File Change immediately after a successful Edit", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -4937,8 +5362,8 @@ describe("Claude Code HarnessAdapter", () => {
       type: "usage.result",
       totalCostUsd: 1.373,
       modelUsage: [
-        { inputTokens: 100, outputTokens: 40 },
-        { inputTokens: 20, outputTokens: 5 },
+        { model: "claude-sonnet-4-6", inputTokens: 100, outputTokens: 40 },
+        { model: "claude-haiku-4-5", inputTokens: 20, outputTokens: 5 },
       ],
       lastRequestUsage: {
         inputTokens: 10,
@@ -4956,6 +5381,65 @@ describe("Claude Code HarnessAdapter", () => {
         outputTokens: 45,
         cacheHitRatePercent: 99,
       },
+    });
+    transport.finish({ status: "succeeded" });
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    expect(transport.getContextUsage).not.toHaveBeenCalled();
+    await session.close();
+  });
+
+  it("projects Context from the Result's context window without an exact refresh", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("result-context"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.event({
+      type: "message.completed",
+      messageId: "assistant-1",
+      lastRequestUsage: {
+        requestId: "request-1",
+        model: "claude-sonnet-4-6",
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 70_000,
+      },
+    });
+    const estimate = await nextEvent(iterator);
+    expect(estimate).toMatchObject({ type: "session.usage.changed" });
+    expect(estimate).not.toHaveProperty("usage.contextWindowTokens");
+
+    transport.event({
+      type: "usage.result",
+      modelUsage: [
+        {
+          model: "claude-haiku-4-5",
+          inputTokens: 900_000,
+          outputTokens: 1,
+          promptTokens: 900_000,
+          contextWindowTokens: 200_000,
+        },
+        {
+          model: "claude-sonnet-4-6",
+          inputTokens: 10,
+          outputTokens: 5,
+          promptTokens: 70_030,
+          contextWindowTokens: 1_000_000,
+        },
+      ],
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { contextUsedTokens: 70_030, contextWindowTokens: 1_000_000 },
     });
     transport.finish({ status: "succeeded" });
     for (;;) {
@@ -5214,7 +5698,7 @@ describe("Claude Code HarnessAdapter", () => {
     transport.event({
       type: "usage.result",
       totalCostUsd: 0.5,
-      modelUsage: [{ inputTokens: 10, outputTokens: 2 }],
+      modelUsage: [{ model: "claude-sonnet-4-6", inputTokens: 10, outputTokens: 2 }],
     });
     expect(await nextEvent(iterator)).toEqual({
       type: "session.usage.changed",
@@ -5325,31 +5809,45 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("drops a malformed plan-limit observation without touching the latest still-applicable Usage", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
+  it.each([
+    { fiveHour: { utilizationPercent: Number.NaN } },
+    { fiveHour: { utilizationPercent: 40, resetsAtUnix: Number.MAX_SAFE_INTEGER } },
+    { sevenDay: { utilizationPercent: 12, resetsAtUnix: Number.MAX_SAFE_INTEGER } },
+  ])(
+    "drops a malformed plan-limit observation without touching the latest still-applicable Usage: %j",
+    async (planLimit) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
 
-    await session.execute(textTurn("plan-malformed"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
+      await session.execute(textTurn("plan-malformed"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
 
-    transport.planLimit({ fiveHour: { utilizationPercent: 30 } });
-    expect(await nextEvent(iterator)).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "plan-malformed",
-      usage: { planFiveHourUsedPercent: 30 },
-    });
+      transport.planLimit({ fiveHour: { utilizationPercent: 30 } });
+      expect(await nextEvent(iterator)).toEqual({
+        type: "session.usage.changed",
+        observedForTurnId: "plan-malformed",
+        usage: { planFiveHourUsedPercent: 30 },
+      });
 
-    transport.planLimit({ fiveHour: { utilizationPercent: Number.NaN } });
-    transport.finish({ status: "succeeded" });
-    expect((await nextEvent(iterator)).type).toBe("item.completed");
-    expect((await nextEvent(iterator)).type).toBe("turn.completed");
-    await session.close();
-  });
+      expect(() => transport.planLimit(planLimit)).not.toThrow();
+      expect(adapter.credits()).toEqual({ usedPercent: 30, periodType: "five_hour" });
+      transport.planLimit({ sevenDay: { utilizationPercent: 12 } });
+      expect(await nextEvent(iterator)).toEqual({
+        type: "session.usage.changed",
+        observedForTurnId: "plan-malformed",
+        usage: { planFiveHourUsedPercent: 30, planSevenDayUsedPercent: 12 },
+      });
+      transport.finish({ status: "succeeded" });
+      expect((await nextEvent(iterator)).type).toBe("item.completed");
+      expect((await nextEvent(iterator)).type).toBe("turn.completed");
+      await session.close();
+    },
+  );
 
   it("has no plan usage on the Adapter before any rate-limit event is observed", () => {
     const { adapter } = fixture();
@@ -6284,6 +6782,7 @@ describe("Claude Code HarnessAdapter", () => {
       readSubagentMessages: async () => [],
       createTransport: () => ({
         sessionId: "claude-id",
+        steer: async () => undefined,
         setAutonomousTurnHandler: () => undefined,
         setIdleTurnHandler: () => undefined,
         setThreadEventHandler: () => undefined,

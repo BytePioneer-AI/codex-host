@@ -221,11 +221,17 @@ export interface RendererSettingsMessages {
   readonly connectionInstallRunning: string;
   readonly harnessVersion: HarnessVersionMessages;
   readonly harnessVersionTitle: string;
+  readonly harnessVersionApplicationTitle: string;
   readonly harnessVersionCurrent: string;
   readonly harnessVersionLatest: string;
   readonly harnessVersionChecking: string;
   readonly harnessVersionAvailable: string;
   readonly harnessVersionUpdate: string;
+  readonly harnessVersionDownloadUpdate: string;
+  readonly harnessUpdateAll: string;
+  readonly harnessUpdateAllProgress: string;
+  readonly harnessUpdateAllDescription: string;
+  readonly harnessUpdateAllResult: string;
   readonly harnessVersionUpdating: string;
   readonly harnessVersionUpToDate: string;
   readonly harnessVersionUpdated: string;
@@ -536,11 +542,17 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "Installing on the selected Host. You can leave this page; login or setup may still be required afterward.",
   harnessVersion: harnessVersionEnglish,
   harnessVersionTitle: "Harness CLI version",
+  harnessVersionApplicationTitle: "Application version",
   harnessVersionCurrent: "Current version",
   harnessVersionLatest: "Latest version",
   harnessVersionChecking: "Checking versions…",
   harnessVersionAvailable: "Update available",
   harnessVersionUpdate: "Update",
+  harnessVersionDownloadUpdate: "Download update",
+  harnessUpdateAll: "Update all",
+  harnessUpdateAllProgress: "Updating",
+  harnessUpdateAllDescription: "Update all eligible Harnesses on the selected Host.",
+  harnessUpdateAllResult: "Updated {succeeded}; failed {failed}.",
   harnessVersionUpdating: "Updating…",
   harnessVersionUpToDate: "Up to date",
   harnessVersionUpdated: "Update verified. New sessions will use the new version.",
@@ -865,11 +877,17 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionInstallRunning: "正在所选 Host 上安装，离开页面不会中断。安装后可能仍需登录或配置。",
   harnessVersion: harnessVersionChinese,
   harnessVersionTitle: "Harness CLI 版本",
+  harnessVersionApplicationTitle: "应用版本",
   harnessVersionCurrent: "当前版本",
   harnessVersionLatest: "最新版本",
   harnessVersionChecking: "正在检查版本…",
-  harnessVersionAvailable: "有新版本",
+  harnessVersionAvailable: "有更新",
   harnessVersionUpdate: "更新",
+  harnessVersionDownloadUpdate: "下载更新",
+  harnessUpdateAll: "全部更新",
+  harnessUpdateAllProgress: "更新中",
+  harnessUpdateAllDescription: "更新当前 Host 上支持自动更新且有新版本的 Harness。",
+  harnessUpdateAllResult: "已更新 {succeeded} 项，{failed} 项失败。",
   harnessVersionUpdating: "正在更新…",
   harnessVersionUpToDate: "已是最新",
   harnessVersionUpdated: "已确认更新成功，新会话将使用新版本。",

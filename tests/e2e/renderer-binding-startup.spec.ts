@@ -1,7 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { decodePiTransportSelection } from "@codexhost/protocol-core";
 import { build } from "esbuild";
 import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import { decodeHarnessPluginRoute, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { createHarnessAdapter } from "@codexhost/adapter-copilot/plugin";
 
 import { tailwindEsbuildPlugin } from "../../packages/renderer-extension/scripts/tailwind-esbuild-plugin.mjs";
 
@@ -29,7 +32,7 @@ const { outputFiles } = await build({
 
       const model = { id: "pi-model-v1.startup" };
       const kiro = globalThis.startupAgent === "kiro-cli";
-      const inspection = {
+      const inspection = globalThis.startupInspection ?? {
         status: "ready",
         catalog: kiro ? parseKiroModelCatalog([{
           id: "model",
@@ -96,16 +99,16 @@ const { outputFiles } = await build({
       globalThis.commandCatalogRequests = [];
       globalThis.appliedConfiguration = null;
       const binding = installRendererBindingProbe({
-        enabledAgents: ["codex", "pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli"],
+        enabledAgents: ["codex", "pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli", ...(globalThis.startupAgent ? [globalThis.startupAgent] : [])],
         defaultAgent: globalThis.startupAgent ?? "pi",
       });
       binding.setAdapter(
         { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
         undefined,
-        (agent, model, thinkingOptionId) => {
-          globalThis.appliedConfiguration = { agent, model, thinkingOptionId };
+        (agent, model, thinkingOptionId, permissionModeId) => {
+          globalThis.appliedConfiguration = { agent, model, thinkingOptionId, ...(permissionModeId ? { permissionModeId } : {}) };
           window.__codexhostHostRoutingV1?.forComposer()?.policy.select(
-            modelSelectionForAgent(null, null, agent, model, thinkingOptionId)?.model ?? null,
+            modelSelectionForAgent(null, null, agent, model, thinkingOptionId, permissionModeId)?.model ?? null,
           );
           return true;
         },
@@ -152,6 +155,10 @@ const { outputFiles } = await build({
         const bridge = {
           sendRequest: async (method, params) => {
             globalThis.threadStartRequests.push({ method, params });
+            if (globalThis.nativeThreadStart) {
+              const result = await globalThis.nativeThreadStart(params, editor.textContent);
+              globalThis.nativeReply = result.text;
+            }
             return { thread: { id: "fixture-thread" } };
           },
           prewarmThreadStart(params) { return this.sendRequest("thread/start", params); },
@@ -187,6 +194,91 @@ const { outputFiles } = await build({
 
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer binding startup E2E bundle was not generated");
+
+test("Copilot preselects Auto and sends without a manual Model choice", async ({ page }) => {
+  test.skip(
+    process.env.CODEXHOST_COPILOT_NATIVE_TEST !== "1",
+    "Requires the installed authenticated Copilot CLI",
+  );
+  test.setTimeout(90_000);
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "copilot-default-send-"));
+  const adapter = createHarnessAdapter({
+    environment: { ...process.env },
+    platform: process.platform,
+    managedRemoteHost: false,
+  });
+  try {
+    const inspection = await adapter.inspect({ cwd, refresh: true });
+    if (inspection.status !== "ready") throw new Error("Copilot inspection unavailable");
+    const initialModel = inspection.catalog.defaultModel;
+    expect(initialModel).toBeDefined();
+    await page.exposeFunction(
+      "nativeThreadStart",
+      async (params: { model: string }, text: string) => {
+        const route = decodeHarnessPluginRoute(params.model);
+        expect(route?.harnessId).toBe("copilot");
+        expect(route?.model).toEqual(initialModel);
+        expect(route?.permissionModeId).toBe("manual");
+        const opened = await adapter.open({
+          kind: "create",
+          cwd,
+          ...(route?.model ? { model: route.model } : {}),
+          ...(route?.permissionModeId ? { permissionModeId: route.permissionModeId } : {}),
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        let terminal: string | undefined;
+        const reading = (async () => {
+          for await (const output of opened.value.outputs) {
+            if (output.kind === "event" && output.event.type === "turn.completed")
+              terminal = output.event.outcome.status;
+          }
+        })();
+        try {
+          expect(
+            (
+              await opened.value.execute({
+                type: "turn.start",
+                turnId: hostTurnIdSchema.parse("default-send"),
+                input: [{ type: "text", text }],
+              })
+            ).ok,
+          ).toBe(true);
+          await expect.poll(() => terminal, { timeout: 60_000 }).toBe("succeeded");
+          const snapshot = await opened.value.readSnapshot();
+          if (!snapshot.ok) throw new Error(snapshot.error.message);
+          return {
+            text: snapshot.value.turns
+              .flatMap((turn) =>
+                turn.items.flatMap(({ item }) => (item.type === "agentMessage" ? [item.text] : [])),
+              )
+              .join("\n"),
+          };
+        } finally {
+          await opened.value.close();
+          await reading;
+        }
+      },
+    );
+    await page.evaluate((inspection) => {
+      Reflect.set(globalThis, "startupAgent", "copilot");
+      Reflect.set(globalThis, "startupInspection", inspection);
+    }, inspection);
+    await page.addScriptTag({ content: browserBundle });
+    await expect(page.getByRole("button", { name: "Model: Auto", exact: true })).toBeEnabled();
+    await page
+      .getByRole("textbox")
+      .fill("Reply exactly AUTO_PRESELECTED_SEND_OK. Do not use tools.");
+    const send = page.locator("[data-codex-composer-root] button[type=submit]");
+    await expect(send).toBeEnabled();
+    await send.click();
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(globalThis, "nativeReply")), { timeout: 60_000 })
+      .toContain("AUTO_PRESELECTED_SEND_OK");
+  } finally {
+    await adapter.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
 
 test("a new conversation shows Harness commands but disables compact before a Thread exists", async ({
   page,
@@ -262,10 +354,10 @@ test("a native Codex draft hides the external Harness command button", async ({ 
 test("a remounted draft keeps explicit Fast through submission, but a new draft starts without it", async ({
   page,
 }) => {
-  await page.route("http://startup.test/", (route) =>
+  await page.route("https://startup.test/", (route) =>
     route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" }),
   );
-  await page.goto("http://startup.test/");
+  await page.goto("https://startup.test/");
   await page.evaluate(() =>
     localStorage.setItem(
       "codexhost.new-thread-preference.v1",
@@ -321,7 +413,7 @@ test("a remounted draft keeps explicit Fast through submission, but a new draft 
   expect(requests).toHaveLength(2);
   for (const request of requests) {
     expect(request.method).toBe("thread/start");
-    expect(decodePiTransportSelection(request.params.model)?.model).toEqual({
+    expect(decodeHarnessPluginRoute(request.params.model)?.model).toEqual({
       id: "pi-model-v1.startup-fast",
     });
   }

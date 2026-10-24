@@ -53,7 +53,7 @@ Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost
 | Pi | 原生 RPC；Model/Thinking、命令、提问、自主 Turn、Fork/跨目录 Fork/Rollback | 不提供会话级 Permission Mode 选择，不可强加其他 Harness 的权限配置 |
 | Claude Code | Agent SDK；审批、提问、Subagent、后台延续、Credits；支持 Fork/Rollback，不支持跨目录 Fork | 原生回调和后台生命周期；macOS 受管远程有专属 Broker 承载 |
 | OMP | 原生 RPC；权限模式、审批与提问、Subagent、后台自主 Turn、跨目录 Fork/Rollback | 权限切换可能重启原生连接；恢复时可能替换不可用 Model，不能复活旧 Thinking |
-| Grok | ACP 加扩展；审批、压缩、Credits、Fork/跨目录 Fork/Rollback | Permission Mode 在 Session 创建时固定，不能通过恢复后的普通配置写入补设 |
+| Grok | ACP 加扩展；审批、压缩、Credits、Fork/跨目录 Fork/Rollback | Permission Mode 可在空闲 Session 中切换；通过原生实际开关与目标 Session 往返确认，缺少确认时关闭 Transport |
 | OpenCode | SDK/Server 事件流；固定 `/compact`、审批、提问、Diff、Fork/Rollback，不支持跨目录 Fork | 原生权限 API 有累加语义，恢复须尊重原生实际状态，不无条件重放旧权限 |
 | DeepSeek Harness | 插件只对接 V4，在 `0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2` 已验证；低于 `0.1.7-rc.1` 的 CLI 明确拒绝，其他 SemVer CLI 可尝试托管 Web 与原生协议；提供控制状态确认、自主 Turn 和导入；Legacy 与 V0/V3 已移除 | V4 日志、Assistant 流、补写的工具结果与限时提问属于原生协议；版本门槛、checkpoint locator、原生状态确认、事件关联与认证须留在插件 |
 | Antigravity | CLI `stream-json`；配置、工具、文件变化投影、Credits；不支持 Fork/Rollback | Adapter 自持历史补充记录及恢复逻辑；不得迁回 Host 或在重构时删除 |
@@ -270,7 +270,7 @@ adapter.open({
 
 `configurationHint` 是设计占位名称，不是现有接口。它不是强制覆盖指令，也不授权提升权限。对应插件须保留自身现有策略：
 
-- Grok 在打开时恢复固定权限基线。
+- Grok 在打开时恢复并确认权限，空闲会话可继续切换；详见[权限模式](../harnesses/grok/permission-modes.md)。
 - OpenCode 尊重原生实际权限，不重放累加设置。
 - OMP 处理实际 Model 回退、权限恢复与必要的连接重启。
 - Claude 等插件接管此前 Host 为其执行的配置恢复步骤。
@@ -443,7 +443,7 @@ Rust 继续拥有原生启动、进程管理、安装与平台集成。若平台
 
 - 每个 Harness 的检查、创建、后续 Turn、恢复、取消、错误和关闭。
 - 所有已支持的工具、Reasoning、Diff、审批、提问及响应。
-- Grok 固定权限在恢复与相关历史操作中保持原义。
+- Grok 的已确认权限在恢复与相关历史操作中保持原义。
 - OpenCode 不错误重放权限；原生配置确认失败不发布虚假状态。
 - OMP Model 回退、缺失 Thinking、权限重启失败恢复、Subagent 和后台自主 Turn。
 - Claude 本地与 Broker 模式的现有行为、交互回调及后台延续。

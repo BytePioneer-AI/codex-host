@@ -24,6 +24,7 @@ import { harnessHasInstallCommands } from "./harness-installation-guides.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
 import { harnessInstallStore } from "./harness-install-store.js";
 import { createConnectionVersions } from "./connection-versions.js";
+import { createConnectionUpdates } from "./connection-updates.js";
 import type { HarnessVersionPanel } from "./harness-version-panel.js";
 import { harnessVersionLabel } from "./harness-version-messages.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -332,14 +333,6 @@ function createConnectionRow(
         : connectionStatusLabel(item.availability, messages, item.error !== null);
 
   const version = item.version;
-  if (version?.state?.updateAvailable && !version.updating) {
-    const available = document.createElement("span");
-    available.className = "settings-connection-version-available";
-    available.textContent = `${messages.harnessVersionAvailable}: ${harnessVersionLabel(version.state, messages.harnessVersion)}`;
-    available.title = `${messages.harnessVersionCurrent}: ${version.state.currentVersion ?? "—"}`;
-    status.append(available);
-  }
-
   const action = document.createElement("div");
   action.className = "settings-connection-row__action";
   action.setAttribute("role", "cell");
@@ -369,6 +362,13 @@ function createConnectionRow(
     });
     action.append(viewError);
   }
+  if (version?.state?.updateAvailable && !version.updating) {
+    const available = document.createElement("span");
+    available.className = "settings-connection-version-available";
+    available.textContent = messages.harnessVersionAvailable;
+    available.title = `${messages.harnessVersionCurrent}: ${version.state.currentVersion ?? "—"}\n${messages.harnessVersionLatest}: ${harnessVersionLabel(version.state, messages.harnessVersion)}`;
+    action.append(available);
+  }
   if (version?.state?.updateAvailable && version.state.canUpdate) {
     const update = document.createElement("button");
     update.type = "button";
@@ -381,7 +381,7 @@ function createConnectionRow(
     update.addEventListener("click", (event) => {
       event.stopPropagation();
       if (update.disabled) return;
-      version.update();
+      void version.update();
       select();
     });
     action.append(update);
@@ -820,6 +820,7 @@ export function createConnectionsSettingsPage(
         scheduleRender,
       );
       const installs = diagnostics ? harnessInstallStore(diagnostics) : null;
+      const updates = createConnectionUpdates(document, messages, context.signal, scheduleRender);
       const runRefresh = (): void => {
         if (pending || !diagnostics) return;
         pending = true;
@@ -1221,7 +1222,14 @@ export function createConnectionsSettingsPage(
 
         const selectedItem = items.find((item) => item.key === selectedItemKey) ?? items[0];
         if (selectedItem) selectItem(selectedItem);
-        list.append(hostStrip, tableHeader, rows);
+        const updateControls = updates.createControls(
+          selectedHost.hostId,
+          items.flatMap((item) => (item.version ? [item.version] : [])),
+        );
+        const hostHeader = document.createElement("div");
+        hostHeader.className = "settings-connection-host-header";
+        hostHeader.append(hostStrip, updateControls.button);
+        list.append(hostHeader, updateControls.result, tableHeader, rows);
         layout.append(list, inspector);
         content.replaceChildren(layout);
         disposeHostScroller = configureHostScroller(

@@ -11,6 +11,7 @@ export { validateHostInteractionResponse } from "./interaction.js";
 export { HarnessOutputChannel } from "./output-channel.js";
 export { sanitizeDiagnosticTail, filterAmbientNodeWarnings } from "./diagnostics.js";
 export { validateHostQuestionResponse } from "./question.js";
+export { unsupportedSteer } from "./steer.js";
 export { hostDerivedUsageFields, parseHostUsage, parseHostUsageRequest } from "./usage.js";
 export type { HostUsage, HostUsageCostSource, HostUsageRequest } from "./usage.js";
 export type {
@@ -73,6 +74,7 @@ export type {
   HostQuestionInteraction,
   HostQuestionResponse,
   HostReasoningItem,
+  HostUserMessageItem,
   HostSubagentDelegationItem,
   HostSubagentState,
   HostSubagentStatus,
@@ -109,6 +111,8 @@ export type {
   TurnCompletedEvent,
   TurnCancelAccepted,
   TurnCancelCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,

@@ -1,3 +1,5 @@
+import { loadCodexNativeServices } from "./codex-native-services.js";
+
 const GET_LOCALE_OVERRIDE_URL = "vscode://codex/get-setting";
 const GET_LOCALE_INFO_URL = "vscode://codex/locale-info";
 const SET_LOCALE_OVERRIDE_URL = "vscode://codex/set-setting";
@@ -13,6 +15,20 @@ interface ElectronLocaleWindow extends Window {
 
 interface LocaleOverrideResponse {
   value: string | null;
+}
+
+interface NativeLocaleServices {
+  appInfo: { getLocaleInfo(): Promise<unknown> };
+}
+
+function isNativeLocaleServices(value: unknown): value is NativeLocaleServices {
+  if (!isRecord(value) || !Object.hasOwn(value, "appInfo")) return false;
+  const appInfo = value.appInfo;
+  // Native RPC stubs may be callable proxies rather than plain objects.
+  return (
+    appInfo != null &&
+    typeof (appInfo as NativeLocaleServices["appInfo"]).getLocaleInfo === "function"
+  );
 }
 
 interface LocaleInfoResponse {
@@ -129,7 +145,7 @@ function sendFixedLocaleRequest(
   timeoutMs: number,
 ): Promise<unknown> {
   const bridge = (ownerWindow as ElectronLocaleWindow).electronBridge;
-  if (typeof bridge?.sendMessageFromView !== "function") {
+  if (request.kind !== "locale-info" && typeof bridge?.sendMessageFromView !== "function") {
     return Promise.reject(new Error("Codex locale bridge is unavailable"));
   }
   if (signal?.aborted) return Promise.reject(abortError());
@@ -185,13 +201,21 @@ function sendFixedLocaleRequest(
       ...(request.body === undefined ? {} : { body: request.body }),
       reportUploadProgress: false,
     };
-    try {
-      Promise.resolve(bridge.sendMessageFromView(message)).catch((error: unknown) => {
-        settle(() => reject(error));
-      });
-    } catch (error) {
-      settle(() => reject(error));
-    }
+    void (async () => {
+      if (request.kind === "locale-info") {
+        const native = await loadCodexNativeServices(ownerWindow, isNativeLocaleServices);
+        if (settled) return;
+        if (native) {
+          const response = await native.appInfo.getLocaleInfo();
+          settle(() => resolve(response));
+          return;
+        }
+      }
+      if (typeof bridge?.sendMessageFromView !== "function") {
+        throw new Error("Codex locale bridge is unavailable");
+      }
+      await bridge.sendMessageFromView(message);
+    })().catch((error: unknown) => settle(() => reject(error)));
   });
 }
 

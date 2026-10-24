@@ -31,8 +31,11 @@ import type {
   TurnCancelCommand,
   TurnStartAccepted,
   TurnStartCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
@@ -1199,6 +1202,7 @@ export class QoderSession implements HarnessSession {
   }
 
   async execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  async execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   async execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   async execute(
     command: InteractionRespondCommand,
@@ -1217,6 +1221,8 @@ export class QoderSession implements HarnessSession {
     }
 
     switch (command.type) {
+      case "turn.steer":
+        return unsupportedSteer("Qoder");
       case "turn.start": {
         if (this.#activeTurn) {
           return {

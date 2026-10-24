@@ -132,6 +132,60 @@ describe("Codex UI projector", () => {
     ).toMatchObject([{ type: "userMessage" }]);
   });
 
+  it("keeps steered input inside its Turn, tagged for Desktop only while live", () => {
+    const steered = {
+      type: "userMessage" as const,
+      itemId: itemId("steer-1"),
+      input: [{ type: "text" as const, text: "also run the tests" }],
+    };
+    const live = projector();
+    live.project({ type: "turn.started", turnId });
+    live.bindUserMessageClientId(steered.itemId, "desktop-message");
+    const started = live.project({ type: "item.started", turnId, item: steered });
+    expect(started.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          turnId,
+          item: { id: "steer-1", type: "userMessage", clientId: "desktop-message" },
+        },
+      },
+    ]);
+    live.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: steered, outcome: { status: "succeeded" } },
+    });
+    expect(live.pendingTurn().items).toContainEqual(
+      expect.objectContaining({ id: "steer-1", clientId: "desktop-message" }),
+    );
+
+    const historical = projectHistoricalTurn({
+      turnId,
+      cwd: "/workspace",
+      snapshot: {
+        nativeTurnRef: nativeTurnRefSchema.parse({
+          harnessId: "pi",
+          nativeSessionId: "native",
+          nativeTurnKey: "user",
+          formatVersion: 1,
+        }),
+        input: [{ type: "text", text: "start" }],
+        items: [{ item: steered, outcome: { status: "succeeded" } }],
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(historical.items).toEqual([
+      expect.objectContaining({ type: "userMessage", id: "turn-1-user" }),
+      {
+        id: "steer-1",
+        type: "userMessage",
+        clientId: null,
+        content: [{ type: "text", text: "also run the tests", text_elements: [] }],
+      },
+    ]);
+  });
+
   it("does not invent historical duration from invalid native timing", () => {
     const snapshot: HostThreadSnapshot["turns"][number] = {
       nativeTurnRef: nativeTurnRefSchema.parse({

@@ -475,6 +475,19 @@ function projectSubagentActivities(
   });
 }
 
+/** `clientId` lets Desktop settle its optimistic steering message for this input. */
+function projectUserMessage(
+  item: Extract<HostItem, { type: "userMessage" }>,
+  clientId: string | null,
+): JsonObject {
+  return {
+    id: item.itemId,
+    type: "userMessage",
+    clientId,
+    content: item.input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+  };
+}
+
 function projectItem(
   item: HostItem,
   outcome: HostItemOutcome | null,
@@ -482,6 +495,8 @@ function projectItem(
   includeCommandOutput = true,
 ): JsonObject {
   switch (item.type) {
+    case "userMessage":
+      return projectUserMessage(item, null);
     case "agentMessage":
       return {
         id: item.itemId,
@@ -731,6 +746,7 @@ export class CodexTurnProjector {
   readonly #interactions = new Map<HostInteractionId, ProjectedInteraction>();
   readonly #items = new Map<HostItemId, ProjectedItem>();
   readonly #wireItemOrder: HostItemId[] = [];
+  readonly #userMessageClientIds = new Map<HostItemId, string>();
   readonly #startedAt: number;
   readonly #startedAtMs: number;
   readonly #threadId: string;
@@ -782,6 +798,11 @@ export class CodexTurnProjector {
     return items;
   }
 
+  /** Associate steered input with the Desktop message that submitted it, before it is published. */
+  bindUserMessageClientId(itemId: HostItemId, clientId: string): void {
+    this.#userMessageClientIds.set(itemId, clientId);
+  }
+
   pendingTurn(startedAt: number | null = null): JsonObject {
     return {
       id: this.#turnId,
@@ -791,6 +812,7 @@ export class CodexTurnProjector {
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
           if (!projected?.wireStarted) return [];
+          if (projected.item.type === "userMessage") return [this.#projectItem(projected.item)];
           if (projected.item.type === "agentMessage") {
             return [projectItem(projected.item, projected.outcome, this.#cwd)];
           }
@@ -1187,7 +1209,7 @@ export class CodexTurnProjector {
     }
     const messages = [
       completedItem(
-        projectItem(projected.item, projected.outcome, this.#cwd, !projected.streamedCommandOutput),
+        this.#projectItem(projected.item, projected.outcome, !projected.streamedCommandOutput),
       ),
     ];
     if (projected.item.type === "reasoning") {
@@ -1265,6 +1287,7 @@ export class CodexTurnProjector {
               ),
             ];
           }
+          if (projected.item.type === "userMessage") return [this.#projectItem(projected.item)];
           if (projected.item.type === "agentMessage") {
             return [projectItem(projected.item, projected.outcome, this.#cwd)];
           }
@@ -1381,9 +1404,19 @@ export class CodexTurnProjector {
         threadId: this.#threadId,
         turnId: this.#turnId,
         startedAtMs,
-        item: projectItem(item, null, this.#cwd),
+        item: this.#projectItem(item, null),
       },
     };
+  }
+
+  #projectItem(
+    item: HostItem,
+    outcome: HostItemOutcome | null = null,
+    includeCommandOutput = true,
+  ): JsonObject {
+    return item.type === "userMessage"
+      ? projectUserMessage(item, this.#userMessageClientIds.get(item.itemId) ?? null)
+      : projectItem(item, outcome, this.#cwd, includeCommandOutput);
   }
 
   #startReasoningTranscript(

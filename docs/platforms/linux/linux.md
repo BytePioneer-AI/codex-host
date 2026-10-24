@@ -25,6 +25,8 @@ Renderer integration failures are recovered in the background and do not display
 
 codexhost refuses to take over an independently running ChatGPT App. Quit ChatGPT completely before launching codexhost. A managed launch starts the verified Desktop executable directly and supervises it through `/proc`; stock ChatGPT launches still use the official launcher. Shutdown signals are sent only after PID, start time, and executable identity are revalidated.
 
+When an active Wayland session is detected (such as when `WAYLAND_DISPLAY` is present), managed launches automatically append `--ozone-platform=wayland`, `--enable-wayland-ime`, and `--wayland-text-input-version=3` so IME candidate windows (such as Fcitx5) render with native Wayland transparency instead of opaque black borders under XWayland. To opt out, set `CODEXHOST_DISABLE_WAYLAND=1` (for example, `CODEXHOST_DISABLE_WAYLAND=1 codexhost`).
+
 ## Diagnosis
 
 ```bash

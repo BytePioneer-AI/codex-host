@@ -1,5 +1,6 @@
 import type { VoiceSettingsRequestClient } from "./settings/voice-page.js";
 import type { RendererUsageStatisticsRequest } from "./console/pages/usage-statistics.js";
+import type { RendererUsageStatisticsHostsProvider } from "./console/usage/usage-hosts.js";
 import type { RemoteConnectionsControl } from "./remote-connections-control.js";
 import type { LoadedSessionsClient } from "./settings/loaded-sessions-table.js";
 import { readCodexLocaleSettings, type CodexLocaleSettings } from "./codex-locale-adapter.js";
@@ -36,6 +37,8 @@ export interface RendererSettingsLifecycleOptions {
   getRemoteConnections?(): RemoteConnectionsControl | null;
   requestUsageStatistics?: RendererUsageStatisticsRequest;
   requestVoiceSettings?: VoiceSettingsRequestClient;
+  /** Machines the usage statistics page may read besides the local Host. */
+  usageStatisticsHosts?: RendererUsageStatisticsHostsProvider;
   openImportedThread?: RendererImportedThreadOpener;
   onLocaleChange?(locale: RendererSettingsLocale): void;
 }
@@ -85,6 +88,7 @@ export function installRendererSettingsLifecycle(
       options.getLoadedSessionsClient ?? (() => null),
       options.getRemoteConnections ?? (() => null),
       options.requestUsageStatistics,
+      options.usageStatisticsHosts,
       options.requestVoiceSettings,
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {

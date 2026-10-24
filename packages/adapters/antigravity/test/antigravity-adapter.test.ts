@@ -1510,6 +1510,101 @@ setTimeout(() => { process.exit(0); }, 50);
       }
     });
 
+    it("does not fail a replied Turn that only repeats an earlier Turn's native error", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-sticky-error-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-sticky-error-cwd-"));
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      const stale =
+        'request failed: Post "https://example.invalid/stream": proxyconnect tcp: connection refused';
+      const runsDir = path.join(directory, "runs");
+      // agy repeats the Conversation's first failure in every later result.
+      const results = [
+        { status: "ERROR", error: stale, num_turns: 1 },
+        { status: "ERROR", error: stale, num_turns: 2, response: "1\n" },
+        { status: "ERROR", error: "Individual quota reached.", num_turns: 3, response: "2\n" },
+        // no new reply: the response only carries the earlier Turn's
+        { status: "ERROR", error: stale, num_turns: 4, response: "2\n" },
+      ];
+      const scriptContent = `
+const fs = require('fs');
+const path = require('path');
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (!process.argv.includes("--input-format")) process.exit(0);
+const runsDir = ${JSON.stringify(runsDir)};
+fs.mkdirSync(runsDir, { recursive: true });
+const count = fs.readdirSync(runsDir).length;
+fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), "");
+const result = ${JSON.stringify(results)}[count];
+process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-sticky", init: { permission_mode: "default" } }) + "\\n");
+process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-sticky", ...result } }) + "\\n");
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const outcomes: unknown[] = [];
+        const agentMessageTurns: string[] = [];
+        for (const [index, text] of ["fails", "print:1", "print:2", "fails again"].entries()) {
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse(`turn-sticky-${String(index + 1)}`),
+            input: [{ type: "text", text }],
+          });
+          while (true) {
+            const event = await nextEvent(iterator);
+            if (event.type === "item.started" && event.item.type === "agentMessage") {
+              agentMessageTurns.push(event.turnId);
+            }
+            if (event.type === "turn.completed") {
+              outcomes.push(event.outcome);
+              break;
+            }
+          }
+        }
+        // the fourth Turn added no reply, so it must not get an agent message
+        expect(agentMessageTurns).toEqual(["turn-sticky-2", "turn-sticky-3"]);
+        expect(outcomes[0]).toMatchObject({
+          status: "failed",
+          error: { message: `Antigravity Turn ended with status ERROR: ${stale}` },
+        });
+        expect(outcomes[1]).toMatchObject({ status: "succeeded" });
+        expect(outcomes[2]).toMatchObject({
+          status: "failed",
+          error: { message: "Antigravity Turn ended with status ERROR: Individual quota reached." },
+        });
+        expect(outcomes[3]).toMatchObject({
+          status: "failed",
+          error: { message: `Antigravity Turn ended with status ERROR: ${stale}` },
+        });
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
     it("dynamically switches between Gemini (1M) and Claude (200k) models within the same session", async () => {
       const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-model-switch-"));
       const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-model-switch-cwd-"));

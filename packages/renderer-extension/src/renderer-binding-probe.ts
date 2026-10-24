@@ -103,6 +103,7 @@ import {
   routeRendererHarnessCommandSelection,
 } from "./renderer-harness-command-claim.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
+import { createRendererUsageStatisticsSource } from "./renderer-usage-statistics-source.js";
 import {
   installRendererDelegationMention,
   type RendererDelegationMentionControl,
@@ -820,6 +821,11 @@ export function installRendererBindingProbe(
     return route.manager.sendRequest(method, params);
   };
   const stopVoiceSync = startVoiceSettingsSync(window, requestLocalSettings);
+  const usageStatistics = createRendererUsageStatisticsSource({
+    routing: () => window.__codexhostHostRoutingV1,
+    listConnections: () => remoteConnections.ssh.list(),
+    disposed: () => disposed,
+  });
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     requestVoiceSettings: (params) => requestLocalSettings("codexhost/voice/settings", params),
     getRemoteConnections: () => remoteConnections,
@@ -827,11 +833,8 @@ export function installRendererBindingProbe(
     getAccountClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,
     getLoadedSessionsClient: () => modelClientForHost("local"),
-    async requestUsageStatistics(method, params) {
-      const route = window.__codexhostHostRoutingV1?.forHost("local");
-      if (disposed || !route) throw new Error("Local Host connection is unavailable");
-      return route.manager.sendRequest(method, params);
-    },
+    requestUsageStatistics: usageStatistics.request,
+    usageStatisticsHosts: usageStatistics.hosts,
     getSessionImportClient: () => {
       const client = modelClientForHost("local");
       const sources = client?.listSessionImportSources;
@@ -958,9 +961,11 @@ export function installRendererBindingProbe(
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
     const state = controller.recordSubmission(composer);
+    // Follow-ups in an existing Thread must not change which Agent a new Thread starts with.
+    const createsThread = state.phase === "draft";
     const preferenceStorage = rendererNewThreadPreferenceStorage(activeModelHostId(composer));
-    writeNewThreadAgentPreference(state.agent, preferenceStorage);
-    if (state.agent !== "codex") {
+    if (createsThread) writeNewThreadAgentPreference(state.agent, preferenceStorage);
+    if (createsThread && state.agent !== "codex") {
       const model = controller.modelForAgent(composer, state.agent);
       if (model) {
         writeNewThreadExternalConfigurationPreference(

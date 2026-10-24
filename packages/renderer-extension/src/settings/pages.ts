@@ -1,6 +1,7 @@
 import { createVoiceSettingsPage, type VoiceSettingsRequestClient } from "./voice-page.js";
 import {
   createUsageStatisticsPage,
+  type RendererUsageStatisticsHostsProvider,
   type RendererUsageStatisticsRequest,
 } from "../console/pages/usage-statistics.js";
 import { consoleMessages } from "../console/messages.js";
@@ -698,6 +699,7 @@ export function createDefaultRendererSettingsPages(
   getRemoteConnections: () => RemoteConnectionsControl | null = () => null,
   requestUsageStatistics: RendererUsageStatisticsRequest = () =>
     Promise.reject(new Error("Local Host connection is unavailable")),
+  usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
   requestVoiceSettings: VoiceSettingsRequestClient = () =>
     Promise.reject(new Error("Local Host connection is unavailable")),
 ): readonly RendererSettingsPageDefinition[] {
@@ -715,6 +717,7 @@ export function createDefaultRendererSettingsPages(
       consoleMessages(messages.locale),
       requestUsageStatistics,
       messages.locale,
+      usageStatisticsHosts,
     ),
     createAppearanceSettingsPage(messages, getLoadedSessionsClient),
     createVoiceSettingsPage(messages.locale, requestVoiceSettings, { desktop: true }),
@@ -731,6 +734,7 @@ export function createDefaultRendererSettingsRegistry(
   getSessionImportClient: () => RendererSessionImportClient | null = () => null,
   openImportedThread?: RendererImportedThreadOpener,
   requestUsageStatistics?: RendererUsageStatisticsRequest,
+  usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
     createDefaultRendererSettingsPages(
@@ -743,6 +747,7 @@ export function createDefaultRendererSettingsRegistry(
       undefined,
       undefined,
       requestUsageStatistics,
+      usageStatisticsHosts,
     ),
   );
 }

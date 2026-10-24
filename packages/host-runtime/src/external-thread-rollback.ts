@@ -232,6 +232,18 @@ export async function executeExternalThreadRollback(input: {
   if (derived.running) {
     return { ok: false, error: { code: -32072, message: "External Thread has an active Turn" } };
   }
+  // Native history may have split a steered Turn that Desktop still shows whole. Only the undone
+  // Turns matter: Turns after a split still map one-to-one to native Turns.
+  const undone = derived.record.turnMappings.slice(-rollback.numTurns);
+  if (undone.some((mapping) => derived.steeredTurnIds.has(mapping.hostTurnId))) {
+    return {
+      ok: false,
+      error: {
+        code: -32080,
+        message: "A Turn here took steered input; reopen the Thread before undoing Turns",
+      },
+    };
+  }
   const refreshError = await runtime.refresh(derived);
   if (refreshError) return { ok: false, error: refreshError };
   if (

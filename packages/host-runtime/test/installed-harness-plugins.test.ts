@@ -15,6 +15,7 @@ const sourceRuntimeUrl = pathToFileURL(path.resolve("packages/host-runtime/dist/
 const pluginRoot = path.resolve("packages/host-runtime/dist/plugins");
 const classes = {
   pi: "PiAdapter",
+  copilot: "CopilotAdapter",
   "claude-code": "ClaudeCodeAdapter",
   "deepseek-harness": "DeepSeekHarnessAdapter",
   opencode: "OpenCodeAdapter",
@@ -101,6 +102,7 @@ describe("installed Harness composition", () => {
 
   it("provides every built-in command catalog before inspection or Session creation", async () => {
     const expected = {
+      copilot: [],
       codebuddy: ["/compact", "/cost"],
       workbuddy: ["/compact", "/init"],
       "cursor-cli": ["/copy-request-id"],
@@ -151,6 +153,7 @@ describe("installed Harness composition", () => {
   }, 35_000);
 
   it.each([
+    ["copilot", "CODEXHOST_COPILOT_COMMAND"],
     ["pi", "CODEXHOST_PI_COMMAND"],
     ["claude-code", "CODEXHOST_CLAUDE_COMMAND"],
     ["grok", "CODEXHOST_GROK_COMMAND"],

@@ -1577,7 +1577,7 @@ describe("OMP Adapter Subagents", () => {
     await adapter.close();
   });
 
-  it("materializes a background Subagent that starts after the parent Turn is idle", async () => {
+  it("reports idle Subagent notifications without inventing a Root Turn", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
       createTransport: (options: OmpRpcSessionOptions) => {
@@ -1597,6 +1597,16 @@ describe("OMP Adapter Subagents", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    const beforeBackground = await opened.value.readSnapshot();
+    expect(beforeBackground.ok).toBe(true);
+    const parentCompletion = observed.find(
+      (output) => output.kind === "event" && output.event.type === "turn.completed",
+    );
+    expect(parentCompletion).toMatchObject({
+      event: { nativeTurnRef: { nativeTurnKey: "user-1" } },
+    });
+    expect(parentCompletion).not.toHaveProperty("event.ephemeral");
+
     transport.onSubagentEvent?.({
       type: "subagent.started",
       callId: "background-tool",
@@ -1613,22 +1623,12 @@ describe("OMP Adapter Subagents", () => {
       )
       .map((output) => output.event);
     const autonomous = startedEvents.find((event) => event.type === "turn.autonomous.started");
-    expect(autonomous).toMatchObject({ type: "turn.autonomous.started" });
-    expect(startedEvents).toContainEqual(
-      expect.objectContaining({
-        type: "item.started",
-        item: expect.objectContaining({
-          type: "subagentDelegation",
-          subagents: [
-            expect.objectContaining({
-              nativeSubagentId: "background-subagent",
-              status: "running",
-              background: true,
-            }),
-          ],
-        }),
-      }),
-    );
+    expect(autonomous).toBeUndefined();
+    expect(startedEvents).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: "background-subagent",
+      status: "running",
+    });
 
     transport.onSubagentEvent?.({
       type: "subagent.completed",
@@ -1643,23 +1643,19 @@ describe("OMP Adapter Subagents", () => {
         (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
       )
       .map((output) => output.event);
-    expect(completedEvents).toContainEqual(
-      expect.objectContaining({
-        type: "item.completed",
-        snapshot: expect.objectContaining({
-          item: expect.objectContaining({
-            type: "subagentDelegation",
-            subagents: [expect.objectContaining({ status: "completed" })],
-          }),
-        }),
-      }),
-    );
-    expect(completedEvents.some((event) => event.type === "turn.completed")).toBe(true);
+    expect(completedEvents).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: "background-subagent",
+      status: "completed",
+      resultSummary: "finished in background",
+    });
+    expect(completedEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(await opened.value.readSnapshot()).toEqual(beforeBackground);
     await opened.value.close();
     await adapter.close();
   });
 
-  it("keeps an autonomous Turn open until all background Subagents settle", async () => {
+  it("keeps idle notifications from multiple Subagents out of Root history", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
       createTransport: (options: OmpRpcSessionOptions) => {
@@ -1711,11 +1707,14 @@ describe("OMP Adapter Subagents", () => {
           event.type === "turn.autonomous.started",
       )
       .map((event) => event.turnId);
-    expect(
-      afterFirst.filter(
-        (event) => event.type === "turn.completed" && autonomousTurnIds.includes(event.turnId),
-      ),
-    ).toHaveLength(0);
+    expect(autonomousTurnIds).toEqual([]);
+    expect(afterFirst).toContainEqual(
+      expect.objectContaining({
+        type: "subagent.state.changed",
+        nativeSubagentId: "background-subagent-1",
+        status: "completed",
+      }),
+    );
     transport.onSubagentEvent?.({
       type: "subagent.completed",
       callId: "background-tool-2",
@@ -1724,16 +1723,22 @@ describe("OMP Adapter Subagents", () => {
       resultSummary: "failed",
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const completed = observed
+    const events = observed
       .filter(
         (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
       )
-      .map((output) => output.event)
-      .filter(
-        (event) => event.type === "turn.completed" && autonomousTurnIds.includes(event.turnId),
-      );
-    expect(completed).toHaveLength(1);
-    expect(completed[0]).toMatchObject({ outcome: { status: "failed" } });
+      .map((output) => output.event);
+    expect(events.filter((event) => event.type === "turn.autonomous.started")).toHaveLength(0);
+    expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(observed).toContainEqual({
+      kind: "event",
+      event: {
+        type: "subagent.state.changed",
+        nativeSubagentId: "background-subagent-2",
+        status: "failed",
+        resultSummary: "failed",
+      },
+    });
     await opened.value.close();
     await adapter.close();
   });

@@ -24,6 +24,7 @@ import {
   type HarnessSession,
   type HarnessSessionCapabilities,
   type HarnessSessionState,
+  type HarnessUsageStatisticsCapability,
   type InspectHarnessInput,
   type HostAgentMessageItem,
   type HostCommand,
@@ -94,6 +95,7 @@ import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js
 import { AntigravityQuestionBridge } from "./question-bridge.js";
 import { AntigravitySubagents } from "./subagents.js";
 import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
+import { createAntigravityUsageStatistics } from "./usage-statistics.js";
 import {
   antigravityToolErrorMessage,
   isAntigravityPermissionDenial,
@@ -1438,6 +1440,7 @@ function historySubagentState(
 export class AntigravityAdapter implements HarnessAdapter {
   readonly commandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
   readonly harnessId: HarnessId = antigravityHarnessId;
+  readonly usageStatistics: HarnessUsageStatisticsCapability;
   readonly subagents = {
     readSnapshot: async (input: {
       parent: NativeSessionRef;
@@ -1494,6 +1497,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   constructor(options: AntigravityAdapterOptions = {}) {
     this.#command = options.command;
     this.#environment = options.environment ?? process.env;
+    this.usageStatistics = createAntigravityUsageStatistics(this.#environment);
     this.#inspectTimeoutMs = options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS;
     this.#printTimeout = options.printTimeout ?? DEFAULT_PRINT_TIMEOUT;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;

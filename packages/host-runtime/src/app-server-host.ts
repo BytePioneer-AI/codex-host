@@ -4319,7 +4319,7 @@ export class AppServerHost {
     const result = await executeExternalThreadRollback({
       derived: thread,
       rollback: { threadId: revert.threadId, numTurns: 1 },
-      expectedLastTurnId: revert.beforeTurnId,
+      revertBeforeTurnId: revert.beforeTurnId,
       adapters: this.#externalAdapters,
       repository: this.#repository,
       runtime: this.#externalRuntime,

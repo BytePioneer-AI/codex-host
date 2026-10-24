@@ -754,7 +754,7 @@ export class MappingStore {
         !current.nativeSessionRef ||
         current.revision !== input.expectedRevision ||
         !sameJson(current.nativeSessionRef, input.expectedNativeSessionRef) ||
-        input.turnMappings.length !== current.turnMappings.length - 1 ||
+        input.turnMappings.length >= current.turnMappings.length ||
         input.turnMappings.some(
           ({ hostTurnId }, index) => hostTurnId !== current.turnMappings[index]?.hostTurnId,
         )

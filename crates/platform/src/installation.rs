@@ -20,6 +20,10 @@ use windows::Management::Deployment::PackageManager;
 #[cfg(target_os = "windows")]
 use windows::core::HSTRING;
 
+#[cfg(not(target_os = "linux"))]
+use super::CodexCliOverride;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use super::CodexCliSource;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::DesktopIdentity;
 #[cfg(not(target_os = "linux"))]
@@ -29,6 +33,8 @@ use super::PlatformError;
 use super::WindowsAppxActivationIdentity;
 #[cfg(target_os = "windows")]
 use super::canonical_existing_file;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use super::codex_cli::select_codex_cli;
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 pub(super) fn sha256_file(path: &Path) -> Result<String, PlatformError> {
@@ -268,9 +274,19 @@ fn find_desktop_cli_cache(local_app_data: &Path) -> Result<Option<PathBuf>, Plat
 }
 
 #[cfg(target_os = "windows")]
+#[cfg(test)]
 fn windows_installation(
     details: WindowsPackageDetails,
     local_app_data: &Path,
+) -> Result<DesktopInstallation, PlatformError> {
+    windows_installation_with_cli(details, || Ok(local_app_data.to_path_buf()), None)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_installation_with_cli(
+    details: WindowsPackageDetails,
+    local_app_data: impl FnOnce() -> Result<PathBuf, PlatformError>,
+    selected_cli: Option<&CodexCliOverride>,
 ) -> Result<DesktopInstallation, PlatformError> {
     let install_root = details.install_root.canonicalize().map_err(|error| {
         PlatformError::NotFound(format!(
@@ -281,20 +297,31 @@ fn windows_installation(
     let desktop_executable = install_root.join("app/ChatGPT.exe");
     let packaged_codex_cli = install_root.join("app/resources/codex.exe");
     let asar_path = install_root.join("app/resources/app.asar");
-    if !desktop_executable.is_file() || !packaged_codex_cli.is_file() || !asar_path.is_file() {
+    if !desktop_executable.is_file() || !asar_path.is_file() {
         return Err(PlatformError::NotFound(format!(
-            "Codex Desktop package '{}' does not contain the required executable, CLI, and app.asar resources",
+            "Codex Desktop package '{}' does not contain the required executable and app.asar resources",
             install_root.display()
         )));
     }
     // WindowsApps resources are not directly executable by a normal desktop
     // process. Use any Desktop-managed CLI copy, without requiring it to match
     // the bundled CLI byte-for-byte or by version.
-    let executable_codex_cli = find_desktop_cli_cache(local_app_data)?.ok_or_else(|| {
-        PlatformError::NotFound(
-            "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
-        )
-    })?;
+    let (executable_codex_cli, codex_cli_source) = select_codex_cli(
+        selected_cli,
+        CodexCliSource::DesktopManagedCache,
+        || {
+            if !packaged_codex_cli.is_file() {
+                return Err(PlatformError::NotFound(
+                    "packaged Codex CLI is unavailable".into(),
+                ));
+            }
+            find_desktop_cli_cache(&local_app_data()?)?.ok_or_else(|| {
+                PlatformError::NotFound(
+                    "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
+                )
+            })
+        },
+    )?;
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::WindowsPackage {
@@ -310,6 +337,7 @@ fn windows_installation(
         desktop_executable,
         packaged_codex_cli,
         executable_codex_cli,
+        codex_cli_source,
     })
 }
 
@@ -425,8 +453,15 @@ mod desktop_managed_cli_tests {
 
 #[cfg(target_os = "windows")]
 pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
+    discover_codex_desktop_with_cli(None)
+}
+
+#[cfg(target_os = "windows")]
+pub fn discover_codex_desktop_with_cli(
+    selected_cli: Option<&CodexCliOverride>,
+) -> Result<DesktopInstallation, PlatformError> {
     if let Some(details) = probe_package_details(env::var_os)? {
-        return windows_installation(details, &windows_local_app_data()?);
+        return windows_installation_with_cli(details, windows_local_app_data, selected_cli);
     }
     // A portable installation - an MSIX that was extracted rather than
     // installed - registers no AppX package, so the PackageManager lookup below
@@ -434,10 +469,10 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     // keeps every entry point working, including the argument-less `codexhost`
     // and `codexhost inspect`.
     if let Some(root) = custom_install_root(env::var_os) {
-        return discover_codex_desktop_from_root(&root);
+        return discover_codex_desktop_from_root_with_cli(&root, selected_cli);
     }
     let details = discover_installed_windows_package()?;
-    windows_installation(details, &windows_local_app_data()?)
+    windows_installation_with_cli(details, windows_local_app_data, selected_cli)
 }
 
 /// Best-effort read of the packaged Desktop version from `AppxManifest.xml`.
@@ -477,6 +512,14 @@ fn portable_package_version(package_root: &Path) -> Option<String> {
 pub fn discover_codex_desktop_from_root(
     install_root: &Path,
 ) -> Result<DesktopInstallation, PlatformError> {
+    discover_codex_desktop_from_root_with_cli(install_root, None)
+}
+
+#[cfg(target_os = "windows")]
+pub fn discover_codex_desktop_from_root_with_cli(
+    install_root: &Path,
+    selected_cli: Option<&CodexCliOverride>,
+) -> Result<DesktopInstallation, PlatformError> {
     let supplied_root = install_root.canonicalize().map_err(|error| {
         PlatformError::NotFound(format!(
             "Codex Desktop directory '{}' is unavailable: {error}",
@@ -501,13 +544,16 @@ pub fn discover_codex_desktop_from_root(
     let desktop_executable = app_root.join("ChatGPT.exe");
     let packaged_codex_cli = app_root.join("resources/codex.exe");
     let asar_path = app_root.join("resources/app.asar");
-    if !packaged_codex_cli.is_file() || !asar_path.is_file() {
+    if !asar_path.is_file() {
         return Err(PlatformError::NotFound(format!(
-            "Codex Desktop directory '{}' does not contain the required codex.exe and app.asar resources beside ChatGPT.exe",
+            "Codex Desktop directory '{}' does not contain the required app.asar resource beside ChatGPT.exe",
             supplied_root.display()
         )));
     }
-    let executable_codex_cli = packaged_codex_cli.clone();
+    let (executable_codex_cli, codex_cli_source) =
+        select_codex_cli(selected_cli, CodexCliSource::Packaged, || {
+            canonical_existing_file(&packaged_codex_cli)
+        })?;
 
     let version = portable_package_version(&package_root).unwrap_or_else(|| "0.0.0.0".to_owned());
 
@@ -525,6 +571,7 @@ pub fn discover_codex_desktop_from_root(
         desktop_executable,
         packaged_codex_cli,
         executable_codex_cli,
+        codex_cli_source,
     })
 }
 
@@ -534,6 +581,56 @@ mod windows_tests {
     use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn explicit_cli_skips_packaged_cli_and_desktop_cache_requirements() {
+        let root = crate::temporary_directory("windows-external-cli");
+        let package = root.join("package");
+        fs::create_dir_all(package.join("app/resources")).unwrap();
+        fs::write(package.join("app/ChatGPT.exe"), b"desktop").unwrap();
+        fs::write(package.join("app/resources/app.asar"), b"asar").unwrap();
+        let cli = root.join("external-codex.exe");
+        fs::write(&cli, b"cli").unwrap();
+        let selected = crate::resolve_codex_cli_override(Some(&cli), None, None, None)
+            .unwrap()
+            .unwrap();
+        let installation = super::windows_installation_with_cli(
+            super::WindowsPackageDetails {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_family".into(),
+                appx_activation: crate::WindowsAppxActivationIdentity {
+                    package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
+                    app_user_model_id: "OpenAI.Codex_family!App".into(),
+                },
+                version: "1.2.3.4".into(),
+                install_root: package.clone(),
+            },
+            || panic!("explicit CLI must not consult LOCALAPPDATA"),
+            Some(&selected),
+        )
+        .unwrap();
+        assert_eq!(
+            installation.executable_codex_cli,
+            cli.canonicalize().unwrap()
+        );
+        assert_eq!(
+            installation.codex_cli_source,
+            crate::CodexCliSource::CommandLine
+        );
+        assert!(!installation.packaged_codex_cli.exists());
+        let portable =
+            super::discover_codex_desktop_from_root_with_cli(&package, Some(&selected)).unwrap();
+        assert_eq!(
+            portable.executable_codex_cli,
+            installation.executable_codex_cli
+        );
+        assert!(super::discover_codex_desktop_from_root(&package).is_err());
+        fs::remove_file(package.join("app/resources/app.asar")).unwrap();
+        assert!(
+            super::discover_codex_desktop_from_root_with_cli(&package, Some(&selected)).is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     use super::{WindowsPackageDetails, probe_package_details, windows_installation};
     use crate::{
@@ -899,6 +996,14 @@ fn canonical_macho_executable(path: &Path, label: &str) -> Result<PathBuf, Platf
 
 #[cfg(target_os = "macos")]
 fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
+    inspect_bundle_with_cli(bundle, None)
+}
+
+#[cfg(target_os = "macos")]
+fn inspect_bundle_with_cli(
+    bundle: &Path,
+    selected_cli: Option<&CodexCliOverride>,
+) -> Result<DesktopInstallation, PlatformError> {
     let bundle = bundle.canonicalize().map_err(|error| {
         PlatformError::NotFound(format!(
             "Codex App bundle '{}' is unavailable: {error}",
@@ -947,13 +1052,24 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
     {
         cli_path = bundle.join("Contents/Resources/codex");
     }
-    let packaged_codex_cli = canonical_macho_executable(&cli_path, "Codex CLI")?;
-    if !desktop_executable.starts_with(&bundle) || !packaged_codex_cli.starts_with(&bundle) {
+    let packaged_codex_cli = cli_path;
+    if !desktop_executable.starts_with(&bundle) {
         return Err(PlatformError::Invalid(format!(
-            "App bundle '{}' resolves an executable outside the bundle",
+            "App bundle '{}' resolves a Desktop executable outside the bundle",
             bundle.display()
         )));
     }
+    let (executable_codex_cli, codex_cli_source) =
+        select_codex_cli(selected_cli, CodexCliSource::Packaged, || {
+            let cli = canonical_macho_executable(&packaged_codex_cli, "Codex CLI")?;
+            if !cli.starts_with(&bundle) {
+                return Err(PlatformError::Invalid(format!(
+                    "App bundle '{}' resolves a Codex CLI outside the bundle",
+                    bundle.display()
+                )));
+            }
+            Ok(cli)
+        })?;
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::MacOsBundle {
@@ -965,14 +1081,24 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
         install_root: bundle,
         desktop_launcher: desktop_executable.clone(),
         desktop_executable,
-        packaged_codex_cli: packaged_codex_cli.clone(),
-        executable_codex_cli: packaged_codex_cli,
+        packaged_codex_cli,
+        executable_codex_cli,
+        codex_cli_source,
     })
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 fn discover_from_candidates(
     candidates: impl IntoIterator<Item = PathBuf>,
+) -> Result<DesktopInstallation, PlatformError> {
+    discover_from_candidates_with_cli(candidates, None)
+}
+
+#[cfg(target_os = "macos")]
+fn discover_from_candidates_with_cli(
+    candidates: impl IntoIterator<Item = PathBuf>,
+    selected_cli: Option<&CodexCliOverride>,
 ) -> Result<DesktopInstallation, PlatformError> {
     let mut installations = Vec::new();
     let mut invalid = Vec::new();
@@ -980,7 +1106,7 @@ fn discover_from_candidates(
         if !candidate.exists() {
             continue;
         }
-        match inspect_bundle(&candidate) {
+        match inspect_bundle_with_cli(&candidate, selected_cli) {
             Ok(installation) => installations.push(installation),
             Err(error) => invalid.push(format!("{}: {error}", candidate.display())),
         }
@@ -1006,30 +1132,51 @@ fn discover_from_candidates(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 fn discover_with_custom_root(
     custom_root: Option<PathBuf>,
     candidates: impl FnOnce() -> Vec<PathBuf>,
 ) -> Result<DesktopInstallation, PlatformError> {
+    discover_with_custom_root_with_cli(custom_root, candidates, None)
+}
+
+#[cfg(target_os = "macos")]
+fn discover_with_custom_root_with_cli(
+    custom_root: Option<PathBuf>,
+    candidates: impl FnOnce() -> Vec<PathBuf>,
+    selected_cli: Option<&CodexCliOverride>,
+) -> Result<DesktopInstallation, PlatformError> {
     match custom_root {
-        Some(root) => inspect_bundle(&root),
-        None => discover_from_candidates(candidates()),
+        Some(root) => inspect_bundle_with_cli(&root, selected_cli),
+        None => discover_from_candidates_with_cli(candidates(), selected_cli),
     }
 }
 
 #[cfg(target_os = "macos")]
 pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
-    discover_with_custom_root(custom_install_root(env::var_os), || {
-        let mut candidates = vec![
-            PathBuf::from("/Applications/Codex.app"),
-            PathBuf::from("/Applications/ChatGPT.app"),
-        ];
-        if let Some(home) = std::env::var_os("HOME") {
-            let applications = PathBuf::from(home).join("Applications");
-            candidates.push(applications.join("Codex.app"));
-            candidates.push(applications.join("ChatGPT.app"));
-        }
-        candidates
-    })
+    discover_codex_desktop_with_cli(None)
+}
+
+#[cfg(target_os = "macos")]
+pub fn discover_codex_desktop_with_cli(
+    selected_cli: Option<&CodexCliOverride>,
+) -> Result<DesktopInstallation, PlatformError> {
+    discover_with_custom_root_with_cli(
+        custom_install_root(env::var_os),
+        || {
+            let mut candidates = vec![
+                PathBuf::from("/Applications/Codex.app"),
+                PathBuf::from("/Applications/ChatGPT.app"),
+            ];
+            if let Some(home) = std::env::var_os("HOME") {
+                let applications = PathBuf::from(home).join("Applications");
+                candidates.push(applications.join("Codex.app"));
+                candidates.push(applications.join("ChatGPT.app"));
+            }
+            candidates
+        },
+        selected_cli,
+    )
 }
 
 /// Resolve a helper's official CLI from a validated Desktop bundle, never PATH.
@@ -1046,7 +1193,15 @@ pub fn discover_desktop_managed_codex_cli() -> Result<PathBuf, PlatformError> {
 /// Inspect an explicit macOS bundle without selecting another installation.
 #[cfg(target_os = "macos")]
 pub fn discover_codex_desktop_from_root(root: &Path) -> Result<DesktopInstallation, PlatformError> {
-    inspect_bundle(root)
+    discover_codex_desktop_from_root_with_cli(root, None)
+}
+
+#[cfg(target_os = "macos")]
+pub fn discover_codex_desktop_from_root_with_cli(
+    root: &Path,
+    selected_cli: Option<&CodexCliOverride>,
+) -> Result<DesktopInstallation, PlatformError> {
+    inspect_bundle_with_cli(root, selected_cli)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -1054,6 +1209,13 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     Err(PlatformError::Unsupported(
         "the Codex Desktop probe currently supports Windows, macOS, and Linux only",
     ))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn discover_codex_desktop_with_cli(
+    _selected_cli: Option<&CodexCliOverride>,
+) -> Result<DesktopInstallation, PlatformError> {
+    discover_codex_desktop()
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -1104,6 +1266,31 @@ mod tests {
                 .expect("make fixture executable");
         }
         bundle
+    }
+
+    #[test]
+    fn external_cli_skips_bundled_cli_without_relaxing_bundle_identity() {
+        let bundle = temporary_bundle("ChatGPT.app", "com.openai.codex", false);
+        let cli = bundle.parent().unwrap().join("external-codex");
+        fs::copy(bundle.join("Contents/MacOS/ChatGPT"), &cli).unwrap();
+        let selected = crate::resolve_codex_cli_override(None, Some(cli.as_os_str()), None, None)
+            .unwrap()
+            .unwrap();
+        let installation = super::inspect_bundle_with_cli(&bundle, Some(&selected)).unwrap();
+        assert_eq!(
+            installation.executable_codex_cli,
+            cli.canonicalize().unwrap()
+        );
+        assert_eq!(
+            installation.codex_cli_source,
+            crate::CodexCliSource::Environment
+        );
+        assert!(!installation.packaged_codex_cli.exists());
+        assert!(super::inspect_bundle(&bundle).is_err());
+        let invalid = temporary_bundle("Other.app", "com.example.other", false);
+        assert!(super::inspect_bundle_with_cli(&invalid, Some(&selected)).is_err());
+        fs::remove_dir_all(bundle.parent().unwrap()).unwrap();
+        fs::remove_dir_all(invalid.parent().unwrap()).unwrap();
     }
 
     #[test]

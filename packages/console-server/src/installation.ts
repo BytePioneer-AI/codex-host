@@ -12,6 +12,10 @@ export interface InspectDesktop {
   version: string;
   build: string;
   installRoot: string;
+  /** Optional for compatibility with older launchers using inspect schema v1. */
+  packagedCodexCli?: string;
+  executableCodexCli?: string;
+  codexCliSource?: "command-line" | "environment" | "packaged" | "desktop-managed-cache";
   processIds: number[];
 }
 

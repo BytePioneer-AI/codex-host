@@ -13,6 +13,8 @@ each start. An explicit `--node` still takes precedence. The npm wrapper leaves
 the automatic choice to the Launcher instead of overriding it with its own Node;
 older Desktops without a bundled runtime keep the installer Node or npm Node.
 The Desktop's peer authorization remains enabled and rejects untrusted runtimes.
+The recovery console starts before Desktop discovery and uses the explicit Node
+override, installer Node, or npm Node so it can report an incomplete installation.
 
 Three independent macOS helper paths need different handling:
 

@@ -1,3 +1,4 @@
+import { isDelegationThreadReadMiss } from "@codexhost/shared-contracts";
 import {
   DelegationControlError,
   type DelegationControlApi,
@@ -110,7 +111,29 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         );
       return this.#remoteRead(read);
     }
-    return (await this.#registrationForThread(read.threadId)).read(read);
+    try {
+      return await (await this.#registrationForThread(read.threadId)).read(read);
+    } catch (error) {
+      // Bare IDs stay machine-local. Only an explicit Desktop-local reference opts in.
+      if (read.hostId !== "local" || !isDelegationThreadReadMiss(error)) throw error;
+      const { hostId, ...input } = read;
+      let lastError = error;
+      for (const registration of [...this.#registrations]) {
+        if (!registration.readConnectedDesktop || !this.#registrations.has(registration)) continue;
+        try {
+          const snapshot = await registration.readConnectedDesktop(input);
+          return { ...snapshot, hostId, readSource: "connected-desktop" as const };
+        } catch (failure) {
+          if (
+            !isDelegationThreadReadMiss(failure) &&
+            !(failure instanceof DelegationControlError && failure.code === "RUNTIME_UNREACHABLE")
+          )
+            throw failure;
+          lastError = failure;
+        }
+      }
+      throw lastError;
+    }
   }
 
   async wait(input: ThreadWaitInput) {

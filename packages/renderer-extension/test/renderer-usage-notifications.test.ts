@@ -37,6 +37,7 @@ function fixture(hostId = "local") {
   const forHost = vi.fn((id: string) => (id === hostId ? route : null));
   const routing = { forHost } as unknown as RendererHostRouting;
   const clients = createRendererHostClients(() => routing, messages);
+  const connectionIndependentListeners = listeners.size;
   const client = clients.forHost(hostId);
   if (!client) throw Error("No client");
   const notification = {
@@ -52,6 +53,7 @@ function fixture(hostId = "local") {
     clients,
     client,
     listeners,
+    connectionIndependentListeners,
     manager,
     forHost,
     removeNative,
@@ -130,7 +132,7 @@ describe("Host usage notifications before Desktop's method filter", () => {
       f.native({ method: "thread/tokenUsage/updated", params: { threadId: "thread" } });
       await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
       unsubscribe?.();
-      expect(f.listeners.size).toBe(0);
+      expect(f.listeners.size).toBe(f.connectionIndependentListeners);
       f.post();
       expect(f.manager.sendRequest).toHaveBeenCalledTimes(1);
       expect(f.removeNative).toHaveBeenCalledTimes(1);
@@ -181,13 +183,13 @@ describe("Host usage notifications before Desktop's method filter", () => {
   it("removes the window listener when a connection is replaced or disposed", () => {
     const f = fixture();
     f.client.subscribeThreadUsage?.(vi.fn());
-    expect(f.listeners.size).toBe(1);
+    expect(f.listeners.size).toBe(f.connectionIndependentListeners + 1);
     const replacement = f.replace();
-    expect(f.listeners.size).toBe(0);
+    expect(f.listeners.size).toBe(f.connectionIndependentListeners);
     f.post();
     expect(f.manager.sendRequest).not.toHaveBeenCalled();
     replacement?.subscribeThreadUsage?.(vi.fn());
-    expect(f.listeners.size).toBe(1);
+    expect(f.listeners.size).toBe(f.connectionIndependentListeners + 1);
     f.clients.dispose();
     expect(f.listeners.size).toBe(0);
     f.post();

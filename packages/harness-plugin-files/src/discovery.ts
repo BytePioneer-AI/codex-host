@@ -9,6 +9,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { pluginResourcePath, readPluginConfiguration, readPluginFile } from "./plugin-files.js";
+import { readClaudeCodeProfiles } from "./claude-profiles.js";
 
 export interface InstalledHarnessPlugin {
   /** Resolved plugin directory. */
@@ -38,6 +39,7 @@ function missingFile(error: unknown): boolean {
 export async function discoverHarnessPlugins(
   configuredRoots: readonly string[],
   diagnose: (code: HarnessPluginDiscoveryDiagnosticCode) => void = () => undefined,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Promise<HarnessPluginDiscovery> {
   const plugins: InstalledHarnessPlugin[] = [];
   const enabledIds = new Set<string>();
@@ -90,6 +92,48 @@ export async function discoverHarnessPlugins(
       }
     } catch {
       diagnose("invalidRoot");
+    }
+  }
+  const claudePlugin = plugins.find((p) => p.manifest.id === "claude-code" && p.enabled);
+  if (claudePlugin) {
+    try {
+      const profiles = await readClaudeCodeProfiles(undefined, environment);
+      for (const profile of profiles) {
+        try {
+          const manifest: HarnessPluginManifest = harnessPluginManifestSchema.parse({
+            manifestVersion: 1,
+            id: profile.id,
+            name: profile.name,
+            version: claudePlugin.manifest.version,
+            adapterApiVersion: claudePlugin.manifest.adapterApiVersion,
+            entry: claudePlugin.manifest.entry,
+            launchCommand: true,
+            ...(profile.icon
+              ? { icon: profile.icon }
+              : claudePlugin.manifest.icon
+                ? { icon: claudePlugin.manifest.icon }
+                : {}),
+            ...(profile.iconStyle
+              ? { iconStyle: profile.iconStyle }
+              : claudePlugin.manifest.iconStyle
+                ? { iconStyle: claudePlugin.manifest.iconStyle }
+                : {}),
+            ...(claudePlugin.manifest.links ? { links: claudePlugin.manifest.links } : {}),
+            ...(claudePlugin.manifest.installation
+              ? { installation: claudePlugin.manifest.installation }
+              : {}),
+            ...(profile.description
+              ? { notice: { en: profile.description, "zh-CN": profile.description } }
+              : {}),
+          });
+          plugins.push({ root: claudePlugin.root, manifest, enabled: true });
+          enabledIds.add(profile.id);
+        } catch {
+          diagnose("invalidManifest");
+        }
+      }
+    } catch {
+      /* Invalid profiles file cannot fail base plugin discovery */
     }
   }
   return { plugins, enabledIds };

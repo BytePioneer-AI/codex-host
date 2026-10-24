@@ -6,8 +6,10 @@ import { z } from "zod";
 
 import {
   harnessConfigurationStateSchema,
+  harnessIdSchema,
   nativeSessionRefSchema,
   type HarnessConfigurationState,
+  type HarnessId,
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
@@ -25,8 +27,10 @@ export function isPendingClaudeSession(ref: NativeSessionRef): boolean {
 /** Durable empty history. The separate, exclusive claim is never inferred from a missing transcript. */
 export class ClaudePendingSessions {
   readonly #directory: string;
+  readonly #harnessId: HarnessId;
 
-  constructor(environment: NodeJS.ProcessEnv) {
+  constructor(environment: NodeJS.ProcessEnv, harnessId: string = "claude-code") {
+    this.#harnessId = harnessIdSchema.parse(harnessId);
     this.#directory = path.join(
       path.resolve(environment.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude")),
       "codexhost",
@@ -36,7 +40,7 @@ export class ClaudePendingSessions {
 
   #path(ref: NativeSessionRef, cwd: string): string {
     if (
-      ref.harnessId !== "claude-code" ||
+      ref.harnessId !== this.#harnessId ||
       !z.uuid().safeParse(ref.nativeSessionId).success ||
       !z.strictObject({ pendingSession: z.literal(1) }).safeParse(ref.locator).success ||
       !path.isAbsolute(cwd)
@@ -48,7 +52,7 @@ export class ClaudePendingSessions {
 
   async create(cwd: string, configuration: HarnessConfigurationState): Promise<NativeSessionRef> {
     const ref = nativeSessionRefSchema.parse({
-      harnessId: "claude-code",
+      harnessId: this.#harnessId,
       nativeSessionId: randomUUID(),
       locator: { pendingSession: 1 },
       formatVersion: 1,

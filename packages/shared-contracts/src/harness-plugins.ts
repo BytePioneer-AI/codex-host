@@ -55,6 +55,47 @@ export const harnessInstallationGuideSchema = z
   .strict();
 export type HarnessInstallationGuide = z.infer<typeof harnessInstallationGuideSchema>;
 
+export const pluginIconStyleSchema = z
+  .object({
+    vector: z
+      .object({
+        viewBox: z
+          .string()
+          .max(128)
+          .regex(/^-?\d+(?:\.\d+)?(?: +-?\d+(?:\.\d+)?){3}$/u),
+        color: z.string().regex(/^(?:currentColor|#[a-f0-9]{6})$/iu),
+        paths: z
+          .array(
+            z
+              .object({
+                d: z
+                  .string()
+                  .min(1)
+                  .max(32768)
+                  .regex(/^[MmLlHhVvCcSsQqTtAaZz\d.,+eE\s-]+$/u),
+                fillRule: z.enum(["evenodd", "nonzero"]).optional(),
+                fill: z
+                  .string()
+                  .regex(/^(?:currentColor|#[a-f0-9]{6})$/iu)
+                  .optional(),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(32),
+      })
+      .strict()
+      .optional(),
+    background: z
+      .string()
+      .regex(/^#[a-f0-9]{6}$/iu)
+      .optional(),
+    borderRadius: z.number().min(0).max(50).optional(),
+    paddingRatio: z.number().min(0).max(0.25).optional(),
+  })
+  .strict();
+export type PluginIconStyle = z.infer<typeof pluginIconStyleSchema>;
+
 const pluginPresentationShape = {
   id: harnessPluginIdSchema,
   name: z.string().trim().min(1).max(128),
@@ -62,46 +103,7 @@ const pluginPresentationShape = {
   /** Capability-only plugin; omitted for existing session-capable plugins. */
   kind: z.literal("usage").optional(),
   /** Original image styling or bounded vector paths; never arbitrary CSS/SVG markup. */
-  iconStyle: z
-    .object({
-      vector: z
-        .object({
-          viewBox: z
-            .string()
-            .max(128)
-            .regex(/^-?\d+(?:\.\d+)?(?: +-?\d+(?:\.\d+)?){3}$/u),
-          color: z.string().regex(/^(?:currentColor|#[a-f0-9]{6})$/iu),
-          paths: z
-            .array(
-              z
-                .object({
-                  d: z
-                    .string()
-                    .min(1)
-                    .max(32768)
-                    .regex(/^[MmLlHhVvCcSsQqTtAaZz\d.,+eE\s-]+$/u),
-                  fillRule: z.enum(["evenodd", "nonzero"]).optional(),
-                  fill: z
-                    .string()
-                    .regex(/^(?:currentColor|#[a-f0-9]{6})$/iu)
-                    .optional(),
-                })
-                .strict(),
-            )
-            .min(1)
-            .max(32),
-        })
-        .strict()
-        .optional(),
-      background: z
-        .string()
-        .regex(/^#[a-f0-9]{6}$/iu)
-        .optional(),
-      borderRadius: z.number().min(0).max(50).optional(),
-      paddingRatio: z.number().min(0).max(0.25).optional(),
-    })
-    .strict()
-    .optional(),
+  iconStyle: pluginIconStyleSchema.optional(),
   installation: harnessInstallationGuideSchema.optional(),
   notice: localizedTextSchema.optional(),
   /** The factory accepts a persisted local entrypoint through its construction context. */

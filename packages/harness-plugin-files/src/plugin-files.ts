@@ -56,9 +56,7 @@ export async function readPluginConfiguration(root: string): Promise<HarnessPlug
   return harnessPluginConfigurationSchema.parse(JSON.parse(bytes.toString("utf8")));
 }
 
-export async function readPluginIcon(root: string, resource: string): Promise<string> {
-  const file = await pluginResourcePath(root, resource);
-  const bytes = await readPluginFile(file, HARNESS_PLUGIN_ICON_MAX_BYTES);
+export function encodePluginIconDataUrl(bytes: Buffer): string {
   let mime: string;
   if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
     mime = "image/png";
@@ -88,4 +86,15 @@ export async function readPluginIcon(root: string, resource: string): Promise<st
     throw new Error("Plugin icon format is unsupported");
   }
   return `data:${mime};base64,${bytes.toString("base64")}`;
+}
+
+export async function readPluginIcon(root: string, resource: string): Promise<string> {
+  if (resource.startsWith("data:")) return resource;
+  if (path.isAbsolute(resource)) {
+    const bytes = await readPluginFile(resource, HARNESS_PLUGIN_ICON_MAX_BYTES);
+    return encodePluginIconDataUrl(bytes);
+  }
+  const file = await pluginResourcePath(root, resource);
+  const bytes = await readPluginFile(file, HARNESS_PLUGIN_ICON_MAX_BYTES);
+  return encodePluginIconDataUrl(bytes);
 }

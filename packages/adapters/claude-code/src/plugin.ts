@@ -5,6 +5,7 @@ import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 import { ClaudeCodeAdapter, claudeCommandCatalog } from "./claude-code-adapter.js";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { createClaudeInstallation } from "./installation.js";
+import { loadClaudeCodeProfile } from "./profiles.js";
 
 import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { withUserShellEnvironment } from "./user-shell-environment.js";
@@ -12,9 +13,26 @@ import { withUserShellEnvironment } from "./user-shell-environment.js";
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 
 export async function createHarnessAdapter(context: HarnessPluginContext): Promise<HarnessAdapter> {
-  const environment = await withUserShellEnvironment({ ...context.environment });
+  const harnessId = context.harnessId ?? "claude-code";
+  const profile =
+    harnessId !== "claude-code"
+      ? await loadClaudeCodeProfile(harnessId, context.environment)
+      : undefined;
+
+  const baseEnv: Record<string, string | undefined> = {
+    ...context.environment,
+    ...(profile?.configDir ? { CLAUDE_CONFIG_DIR: profile.configDir } : {}),
+    ...(profile?.environment ?? {}),
+  };
+  const environment = await withUserShellEnvironment(baseEnv);
+  const command =
+    profile?.command ??
+    context.launchCommand ??
+    (harnessId === "claude-code" ? environment[CLAUDE_CODE_COMMAND_ENV] : undefined);
+
   if (context.platform === "darwin" && context.managedRemoteHost) {
     return new BrokeredHarnessAdapter({
+      harnessId,
       forwardDelegationEnvironment: true,
       commandCatalog: claudeCommandCatalog,
       liveCommandCatalog: true,
@@ -22,9 +40,7 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
       isInstalled: () => {
         try {
           resolveClaudeCodeExecutable({
-            ...(environment[CLAUDE_CODE_COMMAND_ENV]
-              ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
-              : {}),
+            ...(command ? { command } : {}),
             environment,
           });
           return true;
@@ -37,13 +53,12 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
   }
   return Object.assign(
     new ClaudeCodeAdapter({
-      ...(environment[CLAUDE_CODE_COMMAND_ENV]
-        ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
-        : {}),
+      harnessId,
+      ...(command ? { command } : {}),
       environment,
     }),
     {
-      installation: createClaudeInstallation(environment, environment[CLAUDE_CODE_COMMAND_ENV]),
+      installation: createClaudeInstallation(environment, command),
       install: createHarnessInstaller(environment, {
         posix: "https://claude.ai/install.sh",
         windows: "https://claude.ai/install.ps1",

@@ -286,7 +286,11 @@ function itemOutcome(outcome: HistoricalTurnOutcome): HostItemOutcome {
   return { status: "succeeded" };
 }
 
-export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThreadSnapshot {
+export function mapClaudeSnapshot(
+  values: unknown[],
+  sessionId: string,
+  harnessId: HarnessId = claudeCodeHarnessId,
+): HostThreadSnapshot {
   const messages = conversationMessages(values, sessionId);
   const turns: HostThreadSnapshot["turns"] = [];
   for (let index = 0; index < messages.length;) {
@@ -310,7 +314,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     let toolOrdinal = 0;
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
-        harnessId: claudeCodeHarnessId,
+        harnessId,
         nativeSessionId: sessionId,
         nativeTurnKey: user.uuid,
         formatVersion: 1,
@@ -318,7 +322,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
       ...(checkpointMessage
         ? {
             checkpoint: nativeCheckpointRefSchema.parse({
-              harnessId: claudeCodeHarnessId,
+              harnessId,
               nativeSessionId: sessionId,
               checkpointId: checkpointMessage.uuid,
               formatVersion: 1,
@@ -542,6 +546,7 @@ export function mapClaudeSubagentSnapshot(
   parentSessionId: string,
   nativeSubagentId: string,
   parentValues: unknown[] = [],
+  harnessId: HarnessId = claudeCodeHarnessId,
 ): HostThreadSnapshot {
   const messages = conversationMessages(
     values.map((value) => (isRecord(value) ? { ...value, session_id: parentSessionId } : value)),
@@ -652,7 +657,7 @@ export function mapClaudeSubagentSnapshot(
     const checkpointMessage = turnMessages.findLast(({ type }) => type === "assistant");
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
-        harnessId: claudeCodeHarnessId,
+        harnessId,
         nativeSessionId: parentSessionId,
         nativeTurnKey:
           turns.length === 0
@@ -663,7 +668,7 @@ export function mapClaudeSubagentSnapshot(
       ...(checkpointMessage
         ? {
             checkpoint: nativeCheckpointRefSchema.parse({
-              harnessId: claudeCodeHarnessId,
+              harnessId,
               nativeSessionId: parentSessionId,
               checkpointId: checkpointMessage.uuid,
               formatVersion: 1,

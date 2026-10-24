@@ -727,6 +727,49 @@ describe("Harness plugin registry lifetime", () => {
     expect(() => registry.register(first, a)).toThrow("closed");
   });
 
+  it("discovers and loads claude-code profile instances with isolated harnessId", async () => {
+    const directory = await root(["claude-code"]);
+    await plugin(directory, "claude-code", {
+      code: `
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      export function createHarnessAdapter(ctx) {
+        return new FakeHarnessAdapter(ctx.harnessId ?? "claude-code");
+      }
+    `,
+    });
+    const profilesPath = path.join(directory, "claude-code-profiles.json");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        {
+          id: "claude-custom",
+          name: "Claude Custom",
+          description: "Claude Code Custom Profile",
+        },
+      ]),
+      "utf8",
+    );
+
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context: {
+        environment: {
+          CODEXHOST_CLAUDE_PROFILES_FILE: profilesPath,
+        },
+        platform: "darwin",
+        managedRemoteHost: false,
+      },
+    });
+
+    try {
+      const descriptors = registry.list();
+      expect(descriptors.map((d) => d.id).sort()).toEqual(["claude-code", "claude-custom"]);
+      expect(registry.adapters.get("claude-custom" as never)?.harnessId).toBe("claude-custom");
+    } finally {
+      await registry.close();
+    }
+  });
+
   it("uses the configured Host data directory and omits a remote URL opener", () => {
     const data = path.resolve("host-data");
     expect(installedHarnessPluginOptions({ CODEXHOST_DATA_DIR: data }, true).pluginRoots[1]).toBe(

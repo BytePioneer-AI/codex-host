@@ -1,3 +1,5 @@
+import type { HarnessPluginDescriptor } from "@codexhost/shared-contracts";
+
 import type { HarnessAdapter } from "./text-session.js";
 import type { HarnessSessionUsageCapability } from "./session-usage.js";
 export type {
@@ -29,6 +31,8 @@ export interface HarnessLocalPage {
 /** Per Host/connection construction context; never contains Host or Renderer internals. */
 export interface HarnessPluginContext {
   readonly environment: Readonly<Record<string, string | undefined>>;
+  /** Targeted harness ID when instantiating a specific plugin or profile instance. */
+  readonly harnessId?: string;
   /** Persisted installation directory or legacy entrypoint; only for plugins declaring launchCommand. */
   readonly launchCommand?: string;
   readonly platform: string;
@@ -39,9 +43,18 @@ export interface HarnessPluginContext {
   readonly openLocalPage?: (url: string) => Promise<HarnessLocalPage>;
 }
 
+export interface HarnessPluginProfile {
+  readonly descriptor: HarnessPluginDescriptor;
+  readonly adapter: HarnessAdapter;
+}
+
 /** A loaded module supplies a factory, not a global registration side effect. */
 export interface HarnessPluginModule {
   createHarnessAdapter(context: HarnessPluginContext): HarnessAdapter | Promise<HarnessAdapter>;
+  /** Optional factory returning additional profile/variant instances declared by configuration. */
+  createHarnessProfiles?(
+    context: HarnessPluginContext,
+  ): readonly HarnessPluginProfile[] | Promise<readonly HarnessPluginProfile[]>;
   /** Optional, best-effort prefetch. The Host does not await completion before serving requests. */
   warmup?(adapter: HarnessAdapter): Promise<void>;
 }

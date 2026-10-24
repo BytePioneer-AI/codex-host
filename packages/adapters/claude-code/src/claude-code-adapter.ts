@@ -140,6 +140,7 @@ import type {
 } from "./transport.js";
 
 export interface ClaudeCodeAdapterOptions {
+  harnessId?: string;
   command?: string;
   environment?: NodeJS.ProcessEnv;
   closeTimeoutMs?: number;
@@ -570,7 +571,7 @@ export function projectClaudePlanLimitToCredits(
 }
 
 class ClaudeHarnessSession implements HarnessSession {
-  readonly harnessId: HarnessId = claudeCodeHarnessId;
+  readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities = ((session) => ({
     configuration: {
       selectModel: true,
@@ -654,6 +655,7 @@ class ClaudeHarnessSession implements HarnessSession {
     onClosed: () => void,
     onPlanLimitObserved: (planLimit: ClaudePlanLimitEvent) => ClaudePlanLimitEvent | null,
     options: {
+      harnessId?: HarnessId;
       environment?: NodeJS.ProcessEnv;
       bypassPermissionsAvailable: boolean;
       openMode: "create" | "resume";
@@ -676,6 +678,7 @@ class ClaudeHarnessSession implements HarnessSession {
       accountCreditsSupported: boolean;
     },
   ) {
+    this.harnessId = options.harnessId ?? claudeCodeHarnessId;
     this.#cwd = cwd;
     this.#lastAssistantResponseAtUnix = options.usageHistory.lastResponseAtUnix;
     this.#accountCreditsSupported = options.accountCreditsSupported;
@@ -832,7 +835,10 @@ class ClaudeHarnessSession implements HarnessSession {
       try {
         return {
           ok: true,
-          value: { ...mapClaudeSnapshot(messages, this.#sessionId), state: this.#state },
+          value: {
+            ...mapClaudeSnapshot(messages, this.#sessionId, this.harnessId),
+            state: this.#state,
+          },
         };
       } catch {
         return {
@@ -2976,7 +2982,7 @@ class ClaudeHarnessSession implements HarnessSession {
 export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly commandCatalog = claudeCommandCatalog;
   readonly liveCommandCatalog = true;
-  readonly harnessId: HarnessId = claudeCodeHarnessId;
+  readonly harnessId: HarnessId;
   readonly sessionImport = Object.freeze({
     listCandidates: async (): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> => {
       const result = await this.#importScope.read((signal) => this.#importIndex.list(signal));
@@ -3023,6 +3029,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             input.parent.nativeSessionId,
             input.nativeSubagentId,
             parentMessages ?? [],
+            this.harnessId,
           ),
         };
       } catch {
@@ -3061,11 +3068,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   #accountCreditsSupported = false;
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
+    this.harnessId = harnessIdSchema.parse(options.harnessId ?? "claude-code");
     const environment = options.environment ?? process.env;
     this.#environment = environment;
     this.#importIndex = new ClaudeSessionImportIndex(environment);
     this.usageStatistics = createClaudeUsageStatistics(environment);
-    this.#pendingSessions = new ClaudePendingSessions(environment);
+    this.#pendingSessions = new ClaudePendingSessions(environment, this.harnessId);
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.#cancelTimeoutMs) || this.#cancelTimeoutMs <= 0) {
@@ -3487,6 +3495,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       () => this.#sessions.delete(session),
       (planLimit) => this.#recordPlanLimit(session, planLimit),
       {
+        harnessId: this.harnessId,
         ...(environment ? { environment } : {}),
         bypassPermissionsAvailable,
         openMode,

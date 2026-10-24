@@ -84,14 +84,16 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
     let output = output_of_copied_binary(
         Command::new(&installed)
             .args(["launch"])
-            .env("CODEXHOST_DATA_DIR", root.join("data")),
+            .env("CODEXHOST_DATA_DIR", root.join("data"))
+            .env("CODEXHOST_CONSOLE", "0")
+            .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
     )
     .expect("run installed launcher");
     fs::remove_dir_all(&root).expect("remove release layout");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("bundled Shim"));
+    assert!(stderr.contains("bundled Shim"), "{stderr}");
     assert!(stderr.contains("libexec"));
     assert!(stderr.contains("codexhost-shim"));
     assert!(!stderr.contains("--shim is required"));
@@ -114,14 +116,65 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     fs::copy(launcher_path(), &installed).expect("copy app launcher");
 
     let output = output_of_copied_binary(
-        Command::new(&installed).env("CODEXHOST_DATA_DIR", root.join("data")),
+        Command::new(&installed)
+            .env("CODEXHOST_DATA_DIR", root.join("data"))
+            .env("CODEXHOST_CONSOLE", "0")
+            .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
     )
     .expect("run Finder-style launcher");
     fs::remove_dir_all(&root).expect("remove app layout");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("bundled Shim"));
+    assert!(stderr.contains("bundled Shim"), "{stderr}");
     assert!(stderr.contains("Contents/Resources/libexec/codexhost-shim"));
     assert!(!stderr.contains("invalid launcher arguments"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn npm_launch_starts_recovery_console_without_desktop_or_bundled_node() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "codexhost npm console {} {unique}",
+        std::process::id()
+    ));
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let installed = bin.join("codexhost");
+    fs::copy(launcher_path(), &installed).unwrap();
+    let host_runtime = root.join("host-runtime.mjs");
+    fs::write(&host_runtime, "fixture").unwrap();
+    fs::write(root.join("console-server.mjs"), "fixture").unwrap();
+    let node = root.join("npm-node");
+    let calls = root.join("calls");
+    fs::write(&node, "#!/bin/sh\nprintf '%s\n' \"$3\" >> \"$TEST_CONSOLE_CALLS\"\necho 'codexhost console: http://127.0.0.1:4399/'\n").unwrap();
+    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = output_of_copied_binary(
+        Command::new(&installed)
+            .args(["launch", "--host-runtime"])
+            .arg(&host_runtime)
+            .env("CODEXHOST_DATA_DIR", root.join("data"))
+            .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop"))
+            .env("CODEXHOST_CONSOLE", "1")
+            .env("CODEXHOST_NPM_NODE_PATH", &node)
+            .env("TEST_CONSOLE_CALLS", &calls),
+    )
+    .unwrap();
+    let calls = fs::read_to_string(calls).unwrap_or_default();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(!output.status.success());
+    assert!(calls.lines().any(|action| action == "ensure"), "{calls}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("bundled Shim"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("codexhost console: http://127.0.0.1:4399/")
+    );
 }

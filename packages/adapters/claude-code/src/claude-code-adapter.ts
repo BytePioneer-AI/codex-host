@@ -3154,30 +3154,37 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           abortTimeoutMs: this.#cancelTimeoutMs,
         }),
       deleteSession: ({ cwd, sessionId }) =>
-        withSdkConfigDirectory(this.#environment.CLAUDE_CONFIG_DIR, () =>
-          deleteClaudeSession(sessionId, { dir: cwd }),
+        withSdkConfigDirectory(
+          this.#environment.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
+          () => deleteClaudeSession(sessionId, { dir: cwd }),
         ),
       forkSession: async ({ checkpointId, cwd, sourceSessionId }) =>
-        withSdkConfigDirectory(this.#environment.CLAUDE_CONFIG_DIR, async () => {
-          const forked = await forkClaudeNativeSession(sourceSessionId, {
-            dir: cwd,
-            upToMessageId: checkpointId,
-          });
-          // An unresolved reference costs only prompt cache, never history, so a failure here
-          // must not fail the Fork.
-          await remapForkedSessionReferences({
-            cwd,
-            environment: this.#environment,
-            sessionId: forked.sessionId,
-          }).catch(() => undefined);
-          return forked;
-        }),
+        withSdkConfigDirectory(
+          this.#environment.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
+          async () => {
+            const forked = await forkClaudeNativeSession(sourceSessionId, {
+              dir: cwd,
+              upToMessageId: checkpointId,
+            });
+            // An unresolved reference costs only prompt cache, never history, so a failure here
+            // must not fail the Fork.
+            await remapForkedSessionReferences({
+              cwd,
+              environment: this.#environment,
+              sessionId: forked.sessionId,
+            }).catch(() => undefined);
+            return forked;
+          },
+        ),
       getSessionInfo: async ({ sessionId }) =>
-        withSdkConfigDirectory(this.#environment.CLAUDE_CONFIG_DIR, async () => {
-          const info = await getClaudeSessionInfo(sessionId);
-          if (!info) return undefined;
-          return info.cwd ? { cwd: info.cwd } : {};
-        }),
+        withSdkConfigDirectory(
+          this.#environment.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
+          async () => {
+            const info = await getClaudeSessionInfo(sessionId);
+            if (!info) return undefined;
+            return info.cwd ? { cwd: info.cwd } : {};
+          },
+        ),
       readSessionMessages: async ({ cwd, sessionId }) => {
         const transcript = await readClaudeTranscript({
           cwd,
@@ -3187,8 +3194,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         return transcript;
       },
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
-        withSdkConfigDirectory(this.#environment.CLAUDE_CONFIG_DIR, () =>
-          getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
+        withSdkConfigDirectory(
+          this.#environment.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
+          () => getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
         ),
     };
   }

@@ -30,8 +30,8 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
     ...(profile?.environment ?? {}),
   };
   const command =
-    profile?.command ??
     context.launchCommand ??
+    profile?.command ??
     (harnessId === "claude-code" ? environment[CLAUDE_CODE_COMMAND_ENV] : undefined);
 
   if (context.platform === "darwin" && context.managedRemoteHost) {

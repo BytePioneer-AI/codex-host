@@ -390,9 +390,9 @@ function runLauncher(invocation, root, spawnImplementation = spawn, environment 
   });
 }
 
-// Node 22.19+ and Node 24 are supported development runtimes. The published npm
+// Node 22.19+ (22.x), Node 24 and Node 25 are supported development runtimes. The published npm
 // package also accepts newer host runtimes, but this repository keeps the local range bounded.
-const supportedNodeMajors = [22, 24];
+const supportedNodeMajors = [22, 24, 25];
 
 function nodeVersionSupported(version = process.versions.node) {
   const [majorText, minorText] = version.split(".");

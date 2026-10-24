@@ -32,4 +32,13 @@ describe("remote failure messages", () => {
     expect(localizeRemoteFailure(native, zh)).toBe(native);
     expect(localizeRemoteFailure("远程服务已修复，正在连接", zh)).toBe("远程服务已修复，正在连接");
   });
+
+  it("includes Node.js 25 in the supported remote runtime guidance", () => {
+    const message =
+      "Remote Node.js is unsupported. Select Node.js 22.19 or later in the 22.x series, or Node.js 24.x/25.x";
+    expect(localizeRemoteFailure(message, zh)).toBe(
+      "远程 Node.js 版本不受支持，请选择 Node.js 22.19 及以上的 22.x 版本，或 Node.js 24.x/25.x",
+    );
+    expect(localizeRemoteFailure(message, en)).toBe(message);
+  });
 });

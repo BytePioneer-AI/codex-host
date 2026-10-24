@@ -9,6 +9,61 @@ fn executable(path: &std::path::Path, source: &str) {
 
 #[cfg(unix)]
 #[test]
+fn node_version_gate_accepts_25_and_preserves_supported_version_boundaries() {
+    let root = std::env::temp_dir().join(format!("codexhost-ssh-versions-{}", std::process::id()));
+    let mut r = request();
+    r.action = "install".into();
+    r.version = Some("1.2.3".into());
+    // Execute the generated install script with real JavaScript evaluation. Only the
+    // reported Node version and the package/service mutations are replaced by fixtures.
+    let mocks = r#"
+node(){ command node -e 'Object.defineProperty(process.versions, "node", { value: process.env.TEST_NODE_VERSION }); eval(process.argv[1]);' "$2"; }
+npm(){ printf '%s\n' "npm $*" >> "$HOME/calls"; }
+codex(){ :; }
+codexhost(){ printf '%s\n' "codexhost $*" >> "$HOME/calls"; }
+"#;
+    for (version, supported) in [
+        ("20.19.0", false),
+        ("22.18.0", false),
+        ("22.19.0", true),
+        ("23.0.0", false),
+        ("24.0.0", true),
+        ("25.0.0", true),
+        ("25.4.0", true),
+        ("26.0.0", false),
+    ] {
+        let home = root.join(version);
+        std::fs::create_dir_all(&home).unwrap();
+        let result = Command::new("/bin/sh")
+            .args(["-c", &format!("{mocks}{}", script(&r).unwrap())])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", &home)
+            .env("TEST_NODE_VERSION", version)
+            .output()
+            .unwrap();
+        assert_eq!(
+            result.status.code(),
+            Some(if supported { 0 } else { 55 }),
+            "{version}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if supported {
+            assert_eq!(response_state(&result.stdout).unwrap(), "installed");
+            assert_eq!(
+                std::fs::read_to_string(home.join("calls")).unwrap(),
+                "npm install -g @codexhost/cli@1.2.3\ncodexhost remote install\ncodexhost remote start\n"
+            );
+        } else {
+            assert!(!home.join("calls").exists(), "{version}");
+        }
+        assert!(!home.join(".codexhost/ssh-setup.lock").exists());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn missing_tools_report_specific_failures_before_installation_or_service_changes() {
     let root = std::env::temp_dir().join(format!("codexhost-ssh-missing-{}", std::process::id()));
     for (action, missing, expected) in [

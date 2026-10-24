@@ -47,7 +47,7 @@ fn script(request: &Request) -> Result<String, Box<dyn Error>> {
     // their recorded runtime ahead of that default, provided the executable still exists.
     let node = r#"if [ -n "${CODEXHOST_HOST_NODE_PATH:-}" ] && [ -x "$CODEXHOST_HOST_NODE_PATH" ]; then PATH="$(dirname "$CODEXHOST_HOST_NODE_PATH"):$PATH"; export PATH; fi;
 command -v node >/dev/null 2>&1 || exit 45;
-node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major === 24 || (major === 22 && minor >= 19) ? 0 : 1)' >/dev/null 2>&1 || exit 55;
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major === 24 || major === 25 || (major === 22 && minor >= 19) ? 0 : 1)' >/dev/null 2>&1 || exit 55;
 "#;
     // With a damaged installation SSH sessions fall through to stock Codex, which then owns the
     // control socket. There is no managed service to stop in that case; starting replaces it.
@@ -220,7 +220,7 @@ pub fn apply() -> Result<(), Box<dyn Error>> {
             Some(58) => "codexhost was not detected over SSH. Install it on the remote computer or add it to the login shell PATH, then retry",
             Some(59) => "The active codexhost does not match the global npm installation. Uninstall only the remote service, or remove the package manually on the remote computer",
             Some(60) => "The remote service was uninstalled, but removing the codexhost package failed. Check npm permissions on the remote computer and retry",
-            Some(55) => "Remote Node.js is unsupported. Select Node.js 22.19 or later in the 22.x series, or Node.js 24.x",
+            Some(55) => "Remote Node.js is unsupported. Select Node.js 22.19 or later in the 22.x series, or Node.js 24.x/25.x",
             Some(46) => "npm installation failed. Check network access and global installation permissions",
             Some(47) => "Remote service configuration failed. Check Codex CLI and the remote desktop login",
             Some(50) => "Remote service could not stop. Check the remote service before retrying",

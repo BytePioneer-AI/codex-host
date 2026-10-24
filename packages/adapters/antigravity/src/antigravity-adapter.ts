@@ -393,15 +393,28 @@ async function pollAntigravityContextUsage(
   return null;
 }
 
-function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostUsage | null {
+/**
+ * Host usage from one agy usage object. A step's usage describes one model request, whose prompt
+ * estimates the context in use; agy reports that prompt as `input_tokens` plus the separate
+ * `cache_read_tokens`. A result's usage sums every request of the native Conversation, so it
+ * carries context only when agy names it.
+ */
+function hostUsage(
+  value: AntigravityUsage | undefined,
+  modelId: string | undefined,
+  scope: "request" | "conversation",
+): HostUsage | null {
   if (!value) return null;
   const inputTokens = safeToken(value.input_tokens);
   const outputTokens = safeToken(value.output_tokens);
   const reasoningOutputTokens = safeToken(value.thinking_tokens);
   const totalTokens = safeToken(value.total_tokens);
-  const contextUsedTokens = safeToken(
-    value.context_used_tokens ?? value.estimated_tokens_used ?? value.input_tokens,
-  );
+  const requestPromptTokens =
+    scope === "request" && inputTokens !== undefined
+      ? inputTokens + (safeToken(value.cache_read_tokens) ?? 0)
+      : undefined;
+  const contextUsedTokens =
+    safeToken(value.context_used_tokens ?? value.estimated_tokens_used) ?? requestPromptTokens;
   const rawWindow = safeToken(value.context_window_tokens ?? value.max_context_tokens);
   const contextWindowTokens =
     contextUsedTokens !== undefined || rawWindow !== undefined
@@ -902,7 +915,7 @@ class AntigravitySession implements HarnessSession {
     if (event.event === "step_update") {
       if (event.step_update.conversation_id !== this.#nativeRef?.nativeSessionId) return;
       await this.#handleStep(active, event.step_update);
-      const usage = hostUsage(event.step_update.usage, active.model?.id);
+      const usage = hostUsage(event.step_update.usage, active.model?.id, "request");
       if (usage) this.#publishUsage(active, usage);
       this.#ensureContextUsage(active, event.step_update.conversation_id);
       return;
@@ -930,7 +943,7 @@ class AntigravitySession implements HarnessSession {
       });
       return;
     }
-    const usage = hostUsage(event.result.usage, active.model?.id);
+    const usage = hostUsage(event.result.usage, active.model?.id, "conversation");
     if (usage) this.#publishUsage(active, usage);
     this.#ensureContextUsage(active, event.result.conversation_id);
     if (active.contextUsagePromise) {

@@ -1751,6 +1751,83 @@ if (count === 0) {
       }
     });
 
+    it("estimates context from the latest request's prompt, not the Conversation's result totals", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: "conv-context",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-context",
+            step_index: 7,
+            state: "DONE",
+            step_type: "agent_response",
+            text_delta: "Done.",
+            // agy reports the cached part of this request's prompt separately.
+            usage: {
+              input_tokens: 2_751,
+              cache_read_tokens: 80_432,
+              output_tokens: 146,
+              thinking_tokens: 0,
+              total_tokens: 83_329,
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-context",
+            status: "SUCCESS",
+            num_turns: 3,
+            response: "Done.",
+            // Totals over every request of the resumed Conversation, not one prompt.
+            usage: {
+              input_tokens: 120_418,
+              cache_read_tokens: 412_903,
+              output_tokens: 1_204,
+              thinking_tokens: 0,
+              total_tokens: 534_525,
+            },
+          },
+        }),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-context"),
+          input: [{ type: "text", text: "continue" }],
+        });
+        const usages: Array<Record<string, unknown>> = [];
+        while (true) {
+          const event = await nextEvent(iterator);
+          if (event.type === "session.usage.changed" && event.usage) {
+            usages.push(event.usage as Record<string, unknown>);
+          }
+          if (event.type === "turn.completed") break;
+        }
+        expect(usages.map(({ contextUsedTokens }) => contextUsedTokens)).not.toContain(120_418);
+        expect(usages.at(-1)).toMatchObject({
+          contextUsedTokens: 83_183,
+          contextWindowTokens: 1_048_576,
+          inputTokens: 120_418,
+          outputTokens: 1_204,
+        });
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
     it("formats turn prompt with workspace file instructions and leaves slash commands untouched", () => {
       const normalPrompt = "Create a hello world python file";
       const formatted = formatAntigravityTurnPrompt(normalPrompt);

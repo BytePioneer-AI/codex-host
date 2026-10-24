@@ -118,6 +118,12 @@ const pluginPresentationShape = {
     .optional(),
 };
 
+/** Image resources are presentation data, never HTML/SVG markup to inject. */
+export const harnessPluginIconSchema = z
+  .string()
+  .max(Math.ceil(HARNESS_PLUGIN_ICON_MAX_BYTES / 3) * 4 + 64)
+  .regex(/^data:image\/(?:png|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/]+={0,2}$/u);
+
 /** A manifest is data only. It must be validated before importing any plugin code. */
 export const harnessPluginManifestSchema = z
   .object({
@@ -125,21 +131,10 @@ export const harnessPluginManifestSchema = z
     ...pluginPresentationShape,
     adapterApiVersion: z.number().int().positive(),
     entry: relativeResourceSchema,
-    icon: z
-      .string()
-      .trim()
-      .min(1)
-      .max(HARNESS_PLUGIN_ICON_MAX_BYTES * 2)
-      .optional(),
+    icon: relativeResourceSchema.or(harnessPluginIconSchema).optional(),
   })
   .strict();
 export type HarnessPluginManifest = z.infer<typeof harnessPluginManifestSchema>;
-
-/** Image resources are presentation data, never HTML/SVG markup to inject. */
-export const harnessPluginIconSchema = z
-  .string()
-  .max(Math.ceil(HARNESS_PLUGIN_ICON_MAX_BYTES / 3) * 4 + 64)
-  .regex(/^data:image\/(?:png|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/]+={0,2}$/u);
 
 export const harnessPluginDescriptorSchema = z
   .object({

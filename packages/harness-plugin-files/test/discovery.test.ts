@@ -51,6 +51,7 @@ describe("discoverHarnessPlugins", () => {
           id: "claude-custom",
           name: "Claude Custom",
           description: "Claude Code Custom Profile",
+          configDir: path.join(temporaryRoot, ".claude-custom"),
         },
       ]),
       "utf8",
@@ -102,6 +103,7 @@ describe("discoverHarnessPlugins", () => {
         {
           id: "claude-custom",
           name: "Claude Custom",
+          configDir: path.join(temporaryRoot, ".claude-custom"),
           icon: iconPath,
         },
       ]),
@@ -115,6 +117,6 @@ describe("discoverHarnessPlugins", () => {
     expect(result.plugins).toHaveLength(2);
     const customPlugin = result.plugins.find((p) => p.manifest.id === "claude-custom");
     expect(customPlugin).toBeDefined();
-    expect(customPlugin?.manifest.icon).toBe(iconPath);
+    expect(customPlugin?.manifest.icon?.startsWith("data:image/svg+xml;base64,")).toBe(true);
   });
 });

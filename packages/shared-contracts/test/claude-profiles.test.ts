@@ -45,10 +45,12 @@ describe("claudeCodeProfileSchema", () => {
       {
         id: "claude-custom",
         name: "Claude Custom",
+        configDir: "/Users/test/.claude-custom",
       },
       {
         id: "claude-work",
         name: "Claude Work",
+        configDir: "/Users/test/.claude-work",
       },
     ];
 
@@ -59,5 +61,22 @@ describe("claudeCodeProfileSchema", () => {
         profiles: list,
       }),
     ).toHaveLength(2);
+  });
+
+  it("rejects duplicate profile ids in profiles list", () => {
+    const duplicate = [
+      {
+        id: "claude-custom",
+        name: "Claude Custom",
+        configDir: "/Users/test/.claude-1",
+      },
+      {
+        id: "claude-custom",
+        name: "Claude Duplicate",
+        configDir: "/Users/test/.claude-2",
+      },
+    ];
+
+    expect(() => parseClaudeCodeProfiles(duplicate)).toThrow();
   });
 });

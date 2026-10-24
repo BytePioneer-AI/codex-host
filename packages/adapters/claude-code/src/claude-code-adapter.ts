@@ -3424,7 +3424,13 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
     // Permission prerequisites and the native process must observe the same environment.
     const environment = input.environment
-      ? { ...this.#environment, ...input.environment }
+      ? {
+          ...this.#environment,
+          ...input.environment,
+          ...(this.#environment.CLAUDE_CONFIG_DIR
+            ? { CLAUDE_CONFIG_DIR: this.#environment.CLAUDE_CONFIG_DIR }
+            : {}),
+        }
       : undefined;
     const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(environment);
     if (!bypassPermissionsAvailable && requestedPermissionModeId === "bypassPermissions") {

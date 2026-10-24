@@ -4,7 +4,7 @@ import path from "node:path";
 
 import {
   HARNESS_PLUGIN_ICON_MAX_BYTES,
-  parseClaudeCodeProfiles,
+  claudeCodeProfileSchema,
   type ClaudeCodeProfile,
 } from "@codexhost/shared-contracts";
 
@@ -58,17 +58,38 @@ export async function readClaudeCodeProfiles(
     return [];
   }
 
-  const profiles = parseClaudeCodeProfiles(parsedJson);
-  const baseDir = path.dirname(resolvedPath);
+  let rawList: unknown[];
+  if (Array.isArray(parsedJson)) {
+    rawList = parsedJson;
+  } else if (
+    parsedJson &&
+    typeof parsedJson === "object" &&
+    Array.isArray((parsedJson as Record<string, unknown>).profiles)
+  ) {
+    rawList = (parsedJson as Record<string, unknown>).profiles as unknown[];
+  } else {
+    return [];
+  }
 
-  return profiles.map((profile) => ({
-    ...profile,
-    ...(profile.command ? { command: resolveProfilePath(profile.command, baseDir, home) } : {}),
-    ...(profile.configDir
-      ? { configDir: resolveProfilePath(profile.configDir, baseDir, home) }
-      : {}),
-    ...(profile.icon ? { icon: resolveProfileIconPath(profile.icon, baseDir, home) } : {}),
-  }));
+  const baseDir = path.dirname(resolvedPath);
+  const profiles: ClaudeCodeProfile[] = [];
+  const seenIds = new Set<string>();
+
+  for (const item of rawList) {
+    const parsed = claudeCodeProfileSchema.safeParse(item);
+    if (!parsed.success) continue;
+    if (seenIds.has(parsed.data.id)) continue;
+    seenIds.add(parsed.data.id);
+    const profile = parsed.data;
+    profiles.push({
+      ...profile,
+      ...(profile.command ? { command: resolveProfilePath(profile.command, baseDir, home) } : {}),
+      configDir: resolveProfilePath(profile.configDir, baseDir, home),
+      ...(profile.icon ? { icon: resolveProfileIconPath(profile.icon, baseDir, home) } : {}),
+    });
+  }
+
+  return profiles;
 }
 
 function resolveProfilePath(inputPath: string, baseDir: string, home: string): string {

@@ -9,7 +9,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { pluginResourcePath, readPluginConfiguration, readPluginFile } from "./plugin-files.js";
-import { readClaudeCodeProfiles } from "./claude-profiles.js";
+import { readClaudeCodeProfiles, readProfileIcon } from "./claude-profiles.js";
 
 export interface InstalledHarnessPlugin {
   /** Resolved plugin directory. */
@@ -20,7 +20,7 @@ export interface InstalledHarnessPlugin {
 }
 
 export type HarnessPluginDiscoveryDiagnosticCode =
-  "invalidRoot" | "invalidConfiguration" | "invalidManifest";
+  "invalidRoot" | "invalidConfiguration" | "invalidManifest" | "duplicateId";
 
 export interface HarnessPluginDiscovery {
   plugins: InstalledHarnessPlugin[];
@@ -99,7 +99,20 @@ export async function discoverHarnessPlugins(
     try {
       const profiles = await readClaudeCodeProfiles(undefined, environment);
       for (const profile of profiles) {
+        if (plugins.some((p) => p.manifest.id === profile.id)) {
+          diagnose("duplicateId");
+          continue;
+        }
         try {
+          const profileIcon = profile.icon
+            ? await readProfileIcon(profile.icon).catch(() => undefined)
+            : undefined;
+          const icon = profileIcon ?? claudePlugin.manifest.icon;
+          const iconStyle = profile.iconStyle
+            ? profile.iconStyle
+            : profile.icon
+              ? undefined
+              : claudePlugin.manifest.iconStyle;
           const manifest: HarnessPluginManifest = harnessPluginManifestSchema.parse({
             manifestVersion: 1,
             id: profile.id,
@@ -108,16 +121,8 @@ export async function discoverHarnessPlugins(
             adapterApiVersion: claudePlugin.manifest.adapterApiVersion,
             entry: claudePlugin.manifest.entry,
             launchCommand: true,
-            ...(profile.icon
-              ? { icon: profile.icon }
-              : claudePlugin.manifest.icon
-                ? { icon: claudePlugin.manifest.icon }
-                : {}),
-            ...(profile.iconStyle
-              ? { iconStyle: profile.iconStyle }
-              : claudePlugin.manifest.iconStyle
-                ? { iconStyle: claudePlugin.manifest.iconStyle }
-                : {}),
+            ...(icon ? { icon } : {}),
+            ...(iconStyle ? { iconStyle } : {}),
             ...(claudePlugin.manifest.links ? { links: claudePlugin.manifest.links } : {}),
             ...(claudePlugin.manifest.installation
               ? { installation: claudePlugin.manifest.installation }

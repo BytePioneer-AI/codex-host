@@ -91,10 +91,6 @@ export function encodePluginIconDataUrl(bytes: Buffer): string {
 
 export async function readPluginIcon(root: string, resource: string): Promise<string> {
   if (resource.startsWith("data:")) return harnessPluginIconSchema.parse(resource);
-  if (path.isAbsolute(resource)) {
-    const bytes = await readPluginFile(resource, HARNESS_PLUGIN_ICON_MAX_BYTES);
-    return encodePluginIconDataUrl(bytes);
-  }
   const file = await pluginResourcePath(root, resource);
   const bytes = await readPluginFile(file, HARNESS_PLUGIN_ICON_MAX_BYTES);
   return encodePluginIconDataUrl(bytes);

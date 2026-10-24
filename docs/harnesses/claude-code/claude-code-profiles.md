@@ -46,7 +46,7 @@
 | `name` | `string` | 是 | 在 Desktop Agent 选择器与连接设置中展示的名称。 |
 | `description` | `string` | 否 | 简短描述，展示在 Harness 提示中。 |
 | `command` | `string` | 否 | 自定义可执行程序或包装脚本的路径，支持 `~` 展开。缺省时使用系统默认的 `claude` 命令。 |
-| `configDir` | `string` | 否 | 独立的 Claude Code 配置目录（映射到 `CLAUDE_CONFIG_DIR`），支持 `~` 展开。会话转录本、Pending 会话与配置均存放在此目录下，与默认的 `~/.claude` 严格隔离。 |
+| `configDir` | `string` | 是 | 独立的 Claude Code 配置目录（映射到 `CLAUDE_CONFIG_DIR`），支持 `~` 展开。会话转录本、Pending 会话与配置均存放在此目录下，与默认的 `~/.claude` 严格隔离。 |
 | `icon` | `string` | 否 | 图标文件路径（支持 SVG/PNG，支持 `~` 展开）或 Data URL（`data:image/svg+xml;base64,...`）。缺省时复用 Claude Code 默认图标。 |
 | `iconStyle` | `object` | 否 | 可选矢量样式定义（`vector` / `background` / `borderRadius`）。 |
 | `environment` | `object` | 否 | 注入该实例专用的环境变量（键值对）。 |

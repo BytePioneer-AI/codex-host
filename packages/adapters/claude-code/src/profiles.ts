@@ -36,7 +36,7 @@ export async function loadClaudeCodeProfile(
     return {
       ...profile,
       ...(profile.command ? { command: expand(profile.command) } : {}),
-      ...(profile.configDir ? { configDir: expand(profile.configDir) } : {}),
+      configDir: expand(profile.configDir) ?? profile.configDir,
     };
   } catch {
     return undefined;

@@ -13,7 +13,7 @@ import { OfficialWorkGate } from "../src/codex-runtime/official-work-gate.js";
 import { createOwnedLoopbackBackend } from "../src/codex-runtime/owned-official-backends.js";
 import type { OfficialAppServerExit } from "../src/official-app-server-connection.js";
 
-function fixture() {
+function fixture(prepareRequest?: (method: string, params: JsonObject) => Promise<JsonObject>) {
   let live = 0;
   let peak = 0;
   const events: string[] = [];
@@ -129,6 +129,7 @@ function fixture() {
     createBackend: create,
     diagnosticOutput: new PassThrough(),
     gate,
+    ...(prepareRequest ? { prepareRequest } : {}),
   });
   const attach = () => {
     const output: JsonObject[] = [];
@@ -204,6 +205,42 @@ describe("owned loopback backend", () => {
 });
 
 describe("single official runtime owner", () => {
+  it.each(["request", "send"])(
+    "applies local native compatibility before %s and never sends rejected work",
+    async (via) => {
+      const prepareRequest = vi.fn(async (method: string, params: JsonObject) => {
+        if (method === "turn/start") throw new Error("restart CodexHost");
+        return method === "thread/list"
+          ? { ...params, modelProviders: ["openai", "custom"] }
+          : params;
+      });
+      const f = fixture(prepareRequest);
+      const { client } = f.attach();
+      try {
+        await f.owner.start();
+        await client.initialize(initialization);
+        f.gate.initialized();
+        if (via === "request") {
+          await client.request("thread/list", { limit: 5 });
+          await expect(client.request("turn/start", { threadId: "thread-one" })).rejects.toThrow(
+            "restart CodexHost",
+          );
+        } else {
+          await client.send({ id: 4, method: "thread/list", params: { limit: 5 } });
+          await expect(
+            client.send({ id: 5, method: "turn/start", params: { threadId: "thread-one" } }),
+          ).rejects.toThrow("restart CodexHost");
+        }
+        expect(f.connection().requests.find((r) => r.method === "thread/list")?.params).toEqual({
+          limit: 5,
+          modelProviders: ["openai", "custom"],
+        });
+        expect(f.connection().requests.some((r) => r.method === "turn/start")).toBe(false);
+      } finally {
+        await f.owner.stop();
+      }
+    },
+  );
   it.each([
     { via: "request", method: "account/rateLimits/read" },
     { via: "request", method: "thread/read" },

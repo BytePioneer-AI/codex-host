@@ -23,6 +23,7 @@ Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和
 ## 已知例外
 
 - Mapping Store 读取失败时，带 `threadId` 的请求返回 `-32081`，不放行官方，避免外部 Thread 请求误发官方。
+- 本地官方历史别名的语音兼容启动模式使用真实的 `openai` 后端配置，保留原文件。该模式的原生 `thread/list` 默认查询同时包含 `openai` 与旧 `custom` 历史；明确的其他 Provider 过滤、空过滤及原生游标不变。路由改变后拒绝新工作并要求重启。该模式不修改 `config/read`、账号、功能开关或语音协议响应；其他启动形态继续遵循默认放行规则。详见[账号设置](../product/codex-accounts.md#原生听写实时语音与统一历史)。
 
 ## 请求必有回应
 

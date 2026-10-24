@@ -20,6 +20,7 @@ const allowedRuntimePackages = new Set([
   "@deepseek-ai/cordis",
   "@deepseek-ai/cosmokit",
   "diff",
+  "smol-toml",
   "ws",
   "zod",
 ]);

@@ -49,6 +49,8 @@ export interface OfficialRuntimeOwnerOptions {
   createBackend(): OwnedOfficialBackend;
   diagnosticOutput: Writable;
   gate: OfficialWorkGate;
+  /** Local startup compatibility may adjust native history filters and reject stale routes. */
+  prepareRequest?: (method: string, params: JsonObject) => Promise<JsonObject>;
 }
 const object = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -74,6 +76,7 @@ export class OfficialRuntimeOwner {
   readonly gate: OfficialWorkGate;
   readonly #factory: () => OwnedOfficialBackend;
   readonly #diagnosticOutput: Writable;
+  readonly #prepareRequest: OfficialRuntimeOwnerOptions["prepareRequest"];
   readonly #clients = new Set<Client>();
   #backend: OwnedOfficialBackend | undefined;
   #generation = 0;
@@ -84,6 +87,7 @@ export class OfficialRuntimeOwner {
   constructor(input: OfficialRuntimeOwnerOptions) {
     this.#factory = input.createBackend;
     this.#diagnosticOutput = input.diagnosticOutput;
+    this.#prepareRequest = input.prepareRequest;
     this.gate = input.gate;
   }
   get generation(): number {
@@ -341,6 +345,7 @@ export class OfficialRuntimeOwner {
     const finish = this.gate.admit();
     let response: JsonObject | undefined;
     try {
+      if (this.#prepareRequest) params = await this.#prepareRequest(method, params);
       const runtime = await this.#connection(client);
       await this.#restore(client, runtime, method, params);
       response = await runtime.request(method, params);
@@ -371,23 +376,29 @@ export class OfficialRuntimeOwner {
       client.serverRequests.delete(String(value.id));
       return;
     }
-    if (value.method === "initialized") return;
+    const method = value.method;
+    if (method === "initialized") return;
     if (typeof value.id !== "string" && typeof value.id !== "number")
       throw new Error("Official methods require a request ID");
-    const params = object(value.params) ? value.params : {};
-    this.#checkMethod(value.method);
+    let params = object(value.params) ? value.params : {};
+    this.#checkMethod(method);
     const finish = this.gate.admit();
     let pendingKey: string | undefined;
     try {
+      if (this.#prepareRequest && (value.params === undefined || object(value.params))) {
+        const prepared = await this.#prepareRequest(method, params);
+        if (prepared !== params) value = { ...value, params: prepared };
+        params = prepared;
+      }
       const runtime = await this.#connection(client);
-      await this.#restore(client, runtime, value.method, params);
+      await this.#restore(client, runtime, method, params);
       if (typeof value.id === "string" || typeof value.id === "number") {
         const key = requestKey(value.id);
         if (client.pending.has(key)) throw new Error("Duplicate official request ID");
         pendingKey = key;
         client.pending.set(pendingKey, {
           id: value.id,
-          method: value.method,
+          method,
           params,
           finish,
         });

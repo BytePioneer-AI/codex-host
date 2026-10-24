@@ -118,10 +118,12 @@ External Harness conversations created in an SSH project appear on the other com
 By default, Remote SSH Host stores its data under `~/.codexhost/remote/data`, while local Desktop uses `~/.codexhost`. That split means harness sessions and pins created on the local Desktop do not appear over SSH until you share a data directory. To list the same local harness threads and pins remotely, reinstall the remote service with a shared data directory:
 
 ```bash
+codexhost remote stop
 codexhost remote install --share-local-data
+codexhost remote start
 ```
 
-Or set an explicit path with `--data-dir PATH` (for example the same custom directory you already use for Desktop). Reinstall keeps a previously chosen shared path unless you pass a new `--data-dir` / `--share-local-data`. Uninstall never deletes a shared Desktop data directory outside `~/.codexhost/remote`.
+Stop the service before switching and start it again afterwards so the running service picks up the new data directory. Or set an explicit path with `--data-dir PATH` (for example the same custom directory you already use for Desktop). Reinstall keeps a previously chosen shared path unless you pass a new `--data-dir` / `--share-local-data`. Uninstall never deletes a shared Desktop data directory outside `~/.codexhost/remote`.
 
 Keep these points in mind:
 

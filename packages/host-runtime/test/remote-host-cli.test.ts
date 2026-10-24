@@ -127,9 +127,24 @@ describe("remote SSH Host CLI", () => {
         }),
       ).resolves.toBe(1);
       expect(stdout.text()).toBe("");
-      expect(stderr.text()).toContain("Pass either dataDirectory or shareLocalData, not both");
+      expect(stderr.text()).toContain("Pass either --share-local-data or --data-dir, not both");
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+  });
+
+  it("rejects an option in place of the --data-dir path", async () => {
+    const stdout = textSink();
+    const stderr = textSink();
+
+    await expect(
+      runRemoteHostCli({
+        arguments: ["install", "--data-dir", "--share-local-data"],
+        output: stdout.output,
+        diagnosticOutput: stderr.output,
+      }),
+    ).resolves.toBe(1);
+    expect(stdout.text()).toBe("");
+    expect(stderr.text()).toContain("--data-dir requires a value");
   });
 });

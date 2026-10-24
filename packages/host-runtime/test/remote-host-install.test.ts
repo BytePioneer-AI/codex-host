@@ -900,4 +900,36 @@ describe("remote SSH Host installation", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "expands ~ in dataDirectory and keeps an existing directory's permissions",
+    async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-data-dir-tilde-"));
+      const sharedData = path.join(home, "shared-data");
+      await mkdir(sharedData, { mode: 0o755 });
+      await chmod(sharedData, 0o755);
+      const options = {
+        home,
+        dataDirectory: "~/shared-data",
+        stockCodexPath: await executable(path.join(home, "stock-codex")),
+        nodePath: await executable(path.join(home, "node")),
+        shimPath: await executable(path.join(home, "codexhost-shim")),
+        hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+        platform: "linux" as const,
+        environment: { HOME: home, SHELL: "/bin/bash" },
+      };
+      try {
+        const installed = await installRemoteHost(options);
+        expect(installed.dataDirectory).toBe(sharedData);
+        expect((await lstat(sharedData)).mode & 0o777).toBe(0o755);
+
+        const created = path.join(home, "new-data");
+        const reinstalled = await installRemoteHost({ ...options, dataDirectory: "~/new-data" });
+        expect(reinstalled.dataDirectory).toBe(created);
+        expect((await lstat(created)).mode & 0o777).toBe(0o700);
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 });

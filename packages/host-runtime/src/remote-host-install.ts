@@ -37,7 +37,7 @@ export interface RemoteHostManifestV1 {
 export interface RemoteHostInstallOptions {
   home?: string;
   installRoot?: string;
-  /** Absolute or HOME-relative override for CODEXHOST_DATA_DIR. */
+  /** Override for CODEXHOST_DATA_DIR; a leading `~` expands to HOME. */
   dataDirectory?: string;
   /**
    * When true, point CODEXHOST_DATA_DIR at ~/.codexhost (same as local Desktop)
@@ -68,6 +68,12 @@ interface ResolvedRemoteHostPaths {
   profilePath: string;
 }
 
+function expandHome(value: string, home: string): string {
+  if (value === "~") return home;
+  if (value.startsWith("~/")) return path.join(home, value.slice(2));
+  return value;
+}
+
 function resolvePaths(options: RemoteHostInstallOptions): ResolvedRemoteHostPaths {
   const environment = options.environment ?? process.env;
   const configuredHome = options.home ?? environment.HOME;
@@ -96,7 +102,7 @@ function resolvePaths(options: RemoteHostInstallOptions): ResolvedRemoteHostPath
   }
   const dataDirectory =
     options.dataDirectory !== undefined
-      ? path.resolve(options.dataDirectory)
+      ? path.resolve(expandHome(options.dataDirectory, home))
       : options.shareLocalData
         ? path.join(home, ".codexhost")
         : path.join(installRoot, "data");
@@ -475,8 +481,17 @@ export async function installRemoteHost(
       manifest = { ...manifest, profileBackupPath };
       await writeAtomic(profilePath, nextProfile, profileMetadata?.mode ?? 0o600);
     }
-    await mkdir(manifest.dataDirectory, { recursive: true, mode: 0o700 });
-    await chmod(manifest.dataDirectory, 0o700);
+    const createdDataDirectory = await mkdir(manifest.dataDirectory, {
+      recursive: true,
+      mode: 0o700,
+    });
+    // Keep the permissions of an existing shared directory; only tighten ones we own.
+    if (
+      createdDataDirectory !== undefined ||
+      manifest.dataDirectory === path.join(paths.installRoot, "data")
+    ) {
+      await chmod(manifest.dataDirectory, 0o700);
+    }
     await writeAtomicExecutable(paths.wrapperPath, manifest.shimPath);
     manifest = { ...manifest, entrypointSha256: await fileSha256(paths.wrapperPath) };
     await writeAtomic(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o600);

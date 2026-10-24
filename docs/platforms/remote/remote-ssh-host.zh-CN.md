@@ -118,10 +118,12 @@ npm start 0.12.0
 默认情况下，Remote SSH Host 把数据放在 `~/.codexhost/remote/data`，本机 Desktop 则使用 `~/.codexhost`。因此在本机 Desktop 创建的 Harness 会话和置顶，不会直接出现在 SSH 远端列表中。若要让远端看到本机已有的 Harness 会话与置顶，请用共享数据目录重新安装远程服务：
 
 ```bash
+codexhost remote stop
 codexhost remote install --share-local-data
+codexhost remote start
 ```
 
-也可使用 `--data-dir PATH` 指定与 Desktop 相同的自定义数据目录。再次安装时会保留此前选定的共享路径，除非你重新传入 `--data-dir` / `--share-local-data`。卸载远程服务时，不会删除 `~/.codexhost/remote` 之外的共享 Desktop 数据目录。
+切换数据目录前先停止服务，安装后再启动，运行中的服务才会使用新的数据目录。也可使用 `--data-dir PATH` 指定与 Desktop 相同的自定义数据目录。再次安装时会保留此前选定的共享路径，除非你重新传入 `--data-dir` / `--share-local-data`。卸载远程服务时，不会删除 `~/.codexhost/remote` 之外的共享 Desktop 数据目录。
 
 使用时注意：
 

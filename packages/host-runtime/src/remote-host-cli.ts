@@ -39,7 +39,7 @@ function parseRemoteCliArguments(arguments_: readonly string[]): {
       continue;
     }
     const value = arguments_[index + 1];
-    if (!value) throw new Error(`${argument} requires a value`);
+    if (!value || value.startsWith("--")) throw new Error(`${argument} requires a value`);
     switch (argument) {
       case "--install-root":
         options.installRoot = value;
@@ -66,6 +66,9 @@ function parseRemoteCliArguments(arguments_: readonly string[]): {
         throw new Error(`Unknown remote option '${argument}'`);
     }
     index += 1;
+  }
+  if (options.dataDirectory !== undefined && options.shareLocalData) {
+    throw new Error("Pass either --share-local-data or --data-dir, not both");
   }
   return { command, options: { ...options, ...resources } };
 }

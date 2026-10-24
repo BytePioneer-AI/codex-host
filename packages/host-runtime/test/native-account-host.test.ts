@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -61,6 +61,8 @@ function nativeFixture() {
             result = { thread: { id: "voice-thread" } };
           } else if (request.method === "thread/realtime/start") {
             result = {};
+          } else if (request.method === "thread/list") {
+            result = { data: [], nextCursor: null };
           } else {
             throw new Error("Unexpected native request");
           }
@@ -98,9 +100,13 @@ function nativeFixture() {
   };
 }
 
-async function startLocal() {
+async function startLocal(config?: string) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-native-account-host-"));
   temporaryDirectories.add(directory);
+  if (config !== undefined) {
+    await mkdir(path.join(directory, "missing-codex-home"));
+    await writeFile(path.join(directory, "missing-codex-home", "config.toml"), config);
+  }
   const local = await prepareLocalCodex({
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
@@ -112,6 +118,35 @@ async function startLocal() {
 }
 
 describe("local Codex read-only identity startup", () => {
+  it("starts an official history alias on the real openai runtime without editing configuration", async () => {
+    const fixture = nativeFixture();
+    const local = await startLocal(`model_provider = "custom"
+[model_providers.custom]
+name = "OpenAI"
+requires_openai_auth = true
+supports_websockets = true
+wire_api = "responses"
+`);
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledWith(
+      expect.objectContaining({ arguments: ["app-server", "-c", 'model_provider="openai"'] }),
+    );
+    const desktop = new OfficialRuntimeClient({
+      scope: local.officialRuntimeScope,
+      output: async () => {},
+    });
+    try {
+      await desktop.initializeProtocol({
+        clientInfo: { name: "codex_desktop", version: "synthetic" },
+      });
+      await desktop.request("thread/list", { modelProviders: ["openai"], limit: 7 });
+      expect(fixture.requests.find((request) => request.method === "thread/list")?.params).toEqual({
+        modelProviders: ["openai", "custom"],
+        limit: 7,
+      });
+    } finally {
+      desktop.close();
+    }
+  });
   it("recovers the local backend so an existing client can explicitly retry voice startup", async () => {
     const first = nativeFixture();
     const local = await startLocal();

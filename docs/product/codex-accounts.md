@@ -66,6 +66,14 @@ Desktop `account/login/*` 和 `account/logout` 原样交给官方后端。Host �
 
 SSH 维持远端原生单账号，不传输本地凭据。
 
+## 原生听写、实时语音与统一历史
+
+原生 Codex 的听写和实时语音由官方 Desktop 与 app-server 提供，继续遵循原生登录、工作区策略与功能开关。CodexHost 不实现另一套录音或语音服务。
+
+CC Switch 的统一会话历史可把官方 Provider 保存为 `custom` 别名。对于无地址、无附加认证字段且仅包含 `name = "OpenAI"`、`requires_openai_auth = true`、`supports_websockets = true`、`wire_api = "responses"` 的官方别名，本地 Host 以原生 `model_provider="openai"` 启动覆盖运行后端，使 Desktop 能正确识别官方语音能力。兼容层不写回 Codex 或 CC Switch 配置，不迁移或重写已有历史；新会话仍由原生后端保存。历史查询同时包含新的 `openai` 与原来的 `custom` 分桶，旧 Thread 仍通过原生 resume 续接。
+
+显式 Profile、命令行路由或启动目录覆盖、第三方或本地代理地址、附加认证字段及未知形态保持原生路径。兼容模式遇到项目自己的 Provider 覆盖时会拒绝新工作并提示用显式 Profile 重启，避免官方启动覆盖改变项目路由。官方账号与第三方 Provider 之间切换后需重启 CodexHost；若在兼容后端运行期间改成其他路由，新建或续接工作会明确提示重启，既有实时会话的停止操作仍可执行。单纯恢复入口不代表已验证麦克风权限、转写或实时音频往返。
+
 ## 用量浮窗
 
 用量浮窗不重复展示 5 小时和 7 天额度；额度继续由专属额度入口展示。

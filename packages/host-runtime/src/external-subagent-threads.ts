@@ -10,6 +10,7 @@ import {
 import { hostThreadIdSchema, type NativeSessionRef } from "@codexhost/shared-contracts";
 
 import type { ExternalThreadStore } from "./external-thread-repository.js";
+import { presentExternalVoiceTurn } from "./external-voice-presentation.js";
 
 function childCreateRequest(
   parent: Pick<StoredThreadRecordV1, "hostThreadId" | "harnessId">,
@@ -203,14 +204,13 @@ export async function projectExternalSnapshot(
         return { ...entry, item: { ...entry.item, subagents } };
       }),
     );
-    turns.push(
-      projectHistoricalTurn({
-        threadId: record.hostThreadId,
-        turnId: mapping.hostTurnId,
-        cwd: record.cwd,
-        snapshot: { ...turn, items },
-      }),
-    );
+    const projected = projectHistoricalTurn({
+      threadId: record.hostThreadId,
+      turnId: mapping.hostTurnId,
+      cwd: record.cwd,
+      snapshot: { ...turn, items },
+    });
+    turns.push(mapping.realtimeInline ? presentExternalVoiceTurn(projected) : projected);
   }
   return turns;
 }

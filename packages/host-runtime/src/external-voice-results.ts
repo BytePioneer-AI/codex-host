@@ -1,4 +1,5 @@
 import type { HostEvent } from "@codexhost/harness-adapter";
+import { externalVoiceContentText } from "./external-voice-presentation.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -22,7 +23,7 @@ function speakableFromItems(
   const text = (
     finals.length ? finals : values.filter((item) => item.phase !== "commentary").slice(-1)
   )
-    .map((item) => item.text)
+    .map((item) => externalVoiceContentText(item.text))
     .join("\n")
     .trim();
   return text.length > 0 ? text : undefined;

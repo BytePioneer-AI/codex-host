@@ -1,5 +1,6 @@
 import { createGrokUsageStatistics } from "./usage-statistics.js";
 import { randomUUID } from "node:crypto";
+import { grokTextItemId } from "./grok-text-item-id.js";
 import { readGrokCredentials } from "./grok-credential-export.js";
 import path from "node:path";
 import { applyGrokComputerUsePreference } from "@codexhost/harness-plugin-files";
@@ -226,6 +227,7 @@ interface ActiveElicitation {
 
 interface ActiveTurn {
   command: TurnStartCommand;
+  textIdentity: { turnIndex: number; agentMessage: number; reasoning: number };
   usage?: GrokTurnUsage;
   agent: HostAgentMessageItem | null;
   agentMessageId: string | null;
@@ -542,6 +544,7 @@ class GrokHarnessSession implements HarnessSession {
     });
     const active: ActiveTurn = {
       command,
+      textIdentity: { turnIndex: this.#snapshot.turns.length, agentMessage: 0, reasoning: 0 },
       usage: new GrokTurnUsage(this.#usage, this.#snapshot.turns.length === 0),
       agent: null,
       agentMessageId: null,
@@ -666,6 +669,7 @@ class GrokHarnessSession implements HarnessSession {
     });
     const active: ActiveTurn = {
       command: { type: "turn.start", turnId: command.turnId, input: [] },
+      textIdentity: { turnIndex: this.#snapshot.turns.length, agentMessage: 0, reasoning: 0 },
       agent: null,
       agentMessageId: null,
       rawAgentText: "",
@@ -1190,7 +1194,12 @@ class GrokHarnessSession implements HarnessSession {
     if (!active.agent) {
       active.agent = {
         type: "agentMessage",
-        itemId: hostItemIdSchema.parse(this.#randomUUID()),
+        itemId: grokTextItemId(
+          this.#transport.sessionId,
+          active.textIdentity.turnIndex,
+          "agentMessage",
+          ++active.textIdentity.agentMessage,
+        ),
         text: "",
       };
       active.rawAgentText = "";
@@ -1224,7 +1233,12 @@ class GrokHarnessSession implements HarnessSession {
     if (!active.reasoning) {
       active.reasoning = {
         type: "reasoning",
-        itemId: hostItemIdSchema.parse(this.#randomUUID()),
+        itemId: grokTextItemId(
+          this.#transport.sessionId,
+          active.textIdentity.turnIndex,
+          "reasoning",
+          ++active.textIdentity.reasoning,
+        ),
         text: "",
       };
       this.#event({ type: "item.started", turnId: active.command.turnId, item: active.reasoning });

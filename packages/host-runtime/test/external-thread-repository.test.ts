@@ -68,6 +68,56 @@ afterEach(async () => {
 });
 
 describe("ExternalThreadRepository", () => {
+  it("retains native voice Markdown presentation through reconciliation and a store reopen", async () => {
+    const directory = await temporaryStoreDirectory();
+    let repository = new ExternalThreadRepository(new MappingStore({ directory }));
+    await repository.initialize();
+    try {
+      await repository.createProvisional({
+        hostThreadId,
+        createRequestId: "voice-presentation",
+        harnessId,
+        cwd: "/synthetic",
+        transportModelId: "codexhost/claude-code-native",
+        ephemeral: false,
+        historyMode: "paginated",
+      });
+      const ready = await repository.commitNative(hostThreadId, nativeSessionRef);
+      const turn = snapshotTurn("voice");
+      const text = "[A link](https://example.com/)";
+      turn.items = [
+        {
+          item: { type: "agentMessage", itemId: hostItemIdSchema.parse("answer"), text },
+          outcome: { status: "succeeded" },
+        },
+      ];
+      const persisted = await repository.persistTurn(
+        ready,
+        hostTurnIdSchema.parse("voice-turn"),
+        turn.nativeTurnRef,
+        undefined,
+        true,
+      );
+      const aligned = await repository.alignSnapshot(persisted, { turns: [turn] });
+      expect(aligned.record.turnMappings[0]?.realtimeInline).toBe(true);
+      await repository.close();
+      repository = new ExternalThreadRepository(new MappingStore({ directory }));
+      await repository.initialize();
+      const restored = await repository.find(hostThreadId);
+      if (!restored) throw new Error("Expected saved Thread");
+      const reloaded = await repository.alignSnapshot(restored, { turns: [turn] });
+      expect(reloaded.turns[0]?.items).toContainEqual(
+        expect.objectContaining({
+          id: "answer",
+          text: `::codex-realtime-inline{}\n${text}`,
+        }),
+      );
+      expect(turn.items[0]?.item).toMatchObject({ text });
+    } finally {
+      await repository.close();
+    }
+  });
+
   it("does not reconcile uncommitted or mismatched native history", async () => {
     const store = new MappingStore({ directory: await temporaryStoreDirectory() });
     const repository = new ExternalThreadRepository(store);

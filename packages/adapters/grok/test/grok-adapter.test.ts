@@ -702,7 +702,8 @@ describe("Grok Adapter ACP projection", () => {
     expect((await nextEvent(liveIterator)).type).toBe("item.started");
     expect((await nextEvent(liveIterator)).type).toBe("item.updated");
     liveTransport.finish();
-    expect((await nextEvent(liveIterator)).type).toBe("item.completed");
+    const liveItem = await nextEvent(liveIterator);
+    if (liveItem.type !== "item.completed") throw new Error("Expected completed Agent Item");
     const completed = await nextEvent(liveIterator);
     if (completed.type !== "turn.completed" || !completed.nativeTurnRef) {
       throw new Error("Live Grok Turn has no Native identity");
@@ -717,8 +718,66 @@ describe("Grok Adapter ACP projection", () => {
       throw new Error("Resumed Grok Snapshot has no Turn");
     }
     expect(snapshot.value.turns[0].nativeTurnRef).toEqual(completed.nativeTurnRef);
+    expect(snapshot.value.turns[0].items[0]?.item).toEqual(liveItem.snapshot.item);
     await resumed.adapter.close();
   });
+
+  it.each([
+    { withMessageIds: true, withTool: false },
+    { withMessageIds: true, withTool: true },
+    { withMessageIds: false, withTool: true },
+  ])(
+    "keeps streamed text Item identities when history is loaded ($withMessageIds, $withTool)",
+    async ({ withMessageIds, withTool }) => {
+      const transport = new FakeGrokTransport();
+      const { adapter, session } = await openedSession(transport);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("turn-live-history"),
+        input: [{ type: "text", text: "Repeat the answer in two separate messages." }],
+      });
+      const identity = (id: string) => (withMessageIds ? { messageId: id } : {});
+      transport.event({ type: "agent.thought", text: "checking", ...identity("a") });
+      transport.event({ type: "agent.text", text: "same ", ...identity("a") });
+      transport.event({ type: "agent.text", text: "answer", ...identity("a") });
+      if (withTool) {
+        transport.event({ type: "tool.call", callId: "tool", title: "Check", status: "completed" });
+      }
+      transport.event({ type: "agent.text", text: "same answer", ...identity("b") });
+      transport.finish();
+      if (withTool) {
+        // Native saved history may omit the optional IDs attached to streamed chunks.
+        transport.replay = transport.replay.map((event) => {
+          if (event.type !== "agent.text" && event.type !== "agent.thought") return event;
+          const saved = { ...event };
+          delete saved.messageId;
+          return saved;
+        });
+      }
+
+      const live: Array<{ itemId: string; type: string; text: string }> = [];
+      for (;;) {
+        const event = await nextEvent(iterator);
+        if (event.type === "item.completed") {
+          const item = event.snapshot.item;
+          if (item.type === "agentMessage" || item.type === "reasoning") live.push(item);
+        }
+        if (event.type === "turn.completed") break;
+      }
+      const snapshot = await session.readSnapshot();
+      if (!snapshot.ok || !snapshot.value.turns[0]) throw new Error("Expected history snapshot");
+      const history = snapshot.value.turns[0].items
+        .map(({ item }) => item)
+        .filter((item) => item.type === "agentMessage" || item.type === "reasoning");
+      expect(history).toEqual(live);
+      // Desktop upserts live completions by ID after hydrating saved history.
+      const visible = new Map<string, { type: string }>(history.map((item) => [item.itemId, item]));
+      for (const item of live) visible.set(item.itemId, item);
+      expect([...visible.values()].filter((item) => item.type === "agentMessage")).toHaveLength(2);
+      await adapter.close();
+    },
+  );
 
   it("omits background-task control records without shifting persisted Turn identities", async () => {
     const transport = new FakeGrokTransport();

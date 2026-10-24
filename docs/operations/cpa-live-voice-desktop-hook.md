@@ -507,6 +507,19 @@ Turn, returns success without cancelling a newer Turn.
 Context forwarding confirms delivery to the voice control connection. Exact
 audible progress and completion still require an attended Desktop call test.
 
+External Agent Messages completed during a voice call use Desktop's native
+`::codex-realtime-inline{}` Markdown presentation. The Host adds the directive
+only to Desktop projections; Harness history and speech context retain the
+original answer. The Turn mapping records `realtimeInline: true`, so history
+reloads and Host restarts preserve the same written presentation. This keeps
+exact links and other Markdown visible alongside the speech transcript.
+
+Grok text Item IDs use the native Session, visible Turn index, Item kind and
+message ordinal in both live projection and history replay. Chunk boundaries,
+optional native message IDs and message text do not determine those IDs.
+History hydration can therefore replace the streamed Item while preserving
+separate messages that happen to contain identical text.
+
 The speech service is instructed to delegate every question and task, including
 simple arithmetic; it supplies speech rather than owning task reasoning.
 The prototype defaults to Cantonese and the protocol's `cove` voice; supported V3
@@ -572,10 +585,11 @@ no separate voice hook, mock process or worktree is required:
 3. Verify progress only if the Harness actually emits a separate public message.
    A progress heading inside the final answer is one final message and does not
    verify intermediate speech. Private reasoning and command output are excluded.
-4. Check that the final answer is heard before hangup, the backend Turn completes,
-   and Desktop returns to idle. Native voice-work presentation can suppress the
-   backend assistant text in favor of voice transcripts; hidden text alone does
-   not establish a broken event stream.
+4. Check that the final answer is heard before hangup, its written Markdown and
+   links appear in the voice timeline, the backend Turn completes, and Desktop
+   returns to idle. Reopen the chat and check the same links again. Compare a
+   manual Grok chat with an automatically delegated chat using the same Model
+   and Thinking option; each answer should appear once.
 5. If the UI appears stuck, preserve the call and inspect the backend Turn and
    Desktop state before restarting or reloading. An active command is expected
    to remain busy. Judge a stale busy state after the final backend reply.

@@ -17,6 +17,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type { GrokTransportEvent } from "./acp-transport.js";
+import { grokTextItemId } from "./grok-text-item-id.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
 import {
   grokGeneratedImageItem,
@@ -128,7 +129,11 @@ export function mapGrokReplay(
   let nativePromptIndex = 0;
   let currentPromptIndex: number | null = null;
   let agent: HostAgentMessageItem | null = null;
+  let agentMessageId: string | undefined;
+  let agentIndex = 0;
   let reasoning: HostReasoningItem | null = null;
+  let reasoningMessageId: string | undefined;
+  let reasoningIndex = 0;
   const tools = new Map<string, GrokProjectedToolItem>();
   const generatedImages = new Map<string, GrokGeneratedImage>();
   const mediaRoots = grokMediaResolveRoots(cwd, sessionDirectory);
@@ -361,6 +366,8 @@ export function mapGrokReplay(
     });
     turnIndex += 1;
     messageIndex = 0;
+    agentIndex = 0;
+    reasoningIndex = 0;
     nativeTurnKey = null;
     currentPromptIndex = null;
     input = "";
@@ -375,6 +382,8 @@ export function mapGrokReplay(
       });
       turnIndex = turns.length;
       messageIndex = 0;
+      agentIndex = 0;
+      reasoningIndex = 0;
       nativeTurnKey = null;
       nativePromptIndex = event.targetPromptIndex;
       currentPromptIndex = null;
@@ -441,20 +450,26 @@ export function mapGrokReplay(
         outcome,
       });
     } else if (event.type === "agent.text") {
+      if (agent && agentMessageId !== event.messageId) completeAgent();
       if (!agent) {
         completeReasoning();
+        agentMessageId = event.messageId;
+        ++messageIndex;
         agent = {
           type: "agentMessage",
-          itemId: stableId("message", turnIndex, ++messageIndex),
+          itemId: grokTextItemId(sessionId, turnIndex, "agentMessage", ++agentIndex),
           text: "",
         };
       }
       agent = { ...agent, text: agent.text + event.text };
     } else if (event.type === "agent.thought") {
+      if (reasoning && reasoningMessageId !== event.messageId) completeReasoning();
       if (!reasoning) {
+        reasoningMessageId = event.messageId;
+        ++messageIndex;
         reasoning = {
           type: "reasoning",
-          itemId: stableId("reasoning", turnIndex, ++messageIndex),
+          itemId: grokTextItemId(sessionId, turnIndex, "reasoning", ++reasoningIndex),
           text: "",
         };
       }

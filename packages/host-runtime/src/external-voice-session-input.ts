@@ -1,4 +1,5 @@
 import type { JsonObject } from "@codexhost/protocol-core";
+import { externalVoiceContentText } from "./external-voice-presentation.js";
 
 const MAX_MESSAGES = 32;
 const MAX_MESSAGE_CHARS = 2_000;
@@ -48,7 +49,8 @@ export function voiceSessionInputFromTurns(turns: readonly unknown[]): JsonObjec
         const text = userMessageText(item);
         if (text) messages.push(liveMessage("user", text));
       } else if (item.type === "agentMessage" && item.phase !== "commentary") {
-        const text = typeof item.text === "string" ? item.text.trim() : "";
+        const text =
+          typeof item.text === "string" ? externalVoiceContentText(item.text).trim() : "";
         if (text) messages.push(liveMessage("assistant", text));
       }
     }

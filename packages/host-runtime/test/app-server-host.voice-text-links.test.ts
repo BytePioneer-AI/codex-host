@@ -1,5 +1,5 @@
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
-import { harnessIdSchema, type JsonObject } from "@codexhost/shared-contracts";
+import { harnessIdSchema, hostThreadIdSchema, type JsonObject } from "@codexhost/shared-contracts";
 import { expect, it, vi } from "vitest";
 
 import type { ExternalVoiceCallFactory } from "../src/external-voice-gateway.js";
@@ -18,6 +18,7 @@ it("preserves written links and one Agent item identity when speech returns a sh
     "- [BrowserLeaks](https://browserleaks.com/javascript)",
   ].join("\n");
   const spoken = "Here are the three browser test sites.";
+  const displayed = `::codex-realtime-inline{}\n${answer}`;
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("grok"));
   let onEvent: Parameters<ExternalVoiceCallFactory>[0]["onEvent"] | undefined;
   const sent: JsonObject[] = [];
@@ -82,7 +83,7 @@ it("preserves written links and one Agent item identity when speech returns a sh
     const items = ((terminal.params as JsonObject).turn as JsonObject).items as JsonObject[];
     const answers = items.filter((item) => item.type === "agentMessage");
     expect(answers).toHaveLength(1);
-    expect(answers[0]).toMatchObject({ text: answer, phase: "final_answer" });
+    expect(answers[0]).toMatchObject({ text: displayed, phase: "final_answer" });
     const completions = fixture.collector.messages
       .filter(
         (message) =>
@@ -93,7 +94,26 @@ it("preserves written links and one Agent item identity when speech returns a sh
       .filter((item) => item.type === "agentMessage");
     expect(completions.length).toBeGreaterThan(0);
     expect(new Set(completions.map((item) => item.id))).toEqual(new Set([answers[0]?.id]));
-    expect(completions.every((item) => item.text === answer)).toBe(true);
+    expect(completions.every((item) => item.text === displayed)).toBe(true);
+
+    const record = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    expect(record?.turnMappings[0]).toMatchObject({ realtimeInline: true });
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "thread/realtime/stop",
+      params: { threadId },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 4));
+    writeRequest(fixture.desktopInput, {
+      id: 5,
+      method: "thread/read",
+      params: { threadId, includeTurns: true },
+    });
+    const reloaded = await fixture.collector.waitFor((message) => requestId(message, 5));
+    const history = ((reloaded.result as JsonObject).thread as JsonObject).turns as JsonObject[];
+    expect(
+      (history[0]?.items as JsonObject[]).find((item) => item.type === "agentMessage"),
+    ).toMatchObject({ id: answers[0]?.id, text: displayed });
   } finally {
     await stopFixture(fixture);
   }

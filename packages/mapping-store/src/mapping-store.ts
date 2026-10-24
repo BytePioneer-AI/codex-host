@@ -1077,6 +1077,7 @@ export class MappingStore {
         if (!hostMatch.nativeCheckpointRef && update.nativeCheckpointRef) {
           hostMatch.nativeCheckpointRef = update.nativeCheckpointRef;
         }
+        if (update.realtimeInline) hostMatch.realtimeInline = true;
         continue;
       }
       const added = { ...update };

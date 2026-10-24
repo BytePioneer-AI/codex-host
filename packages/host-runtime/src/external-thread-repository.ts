@@ -240,6 +240,7 @@ export class ExternalThreadRepository {
     hostTurnId: StoredTurnMappingV1["hostTurnId"],
     nativeTurnRef: NativeTurnRef,
     nativeCheckpointRef?: NativeCheckpointRef,
+    realtimeInline?: true,
   ): Promise<StoredThreadRecordV1> {
     if (
       record.state !== "ready" ||
@@ -257,6 +258,7 @@ export class ExternalThreadRepository {
         hostTurnId,
         nativeTurnRef,
         ...(nativeCheckpointRef ? { nativeCheckpointRef } : {}),
+        ...(realtimeInline ? { realtimeInline } : {}),
       },
     ]);
   }
@@ -351,6 +353,7 @@ export class ExternalThreadRepository {
       }
       return {
         hostTurnId: previous.hostTurnId,
+        ...(previous.realtimeInline ? { realtimeInline: true as const } : {}),
         nativeTurnRef: turn.nativeTurnRef,
         ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
       };
@@ -399,6 +402,7 @@ export class ExternalThreadRepository {
       }
       return {
         hostTurnId: previous.hostTurnId,
+        ...(previous.realtimeInline ? { realtimeInline: true as const } : {}),
         nativeTurnRef: turn.nativeTurnRef,
         ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
       };
@@ -475,6 +479,7 @@ export class ExternalThreadRepository {
         snapshot: turn,
         mapping: {
           hostTurnId: mapping.hostTurnId,
+          ...(mapping.realtimeInline ? { realtimeInline: true as const } : {}),
           nativeTurnRef: turn.nativeTurnRef,
           ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
         },

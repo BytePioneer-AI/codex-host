@@ -28,6 +28,8 @@ export const storedTurnMappingV1Schema = z
     hostTurnId: hostTurnIdSchema,
     nativeTurnRef: nativeTurnRefSchema,
     nativeCheckpointRef: nativeCheckpointRefSchema.optional(),
+    /** Desktop presentation for work completed during an external voice call. */
+    realtimeInline: z.literal(true).optional(),
   })
   .strict();
 

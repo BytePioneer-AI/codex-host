@@ -26,6 +26,10 @@ import { ExternalVoice } from "./external-voice.js";
 import { voiceSessionInputFromTurns } from "./external-voice-session-input.js";
 import { ExternalVoiceResults } from "./external-voice-results.js";
 import {
+  presentExternalVoiceMessage,
+  presentExternalVoiceTurn,
+} from "./external-voice-presentation.js";
+import {
   configuredExternalVoiceGateway,
   type ExternalVoiceCallFactory,
 } from "./external-voice-gateway.js";
@@ -395,6 +399,7 @@ interface TurnProjectionGate {
 
 interface ProjectedTurn {
   projector: CodexTurnProjector;
+  realtimeInline?: true;
 }
 
 type HostApprovalRequestId = number;
@@ -5415,6 +5420,13 @@ export class AppServerHost {
     const projection = this.#projectedTurn(thread, event.turnId);
     await this.#waitForTurnResponse(thread, event.turnId);
     if (
+      event.type === "item.completed" &&
+      event.snapshot.item.type === "agentMessage" &&
+      this.#externalVoice.has(thread.id)
+    ) {
+      projection.realtimeInline = true;
+    }
+    if (
       event.type === "interaction.closed" &&
       thread.ignoredInteractionIds.delete(event.interactionId)
     ) {
@@ -5458,7 +5470,11 @@ export class AppServerHost {
         thread.ephemeralTurnIds.delete(event.turnId);
         this.#manualCompactionTurns.delete(thread);
       } else {
-        thread.turns.push(result.completedTurn);
+        thread.turns.push(
+          projection.realtimeInline
+            ? presentExternalVoiceTurn(result.completedTurn)
+            : result.completedTurn,
+        );
         thread.projectedTerminalTurnId = event.turnId;
         thread.thread.updatedAt = completedAt;
         thread.thread.recencyAt = completedAt;
@@ -5502,7 +5518,11 @@ export class AppServerHost {
     ) {
       thread.projectedTurns.delete(event.turnId);
     }
-    for (const message of result.messages) await this.#writer.json(message);
+    for (const message of result.messages) {
+      await this.#writer.json(
+        projection.realtimeInline ? presentExternalVoiceMessage(message) : message,
+      );
+    }
     this.#externalVoiceResults.observe(
       thread.id,
       event,

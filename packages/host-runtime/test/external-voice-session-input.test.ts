@@ -15,7 +15,7 @@ describe("voice session input from Thread Turns", () => {
             { type: "agentMessage", text: "Checking.", phase: "commentary" },
             {
               type: "agentMessage",
-              text: "Only empty outputs/ and work/.",
+              text: "::codex-realtime-inline{}\nOnly empty outputs/ and work/.",
               phase: "final_answer",
             },
           ],

@@ -76,7 +76,7 @@ export interface ExternalThread {
   /** Host metering for the current Session only; replaced with it. */
   usageMeter: UsageMeter;
   usageTurnId: HostTurnId | null;
-  projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
+  projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector; realtimeInline?: true }>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
   pendingSteerProjections: Set<Promise<void>>;
   ephemeralTurnIds: Set<HostTurnId>;
@@ -769,6 +769,7 @@ export class ExternalThreadRuntime {
         event.turnId,
         event.nativeTurnRef,
         event.outcome.checkpoint,
+        thread.projectedTurns.get(event.turnId)?.realtimeInline,
       );
       return null;
     } catch (error) {

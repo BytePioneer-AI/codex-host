@@ -29,7 +29,7 @@ Pi 的 Fork 只使用精确可表达的位置：下一轮是用户消息时切�
 
 ## 历史和限制
 
-- 父历史中的成功异步启动结果指向插件公开的 `status.json`。恢复时仅接受 lifecycle artifact v3，要求 run ID 和父 Session ID 精确匹配；每次最多读取最近 128 个 run，每文件最多 1 MiB，不跟随状态文件本身的符号链接。
+- 父历史中的成功异步启动结果指向插件公开的 `status.json`。恢复时仅接受 lifecycle artifact v3，要求 run ID 精确匹配，且 artifact 的 `sessionId` 精确等于父 Session 的 Session ID 或会话文件路径（插件在 Session 有会话文件时记录文件路径）；每次最多读取最近 128 个 run，每文件最多 1 MiB，不跟随状态文件本身的符号链接。
 - 状态快照可能截断。缺失的 run/child 不等于结束、停止或删除；已观察到的状态保留。磁盘历史恢复目前投影直接 steps；嵌套单任务依赖实时状态快照。嵌套 workflow 的内部 steps 暂不生成链接，避免将其 ID 错配到外层 run。
 - 任务工件被清理、格式不支持或归属不匹配时，不伪造历史卡片。已持久化子 Thread 的读取仍交给原生检查协议，可能返回 `stale` / `not_found`。
 - 实时发现依赖插件发出异步状态 widget。关闭该 widget 时，不承诺实时卡片；公开状态工件仍可用于父历史恢复。

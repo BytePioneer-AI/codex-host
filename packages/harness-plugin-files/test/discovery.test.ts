@@ -68,4 +68,53 @@ describe("discoverHarnessPlugins", () => {
     expect(customPlugin?.enabled).toBe(true);
     expect(result.enabledIds.has("claude-custom")).toBe(true);
   });
+
+  it("discovers profiles with custom icon and reads icon", async () => {
+    const pluginsRoot = path.join(temporaryRoot, "plugins-with-icon");
+    const claudeDir = path.join(pluginsRoot, "claude-code");
+    await mkdir(claudeDir, { recursive: true });
+
+    await writeFile(
+      path.join(pluginsRoot, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["claude-code"] }),
+      "utf8",
+    );
+
+    const baseManifest = {
+      manifestVersion: 1,
+      id: "claude-code",
+      name: "Claude Code",
+      version: "1.0.0",
+      adapterApiVersion: 1,
+      entry: "./plugin.mjs",
+    };
+    await writeFile(path.join(claudeDir, "manifest.json"), JSON.stringify(baseManifest), "utf8");
+    await writeFile(path.join(claudeDir, "plugin.mjs"), "export {}", "utf8");
+
+    const iconPath = path.join(temporaryRoot, "custom-icon.svg");
+    const testSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M0 0h24v24H0z"/></svg>`;
+    await writeFile(iconPath, testSvg, "utf8");
+
+    const profilesPath = path.join(temporaryRoot, "profiles-with-icon.json");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        {
+          id: "claude-custom",
+          name: "Claude Custom",
+          icon: iconPath,
+        },
+      ]),
+      "utf8",
+    );
+
+    const result = await discoverHarnessPlugins([pluginsRoot], () => undefined, {
+      CODEXHOST_CLAUDE_PROFILES_FILE: profilesPath,
+    });
+
+    expect(result.plugins).toHaveLength(2);
+    const customPlugin = result.plugins.find((p) => p.manifest.id === "claude-custom");
+    expect(customPlugin).toBeDefined();
+    expect(customPlugin?.manifest.icon).toBe(iconPath);
+  });
 });

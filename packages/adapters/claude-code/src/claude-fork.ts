@@ -70,6 +70,7 @@ async function readSnapshot(
   dependencies: ClaudeForkInput["dependencies"],
   cwd: string,
   sessionId: string,
+  harnessId?: HarnessId,
 ): Promise<HarnessResult<HostThreadSnapshot>> {
   let messages: unknown[];
   try {
@@ -87,7 +88,7 @@ async function readSnapshot(
     };
   }
   try {
-    return { ok: true, value: mapClaudeSnapshot(messages, sessionId) };
+    return { ok: true, value: mapClaudeSnapshot(messages, sessionId, harnessId) };
   } catch {
     return {
       ok: false,
@@ -152,7 +153,12 @@ export async function forkClaudeSession(
     };
   }
 
-  const source = await readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId);
+  const source = await readSnapshot(
+    input.dependencies,
+    input.cwd,
+    sourceRef.data.nativeSessionId,
+    input.harnessId,
+  );
   if (!source.ok) return source;
   if (input.kind === "rollbackLastTurn" && source.value.turns.length === 0) {
     return {
@@ -174,6 +180,7 @@ export async function forkClaudeSession(
       input.dependencies,
       input.cwd,
       sourceRef.data.nativeSessionId,
+      input.harnessId,
     );
     if (!sourceAfter.ok || !isDeepStrictEqual(sourceAfter.value, source.value)) {
       await input.pendingSessions.discard(nativeRef, input.cwd).catch(() => undefined);
@@ -234,8 +241,8 @@ export async function forkClaudeSession(
       .catch(() => undefined);
   };
   const [derived, sourceAfter] = await Promise.all([
-    readSnapshot(input.dependencies, input.cwd, derivedSessionId),
-    readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId),
+    readSnapshot(input.dependencies, input.cwd, derivedSessionId, input.harnessId),
+    readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId, input.harnessId),
   ]);
   if (!derived.ok) {
     await cleanup();

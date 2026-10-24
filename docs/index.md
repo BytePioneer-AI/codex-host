@@ -44,6 +44,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`harnesses/claude-code/claude-code-profiles.md`](harnesses/claude-code/claude-code-profiles.md) | Claude Code 兼容变体 / Profile 配置、独立配置目录与生命周期隔离；新增或修改 Profile 实例时阅读。 |
 | [`harnesses/claude-code/claude-code-plan-mode.md`](harnesses/claude-code/claude-code-plan-mode.md) | Claude Code 规划模式、计划退出确认与权限状态边界；修改 Plan Mode 时阅读。 |
 | [`harnesses/claude-code/claude-code-edit-recovery.md`](harnesses/claude-code/claude-code-edit-recovery.md) | 最后一条消息编辑后的独立 Session、空历史保留和关闭语义；修改编辑恢复时阅读。 |
 | [`harnesses/claude-code/claude-code-background-terminals.md`](harnesses/claude-code/claude-code-background-terminals.md) | Claude 后台命令作为 Desktop 后台终端：原生通知结算、实时输出、历史叠加与所有权；修改后台命令时阅读。 |

@@ -13,16 +13,16 @@ codexhost 需要一种**通用、不带私有逻辑的 Claude Code 兼容变体 
 
 ## What Changes
 
-- **公共契约与模式**：在 `@codexhost/shared-contracts` 中定义 `claudeCodeProfileSchema` 及 profiles 配置文件格式；在 `@codexhost/harness-adapter` 的 `HarnessPluginModule` 中声明通用的 `createHarnessProfiles?` 契约，在 `HarnessPluginContext` 中补充可选 `harnessId`。
-- **配置发现**：在 `@codexhost/harness-plugin-files` 中提供安全读取外部 profiles 配置（`~/.codexhost/claude-code-profiles.json` 或环境变量指定的配置文件）的能力，支持数据 URL 或本地图片资源的图标转换。
-- **动态插件加载**：在 `@codexhost/host-runtime` 的 `loadHarnessPlugins` 中，当加载的插件模块提供 `createHarnessProfiles` 时，由 loader 统一验证并注册派生的 profiles 适配器到 `HarnessPluginRegistry`，确保与普通 Harness 拥有相同的目录发现、权限控制、状态恢复与生命周期管理。
-- **Claude Code 适配器参数化**：在 `packages/adapters/claude-code` 中，解耦硬编码的 `"claude-code"` ID，允许构造时指定 `harnessId`、启动命令与 `environment`（包含独立 `CLAUDE_CONFIG_DIR`），正确映射 Native Ref、Pending Session、历史快照与模型目录；在 `plugin.ts` 中实现 `createHarnessProfiles`。
+- **公共契约与模式**：在 `@codexhost/shared-contracts` 中定义 `claudeCodeProfileSchema` 及 profiles 配置文件格式；在 `@codexhost/harness-adapter` 的 `HarnessPluginContext` 中补充可选 `harnessId`。
+- **配置与候选发现**：在 `@codexhost/harness-plugin-files` 中提供安全读取外部 profiles 配置（`~/.codexhost/claude-code-profiles.json` 或环境变量指定的配置文件）的能力，并在启用 `claude-code` 时将已声明的 profiles 作为合法 Harness 候选纳入插件发现，支持数据 URL 或本地图片资源的图标转换。
+- **统一插件加载与隔离**：在 `@codexhost/host-runtime` 的 `loadHarnessPlugins` 中，通过传递 `context.harnessId` 使具体插件工厂按指定身份实例化，确保 Profile 与普通 Harness 拥有完全相同的目录发现、权限控制、状态恢复与生命周期管理。
+- **Claude Code 适配器参数化**：在 `packages/adapters/claude-code` 中，解耦硬编码的 `"claude-code"` ID，允许构造时指定 `harnessId`、启动命令与 `environment`（包含独立 `CLAUDE_CONFIG_DIR`），正确映射 Native Ref、Pending Session、历史快照、会话导入与原生存储调用；在 `plugin.ts` 中根据 `context.harnessId` 绑定对应 Profile 配置，防止污染共享 Shell 缓存。
 - **Renderer 权限偏好扩展**：使 `renderer-extension` 的权限模式记忆能够支持指定 Harness ID，使 Claude 变体同样享有会话权限偏好记忆。
 
 ## Decisions
 
 - **外部配置文件与零硬编码**：Profile 声明一律放置在仓库外（`~/.codexhost/claude-code-profiles.json`），代码和 PR 中不得包含任何具体网关名称、Token、私有路径或商业凭据。
-- **公共契约扩展与单一责任**：遵循边界规则，Host Runtime 不直接引用任何具体 Adapter 包，而是通过公共模块接口 `createHarnessProfiles` 驱动；具体实例的构建与参数绑定完全封装在 `claude-code` 插件内部。
+- **候选发现复用现有加载链路**：遵循边界规则，Host Runtime 不直接引用任何具体 Adapter 包，Profile 作为经由发现层转换的 Harness 候选参与统一校验与生命周期管理；具体实例的构建与参数绑定完全封装在 `claude-code` 插件内部。
 - **共享插件路由**：所有变体 Harness 统一采用现有的 `encodeHarnessPluginRoute` / `decodeHarnessPluginRoute` 传输模型标识，Desktop 无需新增专有分支即可完整支持模型切换、Thinking 与权限模式。
 - **配置与会话强隔离**：变体实例通过 `CLAUDE_CONFIG_DIR` 隔离本地会话（`projects/`、`history.jsonl`），避免污染官方 `~/.claude`；模型选择器准确反映变体实例环境配置（如 `settings.json` 中的 `modelPicker`）。
 - **向后零回归**：原有 `claude-code` 默认行为、启动路径与存储位置保持 100% 字节级一致。

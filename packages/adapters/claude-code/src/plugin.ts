@@ -19,12 +19,16 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
       ? await loadClaudeCodeProfile(harnessId, context.environment)
       : undefined;
 
-  const baseEnv: Record<string, string | undefined> = {
-    ...context.environment,
+  if (harnessId !== "claude-code" && !profile) {
+    throw new Error(`Claude Code profile '${harnessId}' configuration is unavailable`);
+  }
+
+  const baseEnvironment = await withUserShellEnvironment({ ...context.environment });
+  const environment: NodeJS.ProcessEnv = {
+    ...baseEnvironment,
     ...(profile?.configDir ? { CLAUDE_CONFIG_DIR: profile.configDir } : {}),
     ...(profile?.environment ?? {}),
   };
-  const environment = await withUserShellEnvironment(baseEnv);
   const command =
     profile?.command ??
     context.launchCommand ??

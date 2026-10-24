@@ -2979,6 +2979,36 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 }
 
+let sdkStorageLock: Promise<void> = Promise.resolve();
+
+async function withSdkConfigDirectory<T>(
+  configDir: string | undefined,
+  action: () => Promise<T>,
+): Promise<T> {
+  const previousLock = sdkStorageLock;
+  let release: () => void = () => undefined;
+  sdkStorageLock = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previousLock;
+  const prior = process.env.CLAUDE_CONFIG_DIR;
+  if (configDir) {
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+  } else {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  }
+  try {
+    return await action();
+  } finally {
+    if (prior !== undefined) {
+      process.env.CLAUDE_CONFIG_DIR = prior;
+    } else {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    }
+    release();
+  }
+}
+
 export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly commandCatalog = claudeCommandCatalog;
   readonly liveCommandCatalog = true;
@@ -3071,7 +3101,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     this.harnessId = harnessIdSchema.parse(options.harnessId ?? "claude-code");
     const environment = options.environment ?? process.env;
     this.#environment = environment;
-    this.#importIndex = new ClaudeSessionImportIndex(environment);
+    this.#importIndex = new ClaudeSessionImportIndex(environment, this.harnessId);
     this.usageStatistics = createClaudeUsageStatistics(environment);
     this.#pendingSessions = new ClaudePendingSessions(environment, this.harnessId);
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
@@ -3116,26 +3146,31 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           closeTimeoutMs: this.#closeTimeoutMs,
           abortTimeoutMs: this.#cancelTimeoutMs,
         }),
-      deleteSession: ({ cwd, sessionId }) => deleteClaudeSession(sessionId, { dir: cwd }),
-      forkSession: async ({ checkpointId, cwd, sourceSessionId }) => {
-        const forked = await forkClaudeNativeSession(sourceSessionId, {
-          dir: cwd,
-          upToMessageId: checkpointId,
-        });
-        // An unresolved reference costs only prompt cache, never history, so a failure here
-        // must not fail the Fork.
-        await remapForkedSessionReferences({
-          cwd,
-          environment: options.environment ?? process.env,
-          sessionId: forked.sessionId,
-        }).catch(() => undefined);
-        return forked;
-      },
-      getSessionInfo: async ({ sessionId }) => {
-        const info = await getClaudeSessionInfo(sessionId);
-        if (!info) return undefined;
-        return info.cwd ? { cwd: info.cwd } : {};
-      },
+      deleteSession: ({ cwd, sessionId }) =>
+        withSdkConfigDirectory(options.environment?.CLAUDE_CONFIG_DIR, () =>
+          deleteClaudeSession(sessionId, { dir: cwd }),
+        ),
+      forkSession: async ({ checkpointId, cwd, sourceSessionId }) =>
+        withSdkConfigDirectory(options.environment?.CLAUDE_CONFIG_DIR, async () => {
+          const forked = await forkClaudeNativeSession(sourceSessionId, {
+            dir: cwd,
+            upToMessageId: checkpointId,
+          });
+          // An unresolved reference costs only prompt cache, never history, so a failure here
+          // must not fail the Fork.
+          await remapForkedSessionReferences({
+            cwd,
+            environment: options.environment ?? process.env,
+            sessionId: forked.sessionId,
+          }).catch(() => undefined);
+          return forked;
+        }),
+      getSessionInfo: async ({ sessionId }) =>
+        withSdkConfigDirectory(options.environment?.CLAUDE_CONFIG_DIR, async () => {
+          const info = await getClaudeSessionInfo(sessionId);
+          if (!info) return undefined;
+          return info.cwd ? { cwd: info.cwd } : {};
+        }),
       readSessionMessages: async ({ cwd, sessionId }) => {
         const transcript = await readClaudeTranscript({
           cwd,
@@ -3145,7 +3180,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         return transcript;
       },
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
-        getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
+        withSdkConfigDirectory(options.environment?.CLAUDE_CONFIG_DIR, () =>
+          getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
+        ),
     };
   }
 

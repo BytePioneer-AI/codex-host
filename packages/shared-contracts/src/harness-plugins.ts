@@ -125,7 +125,12 @@ export const harnessPluginManifestSchema = z
     ...pluginPresentationShape,
     adapterApiVersion: z.number().int().positive(),
     entry: relativeResourceSchema,
-    icon: relativeResourceSchema.optional(),
+    icon: z
+      .string()
+      .trim()
+      .min(1)
+      .max(HARNESS_PLUGIN_ICON_MAX_BYTES * 2)
+      .optional(),
   })
   .strict();
 export type HarnessPluginManifest = z.infer<typeof harnessPluginManifestSchema>;

@@ -122,9 +122,6 @@ export async function discoverHarnessPlugins(
             ...(claudePlugin.manifest.installation
               ? { installation: claudePlugin.manifest.installation }
               : {}),
-            ...(profile.description
-              ? { notice: { en: profile.description, "zh-CN": profile.description } }
-              : {}),
           });
           plugins.push({ root: claudePlugin.root, manifest, enabled: true });
           enabledIds.add(profile.id);

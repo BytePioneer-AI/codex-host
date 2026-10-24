@@ -7,9 +7,7 @@ import {
 export const CLAUDE_PERMISSION_MODE_PREFERENCE_KEY = "codexhost.claude-code.permission-mode.v1";
 
 export function claudePermissionModeStorageKey(harnessId = "claude-code"): string {
-  return harnessId === "claude-code"
-    ? CLAUDE_PERMISSION_MODE_PREFERENCE_KEY
-    : `codexhost.${harnessId}.permission-mode.v1`;
+  return `codexhost.${harnessId}.permission-mode.v1`;
 }
 
 export interface PermissionModePreferenceStorage {

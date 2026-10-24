@@ -82,4 +82,63 @@ describe("Claude Code profile adapter support", () => {
     expect(adapter.harnessId).toBe("claude-custom");
     await adapter.close();
   });
+
+  it("fails when requested profile is not found in configuration", async () => {
+    await expect(
+      createHarnessAdapter({
+        environment: {
+          CODEXHOST_CLAUDE_PROFILES_FILE: path.join(temporaryDir, "nonexistent.json"),
+        },
+        harnessId: "missing-profile",
+        platform: process.platform,
+        managedRemoteHost: false,
+      }),
+    ).rejects.toThrow("unavailable");
+  });
+
+  it("does not leak profile environment variables into shared shell environment cache", async () => {
+    const profilesPath = path.join(temporaryDir, "claude-code-profiles.json");
+    const customConfigDir = path.join(temporaryDir, "claude-custom");
+    await mkdir(customConfigDir, { recursive: true });
+
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        {
+          id: "claude-custom",
+          name: "Claude Custom",
+          command: "/bin/sh",
+          configDir: customConfigDir,
+          environment: {
+            SECRET_PROFILE_ENV: "isolated_val",
+          },
+        },
+      ]),
+      "utf8",
+    );
+
+    // 1. Create custom profile adapter
+    const customAdapter = await createHarnessAdapter({
+      environment: {
+        CODEXHOST_CLAUDE_PROFILES_FILE: profilesPath,
+      },
+      harnessId: "claude-custom",
+      platform: process.platform,
+      managedRemoteHost: false,
+    });
+    await customAdapter.close();
+
+    // 2. Create standard claude-code adapter
+    const standardAdapter = await createHarnessAdapter({
+      environment: {
+        CODEXHOST_CLAUDE_PROFILES_FILE: profilesPath,
+      },
+      harnessId: "claude-code",
+      platform: process.platform,
+      managedRemoteHost: false,
+    });
+
+    expect(process.env.SECRET_PROFILE_ENV).toBeUndefined();
+    await standardAdapter.close();
+  });
 });

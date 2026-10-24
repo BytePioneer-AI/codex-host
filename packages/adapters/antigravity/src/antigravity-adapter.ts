@@ -72,7 +72,7 @@ import {
 
 import { resolveAntigravityExecutable } from "./command.js";
 import { forkAntigravitySession } from "./fork.js";
-import { AntigravityHistory } from "./history.js";
+import { AntigravityHistory, antigravityHookDirectory } from "./history.js";
 import {
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
@@ -118,6 +118,11 @@ export interface AntigravityAdapterOptions {
   printTimeout?: string;
   toolOutputLimit?: number;
   subagentObservationTimeoutMs?: number;
+  /**
+   * How long a finished Turn's cleanup waits for its agy to report closing after signalling it.
+   * A child that keeps agy's output open must not hold later Turns' cleanup or close().
+   */
+  turnCleanupWaitMs?: number;
 }
 
 interface ActiveTurn {
@@ -166,6 +171,9 @@ const DEFAULT_INSPECT_TIMEOUT_MS = 20_000;
 const DEFAULT_PRINT_TIMEOUT = "30m";
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const DEFAULT_SUBAGENT_OBSERVATION_TIMEOUT_MS = 30_000;
+/** How long a finished Turn's agy may take to exit after its stdin closes before it is signalled. */
+const NATIVE_EXIT_GRACE_MS = 2_000;
+const DEFAULT_TURN_CLEANUP_WAIT_MS = 5_000;
 const CONTEXT_USAGE_TIMEOUT_MS = 8_000;
 const CONTEXT_USAGE_RETRY_MS = 100;
 const TRAJECTORY_TIMEOUT_MS = 2_000;
@@ -244,14 +252,35 @@ function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
 }
 
+/** Resolves once `promise` settles or `timeoutMs` passes, whichever comes first. */
+function settledWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    const settle = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    void promise.then(settle, settle);
+  });
+}
+
 export const ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION =
   "[System Instruction: When creating new files in the workspace, you MUST use the write_to_file tool. When modifying existing files, use the replace_file_content tool. CRITICAL: NEVER include ArtifactMetadata when calling write_to_file for workspace files (ArtifactMetadata is strictly reserved for artifacts in the brain directory, and providing it for workspace files causes a path validation rejection). Do NOT use terminal commands (such as Set-Content, Out-File, echo, or cat) to create or write code files. For clarification, ask_question is connected to the codexhost Desktop through a Hook. Use single-choice or text questions. The Hook returns the actual user response in its reason while blocking the native auto-skip behavior; do not retry merely because the native tool reports it was blocked.]\n\n";
 
-export function formatAntigravityTurnPrompt(text: string): string {
+/**
+ * agy also receives the Question Hook directory as a workspace (`--add-dir`), so the Turn prompt
+ * names the project directory; otherwise a terminal command can run in the Hook directory.
+ */
+function antigravityWorkingDirectoryInstruction(cwd: string): string {
+  return `[System Instruction: The project working directory is ${JSON.stringify(cwd)}. Run terminal commands and resolve relative file paths in this directory unless the task requires another one.]\n\n`;
+}
+
+export function formatAntigravityTurnPrompt(text: string, cwd?: string): string {
   if (text.startsWith("/") || text.includes("ArtifactMetadata")) {
     return text;
   }
-  return `${ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION}${text}`;
+  const workingDirectory = cwd ? antigravityWorkingDirectoryInstruction(cwd) : "";
+  return `${ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION}${workingDirectory}${text}`;
 }
 
 /**
@@ -501,6 +530,7 @@ class AntigravitySession implements HarnessSession {
   readonly #printTimeout: string;
   readonly #toolOutputLimit: number;
   readonly #subagentObservationTimeoutMs: number;
+  readonly #turnCleanupWaitMs: number;
   readonly #history: AntigravityHistory;
   readonly #subagentObservers = new Set<AntigravitySubagents>();
   #active: ActiveTurn | null = null;
@@ -528,6 +558,7 @@ class AntigravitySession implements HarnessSession {
     thinkingOptionId?: HarnessThinkingOptionId;
     toolOutputLimit: number;
     subagentObservationTimeoutMs: number;
+    turnCleanupWaitMs: number;
     onClosed(): void;
   }) {
     this.#catalog = input.catalog;
@@ -542,6 +573,7 @@ class AntigravitySession implements HarnessSession {
     this.#thinkingOptionId = input.thinkingOptionId ?? input.history.thinkingOptionId;
     this.#toolOutputLimit = input.toolOutputLimit;
     this.#subagentObservationTimeoutMs = input.subagentObservationTimeoutMs;
+    this.#turnCleanupWaitMs = input.turnCleanupWaitMs;
     this.#onClosed = input.onClosed;
     this.initialState = this.#state();
     this.outputs = this.#channel.outputs;
@@ -653,30 +685,38 @@ class AntigravitySession implements HarnessSession {
     }
 
     let questions: AntigravityQuestionBridge;
-    this.#preparingQuestions = AntigravityQuestionBridge.create({
-      turnId: command.turnId,
-      nativeSessionId: () =>
-        this.#active?.command === command && !this.#active.cancellationRequested
-          ? this.#nativeRef?.nativeSessionId
-          : undefined,
-      schedule: (action) => {
-        if (this.#active?.command === command) this.#enqueue(this.#active, action);
-        else action();
-      },
-      emit: (output) => {
-        const active = this.#active;
-        if (!active || active.command !== command) return;
-        if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
-          this.#completeItem(active, active.agentItem, { status: "succeeded" });
-          active.agentItem = null;
-          active.agentText = "";
-        }
-        if (output.kind === "event" && output.event.type === "item.completed") {
-          active.completedItems.push(output.event.snapshot);
-        }
-        this.#channel.emit(output);
-      },
-    });
+    const hookDirectory = antigravityHookDirectory(this.#environment);
+    // The Thread's Hook directory outlives each Turn, while the previous Turn's agy may still be
+    // exiting and its bridge closing; the next bridge rewrites the directory after that cleanup,
+    // which is itself bounded. A private per-Turn directory is shared with no one.
+    const previousTurn = hookDirectory ? this.#questionCleanup : Promise.resolve();
+    this.#preparingQuestions = previousTurn.then(() =>
+      AntigravityQuestionBridge.create({
+        ...(hookDirectory ? { directory: hookDirectory } : {}),
+        turnId: command.turnId,
+        nativeSessionId: () =>
+          this.#active?.command === command && !this.#active.cancellationRequested
+            ? this.#nativeRef?.nativeSessionId
+            : undefined,
+        schedule: (action) => {
+          if (this.#active?.command === command) this.#enqueue(this.#active, action);
+          else action();
+        },
+        emit: (output) => {
+          const active = this.#active;
+          if (!active || active.command !== command) return;
+          if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
+            this.#completeItem(active, active.agentItem, { status: "succeeded" });
+            active.agentItem = null;
+            active.agentText = "";
+          }
+          if (output.kind === "event" && output.event.type === "item.completed") {
+            active.completedItems.push(output.event.snapshot);
+          }
+          this.#channel.emit(output);
+        },
+      }),
+    );
     try {
       questions = await this.#preparingQuestions;
     } catch (error) {
@@ -817,7 +857,7 @@ class AntigravitySession implements HarnessSession {
       });
     });
     try {
-      const turnPrompt = formatAntigravityTurnPrompt(text);
+      const turnPrompt = formatAntigravityTurnPrompt(text, this.#cwd);
       if (child.stdin.writable) {
         child.stdin.write(
           `${JSON.stringify({ event: "user", message: { content: turnPrompt } })}\n`,
@@ -1226,8 +1266,11 @@ class AntigravitySession implements HarnessSession {
         if (outcome.status !== "succeeded") await active.subagents.cancel();
         await active.subagents.settled;
         if (active.process.stdin.writable) active.process.stdin.end();
-        const timer = setTimeout(() => active.process.kill(), 2_000);
-        await active.exited.finally(() => clearTimeout(timer));
+        const timer = setTimeout(() => active.process.kill(), NATIVE_EXIT_GRACE_MS);
+        // A child that keeps agy's output open can delay `close` indefinitely, and later Turns'
+        // cleanup and close() queue behind this one.
+        await settledWithin(active.exited, NATIVE_EXIT_GRACE_MS + this.#turnCleanupWaitMs);
+        clearTimeout(timer);
         await active.questions.dispose();
         this.#subagentObservers.delete(active.subagents);
       })
@@ -1485,6 +1528,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly #sessions = new Set<AntigravitySession>();
   readonly #toolOutputLimit: number;
   readonly #subagentObservationTimeoutMs: number;
+  readonly #turnCleanupWaitMs: number;
   #closed = false;
   #quota: AntigravityQuotaSnapshot | null = null;
   #quotaCwd: string | null = null;
@@ -1503,6 +1547,11 @@ export class AntigravityAdapter implements HarnessAdapter {
       throw new RangeError("subagentObservationTimeoutMs must be a finite positive number");
     }
     this.#subagentObservationTimeoutMs = subagentObservationTimeoutMs;
+    const turnCleanupWaitMs = options.turnCleanupWaitMs ?? DEFAULT_TURN_CLEANUP_WAIT_MS;
+    if (!Number.isFinite(turnCleanupWaitMs) || turnCleanupWaitMs < 0) {
+      throw new RangeError("turnCleanupWaitMs must be a finite non-negative number");
+    }
+    this.#turnCleanupWaitMs = turnCleanupWaitMs;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -1705,6 +1754,7 @@ export class AntigravityAdapter implements HarnessAdapter {
             ...(params.thinkingOptionId ? { thinkingOptionId: params.thinkingOptionId } : {}),
             toolOutputLimit: this.#toolOutputLimit,
             subagentObservationTimeoutMs: this.#subagentObservationTimeoutMs,
+            turnCleanupWaitMs: this.#turnCleanupWaitMs,
             onClosed: () => this.#sessions.delete(session),
           });
           this.#sessions.add(session);
@@ -1744,6 +1794,7 @@ export class AntigravityAdapter implements HarnessAdapter {
             ...(params.thinkingOptionId ? { thinkingOptionId: params.thinkingOptionId } : {}),
             toolOutputLimit: this.#toolOutputLimit,
             subagentObservationTimeoutMs: this.#subagentObservationTimeoutMs,
+            turnCleanupWaitMs: this.#turnCleanupWaitMs,
             onClosed: () => this.#sessions.delete(session),
           });
           this.#sessions.add(session);
@@ -1807,6 +1858,7 @@ export class AntigravityAdapter implements HarnessAdapter {
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       toolOutputLimit: this.#toolOutputLimit,
       subagentObservationTimeoutMs: this.#subagentObservationTimeoutMs,
+      turnCleanupWaitMs: this.#turnCleanupWaitMs,
       onClosed: () => this.#sessions.delete(session),
     });
     this.#sessions.add(session);

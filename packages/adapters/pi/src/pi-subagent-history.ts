@@ -13,17 +13,22 @@ function state(value: unknown): unknown {
   return value === "pending" ? "queued" : value === "completed" ? "complete" : value;
 }
 
-/** Project only documented lifecycle v3 artifacts; do not import the plugin's private runtime. */
+/**
+ * Project only documented lifecycle v3 artifacts; do not import the plugin's private runtime.
+ * pi-subagents records the parent's session file as `sessionId` when the Session has one and its
+ * Session ID otherwise, so `owners` holds both identities of the parent Session.
+ */
 export function piSubagentArtifact(
   value: unknown,
   runId: string,
-  parentSessionId: string,
+  owners: ReadonlySet<string>,
 ): PiSubagentNode[] | null {
   if (
     !record(value) ||
     value.lifecycleArtifactVersion !== 3 ||
     value.runId !== runId ||
-    value.sessionId !== parentSessionId ||
+    typeof value.sessionId !== "string" ||
+    !owners.has(value.sessionId) ||
     !["single", "parallel", "chain", "workflow"].includes(String(value.mode))
   )
     return null;
@@ -66,7 +71,7 @@ export function piSubagentArtifact(
 /** Restored cards use parent-owned native receipts, never arbitrary filesystem paths supplied by the UI. */
 export async function restorePiSubagents(
   history: PiSessionHistory,
-  parentSessionId: string,
+  owners: ReadonlySet<string>,
   observer: PiSubagents,
 ): Promise<void> {
   const receipts = new Map<string, string>();
@@ -104,7 +109,7 @@ export async function restorePiSubagents(
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
       if (bytesRead > 1024 * 1024) continue;
       const value: unknown = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8"));
-      const runs = piSubagentArtifact(value, id, parentSessionId);
+      const runs = piSubagentArtifact(value, id, owners);
       if (runs) observer.restore(runs);
     } catch {
       // Artifact retention and status publication races are not parent Session failures.

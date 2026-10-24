@@ -25,11 +25,13 @@ export async function loadClaudeCodeProfile(
     const profile = profiles.find((p) => p.id === id);
     if (!profile) return undefined;
     const home = environment.HOME || os.homedir();
+    const baseDir = path.dirname(filePath);
     const expand = (p?: string): string | undefined => {
       if (!p) return undefined;
-      if (p === "~") return home;
-      if (p.startsWith("~") && (p[1] === "/" || p[1] === "\\")) return path.join(home, p.slice(2));
-      return p;
+      let expanded = p;
+      if (p === "~") expanded = home;
+      else if (p.startsWith("~/") || p.startsWith("~\\")) expanded = path.join(home, p.slice(2));
+      return path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
     };
     return {
       ...profile,

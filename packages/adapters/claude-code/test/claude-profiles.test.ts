@@ -120,6 +120,8 @@ describe("Claude Code profile adapter support", () => {
     // 1. Create custom profile adapter
     const customAdapter = await createHarnessAdapter({
       environment: {
+        HOME: temporaryDir,
+        SHELL: "/bin/sh",
         CODEXHOST_CLAUDE_PROFILES_FILE: profilesPath,
       },
       harnessId: "claude-custom",
@@ -131,6 +133,8 @@ describe("Claude Code profile adapter support", () => {
     // 2. Create standard claude-code adapter
     const standardAdapter = await createHarnessAdapter({
       environment: {
+        HOME: temporaryDir,
+        SHELL: "/bin/sh",
         CODEXHOST_CLAUDE_PROFILES_FILE: profilesPath,
       },
       harnessId: "claude-code",

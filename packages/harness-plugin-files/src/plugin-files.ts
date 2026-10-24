@@ -5,6 +5,7 @@ import {
   HARNESS_PLUGIN_ICON_MAX_BYTES,
   HARNESS_PLUGIN_MANIFEST_MAX_BYTES,
   harnessPluginConfigurationSchema,
+  harnessPluginIconSchema,
   type HarnessPluginConfiguration,
 } from "@codexhost/shared-contracts";
 
@@ -89,7 +90,7 @@ export function encodePluginIconDataUrl(bytes: Buffer): string {
 }
 
 export async function readPluginIcon(root: string, resource: string): Promise<string> {
-  if (resource.startsWith("data:")) return resource;
+  if (resource.startsWith("data:")) return harnessPluginIconSchema.parse(resource);
   if (path.isAbsolute(resource)) {
     const bytes = await readPluginFile(resource, HARNESS_PLUGIN_ICON_MAX_BYTES);
     return encodePluginIconDataUrl(bytes);

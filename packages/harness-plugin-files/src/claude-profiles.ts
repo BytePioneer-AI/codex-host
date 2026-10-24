@@ -63,16 +63,22 @@ export async function readClaudeCodeProfiles(
 
   return profiles.map((profile) => ({
     ...profile,
-    ...(profile.command ? { command: expandUserPath(profile.command, home) } : {}),
-    ...(profile.configDir ? { configDir: expandUserPath(profile.configDir, home) } : {}),
+    ...(profile.command ? { command: resolveProfilePath(profile.command, baseDir, home) } : {}),
+    ...(profile.configDir
+      ? { configDir: resolveProfilePath(profile.configDir, baseDir, home) }
+      : {}),
     ...(profile.icon ? { icon: resolveProfileIconPath(profile.icon, baseDir, home) } : {}),
   }));
 }
 
+function resolveProfilePath(inputPath: string, baseDir: string, home: string): string {
+  const expanded = expandUserPath(inputPath, home);
+  return path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
+}
+
 function resolveProfileIconPath(icon: string, baseDir: string, home: string): string {
   if (icon.startsWith("data:")) return icon;
-  const expanded = expandUserPath(icon, home);
-  return path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
+  return resolveProfilePath(icon, baseDir, home);
 }
 
 export async function readProfileIcon(iconResource: string): Promise<string> {

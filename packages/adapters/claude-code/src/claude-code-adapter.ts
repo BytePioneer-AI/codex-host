@@ -2992,7 +2992,14 @@ async function withSdkConfigDirectory<T>(
   });
   await previousLock;
   const prior = process.env.CLAUDE_CONFIG_DIR;
-  if (configDir) {
+  if (configDir === prior) {
+    try {
+      return await action();
+    } finally {
+      release();
+    }
+  }
+  if (configDir !== undefined) {
     process.env.CLAUDE_CONFIG_DIR = configDir;
   } else {
     delete process.env.CLAUDE_CONFIG_DIR;
@@ -3147,11 +3154,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           abortTimeoutMs: this.#cancelTimeoutMs,
         }),
       deleteSession: ({ cwd, sessionId }) =>
-        withSdkConfigDirectory(options.environment?.CLAUDE_CONFIG_DIR, () =>
+        withSdkConfigDirectory(this.#environment.CLAUDE_CONFIG_DIR, () =>
           deleteClaudeSession(sessionId, { dir: cwd }),
         ),
       forkSession: async ({ checkpointId, cwd, sourceSessionId }) =>
-        withSdkConfigDirectory(options.environment?.CLAUDE_CONFIG_DIR, async () => {
+        withSdkConfigDirectory(this.#environment.CLAUDE_CONFIG_DIR, async () => {
           const forked = await forkClaudeNativeSession(sourceSessionId, {
             dir: cwd,
             upToMessageId: checkpointId,
@@ -3160,13 +3167,13 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           // must not fail the Fork.
           await remapForkedSessionReferences({
             cwd,
-            environment: options.environment ?? process.env,
+            environment: this.#environment,
             sessionId: forked.sessionId,
           }).catch(() => undefined);
           return forked;
         }),
       getSessionInfo: async ({ sessionId }) =>
-        withSdkConfigDirectory(options.environment?.CLAUDE_CONFIG_DIR, async () => {
+        withSdkConfigDirectory(this.#environment.CLAUDE_CONFIG_DIR, async () => {
           const info = await getClaudeSessionInfo(sessionId);
           if (!info) return undefined;
           return info.cwd ? { cwd: info.cwd } : {};
@@ -3174,13 +3181,13 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       readSessionMessages: async ({ cwd, sessionId }) => {
         const transcript = await readClaudeTranscript({
           cwd,
-          environment: options.environment ?? process.env,
+          environment: this.#environment,
           sessionId,
         });
         return transcript;
       },
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
-        withSdkConfigDirectory(options.environment?.CLAUDE_CONFIG_DIR, () =>
+        withSdkConfigDirectory(this.#environment.CLAUDE_CONFIG_DIR, () =>
           getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
         ),
     };

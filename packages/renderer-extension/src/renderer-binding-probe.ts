@@ -2956,6 +2956,8 @@ export function installRendererBindingProbe(
       return false;
     }
     if (!isExternalConfigurationReady(mounted)) return false;
+    if (current.agent === "codex" && mounted.modelTarget === null && !applyAdapterAgent)
+      return false;
     if (current.phase === "locked") return true;
     if (!applyComposerAgent(composer)) return false;
     controller.markSubmissionPending(composer);

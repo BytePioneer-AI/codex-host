@@ -102,7 +102,7 @@ const { outputFiles } = await build({
         enabledAgents: ["codex", "pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli", ...(globalThis.startupAgent ? [globalThis.startupAgent] : [])],
         defaultAgent: globalThis.startupAgent ?? "pi",
       });
-      binding.setAdapter(
+      const registerAdapter = () => binding.setAdapter(
         { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
         undefined,
         (agent, model, thinkingOptionId, permissionModeId) => {
@@ -150,6 +150,9 @@ const { outputFiles } = await build({
           readUpdateStatus: unavailable,
         },
       );
+
+      globalThis.registerStartupAdapter = registerAdapter;
+      if (!globalThis.holdAdapterRegistration) registerAdapter();
 
       setTimeout(() => {
         globalThis.threadStartRequests = [];
@@ -398,6 +401,33 @@ test("native submission still waits for its scoped routing policy", async ({ pag
     .toBe("function");
   await page.locator("[data-codex-composer-root] button[type=submit]").click();
   expect(await page.evaluate(() => Reflect.get(globalThis, "threadStartRequests"))).toEqual([]);
+});
+
+test("native editing stays available before the routing callback is registered, but Send waits", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    Reflect.set(globalThis, "startupAgent", "codex");
+    Reflect.set(globalThis, "missingNativeModelTarget", true);
+    Reflect.set(globalThis, "holdAdapterRegistration", true);
+  });
+  await page.addScriptTag({ content: browserBundle });
+  await expect
+    .poll(() => page.evaluate(() => typeof Reflect.get(globalThis, "prewarmTestDraft")))
+    .toBe("function");
+  const editor = page.locator("[data-codex-composer]");
+  await editor.fill("draft");
+  await editor.press("End");
+  await editor.press("Backspace");
+  await expect(editor).toHaveText("draf");
+  const send = page.locator("[data-codex-composer-root] button[type=submit]");
+  await send.click();
+  expect(await page.evaluate(() => Reflect.get(globalThis, "threadStartRequests"))).toEqual([]);
+  await page.evaluate(() => Reflect.get(globalThis, "registerStartupAdapter")());
+  await send.click();
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(globalThis, "threadStartRequests")))
+    .toEqual([{ method: "thread/start", params: { cwd: "/fixture/workspace", model: "native" } }]);
 });
 
 test("a remounted draft keeps explicit Fast through submission, but a new draft starts without it", async ({

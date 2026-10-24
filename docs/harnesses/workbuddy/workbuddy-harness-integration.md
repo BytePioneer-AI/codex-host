@@ -42,9 +42,16 @@ WorkBuddy AI 5.8.4 的 macOS 安装包仅包含 `dist/codebuddy-lite-wb.mjs`，�
 
 直接运行内置 CLI 时，其内部默认值可能回退到 `~/.codebuddy`。插件不会沿用这一跨产品默认值：它只把 `WORKBUDDY_CONFIG_DIR` 视为用户选择；没有该值时使用 `~/.workbuddy-ai`，随后强制传给子进程的 `WORKBUDDY_CONFIG_DIR` 与 `CODEBUDDY_CONFIG_DIR` 指向同一 WorkBuddy 根。这样即使普通 CodeBuddy 配置了自己的 `CODEBUDDY_CONFIG_DIR`，WorkBuddy 的历史、认证和设置也不会泄漏到该目录。WorkBuddy CLI 负责认证、原生设置、工具和 MCP 配置；codexhost 不保存、复制或推断其凭据。
 
-新版内置 CLI 的独立 ACP 启动不会自行初始化加密凭据读取能力。对于应用内置入口，插件先在同一个 WorkBuddy Electron 进程中调用其 `electron_browser_workbuddy_storage` 原生绑定，再通过内置 CLI 的 credential bootstrap 接收器初始化字段加密。密钥按原生 `normalizeAtRestKeyPayload` 规则规范化，只在该进程内存与本次随机管道中传递；不写入参数、环境变量或文件，也不由 Host 解密、复制登录 Token。CLI 随后按自己的认证逻辑读取已有登录文件。完整的受管 bootstrap 环境保持原样；已有 socket、Token 或 Session ID 配置时，要求加密策略与四项通信配置均非空，否则在加载 CLI 前明确报错。仅设置 `WORKBUDDY_AT_REST_ENCRYPTION=fields` 或空策略时仍执行字段加密引导，其他显式策略交给原生 CLI 处理；旧应用没有该原生绑定时继续原有启动流程。
+新版内置 CLI 的独立 ACP 启动不会自行初始化加密凭据读取能力。对于应用内置入口，插件先在同一个 WorkBuddy Electron 进程中调用其 `electron_browser_workbuddy_storage` 原生绑定，再通过内置 CLI 的 credential bootstrap 接收器初始化字段加密。密钥按原生 `normalizeAtRestKeyPayload` 规则规范化，只在该进程内存与本次随机管道中传递；不写入参数、环境变量或文件，也不由 Host 解密、复制登录 Token。CLI 随后按自己的认证逻辑读取已有登录文件。完整的受管 bootstrap 环境保持原样；已有 socket、Token 或 Session ID 配置时，要求加密策略与四项通信配置均非空，否则在加载 CLI 前明确报错。`disabled` 策略交给原生 CLI；`fields`、`required` 或空策略执行字段加密引导；旧应用没有该原生绑定时继续原有启动流程。
 
-此接入使用 WorkBuddy 自带的实现接口，不属于 ACP 标准：已在 Windows WorkBuddy AI 5.7.6 / CLI 2.156.0 及 macOS WorkBuddy AI 5.8.4 / CLI 2.161.0 的字段加密策略下验证，升级后须复核原生绑定、密钥格式和接收器。失败时停止启动，不关闭加密或写回明文凭据。POSIX 临时 socket 使用独立的 `0700` 目录，Windows 使用随机命名管道；收到原生确认后清理引导资源。若独立 CLI 仍要求认证，包含 TUI 的发行可在 Host 外启动相同产品配置和数据根的内置 TUI，然后执行官方 [`/login`](https://cloud.tencent.com/document/product/1831/137046)：
+内置 CLI 的接收器存在两种线格式，插件读取 CLI 自身 `package.json` 的发布版本选择：真实版本在 `publishConfig.customPackage.version`，顶层 `version` 固定为 `0.0.0`。不能在同一次启动中试错重发，接收器只接受一次连接：
+
+| CLI 版本 | 引导键 | 确认帧 |
+| --- | --- | --- |
+| `< 2.156` | `bootstrap.mode: "required"` | `{ok,mode}` + 空格，无换行 |
+| `>= 2.156` | `bootstrap.policy: "fields"` | `{ok,policy}` + 换行 |
+
+此接入使用 WorkBuddy 自带的实现接口，不属于 ACP 标准：字段加密策略已在 Windows WorkBuddy AI 5.7.6 / CLI 2.156.0、macOS WorkBuddy AI 5.8.4 / CLI 2.161.0 与 Windows WorkBuddy 5.5.6 / CLI 2.137.1（旧版 `mode` 协议）上验证；2.138–2.155 未逐版验证，2.156 阈值由 2.137.1 与 2.156.0/2.161.0 的实测界定。升级后须复核原生绑定、密钥格式和接收器。失败时停止启动，不关闭加密或写回明文凭据。POSIX 临时 socket 使用独立的 `0700` 目录，Windows 使用随机命名管道；收到原生确认后清理引导资源。若独立 CLI 仍要求认证，包含 TUI 的发行可在 Host 外启动相同产品配置和数据根的内置 TUI，然后执行官方 [`/login`](https://cloud.tencent.com/document/product/1831/137046)：
 
 ```sh
 CODEBUDDY_CONFIG_DIR="$HOME/.workbuddy-ai" \
@@ -170,6 +177,8 @@ codexhost broker status --harness workbuddy
 - 确认本机独立 ACP `session/new` 返回认证要求，集成不依赖 Desktop 私有登录态；
 - 确认标准 ACP `session/fork` 不存在，并核对公开 CLI Fork、原生 `/fork` 与 rollback 扩展；
 - 核对公开 ACP 能力与私有 owner runtime/admission 的边界。
+
+2026-10-22 在 Windows WorkBuddy 5.5.6 / CLI 2.137.1 上验证了旧版 `bootstrap.mode` 引导：独立 ACP 启动后 CLI 日志出现 `stage=afterRestore hasSession=true hasAccessToken=true`，未执行手动 `/login`。
 
 2026-09-18 在本机 macOS 的 WorkBuddy App 内置 CLI 上，以现有原生认证和 Auto 模型完成了真实 create → 空历史读取 → 首条 Turn → close → 同 Session resume → 第二条 Turn → 两轮历史读取。执行目录包含大小写、点号、中文和空格；两个 Turn 都成功，没有请求工具或文件修改。另验证了真实跨目录 Fork 到第一轮：派生会话恰好保留一轮，源会话仍保留两轮，派生会话关闭后可在目标 cwd 恢复。此前失败任务的原生空历史也已通过修正后的只读目录校验。
 

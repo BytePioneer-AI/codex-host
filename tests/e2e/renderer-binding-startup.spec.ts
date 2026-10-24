@@ -76,7 +76,7 @@ const { outputFiles } = await build({
         value: {
           updateQueue: {
             memoCache: {
-              data: [
+              data: globalThis.missingNativeModelTarget ? [] : [
                 [undefined, modelState, modelState],
                 [{}, {}, "client-new-thread:startup", modelState, undefined, modelState, modelState],
               ],
@@ -106,6 +106,7 @@ const { outputFiles } = await build({
         { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
         undefined,
         (agent, model, thinkingOptionId, permissionModeId) => {
+          if (globalThis.rejectDraftCarrier) return false;
           globalThis.appliedConfiguration = { agent, model, thinkingOptionId, ...(permissionModeId ? { permissionModeId } : {}) };
           window.__codexhostHostRoutingV1?.forComposer()?.policy.select(
             modelSelectionForAgent(null, null, agent, model, thinkingOptionId, permissionModeId)?.model ?? null,
@@ -170,6 +171,9 @@ const { outputFiles } = await build({
           { onNotification() {}, onRequest() {}, dispatchAppServerResponse() {} },
           bridge, "local", window, { discardAllPrewarmedThreads() {} },
         );
+        if (globalThis.startWithExternalCarrier) {
+          policy.select(modelSelectionForAgent(null, null, "pi", model)?.model ?? null);
+        }
         window.__codexhostHostRoutingV1 = { forComposer: () => ({ hostId: "local", policy }) };
         globalThis.prewarmTestDraft = () => bridge.prewarmThreadStart({ cwd: "/fixture/workspace", model: "native" });
         document.addEventListener("click", (event) => {
@@ -349,6 +353,51 @@ test("a native Codex draft hides the external Harness command button", async ({ 
   const root = page.locator("[data-codexhost-harness-command-control]");
   await expect(root).toHaveAttribute("hidden", "");
   await expect(root).toBeHidden();
+});
+
+test("native Codex editing and submission survive an unavailable private Model binding", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    Reflect.set(globalThis, "startupAgent", "codex");
+    Reflect.set(globalThis, "missingNativeModelTarget", true);
+    Reflect.set(globalThis, "startWithExternalCarrier", true);
+  });
+  await page.addScriptTag({ content: browserBundle });
+  await expect(page.locator("[data-codexhost-agent-control]")).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => typeof Reflect.get(globalThis, "prewarmTestDraft")))
+    .toBe("function");
+  const editor = page.locator("[data-codex-composer]");
+  await editor.fill("draft");
+  await expect(editor).toHaveText("draft");
+  await editor.press("End");
+  await editor.press("Backspace");
+  await expect(editor).toHaveText("draf");
+  await editor.press("ControlOrMeta+a");
+  await editor.press("x");
+  await expect(editor).toHaveText("x");
+  await page.locator("[data-codex-composer-root] button[type=submit]").click();
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(globalThis, "threadStartRequests")))
+    .toEqual([{ method: "thread/start", params: { cwd: "/fixture/workspace", model: "native" } }]);
+  expect(await page.evaluate(() => Reflect.get(globalThis, "appliedConfiguration"))).toMatchObject({
+    agent: "codex",
+  });
+});
+
+test("native submission still waits for its scoped routing policy", async ({ page }) => {
+  await page.evaluate(() => {
+    Reflect.set(globalThis, "startupAgent", "codex");
+    Reflect.set(globalThis, "missingNativeModelTarget", true);
+    Reflect.set(globalThis, "rejectDraftCarrier", true);
+  });
+  await page.addScriptTag({ content: browserBundle });
+  await expect
+    .poll(() => page.evaluate(() => typeof Reflect.get(globalThis, "prewarmTestDraft")))
+    .toBe("function");
+  await page.locator("[data-codex-composer-root] button[type=submit]").click();
+  expect(await page.evaluate(() => Reflect.get(globalThis, "threadStartRequests"))).toEqual([]);
 });
 
 test("a remounted draft keeps explicit Fast through submission, but a new draft starts without it", async ({

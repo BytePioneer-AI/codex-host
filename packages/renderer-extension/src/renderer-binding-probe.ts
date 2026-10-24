@@ -2934,6 +2934,11 @@ export function installRendererBindingProbe(
     if (mounted?.modelTarget?.[0] === "conversation") {
       return state.phase === "locked" && mounted.ownershipStatus === "ready";
     }
+    // Native routing is cleared through the Composer's scoped prewarm policy.
+    // A missing private Model binding must not disable native editing or sending.
+    if (mounted && state.agent === "codex" && mounted.modelTarget === null) {
+      return applyDraftAgentCarrier(composer, state.agent);
+    }
     if (!mounted || !isComposerModelWriteAllowed(mounted.modelTarget)) return false;
     return applyComposerModelWrite(mounted.modelTarget, () =>
       applyDraftAgentCarrier(composer, state.agent),

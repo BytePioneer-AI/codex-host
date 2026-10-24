@@ -13,7 +13,9 @@ const { outputFiles } = await build({
       import { createRendererSettingsPageRegistry } from "./packages/renderer-extension/src/settings/core.ts";
       import { rendererSettingsMessages } from "./packages/renderer-extension/src/settings/localization.ts";
       import { mountRendererSettingsShell } from "./packages/renderer-extension/src/settings/shell.ts";
+      import { createRendererSettingsBrandGlyph } from "./packages/renderer-extension/src/settings/icons.ts";
 
+      globalThis.createBrandGlyph = createRendererSettingsBrandGlyph;
       globalThis.setupSettingsPage = () => {
         const messages = rendererSettingsMessages("en");
         const page = (id, label) => ({
@@ -126,6 +128,51 @@ function fixtureState(page: Page) {
       homeHighlight: getComputedStyle(home, "::before").opacity,
       homeSelected: home.hasAttribute("data-selected"),
     };
+  });
+}
+
+for (const colorScheme of ["light", "dark"] as const) {
+  test(`renders the otter marks in the ${colorScheme} theme`, async ({ page }, testInfo) => {
+    await page.emulateMedia({ colorScheme });
+    await setup(page);
+    await page.evaluate(() => {
+      document.documentElement.style.colorScheme = "light dark";
+      const rail = document.querySelector("nav");
+      if (!rail) throw new Error("Native rail fixture missing");
+      rail.style.color = "rgb(100, 110, 120)";
+      rail.append(Reflect.get(globalThis, "createBrandGlyph")(22));
+    });
+    await openSettings(page);
+
+    const glyph = page.locator('[data-codexhost-mark="otter-navigation"]');
+    await expect(glyph).toHaveAttribute("width", "22");
+    await expect(glyph.locator("path").nth(0)).toHaveCSS(
+      "fill",
+      colorScheme === "dark" ? "rgb(184, 192, 198)" : "rgba(0, 0, 0, 0)",
+    );
+    await expect(glyph.locator("path").nth(1)).toHaveCSS(
+      "fill",
+      colorScheme === "dark" ? "rgb(105, 118, 128)" : "rgb(100, 110, 120)",
+    );
+
+    const mark = page.locator('[data-codexhost-mark="otter-colored"]');
+    await expect(mark).toBeVisible();
+    await expect(mark).toHaveCSS("width", "24px");
+    await expect(mark).toHaveCSS(
+      "background-color",
+      colorScheme === "dark" ? "rgb(244, 245, 247)" : "rgba(0, 0, 0, 0)",
+    );
+    const image = mark.locator("img");
+    await expect(image).toHaveCSS(
+      "transform",
+      colorScheme === "dark" ? "matrix(0.9, 0, 0, 0.9, 0, 0)" : "none",
+    );
+    expect(
+      await image.evaluate((element: HTMLImageElement) =>
+        element.decode().then(() => element.naturalWidth),
+      ),
+    ).toBeGreaterThan(0);
+    await page.screenshot({ path: testInfo.outputPath(`otter-${colorScheme}.png`) });
   });
 }
 

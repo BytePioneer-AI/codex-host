@@ -10,8 +10,37 @@ its white background, and `codex-logo-bright.png` uses the official bright blue.
 `codex-agent.png` is the Codex App GA mark distributed with OpenAI's official
 `openai.chatgpt` VS Code extension.
 
-`codexhost-app-icon.svg` is the vector master of the codexhost brand icon,
-used in settings. The launcher PNG and Windows ICO are derived from it.
+## CodexHost UI mark
+
+`codexhost-otter.ts` contains the vector silhouette of an otter holding a module.
+The navigation rail renders it inline without a plate: `currentColor` in light UI,
+and a neutral two-tone palette in dark UI (body/module `#697680`, face/chest
+`#b8c0c6`). CSS `light-dark()` follows the inherited native color scheme without
+additional theme state. Native rail hover/selection backgrounds and update badges
+are preserved; Harness identity artwork is independent of the product mark.
+
+Settings and standalone console headers share `renderer-brand-mark.ts` and its
+stylesheet. They use `codexhost-otter-color.svg`: a deep-blue `#082e59` body and
+green `#19a785` module. Dark preference adds a `#f4f5f7` circular backing and scales
+the animal to 90%; light preference has no backing. Settings uses a 24px mark
+inside its 26px container; the console uses a 28px mark.
+
+Viewable SVG exports:
+
+- [`codexhost-otter-light.svg`](codexhost-otter-light.svg): light-theme monochrome silhouette.
+- [`codexhost-otter-dark.svg`](codexhost-otter-dark.svg): dark-theme two-tone silhouette.
+- [`codexhost-otter-color.svg`](codexhost-otter-color.svg): colored settings and console mark.
+
+Keep these exports aligned with `codexhost-otter.ts`; focused icon tests check
+geometry and palettes against the inline paths.
+
+## Historical CH marks
+
+- [`history/codexhost-rail-v1.svg`](history/codexhost-rail-v1.svg): open C ring and
+  center square, retained as a reference rather than used in the UI.
+- `codexhost-app-icon.svg`: plated CH application mark. The launcher PNG and
+  Windows ICO remain derived from this asset; native application and installer
+  icons are independent of the UI mark.
 
 ## External artwork provenance
 

@@ -283,6 +283,7 @@ describe("Claude Code profile adapter support", () => {
         ANTHROPIC_MODEL: "host-model",
         CLAUDE_PID: "99",
         CLAUDE_CONFIG_DIR: "/parent/store",
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: "/parent/secure",
       },
       pinned: {},
       configDirectory: undefined,
@@ -290,6 +291,7 @@ describe("Claude Code profile adapter support", () => {
 
     expect(merged.ANTHROPIC_MODEL).toBeUndefined();
     expect(merged.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(merged.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBeUndefined();
     expect(merged.CLAUDE_PID).toBeUndefined();
   });
 

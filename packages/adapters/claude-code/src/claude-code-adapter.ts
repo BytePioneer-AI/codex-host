@@ -3010,7 +3010,12 @@ export function mergeSessionEnvironment(input: {
     Object.entries(input.override).filter(
       ([name, value]) =>
         value !== undefined &&
-        !(contaminated && (isClaudeToolchainVariable(name) || name === "CLAUDE_CONFIG_DIR")),
+        !(
+          contaminated &&
+          (isClaudeToolchainVariable(name) ||
+            name === "CLAUDE_CONFIG_DIR" ||
+            name === "CLAUDE_SECURESTORAGE_CONFIG_DIR")
+        ),
     ),
   );
   return stripNestedSessionEnvironment({

@@ -107,6 +107,7 @@ describe("User shell environment", () => {
         CLAUDECODE: "1",
         CLAUDE_CODE_SESSION_ID: "parent-session",
         CLAUDE_CONFIG_DIR: "/parent/session/config",
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: "/parent/session/secure",
         ANTHROPIC_BASE_URL: "https://magpie.example.com",
         ANTHROPIC_MODEL: "group/flash",
         CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1048576",
@@ -121,6 +122,7 @@ describe("User shell environment", () => {
     expect(result.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
     expect(result.CLAUDE_CODE_AUTO_MODE_SERVER).toBeUndefined();
     expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(result.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBeUndefined();
   });
 
   it("prefers user shell toolchain values inside a nested Host", async () => {

@@ -67,6 +67,7 @@ const CLAUDE_NESTED_SESSION_ENV_NAMES = new Set<string>([
   "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
   "CLAUDE_CODE_BRIDGE_SESSION_ID",
   "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
+  "CLAUDE_SECURESTORAGE_CONFIG_DIR",
 ]);
 
 /**
@@ -129,7 +130,8 @@ function shellProbeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEn
     (name) =>
       isClaudeToolchainVariable(name) ||
       isNestedSessionVariable(name) ||
-      (contaminated && name === "CLAUDE_CONFIG_DIR"),
+      (contaminated &&
+        (name === "CLAUDE_CONFIG_DIR" || name === "CLAUDE_SECURESTORAGE_CONFIG_DIR")),
   );
 }
 
@@ -151,7 +153,10 @@ function mergeChildEnvironment(
     environment,
     (name) =>
       isNestedSessionVariable(name) ||
-      (contaminated && (isClaudeToolchainVariable(name) || name === "CLAUDE_CONFIG_DIR")),
+      (contaminated &&
+        (isClaudeToolchainVariable(name) ||
+          name === "CLAUDE_CONFIG_DIR" ||
+          name === "CLAUDE_SECURESTORAGE_CONFIG_DIR")),
   );
   for (const [name, value] of Object.entries(shellEnvironment ?? {})) {
     if (merged[name] === undefined) merged[name] = value;

@@ -116,21 +116,25 @@ cc-switch's Unified Codex session history intentionally uses `model_provider =
 "custom"` for official-subscription and third-party sessions. Keep that provider
 identity and its history. Changing it to `openai` is not a voice repair.
 
-The native Voice Settings page checks `voice.realtime` in two subscriptions:
-the exported page reads the capability family, and its Voice chat group reads a
-derived boolean. On 26.1021.31345, CodexHost restores the native controls by
+The native Voice Settings page reads the `voice.realtime`, `dictation.composer`
+and `dictation.global` capability family members. Its Voice chat group also reads
+a derived boolean, and the page and shortcut controls read the native dictation
+mode selector. On 26.1021.31345, CodexHost restores the native controls by
 projecting only these owned Settings subscriptions when the voice access policy
 is `allowed`, root voice capability is ready and capable, and readonly replay
-proves the inference-provider condition is the sole blocker. The boolean replay
-must read that exact realtime capability and agree with its native value before
-substitution. Native atoms, provider configuration and global Statsig values
+proves the inference-provider condition is the sole blocker. The Voice chat boolean replay must read that exact realtime capability and agree
+with its native value before substitution. Dictation mode replay preserves the
+native platform choice (`os-global` on macOS/Windows, `app` on eligible Linux)
+and all non-provider dictation policy and feature checks. Native atoms, provider configuration and global Statsig values
 retain their values. Account/workspace denial, loading, errors, rollout gates
 and unrelated restrictions remain authoritative.
 
 `renderer-voice-settings-availability.ts` identifies committed Settings groups
-below the exported page and binds the boolean reader. The existing capability
-binder handles the page's family subscription. Ambiguous ownership or unsupported
-subscriptions fail closed, with rollback if only one reader could be bound.
+below the exported page and binds the boolean reader. The existing capability binder handles only the explicitly selected family
+members on the exported Settings page. `renderer-dictation-settings.ts` binds
+the exact native mode selector within Settings, including newly mounted shortcut
+controls, so their save handlers select the correct OS service. Ambiguous ownership or unsupported
+subscriptions fail closed, with rollback if a required reader could not be bound.
 Navigation, disposal and eligibility changes restore native readers. While a
 supported binding is unavailable, the existing text-only explanation can identify
 a provider-only rejection; it does not grant access. The hook retries controls
@@ -141,12 +145,16 @@ The restored controls keep their native handlers:
 | Control | Native persistence and consumers | Verification limit |
 | --- | --- | --- |
 | Voice | Account `voice_name`, through `/settings/account_user_setting`; catalog from `/settings/voices` in `wingman` mode. Native Chat browser voice consumes the account voice. Work realtime resolves the same catalog's effective slug, including native alias mapping, and puts it into session audio output. The gateway bootstrap preserves that session body; external Harness voice accepts the native voice parameter. | Picker opens with nine compatible voices. Saving a different voice and audible selection require attended acceptance. |
+| Language | Native account `voice_main_language` preference, shared with voice and dictation. Visibility follows the native dictation capabilities or available dictation mode. | Language selection is visible; the existing saved language is retained. |
+| Dictation | Native composer/global dictation capabilities and mode selector. The macOS shortcut editor uses the native global-dictation service and retains permission setup. | Shortcut row is visible and its owned mode readers commit `os-global`. Capture, transcription, OS registration and permission grants are not established by restoring Settings. |
 | Voice chat hotkey | Desktop `commandKeybindings` service, command `realtimeVoice`; its main-process controller starts `global_hotkey_new_thread` through the avatar overlay. | Editor is enabled. Registration and call launch retain native main-process and overlay capability checks. The gateway starter hook qualifies explicit local composer starts, not global-hotkey starts; restoring Settings does not establish global-hotkey call support with a custom provider. |
 | Screen context | Native `realtimeVoiceScreenContextEnabled` preference. The row retains macOS, appshot availability and dynamic-tool configuration checks, plus the native first-use introduction and OS permissions. Work's `capture_screen_context` handler checks this preference again and requires the matching active voice task. | Row and toggle are enabled in the observed eligible environment. Actual foreground capture and permissions were not exercised. Chat browser voice has separate camera/screen-share controls; this toggle does not establish equivalent capture there. |
 
 Live checks on this build confirmed the native controls, an account policy of
 `allowed`, and a native `voice.realtime` capability that stayed false while the
-owned Settings readers rendered the controls. Three Settings navigation round
+owned Settings readers rendered the controls. Language and Dictation also retain
+their native capability values while the owned mode readers commit the platform
+mode. Three Settings navigation round
 trips retained the controls. No account voice, hotkey or permission was changed.
 These checks do not establish a complete spoken call.
 

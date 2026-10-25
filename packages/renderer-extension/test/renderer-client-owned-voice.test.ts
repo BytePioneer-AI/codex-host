@@ -661,6 +661,45 @@ describe("isWorkComposerSurface", () => {
     ).toBe(false);
   });
 
+  it.each(["zero-size", "hidden", "inert"])(
+    "ignores a retained %s Chat composer beside the visible Work composer",
+    (hiddenBy) => {
+      const work = { getBoundingClientRect: () => ({ width: 800 }), closest: () => null };
+      const chat = {
+        getBoundingClientRect: () => ({ width: hiddenBy === "zero-size" ? 0 : 800 }),
+        closest: () => (hiddenBy === "zero-size" ? null : {}),
+      };
+      expect(
+        isWorkComposerSurface({
+          localStorage: { getItem: () => null },
+          document: {
+            querySelectorAll: (selector: string) =>
+              selector === "[data-codex-composer-root]"
+                ? [work]
+                : selector === "[data-chatgpt-composer]"
+                  ? [chat]
+                  : [],
+          },
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it("rejects a Work surface when a visible Chat composer is also present", () => {
+    const visible = { getBoundingClientRect: () => ({ width: 800 }), closest: () => null };
+    expect(
+      isWorkComposerSurface({
+        localStorage: { getItem: () => null },
+        document: {
+          querySelectorAll: (selector: string) =>
+            selector === "[data-codex-composer-root]" || selector === "[data-chatgpt-composer]"
+              ? [visible]
+              : [],
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("keeps explicit chat storage off Work even if a Work tab is selected", () => {
     expect(isWorkComposerSurface(owner("chat", [{ name: "Work", selected: true }]))).toBe(false);
   });

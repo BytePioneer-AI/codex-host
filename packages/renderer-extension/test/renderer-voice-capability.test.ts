@@ -467,6 +467,39 @@ describe("version and runtime qualification", () => {
     expect(hook.status).toBe("active");
     hook.dispose();
   });
+
+  it("keeps the visible Work projection when Desktop retains hidden Chat composers", async () => {
+    vi.useFakeTimers();
+    const f = target();
+    f.values.delete("home-composer-mode-v1");
+    const hiddenChat = {
+      getBoundingClientRect: () => ({ width: 0 }),
+      closest: () => null,
+    };
+    let chatVisible = false;
+    f.target.document.querySelectorAll = ((selector: string) =>
+      selector === "[data-codex-composer-root]"
+        ? [f.f.composer]
+        : selector === "[data-chatgpt-composer]"
+          ? [{ ...hiddenChat, getBoundingClientRect: () => ({ width: chatVisible ? 800 : 0 }) }]
+          : []) as unknown as Document["querySelectorAll"];
+    const hook = installVoiceCapabilityProjection(f);
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      expect(hook.status).toBe("active");
+      expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: true });
+      chatVisible = true;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(hook.status).toBe("pending");
+      expect(f.f.instance.getSnapshot).toBe(f.f.original);
+      chatVisible = false;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(hook.status).toBe("active");
+      expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: true });
+    } finally {
+      hook.dispose();
+    }
+  });
   it("projects the Chat composer only for Codex gateway, without claiming a Work route", async () => {
     vi.useFakeTimers();
     const f = target();

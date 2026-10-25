@@ -143,11 +143,14 @@ function isWorkBackendModel(name: string): boolean {
 function visibleWorkComposer(owner: object): boolean {
   const document = (owner as { document?: Document }).document;
   if (!document?.querySelectorAll) return false;
-  const work = [...document.querySelectorAll("[data-codex-composer-root]")].some((element) => {
+  const visible = (element: Element) => {
     const box = element.getBoundingClientRect?.() ?? { width: 0 };
     return box.width > 0 && !element.closest?.("[hidden], [inert]");
-  });
-  return work && document.querySelectorAll("[data-chatgpt-composer]").length === 0;
+  };
+  return (
+    [...document.querySelectorAll("[data-codex-composer-root]")].some(visible) &&
+    ![...document.querySelectorAll("[data-chatgpt-composer]")].some(visible)
+  );
 }
 
 function selectedWorkTab(owner: object): boolean {

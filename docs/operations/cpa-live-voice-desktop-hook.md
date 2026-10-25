@@ -76,6 +76,8 @@ interruption can commit the native fallback without changing its underlying
 atom. When readiness returns, a stale committed value causes the next
 one-second poll to rebind and notify the owned subscriptions. React's equivalent
 lazy snapshot wrappers remain valid; account and workspace checks remain native.
+Work surface discovery ignores retained zero-size, hidden or inert Chat composers.
+A visible Chat composer still prevents that Work fallback from claiming the surface.
 
 When Desktop omits resource timing and script asset names, the explicit Desktop
 version selects the profile and the hook imports its exact native assets.

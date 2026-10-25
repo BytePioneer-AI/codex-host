@@ -497,7 +497,11 @@ export class PiRpcSession {
   #autonomousTurnHandler: ((turn: PiAutonomousTurn) => void) | null = null;
   #usageHandler: ((observation: PiUsageObservation) => void) | null = null;
   #usageRequestStartedAtMs: number | null = null;
-  #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  // Pieces of the unterminated frame; joined once at its newline so a large frame (a long
+  // Session's get_entries) costs linear rather than quadratic copying on the Host event loop.
+  #buffer: Buffer<ArrayBufferLike>[] = [];
+  // Ids whose non-Prompt command timed out; Pi may still answer them late.
+  #expired = new Set<string>();
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
   #closePromise: Promise<void> | null = null;
@@ -1011,11 +1015,13 @@ export class PiRpcSession {
   }
 
   #push(chunk: Buffer<ArrayBufferLike>): void {
-    this.#buffer = this.#buffer.length === 0 ? chunk : Buffer.concat([this.#buffer, chunk]);
-    let newline = this.#buffer.indexOf(0x0a);
+    let rest = chunk;
+    let newline = rest.indexOf(0x0a);
     while (newline >= 0) {
-      const frame = this.#buffer.subarray(0, newline);
-      this.#buffer = this.#buffer.subarray(newline + 1);
+      const tail = rest.subarray(0, newline);
+      const frame = this.#buffer.length === 0 ? tail : Buffer.concat([...this.#buffer, tail]);
+      this.#buffer = [];
+      rest = rest.subarray(newline + 1);
       try {
         const value = JSON.parse(textDecoder.decode(frame));
         if (!isRecord(value) || typeof value.type !== "string") {
@@ -1032,8 +1038,9 @@ export class PiRpcSession {
               ),
         );
       }
-      newline = this.#buffer.indexOf(0x0a);
+      newline = rest.indexOf(0x0a);
     }
+    if (rest.length !== 0) this.#buffer.push(rest);
   }
 
   #handle(value: Record<string, unknown>): void {
@@ -1360,6 +1367,7 @@ export class PiRpcSession {
       return;
     }
     const pending = this.#pending.get(id);
+    if (!pending && this.#expired.delete(id)) return;
     if (!pending) {
       this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response id is not pending"));
       return;
@@ -1649,6 +1657,8 @@ export class PiRpcSession {
       const error = new Error(`Pi RPC '${pending.command}' command timed out`);
       if (pending.command !== "prompt") {
         this.#pending.delete(id);
+        // The caller sees the timeout; a late answer must not fault the whole Session.
+        this.#expired.add(id);
         pending.reject(error);
         return;
       }

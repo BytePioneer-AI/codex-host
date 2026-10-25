@@ -55,6 +55,8 @@ type Scenario =
   | "stats-unsupported-mismatch"
   | "stats-error"
   | "stats-timeout"
+  | "stats-late"
+  | "chunked-output"
   | "missing-session-id";
 
 class FakePiRpcProcess extends EventEmitter {
@@ -288,6 +290,10 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type === "get_session_stats") {
       if (this.#scenario === "stats-timeout") return;
+      if (this.#scenario === "stats-late") {
+        setTimeout(() => this.#respond(command, {}), 30);
+        return;
+      }
       if (
         this.#scenario === "stats-unsupported" ||
         this.#scenario === "stats-unsupported-mismatch"
@@ -804,7 +810,15 @@ class FakePiRpcProcess extends EventEmitter {
   }
 
   #output(value: unknown): void {
-    this.stdout.write(`${JSON.stringify(value)}\n`);
+    const frame = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+    if (this.#scenario !== "chunked-output") {
+      this.stdout.write(frame);
+      return;
+    }
+    // Pipe-sized pieces: every frame arrives split across many chunks.
+    for (let offset = 0; offset < frame.length; offset += 7) {
+      this.stdout.write(frame.subarray(offset, offset + 7));
+    }
   }
 }
 
@@ -1727,6 +1741,26 @@ describe("Pi RPC Turn aggregation", () => {
     await expect(timedOut.getSessionUsage()).rejects.toThrow("command timed out");
     expect(onFault).not.toHaveBeenCalled();
     await timedOut.close();
+
+    // Pi answering after the Host gave up must not fault the Session.
+    const lateFault = vi.fn();
+    const late = session("stats-late", lateFault, { commandTimeoutMs: 10 });
+    await late.start();
+    await expect(late.getSessionUsage()).rejects.toThrow("command timed out");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(lateFault).not.toHaveBeenCalled();
+    await expect(late.getAvailableModels()).resolves.toHaveLength(2);
+    await late.close();
+  });
+
+  it("assembles frames split across many stdout chunks", async () => {
+    const plain = session("final-only");
+    const chunked = session("chunked-output");
+    await plain.start();
+    await chunked.start();
+    await expect(chunked.getEntries()).resolves.toEqual(await plain.getEntries());
+    await plain.close();
+    await chunked.close();
   });
 
   it("reads actual Thinking options and corrected state after selection", async () => {

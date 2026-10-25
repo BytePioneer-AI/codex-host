@@ -21,6 +21,7 @@ fn request_stop(descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
         }
         Err(error) => return Err(error.into()),
     };
+    let observed = crate::desktop_attachment::matching_controller_process_ids(descriptor)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     writeln!(stream, "STOP {}", descriptor.nonce)?;
@@ -34,7 +35,11 @@ fn request_stop(descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
     if response.trim_end() != "stopping" {
         return Err("Controller cannot restart this runtime; fully quit and reopen codexhost once to load the new controller".into());
     }
-    if crate::desktop_attachment::wait_for_controller_exit(descriptor, Duration::from_secs(2))? {
+    if crate::desktop_attachment::wait_for_known_controller_exit(
+        descriptor,
+        &observed,
+        Duration::from_secs(2),
+    )? {
         return Ok(());
     }
     crate::desktop_attachment::stop_orphaned_controller(descriptor)
@@ -115,7 +120,8 @@ mod tests {
         let descriptor =
             RuntimeDescriptor::new(1, port, crate::runtime_instance::random_nonce().unwrap())
                 .unwrap();
-        let mut child = Command::new("python3")
+        let mut command = Command::new("python3");
+        command
             .args([
                 "-c",
                 "import socket,signal,time,sys\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\ns=socket.socket()\ns.bind(('127.0.0.1',int(sys.argv[2])))\ns.listen(1)\nprint('ready',flush=True)\nc,_=s.accept()\nline=c.makefile('rb').readline()\nassert line == ('STOP '+sys.argv[4]+'\\n').encode()\nc.sendall(b'stopping\\n')\nc.close()\ns.close()\nwhile True: time.sleep(0.1)",
@@ -126,14 +132,28 @@ mod tests {
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::null());
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command.spawn().unwrap();
         let mut ready = String::new();
         BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut ready)
             .unwrap();
         assert_eq!(ready.trim(), "ready");
+        let visible = Instant::now();
+        while crate::desktop_attachment::matching_controller_process_ids(&descriptor)
+            .unwrap()
+            .is_empty()
+        {
+            assert!(
+                visible.elapsed() < Duration::from_secs(2),
+                "acknowledging Controller fixture was not visible"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
         let result = request_stop(&descriptor);
         let exited = child.try_wait().unwrap().is_some();
         let _ = child.kill();

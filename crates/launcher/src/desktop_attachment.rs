@@ -295,7 +295,7 @@ fn command_line_matches_controller(command: &str, descriptor: &RuntimeDescriptor
     saw_port && saw_nonce
 }
 
-fn matching_controller_process_ids(
+pub(super) fn matching_controller_process_ids(
     descriptor: &RuntimeDescriptor,
 ) -> Result<Vec<u32>, Box<dyn Error>> {
     let mut matches = Vec::new();
@@ -327,11 +327,24 @@ pub(super) fn wait_for_controller_exit(
     descriptor: &RuntimeDescriptor,
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
+    wait_for_known_controller_exit(descriptor, &[], timeout)
+}
+
+pub(super) fn wait_for_known_controller_exit(
+    descriptor: &RuntimeDescriptor,
+    known_process_ids: &[u32],
+    timeout: Duration,
+) -> Result<bool, Box<dyn Error>> {
     let started = Instant::now();
     loop {
         // A Controller can close its socket before its asynchronous cleanup finishes.
         // The Launcher cannot finish shutdown while that process remains alive.
+        let known_alive = known_process_ids
+            .iter()
+            .copied()
+            .any(|process_id| process_snapshot(process_id).is_ok());
         if matching_controller_process_ids(descriptor)?.is_empty()
+            && !known_alive
             && !endpoint_ready(descriptor.control_port, Duration::from_millis(50))
         {
             return Ok(true);

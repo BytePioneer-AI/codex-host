@@ -79,6 +79,8 @@ Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer �
 
 Codex Desktop **26.903.61454 / build 8378** 在功能开关及 app-server 版本满足条件时使用服务端队列。运行中追加消息会先调用 `thread/queue/list`，再调用 `thread/queue/add`；仅让 Host 返回空列表不能恢复入队。外部 Thread 不属于官方 app-server，Host 对这些请求的拒绝仍需保留，不能透传或伪造服务端队列。
 
+Avatar overlay 是独立的 Desktop webcontents，在语音、IAB 或 Computer Use 之后可以成为该 Thread 的 stream owner。主窗口的 Renderer Binding 不会注入 overlay；`cpa-live-voice-hook.js` 在 overlay 里发现 RequestManager 后安装 steer 包装，并把 External Thread 的 stream role 视为 owner，使 follower 窗口可以把跟进消息写入 Host `thread/queue/*`。Overlay 作为 owner 通过 `thread/queue/start` 执行队列。缺少 type:text 的 `turn/start` 会从 Host 队列或本地队列条目恢复文本。
+
 `renderer-external-queue.ts` 在当前 Manager 的 `getTurnCoordinator().serverQueue.isEnabled(threadId)` 上排除外部 Thread，让 Desktop 继续使用保留的本地队列：
 
 - 只读取同一个 Manager 的 `getConversation(threadId)`，核对 Thread ID 及 Host 投影的保留标记 `modelProvider: "codexhost"`。不根据当前 Agent 选择或 Model 名称猜测，不跨 Host 缓存身份，也不增加 RPC。
@@ -112,6 +114,9 @@ Codex Desktop **26.924.22138 / build 11645** 的本地队列在 `turnCompleted` 
 - `packages/renderer-extension/test/renderer-external-steering.test.ts`：正常 start 占位、唯一输入、无旧轮 steer Item、去重、队列暂停恢复、owner/follower、失败和卸载。
 - `packages/renderer-extension/test/renderer-external-steering-rpc.test.ts`：类方法的 RPC 可访问性、模型／权限列表读取、官方与外部 steer、实例隔离、卸载和重复安装，以及卸载期间待定请求的清理。
 - `packages/renderer-extension/test/renderer-external-queue.test.ts`：经生产 Adapter 安装路径验证外部入队、已有暂停消息、队列清空后再次入队、同连接官方队列、Manager 隔离、元数据更新、旧版后端和卸载恢复。
+- `packages/renderer-extension/test/renderer-overlay-external-followups.test.ts`：avatar overlay 发现 RequestManager 后把 External Thread 视为 stream owner。
+- `packages/renderer-extension/test/renderer-external-steering.test.ts`：缺少 type:text 的 queued `turn/start` 从本地队列恢复文本。
+- `packages/host-runtime/test/app-server-host.follow-up-queue.test.ts`：Host `thread/queue/add` 与 `thread/queue/start`，以及空 `turn/start` 消费队列。
 - `packages/renderer-extension/test/versioned-renderer-adapter.test.ts`：现有版本化绑定与清理回归。
 - `packages/host-runtime/test/app-server-host.manual-compaction.test.ts`：命令菜单与输入 `/compact` 两条路径在压缩 `item/started` 前恰好发送一次通知，普通 Turn 与非 `/compact` 命令 Turn 的自动压缩均不发送。
 - `packages/renderer-extension/test/renderer-manual-compaction.test.ts`：经窗口 `mcp-notification` 消息的外部 Thread 登记，follower、未加载／官方 Thread、其他 Host、其他 frame 与非法消息跳过，缺少 Desktop 绑定、卸载，以及按 Host 连接（含 SSH）安装。

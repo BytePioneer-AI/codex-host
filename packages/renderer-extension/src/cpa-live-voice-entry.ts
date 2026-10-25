@@ -1,5 +1,6 @@
 import { installCpaLiveVoiceHook } from "./renderer-cpa-live-voice-hook.js";
 import { installClientOwnedVoiceHook } from "./renderer-client-owned-voice.js";
+import { installOverlayExternalFollowUps } from "./renderer-overlay-external-followups.js";
 import { installOverlayThreadIsolation } from "./renderer-overlay-thread-isolation.js";
 import { installVoiceStartCapabilityHook } from "./renderer-voice-start-capability.js";
 
@@ -8,3 +9,4 @@ installCpaLiveVoiceHook();
 installClientOwnedVoiceHook();
 installVoiceStartCapabilityHook();
 installOverlayThreadIsolation();
+installOverlayExternalFollowUps();

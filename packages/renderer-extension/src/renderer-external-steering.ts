@@ -21,6 +21,7 @@ interface SteeringManager {
   startTurn: RendererMethod;
   getTurnCoordinator: RendererMethod;
   getStreamRole?: RendererMethod;
+  getConversation?: RendererMethod;
 }
 
 function isManager(value: unknown): value is SteeringManager {
@@ -30,6 +31,43 @@ function isManager(value: unknown): value is SteeringManager {
       (key) => typeof value[key] === "function",
     )
   );
+}
+
+function inputText(input: unknown): string {
+  if (!Array.isArray(input)) return "";
+  return input
+    .filter(
+      (item): item is Record<string, unknown> => isRecord(item) && typeof item.text === "string",
+    )
+    .map((item) => item.text as string)
+    .join("\n");
+}
+
+function queuedFollowUpText(message: unknown): string {
+  if (!isRecord(message)) return "";
+  if (typeof message.text === "string" && message.text.trim()) return message.text;
+  const context = message.context;
+  if (isRecord(context) && typeof context.prompt === "string" && context.prompt.trim()) {
+    return context.prompt;
+  }
+  return "";
+}
+
+/** Overlay-owned queued starts can omit type:text input while the local queue still has the prompt. */
+export function restoreQueuedTurnStartText(manager: unknown, params: unknown): unknown {
+  if (!isManager(manager) || !isRecord(params) || typeof params.threadId !== "string")
+    return params;
+  if (inputText(params.input).trim()) return params;
+  const messageId = params.clientUserMessageId;
+  if (typeof messageId !== "string" || !messageId) return params;
+  const coordinator = manager.getTurnCoordinator();
+  if (!isRecord(coordinator) || typeof coordinator.readMessages !== "function") return params;
+  const messages = coordinator.readMessages.call(coordinator, params.threadId);
+  if (!Array.isArray(messages)) return params;
+  const match = messages.find((message) => isRecord(message) && message.id === messageId);
+  const text = queuedFollowUpText(match);
+  if (!text) return params;
+  return { ...params, input: [{ type: "text", text }] };
 }
 
 function submissionHost(manager: SteeringManager): {
@@ -53,15 +91,17 @@ function submissionHost(manager: SteeringManager): {
   };
 }
 
-type SteeringMethodName = "sendRequest" | "steerTurn";
+type SteeringMethodName = "sendRequest" | "steerTurn" | "getStreamRole";
 
 function installSteeringMethods(
   manager: SteeringManager,
-  replacements: Record<SteeringMethodName, RendererMethod>,
+  replacements: Partial<Record<SteeringMethodName, RendererMethod>>,
 ): (name: SteeringMethodName) => void {
   const originalPrototype: object | null = Object.getPrototypeOf(manager);
   const overrides: object = Object.create(originalPrototype);
-  const names = ["sendRequest", "steerTurn"] as const;
+  const names = (Object.keys(replacements) as SteeringMethodName[]).filter(
+    (name) => typeof replacements[name] === "function",
+  );
   const descriptors = new Map(
     names.map((name) => [name, Object.getOwnPropertyDescriptor(manager, name)]),
   );
@@ -74,7 +114,7 @@ function installSteeringMethods(
       configurable: own?.configurable ?? true,
       enumerable: own?.enumerable ?? false,
       writable: true,
-      value: replacements[name],
+      value: replacements[name] as RendererMethod,
     });
   }
   if (names.some((name) => !descriptors.get(name))) {
@@ -166,6 +206,7 @@ export function installRendererExternalSteering(
     if ((method === "turn/start" || method === "turn/steer") && prepareTurnInput) {
       params = prepareTurnInput(params);
     }
+    if (method === "turn/start") params = restoreQueuedTurnStartText(manager, params);
     const messageId = isRecord(params) ? params.clientUserMessageId : null;
     const route =
       typeof messageId === "string" && isRecord(params)
@@ -407,10 +448,34 @@ export function installRendererExternalSteering(
     return promise;
   };
 
-  const restoreMethod = installSteeringMethods(manager, { sendRequest: send, steerTurn: steer });
+  const originalRole = manager.getStreamRole;
+  const getStreamRole: RendererMethod | undefined =
+    typeof originalRole === "function"
+      ? (...args: unknown[]) => {
+          const threadId = args[0];
+          if (typeof threadId === "string" && typeof manager.getConversation === "function") {
+            const conversation: unknown = manager.getConversation(threadId);
+            if (
+              isRecord(conversation) &&
+              conversation.id === threadId &&
+              conversation.modelProvider === "codexhost"
+            ) {
+              return { role: "owner" };
+            }
+          }
+          return originalRole.apply(manager, args);
+        }
+      : undefined;
+
+  const restoreMethod = installSteeringMethods(manager, {
+    sendRequest: send,
+    steerTurn: steer,
+    ...(getStreamRole ? { getStreamRole } : {}),
+  });
   return () => {
     disposed = true;
     restoreMethod("steerTurn");
+    if (getStreamRole) restoreMethod("getStreamRole");
     // In-flight starts must fail closed, not accidentally become ordinary start RPCs.
     if (pending.size === 0) {
       restoreMethod("sendRequest");

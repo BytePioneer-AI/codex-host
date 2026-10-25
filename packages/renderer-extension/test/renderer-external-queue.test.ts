@@ -150,6 +150,18 @@ function fixture() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("external follow-ups retain Desktop's local queue", () => {
+  it("leaves the server queue enabled when the Manager reports stream role", () => {
+    const f = fixture();
+    Object.assign(f.manager, { getStreamRole: () => ({ role: "follower" }) });
+    const adapter = f.install();
+    try {
+      expect(f.queue.isEnabled).toBe(f.originalGate);
+      expect(f.queue.isEnabled("external")).toBe(true);
+    } finally {
+      adapter.dispose();
+    }
+  });
+
   it("queues another message during an external Turn without thread/queue/list or add", async () => {
     const f = fixture();
     const adapter = f.install();

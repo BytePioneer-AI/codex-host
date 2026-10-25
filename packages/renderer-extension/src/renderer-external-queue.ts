@@ -3,9 +3,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Desktop 26.903.61454 still owns the local follow-up queue and its execution.
- * Its serverQueue.isEnabled(threadId) gate must exclude Host-projected external
- * Threads: the official app-server queue cannot execute a Harness Turn.
+ * Desktop 26.1016 overlay-owned External Threads drain through Host
+ * `thread/queue/*`. Keep the local-queue gate only on Desktops that cannot
+ * report stream ownership, where follower windows still need that fallback.
  */
 export function installRendererExternalQueue(target: unknown): (() => void) | null {
   if (
@@ -15,6 +15,7 @@ export function installRendererExternalQueue(target: unknown): (() => void) | nu
   ) {
     return null;
   }
+  if (typeof target.getStreamRole === "function") return null;
   const coordinator: unknown = target.getTurnCoordinator();
   const queue = isRecord(coordinator) ? coordinator.serverQueue : null;
   if (!isRecord(queue) || typeof queue.isEnabled !== "function") return null;

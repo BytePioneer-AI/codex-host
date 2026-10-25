@@ -40,7 +40,13 @@ function fixture(delivery: "newTurn" | "activeTurn" | "official" = "newTurn") {
     steerTurn: vi
       .fn<(...args: unknown[]) => Promise<{ turnId: string }>>()
       .mockResolvedValue({ turnId: "official" }),
-    getStreamRole: vi.fn(() => ({ role: "owner" })),
+    getStreamRole: vi
+      .fn<(threadId: string) => { role: string }>()
+      .mockReturnValue({ role: "owner" }),
+    getConversation: (threadId: string): { id: string; modelProvider: string } | null => {
+      void threadId;
+      return null;
+    },
     getTurnCoordinator: () => ({
       loadMessages: async () => undefined,
       readMessages: () => queued,

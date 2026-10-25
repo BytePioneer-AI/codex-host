@@ -18,7 +18,9 @@ function followUpManager() {
     sendRequest: vi.fn(async (method: string, params: unknown) => ({ method, params })),
     steerTurn: vi.fn(),
     startTurn: vi.fn(),
-    getStreamRole: vi.fn(() => ({ role: "follower" })),
+    getStreamRole: vi
+      .fn<(threadId: string) => { role: string }>()
+      .mockReturnValue({ role: "follower" }),
     getTurnCoordinator: () => coordinator,
     getConversation: (threadId: string) => conversations.get(threadId) ?? null,
   };

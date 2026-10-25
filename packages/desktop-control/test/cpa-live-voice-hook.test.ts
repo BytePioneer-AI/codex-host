@@ -98,7 +98,11 @@ describe("installed Desktop version detection", () => {
     expect(execFileSync).toHaveBeenNthCalledWith(
       2,
       "/usr/bin/defaults",
-      ["read", "/Applications/Codex.app/Contents/Info.plist", "CFBundleShortVersionString"],
+      [
+        "read",
+        path.join("/Applications/Codex.app", "Contents/Info.plist"),
+        "CFBundleShortVersionString",
+      ],
       { encoding: "utf8", timeout: 2000 },
     );
   });

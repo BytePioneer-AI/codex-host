@@ -56,6 +56,7 @@ type Scenario =
   | "stats-error"
   | "stats-timeout"
   | "stats-late"
+  | "model-late"
   | "chunked-output"
   | "missing-session-id";
 
@@ -402,6 +403,10 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     if (command.type === "set_model") {
+      if (this.#scenario === "model-late") {
+        setTimeout(() => this.#respond(command), 30);
+        return;
+      }
       if (typeof command.provider === "string" && typeof command.modelId === "string") {
         this.#provider = command.provider;
         this.#modelId = command.modelId;
@@ -1751,6 +1756,22 @@ describe("Pi RPC Turn aggregation", () => {
     expect(lateFault).not.toHaveBeenCalled();
     await expect(late.getAvailableModels()).resolves.toHaveLength(2);
     await late.close();
+  });
+
+  it("still faults on a late answer to a timed-out state-changing command", async () => {
+    // Pi may have applied the change after the Host gave up, so its state is unconfirmed.
+    const onFault = vi.fn();
+    const rpc = session("model-late", onFault, { commandTimeoutMs: 10 });
+    await rpc.start();
+    await expect(
+      rpc.selectModel({ provider: "synthetic-provider", id: "family/model" }),
+    ).rejects.toThrow("command timed out");
+    await vi.waitFor(() =>
+      expect(onFault).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Pi RPC response id is not pending" }),
+      ),
+    );
+    await rpc.close();
   });
 
   it("assembles frames split across many stdout chunks", async () => {

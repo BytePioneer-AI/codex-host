@@ -171,6 +171,16 @@ export interface PiRpcProcessAdapter {
   spawn(options: PiRpcProcessOptions): ChildProcessWithoutNullStreams;
 }
 
+// Commands without Pi-side effects; a late answer to one of these after its timeout is harmless.
+const READ_ONLY_COMMANDS = new Set([
+  "get_state",
+  "get_commands",
+  "get_entries",
+  "get_session_stats",
+  "get_available_models",
+  "get_available_thinking_levels",
+]);
+
 interface PendingCommand {
   command: string;
   resolve(value: Record<string, unknown>): void;
@@ -500,7 +510,7 @@ export class PiRpcSession {
   // Pieces of the unterminated frame; joined once at its newline so a large frame (a long
   // Session's get_entries) costs linear rather than quadratic copying on the Host event loop.
   #buffer: Buffer<ArrayBufferLike>[] = [];
-  // Ids whose non-Prompt command timed out; Pi may still answer them late.
+  // Ids whose read-only command timed out; Pi may still answer them late.
   #expired = new Set<string>();
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
@@ -1657,8 +1667,10 @@ export class PiRpcSession {
       const error = new Error(`Pi RPC '${pending.command}' command timed out`);
       if (pending.command !== "prompt") {
         this.#pending.delete(id);
-        // The caller sees the timeout; a late answer must not fault the whole Session.
-        this.#expired.add(id);
+        // The caller sees the timeout. A late answer to a read-only query is dropped; one to a
+        // state-changing command still faults the Session, since Pi may have applied a change
+        // the Host state never confirmed.
+        if (READ_ONLY_COMMANDS.has(pending.command)) this.#expired.add(id);
         pending.reject(error);
         return;
       }

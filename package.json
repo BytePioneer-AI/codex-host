@@ -1,6 +1,6 @@
 {
   "name": "codexhost",
-  "version": "0.14.0-0",
+  "version": "0.14.0-1",
   "private": true,
   "license": "LGPL-3.0-only",
   "type": "module",

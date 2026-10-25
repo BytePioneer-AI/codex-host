@@ -68,8 +68,13 @@ export async function readClaudeCodeProfiles(
   const defaultIdentities = new Set<string>();
   defaultIdentities.add(await configDirectoryIdentity(path.join(home, ".claude")));
   if (environment.CLAUDE_CONFIG_DIR) {
-    const customDefault = resolveProfilePath(environment.CLAUDE_CONFIG_DIR, baseDir, home);
-    defaultIdentities.add(await configDirectoryIdentity(customDefault));
+    const customLiteral = environment.CLAUDE_CONFIG_DIR;
+    const customHome = expandUserPath(customLiteral, home);
+    // Protect both cwd-relative resolution (as the Adapter reads) and profile-relative resolution.
+    defaultIdentities.add(await configDirectoryIdentity(path.resolve(customHome)));
+    defaultIdentities.add(
+      await configDirectoryIdentity(resolveProfilePath(customLiteral, baseDir, home)),
+    );
   }
 
   for (const profile of collectClaudeCodeProfiles(parsedJson)) {

@@ -183,6 +183,27 @@ describe("claude-profiles", () => {
     expect(profiles.map(({ id }) => id)).toEqual(["claude-other"]);
   });
 
+  it("refuses a profile pointing at default CLAUDE_CONFIG_DIR even when written as relative path", async () => {
+    const relDefault = "./relative-custom-default";
+    const absDefault = path.resolve(relDefault);
+    const profilesPath = path.join(temporaryDirectory, "rel-config.json");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        { id: "claude-default", name: "Matches cwd default", configDir: absDefault },
+        { id: "claude-other", name: "Other", configDir: path.join(temporaryDirectory, "other") },
+      ]),
+      "utf8",
+    );
+
+    const profiles = await readClaudeCodeProfiles(profilesPath, {
+      HOME: "/custom/home",
+      CLAUDE_CONFIG_DIR: relDefault,
+    });
+
+    expect(profiles.map(({ id }) => id)).toEqual(["claude-other"]);
+  });
+
   it("skips malformed entries without hiding valid profiles", async () => {
     const profilesPath = path.join(temporaryDirectory, "mixed-config.json");
     await writeFile(

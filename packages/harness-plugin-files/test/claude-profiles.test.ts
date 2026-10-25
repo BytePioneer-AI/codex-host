@@ -46,8 +46,9 @@ describe("claude-profiles", () => {
     ];
     await writeFile(profilesPath, JSON.stringify(content), "utf8");
 
+    const testHome = path.join(temporaryDirectory, "custom-home");
     const profiles = await readClaudeCodeProfiles(profilesPath, {
-      HOME: "/custom/home",
+      HOME: testHome,
     });
 
     expect(profiles).toHaveLength(1);
@@ -55,8 +56,8 @@ describe("claude-profiles", () => {
     if (!first) throw new Error("Expected first profile");
     expect(first.id).toBe("claude-custom");
     expect(first.name).toBe("Claude Custom");
-    expect(first.command).toBe(path.join("/custom/home", "bin/claude-custom"));
-    expect(first.configDir).toBe(path.join("/custom/home", ".claude-custom"));
+    expect(first.command).toBe(path.join(testHome, "bin/claude-custom"));
+    expect(first.configDir).toBe(path.join(testHome, ".claude-custom"));
     expect(first.icon).toBe(iconPath);
 
     // Test readProfileIcon
@@ -97,7 +98,9 @@ describe("claude-profiles", () => {
       "utf8",
     );
 
-    const profiles = await readClaudeCodeProfiles(profilesPath, { HOME: "/custom/home" });
+    const profiles = await readClaudeCodeProfiles(profilesPath, {
+      HOME: path.join(temporaryDirectory, "custom-home"),
+    });
 
     expect(profiles.map(({ id }) => id)).toEqual(["claude-one", "claude-three"]);
     expect(profiles[0]?.configDir).toBe(path.join(temporaryDirectory, "shared"));
@@ -119,7 +122,9 @@ describe("claude-profiles", () => {
       "utf8",
     );
 
-    const profiles = await readClaudeCodeProfiles(profilesPath, { HOME: "/custom/home" });
+    const profiles = await readClaudeCodeProfiles(profilesPath, {
+      HOME: path.join(temporaryDirectory, "custom-home"),
+    });
 
     expect(profiles.map(({ id }) => id)).toEqual(["claude-one", "claude-three"]);
   });
@@ -140,7 +145,9 @@ describe("claude-profiles", () => {
       "utf8",
     );
 
-    const profiles = await readClaudeCodeProfiles(profilesPath, { HOME: "/custom/home" });
+    const profiles = await readClaudeCodeProfiles(profilesPath, {
+      HOME: path.join(temporaryDirectory, "custom-home"),
+    });
 
     expect(profiles.map(({ id }) => id)).toEqual(["claude-one", "claude-three"]);
   });
@@ -176,7 +183,7 @@ describe("claude-profiles", () => {
     );
 
     const profiles = await readClaudeCodeProfiles(profilesPath, {
-      HOME: "/custom/home",
+      HOME: path.join(temporaryDirectory, "custom-home"),
       CLAUDE_CONFIG_DIR: customDefault,
     });
 
@@ -197,7 +204,7 @@ describe("claude-profiles", () => {
     );
 
     const profiles = await readClaudeCodeProfiles(profilesPath, {
-      HOME: "/custom/home",
+      HOME: path.join(temporaryDirectory, "custom-home"),
       CLAUDE_CONFIG_DIR: relDefault,
     });
 
@@ -215,7 +222,9 @@ describe("claude-profiles", () => {
       "utf8",
     );
 
-    const profiles = await readClaudeCodeProfiles(profilesPath, { HOME: "/custom/home" });
+    const profiles = await readClaudeCodeProfiles(profilesPath, {
+      HOME: path.join(temporaryDirectory, "custom-home"),
+    });
 
     expect(profiles.map(({ id }) => id)).toEqual(["claude-valid"]);
   });

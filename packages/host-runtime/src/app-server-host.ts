@@ -299,6 +299,11 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
 import { externalThreadEmptyOfficialResult } from "./external-thread-official-defaults.js";
+import {
+  ExternalThreadFollowUpQueue,
+  queuedSubmissionText,
+  type ExternalQueuedSubmission,
+} from "./external-thread-follow-up-queue.js";
 import { ModelPriceCatalog } from "./model-prices.js";
 import { ObservedSessionUsage } from "./observed-session-usage.js";
 import type { UsageStatistics, UsageStatisticsSource } from "./usage-statistics.js";
@@ -586,11 +591,7 @@ function requestObject(request: JsonRpcRequest): JsonObject {
 
 function requestText(params: JsonObject): string {
   if (!Array.isArray(params.input)) throw new Error("turn/start input must be an array");
-  const text = params.input
-    .filter((item): item is JsonObject => isRecord(item) && item.type === "text")
-    .map((item) => item.text)
-    .filter((value): value is string => typeof value === "string")
-    .join("\n");
+  const text = queuedSubmissionText(params.input);
   if (!text) throw new Error("turn/start must contain text input");
   return text;
 }
@@ -654,6 +655,7 @@ export class AppServerHost {
   readonly #executionHosts = new WeakMap<ExternalThread, string>();
   readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering = new ExternalTurnSteering();
+  readonly #followUps = new ExternalThreadFollowUpQueue();
   readonly #nativeVoiceGateway: NativeVoiceGateway;
   readonly #externalVoice: ExternalVoice;
   readonly #externalVoiceResults = new ExternalVoiceResults((threadId, text) =>
@@ -2095,6 +2097,27 @@ export class AppServerHost {
       }
       if (typeof threadId === "string") {
         this.#pendingOfficialTurnStarts.set(request.id, threadId);
+      }
+    }
+    if (request.method.startsWith("thread/queue/")) {
+      const params = routingParams(request);
+      const threadId = params.threadId;
+      const resolution =
+        typeof threadId === "string"
+          ? await this.#resolveExternalThread(threadId)
+          : ({ kind: "official" } as const);
+      if (await this.#writeResolutionError(request, resolution)) return;
+      if (resolution.kind === "external") {
+        if (request.method === "thread/queue/start") {
+          this.#dispatchDesktopReply(
+            request,
+            () => this.#startExternalQueuedTurn(request, resolution.thread),
+            resolution.thread.id,
+          );
+          return;
+        }
+        await this.#handleExternalQueueMutation(request, resolution.thread);
+        return;
       }
     }
     if (request.method === "turn/steer") {
@@ -4858,6 +4881,135 @@ export class AppServerHost {
     );
   }
 
+  async #notifyFollowUpQueueChanged(threadId: string): Promise<void> {
+    await this.#writer.json({
+      method: "thread/queue/changed",
+      params: { threadId },
+    });
+  }
+
+  async #handleExternalQueueMutation(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+  ): Promise<void> {
+    const params = requestObject(request);
+    try {
+      if (request.method === "thread/queue/list") {
+        await this.#writer.json(rpcEnvelope(request, { result: this.#followUps.list(thread.id) }));
+        return;
+      }
+      if (request.method === "thread/queue/add") {
+        if (!Array.isArray(params.input))
+          throw new Error("thread/queue/add input must be an array");
+        const text = queuedSubmissionText(params.input);
+        if (!text) throw new Error("thread/queue/add must contain text input");
+        const queuedSubmission = this.#followUps.add(
+          thread.id,
+          params.input,
+          typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
+        );
+        await this.#writer.json(rpcEnvelope(request, { result: { queuedSubmission } }));
+        await this.#notifyFollowUpQueueChanged(thread.id);
+        return;
+      }
+      if (request.method === "thread/queue/update") {
+        if (typeof params.queuedSubmissionId !== "string" || !Array.isArray(params.input)) {
+          throw new Error("thread/queue/update requires queuedSubmissionId and input");
+        }
+        const queuedSubmission = this.#followUps.update(
+          thread.id,
+          params.queuedSubmissionId,
+          params.input,
+        );
+        if (!queuedSubmission) throw new Error("Queued follow-up was not found");
+        await this.#writer.json(rpcEnvelope(request, { result: { queuedSubmission } }));
+        await this.#notifyFollowUpQueueChanged(thread.id);
+        return;
+      }
+      if (request.method === "thread/queue/delete") {
+        if (typeof params.queuedSubmissionId !== "string") {
+          throw new Error("thread/queue/delete requires queuedSubmissionId");
+        }
+        const deleted = this.#followUps.delete(thread.id, params.queuedSubmissionId);
+        await this.#writer.json(rpcEnvelope(request, { result: { deleted } }));
+        if (deleted) await this.#notifyFollowUpQueueChanged(thread.id);
+        return;
+      }
+      if (request.method === "thread/queue/reorder") {
+        if (
+          !Array.isArray(params.queuedSubmissionIds) ||
+          params.queuedSubmissionIds.some((id) => typeof id !== "string")
+        ) {
+          throw new Error("thread/queue/reorder requires queuedSubmissionIds");
+        }
+        if (!this.#followUps.reorder(thread.id, params.queuedSubmissionIds as string[])) {
+          throw new Error("Queued follow-up order could not be applied");
+        }
+        await this.#writer.json(rpcEnvelope(request, { result: {} }));
+        await this.#notifyFollowUpQueueChanged(thread.id);
+        return;
+      }
+      await this.#writer.json(
+        rpcError(request, -32076, `External Thread does not support ${request.method}`),
+      );
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+    }
+  }
+
+  async #startExternalFromFollowUp(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    queued: ExternalQueuedSubmission,
+    sourceHostId?: unknown,
+  ): Promise<void> {
+    const text = queuedSubmissionText(queued.input);
+    if (!text) {
+      this.#followUps.restore(thread.id, queued);
+      await this.#writer.json(rpcError(request, -32602, "Queued follow-up was not found"));
+      return;
+    }
+    await this.#notifyFollowUpQueueChanged(thread.id);
+    try {
+      const started = await this.#beginExternalInputTurn(
+        thread,
+        text,
+        undefined,
+        queued.clientUserMessageId,
+        sourceHostId,
+      );
+      try {
+        await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));
+      } finally {
+        started.gate.resolve();
+      }
+    } catch (error) {
+      this.#followUps.restore(thread.id, queued);
+      await this.#notifyFollowUpQueueChanged(thread.id);
+      await this.#writer.json(
+        rpcError(
+          request,
+          error instanceof ExternalSteerError || error instanceof ExternalCommandError
+            ? error.code
+            : -32073,
+          errorMessage(error),
+        ),
+      );
+    }
+  }
+
+  async #startExternalQueuedTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    const params = requestObject(request);
+    const queuedSubmissionId =
+      typeof params.queuedSubmissionId === "string" ? params.queuedSubmissionId : undefined;
+    const queued = this.#followUps.take(thread.id, queuedSubmissionId);
+    if (!queued) {
+      await this.#writer.json(rpcError(request, -32602, "Queued follow-up was not found"));
+      return;
+    }
+    await this.#startExternalFromFollowUp(request, thread, queued);
+  }
+
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
     if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
@@ -4882,10 +5034,23 @@ export class AppServerHost {
       }
     }
     let text: string;
+    let clientUserMessageId =
+      typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined;
     try {
       text = requestText(params);
     } catch (error) {
-      await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+      const queued =
+        this.#followUps.take(thread.id, clientUserMessageId) ?? this.#followUps.take(thread.id);
+      if (!queued) {
+        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        return;
+      }
+      await this.#startExternalFromFollowUp(
+        request,
+        thread,
+        queued,
+        params[THREAD_REFERENCE_SOURCE_HOST_PARAM],
+      );
       return;
     }
     try {
@@ -4893,7 +5058,7 @@ export class AppServerHost {
         thread,
         text,
         undefined,
-        typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
+        clientUserMessageId,
         params[THREAD_REFERENCE_SOURCE_HOST_PARAM],
       );
       try {

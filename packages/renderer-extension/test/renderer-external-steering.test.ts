@@ -5,7 +5,12 @@ import { installRendererExternalSteering } from "../src/renderer-external-steeri
 function fixture(delivery: "newTurn" | "activeTurn" | "official" = "newTurn") {
   const events: string[] = [];
   const requestOptions: Record<string, unknown> = { timeoutMs: 30_000 };
-  let queued: Array<{ id: string; pausedReason?: string }> = [];
+  let queued: Array<{
+    id: string;
+    text?: string;
+    context?: { prompt?: string };
+    pausedReason?: string;
+  }> = [];
   const originalTurn = {
     turnId: "old",
     status: "inProgress",
@@ -75,6 +80,7 @@ function fixture(delivery: "newTurn" | "activeTurn" | "official" = "newTurn") {
     }),
   };
   const originalSteer = manager.steerTurn;
+  const originalStreamRole = manager.getStreamRole;
   const dispose = installRendererExternalSteering(manager);
   if (!dispose) throw new Error("Synthetic Renderer steering binding was not installed");
   const args: unknown[] = [
@@ -95,6 +101,7 @@ function fixture(delivery: "newTurn" | "activeTurn" | "official" = "newTurn") {
     events,
     turns,
     originalSteer,
+    originalStreamRole,
     dispose,
     requestOptions,
     queue: {
@@ -143,6 +150,48 @@ describe("external direction changes use normal Desktop start presentation", () 
     expect(f.manager.startTurn).not.toHaveBeenCalled();
     expect(f.rpc.mock.calls.map(([method]) => method)).toEqual([
       "codexhost/thread/steering/inspect",
+    ]);
+    f.dispose();
+  });
+
+  it("reports owner stream role for External Threads so follower windows can enqueue", () => {
+    const f = fixture();
+    f.manager.getConversation = (threadId: string) => ({
+      id: threadId,
+      modelProvider: "codexhost",
+    });
+    f.originalStreamRole.mockReturnValue({ role: "follower" });
+    expect(f.manager.getStreamRole("thread")).toEqual({ role: "owner" });
+    f.dispose();
+  });
+
+  it("restores queued follow-up text onto an empty overlay turn/start", async () => {
+    const f = fixture();
+    f.queue.set([
+      {
+        id: "follow-up",
+        text: "add disallow model list in grok in win10",
+        context: { prompt: "add disallow model list in grok in win10" },
+      },
+    ]);
+    await f.manager.sendRequest("turn/start", {
+      threadId: "thread",
+      clientUserMessageId: "follow-up",
+      input: [],
+    });
+    expect(f.rpc.mock.calls.at(-1)?.slice(0, 2)).toEqual([
+      "turn/start",
+      {
+        threadId: "thread",
+        clientUserMessageId: "follow-up",
+        input: [
+          {
+            type: "text",
+            text: "add disallow model list in grok in win10",
+            text_elements: [],
+          },
+        ],
+      },
     ]);
     f.dispose();
   });
@@ -326,7 +375,7 @@ describe("external direction changes use normal Desktop start presentation", () 
 
   it("lets a follower delegate the original steer to its owning window", async () => {
     const f = fixture();
-    f.manager.getStreamRole.mockReturnValue({ role: "follower" });
+    f.originalStreamRole.mockReturnValue({ role: "follower" });
     await expect(f.manager.steerTurn(...f.args)).resolves.toEqual({ turnId: "official" });
     expect(f.originalSteer).toHaveBeenCalledWith(...f.args);
     expect(f.rpc).not.toHaveBeenCalled();

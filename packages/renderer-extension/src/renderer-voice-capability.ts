@@ -10,7 +10,7 @@ import {
 } from "./renderer-cpa-live-voice-preference.js";
 
 const GLOBAL = "__codexhostVoiceCapabilityV1";
-const INFERENCE_GATE = "3683713372";
+export const INFERENCE_GATE = "3683713372";
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue =>
   value !== null && typeof value === "object";
@@ -93,7 +93,28 @@ export function replayVoiceCapability(store: Store, atom: Atom, gate: Atom): Cap
   }
 }
 
-function hooks(fiber: RecordValue): Hook[] {
+function isFamily(value: unknown): value is Family {
+  return record(value) && record(value.scope) && typeof value.resolve === "function";
+}
+
+/** Family.resolve accepts arbitrary keys, so probing unrelated families cannot
+ * identify the inference gate. Only the selected asset profile owns these exports.
+ */
+export function initializeVoiceCapabilityFamilies(
+  module: RecordValue,
+  assets: { capabilityInit: string; capabilityFamily: string; inferenceGateFamily: string },
+): { family: Family; gates: Family } {
+  const initialize = module[assets.capabilityInit];
+  if (typeof initialize !== "function") throw new Error("Voice capability initializer unavailable");
+  initialize();
+  const family = module[assets.capabilityFamily];
+  const gates = module[assets.inferenceGateFamily];
+  if (!isFamily(family) || !isFamily(gates))
+    throw new Error("Voice capability families unavailable");
+  return { family, gates };
+}
+
+export function hooks(fiber: RecordValue): Hook[] {
   const result: Hook[] = [];
   const seen = new Set<unknown>();
   let hook = fiber.memoizedState;
@@ -168,6 +189,9 @@ export function bindVoiceCapabilitySubscriptions(
   gates: Family,
   allowed: () => boolean,
   realtimeOnly = false,
+  names: readonly (
+    "voice.realtime" | "voice.thread" | "dictation.composer" | "dictation.global"
+  )[] = ["voice.realtime", "voice.thread"],
 ): { dispose(): void; current(): boolean } {
   const fibers = currentFibers();
   const restores: (() => void)[] = [];
@@ -196,7 +220,7 @@ export function bindVoiceCapabilitySubscriptions(
         if (
           !record(parameter) ||
           Object.keys(parameter).some((key) => key !== "name" && key !== "hostId") ||
-          (parameter.name !== "voice.realtime" && parameter.name !== "voice.thread") ||
+          !names.some((name) => parameter.name === name) ||
           (realtimeOnly && parameter.name !== "voice.realtime") ||
           (parameter.hostId !== undefined && parameter.hostId !== "local") ||
           (parameter.name === "voice.thread" && parameter.hostId !== "local")
@@ -294,17 +318,32 @@ export function bindVoiceCapabilitySubscriptions(
     },
     current() {
       const current = [...currentFibers()].flatMap(hooks);
-      return bindings.every(({ subscriber, signal, instance }) =>
-        current.some(
-          (hook) =>
-            Array.isArray(hook.memoizedState) &&
-            hook.memoizedState[0] === subscriber &&
-            hook.memoizedState[1]?.[0] === signal &&
-            hook.next?.queue === instance &&
-            (!realtimeOnly ||
-              (capable(hook.next?.memoizedState) && hook.next.memoizedState.isCapable)),
-        ),
-      );
+      return bindings.every(({ subscriber, signal, instance }) => {
+        try {
+          const snapshot = subscriber.getSnapshot();
+          const instanceSnapshot = instance.getSnapshot();
+          if (
+            !capable(snapshot) ||
+            !capable(instanceSnapshot) ||
+            !equal(snapshot, instanceSnapshot)
+          )
+            return false;
+          return current.some((hook) => {
+            const committed = hook.next?.memoizedState;
+            return (
+              Array.isArray(hook.memoizedState) &&
+              hook.memoizedState[0] === subscriber &&
+              hook.memoizedState[1]?.[0] === signal &&
+              hook.next?.queue === instance &&
+              capable(committed) &&
+              equal(committed, snapshot) &&
+              (!realtimeOnly || snapshot.isCapable)
+            );
+          });
+        } catch {
+          return false;
+        }
+      });
     },
   };
 }
@@ -389,8 +428,6 @@ export function installVoiceCapabilityProjection(
           `app://-/assets/${assets.initial}`,
         );
         if (disposed) return;
-        if (typeof module.njr !== "function")
-          throw new Error("Voice capability exports unavailable");
         const composers = [
           ...(target.document?.querySelectorAll(
             chatGateway() ? "[data-chatgpt-composer]" : "[data-codex-composer-root]",
@@ -401,14 +438,14 @@ export function installVoiceCapabilityProjection(
         );
         if (composers.length !== 1) throw new Error("Voice composer unavailable");
         if (composers[0] !== composer || !binding?.current()) {
-          module.njr();
           binding?.dispose();
           binding = undefined;
           composer = composers[0];
+          const { family, gates } = initializeVoiceCapabilityFamilies(module, assets);
           binding = bindComposerVoiceCapability(
             composer as Element,
-            module.tjr as Family,
-            module.uBr as Family,
+            family,
+            gates,
             allowed,
             chatGateway(),
           );

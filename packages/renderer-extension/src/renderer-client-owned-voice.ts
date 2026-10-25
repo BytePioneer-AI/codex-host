@@ -14,28 +14,54 @@ import {
 } from "./renderer-cpa-live-voice-preference.js";
 import { RENDERER_NEW_THREAD_PREFERENCE_KEY } from "./renderer-new-thread-preference.js";
 
-export const CLIENT_OWNED_VOICE_VERSION = "26.1016.62342";
-export const CLIENT_OWNED_VOICE_INITIAL_ASSET = "app-initial-dddef47d6ef6.js";
-export const CLIENT_OWNED_VOICE_SHARED_ASSET = "app-shared-fc3316d48427.js";
-export const CLIENT_OWNED_VOICE_SERVICES = "ist";
-export const CLIENT_OWNED_VOICE_OVERLAY_ASSET = "avatar-overlay-native-page-ef8332c6a2fb.js";
+export const CLIENT_OWNED_VOICE_VERSION = "26.1021.31345";
+export const CLIENT_OWNED_VOICE_INITIAL_ASSET = "app-initial-feb30b196d11.js";
+export const CLIENT_OWNED_VOICE_SHARED_ASSET = "app-shared-2cae01273bae.js";
+export const CLIENT_OWNED_VOICE_OVERLAY_ASSET = "avatar-overlay-native-page-d549db3706f1.js";
 export const CLIENT_OWNED_VOICE_ASSETS = [
   {
     version: CLIENT_OWNED_VOICE_VERSION,
     initial: CLIENT_OWNED_VOICE_INITIAL_ASSET,
     shared: CLIENT_OWNED_VOICE_SHARED_ASSET,
     overlay: CLIENT_OWNED_VOICE_OVERLAY_ASSET,
+    fetch: "Htr",
+    fetchFrom: "initial",
+    bridge: "bIt",
+    services: "Qot",
+    capabilityInit: "l0n",
+    capabilityFamily: "c0n",
+    inferenceGateFamily: "Cnr",
+  },
+  {
+    version: "26.1016.62342",
+    initial: "app-initial-dddef47d6ef6.js",
+    shared: "app-shared-fc3316d48427.js",
+    overlay: "avatar-overlay-native-page-ef8332c6a2fb.js",
+    init: "Oit",
+    fetch: "Eit",
+    bridge: "AFt",
+    responseError: "Mit",
+    services: "ist",
+    capabilityInit: "njr",
+    capabilityFamily: "tjr",
+    inferenceGateFamily: "uBr",
   },
   {
     version: "26.1016.61520",
     initial: "app-initial-c95ddb62696e.js",
     shared: "app-shared-2eda13eb7044.js",
     overlay: "avatar-overlay-native-page-fcc17283519a.js",
+    init: "Oit",
+    fetch: "Eit",
+    bridge: "AFt",
+    responseError: "Mit",
+    services: "ist",
+    capabilityInit: "njr",
+    capabilityFamily: "tjr",
+    inferenceGateFamily: "uBr",
   },
 ];
 const SHARED_INIT = "Oit";
-const SHARED_FETCH = "Eit";
-const SHARED_BRIDGE = "AFt";
 const SHARED_RESPONSE_ERROR = "Mit";
 const HOOK_GLOBAL = "__codexhostClientOwnedVoiceV1";
 type RecordValue = Record<string, unknown>;
@@ -318,7 +344,7 @@ interface VoiceHook {
   dispose(): void;
 }
 
-/** Desktop 26.1016 always creates calls in the Renderer. Its native WebFetch
+/** Desktop 26.1016+ always creates calls in the Renderer. Its native WebFetch
  * singleton and message bridge are audited exports of the loaded shared module.
  */
 export function installClientOwnedVoiceHook(
@@ -355,40 +381,55 @@ export function installClientOwnedVoiceHook(
     const assets = selectVoiceAssets(CLIENT_OWNED_VOICE_ASSETS, names, config.desktopVersion);
     if (assets) {
       try {
-        const module = await importModule(`app://-/assets/${assets.shared}`);
+        const sharedModule = await importModule(`app://-/assets/${assets.shared}`);
+        const fetchFrom = "fetchFrom" in assets ? assets.fetchFrom : "shared";
+        const fetchModule =
+          fetchFrom === "initial"
+            ? await importModule(`app://-/assets/${assets.initial}`)
+            : sharedModule;
         if (disposed) return;
-        // The shared chunk exports lazy bindings. Initialize WebFetch and its
-        // message bridge before reading their singleton classes on document start.
-        if (typeof module[SHARED_INIT] !== "function") throw new Error();
-        (module[SHARED_INIT] as () => void)();
-        const fetchClass = module[SHARED_FETCH];
-        const bridgeClass = module[SHARED_BRIDGE];
+        const init = "init" in assets ? assets.init : SHARED_INIT;
+        const fetchName = assets.fetch;
+        const bridgeName = assets.bridge;
+        const errorName = "responseError" in assets ? assets.responseError : SHARED_RESPONSE_ERROR;
+        if (typeof init === "string" && typeof fetchModule[init] === "function") {
+          (fetchModule[init] as () => void)();
+        } else if (typeof init === "string" && typeof sharedModule[init] === "function") {
+          (sharedModule[init] as () => void)();
+        }
+        const fetchClass = typeof fetchName === "string" ? fetchModule[fetchName] : undefined;
+        const bridgeClass = typeof bridgeName === "string" ? sharedModule[bridgeName] : undefined;
         if (!object(fetchClass) && typeof fetchClass !== "function") throw new Error();
         if (!object(bridgeClass) && typeof bridgeClass !== "function") throw new Error();
         const client = Reflect.get(fetchClass, "getInstance").call(fetchClass);
         const bridge = Reflect.get(bridgeClass, "getInstance").call(bridgeClass);
+        const responseError =
+          typeof errorName === "string" && typeof sharedModule[errorName] === "function"
+            ? (sharedModule[errorName] as (response: Response, url: string) => Promise<unknown>)
+            : async (response: Response) => {
+                throw Object.assign(new Error(await response.text()), { status: response.status });
+              };
         if (
           typeof client?.fetch !== "function" ||
           typeof bridge?.dispatchMessage !== "function" ||
-          typeof bridge?.subscribe !== "function" ||
-          typeof module[SHARED_RESPONSE_ERROR] !== "function"
+          typeof bridge?.subscribe !== "function"
         )
           throw new Error();
         restore = wrapClientOwnedVoiceFetch(
           client,
           bridge,
           () => cpaLiveVoicePreferenceAllowsInstall(target),
-          module[SHARED_RESPONSE_ERROR] as (response: Response, url: string) => Promise<unknown>,
+          responseError,
           () => chatLiveVoicePreferenceAllowsOverride(target),
           () => isWorkComposerSurface(target),
           () => isExternalHarnessComposer(target),
         );
         handle.status = "active";
       } catch {
-        handle.status = "unsupported";
+        /* Retry below until the timeout. */
       }
-      return;
     }
+    if (handle.status === "active") return;
     if (Date.now() - started >= 60_000) {
       handle.status = "unsupported";
       return;

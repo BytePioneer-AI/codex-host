@@ -192,9 +192,119 @@ describe("overlay starter registration", () => {
       setTimeout,
       clearTimeout,
     };
-    const importModule = vi.fn(async () => ({ Oit() {}, ist: services }));
-    return { register, unregister, native, services, target, importModule };
+    const importModule = vi.fn(async () => ({
+      Oit() {},
+      ist: services,
+      Qot: services,
+    }));
+    return { register, unregister, native, services, names, target, importModule };
   }
+  it.each(CLIENT_OWNED_VOICE_ASSETS)(
+    "starts through the $version bridge with the committed overlay capability and restores it",
+    async (assets) => {
+      const f = registration(assets);
+      // This Desktop can omit all resource timing and script asset names.
+      f.names.length = 0;
+      Object.assign(f.target, { __codexhostClientOwnedVoiceV1: { status: "active" } });
+      type Atom = { read(get: (atom: Atom) => unknown): unknown; write?: boolean };
+      const gate: Atom = { read: () => true, write: true };
+      const atom: Atom = {
+        read: (get) => ({ isLoading: false, isError: false, isCapable: !get(gate) }),
+      };
+      const store = {
+        get: (a: Atom): unknown => a.read(store.get),
+        sub: (atom: Atom, listener: () => void) => {
+          void atom;
+          void listener;
+          return () => {};
+        },
+      };
+      const signal = { atom, store };
+      const original = () => store.get(atom);
+      const subscriber = {
+        getSnapshot: original,
+        subscribe: (listener: () => void) => store.sub(atom, listener),
+      };
+      const instance = { getSnapshot: original };
+      const committed = { memoizedState: original(), queue: instance, next: {} };
+      const family = { scope: { id: Symbol() }, resolve: () => ({ atom: gate }) };
+      const node = {
+        store,
+        familyBindings: new Map([
+          [family, new Map([['{"name":"voice.realtime"}', { cacheKey: "voice" }]])],
+        ]),
+      };
+      const chain = new Map([[family.scope.id, node]]);
+      Object.assign(committed.next, {
+        memoizedState: {
+          create: () =>
+            subscriber.subscribe(() => {
+              committed.memoizedState = instance.getSnapshot();
+            }),
+          deps: [subscriber.subscribe],
+        },
+      });
+      const page = () => {};
+      const element = {
+        __reactFiber$test: {
+          memoizedState: {
+            memoizedState: [signal, ["voice", chain, undefined, family, undefined]],
+            next: { memoizedState: [subscriber, [signal, undefined]], next: committed },
+          },
+          return: { type: page, return: null },
+        },
+      };
+      const query = f.target.document.querySelectorAll;
+      f.target.document.querySelectorAll = ((selector: string) =>
+        selector === "[data-avatar-overlay-native-surface-id]"
+          ? [element]
+          : query.call(f.target.document, selector)) as Document["querySelectorAll"];
+      let reply: ((message: unknown) => void) | undefined;
+      const dispatchMessage = vi.fn((type, message) => {
+        expect(type).toBe("mcp-request");
+        expect(message.request.method).toBe("codexhost/voice/gateway-status");
+        reply?.({ hostId: "local", message: { id: message.request.id, result: true } });
+      });
+      const bridge = {
+        subscribe: (_type: string, listener: (message: unknown) => void) => {
+          reply = listener;
+          return () => {
+            reply = undefined;
+          };
+        },
+        dispatchMessage,
+      };
+      const initialize = vi.fn();
+      const importModule = async (url: string) =>
+        url.endsWith(assets.shared)
+          ? { [assets.services]: f.services, [assets.bridge]: { getInstance: () => bridge } }
+          : url.endsWith(assets.overlay)
+            ? { AvatarOverlayNativePage: page }
+            : {
+                [assets.capabilityInit]: initialize,
+                [assets.capabilityFamily]: family,
+                [assets.inferenceGateFamily]: family,
+              };
+      const handle = installVoiceStartCapabilityHook({ ...f, importModule });
+      try {
+        await vi.waitFor(() => expect(handle.status).toBe("active"));
+        const start = vi.fn(async () => {
+          expect(instance.getSnapshot()).toMatchObject({ isCapable: true });
+          expect(store.get(gate)).toBe(true);
+          return "existingCall";
+        });
+        f.services.realtimeVoiceRuntime.registerRealtimeStarter(start, vi.fn());
+        const wrappedStart = f.register.mock.calls[0]?.[0];
+        if (typeof wrappedStart !== "function") throw new Error("Missing registered starter");
+        await expect(wrappedStart(request)).resolves.toBe("existingCall");
+        expect(start).toHaveBeenCalledOnce();
+        expect(initialize).toHaveBeenCalledOnce();
+        expect(instance.getSnapshot).toBe(original);
+      } finally {
+        handle.dispose();
+      }
+    },
+  );
   it.each(CLIENT_OWNED_VOICE_ASSETS)(
     "wraps the $version callback without modifying RPC stubs or registration readiness",
     async (assets) => {

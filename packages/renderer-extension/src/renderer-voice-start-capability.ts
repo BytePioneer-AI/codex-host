@@ -2,18 +2,16 @@ import { selectVoiceAssets, supportsVoiceVersion } from "./renderer-voice-assets
 import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
 import { VOICE_GATEWAY_STATUS_METHOD } from "@codexhost/shared-contracts";
 import {
-  CLIENT_OWNED_VOICE_SERVICES,
   CLIENT_OWNED_VOICE_ASSETS,
   rememberVoiceProductExperience,
   requestVoiceHost,
   type NativeVoiceBridge,
 } from "./renderer-client-owned-voice.js";
-import { bindVoiceCapabilitySubscriptions } from "./renderer-voice-capability.js";
 import {
-  auditedAppInitialAssetPresent,
-  loadedAssetNames,
-  readCpaLiveVoiceHookConfig,
-} from "./renderer-cpa-live-voice-hook.js";
+  bindVoiceCapabilitySubscriptions,
+  initializeVoiceCapabilityFamilies,
+} from "./renderer-voice-capability.js";
+import { loadedAssetNames, readCpaLiveVoiceHookConfig } from "./renderer-cpa-live-voice-hook.js";
 import {
   chatLiveVoicePreferenceAllowsOverride,
   cpaLiveVoicePreferenceAllowsInstall,
@@ -158,9 +156,11 @@ export function installVoiceStartCapabilityHook(
       const assets = selectVoiceAssets(CLIENT_OWNED_VOICE_ASSETS, names, config.desktopVersion);
       if (assets) {
         const shared = await importModule(`app://-/assets/${assets.shared}`);
-        if (typeof shared.Oit !== "function") throw new Error("Voice bridge unavailable");
-        shared.Oit();
-        const services = shared[CLIENT_OWNED_VOICE_SERVICES];
+        const init = "init" in assets ? assets.init : undefined;
+        if (typeof init === "string" && typeof shared[init] === "function") {
+          (shared[init] as () => void)();
+        }
+        const services = shared[assets.services];
         if (
           record(services) &&
           (record(services.realtimeVoiceRuntime) ||
@@ -187,7 +187,9 @@ export function installVoiceStartCapabilityHook(
                     ready: async () => {
                       const hook = target.__codexhostClientOwnedVoiceV1;
                       if (!record(hook) || hook.status !== "active") return false;
-                      const bridgeClass = shared.AFt as { getInstance(): NativeVoiceBridge };
+                      const bridgeClass = shared[assets.bridge] as {
+                        getInstance(): NativeVoiceBridge;
+                      };
                       const result = await requestVoiceHost(
                         bridgeClass.getInstance(),
                         {},
@@ -197,24 +199,26 @@ export function installVoiceStartCapabilityHook(
                     },
                     prepare: async (allowed) => {
                       const names = loadedAssetNames(target.document, target.performance);
-                      if (!auditedAppInitialAssetPresent(names, assets.overlay))
+                      if (
+                        selectVoiceAssets(
+                          CLIENT_OWNED_VOICE_ASSETS,
+                          names,
+                          config.desktopVersion,
+                        ) !== assets
+                      )
                         throw new Error("Unaudited voice starter");
                       const [initial, overlay] = await Promise.all([
                         importModule(`app://-/assets/${assets.initial}`),
                         importModule(`app://-/assets/${assets.overlay}`),
                       ]);
-                      if (
-                        typeof initial.njr !== "function" ||
-                        typeof overlay.AvatarOverlayNativePage !== "function" ||
-                        !target.document
-                      )
+                      if (typeof overlay.AvatarOverlayNativePage !== "function" || !target.document)
                         throw new Error("Voice starter owner unavailable");
                       const document = target.document;
-                      initial.njr();
+                      const { family, gates } = initializeVoiceCapabilityFamilies(initial, assets);
                       return bindVoiceCapabilitySubscriptions(
                         () => overlayVoiceStarterFibers(document, overlay.AvatarOverlayNativePage),
-                        initial.tjr as Parameters<typeof bindVoiceCapabilitySubscriptions>[1],
-                        initial.uBr as Parameters<typeof bindVoiceCapabilitySubscriptions>[2],
+                        family,
+                        gates,
                         allowed,
                         true,
                       );

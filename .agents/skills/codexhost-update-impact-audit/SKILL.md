@@ -126,6 +126,8 @@ Use `tools/renderer-binding/run.mjs` only when a clean controlled lifecycle, rel
 
 The runner does not accept the `.app` directory. A controlled flow may verify Agent switching, stale-prewarm clearing, new Thread creation, title behavior, or Fork. State clearly when user interaction or creation boundaries were not exercised.
 
+For a requested live-voice fix on an already running Desktop, use the narrow live voice-hook refresh in [cpa-live-voice-desktop-hook.md](../../../docs/operations/cpa-live-voice-desktop-hook.md#live-voice-hook-debug-on-a-running-desktop) to validate the current document without a full Desktop restart. Keep the read-only probe first and skip mutation during an active or unknown call.
+
 ### Codex usage gate probe
 
 This surface lets a Composer submit while the ChatGPT-signed-in Codex subscription is out of usage by projecting `false` for one Composer's two Desktop usage-gate subscriptions. It depends on private React/state-library internals, so check it on every update. `npm run audit:codex-desktop` reports its structure as the `codex-usage-gate` surface (see `tools/codex-desktop-contract-audit/README.md`); `codex-usage-account-gate-dormant` means the audit ran without a ChatGPT sign-in whose Account gate reads usage. The audit does not verify behavior.
@@ -161,7 +163,7 @@ For a requested fix:
 1. Add a regression test that models the observed DOM, Fiber, API-shape, visual relationship, or routing boundary.
 2. Run it red for the observed reason.
 3. Make one minimal production change in the owning module.
-4. Run it green and repeat the relevant live probe.
+4. Run it green and repeat the relevant live probe. For a requested live-voice fix, use the same narrow refresh linked under Controlled probe.
 
 A test that proves only that a control exists or a mock was called does not prove visual alignment, ownership, or routing.
 

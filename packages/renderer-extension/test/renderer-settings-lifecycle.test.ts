@@ -70,6 +70,18 @@ describe("Renderer Settings lifecycle", () => {
     vi.clearAllMocks();
   });
 
+  it("starts in Desktop's rendered language rather than the system language", () => {
+    const ownerWindow = {
+      navigator: { languages: ["zh-TW", "en-US"] },
+      document: { documentElement: { lang: "en-US" } },
+      setTimeout,
+      clearTimeout,
+    } as unknown as Window;
+    const lifecycle = installRendererSettingsLifecycle(ownerWindow);
+    expect(lifecycle.locale).toBe("en");
+    lifecycle.dispose();
+  });
+
   it("notifies consumers when the resolved Codex locale changes", async () => {
     const onLocaleChange = vi.fn();
     const ownerWindow = {

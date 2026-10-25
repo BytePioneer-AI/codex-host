@@ -347,6 +347,36 @@ describe("Codex locale adapter", () => {
     });
   });
 
+  it.each([
+    ["en-US", "zh-TW", "en-US", "document"],
+    ["zh-CN", "en-US", "zh-CN", "document"],
+    ["", "zh-TW", "zh-TW", "navigator"],
+    ["invalid_locale", "en-US", "en-US", "navigator"],
+  ])(
+    "uses rendered Desktop language %s when the override endpoint is unavailable",
+    async (lang, browser, preferredLocale, source) => {
+      nativeLocale({ ideLocale: browser, systemLocale: browser });
+      const ownerWindow = localeWindow({ "vscode://codex/get-setting": handlerMissing }, [browser]);
+      Object.assign(ownerWindow, { document: { documentElement: { lang } } });
+      expect(await readCodexLocaleSettings({ ownerWindow })).toMatchObject({
+        status: "fallback",
+        mode: "unavailable",
+        preferredLocale,
+        source,
+      });
+    },
+  );
+
+  it("keeps a readable explicit override ahead of the rendered document language", async () => {
+    const ownerWindow = localeWindow({ "vscode://codex/get-setting": { value: "en-US" } });
+    Object.assign(ownerWindow, { document: { documentElement: { lang: "zh-CN" } } });
+    expect(await readCodexLocaleSettings({ ownerWindow, timeoutMs: 10 })).toMatchObject({
+      preferredLocale: "en-US",
+      source: "override",
+      mode: "explicit",
+    });
+  });
+
   it("writes only a bounded locale override through the fixed setting endpoint", async () => {
     const sentRequests: FetchRequest[] = [];
     const ownerWindow = localeWindow(

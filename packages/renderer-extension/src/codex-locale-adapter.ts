@@ -60,7 +60,8 @@ type FixedLocaleRequest =
 export type CodexLocaleOverride = "en-US" | "zh-CN" | null;
 export type CodexLocaleReadStatus = "ready" | "fallback";
 export type CodexLocaleMode = "explicit" | "automatic" | "unavailable";
-export type CodexLocaleSource = "override" | "ide" | "system" | "navigator" | "default";
+export type CodexLocaleSource =
+  "override" | "ide" | "system" | "document" | "navigator" | "default";
 
 export interface CodexLocaleSettings {
   readonly status: CodexLocaleReadStatus;
@@ -333,13 +334,14 @@ export async function readCodexLocaleSettings(
     });
   }
 
+  const documentLocale = canonicalLocale(ownerWindow.document?.documentElement?.lang);
   return Object.freeze({
     status: "fallback",
     mode: "unavailable",
     localeOverride: undefined,
     ideLocale: localeInfo.ideLocale,
     systemLocale: localeInfo.systemLocale,
-    preferredLocale: navigatorLocale ?? "en-US",
-    source: navigatorLocale ? "navigator" : "default",
+    preferredLocale: documentLocale ?? navigatorLocale ?? "en-US",
+    source: documentLocale ? "document" : navigatorLocale ? "navigator" : "default",
   });
 }

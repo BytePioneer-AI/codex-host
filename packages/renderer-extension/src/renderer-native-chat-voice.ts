@@ -1,4 +1,8 @@
 import { selectVoiceAssets, supportsVoiceVersion } from "./renderer-voice-assets.js";
+import {
+  NATIVE_CHAT_VOICE_ASSETS,
+  loadNativeChatVoiceModules,
+} from "./renderer-native-chat-voice-assets.js";
 import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
 import { chatVoiceDebug } from "./renderer-chat-voice-debug.js";
 import { loadedAssetNames, readCpaLiveVoiceHookConfig } from "./renderer-cpa-live-voice-hook.js";
@@ -11,27 +15,6 @@ import {
 } from "./renderer-native-chat-voice-presentation.js";
 
 const HOOK_GLOBAL = "__codexhostNativeChatVoiceV1";
-const NATIVE_CHAT_VOICE_VERSION = "26.1016.62342";
-const NATIVE_CHAT_INITIAL_ASSET = "app-initial-dddef47d6ef6.js";
-const NATIVE_CHAT_SHARED_ASSET = "app-shared-fc3316d48427.js";
-const START_ASSET = "start-voice-7cbf0a39d53b.js";
-const PREWARM_ASSET = "voice-prewarm-5d107129ac1c.js";
-const NATIVE_CHAT_VOICE_ASSETS = [
-  {
-    version: NATIVE_CHAT_VOICE_VERSION,
-    initial: NATIVE_CHAT_INITIAL_ASSET,
-    shared: NATIVE_CHAT_SHARED_ASSET,
-    start: START_ASSET,
-    prewarm: PREWARM_ASSET,
-  },
-  {
-    version: "26.1016.61520",
-    initial: "app-initial-c95ddb62696e.js",
-    shared: "app-shared-2eda13eb7044.js",
-    start: "start-voice-18b08f0acdd7.js",
-    prewarm: "voice-prewarm-94271e581c1b.js",
-  },
-];
 const BUTTON = "data-codexhost-chat-voice-start";
 const CONVERSATION_UUID = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 type RecordValue = Record<string, unknown>;
@@ -387,37 +370,9 @@ export function installNativeChatVoiceHook(
           }
           return;
         }
-        const [shared, initial, start, prewarm] = await Promise.all(
-          [assets.shared, assets.initial, assets.start, assets.prewarm].map((asset) =>
-            importModule(`app://-/assets/${asset}`),
-          ),
-        );
+        const loaded = await loadNativeChatVoiceModules(assets, importModule);
         if (disposed) return;
-        if (
-          !shared ||
-          !initial ||
-          !start ||
-          !prewarm ||
-          typeof start.t !== "function" ||
-          typeof start.n !== "function" ||
-          typeof initial.oT !== "function" ||
-          typeof initial.SPn !== "function" ||
-          typeof shared.FBt !== "function" ||
-          typeof shared.PNt !== "function" ||
-          typeof prewarm.VoiceInstantConnectCacheController !== "function"
-        )
-          throw new Error();
-        initial.oT();
-        start.t();
-        if (
-          !record(shared.Qst) ||
-          !record(initial.MOr) ||
-          !initial.B1n ||
-          !initial.aT ||
-          !record(initial.CDr)
-        )
-          throw new Error();
-        modules = { shared, initial, start, prewarm };
+        modules = loaded;
       }
       const current = findBinding();
       selectDraft?.();

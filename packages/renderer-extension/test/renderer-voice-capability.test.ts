@@ -9,13 +9,10 @@ import {
   applyVoiceGatewayReadiness,
   applySharedVoiceRoutes,
 } from "../src/renderer-cpa-live-voice-preference.js";
-import {
-  CLIENT_OWNED_VOICE_INITIAL_ASSET,
-  CLIENT_OWNED_VOICE_SHARED_ASSET,
-} from "../src/renderer-client-owned-voice.js";
+import { CLIENT_OWNED_VOICE_ASSETS } from "../src/renderer-client-owned-voice.js";
 
 type Atom = { read(get: (atom: Atom) => unknown): unknown; write?: unknown };
-function fixture(name = "voice.realtime", hostId?: string) {
+function fixture(name = "voice.realtime", hostId?: string, autoCommit = true) {
   const gate: Atom = { read: () => true, write: true };
   let permitted = true;
   let loading = false;
@@ -43,10 +40,13 @@ function fixture(name = "voice.realtime", hostId?: string) {
     createRender: () => undefined,
   };
   const instance = { getSnapshot: original };
-  const notify = vi.fn();
+  const notify = vi.fn(() => {
+    if (autoCommit) subscription.next.memoizedState = subscriber.getSnapshot();
+  });
   const subscription = {
     memoizedState: [subscriber, [signal, undefined]],
     next: {
+      memoizedState: original(),
       queue: instance,
       next: {
         memoizedState: { create: () => subscriber.subscribe(notify), deps: [subscriber.subscribe] },
@@ -141,7 +141,7 @@ describe("voice capability evaluation", () => {
 
 describe("owned composer subscription", () => {
   it("requires one committed realtime reader for the native overlay starter", () => {
-    const f = fixture();
+    const f = fixture("voice.realtime", undefined, false);
     const binding = bindVoiceCapabilitySubscriptions(
       () => new Set([f.owner]),
       f.family,
@@ -201,6 +201,18 @@ describe("owned composer subscription", () => {
     binding.dispose();
   });
 
+  it("accepts React's lazy snapshot wrapper but detects a restored native instance reader", () => {
+    const f = fixture();
+    const binding = bindComposerVoiceCapability(f.composer, f.family, f.family, () => true);
+    f.instance.getSnapshot = () => f.subscriber.getSnapshot();
+    expect(binding.current()).toBe(true);
+    f.instance.getSnapshot = f.original;
+    expect(binding.current()).toBe(false);
+    binding.dispose();
+    expect(f.instance.getSnapshot).toBe(f.original);
+    expect(f.subscriber.getSnapshot).toBe(f.original);
+  });
+
   it.each([
     { isTemporaryChat: true },
     { shouldBlockExternalEgress: true },
@@ -234,13 +246,14 @@ describe("owned composer subscription", () => {
 });
 
 describe("version and runtime qualification", () => {
-  function target() {
+  function target(assets = CLIENT_OWNED_VOICE_ASSETS[0]) {
+    if (!assets) throw new Error("Missing fixture profile");
     const f = fixture();
     const values = new Map([["home-composer-mode-v1", "work"]]);
     const target = {
       __codexhostCpaLiveVoiceHookV1: {
         enabled: true,
-        desktopVersion: "26.1016.62342",
+        desktopVersion: assets.version,
         auditedDesktopVersion: "26.1007.30912",
         auditedAppInitialAsset: "app-initial-6350d04672d0.js",
       },
@@ -252,7 +265,7 @@ describe("version and runtime qualification", () => {
       } as unknown as Document,
       performance: {
         getEntriesByType: () =>
-          [CLIENT_OWNED_VOICE_INITIAL_ASSET, CLIENT_OWNED_VOICE_SHARED_ASSET].map((x) => ({
+          [assets.initial, assets.shared].map((x) => ({
             name: `app://-/assets/${x}`,
           })) as PerformanceEntry[],
       },
@@ -269,9 +282,66 @@ describe("version and runtime qualification", () => {
       f,
       target,
       values,
-      importModule: vi.fn(async () => ({ njr: () => {}, tjr: f.family, uBr: f.family })),
+      importModule: vi.fn(async () => ({
+        [assets.capabilityInit]: () => {},
+        [assets.capabilityFamily]: f.family,
+        [assets.inferenceGateFamily]: f.family,
+      })),
     };
   }
+  it("uses the audited 26.1021 capability and inference families despite reused old exports", async () => {
+    vi.useFakeTimers();
+    const f = target();
+    const unrelated = { scope: f.f.family.scope, resolve: () => ({ atom: { read: () => false } }) };
+    const initialize = vi.fn();
+    const importModule = async () => ({
+      l0n: initialize,
+      c0n: f.f.family,
+      Cnr: f.f.family,
+      njr: 30_000,
+      tjr: unrelated,
+      uBr: unrelated,
+    });
+    const hook = installVoiceCapabilityProjection({ ...f, importModule });
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      expect(hook.status).toBe("active");
+      expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: true });
+      expect(initialize).toHaveBeenCalledOnce();
+    } finally {
+      hook.dispose();
+    }
+    expect(f.f.instance.getSnapshot).toBe(f.f.original);
+  });
+  it.each(CLIENT_OWNED_VOICE_ASSETS)(
+    "projects the audited $version subscription",
+    async (assets) => {
+      vi.useFakeTimers();
+      const f = target(assets);
+      const hook = installVoiceCapabilityProjection(f);
+      try {
+        await vi.advanceTimersByTimeAsync(1);
+        expect(hook.status).toBe("active");
+        expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: true });
+      } finally {
+        hook.dispose();
+      }
+    },
+  );
+  it("rejects missing audited exports without probing other scope families", async () => {
+    vi.useFakeTimers();
+    const f = target();
+    const resolve = vi.spyOn(f.f.family, "resolve");
+    const hook = installVoiceCapabilityProjection({ ...f, importModule: async () => ({}) });
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      expect(hook.status).toBe("unsupported");
+      expect(resolve).not.toHaveBeenCalled();
+      expect(f.f.instance.getSnapshot).toBe(f.f.original);
+    } finally {
+      hook.dispose();
+    }
+  });
   it("requires injection, gateway readiness, Work ownership and both active hooks", async () => {
     vi.useFakeTimers();
     const f = target();
@@ -322,6 +392,29 @@ describe("version and runtime qualification", () => {
         workConnection: "gateway",
       });
       expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: true });
+    } finally {
+      hook.dispose();
+    }
+  });
+
+  it("restores the committed Work capability after readiness recovers without remounting the composer", async () => {
+    vi.useFakeTimers();
+    const f = target();
+    const hook = installVoiceCapabilityProjection(f);
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      const committed = f.f.owner.memoizedState.next.next;
+      expect(committed.memoizedState).toMatchObject({ isCapable: true });
+      // A native notification while the Host is reconnecting commits the fallback.
+      // Recovery can arrive before the next poll, with no native atom change.
+      applyVoiceGatewayReadiness(f.target, false);
+      f.f.notify();
+      expect(committed.memoizedState).toMatchObject({ isCapable: false });
+      applyVoiceGatewayReadiness(f.target, true);
+      expect(f.f.subscriber.getSnapshot()).toMatchObject({ isCapable: true });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(hook.status).toBe("active");
+      expect(committed.memoizedState).toMatchObject({ isCapable: true });
     } finally {
       hook.dispose();
     }
@@ -465,17 +558,51 @@ describe("version and runtime qualification", () => {
     },
   );
 
-  it("fails closed on unaudited version or assets", async () => {
-    vi.useFakeTimers();
+  it("fails closed on an unaudited Desktop version", () => {
     const f = target();
     f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = "unknown";
     expect(installVoiceCapabilityProjection(f).status).toBe("unsupported");
-    f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = "26.1016.62342";
+  });
+
+  it("uses the version pin when resource timing is empty", async () => {
+    vi.useFakeTimers();
+    const f = target();
     f.target.performance.getEntriesByType = () => [];
     const hook = installVoiceCapabilityProjection(f);
     await vi.advanceTimersByTimeAsync(1);
-    expect(hook.status).toBe("unsupported");
-    expect(f.importModule).not.toHaveBeenCalled();
+    expect(hook.status).toBe("active");
+    expect(f.importModule).toHaveBeenCalled();
     hook.dispose();
   });
+});
+
+describe("Settings-only dictation capability readers", () => {
+  it.each(["dictation.composer", "dictation.global"])(
+    "requires an explicit Settings selection for %s",
+    (name) => {
+      const f = fixture(name);
+      expect(() =>
+        bindVoiceCapabilitySubscriptions(
+          () => new Set([f.owner]),
+          f.family,
+          f.family,
+          () => true,
+        ),
+      ).toThrow();
+      const binding = bindVoiceCapabilitySubscriptions(
+        () => new Set([f.owner]),
+        f.family,
+        f.family,
+        () => true,
+        false,
+        ["dictation.composer", "dictation.global"],
+      );
+      expect(f.subscriber.getSnapshot()).toMatchObject({ isCapable: true });
+      expect(f.store.get(f.atom)).toMatchObject({ isCapable: false });
+      f.block();
+      expect(f.subscriber.getSnapshot()).toMatchObject({ isCapable: false });
+      binding.dispose();
+      expect(f.subscriber.getSnapshot).toBe(f.original);
+    },
+  );
 });

@@ -100,7 +100,7 @@ export async function loadPinsFromRepo(root = ROOT) {
       "utf8",
     ),
     readFile(
-      path.join(root, "packages/renderer-extension/src/renderer-native-chat-voice.ts"),
+      path.join(root, "packages/renderer-extension/src/renderer-native-chat-voice-assets.ts"),
       "utf8",
     ),
     readFile(overlay, "utf8").catch(() => ""),

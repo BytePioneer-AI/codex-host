@@ -469,6 +469,66 @@ function installFixture() {
 
 afterEach(() => vi.useRealTimers());
 describe("native Chat voice lifecycle installation", () => {
+  it("starts 26.1021 Chat through the relocated composer START and primary browser runtime", async () => {
+    vi.useFakeTimers();
+    const f = installFixture();
+    f.target.__codexhostCpaLiveVoiceHookV1.desktopVersion = "26.1021.31345";
+    f.assets.splice(
+      0,
+      f.assets.length,
+      "app-initial-feb30b196d11.js",
+      "app-shared-2cae01273bae.js",
+    );
+    const primary: Record<string, unknown> = {};
+    const initializeBrowser = vi.fn(() => {
+      primary.lm = f.initial.aT;
+    });
+    primary.um = initializeBrowser;
+    const initializeStart = vi.fn();
+    f.importModule.mockImplementation(async (url) => {
+      if (url.endsWith("app-initial-feb30b196d11.js"))
+        return {
+          CQn: f.initial.MOr,
+          PXn: f.initial.CDr,
+          tdn: f.initial.B1n,
+          qXt: f.initial.SPn,
+          Xkn: f.initial.Ycr,
+          ydn: f.initial.n0n,
+          fdn: f.initial.Y1n,
+          yAn: f.initial.Nir,
+        };
+      if (url.endsWith("app-primary-7d7313419f84.js")) return primary;
+      if (url.endsWith("app-shared-2cae01273bae.js"))
+        return { Bst: f.shared.Qst, XVt: f.shared.FBt, KNt: f.shared.PNt, Fot: f.shared.Vot };
+      if (url.endsWith("entity-business-profile-reference-b68063dfc05d.js"))
+        return { r: initializeStart, i: f.start };
+      if (url.endsWith("voice-prewarm-d672f1245523.js"))
+        return { VoiceInstantConnectCacheController: vi.fn() };
+      throw new Error("Unaudited module");
+    });
+    const hook = installNativeChatVoiceHook(f);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hook.status).toBe("active");
+      expect(initializeBrowser).toHaveBeenCalledOnce();
+      expect(initializeStart).toHaveBeenCalledOnce();
+      expect(f.browserEnabled()).toBe(true);
+      expect(f.createRoot).toHaveBeenCalledOnce();
+      await hook.start();
+      expect(f.start).toHaveBeenCalledExactlyOnceWith(
+        f.scope,
+        f.props,
+        { event_source: "composer" },
+        expect.any(AbortSignal),
+      );
+      expect(f.initial.oT).not.toHaveBeenCalled();
+    } finally {
+      hook.dispose();
+    }
+    expect(f.browserEnabled()).toBe(false);
+    expect(f.listeners.size).toBe(0);
+  });
+
   it("keeps one AppScope runtime when navigation replaces the RouteScope", async () => {
     vi.useFakeTimers();
     const f = installFixture();

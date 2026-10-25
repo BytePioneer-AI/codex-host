@@ -55,6 +55,20 @@ function fixture(
   );
   return { bridge, dispatch, listeners, client, original, responseError };
 }
+function sharedExports(f: ReturnType<typeof fixture>) {
+  const fetch = { getInstance: () => f.client };
+  const bridge = { getInstance: () => f.bridge };
+  return {
+    Oit: vi.fn(),
+    Eit: fetch,
+    AFt: bridge,
+    Mit: f.responseError,
+    Zot: fetch,
+    Htr: fetch,
+    bIt: bridge,
+    Qot: { realtimeVoiceRuntime: vi.fn() },
+  };
+}
 const url = "/wham/realtime/calls?intent=quicksilver&architecture=avas";
 const body = (model: string | undefined) =>
   JSON.stringify({ sdp: "offer", ...(model === undefined ? {} : { session: { model } }) });
@@ -424,12 +438,7 @@ describe("client-owned voice gateway", () => {
       setTimeout,
       clearTimeout,
     };
-    const importModule = vi.fn(async () => ({
-      Oit: vi.fn(),
-      Eit: { getInstance: () => f.client },
-      AFt: { getInstance: () => f.bridge },
-      Mit: f.responseError,
-    }));
+    const importModule = vi.fn(async () => sharedExports(f));
     const hook = installClientOwnedVoiceHook({ target, importModule });
     expect(importModule).not.toHaveBeenCalled();
     names.push(CLIENT_OWNED_VOICE_SHARED_ASSET);
@@ -440,6 +449,7 @@ describe("client-owned voice gateway", () => {
     expect(f.client.fetch).toBe(f.original);
   });
   it.each([
+    ["26.1021.31345", "app-initial-feb30b196d11.js", "app-shared-2cae01273bae.js"],
     ["26.1016.62342", "app-initial-dddef47d6ef6.js", "app-shared-fc3316d48427.js"],
     ["26.1016.61520", "app-initial-c95ddb62696e.js", "app-shared-2eda13eb7044.js"],
   ])(
@@ -461,12 +471,7 @@ describe("client-owned voice gateway", () => {
         setTimeout,
         clearTimeout,
       };
-      const importModule = vi.fn(async () => ({
-        Oit() {},
-        Eit: { getInstance: () => f.client },
-        AFt: { getInstance: () => f.bridge },
-        Mit: f.responseError,
-      }));
+      const importModule = vi.fn(async () => sharedExports(f));
       const hook = installClientOwnedVoiceHook({ target, importModule });
       await vi.advanceTimersByTimeAsync(0);
       expect(hook.status).toBe("active");
@@ -504,6 +509,7 @@ describe("client-owned voice gateway", () => {
       setTimeout,
       clearTimeout,
     };
+    Object.assign(target[CPA_LIVE_VOICE_HOOK_GLOBAL], { desktopVersion: "26.1016.62342" });
     const module: Record<string, unknown> = {
       Oit: vi.fn(() => {
         module.Eit = { getInstance: () => f.client };
@@ -511,6 +517,10 @@ describe("client-owned voice gateway", () => {
         module.Mit = f.responseError;
       }),
     };
+    const names = ["app-initial-dddef47d6ef6.js", "app-shared-fc3316d48427.js"];
+    target.document = {
+      querySelectorAll: () => names.map((name) => ({ getAttribute: () => `/assets/${name}` })),
+    } as unknown as ParentNode;
     const hook = installClientOwnedVoiceHook({ target, importModule: async () => module });
     await vi.advanceTimersByTimeAsync(0);
     expect(module.Oit).toHaveBeenCalledOnce();
@@ -544,12 +554,7 @@ describe("client-owned voice gateway", () => {
       setTimeout,
       clearTimeout,
     };
-    const importModule = vi.fn(async () => ({
-      Oit: vi.fn(),
-      Eit: { getInstance: () => f.client },
-      AFt: { getInstance: () => f.bridge },
-      Mit: f.responseError,
-    }));
+    const importModule = vi.fn(async () => sharedExports(f));
     const hook = installClientOwnedVoiceHook({ target, importModule });
     await vi.advanceTimersByTimeAsync(0);
     expect(hook.status).toBe("active");

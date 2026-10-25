@@ -86,7 +86,7 @@ describe("native new-voice selection", () => {
       Reflect.set(f.target[CPA_LIVE_VOICE_HOOK_GLOBAL], "desktopVersion", assets.version);
       const hook = installExternalVoiceLaunchHook({
         target: f.target,
-        importModule: async () => ({ ist: f.services }),
+        importModule: async () => ({ [assets.services]: f.services }),
       });
       await settle();
       expect(hook.status).toBe("active");

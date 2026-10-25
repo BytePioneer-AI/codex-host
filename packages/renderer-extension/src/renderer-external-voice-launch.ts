@@ -2,7 +2,6 @@ import { selectVoiceAssets, supportsVoiceVersion } from "./renderer-voice-assets
 import { startNativeChatVoiceForRequest } from "./renderer-native-chat-voice.js";
 import {
   CLIENT_OWNED_VOICE_ASSETS,
-  CLIENT_OWNED_VOICE_SERVICES,
   rememberVoiceProductExperience,
 } from "./renderer-client-owned-voice.js";
 import type { RendererHostRouting } from "@codexhost/desktop-control/renderer-bindings";
@@ -16,10 +15,7 @@ import {
 const HOOK_GLOBAL = "__codexhostExternalVoiceLaunchV1";
 const SHARED_ASSET = "app-shared-8bd9d0399038.js";
 const LAUNCH_ASSETS = [
-  ...CLIENT_OWNED_VOICE_ASSETS.map((profile) => ({
-    ...profile,
-    services: CLIENT_OWNED_VOICE_SERVICES,
-  })),
+  ...CLIENT_OWNED_VOICE_ASSETS,
   {
     version: AUDITED_CPA_LIVE_VOICE_DESKTOP_VERSION,
     initial: AUDITED_CPA_LIVE_VOICE_APP_INITIAL_ASSET,

@@ -79,24 +79,33 @@ export function auditedAppInitialAssetPresent(
 }
 
 function resourceNamesFromPerformance(
-  source: Pick<Performance, "getEntriesByType"> | undefined,
+  source:
+    (Pick<Performance, "getEntriesByType"> & { getEntries?(): PerformanceEntry[] }) | undefined,
 ): string[] {
   const target = source ?? (typeof performance === "undefined" ? undefined : performance);
-  if (!target || typeof target.getEntriesByType !== "function") return [];
-  return target
-    .getEntriesByType("resource")
-    .map((entry) => entry.name)
-    .filter((name): name is string => typeof name === "string");
+  if (!target) return [];
+  const names: string[] = [];
+  const push = (name: unknown) => {
+    if (typeof name === "string" && name) names.push(name);
+  };
+  if (typeof target.getEntries === "function") {
+    for (const entry of target.getEntries()) push(entry.name);
+  } else if (typeof target.getEntriesByType === "function") {
+    for (const entry of target.getEntriesByType("resource")) push(entry.name);
+  }
+  return names;
 }
 
 /** Every loaded asset name this page exposes: resource timing plus script/link tags. */
 export function loadedAssetNames(
   root: ParentNode | undefined,
-  performanceSource?: Pick<Performance, "getEntriesByType">,
+  performanceSource?: Pick<Performance, "getEntriesByType"> & { getEntries?(): PerformanceEntry[] },
 ): string[] {
   const names = resourceNamesFromPerformance(performanceSource);
   if (!root || !("querySelectorAll" in root)) return names;
-  for (const element of root.querySelectorAll("script[src], link[href]")) {
+  for (const element of root.querySelectorAll(
+    'script[src], link[href], link[rel="modulepreload"], link[rel="preload"]',
+  )) {
     const value = element.getAttribute("src") ?? element.getAttribute("href");
     if (value) names.push(value);
   }

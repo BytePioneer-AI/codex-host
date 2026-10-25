@@ -174,28 +174,28 @@ it("runs drift and recovery workflow steps in separate scopes", async () => {
   assert.equal(comments.length, 1);
 });
 
-it("recognizes the audited 62342 repo pins and both tracked drift issues", async () => {
+it("recognizes the audited 26.1021 Work and relocated native Chat pins", async () => {
   const pins = await loadPinsFromRepo();
-  const report = evaluate(pins, { version: "26.1016.62342", build: "21477" });
-  assert.equal(pins.workVersion, "26.1016.62342");
-  assert.equal(pins.chatVersion, "26.1016.62342");
-  assert.equal(pins.overlayAsset, "avatar-overlay-native-page-ef8332c6a2fb.js");
-  assert.equal(pins.chatStart, "start-voice-7cbf0a39d53b.js");
+  const report = evaluate(pins, { version: "26.1021.31345", build: "21828" });
+  assert.equal(pins.workVersion, "26.1021.31345");
+  assert.equal(pins.chatVersion, "26.1021.31345");
+  assert.equal(pins.overlayAsset, "avatar-overlay-native-page-d549db3706f1.js");
+  assert.equal(pins.chatStart, "entity-business-profile-reference-b68063dfc05d.js");
   assert.deepEqual(report.findings, []);
   assert.deepEqual(
     recoveredPinIssues(report, [
       {
-        number: 7,
-        title: "compat-daily/work-voice: pin 26.1016.61520 behind desktop 26.1016.62342",
+        number: 9,
+        title: "compat-daily/work-voice: pin 26.1016.62342 behind desktop 26.1021.31345",
       },
       {
-        number: 8,
-        title: "compat-daily/chat-voice: pin 26.1016.61520 behind desktop 26.1016.62342",
+        number: 10,
+        title: "compat-daily/chat-voice: pin 26.1016.62342 behind desktop 26.1021.31345",
       },
     ]),
     [
-      { number: 7, surface: "work-voice", version: "26.1016.62342" },
-      { number: 8, surface: "chat-voice", version: "26.1016.62342" },
+      { number: 9, surface: "work-voice", version: "26.1021.31345" },
+      { number: 10, surface: "chat-voice", version: "26.1021.31345" },
     ],
   );
 });

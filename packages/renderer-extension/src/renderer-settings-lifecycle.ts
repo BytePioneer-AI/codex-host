@@ -54,7 +54,10 @@ export function installRendererSettingsLifecycle(
   options: RendererSettingsLifecycleOptions = {},
 ): RendererSettingsLifecycleControl {
   const lifecycleController = new AbortController();
-  let locale = resolveRendererSettingsLocale(ownerWindow.navigator.languages);
+  const documentLanguage = ownerWindow.document?.documentElement?.lang;
+  let locale = resolveRendererSettingsLocale(
+    documentLanguage ? [documentLanguage] : ownerWindow.navigator.languages,
+  );
   let shell: RendererSettingsShell | null = null;
   let trigger: RendererSettingsRailTriggerControl | null = null;
   let localeRequest: Promise<void> | null = null;

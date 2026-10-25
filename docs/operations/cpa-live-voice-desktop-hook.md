@@ -1,6 +1,6 @@
 # CPA live-voice Desktop hook
 
-CodexHost routes native live-voice call creation through the configured realtime gateway without rewriting `app.asar` or replacing `/Applications/ChatGPT.app`. Desktop **26.1007.30912** uses a call-ownership gate override. Desktop **26.1013.40934**, **26.1016.51333**, **26.1016.61520**, and **26.1016.62342** use the native client-owned-call flow described below.
+CodexHost routes native live-voice call creation through the configured realtime gateway without rewriting `app.asar` or replacing `/Applications/ChatGPT.app`. Desktop **26.1007.30912** uses a call-ownership gate override. Desktop **26.1013.40934**, **26.1016.51333**, **26.1016.61520**, **26.1016.62342**, and **26.1021.31345** use the native client-owned-call flow described below. Native Chat Instant Connect has a separate **26.1021.31345** profile.
 
 For upstream merges, follow the [Live Voice preservation checklist](fork-versioning.md#preserve-live-voice-when-syncing-upstream), including regression checks and separate Desktop-version qualification.
 
@@ -51,6 +51,458 @@ The hook only changes Desktop call ownership. Point Codex at the realtime host i
 experimental_realtime_ws_base_url = "https://<realtime-host>/v1"
 experimental_realtime_webrtc_call_base_url = "https://<realtime-host>/v1"
 ```
+
+## Desktop 26.1021.31345 qualification
+
+Work/gateway client-owned-call is audited for **26.1021.31345** build **21828**. `/wham/realtime/calls` is `Htr.getInstance().fetch` on `app-initial-feb30b196d11.js`; the message bridge is shared `bIt` and services `Qot`. Overlay is `avatar-overlay-native-page-d549db3706f1.js`. The 26.1016.62342 and 26.1016.61520 Work profiles remain supported.
+
+The same version profile supplies every Work voice consumer, including new-chat
+launch routing and the overlay starter. Capability initialization uses initial
+`l0n`, capability family `c0n`, and inference-gate family `Cnr`; the 26.1016
+profiles retain `njr` / `tjr` / `uBr`. Family resolution accepts arbitrary cache
+keys, so resolving `3683713372` on an unrelated family does not identify the
+inference gate. Missing audited exports fail closed without probing other
+families. Both composer and overlay project only their owned subscriptions.
+
+Composer health also compares the projected subscriber and instance snapshots
+with React's committed capability value. A brief Host readiness or routing
+interruption can commit the native fallback without changing its underlying
+atom. When readiness returns, a stale committed value causes the next
+one-second poll to rebind and notify the owned subscriptions. React's equivalent
+lazy snapshot wrappers remain valid; account and workspace checks remain native.
+
+When Desktop omits resource timing and script asset names, the explicit Desktop
+version selects the profile and the hook imports its exact native assets.
+Observed incomplete or mixed initial/shared pairs still fail closed. Overlay
+preparation rechecks that profile and requires the committed starter component
+to belong to its exported native overlay page.
+
+A controlled live check on 25 October 2026 confirmed one enabled **Start new
+voice chat** button in an idle Codex Work composer with the gateway selected.
+The native capability remained false while the owned subscription read true.
+The separate overlay check confirmed gateway readiness through `bIt` and a
+committed projected starter snapshot, then restored the native subscription.
+Neither check opened a call or captured microphone audio; physical microphone,
+gateway call creation, audible reply and hangup acceptance remain unverified on
+26.1021. The primary and overlay bundles must both be installed; replacing an
+overlay hook after its native starter has registered does not replace that
+existing callback. A fresh overlay document or Desktop restart binds it.
+
+Native Chat Instant Connect uses the full composer START relocated to
+`entity-business-profile-reference-b68063dfc05d.js` (`i`, initializer `r`). Its
+scope/props/metadata/abort-signal signature preserves native navigation,
+availability and session guards. `start-voice-5bbdc12fe620.js` provides a
+different starter-prompt entry and cannot substitute for composer START.
+`renderer-native-chat-voice-assets.ts` owns the version profiles and normalizes
+audited exports to the retained Chat lifecycle contract. Native initializers run
+before their mutable exports are captured.
+
+The current Chat profile uses shared `Bst` / `XVt` / `KNt` for AppScope, React
+and ReactDOM; initial `CQn` / `PXn` / `tdn` / `qXt` for RouteScope,
+ComposerScope, backend Chat ID and browser voice store; primary `um` / `lm` for
+browser initialization and its enable flag; and
+`voice-prewarm-d672f1245523.js` for the native prewarm controller. Draft
+selection retains the native location/navigation/transcript/intent roles via
+initial `Xkn` / `yAn` / `ydn` / `fdn` / `R2` and shared `Fot`.
+
+A live no-call check confirmed one enabled Chat waveform immediately before
+Send, matching size and vertical alignment, and one native prewarm controller.
+Microphone capture, native call creation, audible reply and hangup are separate
+acceptance checks.
+
+### Native Voice Settings with a custom provider
+
+cc-switch's Unified Codex session history intentionally uses `model_provider =
+"custom"` for official-subscription and third-party sessions. Keep that provider
+identity and its history. Changing it to `openai` is not a voice repair.
+
+The native Voice Settings page checks `voice.realtime` in two subscriptions:
+the exported page reads the capability family, and its Voice chat group reads a
+derived boolean. On 26.1021.31345, CodexHost restores the native controls by
+projecting only these owned Settings subscriptions when the voice access policy
+is `allowed`, root voice capability is ready and capable, and readonly replay
+proves the inference-provider condition is the sole blocker. The boolean replay
+must read that exact realtime capability and agree with its native value before
+substitution. Native atoms, provider configuration and global Statsig values
+retain their values. Account/workspace denial, loading, errors, rollout gates
+and unrelated restrictions remain authoritative.
+
+`renderer-voice-settings-availability.ts` identifies committed Settings groups
+below the exported page and binds the boolean reader. The existing capability
+binder handles the page's family subscription. Ambiguous ownership or unsupported
+subscriptions fail closed, with rollback if only one reader could be bound.
+Navigation, disposal and eligibility changes restore native readers. While a
+supported binding is unavailable, the existing text-only explanation can identify
+a provider-only rejection; it does not grant access. The hook retries controls
+after passive subscription initialization without repeatedly rewriting that text.
+
+The restored controls keep their native handlers:
+
+| Control | Native persistence and consumers | Verification limit |
+| --- | --- | --- |
+| Voice | Account `voice_name`, through `/settings/account_user_setting`; catalog from `/settings/voices` in `wingman` mode. Native Chat browser voice consumes the account voice. Work realtime resolves the same catalog's effective slug, including native alias mapping, and puts it into session audio output. The gateway bootstrap preserves that session body; external Harness voice accepts the native voice parameter. | Picker opens with nine compatible voices. Saving a different voice and audible selection require attended acceptance. |
+| Voice chat hotkey | Desktop `commandKeybindings` service, command `realtimeVoice`; its main-process controller starts `global_hotkey_new_thread` through the avatar overlay. | Editor is enabled. Registration and call launch retain native main-process and overlay capability checks. The gateway starter hook qualifies explicit local composer starts, not global-hotkey starts; restoring Settings does not establish global-hotkey call support with a custom provider. |
+| Screen context | Native `realtimeVoiceScreenContextEnabled` preference. The row retains macOS, appshot availability and dynamic-tool configuration checks, plus the native first-use introduction and OS permissions. Work's `capture_screen_context` handler checks this preference again and requires the matching active voice task. | Row and toggle are enabled in the observed eligible environment. Actual foreground capture and permissions were not exercised. Chat browser voice has separate camera/screen-share controls; this toggle does not establish equivalent capture there. |
+
+Live checks on this build confirmed the native controls, an account policy of
+`allowed`, and a native `voice.realtime` capability that stayed false while the
+owned Settings readers rendered the controls. Three Settings navigation round
+trips retained the controls. No account voice, hotkey or permission was changed.
+These checks do not establish a complete spoken call.
+
+| Asset | 62342 | 26.1021.31345 |
+| --- | --- | --- |
+| Initial | app-initial-dddef47d6ef6.js | app-initial-feb30b196d11.js |
+| Shared | app-shared-fc3316d48427.js | app-shared-2cae01273bae.js |
+| Work overlay | avatar-overlay-native-page-ef8332c6a2fb.js | avatar-overlay-native-page-d549db3706f1.js |
+| Native Chat START | start-voice-7cbf0a39d53b.js | entity-business-profile-reference-b68063dfc05d.js |
+| Native Chat prewarm | voice-prewarm-5d107129ac1c.js | voice-prewarm-d672f1245523.js |
+
+The 26.1021.31345 ASAR SHA-256 is
+`130145706a912db74e4d260ad7538f10f1e05e88af955f9afba42cdf01e64606`.
+Sanitized evidence is under ignored `.codexhost/update-impact/26.1021.31345/`.
+
+## Live voice-hook debug on a running Desktop
+
+Use this procedure when a voice control is missing on an already running
+codexhost-controlled Desktop after a hook source fix. Live `Runtime.evaluate`
+updates the current document. Composer visibility can be confirmed without a
+Desktop restart. A later manual restart remains the user's choice for loading
+new document-start source. This is an attended debug path; it is not a generic
+hot-reload contract for the Renderer binding.
+
+For native Chat, use the same attach/build/evaluate procedure with
+`installNativeChatVoiceHook` and `__codexhostNativeChatVoiceV1.dispose()`;
+`activeCall` must be false before disposal. The Settings controls and fallback explanation have their
+own `installVoiceSettingsExplanation` / `__codexhostVoiceSettingsV1` lifecycle.
+Verify the actual Chat button and native Settings controls after refresh, not just hook
+installation. Both installers are included in the persistent Renderer bundle.
+
+Read-only attach and status (steps 1–2) come first. Run mutation steps within
+the user's requested debug/install scope; preserve any manual-restart
+preference. Skip mutation during an active or unknown call.
+
+### 1. Attach through repository CDP
+
+Discover the current loopback HTTP origin from the running Controller
+`--renderer-cdp-endpoint` or the Desktop `--remote-debugging-port`. The Launcher
+runtime descriptor identifies the current process tree; extract only that origin.
+Leave ports, PIDs, minified export names, temporary paths, nonce, tokens, query
+and hash values, and whole target lists out of notes and command output.
+
+Attach with `CdpClient` from `packages/desktop-control/dist/index.js` (or
+`dist/cdp-client.js`). `listCdpTargets(origin)` reads loopback `/json/list`.
+`selectPrimaryRendererTarget` requires exact `app://-/index.html` with empty
+search and hash. Overlay targets are distinct URLs that include `avatar-overlay`
+(`selectAvatarOverlayRendererTargets`).
+
+```js
+import { execFileSync } from "node:child_process";
+import {
+  CdpClient,
+  listCdpTargets,
+  selectAvatarOverlayRendererTargets,
+  selectPrimaryRendererTarget,
+} from "./packages/desktop-control/dist/index.js";
+
+function discoverRendererCdpOrigin() {
+  const text = execFileSync("/bin/ps", ["-axo", "command="], { encoding: "utf8" });
+  let fromDesktop;
+  for (const line of text.split("\n")) {
+    const endpoint =
+      /--renderer-cdp-endpoint\s+(http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+)\b/.exec(line);
+    if (endpoint) return endpoint[1];
+    const port = /--remote-debugging-port=(\d+)/.exec(line);
+    if (port && /ChatGPT|Codex\.app|codexhost/i.test(line)) {
+      fromDesktop = `http://127.0.0.1:${port[1]}`;
+    }
+  }
+  if (fromDesktop) return fromDesktop;
+  throw new Error("Running Desktop has no loopback Renderer CDP origin");
+}
+
+async function evaluate(client, expression) {
+  const response = await client.command("Runtime.evaluate", {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (response?.exceptionDetails) {
+    throw new Error(
+      response.exceptionDetails.exception?.description ??
+        response.exceptionDetails.text ??
+        "Runtime.evaluate failed",
+    );
+  }
+  return response?.result?.value;
+}
+
+const origin = discoverRendererCdpOrigin();
+const targets = await listCdpTargets(origin);
+const primary = selectPrimaryRendererTarget(targets);
+const overlay = selectAvatarOverlayRendererTargets(targets)[0] ?? null;
+if (!primary) throw new Error("No primary app://-/index.html target");
+```
+
+Define `SANITIZED_STATUS` from step 2 before running the attach example there.
+`evaluate` allows an `undefined` value, which is the normal `Runtime.evaluate`
+result for an IIFE that returns nothing. `CdpClient.evaluate` still checks
+`exceptionDetails` but requires a returned value, so use this helper for
+injection. Connect `overlay?.webSocketDebuggerUrl` only for steps 5–6.
+
+### 2. Inspect sanitized status only
+
+Evaluate counts and booleans. Keep config, credentials, prompts, transcripts,
+IDs, and the DOM out of the result.
+
+```js
+const SANITIZED_STATUS = `(() => {
+  const visible = (el) => {
+    const box = el.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 && !el.closest("[hidden], [inert]");
+  };
+  const nameOf = (el) =>
+    (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim();
+  const routes = JSON.parse(localStorage.getItem("codexhost.voice-routes-cache.v1") || "null");
+  let localComposer = false;
+  try {
+    const routing = window.__codexhostHostRoutingV1;
+    const route = routing?.forComposer();
+    localComposer = route?.hostId === "local" && routing?.forHost("local") === route;
+  } catch {}
+  const workComposers = [...document.querySelectorAll("[data-codex-composer-root]")].filter(
+    visible,
+  );
+  const workComposer = workComposers.length === 1 ? workComposers[0] : null;
+  const start = workComposer
+    ? [...workComposer.querySelectorAll("button")].filter((el) => {
+        const name = nameOf(el);
+        return (
+          visible(el) &&
+          !el.disabled &&
+          /^(Start new voice chat|Start voice chat|Start voice)$/i.test(name)
+        );
+      })
+    : [];
+  return {
+    desktopVersion: window.__codexhostCpaLiveVoiceHookV1?.desktopVersion ?? null,
+    clientOwned: window.__codexhostClientOwnedVoiceV1?.status ?? null,
+    externalLaunch: window.__codexhostExternalVoiceLaunchV1?.status ?? null,
+    voiceCapability: window.__codexhostVoiceCapabilityV1?.status ?? null,
+    voiceStartCapability: window.__codexhostVoiceStartCapabilityV1?.status ?? null,
+    gatewayReady: window.__codexhostVoicePreferenceStateV1?.gatewayReady?.get(window) === true,
+    workGateway: routes?.workConnection === "gateway",
+    chatGateway: routes?.chatExperience === "codex" && routes?.chatConnection === "gateway",
+    chatgptChat: routes?.chatExperience === "chatgpt",
+    localComposer,
+    visibleWorkComposers: workComposers.length,
+    visibleChatComposers: [...document.querySelectorAll("[data-chatgpt-composer]")].filter(visible)
+      .length,
+    enabledStartVoiceButtons: start.length,
+    stopPresent: [...document.querySelectorAll("button")].some((el) => {
+      const name = nameOf(el);
+      return visible(el) && /^(Stop|Stop generating)$/i.test(name);
+    }),
+  };
+})()`;
+```
+
+Count **Start voice** inside the unique visible Work composer
+(`[data-codex-composer-root]`). Native Chat **New voice chat** stays out of Work
+acceptance. On overlay, `voiceStartCapability` is the overlay hook. Hook
+`active` is not proof that the composer button is visible.
+
+```js
+const inspectClient = await CdpClient.connect(primary.webSocketDebuggerUrl);
+try {
+  const status = await evaluate(inspectClient, SANITIZED_STATUS);
+} finally {
+  inspectClient.close();
+}
+```
+
+### 3. Authorized live refresh of the primary page
+
+Build an ephemeral browser IIFE from current repository modules with esbuild.
+Do not copy vendor chunks. Write the bundle outside tracked source. Evaluate it
+once on the primary page. Dispose existing handles first:
+`installExternalVoiceLaunchHook` and `installVoiceCapabilityProjection` return
+the already-installed object when present.
+
+Desktop CSP forbids dynamic code generation, so set Zod `jitless` before
+install. Refresh only the voice hooks. Leave the production Renderer binding,
+native capability atoms, global Statsig, `model_provider`, global `fetch`, and
+immutable RPC stubs unchanged.
+
+```js
+import { mkdtemp, readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { build } from "esbuild";
+
+const root = process.cwd();
+const outfile = path.join(await mkdtemp(path.join(os.tmpdir(), "codexhost-voice-")), "primary.js");
+await build({
+  bundle: true,
+  platform: "browser",
+  format: "iife",
+  target: "es2024",
+  outfile,
+  stdin: {
+    resolveDir: root,
+    loader: "ts",
+    contents: `
+      import { z } from "zod";
+      import { installExternalVoiceLaunchHook } from "./packages/renderer-extension/src/renderer-external-voice-launch.ts";
+      import { installVoiceCapabilityProjection } from "./packages/renderer-extension/src/renderer-voice-capability.ts";
+      z.config({ jitless: true });
+      window.__codexhostVoiceCapabilityV1?.dispose();
+      window.__codexhostExternalVoiceLaunchV1?.dispose();
+      installExternalVoiceLaunchHook();
+      installVoiceCapabilityProjection();
+    `,
+  },
+});
+const refreshClient = await CdpClient.connect(primary.webSocketDebuggerUrl);
+try {
+  await evaluate(refreshClient, await readFile(outfile, "utf8"));
+  const deadline = Date.now() + 20_000;
+  let status;
+  while (Date.now() < deadline) {
+    status = await evaluate(refreshClient, SANITIZED_STATUS);
+    if (status?.externalLaunch === "active" && status?.voiceCapability === "active") break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  if (status?.externalLaunch !== "active" || status?.voiceCapability !== "active") {
+    throw new Error(
+      `Voice hooks did not become active within 20s (externalLaunch=${status?.externalLaunch}, voiceCapability=${status?.voiceCapability})`,
+    );
+  }
+} finally {
+  refreshClient.close();
+}
+```
+
+Installation is async. The loop is bounded hook initialization: it waits until
+`externalLaunch` and `voiceCapability` read `active`, then throws if they never
+do. It does not prove a committed React snapshot, owned subscription, or visible
+button; that verification is step 4. `Runtime.evaluate` of the IIFE returns
+`undefined`; the custom `evaluate` helper allows that. Use the current production
+profile from `CLIENT_OWNED_VOICE_ASSETS` for the observed `desktopVersion`. On
+exact **26.1021.31345** the audited exports
+are `capabilityInit=l0n`, `capabilityFamily=c0n`, `inferenceGateFamily=Cnr`,
+service `Qot`, bridge `bIt`, and fetch `Htr` from initial, as recorded in the
+qualification section above. Those names document that profile. They are not a
+generic discovery contract. Resolving an arbitrary cache key on a family does
+not identify the inference gate; an unrelated family can read `active` while
+projected `voice.realtime` / `voice.thread` remain false.
+
+### 4. Verify composer behavior
+
+Confirm the control, not only hook status. Use an idle, unique, visible **LOCAL**
+Work composer with gateway ready and **Work → Voice connection** set to
+Configured gateway. Pass: exactly one **Start new voice chat** button is visible
+and enabled; native capability stays false; the owned subscription reads true.
+
+An idle blank composer may be selected for this check without submitting text or
+editing existing drafts or turns. A running agent task stays running. A visible
+Stop control can hide the microphone while the turn is busy. Native Voice Settings retain their account access policy; restoring their controls
+does not establish call eligibility for every voice entry point.
+
+### 5. Overlay document
+
+The avatar overlay is a separate JavaScript realm with its own document-start
+registration. To replace a pending overlay hook, dispose only
+`__codexhostVoiceStartCapabilityV1`, then install from
+`renderer-voice-start-capability.ts`:
+
+```ts
+import { z } from "zod";
+import { installVoiceStartCapabilityHook } from "./packages/renderer-extension/src/renderer-voice-start-capability.ts";
+z.config({ jitless: true });
+window.__codexhostVoiceStartCapabilityV1?.dispose();
+installVoiceStartCapabilityHook();
+```
+
+That wrap applies to future `registerRealtimeStarter` calls. It cannot replace a
+callback already registered on this overlay document. Bind an already-registered
+starter with a fresh idle overlay document that received the updated
+document-start injection, or with the user's later manual full restart. Refreshing
+the primary page does not fix overlay registration. Leave the overlay document
+alone during an active or unknown call. A full Desktop restart is not required
+to validate primary composer visibility.
+
+### 6. Optional overlay validation without a call
+
+A bounded overlay check can confirm gateway readiness and a committed projected
+starter snapshot without opening the microphone. Import
+`initializeVoiceCapabilityFamilies` and `bindVoiceCapabilitySubscriptions` from
+`renderer-voice-capability.ts`, `overlayVoiceStarterFibers` from
+`renderer-voice-start-capability.ts`, and `requestVoiceHost` from
+`renderer-client-owned-voice.ts`. Use the current profile's exact `bridge` export
+and `realtimeOnly: true`. Always `binding.dispose()` in `finally`.
+
+```js
+const ready = await requestVoiceHost(
+  shared[profile.bridge].getInstance(),
+  {},
+  "codexhost/voice/gateway-status",
+);
+const { family, gates } = initializeVoiceCapabilityFamilies(initial, profile);
+const binding = bindVoiceCapabilitySubscriptions(
+  () => overlayVoiceStarterFibers(document, overlay.AvatarOverlayNativePage),
+  family,
+  gates,
+  () => true,
+  true,
+);
+try {
+  for (let i = 0; i < 40 && !binding.current(); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return {
+    gatewayReady: ready === true,
+    overlayProjectionCommitted: binding.current() === true,
+  };
+} finally {
+  binding.dispose();
+}
+```
+
+Report those two booleans. Observed pass on 26.1021 was `gatewayReady: true` and
+`overlayProjectionCommitted: true` with no call. This check does not replace an
+already registered overlay starter.
+
+### 7. Persist built bundles
+
+Live evaluation lasts for the current document. For later documents, build and
+stage the installed files:
+
+```sh
+npm run build:renderer
+```
+
+Copy `packages/renderer-extension/dist/production.js` onto the running
+installation's `app/renderer-extension.js`, and
+`packages/renderer-extension/dist/cpa-live-voice-hook.js` onto `app/cpa-live-voice-hook.js`.
+On the macOS app bundle those paths are
+`/Applications/codexhost.app/Contents/Resources/app/`. Discover the equivalent
+payload from the current Controller `--renderer` argument on other layouts.
+Back up both files and hash-verify the copies. Skip `npm run install:local` when
+the goal is only to stage assets; that command can restart Desktop.
+
+The running Controller can keep the previous source in memory. A disk copy does
+not replace the active script or change document-start registration for future
+pages in this process. A later package update can replace a locally staged fix.
+Leave `/Applications/ChatGPT.app` and `app.asar` unchanged.
+
+### Limits
+
+- Live injection is the current document only.
+- Overlay starter wrapping is future registrations on that overlay document.
+- Physical microphone, gateway call creation, audible reply, and hangup remain
+  separately unverified on 26.1021.
+- Keep call IDs, SDP, credentials, and runtime tokens out of docs and output.
 
 ## Desktop 26.1016.62342 qualification
 

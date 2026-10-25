@@ -93,6 +93,19 @@ jobs:
           --exclude 'packages/renderer-extension/test/**'
           --exclude 'tools/gate-claude-code/run.test.mjs'
 
+      # Asset pairs and export contracts differ even when About versions match.
+      - name: Test Windows native voice profiles
+        if: runner.os == 'Windows'
+        run: >
+          npx vitest run --config tests/vitest.config.js
+          packages/renderer-extension/test/renderer-voice-assets.test.ts
+          packages/renderer-extension/test/renderer-client-owned-voice.test.ts
+          packages/renderer-extension/test/renderer-native-chat-voice.test.ts
+          packages/renderer-extension/test/renderer-voice-settings.test.ts
+          packages/renderer-extension/test/renderer-voice-start-capability.test.ts
+          packages/renderer-extension/test/renderer-external-voice-launch.test.ts
+          packages/renderer-extension/test/renderer-voice-capability.test.ts
+
       # Rust formatting is already covered by the Linux x64 formatting step.
       - name: Check Rust
         run: >

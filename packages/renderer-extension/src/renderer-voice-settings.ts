@@ -336,6 +336,7 @@ export function installVoiceSettingsExplanation(
           NATIVE_CHAT_VOICE_ASSETS,
           loadedAssetNames(target.document, target.performance),
           config.desktopVersion,
+          config.desktopPlatform,
         );
         if (!assets?.settings) return;
         const load = options.importModule ?? ((url: string) => import(url));

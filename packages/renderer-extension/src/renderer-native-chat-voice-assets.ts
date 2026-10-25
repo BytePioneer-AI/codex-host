@@ -5,6 +5,7 @@ const START_ASSET = "entity-business-profile-reference-b68063dfc05d.js";
 
 export const NATIVE_CHAT_VOICE_ASSETS = [
   {
+    platform: "darwin",
     version: NATIVE_CHAT_VOICE_VERSION,
     initial: NATIVE_CHAT_INITIAL_ASSET,
     shared: "app-shared-2cae01273bae.js",
@@ -14,6 +15,17 @@ export const NATIVE_CHAT_VOICE_ASSETS = [
     settings: "voice-settings-14000f5c9fc2.js",
   },
   {
+    platform: "win32",
+    version: NATIVE_CHAT_VOICE_VERSION,
+    initial: "app-initial-438d1df57f70.js",
+    shared: "app-shared-955d52676f9c.js",
+    primary: "app-primary-844e405f2b90.js",
+    start: "entity-business-profile-reference-241c52d811f4.js",
+    prewarm: "voice-prewarm-8b47c50a17ae.js",
+    settings: "voice-settings-b1c1633136a5.js",
+  },
+  {
+    platform: "darwin",
     version: "26.1016.62342",
     initial: "app-initial-dddef47d6ef6.js",
     shared: "app-shared-fc3316d48427.js",
@@ -21,6 +33,7 @@ export const NATIVE_CHAT_VOICE_ASSETS = [
     prewarm: "voice-prewarm-5d107129ac1c.js",
   },
   {
+    platform: "darwin",
     version: "26.1016.61520",
     initial: "app-initial-c95ddb62696e.js",
     shared: "app-shared-2eda13eb7044.js",

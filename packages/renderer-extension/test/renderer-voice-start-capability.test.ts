@@ -195,6 +195,7 @@ describe("overlay starter registration", () => {
       __codexhostCpaLiveVoiceHookV1: {
         enabled: true,
         desktopVersion: assets.version,
+        desktopPlatform: assets.platform,
         auditedDesktopVersion: "26.1007.30912",
         auditedAppInitialAsset: "app-initial-6350d04672d0.js",
       },

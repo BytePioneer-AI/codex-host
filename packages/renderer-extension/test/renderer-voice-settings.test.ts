@@ -205,6 +205,7 @@ describe("voice Settings explanation lifecycle", () => {
       __codexhostCpaLiveVoiceHookV1: {
         enabled: true,
         desktopVersion: "26.1021.31345",
+        desktopPlatform: "darwin",
         auditedDesktopVersion: "26.1007.30912",
         auditedAppInitialAsset: "app-initial-6350d04672d0.js",
       },
@@ -239,6 +240,7 @@ describe("voice Settings explanation lifecycle", () => {
       __codexhostCpaLiveVoiceHookV1: {
         enabled: true,
         desktopVersion: "26.1021.31345",
+        desktopPlatform: "darwin",
         auditedDesktopVersion: "26.1007.30912",
         auditedAppInitialAsset: "app-initial-6350d04672d0.js",
       },
@@ -444,6 +446,7 @@ it("retries controls after passive subscription readiness while retaining the fa
     __codexhostCpaLiveVoiceHookV1: {
       enabled: true,
       desktopVersion: "26.1021.31345",
+      desktopPlatform: "darwin",
       auditedDesktopVersion: "26.1007.30912",
       auditedAppInitialAsset: "app-initial-6350d04672d0.js",
     },

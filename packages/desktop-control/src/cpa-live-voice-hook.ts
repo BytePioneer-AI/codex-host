@@ -64,6 +64,7 @@ export function cpaLiveVoiceHookBootstrap(
     detectInstalledDesktopVersion(environment);
   return `globalThis.${CPA_LIVE_VOICE_HOOK_GLOBAL} = Object.freeze(${JSON.stringify({
     enabled: true,
+    desktopPlatform: process.platform,
     auditedDesktopVersion: AUDITED_CPA_LIVE_VOICE_DESKTOP_VERSION,
     auditedAppInitialAsset: AUDITED_CPA_LIVE_VOICE_APP_INITIAL_ASSET,
     ...(version ? { desktopVersion: version } : {}),

@@ -20,6 +20,7 @@ export const CLIENT_OWNED_VOICE_SHARED_ASSET = "app-shared-2cae01273bae.js";
 export const CLIENT_OWNED_VOICE_OVERLAY_ASSET = "avatar-overlay-native-page-d549db3706f1.js";
 export const CLIENT_OWNED_VOICE_ASSETS = [
   {
+    platform: "darwin",
     version: CLIENT_OWNED_VOICE_VERSION,
     initial: CLIENT_OWNED_VOICE_INITIAL_ASSET,
     shared: CLIENT_OWNED_VOICE_SHARED_ASSET,
@@ -33,6 +34,21 @@ export const CLIENT_OWNED_VOICE_ASSETS = [
     inferenceGateFamily: "Cnr",
   },
   {
+    platform: "win32",
+    version: CLIENT_OWNED_VOICE_VERSION,
+    initial: "app-initial-438d1df57f70.js",
+    shared: "app-shared-955d52676f9c.js",
+    overlay: "avatar-overlay-native-page-1549fe5955e1.js",
+    fetch: "Htr",
+    fetchFrom: "initial",
+    bridge: "bIt",
+    services: "Qot",
+    capabilityInit: "l0n",
+    capabilityFamily: "c0n",
+    inferenceGateFamily: "Cnr",
+  },
+  {
+    platform: "darwin",
     version: "26.1016.62342",
     initial: "app-initial-dddef47d6ef6.js",
     shared: "app-shared-fc3316d48427.js",
@@ -47,6 +63,7 @@ export const CLIENT_OWNED_VOICE_ASSETS = [
     inferenceGateFamily: "uBr",
   },
   {
+    platform: "darwin",
     version: "26.1016.61520",
     initial: "app-initial-c95ddb62696e.js",
     shared: "app-shared-2eda13eb7044.js",
@@ -388,7 +405,12 @@ export function installClientOwnedVoiceHook(
   const attempt = async (): Promise<void> => {
     if (disposed) return;
     const names = loadedAssetNames(target.document, target.performance);
-    const assets = selectVoiceAssets(CLIENT_OWNED_VOICE_ASSETS, names, config.desktopVersion);
+    const assets = selectVoiceAssets(
+      CLIENT_OWNED_VOICE_ASSETS,
+      names,
+      config.desktopVersion,
+      config.desktopPlatform,
+    );
     if (assets) {
       try {
         const sharedModule = await importModule(`app://-/assets/${assets.shared}`);

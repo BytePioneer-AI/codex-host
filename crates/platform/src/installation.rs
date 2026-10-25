@@ -303,7 +303,8 @@ fn windows_installation(
             appx_activation: Some(details.appx_activation),
         },
         build: details.version.clone(),
-        version: details.version,
+        version: crate::asar_metadata::desktop_product_version(&asar_path)
+            .unwrap_or(details.version),
         asar_integrity: sha256_file(&asar_path)?,
         install_root,
         desktop_launcher: desktop_executable.clone(),
@@ -444,8 +445,9 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
 ///
 /// A portable/unpacked installation has no registered AppX package, so the
 /// version is not available from the Windows PackageManager. The official MSIX
-/// embeds the marketing version in the `<Identity Version="..."/>` attribute of
-/// its manifest; fall back to a placeholder when it cannot be parsed.
+/// embeds its deployment version in the `<Identity Version="..."/>` attribute of
+/// its manifest; fall back to a placeholder when it cannot be parsed. Product
+/// metadata comes from app.asar.
 #[cfg(target_os = "windows")]
 fn portable_package_version(package_root: &Path) -> Option<String> {
     let content = std::fs::read_to_string(package_root.join("AppxManifest.xml")).ok()?;
@@ -509,7 +511,9 @@ pub fn discover_codex_desktop_from_root(
     }
     let executable_codex_cli = packaged_codex_cli.clone();
 
-    let version = portable_package_version(&package_root).unwrap_or_else(|| "0.0.0.0".to_owned());
+    let build = portable_package_version(&package_root).unwrap_or_else(|| "0.0.0.0".to_owned());
+    let version =
+        crate::asar_metadata::desktop_product_version(&asar_path).unwrap_or_else(|| build.clone());
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::WindowsPackage {
@@ -517,7 +521,7 @@ pub fn discover_codex_desktop_from_root(
             package_family_name: format!("{WINDOWS_CODEX_PACKAGE_NAME}_portable"),
             appx_activation: None,
         },
-        build: version.clone(),
+        build,
         version,
         asar_integrity: sha256_file(&asar_path)?,
         install_root: package_root,
@@ -668,6 +672,53 @@ mod windows_tests {
             fs::write(install_root.join("AppxManifest.xml"), manifest).expect("write AppxManifest");
         }
         (root, install_root)
+    }
+
+    #[test]
+    fn msix_product_metadata_does_not_replace_deployment_identity() {
+        let (root, install_root) = portable_fixture(
+            "codexhost-windows-msix-metadata",
+            Some(br#"<Package><Identity Version="26.1021.3705.0"/></Package>"#),
+        );
+        let package = br#"{"version":"26.1021.31345"}"#;
+        fs::write(
+            install_root.join("app/resources/app.asar"),
+            crate::asar_metadata::tests::archive(
+                serde_json::json!({"size":package.len(),"offset":"0"}),
+                package,
+            ),
+        )
+        .expect("write metadata fixture");
+        let portable = super::discover_codex_desktop_from_root(&install_root).unwrap();
+        assert_eq!(portable.version, "26.1021.31345");
+        assert_eq!(portable.build, "26.1021.3705.0");
+        let cache_root = root.join("LocalAppData");
+        let cli = cache_root.join("OpenAI/Codex/bin/test/codex.exe");
+        fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        fs::write(cli, b"cached cli").unwrap();
+        let activation = WindowsAppxActivationIdentity {
+            package_full_name: "OpenAI.Codex_26.1021.3705.0_x64_family".into(),
+            app_user_model_id: "OpenAI.Codex_family!App".into(),
+        };
+        let registered = windows_installation(
+            WindowsPackageDetails {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_family".into(),
+                appx_activation: activation.clone(),
+                version: "26.1021.3705.0".into(),
+                install_root,
+            },
+            &cache_root,
+        )
+        .unwrap();
+        assert_eq!(registered.version, "26.1021.31345");
+        assert_eq!(registered.build, "26.1021.3705.0");
+        assert!(
+            matches!(registered.identity, DesktopIdentity::WindowsPackage {
+            appx_activation: Some(identity), ..
+        } if identity == activation)
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

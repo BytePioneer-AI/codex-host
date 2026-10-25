@@ -20,6 +20,7 @@ export interface CpaLiveVoiceHookConfig {
   auditedDesktopVersion: string;
   auditedAppInitialAsset: string;
   desktopVersion?: string;
+  desktopPlatform?: string;
 }
 
 export type CpaLiveVoiceHookStatus = "disabled" | "pending" | "active" | "unsupported";
@@ -60,6 +61,9 @@ export function readCpaLiveVoiceHookConfig(globalObject: object): CpaLiveVoiceHo
     enabled: true,
     auditedDesktopVersion: value.auditedDesktopVersion,
     auditedAppInitialAsset: value.auditedAppInitialAsset,
+    ...(typeof value.desktopPlatform === "string"
+      ? { desktopPlatform: value.desktopPlatform }
+      : {}),
     ...(typeof value.desktopVersion === "string" ? { desktopVersion: value.desktopVersion } : {}),
   };
 }

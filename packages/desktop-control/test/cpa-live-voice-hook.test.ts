@@ -112,6 +112,15 @@ describe("installed Desktop version detection", () => {
     expect(execFileSync).not.toHaveBeenCalled();
   });
 
+  it("passes Windows product identity and platform to the renderer without using plist discovery", () => {
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+    const source = cpaLiveVoiceHookBootstrap(environment, "26.1021.31345");
+    expect(source).toContain('"desktopVersion":"26.1021.31345"');
+    expect(source).toContain('"desktopPlatform":"win32"');
+    expect(existsSync).not.toHaveBeenCalled();
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
   it("does not run defaults on other platforms", () => {
     Object.defineProperty(process, "platform", { ...platformDescriptor, value: "linux" });
     expect(detectInstalledDesktopVersion({})).toBeUndefined();

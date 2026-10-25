@@ -17,6 +17,7 @@ const SHARED_ASSET = "app-shared-8bd9d0399038.js";
 const LAUNCH_ASSETS = [
   ...CLIENT_OWNED_VOICE_ASSETS,
   {
+    platform: "darwin",
     version: AUDITED_CPA_LIVE_VOICE_DESKTOP_VERSION,
     initial: AUDITED_CPA_LIVE_VOICE_APP_INITIAL_ASSET,
     shared: SHARED_ASSET,
@@ -119,7 +120,12 @@ export function installExternalVoiceLaunchHook(options: InstallOptions = {}): La
     if (disposed) return;
     try {
       const names = loadedAssetNames(target.document, target.performance);
-      const assets = selectVoiceAssets(LAUNCH_ASSETS, names, config.desktopVersion);
+      const assets = selectVoiceAssets(
+        LAUNCH_ASSETS,
+        names,
+        config.desktopVersion,
+        config.desktopPlatform,
+      );
       if (assets) {
         module ??= await importModule(`app://-/assets/${assets.shared}`);
         if (disposed) return;

@@ -362,7 +362,12 @@ export function installNativeChatVoiceHook(
       if (renderFailed) throw new Error();
       if (!modules) {
         const names = loadedAssetNames(doc, target.performance);
-        const assets = selectVoiceAssets(NATIVE_CHAT_VOICE_ASSETS, names, config.desktopVersion);
+        const assets = selectVoiceAssets(
+          NATIVE_CHAT_VOICE_ASSETS,
+          names,
+          config.desktopVersion,
+          config.desktopPlatform,
+        );
         if (!assets) {
           if (Date.now() - started >= 60_000) {
             handle.status = "unsupported";

@@ -173,7 +173,7 @@ export function bindComposerVoiceCapability(
   gates: Family,
   allowed: () => boolean,
   chat = false,
-): { dispose(): void; current(): boolean } {
+): { dispose(): void; current(): boolean; projectedCapable(): boolean } {
   return bindVoiceCapabilitySubscriptions(
     () => composerFibers(composer, chat),
     family,
@@ -192,7 +192,7 @@ export function bindVoiceCapabilitySubscriptions(
   names: readonly (
     "voice.realtime" | "voice.thread" | "dictation.composer" | "dictation.global"
   )[] = ["voice.realtime", "voice.thread"],
-): { dispose(): void; current(): boolean } {
+): { dispose(): void; current(): boolean; projectedCapable(): boolean } {
   const fibers = currentFibers();
   const restores: (() => void)[] = [];
   const bindings: { subscriber: Subscriber; signal: Signal; instance: Instance }[] = [];
@@ -312,38 +312,46 @@ export function bindVoiceCapabilitySubscriptions(
     for (const restore of restores.reverse()) restore();
     throw error;
   }
+  const alignedSnapshot = ({ subscriber, instance }: (typeof bindings)[number]) => {
+    try {
+      const snapshot = subscriber.getSnapshot();
+      const instanceSnapshot = instance.getSnapshot();
+      if (!capable(snapshot) || !capable(instanceSnapshot) || !equal(snapshot, instanceSnapshot))
+        return undefined;
+      return snapshot;
+    } catch {
+      return undefined;
+    }
+  };
   return {
     dispose() {
       for (const restore of restores.splice(0).reverse()) restore();
     },
     current() {
       const current = [...currentFibers()].flatMap(hooks);
-      return bindings.every(({ subscriber, signal, instance }) => {
-        try {
-          const snapshot = subscriber.getSnapshot();
-          const instanceSnapshot = instance.getSnapshot();
-          if (
-            !capable(snapshot) ||
-            !capable(instanceSnapshot) ||
-            !equal(snapshot, instanceSnapshot)
-          )
-            return false;
-          return current.some((hook) => {
-            const committed = hook.next?.memoizedState;
-            return (
-              Array.isArray(hook.memoizedState) &&
-              hook.memoizedState[0] === subscriber &&
-              hook.memoizedState[1]?.[0] === signal &&
-              hook.next?.queue === instance &&
-              capable(committed) &&
-              equal(committed, snapshot) &&
-              (!realtimeOnly || snapshot.isCapable)
-            );
-          });
-        } catch {
-          return false;
-        }
+      return bindings.every((binding) => {
+        const snapshot = alignedSnapshot(binding);
+        if (!snapshot) return false;
+        const { subscriber, signal, instance } = binding;
+        return current.some((hook) => {
+          const committed = hook.next?.memoizedState;
+          return (
+            Array.isArray(hook.memoizedState) &&
+            hook.memoizedState[0] === subscriber &&
+            hook.memoizedState[1]?.[0] === signal &&
+            hook.next?.queue === instance &&
+            capable(committed) &&
+            equal(committed, snapshot) &&
+            (!realtimeOnly || snapshot.isCapable)
+          );
+        });
       });
+    },
+    projectedCapable() {
+      return (
+        bindings.length > 0 &&
+        bindings.every((binding) => alignedSnapshot(binding)?.isCapable === true)
+      );
     },
   };
 }
@@ -419,7 +427,12 @@ export function installVoiceCapabilityProjection(
     if (disposed) return;
     try {
       const names = loadedAssetNames(target.document, target.performance);
-      const assets = selectVoiceAssets(CLIENT_OWNED_VOICE_ASSETS, names, config.desktopVersion);
+      const assets = selectVoiceAssets(
+        CLIENT_OWNED_VOICE_ASSETS,
+        names,
+        config.desktopVersion,
+        config.desktopPlatform,
+      );
       if (!assets) {
         handle.status = "unsupported";
       } else if (!allowed()) handle.status = "pending";
@@ -437,7 +450,11 @@ export function installVoiceCapabilityProjection(
             element.getBoundingClientRect().width > 0 && !element.closest("[hidden], [inert]"),
         );
         if (composers.length !== 1) throw new Error("Voice composer unavailable");
-        if (composers[0] !== composer || !binding?.current()) {
+        if (
+          composers[0] !== composer ||
+          !binding ||
+          (!binding.current() && binding.projectedCapable())
+        ) {
           binding?.dispose();
           binding = undefined;
           composer = composers[0];
@@ -450,12 +467,12 @@ export function installVoiceCapabilityProjection(
             chatGateway(),
           );
         }
-        handle.status = "active";
+        handle.status = binding.projectedCapable() ? "active" : "native-ineligible";
       }
     } catch {
       handle.status = "unsupported";
     }
-    if (handle.status !== "active") {
+    if (handle.status !== "active" && handle.status !== "native-ineligible") {
       binding?.dispose();
       binding = undefined;
       composer = undefined;

@@ -254,6 +254,7 @@ describe("version and runtime qualification", () => {
       __codexhostCpaLiveVoiceHookV1: {
         enabled: true,
         desktopVersion: assets.version,
+        desktopPlatform: assets.platform,
         auditedDesktopVersion: "26.1007.30912",
         auditedAppInitialAsset: "app-initial-6350d04672d0.js",
       },
@@ -328,6 +329,24 @@ describe("version and runtime qualification", () => {
       }
     },
   );
+  it("reports native ineligibility when provider-only replay cannot make the capability capable", async () => {
+    vi.useFakeTimers();
+    const f = target();
+    f.f.block();
+    const hook = installVoiceCapabilityProjection(f);
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      expect(hook.status).toBe("native-ineligible");
+      expect(f.f.instance.getSnapshot()).toMatchObject({ isCapable: false });
+      expect(f.f.instance.getSnapshot).not.toBe(f.f.original);
+      const wrapped = f.f.instance.getSnapshot;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(hook.status).toBe("native-ineligible");
+      expect(f.f.instance.getSnapshot).toBe(wrapped);
+    } finally {
+      hook.dispose();
+    }
+  });
   it("rejects missing audited exports without probing other scope families", async () => {
     vi.useFakeTimers();
     const f = target();

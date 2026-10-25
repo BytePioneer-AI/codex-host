@@ -15,6 +15,12 @@ WizardStyle=modern
 UninstallDisplayName=codexhost
 SetupIconFile=..\..\..\crates\launcher\assets\codexhost.ico
 UninstallDisplayIcon={app}\bin\codexhost-start.exe
+; Manual installers must release the bundled runtime before replacing it. Keep
+; the filter scoped to codexhost's own files so unrelated Node processes stay
+; untouched, and do not relaunch the old console after the upgrade.
+CloseApplications=yes
+CloseApplicationsFilter=node.exe,codexhost.exe,codexhost-start.exe
+RestartApplications=no
 
 #if Architecture == "x64"
 ArchitecturesAllowed=x64compatible

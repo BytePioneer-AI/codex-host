@@ -13,6 +13,10 @@ on:
       - tools/compat-daily/**
       - .github/workflows/compat-daily.yml
       - packages/renderer-extension/src/renderer-client-owned-voice.ts
+      - crates/platform/src/asar_metadata.rs
+      - crates/platform/src/installation.rs
+      - packages/renderer-extension/src/renderer-voice-assets.ts
+      - packages/renderer-extension/src/renderer-native-chat-voice-assets.ts
       - packages/renderer-extension/src/renderer-native-chat-voice.ts
       - packages/renderer-extension/src/renderer-voice-start-capability.ts
   pull_request:
@@ -20,6 +24,10 @@ on:
       - tools/compat-daily/**
       - .github/workflows/compat-daily.yml
       - packages/renderer-extension/src/renderer-client-owned-voice.ts
+      - crates/platform/src/asar_metadata.rs
+      - crates/platform/src/installation.rs
+      - packages/renderer-extension/src/renderer-voice-assets.ts
+      - packages/renderer-extension/src/renderer-native-chat-voice-assets.ts
       - packages/renderer-extension/src/renderer-native-chat-voice.ts
       - packages/renderer-extension/src/renderer-voice-start-capability.ts
 
@@ -139,3 +147,32 @@ jobs:
                 body: `${marker}\nThe ${issue.surface} pin is now ${issue.version}, matching this issue's tracked Desktop target or the current Sparkle release. Current Sparkle: ${report.latest.version}. Any newer version drift is reported separately. This check does not verify microphone capture, connected audio or conversation lifecycle; the issue remains open for acceptance review.\n\nRun: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
               });
             }
+
+  windows-msix:
+    name: Windows MSIX metadata and voice contracts
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: npm ci --prefer-offline
+      - name: Test bounded ASAR metadata
+        run: cargo test --locked -p codexhost-platform asar_metadata
+      - name: Test MSIX identity and product detection
+        run: cargo test --locked -p codexhost-platform installation::windows_tests
+      - name: Build TypeScript
+        run: npm run build:typescript
+      - name: Test platform profile selection and bootstrap
+        run: >
+          npx vitest run --config tests/vitest.config.js
+          packages/renderer-extension/test/renderer-voice-assets.test.ts
+          packages/desktop-control/test/cpa-live-voice-hook.test.ts

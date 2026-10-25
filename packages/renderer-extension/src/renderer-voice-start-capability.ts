@@ -155,7 +155,12 @@ export function installVoiceStartCapabilityHook(
     if (disposed) return;
     try {
       const names = loadedAssetNames(target.document, target.performance);
-      const assets = selectVoiceAssets(CLIENT_OWNED_VOICE_ASSETS, names, config.desktopVersion);
+      const assets = selectVoiceAssets(
+        CLIENT_OWNED_VOICE_ASSETS,
+        names,
+        config.desktopVersion,
+        config.desktopPlatform,
+      );
       if (assets) {
         const shared = await importModule(`app://-/assets/${assets.shared}`);
         const init = "init" in assets ? assets.init : undefined;
@@ -206,6 +211,7 @@ export function installVoiceStartCapabilityHook(
                           CLIENT_OWNED_VOICE_ASSETS,
                           names,
                           config.desktopVersion,
+                          config.desktopPlatform,
                         ) !== assets
                       )
                         throw new Error("Unaudited voice starter");

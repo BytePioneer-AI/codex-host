@@ -498,11 +498,15 @@ impl LaunchOptions {
 }
 
 fn desktop_controller_command(
+    desktop_version: &str,
     options: &ResolvedLaunchOptions,
     control: &RuntimeControl,
     environment: &[(OsString, OsString)],
 ) -> Command {
     let mut command = Command::new(&options.node);
+    if std::env::var("CODEXHOST_DESKTOP_VERSION").map_or(true, |value| value.trim().is_empty()) {
+        command.env("CODEXHOST_DESKTOP_VERSION", desktop_version);
+    }
     command
         // Keep proxy support without surfacing its experimental API notice.
         .arg("--disable-warning=UNDICI-EHPA")
@@ -584,16 +588,15 @@ fn wait_for_controller_ready(
 }
 
 fn start_desktop_controller(
+    installation: &DesktopInstallation,
     options: &ResolvedLaunchOptions,
     control: &RuntimeControl,
     environment: &[(OsString, OsString)],
 ) -> Result<SupervisedChild, Box<dyn Error>> {
     startup_trace("spawning Desktop Controller");
-    let mut controller = spawn_supervised(&mut desktop_controller_command(
-        options,
-        control,
-        environment,
-    ))?;
+    let mut command =
+        desktop_controller_command(&installation.version, options, control, environment);
+    let mut controller = spawn_supervised(&mut command)?;
     startup_trace("waiting for Desktop Controller readiness");
     match wait_for_controller_ready(&mut controller, Duration::from_secs(120)) {
         Ok(()) => {
@@ -750,7 +753,7 @@ fn supervise_desktop(
         Duration::from_secs(30),
     )?;
     startup_trace("Codex Desktop launched");
-    let mut controller = start_desktop_controller(options, control, environment)?;
+    let mut controller = start_desktop_controller(installation, options, control, environment)?;
     let desktop_pid = desktop.root_snapshot().id;
     startup_trace("waiting for Host chain");
     if !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))? {
@@ -839,7 +842,8 @@ fn supervise_desktop(
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
     wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))?;
-    let mut controller = match start_desktop_controller(options, control, environment) {
+    let mut controller = match start_desktop_controller(installation, options, control, environment)
+    {
         Ok(started) => started,
         Err(error) => {
             let _ = desktop.kill();
@@ -1687,7 +1691,17 @@ mod tests {
     #[test]
     fn production_controller_uses_private_node_and_loopback_renderer_cdp() {
         let options = resolved_options();
-        let command = desktop_controller_command(&options, &runtime_control(), &[]);
+        let command =
+            desktop_controller_command("26.1021.31345", &options, &runtime_control(), &[]);
+        if std::env::var("CODEXHOST_DESKTOP_VERSION").map_or(true, |value| value.trim().is_empty())
+        {
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(key, value)| key == "CODEXHOST_DESKTOP_VERSION"
+                        && value == Some(std::ffi::OsStr::new("26.1021.31345")))
+            );
+        }
         assert_eq!(command.get_program(), "/opt/node");
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
@@ -1958,6 +1972,7 @@ mod tests {
     fn controller_receives_only_the_managed_network_environment() {
         let options = resolved_options();
         let command = desktop_controller_command(
+            "26.1021.31345",
             &options,
             &runtime_control(),
             &[
@@ -2056,7 +2071,8 @@ mod tests {
             desktop_controller: PathBuf::from(r"\\?\C:\Program Files\codexhost\controller.mjs"),
             ..resolved_options()
         };
-        let command = desktop_controller_command(&options, &runtime_control(), &[]);
+        let command =
+            desktop_controller_command("26.1021.31345", &options, &runtime_control(), &[]);
 
         assert_eq!(
             command.get_args().nth(1),

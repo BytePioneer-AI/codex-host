@@ -80,7 +80,7 @@ Work surface discovery ignores retained zero-size, hidden or inert Chat composer
 A visible Chat composer still prevents that Work fallback from claiming the surface.
 
 When Desktop omits resource timing and script asset names, the explicit Desktop
-version selects the profile and the hook imports its exact native assets.
+product version and platform select the profile and the hook imports its exact native assets.
 Observed incomplete or mixed initial/shared pairs still fail closed. Overlay
 preparation rechecks that profile and requires the committed starter component
 to belong to its exported native overlay page.
@@ -167,6 +167,9 @@ owned Settings readers rendered the controls. Language and Dictation also retain
 their native capability values while the owned mode readers commit the platform
 mode. Three Settings navigation round
 trips retained the controls. No account voice, hotkey or permission was changed.
+The Composer capability hook reports `native-ineligible` when its provider-only
+replay still cannot make the native capability capable; this is diagnostic state
+and leaves the native account, workspace and rollout checks authoritative.
 These checks do not establish a complete spoken call. On 25 October 2026,
 Karl reported that the instructed manual Voice Settings and existing-Codex-chat
 voice test passed after a full restart with the startup and `codex` request
@@ -185,6 +188,35 @@ their own live checks.
 The 26.1021.31345 ASAR SHA-256 is
 `130145706a912db74e4d260ad7538f10f1e05e88af955f9afba42cdf01e64606`.
 Sanitized evidence is under ignored `.codexhost/update-impact/26.1021.31345/`.
+
+## Windows MSIX product and platform qualification
+
+Windows discovery reads the Desktop product version from a bounded ASAR
+`package.json` entry and retains the MSIX deployment version in `build` and its
+activation identity. The Launcher supplies that product version to the Controller;
+the voice bootstrap includes `desktopPlatform`. `CODEXHOST_DESKTOP_VERSION` remains
+a diagnostic override. Missing metadata falls back to the deployment version,
+which cannot qualify a different product profile by numeric resemblance.
+
+Product `26.1021.31345` has separate macOS and Windows asset profiles. A complete,
+unambiguous pair identifies a profile; empty resource lists require an exact
+product/platform match. Mixed assets, partial pairs, unknown versions and platform
+contradictions fail closed. Windows uses the public prewarm wrapper, which
+initializes and re-exports the native Instant Connect controller.
+
+Profile selection does not grant account/workspace access or prove a spoken
+call. Native Windows Settings excludes screen context; codexhost preserves that
+platform restriction. Voice selection and hotkey controls remain subject to native
+account and workspace eligibility. The daily Windows CI job verifies MSIX and
+profile fixtures, independently of the macOS Sparkle latest-version check.
+
+On 26 October 2026, the user reported that both Chat and Work voice-chat paths
+passed manual testing on the Windows VM after completing official login. Before
+login, the configured gateway was ready but native provider-only capability
+replay remained ineligible. This acceptance resolves that observed login-related
+blocker while preserving the custom provider route and native eligibility checks.
+The report does not separately qualify Voice Settings controls, screen context,
+external Harness voice, or long-call recovery.
 
 ## Live voice-hook debug on a running Desktop
 

@@ -132,6 +132,7 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 - codexhost 运行中：通过 Host 的更新流程检查与安装，与 Codex 设置页一致。
 - codexhost 未运行：控制台下载并准备更新，拉起 Updater 并等待身份校验后的就绪确认才退出；Updater 等待控制台进程退出，再按原流程安装并重新启动 codexhost。
+- Windows 手动安装包使用 Windows Restart Manager 关闭占用本安装包文件的 codexhost Runtime/Launcher 进程，并且不会重新启动旧的控制台；这样直接运行下载的安装包时不需要先手动结束 codexhost。
 - npm 安装需通过 npm 命令启动的控制台（`codexhost`、`codexhost console`，或 Codex 设置页）才能更新，因为更新需要 npm 路径环境变量。
 - 源码构建不支持在控制台更新。
 

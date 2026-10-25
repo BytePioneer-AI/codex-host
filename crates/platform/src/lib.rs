@@ -5,6 +5,8 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(any(target_os = "windows", test))]
+mod asar_metadata;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod background;

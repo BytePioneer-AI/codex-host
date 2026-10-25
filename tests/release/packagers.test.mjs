@@ -120,6 +120,11 @@ describe("platform packagers", () => {
     expect(installer).toContain("DefaultDirName={localappdata}\\Programs\\codexhost");
     expect(installer).toContain("PrivilegesRequired=lowest");
     expect(installer).toContain("DisableProgramGroupPage=yes");
+    expect(installer).toContain("CloseApplications=yes");
+    expect(installer).toContain(
+      "CloseApplicationsFilter=node.exe,codexhost.exe,codexhost-start.exe",
+    );
+    expect(installer).toContain("RestartApplications=no");
     expect(installer.split(/\r?\n/)).toContain(
       'Name: "{userdesktop}\\codexhost"; Filename: "{app}\\bin\\codexhost-start.exe"; WorkingDir: "{app}"',
     );

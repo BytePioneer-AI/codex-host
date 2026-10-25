@@ -2,6 +2,7 @@ import { auditedAppInitialAssetPresent } from "./renderer-cpa-live-voice-hook.js
 
 interface VoiceAssets {
   version: string;
+  platform: string;
   initial: string;
   shared: string;
 }
@@ -15,22 +16,25 @@ export function selectVoiceAssets<T extends VoiceAssets>(
   profiles: readonly T[],
   names: readonly string[],
   version?: string,
+  platform?: string,
 ): T | undefined {
   const present = profiles.filter((profile) =>
     [profile.initial, profile.shared].some((asset) => auditedAppInitialAssetPresent(names, asset)),
   );
-  if (version !== undefined) {
-    const profile = profiles.find((entry) => entry.version === version);
-    if (!profile) return undefined;
-    if (present.some((entry) => entry.version !== version)) return undefined;
-    const complete = [profile.initial, profile.shared].every((asset) =>
-      auditedAppInitialAssetPresent(names, asset),
-    );
-    return complete || present.length === 0 ? profile : undefined;
+  const matchesMetadata = (profile: T) =>
+    (version === undefined || profile.version === version) &&
+    (platform === undefined || profile.platform === platform);
+  if (present.length > 0) {
+    const profile = present.length === 1 ? present[0] : undefined;
+    return profile &&
+      matchesMetadata(profile) &&
+      [profile.initial, profile.shared].every((asset) =>
+        auditedAppInitialAssetPresent(names, asset),
+      )
+      ? profile
+      : undefined;
   }
-  const profile = present.length === 1 ? present[0] : undefined;
-  return profile &&
-    [profile.initial, profile.shared].every((asset) => auditedAppInitialAssetPresent(names, asset))
-    ? profile
-    : undefined;
+  if (version === undefined) return undefined;
+  const candidates = profiles.filter(matchesMetadata);
+  return candidates.length === 1 ? candidates[0] : undefined;
 }

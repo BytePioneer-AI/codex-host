@@ -149,6 +149,7 @@ it("runs drift and recovery workflow steps in separate scopes", async () => {
     assert.ok(step, name);
     const script = step
       .split("          script: |\n")[1]
+      .split(/\n(?=\S| {1,10}\S)/u)[0]
       .split("\n")
       .map((line) => line.slice(12))
       .join("\n");

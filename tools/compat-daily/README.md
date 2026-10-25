@@ -1,6 +1,6 @@
 # Compat daily
 
-Compares the public ChatGPT/Codex Desktop Sparkle appcast to Renderer voice pins. It does not download ChatGPT.app.
+Compares the public ChatGPT/Codex Desktop Sparkle appcast to Renderer voice pins. It does not download ChatGPT.app. Sparkle reports macOS releases; it is not a Windows MSIX release feed. A separate daily Windows job checks bounded ASAR metadata, registered/portable MSIX discovery, platform profile selection and Controller bootstrap against fixtures. It does not claim to monitor the latest Windows Store release.
 
 ```bash
 npm run compat:daily:test
@@ -36,7 +36,7 @@ Keep this tool, its npm scripts and the workflow when resolving upstream changes
    along with its guards, focused regression coverage and qualification notes.
    Work pins live in `packages/renderer-extension/src/renderer-client-owned-voice.ts`;
    the optional overlay pin is read from `renderer-voice-start-capability.ts` in
-   the same directory. Chat pins/start assets live in `renderer-native-chat-voice.ts`;
+   the same directory. Chat profiles/start assets live in `renderer-native-chat-voice-assets.ts`;
    the parser uses Work version/initial pins if separate Chat constants are absent.
    Preserve independent Chat pins when Work advances. The 26.1016.61520 Chat
    binding maps RouteScope ownership and the inner ComposerScope; see the [native Instant Connect evidence](../../docs/operations/cpa-live-voice-desktop-hook.md#existing-and-new-chatgpt-conversations-native-instant-connect).
@@ -45,3 +45,17 @@ Keep this tool, its npm scripts and the workflow when resolving upstream changes
    and `npm run compat:daily` again after any pin changes. Record remaining drift
    explicitly. A matching pin only clears version drift; it does not prove the
    native bindings or voice behavior work.
+
+## Windows MSIX diagnosis
+
+Run `codexhost inspect --json` on the Windows host. `desktop.version` comes from
+bounded `app.asar/package.json` product metadata; `desktop.build` retains the MSIX
+deployment version. Package identity is preserved for activation. For example,
+product `26.1021.31345` can ship in package `26.1021.3705.0`. Missing or malformed
+product metadata falls back to the deployment version and cannot select a
+three-part audited voice profile. Do not derive one version from the other.
+
+Voice selection uses product version plus platform when resource names are
+absent. A complete, unambiguous asset pair can identify a profile without version
+metadata. Mixed or partial pairs and contradictory platform metadata fail closed.
+`CODEXHOST_DESKTOP_VERSION` remains an explicit diagnostic override.

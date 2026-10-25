@@ -285,12 +285,6 @@ export function installVoiceSettingsExplanation(
   if (!config) return { dispose() {} };
   if (config.desktopVersion && config.desktopVersion !== NATIVE_CHAT_VOICE_VERSION)
     return { dispose() {} };
-  const assets = selectVoiceAssets(
-    NATIVE_CHAT_VOICE_ASSETS,
-    loadedAssetNames(target.document, target.performance),
-    config.desktopVersion,
-  );
-  if (!assets?.settings) return { dispose() {} };
   let disposed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let binding: ReturnType<typeof explainVoiceSettingsRestriction>;
@@ -336,6 +330,14 @@ export function installVoiceSettingsExplanation(
       binding = undefined;
       restored = false;
       if (!modules) {
+        // Document-start can expose one native chunk before its shared dependency.
+        // Keep the installer alive until the audited pair has finished loading.
+        const assets = selectVoiceAssets(
+          NATIVE_CHAT_VOICE_ASSETS,
+          loadedAssetNames(target.document, target.performance),
+          config.desktopVersion,
+        );
+        if (!assets?.settings) return;
         const load = options.importModule ?? ((url: string) => import(url));
         const [initial, shared, settings] = await Promise.all(
           [assets.initial, assets.shared, assets.settings].map((asset) =>

@@ -242,9 +242,14 @@ describe("client-owned voice gateway", () => {
     expect(f.original).toHaveBeenCalledOnce();
     expect(f.dispatch).not.toHaveBeenCalled();
   });
-  it.each(["gpt-6.1-sol", undefined])(
-    "routes an explicit Work overlay start through Host without a Work composer: %s",
-    async (model) => {
+  it.each([
+    { experience: "work", model: "gpt-6.1-sol" },
+    { experience: "work", model: undefined },
+    { experience: "codex", model: "gpt-6.1-sol" },
+    { experience: "codex", model: undefined },
+  ])(
+    "routes an explicit $experience overlay start through Host without a Work composer: $model",
+    async ({ experience, model }) => {
       const f = fixture();
       wrapClientOwnedVoiceFetch(
         f.client,
@@ -274,7 +279,7 @@ describe("client-owned voice gateway", () => {
         },
       );
       const response = (await starter.start({
-        productExperience: "work",
+        productExperience: experience,
         source: "composer_button_new_thread",
         hostId: "local",
       })) as Response;
@@ -283,22 +288,25 @@ describe("client-owned voice gateway", () => {
       expect(f.original).not.toHaveBeenCalled();
     },
   );
-  it("uses the Work preference for an explicit Work overlay start when Chat uses gateway", async () => {
-    const f = fixture();
-    rememberVoiceProductExperience({ productExperience: "work" });
-    wrapClientOwnedVoiceFetch(
-      f.client,
-      f.bridge,
-      () => false,
-      f.responseError,
-      () => true,
-      () => false,
-      () => false,
-    );
-    await f.client.fetch(url, options(speechBody()));
-    expect(f.original).toHaveBeenCalledOnce();
-    expect(f.dispatch).not.toHaveBeenCalled();
-  });
+  it.each(["work", "codex"])(
+    "uses the Work preference for an explicit %s overlay start when Chat uses gateway",
+    async (experience) => {
+      const f = fixture();
+      rememberVoiceProductExperience({ productExperience: experience });
+      wrapClientOwnedVoiceFetch(
+        f.client,
+        f.bridge,
+        () => false,
+        f.responseError,
+        () => true,
+        () => false,
+        () => false,
+      );
+      await f.client.fetch(url, options(speechBody()));
+      expect(f.original).toHaveBeenCalledOnce();
+      expect(f.dispatch).not.toHaveBeenCalled();
+    },
+  );
   it.each([
     ["gpt-live", chatBody()],
     ["shared speech model gpt-live-1-codex", speechBody()],

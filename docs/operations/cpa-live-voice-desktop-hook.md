@@ -63,6 +63,12 @@ profiles retain `njr` / `tjr` / `uBr`. Family resolution accepts arbitrary cache
 keys, so resolving `3683713372` on an unrelated family does not identify the
 inference gate. Missing audited exports fail closed without probing other
 families. Both composer and overlay project only their owned subscriptions.
+Existing Codex chats send the native product experience `codex`; Work home
+starts send `work`. Both use the Work connection choice for explicit local
+composer starts. The starter and call transport retain that native product
+identity, including when the overlay has no Composer or model metadata.
+Starter qualification continues to exclude remote, global-hotkey and
+avatar-button requests.
 
 Composer health also compares the projected subscriber and instance snapshots
 with React's committed capability value. A brief Host readiness or routing
@@ -139,6 +145,9 @@ Navigation, disposal and eligibility changes restore native readers. While a
 supported binding is unavailable, the existing text-only explanation can identify
 a provider-only rejection; it does not grant access. The hook retries controls
 after passive subscription initialization without repeatedly rewriting that text.
+The installer also retries native asset discovery during document startup: an
+initial chunk observed before its shared chunk cannot permanently skip Settings
+installation. Incomplete or mixed asset pairs still fail closed.
 
 The restored controls keep their native handlers:
 
@@ -156,7 +165,12 @@ owned Settings readers rendered the controls. Language and Dictation also retain
 their native capability values while the owned mode readers commit the platform
 mode. Three Settings navigation round
 trips retained the controls. No account voice, hotkey or permission was changed.
-These checks do not establish a complete spoken call.
+These checks do not establish a complete spoken call. On 25 October 2026,
+Karl reported that the instructed manual Voice Settings and existing-Codex-chat
+voice test passed after a full restart with the startup and `codex` request
+fixes installed. This is operator-reported acceptance; the global voice hotkey,
+screen capture, dictation and separate Chat browser-voice call still require
+their own live checks.
 
 | Asset | 62342 | 26.1021.31345 |
 | --- | --- | --- |

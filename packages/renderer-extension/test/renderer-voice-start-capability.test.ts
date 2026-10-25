@@ -41,6 +41,20 @@ function fixture() {
   };
 }
 describe("gateway start ownership", () => {
+  it("qualifies an existing local Codex chat without changing its native product identity", () => {
+    const codex = {
+      source: "composer_button_existing_thread",
+      productExperience: "codex",
+      locator: { hostId: "local" },
+    };
+    expect(gatewayVoiceStartRequest(codex, true)).toBe(true);
+    expect(gatewayVoiceStartRequest(codex, false, true)).toBe(false);
+    expect(gatewayVoiceStartRequest({ ...codex, locator: { hostId: "remote" } }, true)).toBe(false);
+    expect(gatewayVoiceStartRequest({ ...codex, source: "global_hotkey_new_thread" }, true)).toBe(
+      false,
+    );
+    expect(codex.productExperience).toBe("codex");
+  });
   it("qualifies explicit local Work requests and preserves Chat, remote and global starts", () => {
     expect(gatewayVoiceStartRequest(request, true)).toBe(true);
     for (const r of [
@@ -296,8 +310,17 @@ describe("overlay starter registration", () => {
         f.services.realtimeVoiceRuntime.registerRealtimeStarter(start, vi.fn());
         const wrappedStart = f.register.mock.calls[0]?.[0];
         if (typeof wrappedStart !== "function") throw new Error("Missing registered starter");
-        await expect(wrappedStart(request)).resolves.toBe("existingCall");
+        const launch =
+          assets.version === "26.1021.31345"
+            ? {
+                source: "composer_button_existing_thread",
+                productExperience: "codex",
+                locator: { hostId: "local" },
+              }
+            : request;
+        await expect(wrappedStart(launch)).resolves.toBe("existingCall");
         expect(start).toHaveBeenCalledOnce();
+        expect(start).toHaveBeenCalledWith(launch);
         expect(initialize).toHaveBeenCalledOnce();
         expect(instance.getSnapshot).toBe(original);
       } finally {

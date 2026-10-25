@@ -25,7 +25,7 @@ type Start = (...args: unknown[]) => unknown;
 type Binding = { dispose(): void; current(): boolean };
 type Attempt = { binding?: Binding };
 
-/** Explicit local Codex starts use their own Chat or Work connection choice. */
+/** Explicit local starts use Chat's choice or Work's choice for Work/Codex. */
 export function gatewayVoiceStartRequest(
   request: unknown,
   workGateway: boolean,
@@ -33,7 +33,9 @@ export function gatewayVoiceStartRequest(
 ): boolean {
   if (
     !record(request) ||
-    (request.productExperience !== "work" && request.productExperience !== "chat")
+    (request.productExperience !== "work" &&
+      request.productExperience !== "codex" &&
+      request.productExperience !== "chat")
   )
     return false;
   if (request.source === "composer_button_existing_thread") {

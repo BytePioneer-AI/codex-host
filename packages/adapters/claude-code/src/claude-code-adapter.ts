@@ -3008,7 +3008,9 @@ export function mergeSessionEnvironment(input: {
   const contaminated = inheritsNestedClaudeSession(input.override);
   const cleanOverride = Object.fromEntries(
     Object.entries(input.override).filter(
-      ([name, value]) => value !== undefined && !(contaminated && isClaudeToolchainVariable(name)),
+      ([name, value]) =>
+        value !== undefined &&
+        !(contaminated && (isClaudeToolchainVariable(name) || name === "CLAUDE_CONFIG_DIR")),
     ),
   );
   return stripNestedSessionEnvironment({
@@ -3229,14 +3231,14 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           if (!info) return undefined;
           return info.cwd ? { cwd: info.cwd } : {};
         }),
-      readSessionMessages: async ({ cwd, sessionId }) => {
-        const transcript = await readClaudeTranscript({
-          cwd,
-          environment: this.#environment,
-          sessionId,
-        });
-        return transcript;
-      },
+      readSessionMessages: async ({ cwd, sessionId }) =>
+        withSdkConfigDirectory(this.#sdkStorageDirectory, () =>
+          readClaudeTranscript({
+            cwd,
+            environment: this.#environment,
+            sessionId,
+          }),
+        ),
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
         withSdkConfigDirectory(this.#sdkStorageDirectory, () =>
           getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),

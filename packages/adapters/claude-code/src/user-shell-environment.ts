@@ -123,9 +123,13 @@ export function stripNestedSessionEnvironment(environment: NodeJS.ProcessEnv): N
  * toolchain value in the snapshot was exported by the user's own shell configuration.
  */
 function shellProbeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const contaminated = inheritsNestedClaudeSession(environment);
   return withoutVariables(
     environment,
-    (name) => isClaudeToolchainVariable(name) || isNestedSessionVariable(name),
+    (name) =>
+      isClaudeToolchainVariable(name) ||
+      isNestedSessionVariable(name) ||
+      (contaminated && name === "CLAUDE_CONFIG_DIR"),
   );
 }
 

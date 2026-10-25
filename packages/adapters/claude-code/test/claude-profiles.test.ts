@@ -279,12 +279,17 @@ describe("Claude Code profile adapter support", () => {
   it("keeps Host overrides for the default instance but never nested session variables", () => {
     const merged = mergeSessionEnvironment({
       base: { PATH: "/usr/bin" },
-      override: { ANTHROPIC_MODEL: "host-model", CLAUDE_PID: "99" },
+      override: {
+        ANTHROPIC_MODEL: "host-model",
+        CLAUDE_PID: "99",
+        CLAUDE_CONFIG_DIR: "/parent/store",
+      },
       pinned: {},
       configDirectory: undefined,
     });
 
     expect(merged.ANTHROPIC_MODEL).toBeUndefined();
+    expect(merged.CLAUDE_CONFIG_DIR).toBeUndefined();
     expect(merged.CLAUDE_PID).toBeUndefined();
   });
 

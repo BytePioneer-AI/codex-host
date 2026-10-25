@@ -31,6 +31,30 @@ export async function configDirectoryIdentity(directory: string): Promise<string
   }
 }
 
+export async function defaultClaudeConfigIdentities(
+  environment: NodeJS.ProcessEnv,
+  baseDir?: string,
+): Promise<Set<string>> {
+  const home = environment.HOME || os.homedir();
+  const identities = new Set<string>();
+  identities.add(await configDirectoryIdentity(path.join(home, ".claude")));
+  if (environment.CLAUDE_CONFIG_DIR) {
+    const customLiteral = environment.CLAUDE_CONFIG_DIR;
+    const customHome = expandUserPath(customLiteral, home);
+    identities.add(await configDirectoryIdentity(path.resolve(customHome)));
+    if (baseDir) {
+      identities.add(
+        await configDirectoryIdentity(
+          path.isAbsolute(customHome)
+            ? path.resolve(customHome)
+            : path.resolve(baseDir, customHome),
+        ),
+      );
+    }
+  }
+  return identities;
+}
+
 export function defaultClaudeProfilesPath(environment: NodeJS.ProcessEnv = process.env): string {
   if (environment.CODEXHOST_CLAUDE_PROFILES_FILE) {
     return path.resolve(environment.CODEXHOST_CLAUDE_PROFILES_FILE);
@@ -78,14 +102,7 @@ export async function loadClaudeCodeProfile(
   };
 
   const seenConfigDirs = new Set<string>();
-  const defaultIdentities = new Set<string>();
-  defaultIdentities.add(await configDirectoryIdentity(path.join(home, ".claude")));
-  if (environment.CLAUDE_CONFIG_DIR) {
-    const customLiteral = environment.CLAUDE_CONFIG_DIR;
-    const customHome = expandUserPath(customLiteral, home);
-    defaultIdentities.add(await configDirectoryIdentity(path.resolve(customHome)));
-    defaultIdentities.add(await configDirectoryIdentity(resolve(customLiteral)));
-  }
+  const defaultIdentities = await defaultClaudeConfigIdentities(environment, baseDir);
 
   for (const candidate of collectClaudeCodeProfiles(parsedJson)) {
     const resolvedConfigDir = resolve(candidate.configDir);

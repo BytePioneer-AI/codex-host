@@ -175,11 +175,10 @@ export class ExternalThreadIdleRelease {
     });
   }
 
-  #eligible(thread: ExternalThread): boolean {
+  #safeToRelease(thread: ExternalThread): boolean {
     const state = this.#activity.get(thread);
     return (
       !this.#stopped &&
-      this.#settings.enabled &&
       !!state &&
       !state.outputFailed &&
       !state.closeFailed &&
@@ -192,9 +191,48 @@ export class ExternalThreadIdleRelease {
       !thread.persistenceError &&
       !thread.running &&
       !thread.activeTurnId &&
-      this.options.canRelease(thread) &&
+      this.options.canRelease(thread)
+    );
+  }
+
+  #eligible(thread: ExternalThread): boolean {
+    const state = this.#activity.get(thread);
+    return (
+      this.#settings.enabled &&
+      this.#safeToRelease(thread) &&
+      !!state &&
       Date.now() - state.lastActivity >= this.#settings.timeoutMinutes * 60_000
     );
+  }
+
+  /**
+   * Immediately releases an idle External Thread upon archive.
+   * Does not depend on the auto idle release timer setting.
+   */
+  releaseIfIdle(threadId: string): void {
+    const thread = this.options.get(threadId);
+    if (!thread || this.#scheduled.has(thread.id) || !this.#safeToRelease(thread)) {
+      return;
+    }
+    if (!thread.record.archived) {
+      return;
+    }
+    this.#scheduled.add(thread.id);
+    const task = this.options.queue
+      .run(thread.id, async () => {
+        if (!this.#safeToRelease(thread) || !thread.record.archived) return;
+        const closing = this.#close(thread);
+        this.#closing.set(thread.id, closing);
+        try {
+          await closing;
+        } finally {
+          this.#closing.delete(thread.id);
+        }
+      })
+      .catch(this.options.diagnose)
+      .finally(() => this.#scheduled.delete(thread.id));
+    this.#pending.add(task);
+    void task.finally(() => this.#pending.delete(task));
   }
 
   check(): void {

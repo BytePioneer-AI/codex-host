@@ -3044,6 +3044,11 @@ export class AppServerHost {
       method: archived ? "thread/archived" : "thread/unarchived",
       params: { threadId: updated.record.hostThreadId },
     });
+    if (archived) {
+      setImmediate(() => {
+        this.#externalRuntime.idleRelease.releaseIfIdle(updated.record.hostThreadId);
+      });
+    }
   }
 
   async #updateExternalThreadMetadata(

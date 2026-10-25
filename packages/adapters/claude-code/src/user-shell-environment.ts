@@ -87,7 +87,11 @@ export function isClaudeToolchainVariable(name: string): boolean {
     name.startsWith("ANTHROPIC_") ||
     name === "CLAUDE_CODE_SUBAGENT_MODEL" ||
     name === "CLAUDE_CODE_MAX_CONTEXT_TOKENS" ||
-    name === "CLAUDE_CODE_AUTO_MODE_SERVER"
+    name === "CLAUDE_CODE_AUTO_MODE_SERVER" ||
+    name === "CLAUDE_CODE_USE_BEDROCK" ||
+    name === "CLAUDE_CODE_USE_VERTEX" ||
+    name === "CLAUDE_CODE_EXTRA_BODY" ||
+    name === "API_TIMEOUT_MS"
   );
 }
 

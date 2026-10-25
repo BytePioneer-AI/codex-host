@@ -96,6 +96,64 @@ describe("Claude Code profile adapter support", () => {
     ).rejects.toThrow("unavailable");
   });
 
+  it("refuses a profile whose configDir matches the default instance effective directory", async () => {
+    const defaultCustomStore = path.join(temporaryDir, "effective-default-store");
+    const profilesPath = path.join(temporaryDir, "colliding-profiles.json");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        {
+          id: "claude-custom",
+          name: "Claude Custom",
+          configDir: defaultCustomStore,
+        },
+      ]),
+      "utf8",
+    );
+
+    await expect(
+      createHarnessAdapter({
+        environment: {
+          CODEXHOST_CLAUDE_PROFILES_FILE: profilesPath,
+          CLAUDE_CONFIG_DIR: defaultCustomStore,
+        },
+        harnessId: "claude-custom",
+        platform: process.platform,
+        managedRemoteHost: false,
+      }),
+    ).rejects.toThrow("cannot share the default instance configuration directory");
+  });
+
+  it("refuses a profile whose configDir matches ~/.claude", async () => {
+    const home = path.join(temporaryDir, "user-home");
+    const defaultClaude = path.join(home, ".claude");
+    await mkdir(defaultClaude, { recursive: true });
+    const profilesPath = path.join(temporaryDir, "claude-store-profiles.json");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        {
+          id: "claude-custom",
+          name: "Claude Custom",
+          configDir: defaultClaude,
+        },
+      ]),
+      "utf8",
+    );
+
+    await expect(
+      createHarnessAdapter({
+        environment: {
+          HOME: home,
+          CODEXHOST_CLAUDE_PROFILES_FILE: profilesPath,
+        },
+        harnessId: "claude-custom",
+        platform: process.platform,
+        managedRemoteHost: false,
+      }),
+    ).rejects.toThrow("cannot share the default instance configuration directory");
+  });
+
   it("does not leak profile environment variables into shared shell environment cache", async () => {
     const profilesPath = path.join(temporaryDir, "claude-code-profiles.json");
     const customConfigDir = path.join(temporaryDir, "claude-custom");

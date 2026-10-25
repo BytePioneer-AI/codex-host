@@ -1,8 +1,35 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { collectClaudeCodeProfiles, type ClaudeCodeProfile } from "@codexhost/shared-contracts";
+
+/**
+ * Compare directories by real identity so symlinks, `..` aliases and case-insensitive
+ * filesystems cannot hide two Harnesses pointing at one store.
+ */
+export async function configDirectoryIdentity(directory: string): Promise<string> {
+  const normalized = path.resolve(directory);
+  try {
+    const resolved = await realpath(normalized);
+    return process.platform === "win32" || process.platform === "darwin"
+      ? resolved.toLowerCase()
+      : resolved;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      const parent = path.dirname(normalized);
+      if (parent === normalized) return normalized;
+      const resolvedParent = await configDirectoryIdentity(parent);
+      const joined = path.join(resolvedParent, path.basename(normalized));
+      return process.platform === "win32" || process.platform === "darwin"
+        ? joined.toLowerCase()
+        : joined;
+    }
+    return process.platform === "win32" || process.platform === "darwin"
+      ? normalized.toLowerCase()
+      : normalized;
+  }
+}
 
 export function defaultClaudeProfilesPath(environment: NodeJS.ProcessEnv = process.env): string {
   if (environment.CODEXHOST_CLAUDE_PROFILES_FILE) {

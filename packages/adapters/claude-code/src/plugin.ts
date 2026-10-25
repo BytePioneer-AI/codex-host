@@ -1,3 +1,6 @@
+import os from "node:os";
+import path from "node:path";
+
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
@@ -5,7 +8,7 @@ import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 import { ClaudeCodeAdapter, claudeCommandCatalog } from "./claude-code-adapter.js";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { createClaudeInstallation } from "./installation.js";
-import { loadClaudeCodeProfile } from "./profiles.js";
+import { configDirectoryIdentity, loadClaudeCodeProfile } from "./profiles.js";
 
 import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { withUserShellEnvironment } from "./user-shell-environment.js";
@@ -24,6 +27,21 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
   }
 
   const baseEnvironment = await withUserShellEnvironment({ ...context.environment });
+  if (profile) {
+    const home = baseEnvironment.HOME || os.homedir();
+    const defaultRoots = [
+      await configDirectoryIdentity(path.join(home, ".claude")),
+      ...(baseEnvironment.CLAUDE_CONFIG_DIR
+        ? [await configDirectoryIdentity(baseEnvironment.CLAUDE_CONFIG_DIR)]
+        : []),
+    ];
+    const profileIdentity = await configDirectoryIdentity(profile.configDir);
+    if (defaultRoots.includes(profileIdentity)) {
+      throw new Error(
+        `Claude Code profile '${harnessId}' cannot share the default instance configuration directory`,
+      );
+    }
+  }
   const profileEnvironment: NodeJS.ProcessEnv = { ...(profile?.environment ?? {}) };
   // configDir is the schema-validated authority; profile.environment cannot silently override it.
   if (profile?.configDir) profileEnvironment.CLAUDE_CONFIG_DIR = profile.configDir;

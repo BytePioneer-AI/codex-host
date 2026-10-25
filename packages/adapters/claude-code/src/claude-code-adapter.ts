@@ -5,6 +5,7 @@ import {
   lastClaudeAssistantResponseUnix,
 } from "./claude-prompt-cache.js";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import {
@@ -3152,8 +3153,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     this.#environment = environment;
     this.#pinnedEnvironment = { ...options.pinnedEnvironment };
     // The effective storage root is fixed here: later per-open merges must never let a
-    // concurrently running Profile's temporary process.env change it.
-    this.#configDirectory = environment.CLAUDE_CONFIG_DIR;
+    // concurrently running Profile's temporary process.env change it. Defaults to ~/.claude
+    // so SDK operations never fall back to live process.env.
+    this.#configDirectory =
+      environment.CLAUDE_CONFIG_DIR ?? path.join(environment.HOME || homedir(), ".claude");
     this.#importIndex = new ClaudeSessionImportIndex(environment, this.harnessId);
     this.usageStatistics = createClaudeUsageStatistics(environment);
     this.#pendingSessions = new ClaudePendingSessions(environment, this.harnessId);
@@ -3464,14 +3467,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     // Host-supplied overrides can carry nested-session variables and another session's
     // routing, so the merge strips the former and re-applies this instance's own
     // configuration (Profile environment and config directory) last.
-    const environment = input.environment
-      ? mergeSessionEnvironment({
-          base: this.#environment,
-          override: input.environment,
-          pinned: this.#pinnedEnvironment,
-          configDirectory: this.#configDirectory,
-        })
-      : undefined;
+    const environment = mergeSessionEnvironment({
+      base: this.#environment,
+      override: input.environment ?? {},
+      pinned: this.#pinnedEnvironment,
+      configDirectory: this.#configDirectory,
+    });
     const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(environment);
     if (!bypassPermissionsAvailable && requestedPermissionModeId === "bypassPermissions") {
       // Claude Code exits at startup for this request. An explicit create fails visibly, while a

@@ -120,23 +120,51 @@ describe("MappingStore bounded concurrent startup (#595)", () => {
   it("safely drains in-flight workers when initialization fails", async () => {
     const directory = await temporaryStoreDirectory();
     const threadsDirectory = path.join(directory, "threads");
+    const metadataDirectory = path.join(directory, "thread-metadata");
     await mkdir(threadsDirectory, { recursive: true });
+    await mkdir(metadataDirectory, { recursive: true });
 
-    // Write a corrupt file that triggers an invalid record error
-    await writeFile(path.join(threadsDirectory, "valid-1.json"), "corrupt-json{{{", "utf8");
+    // Create 10 valid threads
+    const timestamp = new Date("2026-10-25T00:00:00.000Z").toISOString();
+    for (let i = 0; i < 10; i++) {
+      const id = hostThreadIdSchema.parse(`drain-thread-${i}`);
+      const record = storedThreadCoreV1Schema.parse({
+        formatVersion: 1,
+        revision: 1,
+        hostThreadId: id,
+        createRequestId: `req-${id}`,
+        harnessId: harnessIdSchema.parse("pi"),
+        state: "ready",
+        nativeSessionRef: {
+          harnessId: "pi",
+          nativeSessionId: `native-${id}`,
+          formatVersion: 1,
+        },
+        cwd: "/synthetic",
+        title: `Thread ${id}`,
+        archived: false,
+        transportModelId: "codexhost/pi-native",
+        ephemeral: false,
+        historyMode: "legacy",
+        turnMappings: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      await writeFile(path.join(threadsDirectory, `${id}.json`), JSON.stringify(record), "utf8");
+    }
+
+    // Create a conflict: make a metadata path into a directory so readFile throws EISDIR
+    await mkdir(path.join(metadataDirectory, "drain-thread-0.json"), { recursive: true });
 
     const store = new MappingStore({ directory, concurrency: 4 });
-    // Corrupt record moves to quarantine, so initialize gracefully isolates it
-    await store.initialize();
-    const records = await store.listThreads();
-    expect(records).toHaveLength(0);
+    await expect(store.initialize()).rejects.toThrow();
 
-    // Verify the invalid record was quarantined
-    const quarantine = (await readdir(path.join(directory, "quarantine"))).filter((f) =>
-      f.includes("invalid"),
-    );
-    expect(quarantine.length).toBeGreaterThanOrEqual(1);
-
-    await store.close();
+    // After failure, workers must be drained and store lock released
+    const secondStore = new MappingStore({ directory, concurrency: 4 });
+    // Remove the blocking directory to allow second store to initialize
+    await rm(path.join(metadataDirectory, "drain-thread-0.json"), { recursive: true, force: true });
+    await secondStore.initialize();
+    expect(await secondStore.listThreads()).toHaveLength(10);
+    await secondStore.close();
   });
 });

@@ -93,18 +93,22 @@ async function mapConcurrent<T, R>(
   if (items.length === 0) return [];
   const results = new Array<R>(items.length);
   let nextIndex = 0;
-  let firstError: unknown = null;
-  const workerCount = Math.min(limit, items.length);
+  let failed = false;
+  let firstError: unknown = undefined;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
 
   const workers = Array.from({ length: workerCount }, async () => {
-    while (nextIndex < items.length && !firstError) {
+    while (nextIndex < items.length && !failed) {
       const currentIndex = nextIndex++;
       const item = items[currentIndex];
       if (item !== undefined) {
         try {
           results[currentIndex] = await fn(item, currentIndex);
         } catch (error) {
-          if (!firstError) firstError = error;
+          if (!failed) {
+            failed = true;
+            firstError = error;
+          }
           break;
         }
       }
@@ -113,7 +117,7 @@ async function mapConcurrent<T, R>(
 
   await Promise.allSettled(workers);
 
-  if (firstError) {
+  if (failed) {
     throw firstError;
   }
   return results;
@@ -1279,8 +1283,13 @@ export class MappingStore {
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
       // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
+      // Also clean up any abandoned archived-threads.json files.
       ...rootNames
-        .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
+        .filter(
+          (name) =>
+            name.startsWith(`${path.basename(this.#lockPath)}.stale-`) ||
+            name.startsWith("archived-threads.json"),
+        )
         .map((name) => rm(path.join(this.#directory, name), { force: true })),
     ]);
   }

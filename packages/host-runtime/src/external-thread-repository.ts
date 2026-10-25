@@ -37,7 +37,7 @@ import {
 export interface ExternalThreadStore {
   initialize(): Promise<void>;
   getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null>;
-  listThreads(): Promise<StoredThreadRecordV1[]>;
+  listThreads(filter?: { archived?: boolean }): Promise<StoredThreadRecordV1[]>;
   getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null>;
   getDelegation(delegationId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
   getDelegationByChild(childHostThreadId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
@@ -135,8 +135,8 @@ export class ExternalThreadRepository {
     return parsed.success ? this.store.getThread(parsed.data) : null;
   }
 
-  list(): Promise<StoredThreadRecordV1[]> {
-    return this.store.listThreads();
+  list(filter?: { archived?: boolean }): Promise<StoredThreadRecordV1[]> {
+    return this.store.listThreads(filter);
   }
 
   listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {

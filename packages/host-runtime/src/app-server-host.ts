@@ -2886,7 +2886,7 @@ export class AppServerHost {
   ): Promise<void> {
     try {
       const [records, placements] = await Promise.all([
-        this.#repository.list(),
+        this.#repository.list({ archived: listRequest.params?.archived === true }),
         this.#repository.listSectionPlacements(),
       ]);
       const placementById = new Map(
@@ -2935,7 +2935,7 @@ export class AppServerHost {
   ): Promise<void> {
     try {
       const [records, localPlacements, sharedPlacements, sharedThreads] = await Promise.all([
-        this.#repository.list(),
+        this.#repository.list({ archived: query.params?.archived === true }),
         this.#repository.listSectionPlacements(),
         this.#options.sharedThreads?.placements() ?? [],
         this.#options.sharedThreads?.list(query.params) ?? [],

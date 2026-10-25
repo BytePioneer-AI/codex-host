@@ -70,19 +70,38 @@ export async function loadClaudeCodeProfile(
   } catch {
     return undefined;
   }
-  const profile = collectClaudeCodeProfiles(parsedJson).find((candidate) => candidate.id === id);
-  if (!profile) return undefined;
-
   const home = environment.HOME || os.homedir();
   const baseDir = path.dirname(filePath);
   const resolve = (value: string): string => {
     const expanded = expandUserPath(value, home);
     return path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(baseDir, expanded);
   };
-  return {
-    ...profile,
-    ...(profile.command ? { command: resolve(profile.command) } : {}),
-    configDir: resolve(profile.configDir),
-    ...(profile.icon && !profile.icon.startsWith("data:") ? { icon: resolve(profile.icon) } : {}),
-  };
+
+  const seenConfigDirs = new Set<string>();
+  const defaultIdentities = new Set<string>();
+  defaultIdentities.add(await configDirectoryIdentity(path.join(home, ".claude")));
+  if (environment.CLAUDE_CONFIG_DIR) {
+    const customLiteral = environment.CLAUDE_CONFIG_DIR;
+    const customHome = expandUserPath(customLiteral, home);
+    defaultIdentities.add(await configDirectoryIdentity(path.resolve(customHome)));
+    defaultIdentities.add(await configDirectoryIdentity(resolve(customLiteral)));
+  }
+
+  for (const candidate of collectClaudeCodeProfiles(parsedJson)) {
+    const resolvedConfigDir = resolve(candidate.configDir);
+    const identity = await configDirectoryIdentity(resolvedConfigDir);
+    if (seenConfigDirs.has(identity) || defaultIdentities.has(identity)) continue;
+    seenConfigDirs.add(identity);
+    if (candidate.id === id) {
+      return {
+        ...candidate,
+        ...(candidate.command ? { command: resolve(candidate.command) } : {}),
+        configDir: resolvedConfigDir,
+        ...(candidate.icon && !candidate.icon.startsWith("data:")
+          ? { icon: resolve(candidate.icon) }
+          : {}),
+      };
+    }
+  }
+  return undefined;
 }

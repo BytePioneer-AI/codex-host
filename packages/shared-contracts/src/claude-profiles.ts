@@ -7,8 +7,9 @@ export const claudeCodeProfileSchema = z
   .object({
     id: z
       .string()
-      .regex(/^[a-z0-9-]+$/u, {
-        message: "Profile ID must contain only lowercase ASCII letters, digits, and hyphens",
+      .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u, {
+        message:
+          "Profile ID must start with a lowercase letter and contain only lowercase ASCII letters, digits, and hyphens",
       })
       .min(1)
       .max(64)

@@ -3014,8 +3014,8 @@ export function mergeSessionEnvironment(input: {
   return stripNestedSessionEnvironment({
     ...input.base,
     ...cleanOverride,
-    ...(input.configDirectory ? { CLAUDE_CONFIG_DIR: input.configDirectory } : {}),
     ...input.pinned,
+    ...(input.configDirectory ? { CLAUDE_CONFIG_DIR: input.configDirectory } : {}),
   });
 }
 
@@ -3125,6 +3125,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #environment: NodeJS.ProcessEnv;
   readonly #pinnedEnvironment: NodeJS.ProcessEnv;
   readonly #configDirectory: string | undefined;
+  readonly #sdkStorageDirectory: string;
   get environment(): NodeJS.ProcessEnv {
     return this.#environment;
   }
@@ -3152,10 +3153,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     const environment = options.environment ?? process.env;
     this.#environment = environment;
     this.#pinnedEnvironment = { ...options.pinnedEnvironment };
-    // The effective storage root is fixed here: later per-open merges must never let a
-    // concurrently running Profile's temporary process.env change it. Defaults to ~/.claude
-    // so SDK operations never fall back to live process.env.
-    this.#configDirectory =
+    this.#configDirectory = environment.CLAUDE_CONFIG_DIR;
+    // SDK storage operations require a concrete directory to avoid reading an ambient or
+    // concurrently modified process.env; defaults to ~/.claude while keeping the child
+    // process environment clean (no synthetic CLAUDE_CONFIG_DIR) for the default instance.
+    this.#sdkStorageDirectory =
       environment.CLAUDE_CONFIG_DIR ?? path.join(environment.HOME || homedir(), ".claude");
     this.#importIndex = new ClaudeSessionImportIndex(environment, this.harnessId);
     this.usageStatistics = createClaudeUsageStatistics(environment);
@@ -3203,11 +3205,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           abortTimeoutMs: this.#cancelTimeoutMs,
         }),
       deleteSession: ({ cwd, sessionId }) =>
-        withSdkConfigDirectory(this.#configDirectory, () =>
+        withSdkConfigDirectory(this.#sdkStorageDirectory, () =>
           deleteClaudeSession(sessionId, { dir: cwd }),
         ),
       forkSession: async ({ checkpointId, cwd, sourceSessionId }) =>
-        withSdkConfigDirectory(this.#configDirectory, async () => {
+        withSdkConfigDirectory(this.#sdkStorageDirectory, async () => {
           const forked = await forkClaudeNativeSession(sourceSessionId, {
             dir: cwd,
             upToMessageId: checkpointId,
@@ -3222,7 +3224,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           return forked;
         }),
       getSessionInfo: async ({ sessionId }) =>
-        withSdkConfigDirectory(this.#configDirectory, async () => {
+        withSdkConfigDirectory(this.#sdkStorageDirectory, async () => {
           const info = await getClaudeSessionInfo(sessionId);
           if (!info) return undefined;
           return info.cwd ? { cwd: info.cwd } : {};
@@ -3236,7 +3238,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         return transcript;
       },
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
-        withSdkConfigDirectory(this.#configDirectory, () =>
+        withSdkConfigDirectory(this.#sdkStorageDirectory, () =>
           getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
         ),
     };

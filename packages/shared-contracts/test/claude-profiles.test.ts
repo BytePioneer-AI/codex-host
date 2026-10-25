@@ -40,6 +40,21 @@ describe("claudeCodeProfileSchema", () => {
       claudeCodeProfileSchema.parse({
         id: "Invalid_ID",
         name: "Invalid",
+        configDir: "/tmp/test",
+      }),
+    ).toThrow();
+    expect(() =>
+      claudeCodeProfileSchema.parse({
+        id: "1leading-digit",
+        name: "Invalid",
+        configDir: "/tmp/test",
+      }),
+    ).toThrow();
+    expect(() =>
+      claudeCodeProfileSchema.parse({
+        id: "-leading-hyphen",
+        name: "Invalid",
+        configDir: "/tmp/test",
       }),
     ).toThrow();
   });

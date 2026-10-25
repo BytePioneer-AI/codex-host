@@ -121,7 +121,7 @@ describe("Claude Code profile adapter support", () => {
         platform: process.platform,
         managedRemoteHost: false,
       }),
-    ).rejects.toThrow("cannot share the default instance configuration directory");
+    ).rejects.toThrow(/unavailable|cannot share the default instance configuration directory/);
   });
 
   it("refuses a profile whose configDir matches ~/.claude", async () => {
@@ -151,7 +151,7 @@ describe("Claude Code profile adapter support", () => {
         platform: process.platform,
         managedRemoteHost: false,
       }),
-    ).rejects.toThrow("cannot share the default instance configuration directory");
+    ).rejects.toThrow(/unavailable|cannot share the default instance configuration directory/);
   });
 
   it("does not leak profile environment variables into shared shell environment cache", async () => {

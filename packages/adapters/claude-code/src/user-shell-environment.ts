@@ -145,7 +145,9 @@ function mergeChildEnvironment(
   const contaminated = inheritsNestedClaudeSession(environment);
   const merged = withoutVariables(
     environment,
-    (name) => isNestedSessionVariable(name) || (contaminated && isClaudeToolchainVariable(name)),
+    (name) =>
+      isNestedSessionVariable(name) ||
+      (contaminated && (isClaudeToolchainVariable(name) || name === "CLAUDE_CONFIG_DIR")),
   );
   for (const [name, value] of Object.entries(shellEnvironment ?? {})) {
     if (merged[name] === undefined) merged[name] = value;

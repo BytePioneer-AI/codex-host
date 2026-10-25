@@ -131,7 +131,7 @@ describe("official Codex passthrough", () => {
         error: {
           code: -32000,
           message:
-            'thread is in use by /private/path/session.jsonl (C:\\Users\\Alice\\s.jsonl) token=private-token password="review secret with spaces" {"ANTHROPIC_API_KEY":"json-key-value"} {"api-key-id":"synthetic-credential"} access-token-id=synthetic-credential',
+            'thread is in use by /private/path/session.jsonl (C:\\Users\\Alice\\s.jsonl) token=private-token password="review secret with spaces" {"ANTHROPIC_API_KEY":"json-key-value"} {"api-key-id":"synthetic-credential"} access-token-id=synthetic-credential Authorization: Basic c2VjcmV0',
         },
       });
       expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
@@ -151,6 +151,7 @@ describe("official Codex passthrough", () => {
       expect(diagnostic).not.toContain("review secret with spaces");
       expect(diagnostic).not.toContain("json-key-value");
       expect(diagnostic).not.toContain("synthetic-credential");
+      expect(diagnostic).not.toContain("c2VjcmV0");
     } finally {
       await stopFixture(fixture);
     }

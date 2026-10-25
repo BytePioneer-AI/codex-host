@@ -83,6 +83,30 @@ export interface MappingStoreOptions {
   concurrency?: number;
 }
 
+interface StoredArchivedStubV1 {
+  formatVersion: 1;
+  revision: number;
+  hostThreadId: HostThreadId;
+  createRequestId: string;
+  harnessId: HarnessId;
+  state: "ready";
+  nativeSessionRef?: NativeSessionRef;
+  cwd: string;
+  title: string;
+  archived: true;
+  transportModelId: string;
+  ephemeral: boolean;
+  historyMode: "legacy" | "paginated";
+  forkSource?: StoredThreadRecordV1["forkSource"];
+  subagent?: StoredThreadRecordV1["subagent"];
+  turnMappings: StoredTurnMappingV1[];
+  projectId?: string;
+  daybreakEnabled?: boolean;
+  gitInfo?: StoredThreadRecordV1["gitInfo"];
+  createdAt: string;
+  updatedAt: string;
+}
+
 const DEFAULT_CONCURRENCY = 16;
 
 async function mapConcurrent<T, R>(
@@ -93,17 +117,29 @@ async function mapConcurrent<T, R>(
   if (items.length === 0) return [];
   const results = new Array<R>(items.length);
   let nextIndex = 0;
+  let firstError: unknown = null;
   const workerCount = Math.min(limit, items.length);
+
   const workers = Array.from({ length: workerCount }, async () => {
-    while (nextIndex < items.length) {
+    while (nextIndex < items.length && !firstError) {
       const currentIndex = nextIndex++;
       const item = items[currentIndex];
       if (item !== undefined) {
-        results[currentIndex] = await fn(item, currentIndex);
+        try {
+          results[currentIndex] = await fn(item, currentIndex);
+        } catch (error) {
+          if (!firstError) firstError = error;
+          break;
+        }
       }
     }
   });
-  await Promise.all(workers);
+
+  await Promise.allSettled(workers);
+
+  if (firstError) {
+    throw firstError;
+  }
   return results;
 }
 
@@ -361,7 +397,9 @@ export class MappingStore {
   readonly #sectionsDirectory: string;
   readonly #threadsDirectory: string;
   readonly #records = new Map<HostThreadId, StoredThreadRecordV1>();
-  readonly #unloadedArchivedThreads = new Map<HostThreadId, string>();
+  readonly #archivedStubs = new Map<HostThreadId, StoredArchivedStubV1>();
+  readonly #unloadedDetail = new Set<HostThreadId>();
+  readonly #loadingDetail = new Map<HostThreadId, Promise<void>>();
   readonly #delegations = new Map<HostThreadId, StoredDelegationRecordV1>();
   readonly #delegationRequests = new Map<string, HostThreadId>();
   readonly #delegationChildren = new Map<HostThreadId, HostThreadId>();
@@ -388,7 +426,10 @@ export class MappingStore {
     this.#instanceId = options.instanceId ?? randomUUID();
     this.#now = options.now ?? (() => new Date());
     this.#beforeReplace = options.beforeReplace;
-    this.#concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
+    this.#concurrency =
+      typeof options.concurrency === "number" && Number.isFinite(options.concurrency)
+        ? Math.max(1, Math.floor(options.concurrency))
+        : DEFAULT_CONCURRENCY;
   }
 
   get #archivedIndexPath(): string {
@@ -396,17 +437,31 @@ export class MappingStore {
   }
 
   #hasThread(hostThreadId: HostThreadId): boolean {
-    return this.#records.has(hostThreadId) || this.#unloadedArchivedThreads.has(hostThreadId);
+    return this.#records.has(hostThreadId);
   }
 
-  async #readArchivedIndex(): Promise<Set<HostThreadId>> {
+  async #readArchivedIndex(): Promise<Map<HostThreadId, StoredArchivedStubV1>> {
     try {
       const raw = await readFile(this.#archivedIndexPath, "utf8");
-      const parsed = JSON.parse(raw) as { formatVersion?: unknown; archivedThreadIds?: unknown };
-      if (parsed.formatVersion === 1 && Array.isArray(parsed.archivedThreadIds)) {
-        return new Set(
-          parsed.archivedThreadIds.filter((id): id is HostThreadId => typeof id === "string"),
-        );
+      const parsed = JSON.parse(raw) as {
+        formatVersion?: unknown;
+        stubs?: unknown;
+      };
+      if (parsed.formatVersion === 1 && Array.isArray(parsed.stubs)) {
+        const map = new Map<HostThreadId, StoredArchivedStubV1>();
+        for (const item of parsed.stubs) {
+          if (
+            typeof item === "object" &&
+            item !== null &&
+            typeof item.hostThreadId === "string" &&
+            item.formatVersion === 1 &&
+            item.state === "ready" &&
+            item.archived === true
+          ) {
+            map.set(item.hostThreadId as HostThreadId, item as StoredArchivedStubV1);
+          }
+        }
+        return map;
       }
     } catch (error) {
       if (systemErrorCode(error) !== "ENOENT") {
@@ -419,15 +474,16 @@ export class MappingStore {
         ).catch(() => undefined);
       }
     }
-    return new Set();
+    return new Map();
   }
 
-  async #writeArchivedIndex(archivedThreadIds: Iterable<HostThreadId>): Promise<void> {
+  async #writeArchivedIndex(stubs: Iterable<StoredArchivedStubV1>): Promise<void> {
     const target = this.#archivedIndexPath;
     const temp = `${target}.tmp-${randomUUID()}`;
+    const sorted = Array.from(stubs).sort((a, b) => a.hostThreadId.localeCompare(b.hostThreadId));
     const payload = {
       formatVersion: 1,
-      archivedThreadIds: Array.from(archivedThreadIds).sort(),
+      stubs: sorted,
     };
     let handle: FileHandle | null = null;
     try {
@@ -446,52 +502,76 @@ export class MappingStore {
     }
   }
 
-  async #loadArchivedThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null> {
-    const name = this.#unloadedArchivedThreads.get(hostThreadId);
-    if (!name) return this.#records.get(hostThreadId) ?? null;
-    this.#unloadedArchivedThreads.delete(hostThreadId);
-    const primary = path.join(this.#threadsDirectory, name);
-    const backup = path.join(this.#backupsDirectory, name);
-    let record: StoredThreadRecordV1 | null = null;
-    try {
-      record = await this.#readRecord(primary, name);
-    } catch (primaryError) {
-      try {
-        record = await this.#readRecord(backup, name);
-        await this.#replaceFile(primary, record, false);
-      } catch (backupError) {
-        const quarantine = path.join(
-          this.#quarantineDirectory,
-          `${name}.${this.#now().getTime()}.invalid`,
-        );
-        await rename(primary, quarantine).catch(() => undefined);
-        void primaryError;
-        void backupError;
-        return null;
-      }
-    }
-    if (record.state === "creating" && !record.nativeSessionRef) {
-      await rm(primary, { force: true });
-      await rm(backup, { force: true });
-      await rm(this.#metadataPath(record.hostThreadId), { force: true });
-      return null;
-    }
-    const metadata = await this.#readMetadata(record.hostThreadId);
-    if (metadata) {
-      record = withThreadMetadata(record, metadata);
-    } else if (threadMetadataOf(record)) {
-      await this.#writeMetadataFile(record.hostThreadId, threadMetadataOf(record));
-      await this.#replaceFile(primary, record, false);
-    }
-    this.#records.set(record.hostThreadId, record);
-    this.#indexRecord(record);
-    return record;
+  #createArchivedStub(record: StoredThreadRecordV1): StoredArchivedStubV1 {
+    return {
+      formatVersion: 1,
+      revision: record.revision,
+      hostThreadId: record.hostThreadId,
+      createRequestId: record.createRequestId,
+      harnessId: record.harnessId,
+      state: "ready",
+      ...(record.nativeSessionRef ? { nativeSessionRef: record.nativeSessionRef } : {}),
+      cwd: record.cwd,
+      title: record.title,
+      archived: true,
+      transportModelId: record.transportModelId,
+      ephemeral: record.ephemeral,
+      historyMode: record.historyMode,
+      ...(record.forkSource ? { forkSource: record.forkSource } : {}),
+      ...(record.subagent ? { subagent: record.subagent } : {}),
+      turnMappings: [],
+      ...(record.projectId !== undefined ? { projectId: record.projectId } : {}),
+      ...(record.daybreakEnabled !== undefined ? { daybreakEnabled: record.daybreakEnabled } : {}),
+      ...(record.gitInfo ? { gitInfo: record.gitInfo } : {}),
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
   }
 
-  async #ensureAllArchivedThreadsLoaded(): Promise<void> {
-    if (this.#unloadedArchivedThreads.size === 0) return;
-    const pending = Array.from(this.#unloadedArchivedThreads.keys());
-    await mapConcurrent(pending, this.#concurrency, (id) => this.#loadArchivedThread(id));
+  async #ensureDetailLoaded(hostThreadId: HostThreadId): Promise<void> {
+    if (!this.#unloadedDetail.has(hostThreadId)) return;
+    const inflight = this.#loadingDetail.get(hostThreadId);
+    if (inflight) return inflight;
+
+    const task = (async () => {
+      try {
+        const primary = this.#recordPath(hostThreadId);
+        const backup = this.#backupPath(hostThreadId);
+        let record: StoredThreadRecordV1 | null = null;
+        try {
+          record = await this.#readRecord(primary, `${hostThreadId}.json`);
+        } catch {
+          try {
+            record = await this.#readRecord(backup, `${hostThreadId}.json`);
+            await this.#replaceFile(primary, record, false);
+          } catch {
+            this.#unloadedDetail.delete(hostThreadId);
+            return;
+          }
+        }
+        const metadata = await this.#readMetadata(hostThreadId);
+        if (metadata) {
+          record = withThreadMetadata(record, metadata);
+        } else if (threadMetadataOf(record)) {
+          await this.#writeMetadataFile(record.hostThreadId, threadMetadataOf(record));
+          await this.#replaceFile(primary, record, false);
+        }
+        this.#records.set(hostThreadId, record);
+        this.#unloadedDetail.delete(hostThreadId);
+        this.#indexRecord(record);
+      } finally {
+        this.#loadingDetail.delete(hostThreadId);
+      }
+    })();
+
+    this.#loadingDetail.set(hostThreadId, task);
+    return task;
+  }
+
+  async #ensureAllDetailsLoaded(): Promise<void> {
+    if (this.#unloadedDetail.size === 0) return;
+    const pending = Array.from(this.#unloadedDetail);
+    await mapConcurrent(pending, this.#concurrency, (id) => this.#ensureDetailLoaded(id));
   }
 
   async initialize(): Promise<void> {
@@ -507,27 +587,33 @@ export class MappingStore {
     await this.#acquireLock();
     try {
       await this.#cleanupResidue();
-      const knownArchived = await this.#readArchivedIndex();
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
       const existingThreadIds = new Set(names.map((name) => name.slice(0, -5) as HostThreadId));
 
+      const knownStubs = await this.#readArchivedIndex();
+      this.#archivedStubs.clear();
+      this.#unloadedDetail.clear();
+
       let indexModified = false;
-      for (const id of knownArchived) {
-        if (!existingThreadIds.has(id)) {
-          knownArchived.delete(id);
-          indexModified = true;
+      const candidateActiveNames: string[] = [];
+
+      for (const name of names) {
+        const id = name.slice(0, -5) as HostThreadId;
+        const stub = knownStubs.get(id);
+        if (stub) {
+          this.#archivedStubs.set(id, stub);
+          this.#unloadedDetail.add(id);
+          this.#records.set(id, stub as StoredThreadRecordV1);
+        } else {
+          candidateActiveNames.push(name);
         }
       }
 
-      const candidateActiveNames: string[] = [];
-      for (const name of names) {
-        const id = name.slice(0, -5) as HostThreadId;
-        if (knownArchived.has(id)) {
-          this.#unloadedArchivedThreads.set(id, name);
-        } else {
-          candidateActiveNames.push(name);
+      for (const id of knownStubs.keys()) {
+        if (!existingThreadIds.has(id)) {
+          indexModified = true;
         }
       }
 
@@ -558,12 +644,6 @@ export class MappingStore {
           await rm(this.#metadataPath(record.hostThreadId), { force: true });
           return;
         }
-        if (record.archived) {
-          knownArchived.add(record.hostThreadId);
-          this.#unloadedArchivedThreads.set(record.hostThreadId, name);
-          indexModified = true;
-          return;
-        }
         const metadata = await this.#readMetadata(record.hostThreadId);
         if (metadata) {
           record = withThreadMetadata(record, metadata);
@@ -572,11 +652,16 @@ export class MappingStore {
           await this.#writeMetadataFile(record.hostThreadId, threadMetadataOf(record));
           await this.#replaceFile(primary, record, false);
         }
+        if (record.archived) {
+          const stub = this.#createArchivedStub(record);
+          this.#archivedStubs.set(record.hostThreadId, stub);
+          indexModified = true;
+        }
         this.#records.set(record.hostThreadId, record);
       });
 
       if (indexModified) {
-        await this.#writeArchivedIndex(knownArchived).catch(() => undefined);
+        await this.#writeArchivedIndex(this.#archivedStubs.values());
       }
 
       // An older release may have removed a Thread without knowing about its metadata file.
@@ -646,8 +731,8 @@ export class MappingStore {
 
   async getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null> {
     this.#requireInitialized();
-    if (this.#unloadedArchivedThreads.has(hostThreadId)) {
-      await this.#loadArchivedThread(hostThreadId);
+    if (this.#unloadedDetail.has(hostThreadId)) {
+      await this.#ensureDetailLoaded(hostThreadId);
     }
     const record = this.#records.get(hostThreadId);
     return record ? cloneRecord(record) : null;
@@ -659,20 +744,14 @@ export class MappingStore {
       return [...this.#records.values()].filter((record) => !record.archived).map(cloneRecord);
     }
     if (filter?.archived === true) {
-      await this.#ensureAllArchivedThreadsLoaded();
       return [...this.#records.values()].filter((record) => record.archived).map(cloneRecord);
     }
-    await this.#ensureAllArchivedThreadsLoaded();
     return [...this.#records.values()].map(cloneRecord);
   }
 
   async getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null> {
     this.#requireInitialized();
-    let hostThreadId = this.#createRequests.get(createRequestId);
-    if (!hostThreadId && this.#unloadedArchivedThreads.size > 0) {
-      await this.#ensureAllArchivedThreadsLoaded();
-      hostThreadId = this.#createRequests.get(createRequestId);
-    }
+    const hostThreadId = this.#createRequests.get(createRequestId);
     return hostThreadId ? this.getThread(hostThreadId) : null;
   }
 
@@ -783,8 +862,8 @@ export class MappingStore {
   async findThreadByTurn(hostTurnId: HostTurnId): Promise<StoredThreadRecordV1 | null> {
     this.#requireInitialized();
     let threadId = this.#hostTurns.get(hostTurnId);
-    if (!threadId && this.#unloadedArchivedThreads.size > 0) {
-      await this.#ensureAllArchivedThreadsLoaded();
+    if (!threadId && this.#unloadedDetail.size > 0) {
+      await this.#ensureAllDetailsLoaded();
       threadId = this.#hostTurns.get(hostTurnId);
     }
     return threadId ? this.getThread(threadId) : null;
@@ -801,7 +880,7 @@ export class MappingStore {
         result = cloneRecord(existing);
         return;
       }
-      if (this.#records.has(input.hostThreadId)) {
+      if (this.#hasThread(input.hostThreadId)) {
         throw new MappingStoreError("DUPLICATE_THREAD_ID", "Host Thread ID already exists");
       }
       const timestamp = this.#now().toISOString();
@@ -1160,17 +1239,15 @@ export class MappingStore {
 
   async #remove(hostThreadId: HostThreadId): Promise<void> {
     if (!this.#hasThread(hostThreadId)) return;
-    this.#unloadedArchivedThreads.delete(hostThreadId);
+    this.#unloadedDetail.delete(hostThreadId);
+    this.#archivedStubs.delete(hostThreadId);
     await Promise.all([
       rm(this.#recordPath(hostThreadId), { force: true }),
       rm(this.#backupPath(hostThreadId), { force: true }),
       rm(this.#metadataPath(hostThreadId), { force: true }),
     ]);
     this.#records.delete(hostThreadId);
-    const allArchived = new Set<HostThreadId>();
-    for (const [id] of this.#unloadedArchivedThreads) allArchived.add(id);
-    for (const r of this.#records.values()) if (r.archived) allArchived.add(r.hostThreadId);
-    await this.#writeArchivedIndex(allArchived).catch(() => undefined);
+    await this.#writeArchivedIndex(this.#archivedStubs.values());
     this.#rebuildIndexes();
   }
 
@@ -1195,8 +1272,8 @@ export class MappingStore {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
     await this.#enqueue(async () => {
-      if (this.#unloadedArchivedThreads.has(hostThreadId)) {
-        await this.#loadArchivedThread(hostThreadId);
+      if (this.#unloadedDetail.has(hostThreadId)) {
+        await this.#ensureDetailLoaded(hostThreadId);
       }
       const current = this.#records.get(hostThreadId);
       if (!current)
@@ -1229,17 +1306,13 @@ export class MappingStore {
       }
       this.#records.set(hostThreadId, next);
       if (current.archived !== next.archived) {
-        const allArchived = new Set<HostThreadId>();
-        for (const [id] of this.#unloadedArchivedThreads) allArchived.add(id);
-        for (const r of this.#records.values()) {
-          if (r.hostThreadId === hostThreadId) {
-            if (next.archived) allArchived.add(hostThreadId);
-            else allArchived.delete(hostThreadId);
-          } else if (r.archived) {
-            allArchived.add(r.hostThreadId);
-          }
+        if (next.archived) {
+          this.#archivedStubs.set(hostThreadId, this.#createArchivedStub(next));
+        } else {
+          this.#archivedStubs.delete(hostThreadId);
+          this.#unloadedDetail.delete(hostThreadId);
         }
-        await this.#writeArchivedIndex(allArchived).catch(() => undefined);
+        await this.#writeArchivedIndex(this.#archivedStubs.values());
       }
       this.#rebuildIndexes();
       result = cloneRecord(next);
@@ -1440,8 +1513,13 @@ export class MappingStore {
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
       // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
+      // Also clean up any abandoned archived-threads.json.tmp-* files from interrupted writes.
       ...rootNames
-        .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
+        .filter(
+          (name) =>
+            name.startsWith(`${path.basename(this.#lockPath)}.stale-`) ||
+            name.startsWith("archived-threads.json.tmp-"),
+        )
         .map((name) => rm(path.join(this.#directory, name), { force: true })),
     ]);
   }

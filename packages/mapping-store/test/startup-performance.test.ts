@@ -153,15 +153,82 @@ describe("MappingStore startup performance and lazy loading (#595)", () => {
     await store.close();
 
     // 7. Test persistence of archived index across restarts:
-    // Verify archived-threads.json exists
+    // Verify archived-threads.json exists with structured entries
     const archivedIndexRaw = await readFile(path.join(directory, "archived-threads.json"), "utf8");
     const archivedIndex = JSON.parse(archivedIndexRaw);
     expect(archivedIndex.formatVersion).toBe(1);
-    expect(archivedIndex.archivedThreadIds.length).toBe(archivedCount);
+    expect(archivedIndex.stubs.length).toBe(archivedCount);
 
     // On second startup with clean store instance:
     const restartedStore = new MappingStore({ directory, concurrency: 16 });
     await restartedStore.initialize();
+
+    // 8. Global uniqueness checks against unloaded archived threads:
+    // Duplicate hostThreadId should be rejected
+    await expect(
+      restartedStore.createProvisional({
+        hostThreadId: sampleArchivedId,
+        createRequestId: "new-request-1",
+        harnessId: harnessIdSchema.parse("pi"),
+        cwd: "/synthetic",
+        transportModelId: "codexhost/pi-native",
+        ephemeral: false,
+        historyMode: "legacy",
+      }),
+    ).rejects.toThrow("Host Thread ID already exists");
+
+    // Idempotent createRequest matching archived thread returns existing thread
+    const idempotentResult = await restartedStore.createProvisional({
+      hostThreadId: hostThreadIdSchema.parse("new-active-thread"),
+      createRequestId: `req-${sampleArchivedId}`,
+      harnessId: harnessIdSchema.parse("pi"),
+      cwd: "/synthetic",
+      transportModelId: "codexhost/pi-native",
+      ephemeral: false,
+      historyMode: "legacy",
+    });
+    expect(idempotentResult.hostThreadId).toBe(sampleArchivedId);
+
+    // Duplicate nativeSessionRef mapped to archived thread must be rejected on commitReady
+    const anotherThreadId = hostThreadIdSchema.parse("thread-another-new");
+    await restartedStore.createProvisional({
+      hostThreadId: anotherThreadId,
+      createRequestId: "req-another-new",
+      harnessId: harnessIdSchema.parse("pi"),
+      cwd: "/synthetic",
+      transportModelId: "codexhost/pi-native",
+      ephemeral: false,
+      historyMode: "legacy",
+    });
+    await expect(
+      restartedStore.commitReady({
+        hostThreadId: anotherThreadId,
+        nativeSessionRef: {
+          harnessId: harnessIdSchema.parse("pi"),
+          nativeSessionId: `native-${sampleArchivedId}`,
+          formatVersion: 1,
+        },
+        turnMappings: [],
+      }),
+    ).rejects.toThrow("Native Session is already mapped");
+
+    // removeProvisional on archived ready thread must throw MAPPING_CONFLICT and not delete
+    await expect(restartedStore.removeProvisional(sampleArchivedId)).rejects.toThrow(
+      "Ready Thread cannot be removed as provisional",
+    );
+    expect(await restartedStore.getThread(sampleArchivedId)).not.toBeNull();
+
+    // Clean up provisional test thread
+    await restartedStore.removeProvisional(anotherThreadId);
+
+    // Concurrent getThread calls should deduplicate and return identical records
+    const [concurrent1, concurrent2] = await Promise.all([
+      restartedStore.getThread(hostThreadIdSchema.parse("thread-archived-1")),
+      restartedStore.getThread(hostThreadIdSchema.parse("thread-archived-1")),
+    ]);
+    expect(concurrent1).not.toBeNull();
+    expect(concurrent2).not.toBeNull();
+    expect(concurrent1?.hostThreadId).toBe(concurrent2?.hostThreadId);
 
     // Query active threads should return immediately without loading archived threads
     const activeAgain = await restartedStore.listThreads({ archived: false });

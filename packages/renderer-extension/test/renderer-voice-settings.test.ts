@@ -240,7 +240,7 @@ describe("voice Settings explanation lifecycle", () => {
   });
 });
 
-function controlsFixture() {
+function controlsFixture(withDictation = false) {
   const f = fixture();
   const family = Object.assign(f.modules.capability, { scope: f.modules.appScope });
   const cacheKey = {};
@@ -292,6 +292,46 @@ function controlsFixture() {
     },
   });
   const group = { memoizedState: availability.hook, return: f.pageFiber };
+  let dictationAllowed = true;
+  const dictationAtom: Atom = {
+    read: (get) => ({
+      isLoading: false,
+      isError: false,
+      isCapable: dictationAllowed && !get(f.gate),
+    }),
+  };
+  const modeAtom: Atom = {
+    read: (get) => ((get(dictationAtom) as { isCapable: boolean }).isCapable ? "os-global" : null),
+  };
+  const dictation = subscription(modeAtom, [f.store, modeAtom]);
+  if (withDictation) {
+    const resolve = f.modules.capability.resolve;
+    Object.assign(f.modules.capability, {
+      resolve: (_node: unknown, _chain: unknown, arg: { name: string }) =>
+        arg.name.startsWith("dictation") ? { resolve: () => dictationAtom } : resolve(),
+    });
+    Object.assign(f.modules, { dictationMode: { resolve: () => modeAtom } });
+    let tail = capability.hook.next.next;
+    for (const name of ["dictation.composer", "dictation.global"]) {
+      const key = {};
+      const members = (
+        f.scope.node as typeof f.scope.node & {
+          familyBindings: Map<unknown, Map<string, { cacheKey: unknown }>>;
+        }
+      ).familyBindings.get(family);
+      members?.set(JSON.stringify({ name }), { cacheKey: key });
+      const signal = { atom: dictationAtom, store: f.store };
+      const reader = subscription(dictationAtom, [signal, undefined]);
+      Object.assign(tail, {
+        next: {
+          memoizedState: [signal, [key, f.scope.chain, undefined, family, undefined]],
+          next: reader.hook,
+        },
+      });
+      tail = reader.hook.next.next;
+    }
+    Object.assign(availability.hook.next.next, { next: dictation.hook });
+  }
   const section = { __reactFiber$controls: { return: group } };
   let controlsReady = true;
   const doc = {
@@ -303,6 +343,12 @@ function controlsFixture() {
     doc,
     capability,
     availability,
+    dictation,
+    modeAtom,
+    dictationAtom,
+    denyDictation: () => {
+      dictationAllowed = false;
+    },
     group,
     setControlsReady: (ready: boolean) => {
       controlsReady = ready;
@@ -326,6 +372,20 @@ describe("native Settings controls restoration", () => {
     expect(f.capability.subscriber.getSnapshot).toBe(f.capability.original);
     expect(f.availability.subscriber.getSnapshot).toBe(f.availability.original);
   });
+  it("restores dictation settings and native OS handler mode while preserving independent dictation policy", () => {
+    const f = controlsFixture(true);
+    const binding = restoreNativeVoiceSettings(f.doc, f.modules);
+    expect(binding?.current()).toBe(true);
+    expect(f.dictation.subscriber.getSnapshot()).toBe("os-global");
+    expect(f.store.get(f.modeAtom)).toBeNull();
+    expect(f.store.get(f.dictationAtom)).toMatchObject({ isCapable: false });
+    f.denyDictation();
+    expect(f.dictation.subscriber.getSnapshot()).toBeNull();
+    expect(f.availability.subscriber.getSnapshot()).toBe(true);
+    binding?.dispose();
+    expect(f.dictation.subscriber.getSnapshot).toBe(f.dictation.original);
+  });
+
   it("rolls back the capability reader when the group's boolean subscription is unavailable", () => {
     const f = controlsFixture();
     f.group.memoizedState = null as unknown as typeof f.group.memoizedState;

@@ -39,6 +39,7 @@ export function fixture() {
     nativeOutcome = "SUCCESS";
     nativeStopReason = "end_turn";
     recoverableToolFailure = false;
+    metaNotification = false;
     pending:
       { resolve(value: Record<string, unknown>): void; id: string; input: string } | undefined;
     constructor(readonly context: Parameters<CodeBuddyClientFactory>[0]) {}
@@ -85,6 +86,20 @@ export function fixture() {
           id,
           parentId: history.at(-1)?.id,
           content: [{ type: "input_text", text: input }],
+          providerData: { conversationRequestId: `request-${id}` },
+        });
+      if (this.metaNotification)
+        history.push({
+          type: "message",
+          role: "user",
+          id: `meta-${id}`,
+          parentId: id,
+          content: [{ type: "input_text", text: "<system-reminder>internal</system-reminder>" }],
+          providerData: {
+            conversationRequestId: `request-${id}`,
+            startsNewUserRequest: false,
+            isMeta: true,
+          },
         });
       if (input === "hold")
         return new Promise<Record<string, unknown>>((resolve) => {

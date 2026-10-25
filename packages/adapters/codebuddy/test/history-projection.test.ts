@@ -171,6 +171,73 @@ describe("CodeBuddy native history and output projection", () => {
     });
   });
 
+  it("keeps internal meta user rows inside the active request", () => {
+    const request = { ...user, providerData: { conversationRequestId: "request-1" } };
+    const reminder = {
+      ...user,
+      id: "reminder",
+      parentId: "user",
+      providerData: {
+        conversationRequestId: "request-1",
+        startsNewUserRequest: false,
+        isMeta: true,
+      },
+      content: "<task-notification>background task finished</task-notification>",
+    };
+    const answer = { ...assistant, parentId: "reminder" };
+    const snapshot = snapshotFromHistory(lines([request, reminder, answer]), ref, process.cwd());
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "user" },
+      input: [{ text: "hi" }],
+      items: [{ item: { type: "agentMessage", text: "ok" } }],
+      outcome: { status: "succeeded" },
+    });
+    expect(snapshot.turns[0]?.items).toHaveLength(1);
+
+    const next = snapshotFromHistory(
+      lines([
+        request,
+        reminder,
+        answer,
+        {
+          ...user,
+          id: "next",
+          parentId: "answer",
+          providerData: { conversationRequestId: "request-2" },
+          content: "again",
+        },
+        { ...assistant, id: "next-answer", parentId: "next" },
+      ]),
+      ref,
+      process.cwd(),
+    );
+    expect(next.turns.map((turn) => turn.input)).toEqual([
+      [{ type: "text", text: "hi" }],
+      [{ type: "text", text: "again" }],
+    ]);
+
+    expect(() =>
+      snapshotFromHistory(
+        lines([
+          request,
+          {
+            ...reminder,
+            providerData: { ...reminder.providerData, conversationRequestId: "request-2" },
+          },
+          answer,
+        ]),
+        ref,
+        process.cwd(),
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        code: "protocolError",
+        message: expect.stringContaining("different user request"),
+      }),
+    );
+  });
+
   it.each(["failed", "cancelled", "succeeded"] as const)(
     "does not confirm compaction from a start marker alone (%s)",
     (status) => {

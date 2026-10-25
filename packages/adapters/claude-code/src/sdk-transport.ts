@@ -19,6 +19,7 @@ import {
 import { projectClaudeAccountUsage } from "./account-usage.js";
 
 import { resolveClaudeCodeExecutable, withNodeRuntimeOnPath } from "./command.js";
+import { stripNestedSessionEnvironment } from "./user-shell-environment.js";
 import {
   mergeClaudeModelPickerOptions,
   readClaudeUserModelPicker,
@@ -587,7 +588,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         includePartialMessages: true,
         forwardSubagentText: true,
         env: withNodeRuntimeOnPath({
-          ...this.#environment,
+          ...stripNestedSessionEnvironment(this.#environment),
           CLAUDE_CODE_ENTRYPOINT: SESSION_ENTRYPOINT,
           CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,
         }),
@@ -1487,7 +1488,7 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
         persistSession: false,
         includePartialMessages: false,
         env: withNodeRuntimeOnPath({
-          ...this.#environment,
+          ...stripNestedSessionEnvironment(this.#environment),
           CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,
         }),
         spawnClaudeCodeProcess: (options) => this.#spawn(options),

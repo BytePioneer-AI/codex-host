@@ -59,6 +59,105 @@ describe("User shell environment", () => {
     });
   });
 
+  it("discards ambient toolchain overrides inherited by Host when missing from user shell", async () => {
+    const run = vi.fn(async () => ({
+      status: 0,
+      stdout: Buffer.from(`${marker}ANTHROPIC_API_KEY=sk-ant-user\0PATH=/shell/bin\0`),
+    }));
+
+    const result = await withUserShellEnvironment(
+      {
+        HOME: "/Users/example",
+        PATH: "/host/bin",
+        SHELL: "/bin/zsh",
+        ANTHROPIC_BASE_URL: "https://magpie.example.com",
+        ANTHROPIC_MODEL: "group/flash",
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1048576",
+        CLAUDE_CODE_AUTO_MODE_SERVER: "0",
+      },
+      { platform: "darwin", run },
+    );
+
+    // The shell probe itself must never see the ambient toolchain variables, so any
+    // toolchain value in its output can only come from the user's shell configuration.
+    expect(run).toHaveBeenCalledWith(
+      "/bin/zsh",
+      ["-ilc", expect.stringContaining("/usr/bin/env -0")],
+      expect.objectContaining({
+        env: expect.not.objectContaining({
+          ANTHROPIC_BASE_URL: expect.anything(),
+          ANTHROPIC_MODEL: expect.anything(),
+          CLAUDE_CODE_MAX_CONTEXT_TOKENS: expect.anything(),
+        }),
+      }),
+    );
+    expect(result.ANTHROPIC_API_KEY).toBe("sk-ant-user");
+    expect(result.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(result.ANTHROPIC_MODEL).toBeUndefined();
+    expect(result.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
+    expect(result.CLAUDE_CODE_AUTO_MODE_SERVER).toBeUndefined();
+  });
+
+  it("prioritizes user shell toolchain variables over host overrides", async () => {
+    const run = vi.fn(async () => ({
+      status: 0,
+      stdout: Buffer.from(
+        `${marker}ANTHROPIC_MODEL=claude-3-7-sonnet\0ANTHROPIC_BASE_URL=https://company.proxy.com\0`,
+      ),
+    }));
+
+    const result = await withUserShellEnvironment(
+      {
+        HOME: "/Users/example",
+        PATH: "/host/bin",
+        SHELL: "/bin/zsh",
+        ANTHROPIC_MODEL: "group/flash",
+        ANTHROPIC_BASE_URL: "https://magpie.example.com",
+      },
+      { platform: "darwin", run },
+    );
+
+    expect(result.ANTHROPIC_MODEL).toBe("claude-3-7-sonnet");
+    expect(result.ANTHROPIC_BASE_URL).toBe("https://company.proxy.com");
+  });
+
+  it("strips nested session variables inherited from an active parent Claude session", async () => {
+    const run = vi.fn(async () => ({
+      status: 0,
+      stdout: Buffer.from(`${marker}PATH=/shell/bin\0`),
+    }));
+
+    const result = await withUserShellEnvironment(
+      {
+        HOME: "/Users/example",
+        PATH: "/host/bin",
+        SHELL: "/bin/zsh",
+        CLAUDECODE: "1",
+        CLAUDE_CODE_SESSION_ID: "session-12345",
+        CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/claude.sock",
+        CLAUDE_CODE_MESSAGING_TOKEN: "secret-token",
+        CLAUDE_PID: "9999",
+        CLAUDE_CODE_CHILD_SESSION: "child-1",
+        CLAUDE_CODE_ENTRYPOINT: "cli",
+        CLAUDE_CODE_SESSION_ATTENDED: "1",
+        CLAUDE_CODE_EXECPATH: "/usr/local/bin/claude",
+        CLAUDE_EFFORT: "high",
+      },
+      { platform: "darwin", run },
+    );
+
+    expect(result.CLAUDECODE).toBeUndefined();
+    expect(result.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+    expect(result.CLAUDE_CODE_MESSAGING_SOCKET).toBeUndefined();
+    expect(result.CLAUDE_CODE_MESSAGING_TOKEN).toBeUndefined();
+    expect(result.CLAUDE_PID).toBeUndefined();
+    expect(result.CLAUDE_CODE_CHILD_SESSION).toBeUndefined();
+    expect(result.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(result.CLAUDE_CODE_SESSION_ATTENDED).toBeUndefined();
+    expect(result.CLAUDE_CODE_EXECPATH).toBeUndefined();
+    expect(result.CLAUDE_EFFORT).toBeUndefined();
+  });
+
   it("falls back without changing the Host environment when shell loading fails", async () => {
     const environment = { HOME: "/Users/example", PATH: "/host/bin", SHELL: "/bin/zsh" };
 
@@ -67,14 +166,14 @@ describe("User shell environment", () => {
         platform: "darwin",
         run: async () => ({ status: 1, stdout: Buffer.alloc(0) }),
       }),
-    ).toBe(environment);
+    ).toEqual(environment);
   });
 
   it("does not invoke a POSIX shell on Windows", async () => {
     const run = vi.fn();
     const environment = { HOME: "C:\\Users\\example", PATH: "C:\\Windows" };
 
-    expect(await withUserShellEnvironment(environment, { platform: "win32", run })).toBe(
+    expect(await withUserShellEnvironment(environment, { platform: "win32", run })).toEqual(
       environment,
     );
     expect(run).not.toHaveBeenCalled();

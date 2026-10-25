@@ -745,6 +745,7 @@ describe("Harness plugin registry lifetime", () => {
           id: "claude-custom",
           name: "Claude Custom",
           description: "Claude Code Custom Profile",
+          configDir: path.join(directory, ".claude-custom"),
         },
       ]),
       "utf8",

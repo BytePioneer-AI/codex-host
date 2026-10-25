@@ -53,7 +53,15 @@
 
 ## 隔离与生命周期
 
-1. **会话与转录本隔离**：当指定 `configDir` 时，该变体的待处理会话（`pendingSessions`）、历史转录本（`projects/`）与会话导入索引均绑定到该目录。
-2. **环境缓存隔离**：插件加载时先提取纯净的宿主用户 Shell 环境，再在实例级叠加 Profile 环境变量与 `CLAUDE_CONFIG_DIR`，防止污染共享 Shell 缓存或跨实例泄漏。
+1. **会话与转录本隔离**：`configDir` 为必填项。该变体的待处理会话（`pendingSessions`）、历史转录本（`projects/`）与会话导入索引均绑定到该目录。相对路径以 profiles 文件所在目录为基准解析。请勿将 `configDir` 指向默认的 `~/.claude` 或与其他变体共用同一目录，否则会话与导入索引会互相混淆。
+2. **环境缓存隔离**：插件加载时先提取纯净的宿主用户 Shell 环境，再在实例级叠加 Profile 环境变量与 `CLAUDE_CONFIG_DIR`，防止污染共享 Shell 缓存或跨实例泄漏。`profile.environment` 中的 `CLAUDE_CONFIG_DIR` 不会覆盖 `configDir` 字段。
 3. **原生 SDK 绑定**：原生 SDK 级会话操作（删除、Fork、会话信息及子代理消息读取）在执行时通过锁机制安全绑定目标实例配置目录并立即恢复，避免多实例并发竞争。
-4. **Desktop 一等公民**：变体通过标准插件发现机制注册为独立的 Harness，享有完整的模型选择、Thinking 档位控制、权限模式记忆及会话派生能力。
+4. **Desktop 一等公民**：变体通过标准插件发现机制注册为独立的 Harness，享有完整的模型选择、Thinking 档位控制、权限模式记忆及会话派生能力。`description` 会作为该变体的提示文本（notice）展示。
+
+## 环境变量隔离（默认实例同样生效）
+
+启动原生 Claude Code 前，Adapter 会统一清洗子进程环境：
+
+- **嵌套会话变量始终剥离**：`CLAUDECODE`、`CLAUDE_CODE_SESSION_ID`、`CLAUDE_CODE_MESSAGING_*`、`CLAUDE_PID`、`CLAUDE_CODE_CHILD_SESSION`、`CLAUDE_CODE_ENTRYPOINT`、`CLAUDE_CODE_SESSION_ATTENDED`、`CLAUDE_CODE_EXECPATH`、`CLAUDE_EFFORT`。宿主进程即使从另一个 Claude Code 会话中启动，子进程也不会误认为自己嵌套在父会话内。
+- **工具链变量以用户登录 Shell 为准**：`ANTHROPIC_*` 与模型槽位变量（`CLAUDE_CODE_MAX_CONTEXT_TOKENS`、`CLAUDE_CODE_AUTO_MODE_SERVER`）只在用户自己的 Shell 配置（`.zshrc` / `.bashrc` 等）导出时保留；Shell 探测本身不携带这些变量，因此宿主进程意外继承的值（例如由包装脚本注入）会被丢弃，不会静默改道默认 `claude-code` 实例的流量。用户确实在 Shell 中配置的值优先生效。
+- **Profile 作用域**：`profile.environment` 仅叠加到该 Profile 实例，基础 `claude-code` 实例不受任何 Profile 配置影响。

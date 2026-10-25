@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   HARNESS_PLUGIN_ICON_MAX_BYTES,
   claudeCodeProfileSchema,
+  harnessPluginIconSchema,
   type ClaudeCodeProfile,
 } from "@codexhost/shared-contracts";
 
@@ -74,17 +75,22 @@ export async function readClaudeCodeProfiles(
   const baseDir = path.dirname(resolvedPath);
   const profiles: ClaudeCodeProfile[] = [];
   const seenIds = new Set<string>();
+  const seenConfigDirs = new Set<string>();
 
   for (const item of rawList) {
     const parsed = claudeCodeProfileSchema.safeParse(item);
     if (!parsed.success) continue;
     if (seenIds.has(parsed.data.id)) continue;
+    const configDir = resolveProfilePath(parsed.data.configDir, baseDir, home);
+    // A shared native store would let two Harnesses resume and write the same Sessions.
+    if (seenConfigDirs.has(configDir)) continue;
     seenIds.add(parsed.data.id);
+    seenConfigDirs.add(configDir);
     const profile = parsed.data;
     profiles.push({
       ...profile,
       ...(profile.command ? { command: resolveProfilePath(profile.command, baseDir, home) } : {}),
-      configDir: resolveProfilePath(profile.configDir, baseDir, home),
+      configDir,
       ...(profile.icon ? { icon: resolveProfileIconPath(profile.icon, baseDir, home) } : {}),
     });
   }
@@ -103,7 +109,7 @@ function resolveProfileIconPath(icon: string, baseDir: string, home: string): st
 }
 
 export async function readProfileIcon(iconResource: string): Promise<string> {
-  if (iconResource.startsWith("data:")) return iconResource;
+  if (iconResource.startsWith("data:")) return harnessPluginIconSchema.parse(iconResource);
   const bytes = await readPluginFile(path.resolve(iconResource), HARNESS_PLUGIN_ICON_MAX_BYTES);
   return encodePluginIconDataUrl(bytes);
 }

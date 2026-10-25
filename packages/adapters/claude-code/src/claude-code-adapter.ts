@@ -123,6 +123,7 @@ import { ClaudeBackgroundCommandItems } from "./background-command-items.js";
 import { ClaudeToolLifecycle } from "./tool-lifecycle.js";
 import { estimateClaudeRequestCostUsd } from "./usage-estimate.js";
 import { ClaudeSteerMissedTurnError } from "./transport.js";
+import { stripNestedSessionEnvironment } from "./user-shell-environment.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
@@ -3085,6 +3086,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
   readonly #environment: NodeJS.ProcessEnv;
+  get environment(): NodeJS.ProcessEnv {
+    return this.#environment;
+  }
   readonly #importIndex: ClaudeSessionImportIndex;
   readonly #importScope = new SessionImportScope({
     closedMessage: "Claude Code Adapter is closed",
@@ -3423,14 +3427,16 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       };
     }
     // Permission prerequisites and the native process must observe the same environment.
+    // Host-supplied overrides can still carry nested-session variables from whatever
+    // launched the Host, so the merge strips them again before reaching the child.
     const environment = input.environment
-      ? {
+      ? stripNestedSessionEnvironment({
           ...this.#environment,
           ...input.environment,
           ...(this.#environment.CLAUDE_CONFIG_DIR
             ? { CLAUDE_CONFIG_DIR: this.#environment.CLAUDE_CONFIG_DIR }
             : {}),
-        }
+        })
       : undefined;
     const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(environment);
     if (!bypassPermissionsAvailable && requestedPermissionModeId === "bypassPermissions") {

@@ -2125,6 +2125,28 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("logs a redacted lifecycle diagnostic when External archive persistence fails", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
+    const mappingStore = new FailingArchiveMappingStore({ directory });
+    const fixture = createFixture({ mappingStore, mappingStoreDirectory: directory });
+    const threadId = await startPiThread(fixture);
+    writeRequest(fixture.desktopInput, {
+      id: 52,
+      method: "thread/archive",
+      params: { threadId },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 52));
+    await vi.waitFor(() => {
+      const diagnostic = fixture.diagnosticOutput.read()?.toString() ?? "";
+      expect(diagnostic).toContain("thread/archive failed");
+      expect(diagnostic).toContain(`thread=${threadId}`);
+      expect(diagnostic).toContain("owner=pi");
+      expect(diagnostic).toContain("code=-32081");
+      expect(diagnostic).not.toContain("Synthetic archive write failure");
+    });
+    await stopFixture(fixture);
+  });
+
   it("manages persisted External metadata even when its Harness is not registered", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
     const seed = new MappingStore({ directory });

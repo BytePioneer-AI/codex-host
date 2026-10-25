@@ -24,10 +24,12 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
   }
 
   const baseEnvironment = await withUserShellEnvironment({ ...context.environment });
+  const profileEnvironment: NodeJS.ProcessEnv = { ...(profile?.environment ?? {}) };
+  // configDir is the schema-validated authority; profile.environment cannot silently override it.
+  if (profile?.configDir) profileEnvironment.CLAUDE_CONFIG_DIR = profile.configDir;
   const environment: NodeJS.ProcessEnv = {
     ...baseEnvironment,
-    ...(profile?.configDir ? { CLAUDE_CONFIG_DIR: profile.configDir } : {}),
-    ...(profile?.environment ?? {}),
+    ...profileEnvironment,
   };
   const command =
     context.launchCommand ??

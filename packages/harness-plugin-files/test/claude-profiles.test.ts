@@ -68,11 +68,38 @@ describe("claude-profiles", () => {
   });
 
   it("resolves default path from environment variable", () => {
-    const custom = "/opt/custom/profiles.json";
+    const custom = path.resolve(temporaryDirectory, "custom-profiles.json");
     expect(
       defaultClaudeCodeProfilesPath({
         [CLAUDE_CODE_PROFILES_FILE_ENV]: custom,
       }),
     ).toBe(custom);
+  });
+
+  it("validates data url icon and rejects malformed data urls", async () => {
+    const validDataUrl =
+      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjwvc3ZnPg==";
+    expect(await readProfileIcon(validDataUrl)).toBe(validDataUrl);
+
+    await expect(readProfileIcon("data:text/html;base64,PHNjcmlwdD4=")).rejects.toThrow();
+    await expect(readProfileIcon("data:image/svg+xml,<svg></svg>")).rejects.toThrow();
+  });
+
+  it("drops profiles that share a resolved configDir", async () => {
+    const profilesPath = path.join(temporaryDirectory, "shared-config.json");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        { id: "claude-one", name: "One", configDir: "./shared" },
+        { id: "claude-two", name: "Two", configDir: "./shared" },
+        { id: "claude-three", name: "Three", configDir: "./other" },
+      ]),
+      "utf8",
+    );
+
+    const profiles = await readClaudeCodeProfiles(profilesPath, { HOME: "/custom/home" });
+
+    expect(profiles.map(({ id }) => id)).toEqual(["claude-one", "claude-three"]);
+    expect(profiles[0]?.configDir).toBe(path.join(temporaryDirectory, "shared"));
   });
 });

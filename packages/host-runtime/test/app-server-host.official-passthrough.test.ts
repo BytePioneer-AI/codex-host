@@ -116,6 +116,35 @@ describe("official Codex passthrough", () => {
     }
   });
 
+  it("logs a redacted diagnostic when native Codex rejects an archive", async () => {
+    const fixture = createFixture();
+    try {
+      await initialize(fixture);
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "thread/archive",
+        params: { threadId: "official-thread" },
+      });
+      const forwarded = await readJsonLine(fixture.official.stdin);
+      writeRequest(fixture.official.stdout, {
+        id: requiredMessageId(forwarded),
+        error: { code: -32000, message: "thread is in use by /private/path/session.jsonl" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
+        id: 2,
+        error: { code: -32000 },
+      });
+      const diagnostic = fixture.diagnosticOutput.read()?.toString() ?? "";
+      expect(diagnostic).toContain("thread/archive failed");
+      expect(diagnostic).toContain("thread=official-thread");
+      expect(diagnostic).toContain("owner=official");
+      expect(diagnostic).toContain("code=-32000");
+      expect(diagnostic).toContain("thread is in use");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("validates management parameters once an External Thread owns them", async () => {
     const fixture = createFixture();
     try {

@@ -121,6 +121,7 @@ export async function discoverHarnessPlugins(
             adapterApiVersion: claudePlugin.manifest.adapterApiVersion,
             entry: claudePlugin.manifest.entry,
             launchCommand: true,
+            ...(profile.description ? { notice: { en: profile.description } } : {}),
             ...(icon ? { icon } : {}),
             ...(iconStyle ? { iconStyle } : {}),
             ...(claudePlugin.manifest.links ? { links: claudePlugin.manifest.links } : {}),

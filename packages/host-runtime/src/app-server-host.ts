@@ -5034,7 +5034,7 @@ export class AppServerHost {
       }
     }
     let text: string;
-    let clientUserMessageId =
+    const clientUserMessageId =
       typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined;
     try {
       text = requestText(params);

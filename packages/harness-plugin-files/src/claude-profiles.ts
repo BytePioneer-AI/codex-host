@@ -64,12 +64,18 @@ export async function readClaudeCodeProfiles(
   const seenConfigDirs = new Set<string>();
   // Profiles must never share the default instance's store: Session imports and pending
   // Sessions are keyed by Harness, so a shared root would let two Harnesses claim them.
-  const defaultConfigDir = await configDirectoryIdentity(path.join(home, ".claude"));
+  // Both ~/.claude and any custom CLAUDE_CONFIG_DIR the default instance uses are protected.
+  const defaultIdentities = new Set<string>();
+  defaultIdentities.add(await configDirectoryIdentity(path.join(home, ".claude")));
+  if (environment.CLAUDE_CONFIG_DIR) {
+    const customDefault = resolveProfilePath(environment.CLAUDE_CONFIG_DIR, baseDir, home);
+    defaultIdentities.add(await configDirectoryIdentity(customDefault));
+  }
 
   for (const profile of collectClaudeCodeProfiles(parsedJson)) {
     const configDir = resolveProfilePath(profile.configDir, baseDir, home);
     const identity = await configDirectoryIdentity(configDir);
-    if (seenConfigDirs.has(identity) || identity === defaultConfigDir) continue;
+    if (seenConfigDirs.has(identity) || defaultIdentities.has(identity)) continue;
     seenConfigDirs.add(identity);
     profiles.push({
       ...profile,
@@ -88,13 +94,31 @@ function resolveProfilePath(inputPath: string, baseDir: string, home: string): s
 }
 
 /**
+ * Resolve directory to realpath through existing ancestors when the target directory
+ * does not exist yet. Prevents symlinked parent directories (like /tmp -> /private/tmp)
+ * from evading duplicate store detection.
+ */
+async function realpathWithAncestors(directory: string): Promise<string> {
+  const normalized = path.resolve(directory);
+  try {
+    return await realpath(normalized);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      const parent = path.dirname(normalized);
+      if (parent === normalized) return normalized;
+      const resolvedParent = await realpathWithAncestors(parent);
+      return path.join(resolvedParent, path.basename(normalized));
+    }
+    return normalized;
+  }
+}
+
+/**
  * Compare directories by real identity so symlinks, `..` aliases and case-insensitive
- * filesystems cannot hide two Harnesses pointing at one store. Missing directories cannot
- * be aliased yet, so their normalized lexical path is the identity.
+ * filesystems cannot hide two Harnesses pointing at one store.
  */
 async function configDirectoryIdentity(directory: string): Promise<string> {
-  const normalized = path.resolve(directory);
-  const identifier = await realpath(normalized).catch(() => normalized);
+  const identifier = await realpathWithAncestors(directory);
   return process.platform === "win32" || process.platform === "darwin"
     ? identifier.toLowerCase()
     : identifier;

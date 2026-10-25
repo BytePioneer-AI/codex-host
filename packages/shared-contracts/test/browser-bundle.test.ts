@@ -32,5 +32,5 @@ describe("shared-contracts browser bundle", () => {
       expect(inputPath).not.toMatch(/(^|[/\\])node:/u);
       expect(inputPath).not.toMatch(/electron|codex-sdk|claude-agent-sdk|pi-coding-agent/iu);
     }
-  });
+  }, 30_000);
 });

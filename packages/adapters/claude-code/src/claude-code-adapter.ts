@@ -123,7 +123,11 @@ import { ClaudeBackgroundCommandItems } from "./background-command-items.js";
 import { ClaudeToolLifecycle } from "./tool-lifecycle.js";
 import { estimateClaudeRequestCostUsd } from "./usage-estimate.js";
 import { ClaudeSteerMissedTurnError } from "./transport.js";
-import { stripNestedSessionEnvironment } from "./user-shell-environment.js";
+import {
+  inheritsNestedClaudeSession,
+  isClaudeToolchainVariable,
+  stripNestedSessionEnvironment,
+} from "./user-shell-environment.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
@@ -3000,9 +3004,15 @@ export function mergeSessionEnvironment(input: {
   pinned: NodeJS.ProcessEnv;
   configDirectory: string | undefined;
 }): NodeJS.ProcessEnv {
+  const contaminated = inheritsNestedClaudeSession(input.override);
+  const cleanOverride = Object.fromEntries(
+    Object.entries(input.override).filter(
+      ([name, value]) => value !== undefined && !(contaminated && isClaudeToolchainVariable(name)),
+    ),
+  );
   return stripNestedSessionEnvironment({
     ...input.base,
-    ...input.override,
+    ...cleanOverride,
     ...(input.configDirectory ? { CLAUDE_CONFIG_DIR: input.configDirectory } : {}),
     ...input.pinned,
   });

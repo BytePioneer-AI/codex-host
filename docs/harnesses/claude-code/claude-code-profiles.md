@@ -63,5 +63,7 @@
 启动原生 Claude Code 前，Adapter 会统一清洗子进程环境：
 
 - **嵌套会话变量始终剥离**：`CLAUDECODE`、`CLAUDE_CODE_SESSION_ID`、`CLAUDE_CODE_MESSAGING_*`、`CLAUDE_PID`、`CLAUDE_CODE_CHILD_SESSION`、`CLAUDE_CODE_ENTRYPOINT`、`CLAUDE_CODE_SESSION_ATTENDED`、`CLAUDE_CODE_EXECPATH`、`CLAUDE_EFFORT`。宿主进程即使从另一个 Claude Code 会话中启动，子进程也不会误认为自己嵌套在父会话内。
-- **工具链变量以用户登录 Shell 为准**：`ANTHROPIC_*` 与模型槽位变量（`CLAUDE_CODE_MAX_CONTEXT_TOKENS`、`CLAUDE_CODE_AUTO_MODE_SERVER`）只在用户自己的 Shell 配置（`.zshrc` / `.bashrc` 等）导出时保留；Shell 探测本身不携带这些变量，因此宿主进程意外继承的值（例如由包装脚本注入）会被丢弃，不会静默改道默认 `claude-code` 实例的流量。用户确实在 Shell 中配置的值优先生效。
-- **Profile 作用域**：`profile.environment` 仅叠加到该 Profile 实例，基础 `claude-code` 实例不受任何 Profile 配置影响。
+- **普通启动 vs 嵌套启动**：
+  - **普通启动**（通过 Desktop、Dock、Finder、launchd、systemd、CLI 或包装脚本启动）：宿主进程的环境变量（如合法设置的 `ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL`）会被正常保留并透传至子进程，用户在登录 Shell 中导出的变量也会按需补全。
+  - **嵌套启动**（宿主进程从父 Claude Code 会话中被拉起）：此时检测到父会话标识，宿主进程中继承自父会话的工具链变量（`ANTHROPIC_*`、`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 等）会被安全剔除，改由用户登录 Shell 自身导出的配置生效，杜绝父会话的网关或临时模型槽位静默改道默认 `claude-code` 实例的流量。
+- **Profile 作用域**：`profile.environment` 仅叠加到该 Profile 实例，基础 `claude-code` 实例不受任何 Profile 配置影响。在会话启动时，Profile 显式声明的网关与凭据优先于宿主运行时传入的环境变量。

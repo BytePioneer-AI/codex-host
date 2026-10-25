@@ -226,7 +226,18 @@ describe("Claude Code profile adapter support", () => {
       configDirectory: undefined,
     });
 
-    expect(merged.ANTHROPIC_MODEL).toBe("host-model");
+    expect(merged.ANTHROPIC_MODEL).toBeUndefined();
     expect(merged.CLAUDE_PID).toBeUndefined();
+  });
+
+  it("keeps legitimate non-nested Host overrides for the default instance", () => {
+    const merged = mergeSessionEnvironment({
+      base: { PATH: "/usr/bin", ANTHROPIC_BASE_URL: "https://base.example.com" },
+      override: { ANTHROPIC_BASE_URL: "https://custom.example.com" },
+      pinned: {},
+      configDirectory: undefined,
+    });
+
+    expect(merged.ANTHROPIC_BASE_URL).toBe("https://custom.example.com");
   });
 });

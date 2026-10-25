@@ -124,6 +124,27 @@ describe("claude-profiles", () => {
     expect(profiles.map(({ id }) => id)).toEqual(["claude-one", "claude-three"]);
   });
 
+  it("drops profiles that alias one store through a symlinked parent directory that does not exist yet", async () => {
+    const parentReal = path.join(temporaryDirectory, "parent-real");
+    const parentSymlink = path.join(temporaryDirectory, "parent-symlink");
+    await mkdir(parentReal, { recursive: true });
+    await symlink(parentReal, parentSymlink, "dir");
+    const profilesPath = path.join(temporaryDirectory, "symlink-parent-config.json");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        { id: "claude-one", name: "One", configDir: path.join(parentReal, "not-yet-created") },
+        { id: "claude-two", name: "Two", configDir: path.join(parentSymlink, "not-yet-created") },
+        { id: "claude-three", name: "Three", configDir: path.join(parentReal, "different-dir") },
+      ]),
+      "utf8",
+    );
+
+    const profiles = await readClaudeCodeProfiles(profilesPath, { HOME: "/custom/home" });
+
+    expect(profiles.map(({ id }) => id)).toEqual(["claude-one", "claude-three"]);
+  });
+
   it("refuses a profile that points at the default ~/.claude store", async () => {
     const home = path.join(temporaryDirectory, "home");
     await mkdir(path.join(home, ".claude"), { recursive: true });
@@ -140,6 +161,26 @@ describe("claude-profiles", () => {
     const profiles = await readClaudeCodeProfiles(profilesPath, { HOME: home });
 
     expect(profiles.map(({ id }) => id)).toEqual(["claude-own"]);
+  });
+
+  it("refuses a profile that points at the default instance custom CLAUDE_CONFIG_DIR", async () => {
+    const customDefault = path.join(temporaryDirectory, "custom-default-claude");
+    const profilesPath = path.join(temporaryDirectory, "custom-default-config.json");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        { id: "claude-default", name: "Matches custom default", configDir: customDefault },
+        { id: "claude-other", name: "Other", configDir: path.join(temporaryDirectory, "other") },
+      ]),
+      "utf8",
+    );
+
+    const profiles = await readClaudeCodeProfiles(profilesPath, {
+      HOME: "/custom/home",
+      CLAUDE_CONFIG_DIR: customDefault,
+    });
+
+    expect(profiles.map(({ id }) => id)).toEqual(["claude-other"]);
   });
 
   it("skips malformed entries without hiding valid profiles", async () => {

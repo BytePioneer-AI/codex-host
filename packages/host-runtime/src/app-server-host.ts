@@ -409,8 +409,9 @@ function errorMessage(error: unknown): string {
 
 const DIAGNOSTIC_REASON_MAX_LENGTH = 200;
 // Order matters: credentials first (they may contain path-like text), then paths.
+// Handles JSON keys/values, quoted strings with spaces, and standard auth headers.
 const DIAGNOSTIC_SECRET =
-  /\b(?:sk-[A-Za-z0-9_-]{8,}|Bearer\s+[^\s"')]+|[\w.-]*(?:token|secret|key|password)[\w.-]*\s*[=:]\s*\S+)/giu;
+  /(?:sk-[A-Za-z0-9_-]{8,}|(?:Authorization:\s*)?Bearer\s+\S+|["']?[\w.-]*(?:token|secret|key|password|credential)\w*["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;)\]}>]+))/giu;
 // Quoted or bracketed runs that start like an absolute path (`C:\`, UNC, POSIX) are
 // replaced wholesale up to a message delimiter, so a space-bearing path cannot leave a
 // trailing file name behind.

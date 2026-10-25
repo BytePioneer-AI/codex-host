@@ -59,7 +59,41 @@ describe("User shell environment", () => {
     });
   });
 
-  it("discards ambient toolchain overrides inherited by Host when missing from user shell", async () => {
+  it("keeps a wrapper's toolchain environment when the Host is not nested in a session", async () => {
+    const run = vi.fn(async () => ({
+      status: 0,
+      stdout: Buffer.from(`${marker}PATH=/shell/bin\0`),
+    }));
+
+    const result = await withUserShellEnvironment(
+      {
+        HOME: "/Users/example",
+        PATH: "/host/bin",
+        SHELL: "/bin/zsh",
+        ANTHROPIC_BASE_URL: "https://gateway.example.com",
+        ANTHROPIC_AUTH_TOKEN: "gateway-token",
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS: "200000",
+      },
+      { platform: "darwin", run },
+    );
+
+    expect(result.ANTHROPIC_BASE_URL).toBe("https://gateway.example.com");
+    expect(result.ANTHROPIC_AUTH_TOKEN).toBe("gateway-token");
+    expect(result.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe("200000");
+    // The probe never seeds toolchain variables, so only the user's shell can add them.
+    expect(run).toHaveBeenCalledWith(
+      "/bin/zsh",
+      ["-ilc", expect.stringContaining("/usr/bin/env -0")],
+      expect.objectContaining({
+        env: expect.not.objectContaining({
+          ANTHROPIC_BASE_URL: expect.anything(),
+          ANTHROPIC_AUTH_TOKEN: expect.anything(),
+        }),
+      }),
+    );
+  });
+
+  it("discards a parent session's toolchain routing when the Host was launched inside one", async () => {
     const run = vi.fn(async () => ({
       status: 0,
       stdout: Buffer.from(`${marker}ANTHROPIC_API_KEY=sk-ant-user\0PATH=/shell/bin\0`),
@@ -70,6 +104,8 @@ describe("User shell environment", () => {
         HOME: "/Users/example",
         PATH: "/host/bin",
         SHELL: "/bin/zsh",
+        CLAUDECODE: "1",
+        CLAUDE_CODE_SESSION_ID: "parent-session",
         ANTHROPIC_BASE_URL: "https://magpie.example.com",
         ANTHROPIC_MODEL: "group/flash",
         CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1048576",
@@ -78,19 +114,6 @@ describe("User shell environment", () => {
       { platform: "darwin", run },
     );
 
-    // The shell probe itself must never see the ambient toolchain variables, so any
-    // toolchain value in its output can only come from the user's shell configuration.
-    expect(run).toHaveBeenCalledWith(
-      "/bin/zsh",
-      ["-ilc", expect.stringContaining("/usr/bin/env -0")],
-      expect.objectContaining({
-        env: expect.not.objectContaining({
-          ANTHROPIC_BASE_URL: expect.anything(),
-          ANTHROPIC_MODEL: expect.anything(),
-          CLAUDE_CODE_MAX_CONTEXT_TOKENS: expect.anything(),
-        }),
-      }),
-    );
     expect(result.ANTHROPIC_API_KEY).toBe("sk-ant-user");
     expect(result.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(result.ANTHROPIC_MODEL).toBeUndefined();
@@ -98,7 +121,7 @@ describe("User shell environment", () => {
     expect(result.CLAUDE_CODE_AUTO_MODE_SERVER).toBeUndefined();
   });
 
-  it("prioritizes user shell toolchain variables over host overrides", async () => {
+  it("prefers user shell toolchain values inside a nested Host", async () => {
     const run = vi.fn(async () => ({
       status: 0,
       stdout: Buffer.from(
@@ -111,6 +134,7 @@ describe("User shell environment", () => {
         HOME: "/Users/example",
         PATH: "/host/bin",
         SHELL: "/bin/zsh",
+        CLAUDECODE: "1",
         ANTHROPIC_MODEL: "group/flash",
         ANTHROPIC_BASE_URL: "https://magpie.example.com",
       },

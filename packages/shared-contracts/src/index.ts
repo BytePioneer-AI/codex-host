@@ -89,9 +89,11 @@ export type {
   PluginIconStyle,
 } from "./harness-plugins.js";
 export {
+  CLAUDE_PROFILE_LIMIT,
   claudeCodeProfileSchema,
   claudeCodeProfilesFileSchema,
   claudeCodeProfilesListSchema,
+  collectClaudeCodeProfiles,
   parseClaudeCodeProfiles,
 } from "./claude-profiles.js";
 export type { ClaudeCodeProfile, ClaudeCodeProfilesFile } from "./claude-profiles.js";

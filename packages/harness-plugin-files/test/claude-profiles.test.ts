@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -101,5 +101,60 @@ describe("claude-profiles", () => {
 
     expect(profiles.map(({ id }) => id)).toEqual(["claude-one", "claude-three"]);
     expect(profiles[0]?.configDir).toBe(path.join(temporaryDirectory, "shared"));
+  });
+
+  it("drops profiles that alias one store through a symlink", async () => {
+    const profilesPath = path.join(temporaryDirectory, "symlink-config.json");
+    const realStore = path.join(temporaryDirectory, "real-store");
+    const aliasStore = path.join(temporaryDirectory, "alias-store");
+    await mkdir(realStore, { recursive: true });
+    await symlink(realStore, aliasStore, "dir");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        { id: "claude-one", name: "One", configDir: realStore },
+        { id: "claude-two", name: "Two", configDir: aliasStore },
+        { id: "claude-three", name: "Three", configDir: "./other" },
+      ]),
+      "utf8",
+    );
+
+    const profiles = await readClaudeCodeProfiles(profilesPath, { HOME: "/custom/home" });
+
+    expect(profiles.map(({ id }) => id)).toEqual(["claude-one", "claude-three"]);
+  });
+
+  it("refuses a profile that points at the default ~/.claude store", async () => {
+    const home = path.join(temporaryDirectory, "home");
+    await mkdir(path.join(home, ".claude"), { recursive: true });
+    const profilesPath = path.join(temporaryDirectory, "default-config.json");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        { id: "claude-default", name: "Default", configDir: path.join(home, ".claude") },
+        { id: "claude-own", name: "Own", configDir: path.join(home, ".claude-own") },
+      ]),
+      "utf8",
+    );
+
+    const profiles = await readClaudeCodeProfiles(profilesPath, { HOME: home });
+
+    expect(profiles.map(({ id }) => id)).toEqual(["claude-own"]);
+  });
+
+  it("skips malformed entries without hiding valid profiles", async () => {
+    const profilesPath = path.join(temporaryDirectory, "mixed-config.json");
+    await writeFile(
+      profilesPath,
+      JSON.stringify([
+        { id: "claude-valid", name: "Valid", configDir: "./valid" },
+        { id: "claude-invalid", name: "Missing config dir" },
+      ]),
+      "utf8",
+    );
+
+    const profiles = await readClaudeCodeProfiles(profilesPath, { HOME: "/custom/home" });
+
+    expect(profiles.map(({ id }) => id)).toEqual(["claude-valid"]);
   });
 });

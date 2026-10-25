@@ -408,17 +408,28 @@ function errorMessage(error: unknown): string {
 }
 
 const DIAGNOSTIC_REASON_MAX_LENGTH = 200;
-const DIAGNOSTIC_POSIX_PATH = /(?:^|[\s"'(=])\/(?:[^\s"')]+)/gu;
-const DIAGNOSTIC_WINDOWS_PATH = /[A-Za-z]:\\[^\s"')]+/gu;
-const DIAGNOSTIC_SECRET = /\b(?:sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]{8,})/gu;
+// Order matters: credentials first (they may contain path-like text), then paths.
+const DIAGNOSTIC_SECRET =
+  /\b(?:sk-[A-Za-z0-9_-]{8,}|Bearer\s+[^\s"')]+|[\w.-]*(?:token|secret|key|password)[\w.-]*\s*[=:]\s*\S+)/giu;
+// Quoted or bracketed runs that start like an absolute path (`C:\`, UNC, POSIX) are
+// replaced wholesale up to a message delimiter, so a space-bearing path cannot leave a
+// trailing file name behind.
+const DIAGNOSTIC_PATH = /(?:^|[\s"'(=:])(?:[A-Za-z]:[\\/]|\\\\|~?\/)[^,;)\]"']*/gu;
+const DIAGNOSTIC_PATH_PREFIX = /^[\s"'(=:]/u;
 
-/** Keep diagnostics quotable: no absolute paths, no credential-shaped tokens, one line. */
+/**
+ * Keep diagnostics quotable: credentials, absolute paths and control characters are
+ * removed, and the remainder is bounded. Two independent call sites rely on this to log
+ * native error text the Host does not control.
+ */
 function redactDiagnosticReason(reason: string): string {
   const redacted = reason
     .replace(DIAGNOSTIC_SECRET, "[redacted]")
-    .replace(DIAGNOSTIC_WINDOWS_PATH, "[path]")
-    .replace(DIAGNOSTIC_POSIX_PATH, (match) => match.replace(/\/\S*/u, "[path]"))
-    .replace(/[\r\n\t]+/gu, " ")
+    .replace(DIAGNOSTIC_PATH, (match) => {
+      const prefix = match.match(DIAGNOSTIC_PATH_PREFIX)?.[0] ?? "";
+      return `${prefix}[path]`;
+    })
+    .replace(/[\u0000-\u001f\u007f]+/gu, " ")
     .trim();
   return redacted.length > DIAGNOSTIC_REASON_MAX_LENGTH
     ? `${redacted.slice(0, DIAGNOSTIC_REASON_MAX_LENGTH)}…`
@@ -1824,7 +1835,7 @@ export class AppServerHost {
           : ({ kind: "official" } as const);
       if (await this.#writeResolutionError(request, location)) return;
       if (location.kind === "official") {
-        await this.#forwardOfficialRequest(request, frame, { method: "thread/archive" });
+        await this.#forwardOfficialRequest(request, frame, { method: request.method });
         return;
       }
       if (location.kind === "external") {
@@ -5991,8 +6002,9 @@ export class AppServerHost {
   }
 
   /**
-   * One-line lifecycle diagnostic: method, Thread, owner, code and a short reason. Paths,
-   * credentials and multi-line native text are removed so logs stay shareable.
+   * One-line lifecycle diagnostic: method, Thread, owner, code and a short reason. The
+   * Thread identity and reason both pass through the redactor because both can carry
+   * native or Desktop text; the log line itself stays a single record.
    */
   #diagnoseThreadLifecycle(
     method: string,
@@ -6001,10 +6013,10 @@ export class AppServerHost {
     code: number,
     reason: string,
   ): void {
-    const thread = threadId ?? "(unidentified)";
+    const thread = threadId ? redactDiagnosticReason(threadId) : "(unidentified)";
     const shortReason = redactDiagnosticReason(reason);
     this.#options.diagnosticOutput.write(
-      `codexhost Host Runtime: ${method} failed thread=${thread} owner=${owner} code=${code} reason=${shortReason}\n`,
+      `codexhost Host Runtime: ${method} failed thread=${thread} owner=${redactDiagnosticReason(owner)} code=${code} reason=${shortReason}\n`,
     );
   }
 }

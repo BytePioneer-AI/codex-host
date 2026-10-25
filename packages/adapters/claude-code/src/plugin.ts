@@ -62,6 +62,7 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
       harnessId,
       ...(command ? { command } : {}),
       environment,
+      ...(profile ? { pinnedEnvironment: profileEnvironment } : {}),
     }),
     {
       installation: createClaudeInstallation(environment, command),

@@ -62,7 +62,25 @@ const CLAUDE_NESTED_SESSION_ENV_NAMES = new Set<string>([
   "CLAUDE_CODE_SESSION_ATTENDED",
   "CLAUDE_CODE_EXECPATH",
   "CLAUDE_EFFORT",
+  "CLAUDE_CODE_REMOTE_SESSION_ID",
+  "CLAUDE_CODE_REMOTE_SESSION_ORIGIN",
+  "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+  "CLAUDE_CODE_BRIDGE_SESSION_ID",
+  "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
 ]);
+
+/**
+ * Evidence that the Host process itself was started inside a Claude Code session. Those
+ * markers name a *parent* session, so the toolchain variables beside them describe that
+ * parent's routing rather than the user's own configuration.
+ */
+const CLAUDE_NESTED_SESSION_MARKERS = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_PID",
+];
 
 export function isClaudeToolchainVariable(name: string): boolean {
   return (
@@ -75,6 +93,11 @@ export function isClaudeToolchainVariable(name: string): boolean {
 
 function isNestedSessionVariable(name: string): boolean {
   return CLAUDE_NESTED_SESSION_ENV_NAMES.has(name);
+}
+
+/** A Host launched from inside a Claude Code session inherits that session's routing. */
+export function inheritsNestedClaudeSession(environment: NodeJS.ProcessEnv): boolean {
+  return CLAUDE_NESTED_SESSION_MARKERS.some((name) => environment[name] !== undefined);
 }
 
 function withoutVariables(
@@ -92,8 +115,8 @@ export function stripNestedSessionEnvironment(environment: NodeJS.ProcessEnv): N
 
 /**
  * Seed the login-shell probe with Host variables the user's rc files may build on (PATH,
- * HOME, locale), but never the Claude toolchain or nested-session variables: anything of
- * those classes observed after startup was set by the user's own shell configuration.
+ * HOME, locale), but never the Claude toolchain or nested-session variables, so every
+ * toolchain value in the snapshot was exported by the user's own shell configuration.
  */
 function shellProbeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return withoutVariables(
@@ -102,19 +125,25 @@ function shellProbeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEn
   );
 }
 
-function mergeEnvironmentWithShellSnapshot(
+/**
+ * Build the child environment without inheriting another Claude session.
+ *
+ * Nested-session variables are always removed. Toolchain variables (`ANTHROPIC_*`, model
+ * slots) are dropped from the Host process only when it shows nested-session markers, in
+ * which case they describe the launching session; values the user's own shell exports are
+ * then used instead. A Host started normally (launchd, systemd, a wrapper) keeps its
+ * environment, so deliberate configuration still reaches the child.
+ */
+function mergeChildEnvironment(
   environment: NodeJS.ProcessEnv,
-  shellEnvironment: Readonly<Record<string, string>>,
+  shellEnvironment: Readonly<Record<string, string>> | null,
 ): NodeJS.ProcessEnv {
-  // Toolchain and model slot variables: the login-shell snapshot is the authoritative
-  // source because the probe never seeds them. Values present only in the Host process
-  // are ambient inheritance (a wrapper script or nested session exported them), so they
-  // are dropped instead of silently rerouting the default claude-code instance.
+  const contaminated = inheritsNestedClaudeSession(environment);
   const merged = withoutVariables(
     environment,
-    (name) => isNestedSessionVariable(name) || isClaudeToolchainVariable(name),
+    (name) => isNestedSessionVariable(name) || (contaminated && isClaudeToolchainVariable(name)),
   );
-  for (const [name, value] of Object.entries(shellEnvironment)) {
+  for (const [name, value] of Object.entries(shellEnvironment ?? {})) {
     if (merged[name] === undefined) merged[name] = value;
   }
   return merged;
@@ -123,26 +152,22 @@ function mergeEnvironmentWithShellSnapshot(
 /**
  * GUI applications do not load the user's shell initialization files. Capture them once
  * for Claude Code without parsing shell syntax or overriding the Host process environment.
- * The snapshot is never persisted or logged. Claude toolchain variables (`ANTHROPIC_*`,
- * model slots) survive only when the user's own shell configuration exports them; values
- * ambient in the Host process are dropped so a wrapper-launched Host cannot reroute the
- * default instance. Nested-session variables (`CLAUDECODE`, `CLAUDE_CODE_*`, …) are always
- * stripped so a Claude Code child never believes it is nested inside another session.
+ * The snapshot is never persisted or logged.
  */
 export async function withUserShellEnvironment(
   environment: NodeJS.ProcessEnv,
   dependencies?: UserShellEnvironmentDependencies,
 ): Promise<NodeJS.ProcessEnv> {
   const platform = dependencies?.platform ?? process.platform;
-  if (platform === "win32" || !environment.HOME) return stripNestedSessionEnvironment(environment);
+  if (platform === "win32" || !environment.HOME) return mergeChildEnvironment(environment, null);
   const shell = environment.SHELL?.trim() || defaultShell(platform);
   if (!shell || !SUPPORTED_SHELLS.has(path.basename(shell))) {
-    return stripNestedSessionEnvironment(environment);
+    return mergeChildEnvironment(environment, null);
   }
 
   const cacheKey = `${platform}\0${shell}\0${environment.HOME}`;
   const cached = dependencies ? undefined : shellEnvironmentCache.get(cacheKey);
-  if (cached) return mergeEnvironmentWithShellSnapshot(environment, cached);
+  if (cached) return mergeChildEnvironment(environment, cached);
 
   const run =
     dependencies?.run ??
@@ -168,10 +193,10 @@ export async function withUserShellEnvironment(
       windowsHide: true,
     });
     const loaded = result.status === 0 ? parseEnvironment(result.stdout) : null;
-    if (!loaded) return stripNestedSessionEnvironment(environment);
+    if (!loaded) return mergeChildEnvironment(environment, null);
     if (!dependencies) shellEnvironmentCache.set(cacheKey, loaded);
-    return mergeEnvironmentWithShellSnapshot(environment, loaded);
+    return mergeChildEnvironment(environment, loaded);
   } catch {
-    return stripNestedSessionEnvironment(environment);
+    return mergeChildEnvironment(environment, null);
   }
 }

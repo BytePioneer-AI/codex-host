@@ -1,10 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import {
   HARNESS_PLUGIN_ICON_MAX_BYTES,
-  claudeCodeProfileSchema,
+  collectClaudeCodeProfiles,
   harnessPluginIconSchema,
   type ClaudeCodeProfile,
 } from "@codexhost/shared-contracts";
@@ -59,34 +59,18 @@ export async function readClaudeCodeProfiles(
     return [];
   }
 
-  let rawList: unknown[];
-  if (Array.isArray(parsedJson)) {
-    rawList = parsedJson;
-  } else if (
-    parsedJson &&
-    typeof parsedJson === "object" &&
-    Array.isArray((parsedJson as Record<string, unknown>).profiles)
-  ) {
-    rawList = (parsedJson as Record<string, unknown>).profiles as unknown[];
-  } else {
-    return [];
-  }
-
   const baseDir = path.dirname(resolvedPath);
   const profiles: ClaudeCodeProfile[] = [];
-  const seenIds = new Set<string>();
   const seenConfigDirs = new Set<string>();
+  // Profiles must never share the default instance's store: Session imports and pending
+  // Sessions are keyed by Harness, so a shared root would let two Harnesses claim them.
+  const defaultConfigDir = await configDirectoryIdentity(path.join(home, ".claude"));
 
-  for (const item of rawList) {
-    const parsed = claudeCodeProfileSchema.safeParse(item);
-    if (!parsed.success) continue;
-    if (seenIds.has(parsed.data.id)) continue;
-    const configDir = resolveProfilePath(parsed.data.configDir, baseDir, home);
-    // A shared native store would let two Harnesses resume and write the same Sessions.
-    if (seenConfigDirs.has(configDir)) continue;
-    seenIds.add(parsed.data.id);
-    seenConfigDirs.add(configDir);
-    const profile = parsed.data;
+  for (const profile of collectClaudeCodeProfiles(parsedJson)) {
+    const configDir = resolveProfilePath(profile.configDir, baseDir, home);
+    const identity = await configDirectoryIdentity(configDir);
+    if (seenConfigDirs.has(identity) || identity === defaultConfigDir) continue;
+    seenConfigDirs.add(identity);
     profiles.push({
       ...profile,
       ...(profile.command ? { command: resolveProfilePath(profile.command, baseDir, home) } : {}),
@@ -100,7 +84,20 @@ export async function readClaudeCodeProfiles(
 
 function resolveProfilePath(inputPath: string, baseDir: string, home: string): string {
   const expanded = expandUserPath(inputPath, home);
-  return path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
+  return path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(baseDir, expanded);
+}
+
+/**
+ * Compare directories by real identity so symlinks, `..` aliases and case-insensitive
+ * filesystems cannot hide two Harnesses pointing at one store. Missing directories cannot
+ * be aliased yet, so their normalized lexical path is the identity.
+ */
+async function configDirectoryIdentity(directory: string): Promise<string> {
+  const normalized = path.resolve(directory);
+  const identifier = await realpath(normalized).catch(() => normalized);
+  return process.platform === "win32" || process.platform === "darwin"
+    ? identifier.toLowerCase()
+    : identifier;
 }
 
 function resolveProfileIconPath(icon: string, baseDir: string, home: string): string {

@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { harnessIdSchema } from "@codexhost/shared-contracts";
-import { ClaudeCodeAdapter } from "../src/claude-code-adapter.js";
+import { ClaudeCodeAdapter, mergeSessionEnvironment } from "../src/claude-code-adapter.js";
 import { createHarnessAdapter } from "../src/plugin.js";
 
 describe("Claude Code profile adapter support", () => {
@@ -192,5 +192,41 @@ describe("Claude Code profile adapter support", () => {
       expect(environment.CLAUDE_EFFORT).toBeUndefined();
       await adapter.close();
     }
+  });
+
+  it("keeps a Profile's declared routing over Host-supplied open overrides", () => {
+    const merged = mergeSessionEnvironment({
+      base: { PATH: "/usr/bin", ANTHROPIC_BASE_URL: "https://base.example.com" },
+      override: {
+        ANTHROPIC_BASE_URL: "https://host.example.com",
+        ANTHROPIC_AUTH_TOKEN: "host-token",
+        CLAUDECODE: "1",
+        CLAUDE_CODE_SESSION_ID: "parent",
+      },
+      pinned: {
+        ANTHROPIC_BASE_URL: "https://profile.example.com",
+        ANTHROPIC_AUTH_TOKEN: "profile-token",
+        CLAUDE_CONFIG_DIR: "/fake/profile-config",
+      },
+      configDirectory: "/fake/profile-config",
+    });
+
+    expect(merged.ANTHROPIC_BASE_URL).toBe("https://profile.example.com");
+    expect(merged.ANTHROPIC_AUTH_TOKEN).toBe("profile-token");
+    expect(merged.CLAUDE_CONFIG_DIR).toBe("/fake/profile-config");
+    expect(merged.CLAUDECODE).toBeUndefined();
+    expect(merged.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+  });
+
+  it("keeps Host overrides for the default instance but never nested session variables", () => {
+    const merged = mergeSessionEnvironment({
+      base: { PATH: "/usr/bin" },
+      override: { ANTHROPIC_MODEL: "host-model", CLAUDE_PID: "99" },
+      pinned: {},
+      configDirectory: undefined,
+    });
+
+    expect(merged.ANTHROPIC_MODEL).toBe("host-model");
+    expect(merged.CLAUDE_PID).toBeUndefined();
   });
 });

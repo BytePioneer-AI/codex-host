@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { claudeCodeProfileSchema, parseClaudeCodeProfiles } from "../src/index.js";
+import {
+  claudeCodeProfileSchema,
+  collectClaudeCodeProfiles,
+  parseClaudeCodeProfiles,
+} from "../src/index.js";
 
 describe("claudeCodeProfileSchema", () => {
   it("accepts a valid profile", () => {
@@ -78,5 +82,25 @@ describe("claudeCodeProfileSchema", () => {
     ];
 
     expect(() => parseClaudeCodeProfiles(duplicate)).toThrow();
+  });
+
+  it("collects valid profiles and skips malformed or duplicate entries", () => {
+    const profiles = collectClaudeCodeProfiles({
+      version: 1,
+      profiles: [
+        { id: "claude-a", name: "A", configDir: "/tmp/a" },
+        { id: "claude-b", name: "Missing config dir" },
+        { id: "claude-c", name: "C", configDir: "/tmp/c" },
+        { id: "claude-a", name: "Duplicate A", configDir: "/tmp/a2" },
+        { id: "claude-d", name: "D", configDir: "/tmp/d" },
+      ],
+    });
+
+    expect(profiles.map(({ id }) => id)).toEqual(["claude-a", "claude-c", "claude-d"]);
+  });
+
+  it("returns no profiles for a document without a profiles array", () => {
+    expect(collectClaudeCodeProfiles({ version: 1 })).toEqual([]);
+    expect(collectClaudeCodeProfiles("not-profiles")).toEqual([]);
   });
 });

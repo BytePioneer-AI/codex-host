@@ -128,7 +128,11 @@ describe("official Codex passthrough", () => {
       const forwarded = await readJsonLine(fixture.official.stdin);
       writeRequest(fixture.official.stdout, {
         id: requiredMessageId(forwarded),
-        error: { code: -32000, message: "thread is in use by /private/path/session.jsonl" },
+        error: {
+          code: -32000,
+          message:
+            "thread is in use by /private/path/session.jsonl (C:\\Users\\Alice\\s.jsonl) token=private-token",
+        },
       });
       expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
         id: 2,
@@ -140,6 +144,33 @@ describe("official Codex passthrough", () => {
       expect(diagnostic).toContain("owner=official");
       expect(diagnostic).toContain("code=-32000");
       expect(diagnostic).toContain("thread is in use");
+      expect(diagnostic).toContain("[path]");
+      expect(diagnostic).not.toContain("/private/path");
+      expect(diagnostic).not.toContain("C:\\Users");
+      expect(diagnostic).not.toContain("private-token");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("names thread/unarchive in its diagnostic instead of archive", async () => {
+    const fixture = createFixture();
+    try {
+      await initialize(fixture);
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "thread/unarchive",
+        params: { threadId: "official-thread" },
+      });
+      const forwarded = await readJsonLine(fixture.official.stdin);
+      writeRequest(fixture.official.stdout, {
+        id: requiredMessageId(forwarded),
+        error: { code: -32000, message: "unarchive failed" },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 2));
+      const diagnostic = fixture.diagnosticOutput.read()?.toString() ?? "";
+      expect(diagnostic).toContain("thread/unarchive failed");
+      expect(diagnostic).not.toContain("thread/archive failed");
     } finally {
       await stopFixture(fixture);
     }

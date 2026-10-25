@@ -144,6 +144,13 @@ export interface ClaudeCodeAdapterOptions {
   harnessId?: string;
   command?: string;
   environment?: NodeJS.ProcessEnv;
+  /**
+   * Variables this instance owns: a Profile's declared environment plus its config
+   * directory. They win over Host-supplied per-open overrides so a Host that inherited
+   * another session's routing cannot swap the gateway, credentials, or storage of a
+   * Profile that declares them explicitly.
+   */
+  pinnedEnvironment?: NodeJS.ProcessEnv;
   closeTimeoutMs?: number;
   cancelTimeoutMs?: number;
   toolOutputLimit?: number;
@@ -2982,6 +2989,25 @@ class ClaudeHarnessSession implements HarnessSession {
 
 let sdkStorageLock: Promise<void> = Promise.resolve();
 
+/**
+ * Effective child environment for one Session. Nested-session variables never survive;
+ * the instance's own storage root wins over the Host's, and Profile-declared variables win
+ * over per-open overrides while still replacing any nested-session leftovers.
+ */
+export function mergeSessionEnvironment(input: {
+  base: NodeJS.ProcessEnv;
+  override: NodeJS.ProcessEnv;
+  pinned: NodeJS.ProcessEnv;
+  configDirectory: string | undefined;
+}): NodeJS.ProcessEnv {
+  return stripNestedSessionEnvironment({
+    ...input.base,
+    ...input.override,
+    ...(input.configDirectory ? { CLAUDE_CONFIG_DIR: input.configDirectory } : {}),
+    ...input.pinned,
+  });
+}
+
 async function withSdkConfigDirectory<T>(
   configDir: string | undefined,
   action: () => Promise<T>,
@@ -3086,6 +3112,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
   readonly #environment: NodeJS.ProcessEnv;
+  readonly #pinnedEnvironment: NodeJS.ProcessEnv;
+  readonly #configDirectory: string | undefined;
   get environment(): NodeJS.ProcessEnv {
     return this.#environment;
   }
@@ -3112,6 +3140,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     this.harnessId = harnessIdSchema.parse(options.harnessId ?? "claude-code");
     const environment = options.environment ?? process.env;
     this.#environment = environment;
+    this.#pinnedEnvironment = { ...options.pinnedEnvironment };
+    // The effective storage root is fixed here: later per-open merges must never let a
+    // concurrently running Profile's temporary process.env change it.
+    this.#configDirectory = environment.CLAUDE_CONFIG_DIR;
     this.#importIndex = new ClaudeSessionImportIndex(environment, this.harnessId);
     this.usageStatistics = createClaudeUsageStatistics(environment);
     this.#pendingSessions = new ClaudePendingSessions(environment, this.harnessId);
@@ -3158,37 +3190,30 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           abortTimeoutMs: this.#cancelTimeoutMs,
         }),
       deleteSession: ({ cwd, sessionId }) =>
-        withSdkConfigDirectory(
-          this.#environment.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
-          () => deleteClaudeSession(sessionId, { dir: cwd }),
+        withSdkConfigDirectory(this.#configDirectory, () =>
+          deleteClaudeSession(sessionId, { dir: cwd }),
         ),
       forkSession: async ({ checkpointId, cwd, sourceSessionId }) =>
-        withSdkConfigDirectory(
-          this.#environment.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
-          async () => {
-            const forked = await forkClaudeNativeSession(sourceSessionId, {
-              dir: cwd,
-              upToMessageId: checkpointId,
-            });
-            // An unresolved reference costs only prompt cache, never history, so a failure here
-            // must not fail the Fork.
-            await remapForkedSessionReferences({
-              cwd,
-              environment: this.#environment,
-              sessionId: forked.sessionId,
-            }).catch(() => undefined);
-            return forked;
-          },
-        ),
+        withSdkConfigDirectory(this.#configDirectory, async () => {
+          const forked = await forkClaudeNativeSession(sourceSessionId, {
+            dir: cwd,
+            upToMessageId: checkpointId,
+          });
+          // An unresolved reference costs only prompt cache, never history, so a failure here
+          // must not fail the Fork.
+          await remapForkedSessionReferences({
+            cwd,
+            environment: this.#environment,
+            sessionId: forked.sessionId,
+          }).catch(() => undefined);
+          return forked;
+        }),
       getSessionInfo: async ({ sessionId }) =>
-        withSdkConfigDirectory(
-          this.#environment.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
-          async () => {
-            const info = await getClaudeSessionInfo(sessionId);
-            if (!info) return undefined;
-            return info.cwd ? { cwd: info.cwd } : {};
-          },
-        ),
+        withSdkConfigDirectory(this.#configDirectory, async () => {
+          const info = await getClaudeSessionInfo(sessionId);
+          if (!info) return undefined;
+          return info.cwd ? { cwd: info.cwd } : {};
+        }),
       readSessionMessages: async ({ cwd, sessionId }) => {
         const transcript = await readClaudeTranscript({
           cwd,
@@ -3198,9 +3223,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         return transcript;
       },
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
-        withSdkConfigDirectory(
-          this.#environment.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
-          () => getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
+        withSdkConfigDirectory(this.#configDirectory, () =>
+          getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
         ),
     };
   }
@@ -3427,15 +3451,15 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       };
     }
     // Permission prerequisites and the native process must observe the same environment.
-    // Host-supplied overrides can still carry nested-session variables from whatever
-    // launched the Host, so the merge strips them again before reaching the child.
+    // Host-supplied overrides can carry nested-session variables and another session's
+    // routing, so the merge strips the former and re-applies this instance's own
+    // configuration (Profile environment and config directory) last.
     const environment = input.environment
-      ? stripNestedSessionEnvironment({
-          ...this.#environment,
-          ...input.environment,
-          ...(this.#environment.CLAUDE_CONFIG_DIR
-            ? { CLAUDE_CONFIG_DIR: this.#environment.CLAUDE_CONFIG_DIR }
-            : {}),
+      ? mergeSessionEnvironment({
+          base: this.#environment,
+          override: input.environment,
+          pinned: this.#pinnedEnvironment,
+          configDirectory: this.#configDirectory,
         })
       : undefined;
     const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(environment);

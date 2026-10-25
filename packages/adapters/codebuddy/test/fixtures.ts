@@ -97,7 +97,6 @@ export function fixture() {
           content: [{ type: "input_text", text: "<system-reminder>internal</system-reminder>" }],
           providerData: {
             conversationRequestId: `request-${id}`,
-            startsNewUserRequest: false,
             isMeta: true,
           },
         });

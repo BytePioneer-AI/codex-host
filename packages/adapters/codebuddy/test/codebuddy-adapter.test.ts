@@ -427,8 +427,8 @@ describe("CodeBuddy native Adapter", () => {
     await events.completed();
     expect(await session.execute(turn("second", "again"))).toMatchObject({ ok: true });
     expect(await events.completed(2)).toMatchObject([
-      { event: { outcome: { status: "succeeded" } } },
-      { event: { outcome: { status: "succeeded" } } },
+      { event: { outcome: { status: "succeeded" }, nativeTurnRef: { nativeTurnKey: "user-1" } } },
+      { event: { outcome: { status: "succeeded" }, nativeTurnRef: { nativeTurnKey: "user-2" } } },
     ]);
     expect(native.history.filter((row) => row.role === "user")).toHaveLength(4);
   });

@@ -490,7 +490,6 @@ export function snapshotFromHistory(
   const supportsFork = capabilitiesForProfile(profile).history.fork;
   const turns: HostTurnSnapshot[] = [];
   let current: HostTurnSnapshot | undefined;
-  let currentRequestId: string | undefined;
   const tools = new Map<string, HostItemSnapshot>();
   // CodeBuddy persists a Tool call and its result from separate writers, so a call that
   // is refused before it runs can land its result first. Hold such a result until its
@@ -576,26 +575,19 @@ export function snapshotFromHistory(
     )
       continue;
     // CodeBuddy appends reminders and notifications as internal user rows that stay
-    // inside the active request, so they must not open another Native Turn.
+    // inside the active request, so they must not open another Native Turn. Rows of
+    // interrupted or retried requests may carry another request ID; they still never
+    // start a Turn on their own.
     if (
       row.type === "message" &&
       row.role === "user" &&
       data.isMeta === true &&
-      data.startsNewUserRequest === false &&
+      data.startsNewUserRequest !== true &&
       !localCommand &&
       data.agent !== "compact"
-    ) {
-      const requestId = text(data.conversationRequestId);
-      if (currentRequestId && requestId && requestId !== currentRequestId)
-        throw new CodeBuddyError(
-          "protocolError",
-          "Internal message belongs to a different user request",
-        );
-      if (current) currentRequestId ??= requestId || undefined;
+    )
       continue;
-    }
     if (row.type === "message" && row.role === "user") {
-      currentRequestId = text(data.conversationRequestId) || undefined;
       current = {
         nativeTurnRef: nativeTurnRefSchema.parse({
           harnessId: profile.harnessId,
@@ -624,7 +616,6 @@ export function snapshotFromHistory(
       continue;
     }
     if (!current) continue;
-    currentRequestId ??= text(data.conversationRequestId) || undefined;
     if (supportsNativeCommands && (data.agent === "compact" || data.isCompactInternal === true)) {
       if (row.role === "assistant") {
         const outcome: HostItemSnapshot["outcome"] =

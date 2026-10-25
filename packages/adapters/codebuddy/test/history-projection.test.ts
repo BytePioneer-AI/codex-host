@@ -217,25 +217,41 @@ describe("CodeBuddy native history and output projection", () => {
       [{ type: "text", text: "again" }],
     ]);
 
-    expect(() =>
-      snapshotFromHistory(
-        lines([
-          request,
-          {
-            ...reminder,
-            providerData: { ...reminder.providerData, conversationRequestId: "request-2" },
-          },
-          answer,
-        ]),
+    for (const providerData of [
+      { conversationRequestId: "request-1", isMeta: true },
+      { conversationRequestId: "request-retry", startsNewUserRequest: false, isMeta: true },
+    ]) {
+      const projected = snapshotFromHistory(
+        lines([request, { ...reminder, providerData }, answer]),
         ref,
         process.cwd(),
-      ),
-    ).toThrow(
-      expect.objectContaining({
-        code: "protocolError",
-        message: expect.stringContaining("different user request"),
-      }),
+      );
+      expect(projected.turns).toHaveLength(1);
+      expect(projected.turns[0]).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "user" },
+        items: [{ item: { type: "agentMessage", text: "ok" } }],
+        outcome: { status: "succeeded" },
+      });
+    }
+
+    const trailing = snapshotFromHistory(
+      lines([
+        request,
+        assistant,
+        {
+          ...reminder,
+          parentId: "answer",
+          providerData: { conversationRequestId: "request-retry", isMeta: true },
+        },
+      ]),
+      ref,
+      process.cwd(),
     );
+    expect(trailing.turns).toHaveLength(1);
+    expect(trailing.turns[0]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "user" },
+      outcome: { status: "succeeded" },
+    });
   });
 
   it.each(["failed", "cancelled", "succeeded"] as const)(

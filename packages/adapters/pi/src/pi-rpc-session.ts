@@ -181,6 +181,10 @@ const READ_ONLY_COMMANDS = new Set([
   "get_available_thinking_levels",
 ]);
 
+// Bound on remembered expired ids, so a Pi that never answers cannot grow the set without limit.
+// Past it the oldest id is forgotten, and its late answer faults the Session as an unknown id.
+const MAX_EXPIRED_IDS = 64;
+
 interface PendingCommand {
   command: string;
   resolve(value: Record<string, unknown>): void;
@@ -1670,7 +1674,12 @@ export class PiRpcSession {
         // The caller sees the timeout. A late answer to a read-only query is dropped; one to a
         // state-changing command still faults the Session, since Pi may have applied a change
         // the Host state never confirmed.
-        if (READ_ONLY_COMMANDS.has(pending.command)) this.#expired.add(id);
+        if (READ_ONLY_COMMANDS.has(pending.command)) {
+          this.#expired.add(id);
+          if (this.#expired.size > MAX_EXPIRED_IDS) {
+            this.#expired.delete(this.#expired.values().next().value as string);
+          }
+        }
         pending.reject(error);
         return;
       }

@@ -20,6 +20,24 @@ export function queuedSubmissionText(input: JsonValue[]): string {
     .join("\n");
 }
 
+/** Desktop 26.1021 reads `text_elements.length` on every queued `type: "text"` item. */
+export function queuedSubmissionInput(input: JsonValue[]): JsonValue[] {
+  return input.map((entry) => {
+    if (!isRecord(entry) || typeof entry.text !== "string" || entry.text.length === 0) {
+      return entry;
+    }
+    if (entry.type === "input_text") {
+      return {
+        type: "text",
+        text: entry.text,
+        text_elements: Array.isArray(entry.text_elements) ? entry.text_elements : [],
+      };
+    }
+    if (entry.type !== "text" || Array.isArray(entry.text_elements)) return entry;
+    return { ...entry, text_elements: [] };
+  });
+}
+
 /** In-memory Desktop follow-up queue for External Threads. Overlay-owned drain uses this. */
 export class ExternalThreadFollowUpQueue {
   readonly #threads = new Map<string, ExternalQueuedSubmission[]>();
@@ -36,7 +54,7 @@ export class ExternalThreadFollowUpQueue {
     const item: ExternalQueuedSubmission = {
       id: randomUUID(),
       clientUserMessageId: clientUserMessageId?.trim() || randomUUID(),
-      input,
+      input: queuedSubmissionInput(input),
     };
     const items = this.#threads.get(threadId) ?? [];
     items.push(item);
@@ -47,7 +65,7 @@ export class ExternalThreadFollowUpQueue {
   update(threadId: string, id: string, input: JsonValue[]): ExternalQueuedSubmission | undefined {
     const item = this.#threads.get(threadId)?.find((entry) => entry.id === id);
     if (!item) return undefined;
-    item.input = input;
+    item.input = queuedSubmissionInput(input);
     return item;
   }
 

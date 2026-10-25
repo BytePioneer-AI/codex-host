@@ -27,7 +27,26 @@ describe("external follow-up queue", () => {
       const added = await fixture.collector.waitFor((message) => requestId(message, 2));
       expect(added.error).toBeUndefined();
       expect(added.result).toMatchObject({
-        queuedSubmission: { clientUserMessageId: "follow-up" },
+        queuedSubmission: {
+          clientUserMessageId: "follow-up",
+          input: [{ type: "text", text: "queued from overlay", text_elements: [] }],
+        },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 21,
+        method: "thread/queue/list",
+        params: { threadId, limit: 100 },
+      });
+      const listed = await fixture.collector.waitFor((message) => requestId(message, 21));
+      expect(listed.error).toBeUndefined();
+      expect(listed.result).toMatchObject({
+        data: [
+          {
+            clientUserMessageId: "follow-up",
+            input: [{ type: "text", text: "queued from overlay", text_elements: [] }],
+          },
+        ],
+        nextCursor: null,
       });
 
       writeRequest(fixture.desktopInput, {
@@ -114,6 +133,44 @@ describe("external follow-up queue", () => {
       const started = await fixture.collector.waitFor((message) => requestId(message, 6));
       expect(started.error).toBeUndefined();
       expect(started.result).toMatchObject({ turn: { status: "inProgress" } });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("rejects an empty turn/start after interrupt when the Host queue is empty", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId, 2);
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "turn/interrupt",
+        params: { threadId, turnId },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 3));
+      session.completeCancellation();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+      writeRequest(fixture.desktopInput, {
+        id: 4,
+        method: "thread/resume",
+        params: { threadId, excludeTurns: true },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 4));
+      writeRequest(fixture.desktopInput, {
+        id: 5,
+        method: "turn/start",
+        params: { threadId, clientUserMessageId: "empty-after-resume", input: [] },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 5)),
+      ).resolves.toMatchObject({
+        error: { code: -32602, message: "turn/start must contain text input" },
+      });
     } finally {
       await stopFixture(fixture);
     }

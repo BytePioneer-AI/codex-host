@@ -184,7 +184,13 @@ describe("external direction changes use normal Desktop start presentation", () 
       {
         threadId: "thread",
         clientUserMessageId: "follow-up",
-        input: [{ type: "text", text: "add disallow model list in grok in win10" }],
+        input: [
+          {
+            type: "text",
+            text: "add disallow model list in grok in win10",
+            text_elements: [],
+          },
+        ],
       },
     ]);
     f.dispose();

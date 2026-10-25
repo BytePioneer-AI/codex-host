@@ -67,7 +67,7 @@ export function restoreQueuedTurnStartText(manager: unknown, params: unknown): u
   const match = messages.find((message) => isRecord(message) && message.id === messageId);
   const text = queuedFollowUpText(match);
   if (!text) return params;
-  return { ...params, input: [{ type: "text", text }] };
+  return { ...params, input: [{ type: "text", text, text_elements: [] }] };
 }
 
 function submissionHost(manager: SteeringManager): {
@@ -335,12 +335,7 @@ export function installRendererExternalSteering(
     } catch {
       // Official steering must not depend on our additional presentation binding.
     }
-    const text = Array.isArray(input)
-      ? input
-          .filter((item) => isRecord(item) && typeof item.text === "string")
-          .map((item) => (item as Record<string, unknown>).text as string)
-          .join("\n")
-      : undefined;
+    const text = Array.isArray(input) ? inputText(input) : undefined;
     const delivery = await inspectDelivery(threadId, text);
     if (disposed) throw new Error("External steering binding was disposed");
     if (delivery === "official") return originalSteer.apply(manager, args);

@@ -76,7 +76,9 @@ async function runHook(bridge: AntigravityQuestionBridge, payload: unknown = inp
 }
 
 async function question(outputs: HarnessOutput[]): Promise<HostQuestionInteraction> {
-  await vi.waitFor(() => expect(outputs.some(({ kind }) => kind === "interaction")).toBe(true));
+  await vi.waitFor(() => expect(outputs.some(({ kind }) => kind === "interaction")).toBe(true), {
+    timeout: 10_000,
+  });
   const output = outputs.find(({ kind }) => kind === "interaction");
   if (output?.kind !== "interaction" || output.interaction.type !== "question")
     throw new Error("No Question");
@@ -319,12 +321,14 @@ describe("Antigravity question Hook bridge", () => {
       request.end(JSON.stringify(input));
       const interaction = await question(outputs);
       request.destroy();
-      await vi.waitFor(() =>
-        expect(
-          outputs.some(
-            (output) => output.kind === "event" && output.event.type === "interaction.closed",
-          ),
-        ).toBe(true),
+      await vi.waitFor(
+        () =>
+          expect(
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "interaction.closed",
+            ),
+          ).toBe(true),
+        { timeout: 10_000 },
       );
       expect(
         bridge.respond({

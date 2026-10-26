@@ -107,7 +107,13 @@ Host Runtime SHALL route `thread/archive` and `thread/unarchive` by persisted Th
 #### Scenario: External Thread is archived
 - **WHEN** Desktop sends `thread/archive` for a ready External Thread
 - **THEN** Host SHALL persist `archived=true`, return the archive response, and then emit `thread/archived` for the same Host Thread ID
-- **AND** the Native Session, Transcript, Turn mappings, Fork anchors, and loaded runtime SHALL remain intact
+- **AND** the Native Session, Transcript, Turn mappings, and Fork anchors SHALL remain intact
+- **AND** Host MAY asynchronously release its loaded runtime session if safe and idle without modifying native session history
+
+#### Scenario: External Thread with active work is archived
+- **WHEN** Desktop sends `thread/archive` for an External Thread that is running a Turn or background task
+- **THEN** Host SHALL persist `archived=true`, return the archive response, and emit `thread/archived`
+- **AND** the running Turn or background task SHALL continue uninterrupted
 
 #### Scenario: External Thread is unarchived
 - **WHEN** Desktop sends `thread/unarchive` for an archived External Thread

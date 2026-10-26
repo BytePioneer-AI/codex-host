@@ -11,11 +11,28 @@ import {
   launcherInvocation,
   npmBuildInvocation,
   parseArguments,
-  runDevelopmentDesktop,
+  runDevelopmentDesktop as runDesktop,
   runningDesktopCleanupInvocation,
   usage,
   validateDevelopmentArtifacts,
 } from "./run.mjs";
+
+vi.mock("./interface-processes.mjs", async (importOriginal) => ({
+  ...(await importOriginal()),
+  isWebRunning: async () => false,
+}));
+
+// Desktop orchestration fixtures always use an isolated, live owner record.
+function runDevelopmentDesktop(options = {}) {
+  if (options.arguments_?.[0] === "web" || !options.root) return runDesktop(options);
+  return runDesktop({
+    ...options,
+    environment: {
+      CODEXHOST_DATA_DIR: path.join(options.root, "host-data"),
+      ...options.environment,
+    },
+  });
+}
 
 const temporaryDirectories = [];
 
@@ -34,6 +51,13 @@ function writeExecutable(filePath) {
 function materializeArtifacts(root, platform, nodePath) {
   const artifacts = developmentArtifacts(root, platform, nodePath);
   for (const filePath of Object.values(artifacts)) writeExecutable(filePath);
+  writeFileSync(path.join(root, "package-lock.json"), "{}");
+  const data = path.join(root, "host-data");
+  mkdirSync(data);
+  writeFileSync(
+    path.join(data, "shared-host-ready.json"),
+    JSON.stringify({ pid: process.pid, runtime: artifacts.hostRuntime }),
+  );
   return artifacts;
 }
 
@@ -98,6 +122,50 @@ describe("development Desktop start", () => {
     expect(calls.some(({ args }) => args[0] === "launch")).toBe(false);
     if (failure === "build") expect(calls.some(({ args }) => args[0] === "host")).toBe(false);
   });
+  it.each(["restart", "keep"])(
+    "applies --%s-host to GUI without changing Desktop launch",
+    async (mode) => {
+      const root = temporaryDirectory();
+      const nodePath = path.join(root, "node");
+      materializeArtifacts(root, "linux", nodePath);
+      const spawnImplementation = vi.fn((_command, args) =>
+        args[0] === "launch" ? readyChild() : exitingChild(),
+      );
+      await expect(
+        runDevelopmentDesktop({
+          root,
+          nodePath,
+          platform: "linux",
+          arguments_: ["--no-build", `--${mode}-host`],
+          environment: {},
+          spawnImplementation,
+        }),
+      ).resolves.toBe(0);
+      const calls = spawnImplementation.mock.calls.map(([, args]) => args[0]);
+      expect(calls).toEqual(mode === "restart" ? ["host", "launch"] : ["launch"]);
+    },
+  );
+
+  it("lets GUI ensure an absent Host rather than restarting it", async () => {
+    const root = temporaryDirectory();
+    const nodePath = path.join(root, "node");
+    materializeArtifacts(root, "linux", nodePath);
+    rmSync(path.join(root, "host-data/shared-host-ready.json"));
+    const spawnImplementation = vi.fn(() => readyChild());
+    await expect(
+      runDevelopmentDesktop({
+        root,
+        nodePath,
+        platform: "linux",
+        arguments_: ["--no-build", "--restart-host"],
+        environment: {},
+        spawnImplementation,
+      }),
+    ).resolves.toBe(0);
+    expect(spawnImplementation).toHaveBeenCalledOnce();
+    expect(spawnImplementation.mock.calls[0][1][0]).toBe("launch");
+  });
+
   it.each([0, 7])(
     "routes web --no-build to the preview without Desktop cleanup or build (exit %s)",
     async (code) => {
@@ -129,6 +197,34 @@ describe("development Desktop start", () => {
       );
     },
   );
+
+  it.each(["--restart-host", "--keep-host"])(
+    "forwards %s to Web preview after building",
+    async (flag) => {
+      const root = temporaryDirectory();
+      const spawnImplementation = vi.fn(() => exitingChild());
+      await runDevelopmentDesktop({
+        root,
+        arguments_: ["web", flag],
+        environment: {},
+        spawnImplementation,
+      });
+      expect(spawnImplementation).toHaveBeenCalledTimes(2);
+      expect(spawnImplementation.mock.calls[0][1]).toContain("build:web");
+      expect(spawnImplementation.mock.calls[1][1]).toContain(flag);
+    },
+  );
+
+  it("rejects conflicting Web flags before building or launching", async () => {
+    const spawnImplementation = vi.fn();
+    await expect(
+      runDevelopmentDesktop({
+        arguments_: ["web", "--restart-host", "--keep-host"],
+        spawnImplementation,
+      }),
+    ).rejects.toThrow("mutually exclusive");
+    expect(spawnImplementation).not.toHaveBeenCalled();
+  });
 
   it.each([0, 7])(
     "builds Web before preview and stops on build failure (exit %s)",
@@ -178,6 +274,9 @@ describe("development Desktop start", () => {
 
   it("parses the default and bounded options", () => {
     expect(parseArguments([])).toEqual({ build: true, help: false });
+    expect(parseArguments(["--restart-host"])["restart-host"]).toBe(true);
+    expect(parseArguments(["--keep-host"])["keep-host"]).toBe(true);
+    expect(() => parseArguments(["--restart-host", "--keep-host"])).toThrow("mutually exclusive");
     expect(parseArguments(["--no-build"])).toEqual({
       build: false,
       help: false,
@@ -276,7 +375,7 @@ describe("development Desktop start", () => {
       environment,
       spawnImplementation,
     });
-    const [command, arguments_, options] = spawnImplementation.mock.calls[1];
+    const [command, arguments_, options] = spawnImplementation.mock.calls.at(-1);
     expect(command).toBe(artifacts.launcher);
     expect(arguments_).toEqual(expect.arrayContaining(["--host-runtime", artifacts.hostRuntime]));
     for (const key of Object.keys(environment).filter((key) => key.startsWith("CODEXHOST_NPM_"))) {

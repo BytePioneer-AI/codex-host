@@ -20,13 +20,17 @@ npm start web -- --port 4401
 
 Web 默认端口为 **4400**，控制台默认端口为 **4399**；可用 `--port` 显式覆盖 Web 端口。`npm start web` 默认监听所有 IPv4 网卡；手机可使用终端输出的带令牌局域网或 Tailscale 地址。需要相应网络可达且防火墙允许入站，不会自动配置穿透或公网端口转发。不要将明文 HTTP 直接暴露到不可信网络；跨网络优先使用 Tailscale，或配置 HTTPS 反向代理。
 
-`npm start web` 默认先执行 `build:web`，构建成功并验证产物后，停止相同工作树、相同端口的旧 Web 开发服务，通过原生 `host restart` 重启共享 Host，再启动当前 Web。成功构建仅显示进度和耗时；失败显示末尾最多 64,000 字符诊断，保留旧 Host 和 Web。完整构建输出可通过 `npm run build:web` 查看。`npm start web -- --no-build` 复用已有发行产物，仍重启 Host 和 Web。不会关闭 Desktop，但 Host 上所有运行中的任务会被中断，另一端界面自动重连。不带 `web` 的 `npm start` 同样默认重启 Host 和 Desktop。`npm run start:web` 保留兼容。Web 仅停止明确匹配的旧开发进程，不按端口直接杀进程；其他程序占用端口仍需自行处理。开发重启要求本地共享 Host，旧 CDP 接入使用直接 preview 入口。
+`npm start web` 默认先执行 `build:web`，构建成功并验证产物后判断共享 Host 是否变化，再停止相同工作树、相同端口的旧 Web 开发服务并启动当前 Web。Host 未变时仅重启 Web；Host 变化且 Desktop 未开启时通过原生 `host restart` 重启 Host；Desktop 开启时，构建后提问保留或重启 Host，回车默认保留，提问期间旧 Web 保持运行。保留时提示新界面连接的是旧 Host。没有运行中的 Host 时不执行 restart，由界面后续的 `host ensure` 自动拉起。非交互（stdin 不是 TTY）遇到需要提问的情况时保留 Host，并警告可用 `--restart-host` 重启。两条启动命令都支持互斥的 `--restart-host` / `--keep-host`，分别强制重启已有 Host 或保留 Host，不再提问。Host 重启会中断其所有运行中的任务，另一端界面自动重连；Web 命令不会关闭 Desktop。
+
+Web 按内容寻址快照的 runtime 路径（或 `--ch-host-runtime` 覆盖值）与存活 Host 的 ready 记录比较。不带 `web` 的 `npm start` 使用固定的源码构建入口，按 `packages/**/dist/**/*.js`（包含 Host 直接依赖的 `packages/desktop-control/dist`，排除 node_modules、`packages/web-server/dist` 和 `packages/renderer-extension/dist`）、`packages/host-runtime/dist/plugins/enabled.json`、该插件目录下各 `<id>/plugin.mjs` 与 `<id>/manifest.json`，以及 `package-lock.json` 的相对路径和内容计算 SHA-256 指纹；相同内容重写不改变指纹。GUI 命令在没有运行中的 Host 时记录本次构建，供后续 Desktop `host ensure` 使用；已有 Host 时仅在成功重启后更新 `<data>/dev-host-fingerprint.json`。运行入口和已记录指纹都相同才视为未变，无记录视为变化。GUI 在 Host 未变时仅重启 Desktop；Host 变化且没有 Web 服务运行时自动重启 Host，任意打包 Web 服务正在运行时使用相同的保留/重启提问。Desktop 存活检测复用 macOS/Windows 的开发进程识别，Linux 视为未开启。
+
+成功构建仅显示进度和耗时；失败显示末尾最多 64,000 字符诊断，保留旧 Host 和 Web。完整构建输出可通过 `npm run build:web` 查看。`npm start web -- --no-build` 复用已有发行产物，仍应用同一 Host 判断并重启 Web。`npm run start:web` 保留兼容。Web 仅停止明确匹配的旧开发进程，不按端口直接杀进程；其他程序占用端口仍需自行处理。开发重启要求本地共享 Host，旧 CDP 接入使用直接 preview 入口。
 
 `build:web` 编译当前工作树的 CH 包并调用已有插件构建器，构建原生 Launcher，随后编译前端和打包。插件输入为 `packages/host-runtime/dist/plugins`，不是已安装的 CH.app 或另一个仓库。用量统计专用插件不作为聊天 Harness；Web 另行打包同仓库的 Codex Adapter。
 
 发行目录为 `packages/web-server/dist/codexhost-web`，包含 Node 网关、Web 界面、同一 Host bundle、当前平台的原生 Launcher 和自包含插件；网关与 Host bundle 使用既有安装资源布局 `app/server.mjs`、`app/host-runtime.mjs`，原生 CLI 无须 Web 专用路径回退，根目录 `preview.mjs` 仍为隔离启动入口；会话与用量插件在后台显式启用，Codex CLI 与其他外部 Harness 使用同一插件注册表，Manifest 只声明 Web 界面。整体目录可以移动到仓库外运行，无需源码目录或仓库的 node_modules，但原生 Launcher 不能跨 OS/CPU 使用。默认共享模式也不要求 Desktop 运行：Web、Desktop 均可独立使用，同时开启时共享后台，晚开启的一端读取最新事实；关闭任意界面不停止另一端或后台任务。需要本机受支持的 Node，Harness CLI 和其认证仍由用户安装、配置。
 
-打包版 Web 在连接 Host 前，将随包的 Host bundle、原生 Launcher 与完整插件目录复制到 `<ch-data>/host-builds/<内容哈希>/`，完成后原子发布；相同内容复用同一路径。后台与 Web 自动重连始终引用这份快照，重新打包 Web 不会删除或替换运行中的 Host 文件，延迟加载的插件资源仍可读取。显式指定的外部运行入口、Launcher 或插件目录由调用方维护，不会自动复制。快照不包含用户凭据或会话数据，不自动清理；需要回收磁盘时，先停止相关 Web 与 Host，再清理不使用的构建。直接运行打包入口仍按共享生命周期复用已有后台；仓库开发命令 `npm start` 和 `npm start web` 则默认重启后台及对应界面。
+打包版 Web 在连接 Host 前，将随包的 Host bundle、原生 Launcher 与完整插件目录复制到 `<ch-data>/host-builds/<内容哈希>/`，完成后原子发布；相同内容复用同一路径。后台与 Web 自动重连始终引用这份快照，重新打包 Web 不会删除或替换运行中的 Host 文件，延迟加载的插件资源仍可读取。显式指定的外部运行入口、Launcher 或插件目录由调用方维护，不会自动复制。快照不包含用户凭据或会话数据，不自动清理；需要回收磁盘时，先停止相关 Web 与 Host，再清理不使用的构建。直接运行打包入口仍按共享生命周期复用已有后台；仓库开发命令 `npm start` 和 `npm start web` 重启对应界面，并按上述内容变化与另一端运行状态决定是否重启后台。
 
 ## Web 数据目录
 

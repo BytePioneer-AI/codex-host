@@ -4,24 +4,18 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { runQuietWebBuild } from "./build.mjs";
 import { restartDevelopmentHost } from "./host.mjs";
+import { hostRestartMode } from "./host-restart.mjs";
+import {
+  windowsDesktopDetectionScript,
+  macOsDesktopDetectionScript,
+} from "./interface-processes.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 const windowsDesktopCleanupScript = String.raw`
 $ErrorActionPreference = 'Stop'
 
-function Test-CodexDesktopProcess($process) {
-  if ($null -eq $process) {
-    return $false
-  }
-
-  $executablePath = ([string]$process.ExecutablePath).Replace([char]47, [char]92).ToLowerInvariant()
-  return (
-    $process.Name -ieq 'ChatGPT.exe' -and
-    $executablePath.Contains('\windowsapps\openai.codex_') -and
-    $executablePath.EndsWith('\app\chatgpt.exe')
-  )
-}
+${windowsDesktopDetectionScript}
 
 $desktopProcesses = @(
   Get-CimInstance Win32_Process -ErrorAction Stop |
@@ -61,14 +55,7 @@ Write-Output "codexhost dev: stopped $($desktopProcessIds.Count) Codex Desktop p
 const macOsDesktopCleanupScript = String.raw`
 set -eu
 
-# Bundled CLI and node_repl processes can belong to an independent Web Host.
-# Only the Desktop application executable is owned by this cleanup.
-system_desktop_pattern='^/Applications/(ChatGPT|Codex)\.app/Contents/MacOS/(ChatGPT|Codex)( |$)'
-user_desktop_pattern="^$HOME/Applications/(ChatGPT|Codex)\.app/Contents/MacOS/(ChatGPT|Codex)( |$)"
-desktop_running() {
-  /usr/bin/pgrep -f "$system_desktop_pattern" >/dev/null 2>&1 ||
-    /usr/bin/pgrep -f "$user_desktop_pattern" >/dev/null 2>&1
-}
+${macOsDesktopDetectionScript}
 
 if desktop_running; then
   /usr/bin/pkill -KILL -f "$system_desktop_pattern" >/dev/null 2>&1 || true
@@ -155,7 +142,9 @@ export function usage() {
        npm start web [-- --port 3181]
 
 Stop any running Codex Desktop, then build and run the current codexhost worktree.
-Both commands restart the shared Host, interrupting its tasks, then start the selected interface.
+After building, reuse an unchanged shared Host; restart a changed Host unless the other interface is open.
+If the other interface is open, ask whether to keep Host (default) or restart it, interrupting tasks.
+Non-interactive prompts keep Host and warn; an absent Host is started by the interface.
 The web subcommand replaces this worktree's Web preview on the selected port without stopping Desktop.
 
 arguments:
@@ -163,6 +152,8 @@ arguments:
 
 options:
   --no-build          reuse existing development artifacts
+  --restart-host      force restart of a running Host (mutually exclusive with --keep-host)
+  --keep-host         keep the running Host without asking
   --version <semver>  alternative version syntax (npm start -- --version 0.12.0)
   --help              show this help`;
 }
@@ -175,6 +166,11 @@ export function parseArguments(arguments_) {
     const argument = arguments_[index];
     if (argument === "--help" || argument === "-h") {
       options.help = true;
+      continue;
+    }
+    if (argument === "--restart-host" || argument === "--keep-host") {
+      options[argument.slice(2)] = true;
+      hostRestartMode(options);
       continue;
     }
     if (argument === "--no-build") {
@@ -397,6 +393,10 @@ export async function runDevelopmentDesktop({
 } = {}) {
   if (arguments_[0] === "web") {
     const webArguments = arguments_.slice(1);
+    hostRestartMode({
+      "restart-host": webArguments.includes("--restart-host"),
+      "keep-host": webArguments.includes("--keep-host"),
+    });
     if (!webArguments.includes("--no-build")) {
       const buildResult = await runQuietWebBuild(
         npmBuildInvocation(environment, platform, nodePath, "build:web"),
@@ -501,6 +501,8 @@ export async function runDevelopmentDesktop({
     console.log(`codexhost dev: source runtime version is ${options.version}`);
   }
   await restartDevelopmentHost({
+    root,
+    mode: hostRestartMode(options),
     artifacts,
     environment: launchEnvironment,
     run: (invocation, env) => runChild(invocation, root, spawnImplementation, env),

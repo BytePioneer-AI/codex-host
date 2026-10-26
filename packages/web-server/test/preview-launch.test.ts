@@ -110,6 +110,17 @@ it("rejects empty ids and unsafe selection syntax before spawning", () => {
   }
 });
 
+it("accepts Host decision flags without forwarding them to the Web service", () => {
+  for (const flag of ["restart-host", "keep-host"] as const) {
+    const launch = previewLaunch("/packed", { [flag]: true }, {});
+    assert.equal(launch.args.includes(`--${flag}`), false);
+  }
+  assert.throws(
+    () => previewLaunch("/packed", { "restart-host": true, "keep-host": true }, {}),
+    /mutually exclusive/u,
+  );
+});
+
 it("rejects standalone at both Web entry points before creating a profile", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "codexhost-no-standalone-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

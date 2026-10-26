@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
+import { shouldRestartHost } from "../../../tools/dev-desktop/host-restart.mjs";
 import {
   isDevelopmentWeb,
   restartDevelopmentPreview,
@@ -86,6 +87,8 @@ it("prepares the payload, stops Web, then restarts the selected Host with its sn
         calls.push("snapshot");
         return payload;
       },
+      readHost: async () => ({ runtime: "/old/host.mjs" }),
+      desktopRunning: async () => false,
       stopWeb: async (entry, port) => {
         assert.equal(entry, join(distribution, "app/server.mjs"));
         assert.equal(port, "4401");
@@ -127,6 +130,131 @@ it("prepares the payload, stops Web, then restarts the selected Host with its sn
     /missing build/u,
   );
   assert.equal(stopped, false);
+});
+
+for (const scenario of [
+  { name: "unchanged Host", same: true, desktop: true, restart: false },
+  { name: "changed Host without Desktop", desktop: false, restart: true },
+  { name: "changed Host with Desktop, Enter", desktop: true, answer: "", restart: false },
+  { name: "changed Host with Desktop, restart", desktop: true, answer: "restart", restart: true },
+  { name: "no Host", absent: true, desktop: true, restart: false },
+  {
+    name: "no Host even with --restart-host",
+    absent: true,
+    mode: "restart",
+    desktop: true,
+    restart: false,
+  },
+  { name: "non-interactive with Desktop", desktop: true, interactive: false, restart: false },
+  {
+    name: "forced restart of unchanged Host",
+    same: true,
+    desktop: true,
+    mode: "restart",
+    restart: true,
+  },
+  { name: "forced keep without Desktop", desktop: false, mode: "keep", restart: false },
+] as const) {
+  it(`Web decision: ${scenario.name}`, async () => {
+    const s: {
+      same?: boolean;
+      desktop: boolean;
+      absent?: boolean;
+      answer?: string;
+      interactive?: boolean;
+      mode?: string;
+      restart: boolean;
+    } = scenario;
+    const calls: string[] = [];
+    const runtime = resolve("snapshot/app/host-runtime.mjs");
+    const messages: string[] = [];
+    await restartDevelopmentPreview(
+      resolve("distribution"),
+      {
+        ...(s.mode === "restart" ? { "restart-host": true } : {}),
+        ...(s.mode === "keep" ? { "keep-host": true } : {}),
+      },
+      {},
+      {
+        snapshot: async () => {
+          calls.push("snapshot");
+          return resolve("snapshot");
+        },
+        readHost: async () => (s.absent ? null : { runtime: s.same ? runtime : "/old/host.mjs" }),
+        desktopRunning: async () => {
+          calls.push("detect");
+          return s.desktop;
+        },
+        decide: (options) =>
+          shouldRestartHost({
+            ...options,
+            interactive: s.interactive ?? true,
+            ask: async () => {
+              // The old Web must still be running while waiting for an answer.
+              assert.equal(calls.includes("stop"), false);
+              calls.push("ask");
+              return s.answer ?? "";
+            },
+            warn: (message) => messages.push(message),
+            log: (message) => messages.push(message),
+          }),
+        stopWeb: async () => {
+          calls.push("stop");
+        },
+        run: async () => {
+          calls.push("restart");
+          return { stdout: "", stderr: "" };
+        },
+      },
+    );
+    assert.equal(calls.includes("restart"), s.restart);
+    assert.equal(calls.includes("ask"), s.answer !== undefined);
+    assert.equal(calls.includes("detect"), !s.same && !s.absent && !s.mode);
+    assert.equal(calls[0], "snapshot");
+    assert.equal(calls.at(-1), s.restart ? "restart" : "stop");
+    if (s.interactive === false)
+      assert.ok(messages.some((message) => message.includes("--restart-host")));
+    if (!s.restart && !s.same && !s.absent)
+      assert.ok(messages.some((message) => message.includes("old Host")));
+  });
+}
+
+it("uses the explicit runtime override to compare the live Host", async () => {
+  let restarted = false;
+  await restartDevelopmentPreview(
+    resolve("distribution"),
+    { "ch-host-runtime": resolve("override.mjs") },
+    {},
+    {
+      snapshot: async () => resolve("snapshot"),
+      readHost: async () => ({ runtime: resolve("override.mjs") }),
+      desktopRunning: async () => {
+        throw new Error("unchanged Host must not need detection");
+      },
+      stopWeb: async () => {},
+      run: async () => {
+        restarted = true;
+        return { stdout: "", stderr: "" };
+      },
+    },
+  );
+  assert.equal(restarted, false);
+});
+
+it("rejects conflicting flags before snapshotting or stopping Web", async () => {
+  await assert.rejects(
+    restartDevelopmentPreview(
+      "/distribution",
+      { "restart-host": true, "keep-host": true },
+      {},
+      {
+        snapshot: async () => {
+          throw new Error("should not snapshot");
+        },
+      },
+    ),
+    /mutually exclusive/u,
+  );
 });
 
 it(

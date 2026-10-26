@@ -2,9 +2,13 @@
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { defaultWebDataDirectory } from "./data-paths.ts";
+import {
+  hostRestartMode,
+  type HostRestartOptions,
+} from "../../../tools/dev-desktop/host-restart.mjs";
 
 /** Optional preview paths, port and comma-separated Harness ids. */
-export interface PreviewOptions {
+export interface PreviewOptions extends HostRestartOptions {
   host?: string;
   port?: string;
   data?: string;
@@ -34,6 +38,7 @@ export function previewLaunch(
   args: string[];
   env: NodeJS.ProcessEnv;
 } {
+  hostRestartMode(options);
   const harnesses = [...new Set((options.harness ?? "all").split(",").map((id) => id.trim()))];
   for (const id of harnesses) {
     if (!/^[a-z0-9][a-z0-9-]*$/u.test(id)) {

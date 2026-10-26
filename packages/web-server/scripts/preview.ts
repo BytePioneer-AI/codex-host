@@ -10,6 +10,8 @@ import { restartDevelopmentPreview } from "../src/development-restart.ts";
 const { values } = parseArgs({
   options: {
     restart: { type: "boolean" },
+    "restart-host": { type: "boolean" },
+    "keep-host": { type: "boolean" },
     "ch-cdp": { type: "string" },
     "ch-control-directory": { type: "string" },
     "ch-launcher": { type: "string" },

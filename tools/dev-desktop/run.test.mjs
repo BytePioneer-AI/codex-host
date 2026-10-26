@@ -167,7 +167,7 @@ describe("development Desktop start", () => {
   });
 
   it.each([0, 7])(
-    "routes web --no-build to the preview without Desktop cleanup or build (exit %s)",
+    "routes web --no-build --no-watch to only the preview (exit %s)",
     async (code) => {
       const root = temporaryDirectory();
       const nodePath = path.join(root, "node");
@@ -175,7 +175,7 @@ describe("development Desktop start", () => {
       const spawnImplementation = vi.fn(() => exitingChild(code));
       expect(
         await runDevelopmentDesktop({
-          arguments_: ["web", "--no-build", "--port", "3181"],
+          arguments_: ["web", "--no-build", "--no-watch", "--port", "3181"],
           root,
           nodePath,
           platform: "darwin",
@@ -205,7 +205,7 @@ describe("development Desktop start", () => {
       const spawnImplementation = vi.fn(() => exitingChild());
       await runDevelopmentDesktop({
         root,
-        arguments_: ["web", flag],
+        arguments_: ["web", "--no-watch", flag],
         environment: {},
         spawnImplementation,
       });
@@ -215,59 +215,66 @@ describe("development Desktop start", () => {
     },
   );
 
-  it("rejects conflicting Web flags before building or launching", async () => {
+  it.each([
+    ["--restart-host", "--keep-host"],
+    ["--watch", "--no-watch"],
+    ["--no-watch", "--watch"],
+  ])("rejects conflicting Web flags %s and %s before building", async (first, second) => {
     const spawnImplementation = vi.fn();
     await expect(
       runDevelopmentDesktop({
-        arguments_: ["web", "--restart-host", "--keep-host"],
+        arguments_: ["web", first, second],
         spawnImplementation,
       }),
     ).rejects.toThrow("mutually exclusive");
     expect(spawnImplementation).not.toHaveBeenCalled();
   });
 
-  it("runs the Web UI watcher beside a source-serving preview and stops it with the preview", async () => {
-    const root = temporaryDirectory();
-    const nodePath = path.join(root, "node");
-    const environment = { PATH: "/fixture/bin" };
-    const watcher = new EventEmitter();
-    watcher.kill = vi.fn();
-    const spawnImplementation = vi
-      .fn()
-      .mockImplementationOnce(() => watcher)
-      .mockImplementationOnce(() => exitingChild(0));
-    expect(
-      await runDevelopmentDesktop({
-        arguments_: ["web", "--no-build", "--watch", "--port", "3181"],
-        root,
+  it.each([{ flags: [] }, { flags: ["--watch"] }])(
+    "runs and stops the Web UI watcher with $flags",
+    async ({ flags }) => {
+      const root = temporaryDirectory();
+      const nodePath = path.join(root, "node");
+      const environment = { PATH: "/fixture/bin" };
+      const watcher = new EventEmitter();
+      watcher.kill = vi.fn();
+      const spawnImplementation = vi
+        .fn()
+        .mockImplementationOnce(() => watcher)
+        .mockImplementationOnce(() => exitingChild(0));
+      expect(
+        await runDevelopmentDesktop({
+          arguments_: ["web", "--no-build", ...flags, "--port", "3181"],
+          root,
+          nodePath,
+          environment,
+          spawnImplementation,
+        }),
+      ).toBe(0);
+      expect(spawnImplementation).toHaveBeenNthCalledWith(
+        1,
         nodePath,
-        environment,
-        spawnImplementation,
-      }),
-    ).toBe(0);
-    expect(spawnImplementation).toHaveBeenNthCalledWith(
-      1,
-      nodePath,
-      ["--import", "tsx", path.join(root, "apps/web-ui/scripts/build.ts"), "--watch"],
-      expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
-    );
-    expect(spawnImplementation).toHaveBeenNthCalledWith(
-      2,
-      nodePath,
-      [
-        "--import",
-        "tsx",
-        path.join(root, "packages/web-server/scripts/preview.ts"),
-        "--restart",
-        "--dev-web-ui",
-        path.join(root, "apps/web-ui"),
-        "--port",
-        "3181",
-      ],
-      expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
-    );
-    expect(watcher.kill).toHaveBeenCalledWith("SIGTERM");
-  });
+        ["--import", "tsx", path.join(root, "apps/web-ui/scripts/build.ts"), "--watch"],
+        expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
+      );
+      expect(spawnImplementation).toHaveBeenNthCalledWith(
+        2,
+        nodePath,
+        [
+          "--import",
+          "tsx",
+          path.join(root, "packages/web-server/scripts/preview.ts"),
+          "--restart",
+          "--dev-web-ui",
+          path.join(root, "apps/web-ui"),
+          "--port",
+          "3181",
+        ],
+        expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
+      );
+      expect(watcher.kill).toHaveBeenCalledWith("SIGTERM");
+    },
+  );
 
   it("stops the preview and fails when the Web UI watcher exits first", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -280,7 +287,7 @@ describe("development Desktop start", () => {
       .mockImplementationOnce(() => preview);
     expect(
       await runDevelopmentDesktop({
-        arguments_: ["web", "--no-build", "--watch"],
+        arguments_: ["web", "--no-build"],
         root,
         nodePath: path.join(root, "node"),
         environment: {},
@@ -298,10 +305,13 @@ describe("development Desktop start", () => {
       const root = temporaryDirectory();
       const nodePath = path.join(root, "node");
       const environment = { npm_execpath: "/fixture/npm-cli.js" };
+      const watcher = new EventEmitter();
+      watcher.kill = vi.fn();
       const spawnImplementation = vi
         .fn()
         .mockImplementationOnce(() => exitingChild(code))
-        .mockImplementation(() => exitingChild());
+        .mockImplementationOnce(() => watcher)
+        .mockImplementationOnce(() => exitingChild());
       expect(
         await runDevelopmentDesktop({
           arguments_: ["web", "--port", "3181"],
@@ -317,21 +327,30 @@ describe("development Desktop start", () => {
         [environment.npm_execpath, "run", "build:web"],
         expect.objectContaining({ cwd: root, env: environment, stdio: ["ignore", "pipe", "pipe"] }),
       );
-      expect(spawnImplementation).toHaveBeenCalledTimes(code === 0 ? 2 : 1);
+      expect(spawnImplementation).toHaveBeenCalledTimes(code === 0 ? 3 : 1);
       if (code === 0) {
         expect(spawnImplementation).toHaveBeenNthCalledWith(
           2,
+          nodePath,
+          ["--import", "tsx", path.join(root, "apps/web-ui/scripts/build.ts"), "--watch"],
+          expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
+        );
+        expect(spawnImplementation).toHaveBeenNthCalledWith(
+          3,
           nodePath,
           [
             "--import",
             "tsx",
             path.join(root, "packages/web-server/scripts/preview.ts"),
             "--restart",
+            "--dev-web-ui",
+            path.join(root, "apps/web-ui"),
             "--port",
             "3181",
           ],
           expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
         );
+        expect(watcher.kill).toHaveBeenCalledWith("SIGTERM");
       }
     },
   );

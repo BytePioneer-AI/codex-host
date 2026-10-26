@@ -139,7 +139,7 @@ echo 'codexhost dev: stopped the running Codex Desktop'
 
 export function usage() {
   return `usage: npm start [version] [-- --no-build]
-       npm start web [-- --port 3181] [--watch]
+       npm start web [-- --port 3181] [--no-watch]
 
 Stop any running Codex Desktop, then build and run the current codexhost worktree.
 After building, reuse an unchanged shared Host; restart a changed Host unless the other interface is open.
@@ -154,7 +154,8 @@ options:
   --no-build          reuse existing development artifacts
   --restart-host      force restart of a running Host (mutually exclusive with --keep-host)
   --keep-host         keep the running Host without asking
-  --watch             web only: rebuild Web UI sources on edit and reload them in open pages
+  --watch             web only: enable Web UI hot reload (default)
+  --no-watch          web only: disable Web UI rebuild watching and hot reload
   --version <semver>  alternative version syntax (npm start -- --version 0.12.0)
   --help              show this help`;
 }
@@ -339,7 +340,7 @@ function runChild(invocation, root, spawnImplementation = spawn, environment = p
   });
 }
 
-// `npm start web -- --watch`: the Web UI rebuild watcher runs beside the preview, which serves
+// `npm start web`: the Web UI rebuild watcher runs beside the preview, which serves
 // the rebuilt bundles from source. Either process ending stops the other.
 function runWatchedWeb(preview, watcher, root, spawnImplementation, environment) {
   const start = (invocation) =>
@@ -433,7 +434,10 @@ export async function runDevelopmentDesktop({
       "restart-host": webArguments.includes("--restart-host"),
       "keep-host": webArguments.includes("--keep-host"),
     });
-    const watch = webArguments.includes("--watch");
+    if (webArguments.includes("--watch") && webArguments.includes("--no-watch")) {
+      throw new Error("--watch and --no-watch are mutually exclusive");
+    }
+    const watch = !webArguments.includes("--no-watch");
     if (!webArguments.includes("--no-build")) {
       const buildResult = await runQuietWebBuild(
         npmBuildInvocation(environment, platform, nodePath, "build:web"),
@@ -449,7 +453,9 @@ export async function runDevelopmentDesktop({
         path.join(root, "packages/web-server/scripts/preview.ts"),
         "--restart",
         ...(watch ? ["--dev-web-ui", path.join(root, "apps/web-ui")] : []),
-        ...webArguments.filter((argument) => argument !== "--no-build" && argument !== "--watch"),
+        ...webArguments.filter(
+          (argument) => !["--no-build", "--watch", "--no-watch"].includes(argument),
+        ),
       ],
     };
     if (!watch) return (await runChild(preview, root, spawnImplementation, environment)).code ?? 1;

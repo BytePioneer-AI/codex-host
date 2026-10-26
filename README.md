@@ -64,7 +64,7 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ## Standalone Web development
 
-This checkout also contains a Web/PWA application. Run `npm ci`, `npm run build:web`, then `npm start web` for an authenticated Web client. The development command restarts the shared Host and this checkout's Web service on the selected port, interrupting running Host tasks. Web and Desktop can each be used alone, share canonical external Threads when both are open, and close without stopping the other or its tasks. Existing saved GUI project metadata remains read-only; no GUI projects are created. This does not launch or restart Desktop. A running older Desktop-owned Host is not taken over; update/restart it separately to transition. `-- --session-source standalone` explicitly selects the independent Harness plugin mode. See [the Web guide](docs/product/standalone-web.md) for connection requirements, plugin distribution and current limitations.
+This checkout also contains a Web/PWA application. Run `npm ci`, then `npm start web` to build and start an authenticated Web client with Web UI hot reload enabled by default. Use `npm start web -- --no-watch` to disable hot reload. The development command restarts this checkout's Web service on the selected port and reuses an unchanged shared Host. If the Host changes, it restarts automatically when Desktop is closed; otherwise a post-build prompt defaults to keeping it (non-interactive runs keep it and warn). Restarting Host interrupts its tasks. Web and Desktop can each be used alone, share canonical external Threads when both are open, and close without stopping the other or its tasks. Existing saved GUI project metadata remains read-only; no GUI projects are created. This does not launch or restart Desktop. A running older Desktop-owned Host is not taken over; update/restart it separately to transition. See [the Web guide](docs/product/standalone-web.md) for connection requirements, plugin distribution and current limitations.
 
 ## Quick Start
 
@@ -299,6 +299,17 @@ cd codex-host
 npm ci
 npm start
 ```
+
+| Command | Purpose |
+| --- | --- |
+| `npm start` | Build and start Desktop. |
+| `npm start web` | Build and start Web with Web UI hot reload (default). |
+| `npm start web -- --no-watch` | Build and start Web without hot reload. |
+| `npm stop` | Stop the current user's local codexhost services across worktrees. |
+
+Explicit `--watch` remains supported; it cannot be combined with `--no-watch`. `--no-build` skips the initial full build but does not disable watching.
+
+Web UI hot reload swaps rebuilt client plugins in open pages; shell changes reload the page. Plugin React state may reset. Changes to Host, Web server or the CodexHost settings page still require restarting. See [Web UI hot reload](docs/product/standalone-web.md#前端开发热更新) for details.
 
 `npm start` rebuilds and restarts Desktop; `npm start web` rebuilds and restarts Web. Both reuse an unchanged shared Host. A changed Host is restarted if the other interface is closed; otherwise a post-build prompt defaults to keeping it. `--restart-host` / `--keep-host` override that decision. `--no-build` skips building but applies the same decision. Restarting Host interrupts its tasks.
 

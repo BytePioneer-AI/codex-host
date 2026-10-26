@@ -36,13 +36,13 @@ Web 按内容寻址快照的 runtime 路径（或 `--ch-host-runtime` 覆盖值�
 
 ### 前端开发热更新
 
-`npm start web -- --watch` 在上述构建与重启之后，同时运行 Web UI 监听构建（`apps/web-ui/scripts/build.ts --watch`）和 Web 服务；Web 服务以 `--dev-web-ui <apps/web-ui>` 直接读取工作树的前端产物，而不是发行目录中的副本。修改前端源码后无须重启 Host 或 Web：
+`npm start web` 默认开启前端热更新。在上述构建与重启之后，同时运行 Web UI 监听构建（`apps/web-ui/scripts/build.ts --watch`）和 Web 服务；Web 服务以 `--dev-web-ui <apps/web-ui>` 直接读取工作树的前端产物，而不是发行目录中的副本。修改前端源码后无须重启 Host 或 Web：
 
 - `packages/*/*` 下的客户端插件（如 `ui-chat`、`ui-sidebar`）由 tsdown 增量重建，服务端轮询各插件的 `lib/client.js`，内容变化时经 `/plugins/events` SSE 推送 `rebuilt`，已打开的页面就地替换该插件，不刷新页面。被替换插件及依赖它的插件的 React 状态会重置；会话、工作区与连接保持。
 - 静态链接进页面外壳的包（如 `ui-primitives`、`store`、`ui-slots`）及 `apps/web` 由 Vite 监听重建，服务端检测到 `index.html` 变化后推送 `shell`，页面整页刷新。
 - 内容未变的重写（例如监听启动时的首次构建）不会触发替换。CodexHost 设置页（`renderer-extension`）、Web 服务与 Host 代码的修改仍需重新执行 `npm start web`。
 
-浏览器侧沿用上游 `@deepseek-ai/dsh-client-hmr` 插件与 Client Modules 的替换逻辑；服务侧检测与推送由 `packages/web-server/src/web-hmr.ts` 实现。该插件只在 `--dev-web-ui` 时加入插件组合，发行包不包含。任一进程退出都会停止另一个；`--watch` 可与 `--no-build`、`--port` 组合使用。
+浏览器侧沿用上游 `@deepseek-ai/dsh-client-hmr` 插件与 Client Modules 的替换逻辑；服务侧检测与推送由 `packages/web-server/src/web-hmr.ts` 实现。该插件只在 `--dev-web-ui` 时加入插件组合，发行包不包含。任一进程退出都会停止另一个。`npm start web -- --no-watch` 关闭监听构建和热更新，改为读取发行目录中的前端产物；显式 `--watch` 保持兼容，与 `--no-watch` 互斥。两种模式均可与 `--no-build`、`--port` 组合使用；`--no-build` 仅跳过初始完整构建，不关闭监听构建。直接运行打包发行入口不会默认开启热更新。
 
 `build:web` 编译当前工作树的 CH 包并调用已有插件构建器，构建原生 Launcher，随后编译前端和打包。插件输入为 `packages/host-runtime/dist/plugins`，不是已安装的 CH.app 或另一个仓库。用量统计专用插件不作为聊天 Harness；Web 另行打包同仓库的 Codex Adapter。
 

@@ -114,6 +114,7 @@ class FakeTransport extends DevinTransport {
   override async configure(configId: string, value: string) {
     return {
       configOptions: [
+        ...structuredClone(info.configOptions).filter((option) => option.id !== configId),
         {
           id: configId,
           name: configId,

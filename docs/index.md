@@ -61,7 +61,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/devin/devin-cli-acp-integration.md`](harnesses/devin/devin-cli-acp-integration.md) | Devin CLI 原生 ACP 插件、Turn 身份与能力边界；维护 Devin Adapter 时阅读。 |
+| [`harnesses/devin/devin-cli-acp-integration.md`](harnesses/devin/devin-cli-acp-integration.md) | Devin CLI 原生 ACP 插件、动态 Thinking 配置、Turn 身份与能力边界；维护 Devin Adapter 时阅读。 |
 
 ### DeepSeek Harness
 

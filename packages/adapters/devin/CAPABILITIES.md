@@ -8,7 +8,7 @@
 | 原生接口与传输方式 | `devin acp` stdio，`@agentclientprotocol/sdk` |
 | 已验证的原生版本 | PR 原生记录：3000.10.31；3000.11+ 认证适配见 `src/credentials.ts`，本地未复验 |
 | 交付范围 | 预装插件；Desktop 与完整委派验收尚未完成 |
-| 参考插件 | Qoder 的执行策略冲突拒绝；Pi 的历史边界、独立 Fork、Rollback 配置保留及测试结构（不复用其协议或存储）；公共插件 Loader |
+| 参考插件 | Qoder 的执行策略冲突拒绝；Pi 的配置确认、动态选项、历史边界及聚焦测试（不复用其协议或存储）；公共插件 Loader |
 | 最后验证 | 本地 macOS 无 Devin CLI；仅 hermetic 测试，不代表原生验收 |
 
 证据路径相对于插件目录；[集成记录](../../../docs/harnesses/devin/devin-cli-acp-integration.md)保留 PR 的原生实测范围。Host 测试位于仓库根 `packages/host-runtime/test/`。
@@ -28,7 +28,7 @@
 | A9 | 错误与并发 | 必做 | P0 | 支持 | src/adapter.ts | test/devin-adapter.test.ts、test/configuration.test.ts | 活动 Turn 与并行配置边界 |
 | A10 | 关闭 | 必做 | P0 | 支持 | src/transport.ts、src/adapter.ts | test/devin-adapter.test.ts | 结束流及子进程 |
 | B1 | 切换 Model | 原生有则必做 | P1 | 支持 | src/adapter.ts、src/models.ts | test/configuration.test.ts | 活动 Turn 直接调用原生 config，确认后发布状态 |
-| B2 | 切换 Thinking | 原生有则必做 | P1 | 不支持 | src/models.ts | 集成记录：无独立 selector | 返回 unsupported |
+| B2 | 切换 Thinking | 原生有则必做 | P1 | 受限 | src/models.ts、src/adapter.ts、src/transport.ts | Devin stable changelog v3000.11.1；ACP Session Config Options 的 `category: thought_level`；test/thinking.test.ts、test/configuration-transport.test.ts | 动态发现、create/resume 提示、运行中选择、完整原生确认与选项替换；旧 CLI 返回 unsupported；真实 CLI 字段与行为待验收 |
 | B3 | 权限模式 | 原生有则必做 | P1 | 支持 | src/models.ts、src/adapter.ts | test/devin-adapter.test.ts | 原生确认后更新 |
 | B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 受限 | src/adapter.ts | test/configuration.test.ts；原生 modes 目录含 bypass | 创建前拒绝非 bypass；真实工具执行未验收 |
 | B5 | Fork | 原生有则必做 | P1 | 待验证 | src/models.ts、src/adapter.ts | 官方 `/fork [step]`；集成记录「History derivation」；test/history.test.ts | 精确边界调用与返回契约不足；保持 false，open 返回 unsupported |
@@ -62,6 +62,7 @@
 - A3/A4：inspect 调用 session/new 获取目录；原生空 Session 的持久化和预热丢弃行为未验证，不能宣称满足无用户会话副作用要求。
 - A6/A8：已有取消与身份回放 mock 测试；真实取消后继续、压缩历史、重载持久性尚未验证。
 - B1/B4：活动 Turn 配置和无人值守显式权限冲突由 hermetic 回归测试覆盖；真实运行中切换及 bypass 工具执行仍需 CLI 验收。
+- B2：仅按 ACP 标准 `thought_level` select 类别发现独立 Thinking，使用原生 `id`、`currentValue`、`options[].value/name`（含分组）；未公开类别的字段不猜测。配置响应、通知和 load 的完整列表替换状态；create/resume 提示在 Model 后校验并写入。无可用 selector 时能力为 false、选择返回 unsupported；`model_config` 的 speed 不接入本任务。官方功能依据不替代实际 Devin wire 样本，3000.11.1+ 的真实 inspect、运行中选择、Model 依赖变化与冷恢复仍需作者验收。
 - B5–B7：官方交互命令和 changelog 表明原生有 Fork/revert，不能据旧版 ACP 探测认定原生不支持。SDK 1.3.0 的实验性 session/fork 没有精确边界字段；Devin 的 step 与 Host Turn 对齐、命令分发、派生身份、历史回放和配置保留尚无充分协议依据。P1 历史能力未完成；验收清单和脱敏证据要求见集成记录「History derivation」。不得使用会撤销文件的 `/revert` 实现 Host rollback。
 - B10：未映射的扩展明确报错，不自动代答；原生提问协议需进一步核实。
 - B11–B16/C7：未验证的原生能力不等于原生不支持；完整委派、用量、自主 Turn、Subagent 不作完成声明。
@@ -81,10 +82,10 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| Adapter 公共行为 | Vitest，`tests/vitest.config.js`，`packages/adapters/devin/test` | 32 项通过；配置回归 14 项中 9 项在修复前失败 |
-| 历史能力边界 | Vitest 聚焦 `test/history.test.ts`、`test/devin-adapter.test.ts`、`test/configuration.test.ts` | 36 项测试通过（历史边界 4 项）；仅验证能力关闭、无原生启动及不伪造 checkpoint，不代表原生 Fork/rollback 验收 |
-| 原生边界 | Mock ACP 回放、权限和终态 | 非真实 CLI 验收 |
-| 插件加载 | installed-harness-plugins.test.ts | 与 Devin、host-bundle 聚焦检查合计 64 项通过、1 项跳过；跳过的是未配置 CODEXHOST_OPENCODE_REAL_COMMAND 的原生测试 |
-| Host 集成 | typecheck、build:typescript、lint | 通过；turn.steer 显式返回 unsupported |
+| Adapter 公共行为 | Vitest，`tests/vitest.config.js`，`packages/adapters/devin/test` | Thinking 变更聚焦回归 58 项通过；含既有执行策略与运行中 Model 回归 |
+| 原生边界 | Mock ACP 回放、权限和终态；test/fixtures/configuration-acp.mjs 合成 stdio 进程 | 覆盖 idle/running config_option_update 与 load 完整状态；非真实 CLI 验收 |
+| 插件加载 | installed-harness-plugins.test.ts，按 factories / independent instances / explicit devin command 过滤 | 3 项通过；其余 20 项未选中；构建产物的真实 Loader 与合成缺失 CLI 检查，不启动真实 Devin |
+| 构建与静态检查 | npm run typecheck、npm run build:plugins；变更 TS/MJS 的 ESLint；tools/check-boundaries.mjs；变更文件 Prettier；git diff --check | 通过；未运行全量测试、完整 Host 集成或 Desktop |
+| 历史能力边界 | test/history.test.ts | 4 项回归测试；仅验证能力关闭、无原生启动及不伪造 checkpoint，不代表原生 Fork/rollback 验收 |
 | 真实原生验收 | PR 集成记录中的 3000.10.31 / macOS / swe-2-high / accept-edits | 历史记录；本机无 CLI，未复验 |
 | Desktop / 委派 | — | 未执行 |

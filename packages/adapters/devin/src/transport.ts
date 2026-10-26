@@ -32,6 +32,7 @@ export interface DevinCallbacks {
 export class DevinTransport {
   sessionId = "";
   replay: SessionNotification[] = [];
+  onConfigOptions: ((options: NonNullable<DevinSessionInfo["configOptions"]>) => void) | undefined;
   #child: ChildProcessWithoutNullStreams | undefined;
   #connection: ClientSideConnection | undefined;
   #callbacks: DevinCallbacks | undefined;
@@ -89,6 +90,8 @@ export class DevinTransport {
       () => ({
         sessionUpdate: (value) => {
           if (this.sessionId && value.sessionId !== this.sessionId) return;
+          if (value.update.sessionUpdate === "config_option_update")
+            this.onConfigOptions?.(value.update.configOptions);
           if (this.#callbacks) this.#callbacks.update(value);
           else if (this.#collecting) {
             // The SDK swallows notification handler errors, so record overflow for the caller.
@@ -185,13 +188,14 @@ export class DevinTransport {
     this.#replayOverflow = false;
     this.#collecting = true;
     try {
-      await this.#bounded(
+      const info = await this.#bounded(
         this.#connection.loadSession({
           sessionId: this.sessionId,
           cwd: this.options.cwd,
           mcpServers: [],
         }),
       );
+      if (info.configOptions) this.onConfigOptions?.(info.configOptions);
     } finally {
       this.#collecting = false;
     }

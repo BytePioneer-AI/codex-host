@@ -33,9 +33,15 @@ catalog (385 entries when tested) and the permission modes `accept-edits`,
   original value; `model.select` resolves them back and rejects models outside
   the session's native catalog. Selection during an active Turn goes directly
   to the native configuration interface; Devin determines when it takes effect.
-  Native rejection or missing confirmation leaves Host state unchanged. Parallel
-  configuration writes and history reads remain mutually exclusive; a second
+  Native rejection does not publish the requested value; a complete native
+  readback publishes the actual state even when it differs from the request.
+  Parallel configuration writes and history reads remain mutually exclusive; a second
   Turn and permission-mode changes remain blocked during an active Turn.
+- Independent Thinking selection when ACP advertises a `thought_level` select
+  option. Inspect and Session state use its native values, labels and current
+  value; model-dependent options are replaced after every native configuration
+  response or notification. Idle and active-Turn selection use the same native
+  interface without cancelling or restarting the Turn.
 - Native permission modes, confirmed by the ACP configuration response before
   Host state changes. Unsupported or unconfirmed values fail closed. Creating
   with `unattended-full-access` selects and confirms native `bypass`; an explicit
@@ -53,6 +59,50 @@ catalog (385 entries when tested) and the permission modes `accept-edits`,
   connection (`initialize` only, no user Session is created). Rows missing a
   valid `cwd` or `updatedAt` are skipped rather than fabricated; `running`
   reflects the native `cognition.ai/isLocked` meta flag when present.
+
+## Thinking configuration
+
+[Devin stable changelog v3000.11.1](https://docs.devin.ai/cli/changelog/stable)
+explicitly adds model, thinking effort and speed selection through ACP session
+configuration. The [Models guide](https://docs.devin.ai/cli/models) describes
+reasoning levels as model-dependent, but does not define wire IDs or enumerate
+ACP values. The adapter follows the official
+[ACP Session Config Options](https://agentclientprotocol.com/protocol/session-config-options)
+fields instead:
+
+- Discover the first `type: "select"`, `category: "thought_level"` entry in
+  `session/new` or `session/load`'s `configOptions`, respecting ACP priority order.
+  Missing/unknown categories, a `model_config` speed option, model suffixes and
+  selector names/IDs do not establish Thinking support. No Devin-specific
+  Thinking `_meta` fields are assumed.
+- Flatten native select groups without inventing levels or labels. Host Thinking
+  IDs use `devin.<base64url(native value)>`; selection resolves back through the
+  current advertised values and sends their original `value` and selector `id`
+  in `session/set_config_option`'s `configId`/`value` fields.
+- Treat the response and `config_option_update` notifications as complete
+  replacements, including idle notifications and snapshot reload responses.
+  `effectiveThinkingOptionId` and `availableThinkingOptions` come only from
+  native readback. Removing the selector clears the effective value and options;
+  changing Model never replays the previous Thinking selection. Catalog
+  per-Model Thinking restrictions are supplied only for the observed active Model,
+  not guessed for other Models. The Model selector uses category `model`, with
+  the observed legacy `id: "model"` as a compatibility fallback.
+- Apply create/resume configuration hints inside the adapter: Model first, then
+  Thinking validated against the resulting options. Omitted hints preserve the
+  native defaults/restored state. Stale or unconfirmed hints fail the open
+  operation and close the transport rather than reporting the requested state. A CLI with
+  no usable categorized Thinking selector advertises false and returns typed
+  `unsupported` for Thinking selection or hints.
+
+Hermetic tests cover dynamic discovery, model-dependent option changes, hints,
+concurrent configuration, cancellation, failures, close, and ACP notification/load
+handling using a synthetic process. They do **not** verify which selector IDs or
+categories a real Devin build emits. Native validation still requires an
+installed, authenticated CLI with this feature: capture its `configOptions`,
+verify idle/running selection and dependent options across Models, then close
+and resume the same session with and without hints. No native Thinking
+acceptance has been performed locally; the `3000.10.31` run below predates this
+feature.
 
 ## Turn identity
 
@@ -125,7 +175,7 @@ pseudonymize IDs consistently while retaining field names, types and ordering.
 
 - Desktop discovery, icons and installation links use the dynamic plugin
   catalog and shared route. There is no Devin-specific Host or Renderer branch.
-- Fork, rollback, steering, independent thinking selection, usage/account reporting,
+- Fork, rollback, steering, speed selection, usage/account reporting,
   native session deletion wiring and subagent transcript browsing are
   not advertised. `devin auth status` exposes identity and plan but no valid
   usage percentage, so no `inspectAccount()` credits are fabricated. Image

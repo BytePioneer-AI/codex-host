@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { ClientSideConnection } from "@agentclientprotocol/sdk";
 import {
   HarnessOutputChannel,
@@ -37,9 +38,11 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import {
-  DEVIN_CAPABILITIES,
+  devinCapabilities,
   devinCatalog,
-  devinModelRef,
+  devinConfigurationState,
+  devinThinking,
+  devinThinkingOptionId,
   devinModels,
   devinModes,
   devinNativeModel,
@@ -111,7 +114,7 @@ export class DevinAdapter implements HarnessAdapter {
         return {
           status: "ready",
           catalog: devinCatalog(info),
-          capabilities: DEVIN_CAPABILITIES,
+          capabilities: devinCapabilities(info),
           permissionModes: devinModes(info),
         };
       } catch (error) {
@@ -136,8 +139,6 @@ export class DevinAdapter implements HarnessAdapter {
     if (this.#closed) return rejected("invalidState", "Devin adapter is closed");
     if (input.kind !== "create" && input.kind !== "resume")
       return rejected("unsupported", "Devin fork and rollback are not supported");
-    if (input.thinkingOptionId)
-      return rejected("unsupported", "Devin ACP has no independent thinking selector");
     if (input.kind === "resume" && input.nativeRef.harnessId !== this.harnessId)
       return rejected("invalidRequest", "Session belongs to another Harness");
     if (
@@ -179,7 +180,20 @@ export class DevinAdapter implements HarnessAdapter {
       );
       if (input.model) {
         const selected = await session.execute({ type: "model.select", model: input.model });
-        if (!selected.ok) throw new Error(selected.error.message);
+        if (!selected.ok) {
+          await session.close();
+          return selected;
+        }
+      }
+      if (input.thinkingOptionId) {
+        const selected = await session.execute({
+          type: "thinking.select",
+          thinkingOptionId: input.thinkingOptionId,
+        });
+        if (!selected.ok) {
+          await session.close();
+          return selected;
+        }
       }
       const permissionModeId =
         input.permissionModeId ??
@@ -257,7 +271,9 @@ export class DevinAdapter implements HarnessAdapter {
 
 export class DevinSession implements HarnessSession {
   readonly harnessId = harnessIdSchema.parse("devin");
-  readonly capabilities = DEVIN_CAPABILITIES;
+  get capabilities() {
+    return devinCapabilities(this.info);
+  }
   readonly initialUsage = null;
   readonly initialState: HarnessSessionState;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
@@ -276,17 +292,39 @@ export class DevinSession implements HarnessSession {
     created = true,
   ) {
     this.#fresh = created;
-    const current = devinModels(info).current;
     this.initialState = {
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "devin",
         nativeSessionId: transport.sessionId,
         formatVersion: 1,
       }),
-      ...(current ? { effectiveModel: devinModelRef(current) } : {}),
-      // Fails closed when Devin returns no usable native permission mode catalog.
-      effectivePermissionModeId: devinModes(info).defaultModeId,
+      ...devinConfigurationState(info),
     };
+    transport.onConfigOptions = (configOptions) => {
+      try {
+        this.#applyConfiguration(configOptions);
+      } catch (error) {
+        this.#channel.emit({
+          kind: "event",
+          event: { type: "session.faulted", error: devinError(error) },
+        });
+        void this.close();
+      }
+    };
+  }
+  #applyConfiguration(configOptions: NonNullable<DevinSessionInfo["configOptions"]>) {
+    const state = devinConfigurationState({ ...this.info, configOptions });
+    this.info.configOptions = configOptions;
+    const previous = structuredClone(this.initialState);
+    // Complete lists can explicitly remove Thinking, so never merge a stale effective value.
+    delete this.initialState.effectiveModel;
+    delete this.initialState.effectiveThinkingOptionId;
+    Object.assign(this.initialState, state);
+    if (isDeepStrictEqual(this.initialState, previous)) return;
+    this.#channel.emit({
+      kind: "event",
+      event: { type: "session.state.changed", state: structuredClone(this.initialState) },
+    });
   }
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed) return rejected("invalidState", "Devin session is closed");
@@ -372,36 +410,46 @@ export class DevinSession implements HarnessSession {
       active.task = this.#run(command);
       return { ok: true, value: { turnId: command.turnId } };
     }
-    if (command.type === "thinking.select")
-      return rejected(
-        "unsupported",
-        "Devin ACP exposes model variants, not an independent thinking selector",
-      );
+    const thinking = devinThinking(this.info);
+    if (command.type === "thinking.select" && !thinking.options.length)
+      return rejected("unsupported", "Devin does not advertise a native Thinking selector");
     this.#configuring = true;
     try {
-      const value =
-        command.type === "model.select"
-          ? devinNativeModel(this.info, command.model.id)
-          : command.permissionModeId;
-      const configId = command.type === "model.select" ? "model" : "mode";
+      let value: string;
+      let configId: string;
+      if (command.type === "model.select") {
+        value = devinNativeModel(this.info, command.model.id);
+        configId = devinModels(this.info).configId;
+      } else if (command.type === "thinking.select") {
+        const native = thinking.values.find(
+          ({ value }) => devinThinkingOptionId(value) === command.thinkingOptionId,
+        );
+        if (!native || !thinking.selector)
+          return rejected(
+            "invalidRequest",
+            "Thinking option is not in this Devin Model's native catalog",
+          );
+        value = native.value;
+        configId = thinking.selector.id;
+      } else {
+        value = command.permissionModeId;
+        configId = "mode";
+      }
       if (
-        configId === "mode" &&
+        command.type === "permissionMode.select" &&
         !(this.info.modes?.availableModes ?? []).some((mode) => mode.id === value)
       )
         return rejected("invalidRequest", "Unknown Devin permission mode");
       const result = await this.transport.configure(configId, value);
+      if (this.#closed)
+        return rejected("invalidState", "Devin session closed during configuration");
+      this.#applyConfiguration(result.configOptions);
       if (
         !result.configOptions.some(
           (option) => option.id === configId && option.currentValue === value,
         )
       )
         throw new Error("Devin did not confirm configuration selection");
-      if (command.type === "model.select") this.initialState.effectiveModel = command.model;
-      else this.initialState.effectivePermissionModeId = command.permissionModeId;
-      this.#channel.emit({
-        kind: "event",
-        event: { type: "session.state.changed", state: { ...this.initialState } },
-      });
       return { ok: true, value: { completed: true } };
     } catch (error) {
       return { ok: false, error: devinError(error) };
@@ -506,6 +554,7 @@ export class DevinSession implements HarnessSession {
     const active = this.#active;
     if (active) active.cancelled = true;
     this.#interactions.cancel();
+    this.transport.onConfigOptions = undefined;
     try {
       await this.transport.close();
       await active?.task;

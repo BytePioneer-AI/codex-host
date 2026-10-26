@@ -39,12 +39,16 @@ const start = {
 function confirmed(configId: string, value: string) {
   return {
     configOptions: [
+      ...structuredClone(info.configOptions).filter((option) => option.id !== configId),
       {
         id: configId,
         name: configId,
         type: "select" as const,
         currentValue: value,
-        options: [{ value, name: value }],
+        options:
+          configId === "model"
+            ? structuredClone(info.configOptions[0]?.options ?? [])
+            : [{ value, name: value }],
       },
     ],
   };

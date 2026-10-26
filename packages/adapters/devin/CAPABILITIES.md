@@ -6,10 +6,10 @@
 |---|---|
 | Harness ID | `devin` |
 | 原生接口与传输方式 | `devin acp` stdio，`@agentclientprotocol/sdk` |
-| 已验证的原生版本 | PR 原生记录：3000.10.31；3000.11+ 认证适配见 `src/credentials.ts`，本地未复验 |
+| 已验证的原生版本 | PR 原生记录：3000.10.31；本地 3000.11.205 仅验证隔离未认证的初始化及只读历史请求解析，不代表会话或修改历史验收 |
 | 交付范围 | 预装插件；Desktop 与完整委派验收尚未完成 |
 | 参考插件 | Qoder 的执行策略冲突拒绝；Pi 的配置确认、动态选项、历史边界及聚焦测试（不复用其协议或存储）；公共插件 Loader |
-| 最后验证 | 本地 macOS 无 Devin CLI；仅 hermetic 测试，不代表原生验收 |
+| 最后验证 | 本地 macOS：hermetic 测试及临时官方 CLI 未认证探测；无有效账号，未执行真实 Turn、Fork 或回滚 |
 
 证据路径相对于插件目录；[集成记录](../../../docs/harnesses/devin/devin-cli-acp-integration.md)保留 PR 的原生实测范围。Host 测试位于仓库根 `packages/host-runtime/test/`。
 
@@ -87,5 +87,6 @@
 | 插件加载与发行包 | Devin 测试、installed-harness-plugins.test.ts、tests/release/host-bundle.test.mjs | 独立整合验收共 99 项通过、1 项跳过；跳过的是未配置 CODEXHOST_OPENCODE_REAL_COMMAND 的原生测试 |
 | 构建与静态检查 | npm run typecheck；npm run build:typescript；npm run lint；Devin 源码及测试 Prettier；git diff --check | 独立整合验收通过；未运行全量测试或 Desktop |
 | 历史能力边界 | test/history.test.ts | 4 项回归测试；仅验证能力关闭、无原生启动及不伪造 checkpoint，不代表原生 Fork/rollback 验收 |
-| 真实原生验收 | PR 集成记录中的 3000.10.31 / macOS / swe-2-high / accept-edits | 历史记录；本机无 CLI，未复验 |
+| 真实原生验收 | PR 集成记录中的 3000.10.31 / macOS / swe-2-high / accept-edits | 历史记录；本地未复验 |
+| 未认证原生探测 | 官方 3000.11.205 macOS arm64，临时 HOME/XDG，initialize + listSteps/preview 的不存在 Session 输入 | 确认 revert 扩展协商与部分参数解析；未创建 Session、登录、执行模型或修改历史，详细边界见集成文档 |
 | Desktop / 委派 | — | 未执行 |

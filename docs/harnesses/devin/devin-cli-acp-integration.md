@@ -134,6 +134,23 @@ identities are not checkpoints.
   the step **and changes workspace files**, so it cannot implement Host rollback,
   even on a copied Session.
 
+### Native discovery (3000.11.205)
+
+An isolated, unauthenticated probe of the official macOS arm64 bundle confirmed
+that advertising client `_meta["cognition.ai/revert"]: true` enables agent
+`cognition.ai/revert`, `cognition.ai/revertHistoryRewound` and
+`cognition.ai/revertByUserMessageId` flags. Standard `session/fork` is not advertised.
+`_cognition.ai/revert/listSteps` accepts a `sessionId`; preview accepts
+`sessionId` with a string `userMessageId` or `stepId`. Native diagnostics distinguish
+these parsed requests failing on an inactive synthetic Session from malformed
+requests, although both return `-32602`.
+
+The official binary contains `forkFromStep`, `forkedSessionId` and `skipFileUndo`
+strings. These are discovery evidence, not a verified mutation contract: neither
+Fork inclusion boundaries nor file preservation has been exercised. The probe
+created no Session and performed no authentication, model execution or history
+mutation. Successful disposable-session validation is still required.
+
 ### Evidence required from the PR author
 
 Return CLI/SDK versions, platform, advertised capabilities and redacted native

@@ -667,6 +667,15 @@ if (${keepAlive}) {
       return { command, cwd, cleanup };
     }
 
+    function isProcessAlive(pid: number): boolean {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     async function nextEvent(iterator: AsyncIterator<HarnessOutput>): Promise<HostEvent> {
       const result = await iterator.next();
       if (result.done) throw new Error("Output stream ended unexpectedly");
@@ -1936,9 +1945,8 @@ if (process.argv.includes("models")) {
 }
 if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
 fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+// Ignored where signals are distinct; on Windows kill() terminates regardless.
 process.on("SIGTERM", () => undefined);
-// Outlives both bounded release waits, then ends so the test can clean up.
-setTimeout(() => process.exit(0), 6000);
 let buffer = "";
 process.stdin.resume();
 process.stdin.on("data", (chunk) => {
@@ -1986,8 +1994,24 @@ setInterval(() => undefined, 1000);
         // A driver whose exit cannot be confirmed must keep reporting that, not report
         // success on the second ask while the process is still writing the database.
         const session2 = session as unknown as { releaseIdleDriver(): Promise<boolean> };
-        expect(await session2.releaseIdleDriver()).toBe(false);
-        expect(await session2.releaseIdleDriver()).toBe(false);
+        const pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
+        const alive = () => Number.isInteger(pid) && pid > 0 && isProcessAlive(pid);
+
+        // The invariant, on every platform: release reports success only when the process is
+        // actually gone. On POSIX the fixture ignores SIGTERM, so the first attempt cannot
+        // confirm exit and the driver must stay reachable; on Windows kill() terminates it,
+        // so the first attempt may legitimately succeed.
+        const first = await session2.releaseIdleDriver();
+        if (first) expect(alive()).toBe(false);
+        else expect(alive()).toBe(true);
+
+        if (!first) {
+          // Unconfirmed exit must keep reporting the truth, not report release on a retry
+          // just because the first attempt already asked.
+          const retried = await session2.releaseIdleDriver();
+          if (retried) expect(alive()).toBe(false);
+          else expect(alive()).toBe(true);
+        }
 
         // Two consecutive false results are the invariant under test. The fork below may run
         // after the escalation finally kills the driver, so its failure code is not asserted.

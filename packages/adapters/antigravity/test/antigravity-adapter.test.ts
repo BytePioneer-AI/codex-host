@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { HarnessOutput, HarnessSession, HostEvent } from "@codexhost/harness-adapter";
+import type { NativeSessionRef } from "@codexhost/shared-contracts";
 import {
   accountCreditsSnapshotSchema,
   harnessModelRefSchema,
@@ -1900,6 +1901,88 @@ process.stdin.on("end", () => process.exit(served ? 0 : 1));
           // The replacement driver answers the second Turn.
         }
         await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("refuses to copy the database while an idle driver has not confirmed exit", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-exit-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-exit-cwd-"));
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      // The driver ignores stdin ending and SIGTERM, so its exit can never be confirmed
+      // within the cleanup bound.
+      const scriptContent = `
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+process.on("SIGTERM", () => undefined);
+let buffer = "";
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-exit", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+    process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-exit", status: "SUCCESS", num_turns: 1, response: "ok" } }) + "\\n");
+  }
+});
+process.stdin.on("end", () => undefined);
+setInterval(() => undefined, 1000);
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command, turnCleanupWaitMs: 0 });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-exit-1"),
+          input: [{ type: "text", text: "one" }],
+        });
+        while ((await nextEvent(iterator)).type !== "turn.completed") {
+          // Remaining events are not under test.
+        }
+
+        // The driver is retained and refuses to exit, so fork must not copy its database.
+        const nativeRef = (session as unknown as { nativeRef?: NativeSessionRef }).nativeRef;
+        if (!nativeRef) throw new Error("The Turn did not bind a native session");
+        // A driver whose exit cannot be confirmed must keep reporting that, not report
+        // success on the second ask while the process is still writing the database.
+        const session2 = session as unknown as { releaseIdleDriver(): Promise<boolean> };
+        expect(await session2.releaseIdleDriver()).toBe(false);
+        expect(await session2.releaseIdleDriver()).toBe(false);
+
+        // Once the escalation does kill it, the fork may proceed; the fixture has no native
+        // database, so it still fails, but never with the busy code.
+        const fork = await adapter.open({
+          kind: "fork",
+          cwd,
+          sourceRef: nativeRef,
+          checkpoint: nativeRef as never,
+        });
+        expect(fork.ok).toBe(false);
       } finally {
         await adapter.close();
         await cleanup();

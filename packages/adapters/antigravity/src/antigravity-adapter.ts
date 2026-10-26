@@ -1517,7 +1517,11 @@ class AntigravitySession implements HarnessSession {
    */
   async #disposeTransport(transport: AntigravityTransport | null): Promise<boolean> {
     if (!transport) return true;
-    if (this.#transport === transport) this.#transport = null;
+    // A driver that has not confirmed exit stays reachable, so a caller that retries keeps
+    // waiting on it instead of being told a released process is gone.
+    const confirmed = () =>
+      transport.process.exitCode !== null || transport.process.signalCode !== null;
+    if (this.#transport === transport && confirmed()) this.#transport = null;
     transport.questions.stop();
     if (transport.process.stdin.writable) transport.process.stdin.end();
     const timer = setTimeout(() => transport.process.kill(), NATIVE_EXIT_GRACE_MS);
@@ -1538,7 +1542,13 @@ class AntigravitySession implements HarnessSession {
       await transport.questions.dispose();
       await unlink(transport.logPath).catch(() => undefined);
     }
-    return transport.process.exitCode !== null || transport.process.signalCode !== null;
+    if (confirmed()) {
+      if (this.#transport === transport) this.#transport = null;
+      return true;
+    }
+    // Still alive: keep it as the Session's driver so a retry escalates again rather than
+    // reporting success for a process that may still be writing the database.
+    return false;
   }
 
   #completeItem(active: ActiveTurn, item: HostItem, outcome: HostItemOutcome): void {

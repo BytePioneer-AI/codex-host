@@ -295,6 +295,7 @@ describe("ZCode account configuration and Start Plan entitlement", () => {
 
     const result = await accountConfig(installation, env);
     expect(result.signedIn).toBe(true);
+    expect(result.startPlanChecked).toBe(true);
     expect(result.startPlan).toBe(false);
     expect(result.params.states["account:zai-start-plan"]).toMatchObject({
       availability: "unavailable",
@@ -318,6 +319,8 @@ describe("ZCode account configuration and Start Plan entitlement", () => {
 
     const result = await accountConfig(installation, env);
     expect(result.startPlan).toBe(false);
+    expect(result.signedIn).toBe(true);
+    expect(result.startPlanChecked).toBe(false);
     expect(result.params.providers["account:zai-start-plan"]).toEqual({
       access: { type: "zhipu-account", entitled: false },
     });

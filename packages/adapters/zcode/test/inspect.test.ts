@@ -27,9 +27,10 @@ function snapshot(available: unknown[]) {
     runtime: {},
   };
 }
-function adapterWith(signedIn: boolean, available: unknown[] = []) {
+function adapterWith(signedIn: boolean, available: unknown[] = [], startPlanChecked = true) {
   const transport = {
     signedIn,
+    startPlanChecked,
     startPlan: false,
     start: async () => undefined,
     close: async () => undefined,
@@ -49,6 +50,19 @@ describe("ZCode connection check without available models", () => {
     });
     if (inspected.status !== "unavailable") throw new Error("expected unavailable");
     expect(inspected.error?.message).toContain("ZCode is signed in");
+    await adapter.close();
+  });
+
+  it("does not claim there is no plan when the Start Plan balance could not be checked", async () => {
+    const adapter = adapterWith(true, [], false);
+    const inspected = await adapter.inspect({ cwd: tmpdir() });
+    expect(inspected).toMatchObject({
+      status: "unavailable",
+      error: { code: "configurationRequired", retryable: true },
+    });
+    if (inspected.status !== "unavailable") throw new Error("expected unavailable");
+    expect(inspected.error?.message).toContain("could not be checked");
+    expect(inspected.error?.message).not.toContain("no active Start Plan");
     await adapter.close();
   });
 

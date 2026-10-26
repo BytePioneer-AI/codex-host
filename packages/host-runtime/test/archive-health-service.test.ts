@@ -277,6 +277,20 @@ describe("safe forced archive", () => {
     expect(f.record.nativeSessionRef).toEqual(nativeRef);
   });
 
+  it("does not detach when the archive write fails", async () => {
+    const f = await createFixture();
+    vi.spyOn(f.repository, "setArchived").mockRejectedValue(new Error("setArchived failed"));
+    const close = vi.spyOn(f.thread.session, "close");
+
+    await expect(f.service.forceArchive(f.id)).rejects.toMatchObject({ code: -32081 });
+    expect(close).toHaveBeenCalledTimes(1);
+    // The Session is gone, but the Thread is still registered so recovery sees the
+    // durable state that actually exists rather than a phantom archive.
+    expect(f.runtime.get(f.id)).toBeDefined();
+    expect(f.record.archived).toBe(false);
+    expect(f.notifiedArchived).toHaveLength(0);
+  });
+
   it("keeps the instance loaded and reports failure when close rejects", async () => {
     const f = await createFixture();
     vi.spyOn(f.thread.session, "close").mockRejectedValue(new Error("close failed"));

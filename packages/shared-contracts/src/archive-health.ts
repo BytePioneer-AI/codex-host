@@ -4,11 +4,9 @@ export const archiveHealthInconsistentThreadSchema = z.strictObject({
   threadId: z.string(),
   title: z.string().nullable().optional(),
   harnessId: z.string().nullable().optional(),
-  kind: z.enum(["external", "official"]),
+  kind: z.literal("external"),
   state: z.string(),
   reason: z.string(),
-  occupyingPid: z.number().nullable().optional(),
-  occupyingCommand: z.string().nullable().optional(),
   recoverable: z.boolean(),
   hint: z.string().nullable().optional(),
 });

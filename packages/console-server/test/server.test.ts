@@ -406,4 +406,42 @@ describe("console server", () => {
     expect(await forceResponse.json()).toEqual(forceResult);
     expect(request).toHaveBeenCalledWith("codexhost/archive/force", { threadId: "t-1" });
   });
+
+  it("maps archive Host errors to real HTTP statuses", async () => {
+    const request = vi.fn(
+      async (
+        method: string,
+      ): Promise<{ result: unknown } | { error: { code: number; message: string } }> => {
+        throw new Error(`Unexpected method: ${method}`);
+      },
+    );
+    const { base } = await start({ host: { available: async () => true, request } });
+    const force = (threadId: string) =>
+      fetch(`${base}/api/archive/force`, {
+        method: "POST",
+        headers: { origin: base, ...CHANGE },
+        body: JSON.stringify({ threadId }),
+      });
+    const health = () => fetch(`${base}/api/archive/health`);
+
+    request.mockResolvedValueOnce({ error: { code: -32602, message: "not found" } });
+    const missing = await force("missing");
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: "not found" });
+
+    request.mockResolvedValueOnce({ error: { code: -32072, message: "thread is busy" } });
+    const busy = await force("busy");
+    expect(busy.status).toBe(409);
+    expect(await busy.json()).toEqual({ error: "thread is busy" });
+
+    request.mockResolvedValueOnce({ error: { code: -32075, message: "close unconfirmed" } });
+    const unconfirmed = await force("stuck");
+    expect(unconfirmed.status).toBe(500);
+    expect(await unconfirmed.json()).toEqual({ error: "close unconfirmed" });
+
+    request.mockResolvedValueOnce({ error: { code: -32081, message: "store unreadable" } });
+    const unreadable = await health();
+    expect(unreadable.status).toBe(500);
+    expect(await unreadable.json()).toEqual({ error: "store unreadable" });
+  });
 });

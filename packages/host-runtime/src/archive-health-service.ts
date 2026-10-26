@@ -347,10 +347,24 @@ export class ArchiveHealthService {
           `External Thread '${trimmedId}' changed while closing; retry the request.`,
         );
       }
-      this.options.runtime.remove(trimmedId);
     }
 
-    if (record) await this.options.repository.setArchived(record.hostThreadId, true);
+    // Persist first: an archive that cannot be made durable must leave the Thread as it
+    // was, so the caller sees one honest failure instead of a detached but unarchived row.
+    if (record) {
+      try {
+        await this.options.repository.setArchived(record.hostThreadId, true);
+      } catch (error) {
+        this.options.diagnose?.(error);
+        throw new ArchiveHealthError(
+          -32081,
+          `External Thread archive state could not be persisted: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (thread && this.options.runtime.get(trimmedId) === thread) {
+      this.options.runtime.remove(trimmedId);
+    }
 
     // The archive state is already durable; a failed notification must not report
     // the whole operation as failed.

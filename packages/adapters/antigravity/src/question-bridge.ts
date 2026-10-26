@@ -49,7 +49,7 @@ const responseSchema = z
     cancelled: z.boolean().optional(),
   })
   .strict();
-interface BridgeOptions {
+export interface BridgeOptions {
   /**
    * A directory the caller keeps across Turns. The bridge writes its Hook files there and leaves
    * the directory on dispose; without one it uses a private temporary directory it removes.
@@ -372,6 +372,27 @@ export class AntigravityQuestionBridge {
           },
         },
       });
+  }
+
+  /**
+   * Hands the bridge to the next Turn of a reused native driver. Ownership, the Turn
+   * identity used in emitted Items, and the duplicate-question guard all move to the new
+   * Turn, so a question from an earlier Turn can no longer be attributed or answered.
+   */
+  rebind(options: BridgeOptions): AntigravityQuestionBridge {
+    if (this.#disposal) throw new Error("Cannot reuse a disposed Question bridge");
+    if (this.#pending.size) throw new Error("Cannot reuse a busy Question bridge");
+    if (options.directory !== this.#options.directory) {
+      throw new Error("A reused Question bridge keeps its directory");
+    }
+    this.#options.turnId = options.turnId;
+    this.#options.nativeSessionId = options.nativeSessionId;
+    this.#options.schedule = options.schedule;
+    this.#options.emit = options.emit;
+    if (options.timeoutMs !== undefined) this.#options.timeoutMs = options.timeoutMs;
+    this.#stopped = false;
+    this.#seenSteps.clear();
+    return this;
   }
 
   stop(): void {

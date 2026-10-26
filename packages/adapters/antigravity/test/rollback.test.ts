@@ -44,15 +44,26 @@ if (process.argv.includes("models") || process.argv.some((arg) => arg.includes("
 
 const runsDir = ${JSON.stringify(runsDir)};
 fs.mkdirSync(runsDir, { recursive: true });
-const count = fs.readdirSync(runsDir).length;
-fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), JSON.stringify(process.argv) + "\\n");
-
 const turnStreamLines = ${JSON.stringify(turnStreamLines)};
-const lines = turnStreamLines[Math.min(count, turnStreamLines.length - 1)] || [];
-for (const line of lines) {
-  process.stdout.write(line + "\\n");
+// One process serves every Turn, as the real CLI does: each stdin line advances the script.
+let count = fs.readdirSync(runsDir).length;
+function emit() {
+  fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), JSON.stringify(process.argv) + "\\n");
+  const lines = turnStreamLines[Math.min(count, turnStreamLines.length - 1)] || [];
+  count += 1;
+  for (const line of lines) process.stdout.write(line + "\\n");
 }
-setTimeout(() => { process.exit(0); }, 50);
+let buffer = "";
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let index;
+  while ((index = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(index + 1);
+    emit();
+  }
+});
+process.stdin.on("end", () => process.exit(0));
 `;
   const jsPath = path.join(directory, "agy.cjs");
   await writeFile(jsPath, scriptContent);

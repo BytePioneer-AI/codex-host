@@ -92,7 +92,7 @@ import {
   type AntigravityCodeAction,
 } from "./code-action-diff.js";
 import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js";
-import { AntigravityQuestionBridge } from "./question-bridge.js";
+import { AntigravityQuestionBridge, type BridgeOptions } from "./question-bridge.js";
 import { AntigravitySubagents } from "./subagents.js";
 import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
 import { createAntigravityUsageStatistics } from "./usage-statistics.js";
@@ -136,6 +136,10 @@ interface ActiveTurn {
   questions: AntigravityQuestionBridge;
   subagents: AntigravitySubagents;
   logPath: string;
+  /** The native driver this Turn runs on; a successful Turn hands it to the next one. */
+  transport: AntigravityTransport;
+  /** Steps below this index belong to an earlier Turn on a reused driver. */
+  firstStepIndex: number;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
   tools: Map<number, HostItem>;
@@ -166,6 +170,30 @@ interface ActiveTurn {
    * its parameters when the step opens, not when it ends. */
   pendingSteps: Map<number, AntigravityStepUpdateEvent["step_update"]>;
   httpsPort: number | null;
+}
+
+/**
+ * One agy stream-json driver. A successful Turn keeps it (and its Question bridge)
+ * alive for the next Turn of the same model/effort/permission selection, so
+ * continued conversations skip CLI, Language Server, and customization startup.
+ * Any other outcome disposes it.
+ */
+interface AntigravityTransport {
+  process: ChildProcessByStdio<Writable, Readable, Readable>;
+  exited: Promise<void>;
+  questions: AntigravityQuestionBridge;
+  logPath: string;
+  /** Model, effort, and permission mode this process was started with. */
+  key: string;
+  nativePermissionMode: string | null;
+  httpsPort: number | null;
+  codeActionCursor: number;
+  /** Highest `num_turns` whose result this process already reported. */
+  lastResultTurn: number;
+  /** Fingerprint of the last successful result, to ignore a replayed one. */
+  lastResultJSON: string | null;
+  /** Highest step index this process already reported. */
+  lastStepIndex: number;
 }
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
@@ -549,6 +577,8 @@ class AntigravitySession implements HarnessSession {
   readonly #history: AntigravityHistory;
   readonly #subagentObservers = new Set<AntigravitySubagents>();
   #active: ActiveTurn | null = null;
+  /** The driver a successful Turn kept for this Session's next Turn. */
+  #transport: AntigravityTransport | null = null;
   #preparingQuestions: Promise<AntigravityQuestionBridge> | null = null;
   #questionCleanup: Promise<void> = Promise.resolve();
   #closed = false;
@@ -701,37 +731,58 @@ class AntigravitySession implements HarnessSession {
 
     let questions: AntigravityQuestionBridge;
     const hookDirectory = antigravityHookDirectory(this.#environment);
-    // The Thread's Hook directory outlives each Turn, while the previous Turn's agy may still be
-    // exiting and its bridge closing; the next bridge rewrites the directory after that cleanup,
-    // which is itself bounded. A private per-Turn directory is shared with no one.
-    const previousTurn = hookDirectory ? this.#questionCleanup : Promise.resolve();
-    this.#preparingQuestions = previousTurn.then(() =>
-      AntigravityQuestionBridge.create({
-        ...(hookDirectory ? { directory: hookDirectory } : {}),
-        turnId: command.turnId,
-        nativeSessionId: () =>
-          this.#active?.command === command && !this.#active.cancellationRequested
-            ? this.#nativeRef?.nativeSessionId
-            : undefined,
-        schedule: (action) => {
-          if (this.#active?.command === command) this.#enqueue(this.#active, action);
-          else action();
-        },
-        emit: (output) => {
-          const active = this.#active;
-          if (!active || active.command !== command) return;
-          if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
-            this.#completeItem(active, active.agentItem, { status: "succeeded" });
-            active.agentItem = null;
-            active.agentText = "";
-          }
-          if (output.kind === "event" && output.event.type === "item.completed") {
-            active.completedItems.push(output.event.snapshot);
-          }
-          this.#channel.emit(output);
-        },
-      }),
-    );
+    // A successful Turn keeps its driver, bridge, and log alive for the next Turn, so a
+    // continued conversation skips CLI, Language Server, and customization startup. A
+    // different model/effort/permission selection, a dead or unwritable process, or any
+    // earlier cleanup still in flight falls back to a fresh driver.
+    const transportKey = JSON.stringify([
+      this.#model?.id ?? null,
+      this.#thinkingOptionId ?? null,
+      this.#permissionMode,
+    ]);
+    await this.#questionCleanup.catch(() => undefined);
+    if (this.#closed) {
+      return { ok: false, error: invalidState("Antigravity Session is closed") };
+    }
+    let reusable = this.#transport;
+    if (
+      reusable &&
+      (reusable.key !== transportKey ||
+        reusable.process.exitCode !== null ||
+        reusable.process.signalCode !== null ||
+        !reusable.process.stdin.writable)
+    ) {
+      await this.#disposeTransport(reusable);
+      reusable = null;
+    }
+    const questionOptions: BridgeOptions = {
+      ...(hookDirectory ? { directory: hookDirectory } : {}),
+      turnId: command.turnId,
+      nativeSessionId: () =>
+        this.#active?.command === command && !this.#active.cancellationRequested
+          ? this.#nativeRef?.nativeSessionId
+          : undefined,
+      schedule: (action) => {
+        if (this.#active?.command === command) this.#enqueue(this.#active, action);
+        else action();
+      },
+      emit: (output) => {
+        const active = this.#active;
+        if (!active || active.command !== command) return;
+        if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
+          this.#completeItem(active, active.agentItem, { status: "succeeded" });
+          active.agentItem = null;
+          active.agentText = "";
+        }
+        if (output.kind === "event" && output.event.type === "item.completed") {
+          active.completedItems.push(output.event.snapshot);
+        }
+        this.#channel.emit(output);
+      },
+    };
+    this.#preparingQuestions = reusable
+      ? Promise.resolve(reusable.questions.rebind(questionOptions))
+      : AntigravityQuestionBridge.create(questionOptions);
     try {
       questions = await this.#preparingQuestions;
     } catch (error) {
@@ -747,11 +798,13 @@ class AntigravitySession implements HarnessSession {
       this.#preparingQuestions = null;
     }
     if (this.#closed) {
-      await questions.dispose();
+      await this.#disposeTransport(reusable);
+      if (!reusable) await questions.dispose();
       return { ok: false, error: invalidState("Antigravity Session is closed") };
     }
     const environment = { ...this.#environment, ...questions.environment };
-    const logPath = path.join(os.tmpdir(), `codexhost-antigravity-${randomUUID()}.log`);
+    const logPath =
+      reusable?.logPath ?? path.join(os.tmpdir(), `codexhost-antigravity-${randomUUID()}.log`);
     const arguments_ = [
       "--input-format",
       "stream-json",
@@ -769,13 +822,15 @@ class AntigravitySession implements HarnessSession {
     const invocation = commandInvocation(this.#executable, arguments_, environment);
     let child: ChildProcessByStdio<Writable, Readable, Readable>;
     try {
-      child = spawn(invocation.command, invocation.arguments, {
-        cwd: this.#cwd,
-        env: environment,
-        windowsHide: true,
-        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      child =
+        reusable?.process ??
+        spawn(invocation.command, invocation.arguments, {
+          cwd: this.#cwd,
+          env: environment,
+          windowsHide: true,
+          windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
     } catch (error) {
       await questions.dispose();
       return {
@@ -783,11 +838,24 @@ class AntigravitySession implements HarnessSession {
         error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
       };
     }
+    const transport: AntigravityTransport = reusable ?? {
+      process: child,
+      exited: new Promise<void>((resolve) => child.once("close", () => resolve())),
+      questions,
+      logPath,
+      key: transportKey,
+      nativePermissionMode: null,
+      httpsPort: null,
+      codeActionCursor: 0,
+      lastResultTurn: -1,
+      lastResultJSON: null,
+      lastStepIndex: -1,
+    };
     const active: ActiveTurn = {
       command,
       model: this.#model,
       process: child,
-      exited: new Promise<void>((resolve) => child.once("close", () => resolve())),
+      exited: transport.exited,
       questions,
       subagents: new AntigravitySubagents({
         turnId: command.turnId,
@@ -814,6 +882,8 @@ class AntigravitySession implements HarnessSession {
         schedule: (work) => this.#enqueue(active, work),
       }),
       logPath,
+      transport,
+      firstStepIndex: reusable ? reusable.lastStepIndex + 1 : 0,
       agentItem: null,
       agentText: "",
       tools: new Map(),
@@ -826,51 +896,87 @@ class AntigravitySession implements HarnessSession {
       latestUsage: null,
       contextUsagePromise: null,
       queue: Promise.resolve(),
-      codeActionCursor: 0,
+      codeActionCursor: reusable?.codeActionCursor ?? 0,
       fileChanges: new Map(),
       pendingSteps: new Map(),
       httpsPort: null,
     };
     this.#active = active;
+    this.#transport = transport;
     this.#subagentObservers.add(active.subagents);
-    child.stdin.on("error", () => undefined);
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-      active.stderr = (active.stderr + chunk).slice(-8_000);
-    });
-    const lines = readline.createInterface({ input: child.stdout });
-    lines.on("line", (line) => {
-      const event = parseAntigravityStreamLine(line);
-      if (event) this.#enqueue(active, () => this.#handleEvent(active, event));
-      else if (line.trim()) active.stderr = (active.stderr + `\n${line}`).slice(-8_000);
-    });
-    child.once("error", (error) => {
-      this.#enqueue(active, () => {
-        if (this.#active !== active) return;
-        this.#completeTurn(active, {
-          status: "failed",
-          error: { code: "nativeFailure", message: error.message, retryable: true },
+    // A reused process already has its stream listeners and its stdin error handler;
+    // attaching a second set would deliver every event twice.
+    if (!reusable) {
+      child.stdin.on("error", () => undefined);
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+        const turn = this.#active;
+        if (turn?.process === child) turn.stderr = (turn.stderr + chunk).slice(-8_000);
+      });
+      const lines = readline.createInterface({ input: child.stdout });
+      lines.on("line", (line) => {
+        const turn = this.#active;
+        if (!turn || turn.process !== child) return;
+        const event = parseAntigravityStreamLine(line);
+        if (!event) {
+          if (line.trim()) turn.stderr = (turn.stderr + `\n${line}`).slice(-8_000);
+          return;
+        }
+        // agy replays the previous successful result and old steps when it starts the
+        // next stdin message, so only genuinely new Turn output reaches the Host.
+        if (event.event === "result" && Number.isInteger(event.result.num_turns)) {
+          const fingerprint = JSON.stringify(event.result);
+          if (
+            event.result.status === "SUCCESS" &&
+            event.result.num_turns <= transport.lastResultTurn &&
+            fingerprint === transport.lastResultJSON
+          ) {
+            return;
+          }
+          transport.lastResultTurn = Math.max(transport.lastResultTurn, event.result.num_turns);
+          transport.lastResultJSON = fingerprint;
+        }
+        if (event.event === "step_update") {
+          const index = event.step_update.step_index;
+          if (Number.isInteger(index)) {
+            if (index < turn.firstStepIndex) return;
+            transport.lastStepIndex = Math.max(transport.lastStepIndex, index);
+          }
+        }
+        this.#enqueue(turn, () => this.#handleEvent(turn, event));
+      });
+      child.once("error", (error) => {
+        const turn = this.#active;
+        if (turn?.process !== child) return;
+        this.#enqueue(turn, () => {
+          if (this.#active !== turn) return;
+          this.#completeTurn(turn, {
+            status: "failed",
+            error: { code: "nativeFailure", message: error.message, retryable: true },
+          });
         });
       });
-    });
-    child.once("close", (code) => {
-      this.#enqueue(active, () => {
-        void unlink(active.logPath).catch(() => undefined);
-        if (active.subagents.running) void active.subagents.cancel();
-        else active.subagents.stop();
-        if (this.#active !== active || active.receivedResult) return;
-        if (active.cancellationRequested) {
-          this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
-        } else {
-          this.#completeTurn(active, {
-            status: "failed",
-            error: normalizedProcessError(
-              active.stderr,
-              `Antigravity CLI exited before a result event (code ${String(code)})`,
-            ),
-          });
-        }
+      child.once("close", (code) => {
+        if (this.#transport === transport) this.#transport = null;
+        const turn = this.#active;
+        if (!turn || turn.process !== child) return;
+        this.#enqueue(turn, () => {
+          if (turn.subagents.running) void turn.subagents.cancel();
+          else turn.subagents.stop();
+          if (this.#active !== turn || turn.receivedResult) return;
+          if (turn.cancellationRequested) {
+            this.#completeTurn(turn, { status: "cancelled", reason: "Cancelled by user" });
+          } else {
+            this.#completeTurn(turn, {
+              status: "failed",
+              error: normalizedProcessError(
+                turn.stderr,
+                `Antigravity CLI exited before a result event (code ${String(code)})`,
+              ),
+            });
+          }
+        });
       });
-    });
+    }
     try {
       const turnPrompt = formatAntigravityTurnPrompt(text, this.#cwd);
       if (child.stdin.writable) {
@@ -905,6 +1011,9 @@ class AntigravitySession implements HarnessSession {
       await active.subagents.cancel();
       active.process.kill();
       this.#completeTurn(active, { status: "cancelled", reason: "Session closed" });
+    } else if (this.#transport) {
+      // A retained driver from a successful Turn belongs to the Session; close releases it.
+      await this.#disposeTransport(this.#transport);
     }
     await Promise.all([...this.#subagentObservers].map((observer) => observer.cancel()));
     await this.#questionCleanup;
@@ -1276,17 +1385,28 @@ class AntigravitySession implements HarnessSession {
   #completeTurn(active: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (this.#active !== active) return;
     active.questions.stop();
+    const transport = active.transport;
+    // A successful Turn keeps its driver for the next Turn of this Session; the bridge is
+    // rebound there. Anything else (failure, cancellation, close) releases the driver.
+    const keepTransport =
+      outcome.status === "succeeded" &&
+      !this.#closed &&
+      this.#transport === transport &&
+      active.process.exitCode === null &&
+      active.process.signalCode === null &&
+      active.process.stdin.writable;
+    if (keepTransport) {
+      transport.httpsPort = active.httpsPort ?? transport.httpsPort;
+      transport.codeActionCursor = active.codeActionCursor;
+      transport.nativePermissionMode = active.nativePermissionMode;
+    }
     this.#questionCleanup = this.#questionCleanup
       .then(async () => {
-        if (outcome.status !== "succeeded") await active.subagents.cancel();
         await active.subagents.settled;
-        if (active.process.stdin.writable) active.process.stdin.end();
-        const timer = setTimeout(() => active.process.kill(), NATIVE_EXIT_GRACE_MS);
-        // A child that keeps agy's output open can delay `close` indefinitely, and later Turns'
-        // cleanup and close() queue behind this one.
-        await settledWithin(active.exited, NATIVE_EXIT_GRACE_MS + this.#turnCleanupWaitMs);
-        clearTimeout(timer);
-        await active.questions.dispose();
+        if (!keepTransport) {
+          if (outcome.status !== "succeeded") await active.subagents.cancel();
+          await this.#disposeTransport(transport);
+        }
         this.#subagentObservers.delete(active.subagents);
       })
       .catch(() => undefined);
@@ -1333,6 +1453,29 @@ class AntigravitySession implements HarnessSession {
       outcome,
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
     });
+  }
+
+  /** Releases a native driver: stop its bridge, end stdin, then kill if it lingers. */
+  async #disposeTransport(transport: AntigravityTransport | null): Promise<void> {
+    if (!transport) return;
+    if (this.#transport === transport) this.#transport = null;
+    transport.questions.stop();
+    if (transport.process.stdin.writable) transport.process.stdin.end();
+    const timer = setTimeout(() => transport.process.kill(), NATIVE_EXIT_GRACE_MS);
+    const hardTimer = setTimeout(
+      () => transport.process.kill("SIGKILL"),
+      NATIVE_EXIT_GRACE_MS + 5_000,
+    );
+    try {
+      // A process that keeps agy's output open can delay `close` indefinitely, and later
+      // Turns' cleanup and close() queue behind this one.
+      await settledWithin(transport.exited, NATIVE_EXIT_GRACE_MS + this.#turnCleanupWaitMs);
+    } finally {
+      clearTimeout(timer);
+      clearTimeout(hardTimer);
+      await transport.questions.dispose();
+      await unlink(transport.logPath).catch(() => undefined);
+    }
   }
 
   #completeItem(active: ActiveTurn, item: HostItem, outcome: HostItemOutcome): void {

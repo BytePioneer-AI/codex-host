@@ -86,7 +86,7 @@
 |---|---|---|
 | Adapter 公共行为 | `npx vitest run --config tests/vitest.config.js packages/adapters/devin/test` | 104 项通过（6 个文件）；含 Thinking、原生历史路径、执行策略、运行中 Model、权限状态保留与故障/关闭期间 snapshot 拒绝 |
 | 原生边界 | Mock ACP；test/fixtures/configuration-acp.mjs、history-acp.mjs 合成 stdio 进程 | 请求驱动的配置通知、native history RPC wire/边界/错误与子进程退出；不读取凭据、不启动真实 Devin，非真实 CLI 验收 |
-| 插件加载 | installed-harness-plugins.test.ts，筛选 `loads all preinstalled plugin factories without static registration or executable discovery` | 1 项通过，22 项因名称筛选跳过；加载构建产物，不发现或启动原生可执行文件 |
+| 整合回归 | `npx vitest run --config tests/vitest.config.js packages/adapters/devin/test packages/host-runtime/test/installed-harness-plugins.test.ts tests/release/host-bundle.test.mjs` | 136 项通过，1 项跳过（缺少 CODEXHOST_OPENCODE_REAL_COMMAND）；覆盖 Devin、公共插件 Loader 与发布 bundle |
 | 构建与静态检查 | npm run typecheck；npm run build:typescript；npm run lint；改动文件 Prettier；git diff --check | 全部通过；依赖用 npm ci --ignore-scripts 安装；未运行全量测试、真实 Devin 或 Desktop |
 | 历史能力实现 | test/history.test.ts、test/history-transport.test.ts、test/fixtures/history-acp.mjs | 原生 ID/step 对齐、中间/末尾 Fork、配置保留、多轮/单轮/空历史 rollback、旧版 unsupported、活动操作互斥、错误 ID/前缀/opaque payload/源变更与资源清理；仅 mock/synthetic，非真实 mutation 验收 |
 | 真实原生验收 | PR 集成记录中的 3000.10.31 / macOS / swe-2-high / accept-edits | 历史记录；本地未复验 |

@@ -2187,7 +2187,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await fixture.collector.waitFor((message) => method(message, "thread/archived"));
 
     // Allow setImmediate idle release to run and hit the close rejection
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
 
     // Metadata read succeeds cleanly
     writeRequest(fixture.desktopInput, {

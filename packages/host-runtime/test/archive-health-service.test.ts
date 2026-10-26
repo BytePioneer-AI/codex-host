@@ -133,22 +133,22 @@ describe("ArchiveHealthService", () => {
     expect(report.summary.externalRecoverable).toBe(1);
   });
 
-  it("identifies uncommitted provisional thread records", async () => {
+  it("identifies uncommitted creating thread records", async () => {
     const f = await createFixture();
-    const provisionalId = hostThreadIdSchema.parse("provisional-1");
-    const provisionalRecord: StoredThreadRecordV1 = {
+    const creatingId = hostThreadIdSchema.parse("creating-1");
+    const creatingRecord: StoredThreadRecordV1 = {
       ...f.record,
-      hostThreadId: provisionalId,
-      state: "provisional",
+      hostThreadId: creatingId,
+      state: "creating",
     };
-    f.records.set(provisionalId, provisionalRecord);
+    f.records.set(creatingId, creatingRecord);
 
     const report = await f.service.inspect();
-    const found = report.inconsistentThreads.find((t) => t.threadId === provisionalId);
+    const found = report.inconsistentThreads.find((t) => t.threadId === creatingId);
     expect(found).toMatchObject({
-      threadId: provisionalId,
+      threadId: creatingId,
       kind: "external",
-      state: "provisional",
+      state: "creating",
       recoverable: true,
     });
   });
@@ -173,6 +173,60 @@ describe("ArchiveHealthService", () => {
 
     // Broadcast notification sent
     expect(f.notifiedArchived).toContain(f.id);
+
+    // History and native identity remain intact
+    expect(f.record.nativeSessionRef).toEqual(f.record.nativeSessionRef);
+    expect(f.record.turnMappings).toEqual([]);
+  });
+
+  it("safely force-archives an orphaned in-memory thread missing from repository", async () => {
+    const f = await createFixture();
+    const orphanId = hostThreadIdSchema.parse("orphan-in-memory");
+    const orphanRecord: StoredThreadRecordV1 = {
+      ...f.record,
+      hostThreadId: orphanId,
+    };
+    f.runtime.register({
+      record: orphanRecord,
+      session: f.thread.session,
+      sessionId: orphanId,
+      thread: { id: orphanId },
+      turns: [],
+    });
+
+    // Check inspection identifies it
+    const report = await f.service.inspect();
+    const found = report.inconsistentThreads.find((t) => t.threadId === orphanId);
+    expect(found).toMatchObject({
+      threadId: orphanId,
+      state: "orphaned",
+      recoverable: true,
+    });
+
+    // Force archive detaches the orphan without error
+    const result = await f.service.forceArchive(orphanId);
+    expect(result).toEqual({
+      ok: true,
+      threadId: orphanId,
+      archived: true,
+    });
+    expect(f.runtime.get(orphanId)).toBeUndefined();
+  });
+
+  it("rejects force-archive when thread has an active running turn", async () => {
+    const f = await createFixture();
+    f.thread.running = true;
+
+    await expect(f.service.forceArchive(f.id)).rejects.toMatchObject({
+      code: -32072,
+    });
+  });
+
+  it("skips official process inspection when includeOfficial is false", async () => {
+    const f = await createFixture();
+    const report = await f.service.inspect({ includeOfficial: false });
+    expect(report.officialProcesses).toHaveLength(0);
+    expect(report.summary.officialOccupied).toBe(0);
   });
 
   it("rejects force-archive for non-existent thread", async () => {

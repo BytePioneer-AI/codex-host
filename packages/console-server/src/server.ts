@@ -317,7 +317,11 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     if (route === "GET /api/archive/health") {
       try {
         const reply = await options.host.request("codexhost/archive/health", {});
-        sendJson(response, 200, reply);
+        if ("error" in reply) {
+          sendJson(response, 500, { error: reply.error.message });
+        } else {
+          sendJson(response, 200, reply.result);
+        }
       } catch (error) {
         sendJson(response, error instanceof HostUnavailableError ? 503 : 500, {
           error: error instanceof Error ? error.message : String(error),
@@ -328,7 +332,13 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     if (route === "POST /api/archive/force") {
       try {
         const reply = await options.host.request("codexhost/archive/force", body);
-        sendJson(response, 200, reply);
+        if ("error" in reply) {
+          const status =
+            reply.error.code === -32602 ? 404 : reply.error.code === -32072 ? 409 : 500;
+          sendJson(response, status, { error: reply.error.message });
+        } else {
+          sendJson(response, 200, reply.result);
+        }
       } catch (error) {
         sendJson(response, error instanceof HostUnavailableError ? 503 : 500, {
           error: error instanceof Error ? error.message : String(error),

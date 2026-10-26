@@ -379,8 +379,8 @@ describe("console server", () => {
     };
     const forceResult = { ok: true, threadId: "t-1", archived: true };
     const request = vi.fn(async (method: string) => {
-      if (method === "codexhost/archive/health") return healthResult;
-      if (method === "codexhost/archive/force") return forceResult;
+      if (method === "codexhost/archive/health") return { result: healthResult };
+      if (method === "codexhost/archive/force") return { result: forceResult };
       throw new Error(`Unexpected method: ${method}`);
     });
     const { base } = await start({ host: { available: async () => true, request } });

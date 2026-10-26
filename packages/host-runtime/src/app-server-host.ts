@@ -815,6 +815,14 @@ export class AppServerHost {
     this.#archiveHealthService = new ArchiveHealthService({
       repository: this.#repository,
       runtime: this.#externalRuntime,
+      canRelease: (thread) =>
+        !this.#hasRunningSubagents(thread.id) &&
+        !thread.session.hasBackgroundWork?.() &&
+        !this.#externalSteering.hasPending(thread.id) &&
+        !this.#pendingExternalCommandRequests.has(thread.id) &&
+        ![...this.#pendingDesktopApprovals.values()].some((pending) => pending.thread === thread) &&
+        ![...this.#pendingDesktopQuestions.values()].some((pending) => pending.thread === thread),
+      diagnose: (error) => this.#diagnose(error),
       notifyArchived: async (threadId) => {
         await this.#writer.json({
           method: "thread/archived",
@@ -3408,7 +3416,7 @@ export class AppServerHost {
       return;
     }
     try {
-      const result = await this.#archiveHealthService.inspect();
+      const result = await this.#archiveHealthService.inspect(params.data);
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
     } catch (error) {
       await this.#writer.json(rpcError(request, -32603, errorMessage(error)));

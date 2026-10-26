@@ -3,6 +3,7 @@ import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import type { HarnessOutput, HarnessSessionState } from "@codexhost/harness-adapter";
 import {
   harnessInspectionSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   nativeSessionRefSchema,
@@ -71,7 +72,7 @@ function withoutThinking() {
   );
   return result;
 }
-function fixture(initial = info()) {
+function fixture(initial = info(), created = true) {
   const transport = new DevinTransport({ cwd: process.cwd(), environment: {} });
   transport.sessionId = nativeRef.nativeSessionId;
   const configure = vi.spyOn(transport, "configure").mockImplementation(async (id, value) => ({
@@ -85,7 +86,7 @@ function fixture(initial = info()) {
   const cancel = vi.spyOn(transport, "cancel").mockImplementation(async () => {
     turn.resolve({ stopReason: "cancelled" });
   });
-  const session = new DevinSession(transport, structuredClone(initial), () => {});
+  const session = new DevinSession(transport, structuredClone(initial), () => {}, created);
   const outputs: HarnessOutput[] = [];
   const done = (async () => {
     for await (const output of session.outputs) outputs.push(output);
@@ -201,6 +202,102 @@ describe("Devin native Thinking discovery", () => {
 });
 
 describe("Devin Thinking selection and native state", () => {
+  it("preserves the latest confirmed permission notification across Thinking selection", async () => {
+    const initial = info();
+    initial.modes.availableModes.push({ id: "bypass", name: "Bypass" });
+    const f = fixture(initial);
+    vi.mocked(f.transport.prompt).mockImplementation((_text, callbacks) => {
+      callbacks.update({
+        sessionId: nativeRef.nativeSessionId,
+        update: { sessionUpdate: "current_mode_update", currentModeId: "bypass" },
+      });
+      return f.turn.promise;
+    });
+    try {
+      await f.session.execute(start);
+      expect(f.session.initialState.effectivePermissionModeId).toBe("bypass");
+      expect(
+        (await f.session.execute({ type: "thinking.select", thinkingOptionId: high })).ok,
+      ).toBe(true);
+      expect(f.session.initialState.effectivePermissionModeId).toBe("bypass");
+      expect(f.session.info.modes?.currentModeId).toBe("bypass");
+      expect(states(f.outputs).every((state) => state.effectivePermissionModeId === "bypass")).toBe(
+        true,
+      );
+    } finally {
+      await f.close();
+    }
+  });
+  it("preserves a configured permission mode when its selector is removed", async () => {
+    const initial = info();
+    initial.modes.availableModes.push({ id: "bypass", name: "Bypass" });
+    const f = fixture(initial);
+    f.configure.mockResolvedValueOnce({
+      configOptions: [
+        ...initial.configOptions,
+        {
+          id: "mode",
+          category: "mode",
+          name: "Mode",
+          type: "select",
+          currentValue: "bypass",
+          options: [{ value: "bypass", name: "Bypass" }],
+        },
+      ],
+    });
+    try {
+      expect(
+        (
+          await f.session.execute({
+            type: "permissionMode.select",
+            permissionModeId: harnessPermissionModeIdSchema.parse("bypass"),
+          })
+        ).ok,
+      ).toBe(true);
+      f.configure.mockResolvedValueOnce({
+        configOptions: info(thinking(undefined, "budget: high")).configOptions,
+      });
+      expect(
+        (await f.session.execute({ type: "thinking.select", thinkingOptionId: high })).ok,
+      ).toBe(true);
+      expect(f.session.initialState.effectivePermissionModeId).toBe("bypass");
+      expect(f.session.info.modes?.currentModeId).toBe("bypass");
+    } finally {
+      await f.close();
+    }
+  });
+  it("rejects a snapshot whose reload configuration faults and closes the Session", async () => {
+    const f = fixture(info(), false);
+    vi.spyOn(f.transport, "reload").mockImplementation(async () => {
+      f.transport.onConfigOptions?.([]);
+      return [];
+    });
+    try {
+      const result = await f.session.readSnapshot();
+      expect(result).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(result).not.toHaveProperty("value");
+      expect(await f.session.readSnapshot()).toMatchObject({ ok: false });
+      expect(f.outputs).toContainEqual(
+        expect.objectContaining({ event: expect.objectContaining({ type: "session.faulted" }) }),
+      );
+    } finally {
+      await f.close();
+    }
+  });
+  it("rejects a snapshot when close occurs while reload is pending", async () => {
+    const f = fixture(info(), false);
+    const replay = Promise.withResolvers<Awaited<ReturnType<DevinTransport["reload"]>>>();
+    vi.spyOn(f.transport, "reload").mockReturnValue(replay.promise);
+    try {
+      const snapshot = f.session.readSnapshot();
+      await f.session.close();
+      replay.resolve([]);
+      expect(await snapshot).toMatchObject({ ok: false, error: { code: "invalidState" } });
+    } finally {
+      replay.resolve([]);
+      await f.close();
+    }
+  });
   it.each([false, true])(
     "confirms selection before completion (running=%s), without interrupting the Turn",
     async (running) => {

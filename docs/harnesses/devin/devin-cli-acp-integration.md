@@ -62,47 +62,32 @@ catalog (385 entries when tested) and the permission modes `accept-edits`,
 
 ## Thinking configuration
 
-[Devin stable changelog v3000.11.1](https://docs.devin.ai/cli/changelog/stable)
-explicitly adds model, thinking effort and speed selection through ACP session
-configuration. The [Models guide](https://docs.devin.ai/cli/models) describes
-reasoning levels as model-dependent, but does not define wire IDs or enumerate
-ACP values. The adapter follows the official
-[ACP Session Config Options](https://agentclientprotocol.com/protocol/session-config-options)
-fields instead:
+[Devin v3000.11.1](https://docs.devin.ai/cli/changelog/stable) adds ACP model,
+thinking effort and speed controls. The [Models guide](https://docs.devin.ai/cli/models)
+describes model-dependent reasoning levels; wire fields follow
+[ACP Session Config Options](https://agentclientprotocol.com/protocol/session-config-options).
 
 - Discover the first `type: "select"`, `category: "thought_level"` entry in
-  `session/new` or `session/load`'s `configOptions`, respecting ACP priority order.
-  Missing/unknown categories, a `model_config` speed option, model suffixes and
-  selector names/IDs do not establish Thinking support. No Devin-specific
-  Thinking `_meta` fields are assumed.
-- Flatten native select groups without inventing levels or labels. Host Thinking
-  IDs use `devin.<base64url(native value)>`; selection resolves back through the
-  current advertised values and sends their original `value` and selector `id`
-  in `session/set_config_option`'s `configId`/`value` fields.
-- Treat the response and `config_option_update` notifications as complete
-  replacements, including idle notifications and snapshot reload responses.
-  `effectiveThinkingOptionId` and `availableThinkingOptions` come only from
-  native readback. Removing the selector clears the effective value and options;
-  changing Model never replays the previous Thinking selection. Catalog
-  per-Model Thinking restrictions are supplied only for the observed active Model,
-  not guessed for other Models. The Model selector uses category `model`, with
-  the observed legacy `id: "model"` as a compatibility fallback.
-- Apply create/resume configuration hints inside the adapter: Model first, then
-  Thinking validated against the resulting options. Omitted hints preserve the
-  native defaults/restored state. Stale or unconfirmed hints fail the open
-  operation and close the transport rather than reporting the requested state. A CLI with
-  no usable categorized Thinking selector advertises false and returns typed
-  `unsupported` for Thinking selection or hints.
+  `configOptions`. Missing/unknown categories, `model_config` speed options,
+  selector names/IDs and Model suffixes do not establish Thinking support.
+  No usable selector means false capability and typed `unsupported`.
+- Preserve native labels and grouped values. Host IDs encode
+  `devin.<base64url(native value)>`; writes use the advertised selector `id`
+  and original `value` as `session/set_config_option`'s `configId`/`value`.
+- Complete responses, `config_option_update` notifications and reloads replace
+  effective state and available options. Selector removal clears Thinking;
+  Model changes never replay old Thinking. Per-Model restrictions describe only
+  the observed active Model. A missing mode selector preserves the latest
+  native-confirmed permission mode. Faulted or closed reloads fail snapshot reads.
+- Create/resume hints apply Model first, then validate Thinking against its
+  returned options. Omitted hints preserve native state; stale or unconfirmed
+  hints fail opening and close the transport. Model discovery uses category
+  `model`, with the observed legacy `id: "model"` fallback.
 
-Hermetic tests cover dynamic discovery, model-dependent option changes, hints,
-concurrent configuration, cancellation, failures, close, and ACP notification/load
-handling using a synthetic process. They do **not** verify which selector IDs or
-categories a real Devin build emits. Native validation still requires an
-installed, authenticated CLI with this feature: capture its `configOptions`,
-verify idle/running selection and dependent options across Models, then close
-and resume the same session with and without hints. No native Thinking
-acceptance has been performed locally; the `3000.10.31` run below predates this
-feature.
+Coverage is hermetic, including synthetic ACP processes, not native Thinking
+acceptance. Actual Devin fields, idle/running selection, Model-dependent options
+and cold resume with/without hints still require an authenticated CLI with this
+feature; the `3000.10.31` run below predates it.
 
 ## Turn identity
 

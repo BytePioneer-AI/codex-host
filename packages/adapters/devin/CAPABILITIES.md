@@ -82,8 +82,8 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| Adapter 公共行为 | Vitest，`tests/vitest.config.js`，`packages/adapters/devin/test` | Thinking 变更聚焦回归 58 项通过；含既有执行策略与运行中 Model 回归 |
-| 原生边界 | Mock ACP 回放、权限和终态；test/fixtures/configuration-acp.mjs 合成 stdio 进程 | 覆盖 idle/running config_option_update 与 load 完整状态；非真实 CLI 验收 |
+| Adapter 公共行为 | Vitest，`tests/vitest.config.js`，`packages/adapters/devin/test` | Thinking 聚焦回归 63 项通过；含执行策略、运行中 Model、权限状态保留与故障/关闭期间 snapshot 拒绝 |
+| 原生边界 | Mock ACP 回放、权限和终态；test/fixtures/configuration-acp.mjs 合成 stdio 进程 | 请求驱动的 idle/running 通知、权限状态与非法 load 配置响应；非真实 CLI 验收 |
 | 插件加载 | installed-harness-plugins.test.ts，按 factories / independent instances / explicit devin command 过滤 | 3 项通过；其余 20 项未选中；构建产物的真实 Loader 与合成缺失 CLI 检查，不启动真实 Devin |
 | 构建与静态检查 | npm run typecheck、npm run build:plugins；变更 TS/MJS 的 ESLint；tools/check-boundaries.mjs；变更文件 Prettier；git diff --check | 通过；未运行全量测试、完整 Host 集成或 Desktop |
 | 历史能力边界 | test/history.test.ts | 4 项回归测试；仅验证能力关闭、无原生启动及不伪造 checkpoint，不代表原生 Fork/rollback 验收 |

@@ -2,7 +2,14 @@ import { createInterface } from "node:readline";
 
 // Synthetic ACP server: no Devin installation, authentication or model requests.
 const sessionId = "fixture-session";
-const modes = { currentModeId: "ask", availableModes: [{ id: "ask", name: "Ask" }] };
+const scenario = process.argv[2];
+const modes = {
+  currentModeId: "ask",
+  availableModes: [
+    { id: "ask", name: "Ask" },
+    { id: "bypass", name: "Bypass" },
+  ],
+};
 const model = {
   id: "model",
   category: "model",
@@ -25,7 +32,7 @@ const notify = (configOptions) =>
     method: "session/update",
     params: { sessionId, update: { sessionUpdate: "config_option_update", configOptions } },
   });
-let loaded = false;
+let loads = 0;
 let promptId;
 for await (const line of createInterface({ input: process.stdin })) {
   const message = JSON.parse(line);
@@ -35,12 +42,24 @@ for await (const line of createInterface({ input: process.stdin })) {
       result = { protocolVersion: 1, agentCapabilities: { loadSession: true }, authMethods: [] };
       break;
     case "session/load":
-      result = { modes, configOptions: loaded ? [model] : [model, thoughts("low")] };
-      if (!loaded) setTimeout(() => notify([model, thoughts("high")]), 50);
-      loaded = true;
+      loads += 1;
+      if (loads === 1) result = { modes, configOptions: [model, thoughts("low")] };
+      else if (scenario === "invalid-reload") result = { modes, configOptions: [] };
+      else if (loads === 2) {
+        notify([model, thoughts("high")]);
+        result = { modes };
+      } else result = { modes, configOptions: [model] };
       break;
     case "session/prompt":
       promptId = message.id;
+      modes.currentModeId = "bypass";
+      send({
+        method: "session/update",
+        params: {
+          sessionId,
+          update: { sessionUpdate: "current_mode_update", currentModeId: "bypass" },
+        },
+      });
       notify([model, thoughts("low")]);
       continue;
     case "session/set_config_option":

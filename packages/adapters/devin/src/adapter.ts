@@ -315,6 +315,8 @@ export class DevinSession implements HarnessSession {
   #applyConfiguration(configOptions: NonNullable<DevinSessionInfo["configOptions"]>) {
     const state = devinConfigurationState({ ...this.info, configOptions });
     this.info.configOptions = configOptions;
+    if (this.info.modes && state.effectivePermissionModeId)
+      this.info.modes.currentModeId = state.effectivePermissionModeId;
     const previous = structuredClone(this.initialState);
     // Complete lists can explicitly remove Thinking, so never merge a stale effective value.
     delete this.initialState.effectiveModel;
@@ -334,6 +336,8 @@ export class DevinSession implements HarnessSession {
     this.#configuring = true;
     try {
       const replay = await this.transport.reload();
+      if (this.#closed)
+        return rejected("invalidState", "Devin session closed during snapshot reload");
       return {
         ok: true,
         value: {
@@ -477,6 +481,8 @@ export class DevinSession implements HarnessSession {
               this.initialState.effectivePermissionModeId = harnessPermissionModeIdSchema.parse(
                 event.update.currentModeId,
               );
+              if (this.info.modes)
+                this.info.modes.currentModeId = this.initialState.effectivePermissionModeId;
               this.#channel.emit({
                 kind: "event",
                 event: {

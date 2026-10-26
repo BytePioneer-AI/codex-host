@@ -21,6 +21,8 @@ export interface PreviewOptions extends HostRestartOptions {
   "ch-data"?: string;
   "ch-codex-home"?: string;
   "ch-plugins"?: string;
+  /** Serve the Web UI from this source checkout and reload rebuilt bundles (development only). */
+  "dev-web-ui"?: string;
 }
 
 /**
@@ -85,6 +87,7 @@ export function previewLaunch(
       ),
       "--workspace",
       resolve(options.workspace ?? join(homedir(), "codexhost-web-preview-workspace")),
+      ...(options["dev-web-ui"] ? ["--dev-web-ui", resolve(options["dev-web-ui"])] : []),
     ],
   };
 }

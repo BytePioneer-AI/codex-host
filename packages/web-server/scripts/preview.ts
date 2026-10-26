@@ -19,6 +19,7 @@ const { values } = parseArgs({
     "ch-data": { type: "string" },
     "ch-codex-home": { type: "string" },
     "ch-plugins": { type: "string" },
+    "dev-web-ui": { type: "string" },
     host: { type: "string" },
     port: { type: "string" },
     data: { type: "string" },

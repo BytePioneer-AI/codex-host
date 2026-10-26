@@ -226,6 +226,70 @@ describe("development Desktop start", () => {
     expect(spawnImplementation).not.toHaveBeenCalled();
   });
 
+  it("runs the Web UI watcher beside a source-serving preview and stops it with the preview", async () => {
+    const root = temporaryDirectory();
+    const nodePath = path.join(root, "node");
+    const environment = { PATH: "/fixture/bin" };
+    const watcher = new EventEmitter();
+    watcher.kill = vi.fn();
+    const spawnImplementation = vi
+      .fn()
+      .mockImplementationOnce(() => watcher)
+      .mockImplementationOnce(() => exitingChild(0));
+    expect(
+      await runDevelopmentDesktop({
+        arguments_: ["web", "--no-build", "--watch", "--port", "3181"],
+        root,
+        nodePath,
+        environment,
+        spawnImplementation,
+      }),
+    ).toBe(0);
+    expect(spawnImplementation).toHaveBeenNthCalledWith(
+      1,
+      nodePath,
+      ["--import", "tsx", path.join(root, "apps/web-ui/scripts/build.ts"), "--watch"],
+      expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
+    );
+    expect(spawnImplementation).toHaveBeenNthCalledWith(
+      2,
+      nodePath,
+      [
+        "--import",
+        "tsx",
+        path.join(root, "packages/web-server/scripts/preview.ts"),
+        "--restart",
+        "--dev-web-ui",
+        path.join(root, "apps/web-ui"),
+        "--port",
+        "3181",
+      ],
+      expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
+    );
+    expect(watcher.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("stops the preview and fails when the Web UI watcher exits first", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const root = temporaryDirectory();
+    const preview = new EventEmitter();
+    preview.kill = vi.fn(() => queueMicrotask(() => preview.emit("exit", null, "SIGTERM")));
+    const spawnImplementation = vi
+      .fn()
+      .mockImplementationOnce(() => exitingChild(1))
+      .mockImplementationOnce(() => preview);
+    expect(
+      await runDevelopmentDesktop({
+        arguments_: ["web", "--no-build", "--watch"],
+        root,
+        nodePath: path.join(root, "node"),
+        environment: {},
+        spawnImplementation,
+      }),
+    ).toBe(1);
+    expect(preview.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
   it.each([0, 7])(
     "builds Web before preview and stops on build failure (exit %s)",
     async (code) => {

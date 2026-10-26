@@ -43,7 +43,8 @@
     "@deepseek-ai/dsh-api-workspace-controller",
     "@deepseek-ai/dsh-client-ui-directory-picker-browse",
     "@deepseek-ai/dsh-client-ui-codexhost",
-    "@deepseek-ai/dsh-api-workspace-files"
+    "@deepseek-ai/dsh-api-workspace-files",
+    "@deepseek-ai/dsh-client-hmr"
   ],
   "packages": [
     "@deepseek-ai/cordis",
@@ -62,6 +63,7 @@
     "@deepseek-ai/dsh-brand",
     "@deepseek-ai/dsh-client-connection",
     "@deepseek-ai/dsh-client-file-upload",
+    "@deepseek-ai/dsh-client-hmr",
     "@deepseek-ai/dsh-client-locale",
     "@deepseek-ai/dsh-client-modules",
     "@deepseek-ai/dsh-client-product-analytics",

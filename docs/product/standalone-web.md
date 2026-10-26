@@ -26,6 +26,16 @@ Web 按内容寻址快照的 runtime 路径（或 `--ch-host-runtime` 覆盖值�
 
 成功构建仅显示进度和耗时；失败显示末尾最多 64,000 字符诊断，保留旧 Host 和 Web。完整构建输出可通过 `npm run build:web` 查看。`npm start web -- --no-build` 复用已有发行产物，仍应用同一 Host 判断并重启 Web。`npm run start:web` 保留兼容。Web 仅停止明确匹配的旧开发进程，不按端口直接杀进程；其他程序占用端口仍需自行处理。开发重启要求本地共享 Host，旧 CDP 接入使用直接 preview 入口。
 
+### 前端开发热更新
+
+`npm start web -- --watch` 在上述构建与重启之后，同时运行 Web UI 监听构建（`apps/web-ui/scripts/build.ts --watch`）和 Web 服务；Web 服务以 `--dev-web-ui <apps/web-ui>` 直接读取工作树的前端产物，而不是发行目录中的副本。修改前端源码后无须重启 Host 或 Web：
+
+- `packages/*/*` 下的客户端插件（如 `ui-chat`、`ui-sidebar`）由 tsdown 增量重建，服务端轮询各插件的 `lib/client.js`，内容变化时经 `/plugins/events` SSE 推送 `rebuilt`，已打开的页面就地替换该插件，不刷新页面。被替换插件及依赖它的插件的 React 状态会重置；会话、工作区与连接保持。
+- 静态链接进页面外壳的包（如 `ui-primitives`、`store`、`ui-slots`）及 `apps/web` 由 Vite 监听重建，服务端检测到 `index.html` 变化后推送 `shell`，页面整页刷新。
+- 内容未变的重写（例如监听启动时的首次构建）不会触发替换。CodexHost 设置页（`renderer-extension`）、Web 服务与 Host 代码的修改仍需重新执行 `npm start web`。
+
+浏览器侧沿用上游 `@deepseek-ai/dsh-client-hmr` 插件与 Client Modules 的替换逻辑；服务侧检测与推送由 `packages/web-server/src/web-hmr.ts` 实现。该插件只在 `--dev-web-ui` 时加入插件组合，发行包不包含。任一进程退出都会停止另一个；`--watch` 可与 `--no-build`、`--port` 组合使用。
+
 `build:web` 编译当前工作树的 CH 包并调用已有插件构建器，构建原生 Launcher，随后编译前端和打包。插件输入为 `packages/host-runtime/dist/plugins`，不是已安装的 CH.app 或另一个仓库。用量统计专用插件不作为聊天 Harness；Web 另行打包同仓库的 Codex Adapter。
 
 发行目录为 `packages/web-server/dist/codexhost-web`，包含 Node 网关、Web 界面、同一 Host bundle、当前平台的原生 Launcher 和自包含插件；网关与 Host bundle 使用既有安装资源布局 `app/server.mjs`、`app/host-runtime.mjs`，原生 CLI 无须 Web 专用路径回退，根目录 `preview.mjs` 仍为隔离启动入口；会话与用量插件在后台显式启用，Codex CLI 与其他外部 Harness 使用同一插件注册表，Manifest 只声明 Web 界面。整体目录可以移动到仓库外运行，无需源码目录或仓库的 node_modules，但原生 Launcher 不能跨 OS/CPU 使用。默认共享模式也不要求 Desktop 运行：Web、Desktop 均可独立使用，同时开启时共享后台，晚开启的一端读取最新事实；关闭任意界面不停止另一端或后台任务。需要本机受支持的 Node，Harness CLI 和其认证仍由用户安装、配置。

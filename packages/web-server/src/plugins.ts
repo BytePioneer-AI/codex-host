@@ -51,6 +51,12 @@ export const CLIENT_PLUGINS: readonly string[] = [
   "@deepseek-ai/dsh-client-ui-codexhost",
 ];
 
+/**
+ * Development-only browser half of the reload channel, composed after {@link CLIENT_PLUGINS} when
+ * the server runs with `--dev-web-ui`; packed distributions never include it.
+ */
+export const HMR_CLIENT_PLUGIN = "@deepseek-ai/dsh-client-hmr";
+
 /** Configuration globals read by the composed plugins. */
 export const CLIENT_GLOBALS: Readonly<Record<string, unknown>> = {
   __DSH_SHORTCUTS_CONFIG__: { stopSequenceMs: 500 },

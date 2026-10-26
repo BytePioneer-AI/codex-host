@@ -139,7 +139,7 @@ echo 'codexhost dev: stopped the running Codex Desktop'
 
 export function usage() {
   return `usage: npm start [version] [-- --no-build]
-       npm start web [-- --port 3181]
+       npm start web [-- --port 3181] [--watch]
 
 Stop any running Codex Desktop, then build and run the current codexhost worktree.
 After building, reuse an unchanged shared Host; restart a changed Host unless the other interface is open.
@@ -154,6 +154,7 @@ options:
   --no-build          reuse existing development artifacts
   --restart-host      force restart of a running Host (mutually exclusive with --keep-host)
   --keep-host         keep the running Host without asking
+  --watch             web only: rebuild Web UI sources on edit and reload them in open pages
   --version <semver>  alternative version syntax (npm start -- --version 0.12.0)
   --help              show this help`;
 }
@@ -338,6 +339,41 @@ function runChild(invocation, root, spawnImplementation = spawn, environment = p
   });
 }
 
+// `npm start web -- --watch`: the Web UI rebuild watcher runs beside the preview, which serves
+// the rebuilt bundles from source. Either process ending stops the other.
+function runWatchedWeb(preview, watcher, root, spawnImplementation, environment) {
+  const start = (invocation) =>
+    spawnImplementation(invocation.command, invocation.arguments, {
+      cwd: root,
+      stdio: "inherit",
+      env: environment,
+      windowsHide: false,
+    });
+  return new Promise((resolve, reject) => {
+    const watchProcess = start(watcher);
+    const previewProcess = start(preview);
+    let previewExited = false;
+    let watcherExited = false;
+    watchProcess.once("error", reject);
+    previewProcess.once("error", reject);
+    watchProcess.once("exit", () => {
+      watcherExited = true;
+      if (previewExited) return;
+      console.error("codexhost web: the Web UI watcher exited; stopping the Web preview");
+      previewProcess.kill("SIGTERM");
+    });
+    previewProcess.once("exit", (code) => {
+      previewExited = true;
+      if (watcherExited) {
+        resolve(1);
+        return;
+      }
+      watchProcess.kill("SIGTERM");
+      resolve(code ?? 1);
+    });
+  });
+}
+
 // The Launcher prints a single "ready\n" line once the Desktop, Controller,
 // and Host chain are up, then detaches from the terminal to keep supervising.
 // Resolve on that signal so `npm start` returns instead of holding the terminal
@@ -397,6 +433,7 @@ export async function runDevelopmentDesktop({
       "restart-host": webArguments.includes("--restart-host"),
       "keep-host": webArguments.includes("--keep-host"),
     });
+    const watch = webArguments.includes("--watch");
     if (!webArguments.includes("--no-build")) {
       const buildResult = await runQuietWebBuild(
         npmBuildInvocation(environment, platform, nodePath, "build:web"),
@@ -404,22 +441,23 @@ export async function runDevelopmentDesktop({
       );
       if (buildResult.code !== 0) return buildResult.code ?? 1;
     }
-    const result = await runChild(
-      {
-        command: nodePath,
-        arguments: [
-          "--import",
-          "tsx",
-          path.join(root, "packages/web-server/scripts/preview.ts"),
-          "--restart",
-          ...webArguments.filter((argument) => argument !== "--no-build"),
-        ],
-      },
-      root,
-      spawnImplementation,
-      environment,
-    );
-    return result.code ?? 1;
+    const preview = {
+      command: nodePath,
+      arguments: [
+        "--import",
+        "tsx",
+        path.join(root, "packages/web-server/scripts/preview.ts"),
+        "--restart",
+        ...(watch ? ["--dev-web-ui", path.join(root, "apps/web-ui")] : []),
+        ...webArguments.filter((argument) => argument !== "--no-build" && argument !== "--watch"),
+      ],
+    };
+    if (!watch) return (await runChild(preview, root, spawnImplementation, environment)).code ?? 1;
+    const watcher = {
+      command: nodePath,
+      arguments: ["--import", "tsx", path.join(root, "apps/web-ui/scripts/build.ts"), "--watch"],
+    };
+    return runWatchedWeb(preview, watcher, root, spawnImplementation, environment);
   }
 
   const options = parseArguments(arguments_);

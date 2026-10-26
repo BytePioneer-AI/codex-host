@@ -90,6 +90,15 @@ function shortHash(input: string | Buffer): string {
   return createHash("sha1").update(input).digest("hex").slice(0, 12);
 }
 
+/** Content-addressed bundle revision: an unchanged rebuild keeps its revision and its cache. */
+function bundleRev(id: string, clientPath: string): string {
+  return createHash("sha1")
+    .update(`${id}\0`)
+    .update(readFileSync(clientPath))
+    .digest("hex")
+    .slice(0, 12);
+}
+
 /** Map every workspace package name to its directory. */
 function scanWorkspacePackages(repoRoot: string): Map<string, string> {
   const result = new Map<string, string>();
@@ -216,11 +225,11 @@ const THEME_SCRIPT = `(() => {
 /** Composed plugin graph plus the responses that serve it. */
 export class WebAssets {
   readonly distRoot: string;
-  readonly graph: BootGraph;
+  private current: BootGraph;
   private readonly records: PluginRecord[];
   private readonly byId: Map<string, PluginRecord>;
   private readonly combos = new Map<string, AssetResponse>();
-  private readonly indexHtml: Buffer;
+  private indexHtml: Buffer;
 
   constructor(private readonly options: WebAssetOptions) {
     if (options.packedRoot !== undefined) {
@@ -234,18 +243,17 @@ export class WebAssets {
         .map((plugin) => {
           const dir = join(this.distRoot, "plugins", plugin.dir);
           const clientPath = join(dir, "client.js");
-          const stat = statSync(clientPath);
           return {
             id: plugin.id,
             dir,
             clientPath,
             manifest: plugin.manifest,
-            rev: shortHash(`${stat.mtimeMs}:${stat.size}:${plugin.id}`),
+            rev: bundleRev(plugin.id, clientPath),
           };
         });
       this.records = orderByModuleGraph(records);
       this.byId = new Map(this.records.map((record) => [record.id, record]));
-      this.graph = this.composeGraph();
+      this.current = this.composeGraph();
       this.indexHtml = this.renderIndex();
       return;
     }
@@ -267,14 +275,7 @@ export class WebAssets {
       const rel = clientExportOf(pkg.exports);
       if (rel === undefined) throw new Error(`web-assets: ${id} exports no ./client bundle`);
       const clientPath = join(dir, rel);
-      const stat = statSync(clientPath);
-      records.push({
-        id,
-        dir,
-        clientPath,
-        manifest,
-        rev: shortHash(`${stat.mtimeMs}:${stat.size}:${id}`),
-      });
+      records.push({ id, dir, clientPath, manifest, rev: bundleRev(id, clientPath) });
     }
     const present = new Set(records.map((record) => record.id));
     const missing: string[] = [];
@@ -300,8 +301,50 @@ export class WebAssets {
     }
     this.records = orderByModuleGraph(records);
     this.byId = new Map(this.records.map((record) => [record.id, record]));
-    this.graph = this.composeGraph();
+    this.current = this.composeGraph();
     this.indexHtml = this.renderIndex();
+  }
+
+  /** Boot graph rendered into the document as `__DSH_BOOT__`. */
+  get graph(): BootGraph {
+    return this.current;
+  }
+
+  /** Composed client bundles, for development rebuild polling. */
+  bundles(): { id: string; path: string }[] {
+    return this.records.map((record) => ({ id: record.id, path: record.clientPath }));
+  }
+
+  /** The Vite shell document the served index is rendered from. */
+  get shellIndexPath(): string {
+    return join(this.distRoot, "index.html");
+  }
+
+  /**
+   * Re-read one rebuilt client bundle and recompose the graph and document around it.
+   * @param id - composed plugin package name.
+   * @returns the new revision, or undefined when the plugin is unknown or its bytes are unchanged.
+   */
+  rebuilt(id: string): string | undefined {
+    const record = this.byId.get(id);
+    if (record === undefined) return undefined;
+    const rev = bundleRev(id, record.clientPath);
+    if (rev === record.rev) return undefined;
+    record.rev = rev;
+    this.combos.clear();
+    this.current = this.composeGraph();
+    this.indexHtml = this.renderIndex();
+    return rev;
+  }
+
+  /**
+   * Re-render the document after the Vite shell rebuilt.
+   * @returns whether the served document changed.
+   */
+  shellRebuilt(): boolean {
+    const previous = this.indexHtml;
+    this.indexHtml = this.renderIndex();
+    return !previous.equals(this.indexHtml);
   }
 
   private composeGraph(): BootGraph {

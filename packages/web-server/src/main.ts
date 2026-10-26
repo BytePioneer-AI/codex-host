@@ -3,7 +3,10 @@
  *
  *   node --import tsx src/main.ts [--port 4400] [--host 127.0.0.1] [--data <dir>]
  *        [--adapters <dir>[,<dir>...]] [--harness <id>[,<id>...]]
- *        [--token <value>] [--rotate-token] [--no-auth]
+ *        [--token <value>] [--rotate-token] [--no-auth] [--dev-web-ui <apps/web-ui>]
+ *
+ * `--dev-web-ui` serves the Web UI from that source checkout instead of the packed copy and pushes
+ * rebuilt plugin bundles to open pages (used by `npm start web -- --watch`).
  */
 
 import { existsSync } from "node:fs";
@@ -18,7 +21,7 @@ import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 import { AccessAuth } from "./auth.ts";
 import { registerMisc } from "./misc.ts";
 import { PushNotifier } from "./push.ts";
-import { CLIENT_GLOBALS, CLIENT_PLUGINS } from "./plugins.ts";
+import { CLIENT_GLOBALS, CLIENT_PLUGINS, HMR_CLIENT_PLUGIN } from "./plugins.ts";
 import { ChSessions } from "./ch-sessions.ts";
 import { WebHarnessDisplaySettings } from "./harness-display-settings.ts";
 import { WebHarnessPreferences } from "./harness-preferences.ts";
@@ -31,6 +34,7 @@ import { formatWebStartup, type NetworkAccessUrl } from "./startup-display.ts";
 import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
 import { WebAssets, type AssetResponse } from "./web-assets.ts";
+import { HMR_EVENTS_PATH, WebHmr } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
 import { WebFiles } from "./web-files.ts";
@@ -81,6 +85,7 @@ const { values } = parseArgs({
     "rotate-token": { type: "boolean", default: false },
     "no-auth": { type: "boolean", default: false },
     "import-recent": { type: "string", default: process.env.CODEXHOST_IMPORT_RECENT },
+    "dev-web-ui": { type: "string" },
   },
   allowPositionals: false,
 });
@@ -207,19 +212,22 @@ sessions.notifier = (notification) => {
     url: `./?session=${encodeURIComponent(notification.sessionId)}`,
   });
 };
-const assets = PACKED
-  ? new WebAssets({
-      packedRoot: PACKED_WEB,
-      plugins: [],
-      globals: CLIENT_GLOBALS,
-      title: "CodexHost",
-    })
-  : new WebAssets({
-      repoRoot: resolve(REPO_ROOT, "apps/web-ui"),
-      plugins: CLIENT_PLUGINS,
-      globals: CLIENT_GLOBALS,
-      title: "CodexHost",
-    });
+const devWebUi = values["dev-web-ui"] === undefined ? undefined : resolve(values["dev-web-ui"]);
+const assets =
+  PACKED && devWebUi === undefined
+    ? new WebAssets({
+        packedRoot: PACKED_WEB,
+        plugins: [],
+        globals: CLIENT_GLOBALS,
+        title: "CodexHost",
+      })
+    : new WebAssets({
+        repoRoot: devWebUi ?? resolve(REPO_ROOT, "apps/web-ui"),
+        plugins: devWebUi === undefined ? CLIENT_PLUGINS : [...CLIENT_PLUGINS, HMR_CLIENT_PLUGIN],
+        globals: CLIENT_GLOBALS,
+        title: "CodexHost",
+      });
+const hmr = devWebUi === undefined ? undefined : new WebHmr(assets);
 
 streams.register("$events", events.handler);
 workspaces.register(rpc, streams);
@@ -375,6 +383,10 @@ const server = createServer((request, response) => {
       send(response, assets.index());
       return;
     }
+    if (hmr !== undefined && pathname === HMR_EVENTS_PATH) {
+      hmr.connect(request, response);
+      return;
+    }
     if (pathname.startsWith("/plugins/")) {
       send(response, assets.plugin(url), url.includes("rev="));
       return;
@@ -444,6 +456,8 @@ server.listen(Number(values.port), values.host, () => {
         ...(qrCode === undefined ? {} : { qrCode }),
       }),
     );
+  if (devWebUi !== undefined)
+    console.log(`  dev Web UI: ${devWebUi} (rebuilt bundles reload live)`);
   const preferred = urls[0];
   if (preferred !== undefined && process.stdout.isTTY) {
     qrcode.generate(preferred.url, { small: true }, printStartup);
@@ -464,6 +478,7 @@ server.listen(Number(values.port), values.host, () => {
 });
 
 async function shutdown(): Promise<void> {
+  hmr?.close();
   server.close();
   await dsh?.close();
   await sessions.close();

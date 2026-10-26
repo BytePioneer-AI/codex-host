@@ -302,6 +302,8 @@ npm start
 
 `npm start` rebuilds and restarts Desktop; `npm start web` rebuilds and restarts Web. Both reuse an unchanged shared Host. A changed Host is restarted if the other interface is closed; otherwise a post-build prompt defaults to keeping it. `--restart-host` / `--keep-host` override that decision. `--no-build` skips building but applies the same decision. Restarting Host interrupts its tasks.
 
+Run `npm stop` from a separate terminal to stop the current user's local codexhost services across worktrees, including managed Desktop, Web/watchers, shared Hosts and Console. It interrupts tasks and Web terminals but preserves data and build artifacts, and requires no build in the invoking checkout. See [cross-worktree shutdown](docs/product/standalone-web.md#跨工作树停机) for scope and limitations; `npm stop -- --help` is read-only.
+
 To run the current source with a specific runtime version, use `npm start 0.12.0` (prereleases such as `0.13.0-rc.1` are also accepted). Host status, console version and update-check version reporting use this value. Without a version argument the version remains `<workspace-version>-dev`; `npm start 0.12.0 -- --no-build` reuses artifacts after building once. The override lasts for this launch and does not modify version files or publish packages. Source installations still lack packaged self-update resources; remote npm installation downloads the published package with that version, not the local source.
 
 

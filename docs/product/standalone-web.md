@@ -26,6 +26,14 @@ Web 按内容寻址快照的 runtime 路径（或 `--ch-host-runtime` 覆盖值�
 
 成功构建仅显示进度和耗时；失败显示末尾最多 64,000 字符诊断，保留旧 Host 和 Web。完整构建输出可通过 `npm run build:web` 查看。`npm start web -- --no-build` 复用已有发行产物，仍应用同一 Host 判断并重启 Web。`npm run start:web` 保留兼容。Web 仅停止明确匹配的旧开发进程，不按端口直接杀进程；其他程序占用端口仍需自行处理。开发重启要求本地共享 Host，旧 CDP 接入使用直接 preview 入口。
 
+### 跨工作树停机
+
+在包含此脚本的仓库目录运行 `npm stop`，可停止当前用户在不同工作树运行的本地 codexhost 服务，不要求当前目录已构建。它先停止 Web 热更新监听和 Web 服务，再通过停止 Desktop Controller 让原生 Launcher 关闭其管理的 Codex Desktop 和旧式 Host，随后停止 Host，最后停止 Console。macOS/Linux 向已确认身份的服务进程发送 SIGTERM，让现有退出逻辑和原生监督进程回收所属子进程；Windows 停止对应进程树。脚本等待服务及其原生监督进程退出；运行中的任务和 Web 终端会中断。会话、认证、配置和构建产物不会删除。
+
+停机按 Node 入口路径及仓库/发行元数据识别服务，不按端口或模糊进程名杀进程，也不停止其他用户、远程机器或独立运行的 Agent。只读帮助：`npm stop -- --help`。重复执行且没有服务时正常退出。PID 已被其他进程复用时不会向替代进程发信号。无法验证 Host 监督进程或退出超时会报错，不会宣称停机完成；不要同时运行启动命令。通过相对路径手工启动、不符合仓库启动器布局的进程不在自动识别范围内。
+
+切换到尚不支持共享 Host 的旧工作树前，先在含停机脚本的工作树执行 `npm stop`，再到目标目录执行 `npm start`；这不会为其他分支自动安装新命令。必须从独立终端执行停机，不要让需要停止的 Host 内部 Agent 执行，否则当前任务本身也会被中断。该命令提供停机能力，不保证修复其他构建或 Desktop 兼容性问题。
+
 ### 前端开发热更新
 
 `npm start web -- --watch` 在上述构建与重启之后，同时运行 Web UI 监听构建（`apps/web-ui/scripts/build.ts --watch`）和 Web 服务；Web 服务以 `--dev-web-ui <apps/web-ui>` 直接读取工作树的前端产物，而不是发行目录中的副本。修改前端源码后无须重启 Host 或 Web：

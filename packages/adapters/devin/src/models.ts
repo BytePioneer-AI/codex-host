@@ -26,6 +26,11 @@ export const DEVIN_CAPABILITIES: HarnessSessionCapabilities = {
 export function devinCapabilities(info: DevinSessionInfo): HarnessSessionCapabilities {
   return {
     ...DEVIN_CAPABILITIES,
+    history: {
+      fork: info.nativeHistory === true,
+      forkAcrossCwd: false,
+      rollbackLastTurn: info.nativeHistory === true,
+    },
     configuration: {
       ...DEVIN_CAPABILITIES.configuration,
       selectThinkingOption: devinThinking(info).options.length > 0,

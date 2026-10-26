@@ -113,45 +113,71 @@ been established.
 
 ## History derivation
 
-`history.fork`, `forkAcrossCwd` and `rollbackLastTurn` are **false**.
-Derivation returns `unsupported` before transport startup; replayed Turn
-identities are not checkpoints.
+Fork and `rollbackLastTurn` are implemented through the native revert extension.
+They are advertised only when initialization confirms `loadSession` and all three
+agent `_meta` flags: `cognition.ai/revert`, `cognition.ai/revertHistoryRewound` and
+`cognition.ai/revertByUserMessageId`. The client advertises
+`_meta["cognition.ai/revert"]: true`. Older/unnegotiated agents return `unsupported`;
+there is no account-free-probe gate that disables every real Fork.
+`forkAcrossCwd` remains **false**.
 
-### Official evidence and protocol gaps
+### Runtime path and safety boundary
 
-- ACP SDK **1.3.0** exposes experimental `session/fork`, but its
-  `ForkSessionRequest` has **no boundary field**; the response supplies a new
-  `sessionId` and optional configuration, not proof of the retained prefix.
-  See the SDK's `dist/schema/types.gen.d.ts`. Method availability does not prove
-  Devin support, and no documented Devin exact-boundary request/return contract
-  establishes a usable `_meta` key or slash-command result format.
-- The [stable changelog](https://docs.devin.ai/cli/changelog/stable),
-  v3000.4.16, includes completed `ask_user_question` prompts as steps and says
-  `/fork` defaults to the latest step. A step is not necessarily a Host Turn;
-  its mapping to replayed user-message IDs and Fork inclusion boundary is unknown.
-- [Commands & Flags](https://docs.devin.ai/cli/reference/commands#session-management)
-  documents `/fork [step]`, `/steps` and `/revert <step>`. Revert rewinds to before
-  the step **and changes workspace files**, so it cannot implement Host rollback,
-  even on a copied Session.
+- `session/load` supplies the actual Turn IDs. Native
+  `_cognition.ai/revert/listSteps({sessionId})` supplies step boundaries: only a
+  unique `kind: "prompt"` step whose `userMessageId` equals the replayed Turn key
+  becomes a checkpoint, using its native `stepId`. Missing mappings have no
+  checkpoint; ambiguous/malformed mappings fail. Tool/question steps, positions,
+  prompt text and hashes never manufacture a boundary. Live terminal checkpoints
+  use the same mapping; a discovery error reports a Session fault without inventing
+  a checkpoint or changing the already-settled native Turn outcome.
+- Fork calls only `_cognition.ai/revert/forkFromStep({sessionId, stepId})` and
+  requires a nonempty `forkedSessionId` different from the source. A new transport
+  loads that exact ID. `session/list` must confirm the requested cwd for both
+  source and child; a known live source in another cwd is rejected. An unavailable
+  cwd confirmation fails rather than treating process cwd as native proof.
+- Before success, the child is read back through `session/load` and `listSteps`.
+  Both its full projected Turns (including native user IDs, inputs and Items) and
+  native transcript update payloads must equal the requested inclusive prefix.
+  Only Session routing/checkpoints and session-level config/mode/catalog/usage
+  updates are excluded from equality. The source is read again and must remain
+  unchanged. Active Turns/configuration/history operations are mutually exclusive
+  on a live source; a cold source uses its own temporary load connection and
+  verifies its native cwd **before** loading (load must not silently relocate it).
+- Multi-Turn rollback forks at the preceding Turn's checkpoint. Single-Turn
+  rollback creates a distinct `session/new`, then loads it to verify empty history
+  and a usable identity; empty-source rollback returns `invalidState`. The child
+  receives the supplied Model, Thinking and Permission Mode in that order, with
+  native acknowledgements and a final combined-state check. Source configuration
+  is not written. Every transport receives this open's environment overrides.
+- No prompt replay, summary, database copy, standard `session/fork`, slash command,
+  `execute`, `resume` extension or file undo is used. In particular `/revert` is
+  not Host rollback. There are no speculative alternative RPCs on failure.
+- Failed children and temporary source transports are closed. Safe native deletion
+  is not wired: once a child ID is known, failure reports that its persistent data
+  may remain on disk. Source data is never deleted or intentionally rewound.
 
-### Native discovery (3000.11.205)
+### Evidence versus assumptions (3000.11.205)
 
-An isolated, unauthenticated probe of the official macOS arm64 bundle confirmed
-that advertising client `_meta["cognition.ai/revert"]: true` enables agent
-`cognition.ai/revert`, `cognition.ai/revertHistoryRewound` and
-`cognition.ai/revertByUserMessageId` flags. Standard `session/fork` is not advertised.
-`_cognition.ai/revert/listSteps` accepts a `sessionId`; preview accepts
-`sessionId` with a string `userMessageId` or `stepId`. Native diagnostics distinguish
-these parsed requests failing on an inactive synthetic Session from malformed
-requests, although both return `-32602`.
+The official macOS arm64 archive has manifest SHA-256
+`d80c39678dc3ac6b62c25c1864ba6881086b4eeaadf9a3e3a4e86a30b41423df`.
+The supplied `/tmp/devin-native-probe.vYP85R` evidence and independent
+`/tmp/devin-history-independent-0hrvtq73.json` / `-stderr.txt` confirm negotiation,
+not a successful mutation. The archive and raw local probe files are not repository fixtures.
 
-The official binary contains `forkFromStep`, `forkedSessionId` and `skipFileUndo`
-strings. These are discovery evidence, not a verified mutation contract: neither
-Fork inclusion boundaries nor file preservation has been exercised. The probe
-created no Session and performed no authentication, model execution or history
-mutation. Successful disposable-session validation is still required.
+| Evidence level | Established facts / assumptions |
+| --- | --- |
+| Unauthenticated native observation | The three extension flags are negotiated. Wire methods require the leading `_`. `listSteps({sessionId})` and `preview({sessionId,userMessageId:string})` or `preview({sessionId,stepId:string})` parse, then fail because the synthetic Session is inactive. Standard `session/fork` is not advertised. |
+| Official binary symbols, not successful responses | `RevertListStepsResponse`, `RevertStepInfo` with `stepId`, `stepNumber`, `userMessageId`, `toolCallId`, `questionNodeId`, `revertTargetNodeId`, `forkTargetNodeId`, `summary`; step kinds `prompt` / `questionAnswer`; `RevertForkFromStepParams/Response`, `forkedSessionId`, `execute`, `resume`, `preview`, `skipFileUndo`. |
+| Implemented, pending author native verification | `listSteps` returns `{steps:[{kind,stepId,userMessageId,...}]}`; prompt IDs match ACP replay IDs; `forkFromStep` accepts `{sessionId,stepId}` and retains the **complete inclusive Turn** at that prompt's fork target, without changing workspace files or source history. |
+| Implemented, pending author native verification | The returned child can be loaded/continued independently with preserved user IDs and transcript payloads; `session/list` reports its cwd; single-Turn `session/new` plus load yields a durable empty writable Session; Model/Thinking/permissions can be confirmed on that child. |
+| Hermetic validation only | Mock regression and `test/fixtures/history-acp.mjs` synthetic stdio ACP exercise the implementation under these assumptions. They are not captured successful native traces. A native schema or boundary mismatch fails explicitly at runtime, not as fabricated success. |
 
-### Evidence required from the PR author
+No real Devin process, credential access or paid model execution is required by
+these tests. Native mutation/file-preservation/persistence validation remains for
+the author; it is not a prerequisite gate for enabling the negotiated code path.
+
+### Native follow-up acceptance
 
 Return CLI/SDK versions, platform, advertised capabilities and redacted native
 request/response/notification traces proving:
@@ -177,13 +203,13 @@ pseudonymize IDs consistently while retaining field names, types and ordering.
 
 - Desktop discovery, icons and installation links use the dynamic plugin
   catalog and shared route. There is no Devin-specific Host or Renderer branch.
-- Fork, rollback, steering, speed selection, usage/account reporting,
+- Steering, speed selection, usage/account reporting,
   native session deletion wiring and subagent transcript browsing are
   not advertised. `devin auth status` exposes identity and plan but no valid
   usage percentage, so no `inspectAccount()` credits are fabricated. Image
   prompt input is outside the current Host text contract.
-- Devin-specific `_meta` extensions beyond the identity and tool-name keys
-  (slash commands, embedded context payloads) are not surfaced.
+- Devin-specific extensions outside identity/tool metadata and the negotiated
+  native history path (slash commands, embedded context payloads) are not surfaced.
 - Model inspection opens one empty native ACP session per cache refresh because
   the catalog is returned by `session/new`; it submits no prompt.
 

@@ -51,6 +51,14 @@ import { DevinTransport, type DevinSessionInfo, type DevinTransportOptions } fro
 import { listDevinSessionCandidates, resolveDevinSessionCandidate } from "./import.js";
 import { DevinTurnOutput, devinPromptTurnKey, devinSnapshot } from "./projection.js";
 import { DevinInteractions } from "./interactions.js";
+import {
+  DevinHistoryError,
+  deriveDevinHistory,
+  devinCheckpoint,
+  devinHistorySteps,
+  readDevinHistory,
+  type DevinHistoryInput,
+} from "./history.js";
 
 export interface DevinAdapterOptions {
   environment?: NodeJS.ProcessEnv;
@@ -61,6 +69,8 @@ export function devinError(error: unknown): HarnessError {
   const message = sanitizeDiagnosticTail(
     error instanceof Error ? error.message : "Devin operation failed",
   );
+  if (error instanceof DevinHistoryError)
+    return { code: error.code, message, retryable: error.code === "sessionBusy" };
   const code = /not installed/iu.test(message)
     ? "notInstalled"
     : /auth|not logged in|login|unauthorized|credential/iu.test(message)
@@ -137,8 +147,6 @@ export class DevinAdapter implements HarnessAdapter {
   }
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closed) return rejected("invalidState", "Devin adapter is closed");
-    if (input.kind !== "create" && input.kind !== "resume")
-      return rejected("unsupported", "Devin fork and rollback are not supported");
     if (input.kind === "resume" && input.nativeRef.harnessId !== this.harnessId)
       return rejected("invalidRequest", "Session belongs to another Harness");
     if (
@@ -149,12 +157,20 @@ export class DevinAdapter implements HarnessAdapter {
     )
       return rejected("invalidRequest", "unattended-full-access requires Devin bypass mode");
     const options = this.transportOptions(input.cwd, input.environment);
-    const transport = new DevinTransport(options);
+    let transport: DevinTransport | undefined;
+    let session: DevinSession | undefined;
     try {
-      const info = await transport.open(
-        input.kind === "resume" ? input.nativeRef.nativeSessionId : undefined,
-      );
+      let info: DevinSessionInfo;
+      if (input.kind === "fork" || input.kind === "rollbackLastTurn") {
+        ({ transport, info } = await this.#derive(input));
+      } else {
+        transport = new DevinTransport(options);
+        info = await transport.open(
+          input.kind === "resume" ? input.nativeRef.nativeSessionId : undefined,
+        );
+      }
       if (input.kind === "resume") {
+        const sessionId = transport.sessionId;
         const known = new Set(
           devinSnapshot(transport.sessionId, transport.replay).turns.map(
             (turn) => turn.nativeTurnRef.nativeTurnKey,
@@ -164,39 +180,34 @@ export class DevinAdapter implements HarnessAdapter {
           input.knownTurnRefs?.some(
             (ref) =>
               ref.harnessId !== this.harnessId ||
-              ref.nativeSessionId !== transport.sessionId ||
+              ref.nativeSessionId !== sessionId ||
               !known.has(ref.nativeTurnKey),
           )
         )
           throw new Error("Saved Devin turn identity no longer exists in native history");
       }
-      const session = new DevinSession(
+      const openedSession = new DevinSession(
         transport,
         info,
         () => {
-          this.#sessions.delete(session);
+          this.#sessions.delete(openedSession);
         },
         input.kind === "create",
       );
-      if (input.model) {
+      session = openedSession;
+      if ("model" in input && input.model) {
         const selected = await session.execute({ type: "model.select", model: input.model });
-        if (!selected.ok) {
-          await session.close();
-          return selected;
-        }
+        if (!selected.ok) throw new DevinHistoryError(selected.error.code, selected.error.message);
       }
-      if (input.thinkingOptionId) {
+      if ("thinkingOptionId" in input && input.thinkingOptionId) {
         const selected = await session.execute({
           type: "thinking.select",
           thinkingOptionId: input.thinkingOptionId,
         });
-        if (!selected.ok) {
-          await session.close();
-          return selected;
-        }
+        if (!selected.ok) throw new DevinHistoryError(selected.error.code, selected.error.message);
       }
       const permissionModeId =
-        input.permissionModeId ??
+        ("permissionModeId" in input ? input.permissionModeId : undefined) ??
         (input.kind === "create" && input.executionPolicy === "unattended-full-access"
           ? harnessPermissionModeIdSchema.parse("bypass")
           : undefined);
@@ -205,17 +216,58 @@ export class DevinAdapter implements HarnessAdapter {
           type: "permissionMode.select",
           permissionModeId,
         });
-        if (!selected.ok) throw new Error(selected.error.message);
+        if (!selected.ok) throw new DevinHistoryError(selected.error.code, selected.error.message);
       }
-      if (this.#closed) {
-        await session.close();
-        return rejected("invalidState", "Devin adapter closed during session startup");
+      if (input.kind === "rollbackLastTurn") {
+        const state = session.initialState;
+        if (
+          (input.model && !isDeepStrictEqual(state.effectiveModel, input.model)) ||
+          (input.thinkingOptionId && state.effectiveThinkingOptionId !== input.thinkingOptionId) ||
+          (input.permissionModeId && state.effectivePermissionModeId !== input.permissionModeId)
+        )
+          throw new Error("Devin rollback did not preserve the requested configuration");
       }
+      if (this.#closed)
+        throw new DevinHistoryError("invalidState", "Devin adapter closed during session startup");
       this.#sessions.add(session);
       return { ok: true, value: session };
     } catch (error) {
-      await transport.close();
-      return { ok: false, error: devinError(error) };
+      const failure = devinError(error);
+      try {
+        if (session) await session.close();
+        else await transport?.close();
+      } catch {
+        failure.message += "; session resource cleanup failed";
+      }
+      if ((input.kind === "fork" || input.kind === "rollbackLastTurn") && transport?.sessionId)
+        failure.message += `; native child ${transport.sessionId} may remain on disk (safe deletion unavailable)`;
+      failure.message = sanitizeDiagnosticTail(failure.message);
+      return { ok: false, error: failure };
+    }
+  }
+  async #derive(input: DevinHistoryInput) {
+    if (input.sourceRef.harnessId !== this.harnessId)
+      throw new DevinHistoryError("invalidRequest", "Session belongs to another Harness");
+    if (
+      input.kind === "fork" &&
+      (input.checkpoint.harnessId !== this.harnessId ||
+        input.checkpoint.nativeSessionId !== input.sourceRef.nativeSessionId)
+    )
+      throw new DevinHistoryError(
+        "checkpointNotFound",
+        "Checkpoint does not belong to the source Session",
+      );
+    const options = this.transportOptions(input.cwd, input.environment);
+    const live = [...this.#sessions].find(
+      (session) => session.transport.sessionId === input.sourceRef.nativeSessionId,
+    );
+    if (live) return live.withHistory(() => deriveDevinHistory(input, live.transport, options));
+    const source = new DevinTransport(options);
+    try {
+      await source.open(input.sourceRef.nativeSessionId, true);
+      return await deriveDevinHistory(input, source, options);
+    } finally {
+      await source.close();
     }
   }
   /**
@@ -328,6 +380,17 @@ export class DevinSession implements HarnessSession {
       event: { type: "session.state.changed", state: structuredClone(this.initialState) },
     });
   }
+  async withHistory<T>(action: () => Promise<T>): Promise<T> {
+    if (this.#closed) throw new DevinHistoryError("invalidState", "Devin session is closed");
+    if (this.#active || this.#configuring)
+      throw new DevinHistoryError("sessionBusy", "Devin session is busy");
+    this.#configuring = true;
+    try {
+      return await action();
+    } finally {
+      this.#configuring = false;
+    }
+  }
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed) return rejected("invalidState", "Devin session is closed");
     if (this.#active || this.#configuring) return rejected("sessionBusy", "Devin session is busy");
@@ -335,13 +398,13 @@ export class DevinSession implements HarnessSession {
       return { ok: true, value: { turns: [], state: structuredClone(this.initialState) } };
     this.#configuring = true;
     try {
-      const replay = await this.transport.reload();
+      const snapshot = await readDevinHistory(this.transport);
       if (this.#closed)
         return rejected("invalidState", "Devin session closed during snapshot reload");
       return {
         ok: true,
         value: {
-          ...devinSnapshot(this.transport.sessionId, replay),
+          ...snapshot,
           state: structuredClone(this.initialState),
         },
       };
@@ -520,6 +583,19 @@ export class DevinSession implements HarnessSession {
         });
         this.#turns += 1;
         this.#fresh = false;
+        if (this.transport.nativeHistory) {
+          try {
+            const checkpoint = devinCheckpoint(
+              this.transport.sessionId,
+              key,
+              devinHistorySteps(await this.transport.historyRequest("listSteps")),
+            );
+            if (checkpoint) outcome = { ...outcome, checkpoint };
+          } catch (error) {
+            // Checkpoint discovery cannot change a settled native Turn's actual outcome.
+            fault = devinError(error);
+          }
+        }
       } else if (outcome.status === "succeeded") {
         // Never publish a success terminal with guessed identity.
         outcome = {

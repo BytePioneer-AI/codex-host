@@ -22,7 +22,9 @@ export interface DevinTransportOptions {
   command?: string;
   timeoutMs?: number;
 }
-export type DevinSessionInfo = NewSessionResponse | LoadSessionResponse;
+export type DevinSessionInfo = (NewSessionResponse | LoadSessionResponse) & {
+  nativeHistory?: boolean;
+};
 export interface DevinCallbacks {
   update(value: SessionNotification): void;
   permission(value: RequestPermissionRequest): Promise<RequestPermissionResponse>;
@@ -31,6 +33,7 @@ export interface DevinCallbacks {
 }
 export class DevinTransport {
   sessionId = "";
+  nativeHistory = false;
   replay: SessionNotification[] = [];
   onConfigOptions: ((options: NonNullable<DevinSessionInfo["configOptions"]>) => void) | undefined;
   #child: ChildProcessWithoutNullStreams | undefined;
@@ -120,7 +123,7 @@ export class DevinTransport {
       const init = await this.#bounded(
         this.#connection.initialize({
           protocolVersion: 1,
-          clientCapabilities: {},
+          clientCapabilities: { _meta: { "cognition.ai/revert": true } },
           clientInfo: { name: "codexhost", version: "0.9.0" },
         }),
       );
@@ -129,6 +132,12 @@ export class DevinTransport {
         (requiresLoadSession && !init.agentCapabilities?.loadSession)
       )
         throw new Error("Devin does not support the required ACP session protocol");
+      const meta = init.agentCapabilities?._meta;
+      this.nativeHistory =
+        init.agentCapabilities?.loadSession === true &&
+        meta?.["cognition.ai/revert"] === true &&
+        meta?.["cognition.ai/revertHistoryRewound"] === true &&
+        meta?.["cognition.ai/revertByUserMessageId"] === true;
       // Devin 3000.11+ requires an explicit authenticate call carrying the API
       // key in _meta.api_key on its browser method, which then skips PKCE.
       // Without a key, never trigger the browser flow implicitly — let the
@@ -148,11 +157,13 @@ export class DevinTransport {
     }
   }
 
-  async open(sessionId?: string): Promise<DevinSessionInfo> {
+  async open(sessionId?: string, requireSameCwd = false): Promise<DevinSessionInfo> {
     if (this.#closed || this.#connection) throw new Error("Devin transport cannot be reopened");
     const connection = await this.#connect(Boolean(sessionId));
     try {
       this.sessionId = sessionId ?? "";
+      // Derivation must not use load's cwd parameter to silently relocate its source.
+      if (sessionId && requireSameCwd && this.nativeHistory) await this.verifyCwd(this.options.cwd);
       this.#collecting = true;
       const info = await (sessionId
         ? this.#bounded(
@@ -161,10 +172,15 @@ export class DevinTransport {
         : this.#bounded(connection.newSession({ cwd: this.options.cwd, mcpServers: [] })));
       this.#collecting = false;
       this.#assertReplayComplete();
-      if ("sessionId" in info && typeof info.sessionId === "string")
+      if ("sessionId" in info) {
+        if (typeof info.sessionId !== "string" || !info.sessionId.trim())
+          throw new Error("Devin returned an invalid native Session ID");
+        if (sessionId && info.sessionId !== sessionId)
+          throw new Error("Devin load returned a different native Session ID");
         this.sessionId = info.sessionId;
-      if (!this.sessionId) throw new Error("Devin returned no native session ID");
-      return info;
+      }
+      if (!this.sessionId.trim()) throw new Error("Devin returned no native session ID");
+      return { ...info, nativeHistory: this.nativeHistory };
     } catch (error) {
       await this.close();
       throw error;
@@ -195,6 +211,8 @@ export class DevinTransport {
           mcpServers: [],
         }),
       );
+      if ("sessionId" in info && info.sessionId !== this.sessionId)
+        throw new Error("Devin reload returned a different native Session ID");
       if (info.configOptions) this.onConfigOptions?.(info.configOptions);
     } finally {
       this.#collecting = false;
@@ -205,6 +223,25 @@ export class DevinTransport {
 
   #assertReplayComplete() {
     if (this.#replayOverflow) throw new Error("Devin replay exceeds the supported history limit");
+  }
+
+  async historyRequest(method: "listSteps" | "forkFromStep", params: Record<string, unknown> = {}) {
+    if (!this.nativeHistory || !this.#connection || this.#closed || !this.sessionId)
+      throw new Error("Devin native history extension is unavailable");
+    return this.#bounded(
+      this.#connection.request(`_cognition.ai/revert/${method}`, {
+        ...params,
+        sessionId: this.sessionId,
+      }),
+    );
+  }
+
+  async verifyCwd(cwd: string) {
+    if (!this.#connection || this.#closed) throw new Error("Devin session is not open");
+    const response = await this.#bounded(this.#connection.listSessions({}));
+    const rows = response.sessions.filter((row) => row.sessionId === this.sessionId);
+    if (rows.length !== 1 || rows[0]?.cwd !== cwd)
+      throw new Error("Devin native Session cwd does not match the requested directory");
   }
 
   async configure(configId: string, value: string) {

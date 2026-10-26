@@ -192,12 +192,20 @@ Every accepted Claude text Turn SHALL emit one Turn start, retain the establishe
 
 #### Scenario: Streamed thinking has a complete Assistant counterpart
 - **WHEN** Root SDK stream events emit non-empty `thinking_delta` text for one Assistant message and the complete Assistant wrapper with the same native `message.id` contains thinking blocks
-- **THEN** the Adapter SHALL append only the `thinking_delta` text through one Reasoning Item for that message
-- **AND** it SHALL ignore the complete `thinking` blocks without appending their suffix
+- **THEN** it SHALL classify each complete block by the same signature metadata rule as Claude Desktop
+- **AND** narration SHALL become a separate commentary Agent Message before the following Tool or Question, while ordinary thinking remains Reasoning
+- **AND** ordinary Reasoning SHALL retain only streamed text, while narration SHALL include a matching complete-message suffix exactly once
+- **AND** a block whose stream ends without its complete wrapper or a native Result SHALL keep its streamed text as Reasoning
 
 #### Scenario: Thinking streaming is unavailable
 - **WHEN** no Root partial thinking event is emitted but a complete Assistant message contains non-empty visible thinking text
-- **THEN** the Adapter SHALL emit no Reasoning Item from the complete `thinking` blocks
+- **THEN** signed narration MAY become a commentary Agent Message
+- **AND** ordinary, unknown, or protected complete-only thinking SHALL emit no live Reasoning Item
+
+#### Scenario: History contains signed narration
+- **WHEN** `readSnapshot()` or a Subagent transcript read maps a Root or Subagent thinking block whose signature marks narration
+- **THEN** each thinking block SHALL keep its native position and its own Item: narration becomes a commentary Agent Message, and every other explicit visible thinking block remains its own Reasoning Item
+- **AND** the block order and per-kind Item identities SHALL match the live per-block projection
 
 #### Scenario: One Turn contains multiple Assistant messages
 - **WHEN** a Claude Tool loop or retry produces Root `thinking_delta` text in more than one native Assistant message

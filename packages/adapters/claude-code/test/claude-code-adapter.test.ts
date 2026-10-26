@@ -2459,6 +2459,51 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("projects signed native narration as a commentary Agent Message before the answer", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("narration-commentary"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const liveStarted = await nextEvent(iterator);
+    if (liveStarted.type !== "item.started" || liveStarted.item.type !== "agentMessage") {
+      throw new Error("Claude live Agent Message did not start");
+    }
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude Turn did not start");
+
+    transport.event({
+      type: "narration.completed",
+      messageId: "native-message:thinking:0",
+      text: "Checking the files first.",
+    });
+    await nextEvent(iterator);
+    const narration = await nextEvent(iterator);
+    expect(narration).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "agentMessage",
+          itemId: liveStarted.item.itemId,
+          text: "Checking the files first.",
+          phase: "commentary",
+        },
+        outcome: { status: "succeeded" },
+      },
+    });
+
+    transport.delta("The answer.", "native-message");
+    const answer = await nextEvent(iterator);
+    expect(answer).toMatchObject({ type: "item.started", item: { type: "agentMessage" } });
+    if (answer.type !== "item.started" || answer.item.type !== "agentMessage") return;
+    expect(answer.item.itemId).not.toBe(liveStarted.item.itemId);
+    expect(answer.item).not.toHaveProperty("phase");
+    transport.finish({ status: "succeeded" });
+    await session.close();
+  });
+
   it("uses one Item identity for a live response and its native history snapshot", async () => {
     const { adapter, history, transports } = fixture();
     const session = await openSession(adapter);

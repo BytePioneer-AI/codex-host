@@ -285,8 +285,21 @@ export class ExternalThreadIdleRelease {
       if (this.options.get(thread.id) !== thread) throw new Error("Session changed during release");
       this.options.remove(thread.id);
     } catch (error) {
-      if (blockOnFailure) {
+      const isArchived = Boolean(thread.record.archived);
+      if (blockOnFailure && !isArchived) {
         state.closeFailed = true;
+      } else {
+        // For best-effort archive release (or timer release of an archived thread),
+        // detach the instance from runtime so that failure to close the underlying
+        // session does not leave a zombie instance blocking future unarchive/read/delete.
+        if (this.options.get(thread.id) === thread) {
+          try {
+            await this.options.onClosed?.(thread);
+          } catch (cleanupError) {
+            this.options.diagnose(cleanupError);
+          }
+          this.options.remove(thread.id);
+        }
       }
       this.options.diagnose(error);
     } finally {

@@ -117,16 +117,45 @@ describe("External thread release on archive (#424)", () => {
     expect(f.runtime.get(f.id)).toBeDefined();
   });
 
-  it("diagnoses error but does not set closeFailed when release fails upon archive", async () => {
+  it("diagnoses error and detaches instance without setting closeFailed when release fails upon archive", async () => {
     const f = await fixture(true);
-    f.close.mockRejectedValueOnce(new Error("Close failed"));
+    f.close.mockRejectedValue(new Error("Close failed"));
 
     f.idle.releaseIfIdle(f.id);
     await f.queue.drain();
 
     expect(f.close).toHaveBeenCalledTimes(1);
     expect(f.diagnose).toHaveBeenCalled();
-    // Archive-triggered release is best-effort and does not set closeFailed
+    // Archive-triggered release is best-effort: does not set closeFailed and detaches from memory
     expect(f.idle.failure(f.thread)).toBeUndefined();
+    expect(f.runtime.get(f.id)).toBeUndefined();
+
+    // Subsequent locate succeeds without -32075
+    const location = await f.runtime.locate(f.id);
+    expect(location.kind).toBe("external");
+    if (location.kind === "external") {
+      expect(location.thread).toBeNull();
+      expect(location.record.hostThreadId).toBe(f.id);
+    }
+  });
+
+  it("degrades timer release to best-effort when thread is already archived", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = await fixture(true);
+      f.idle.configure({ enabled: true, timeoutMinutes: 5 });
+      f.close.mockRejectedValue(new Error("Close failed"));
+
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      f.idle.check();
+      await f.queue.drain();
+
+      expect(f.close).toHaveBeenCalledTimes(1);
+      expect(f.diagnose).toHaveBeenCalled();
+      expect(f.idle.failure(f.thread)).toBeUndefined();
+      expect(f.runtime.get(f.id)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

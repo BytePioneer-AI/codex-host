@@ -102,7 +102,7 @@ Host SHALL return versioned opaque `nextCursor` and `backwardsCursor` values tha
 - **AND** it SHALL NOT forward the Host cursor to official Codex
 
 ### Requirement: Archive and Unarchive are persisted Host operations
-Host Runtime SHALL route `thread/archive` and `thread/unarchive` by persisted Thread ownership. For an External Thread it SHALL update only Mapping Store archive metadata, MUST NOT open or modify the Harness Native Session, and SHALL report success only after the requested state is durable.
+Host Runtime SHALL route `thread/archive` and `thread/unarchive` by persisted Thread ownership. For an External Thread it SHALL update only Mapping Store archive metadata, MUST NOT modify native session history or create conflicting turns, and SHALL report success only after the requested state is durable.
 
 #### Scenario: External Thread is archived
 - **WHEN** Desktop sends `thread/archive` for a ready External Thread

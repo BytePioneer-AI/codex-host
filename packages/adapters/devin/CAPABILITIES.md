@@ -64,6 +64,7 @@
 - B1/B4：活动 Turn 配置和无人值守显式权限冲突由 hermetic 回归测试覆盖；真实运行中切换及 bypass 工具执行仍需 CLI 验收。
 - B2：仅按 ACP 标准 `thought_level` select 类别发现独立 Thinking，使用原生 `id`、`currentValue`、`options[].value/name`（含分组）；未公开类别的字段不猜测。配置响应、通知和 load 的完整列表替换状态；create/resume 提示在 Model 后校验并写入。无可用 selector 时能力为 false、选择返回 unsupported；`model_config` 的 speed 不接入本任务。官方功能依据不替代实际 Devin wire 样本，3000.11.1+ 的真实 inspect、运行中选择、Model 依赖变化与冷恢复仍需作者验收。
 - B5/B7：已实现协商驱动的单一路径，不以真实账号探测为能力开关。listSteps 仅将唯一 prompt step 的 userMessageId 精确对齐到 Host Turn；forkFromStep 返回独立 ID 后读回检查完整 Turn 与原生 transcript 前缀，并复读源历史确认不变。多轮 rollback 复用上一轮 Fork；单轮创建并加载独立空 Session；传入配置由原生确认并检查最终组合状态。活动操作互斥，失败关闭子资源；无安全删除契约，已知子 ID 的持久化残留在错误中报告。mock 与 synthetic ACP 覆盖此路径，不代表真实修改历史成功。
+- 可选 live checkpoint 的 RPC/解析失败不改变已完成 Turn 终态，也不关闭健康 Session；仅 transport 已关闭/故障（含真实退出、超时关闭）才 fault。冷派生在临时 source 释放失败时关闭已创建 child，保留原始错误并报告持久化残留；清理失败不伪造成功。
 - 原生未验证假设：listSteps 的 `{steps:[{kind,stepId,userMessageId}]}` 结构及 prompt ID 对齐；forkFromStep 的 `{sessionId,stepId}` 入参与完整 Turn 的包含边界；fork 不改文件；子身份、同 cwd 的 session/list 确认、独立继续与空 Session 持久性。3000.11.205 已观测协商和只读参数解析，静态字段不能当作 mutation 成功。假设不符必须运行时失败，不尝试其他 RPC；详见集成记录「History derivation」。B6 仍 false。无 execute(skipFileUndo)、/revert、prompt 重放、数据库复制或摘要替代。
 - B10：未映射的扩展明确报错，不自动代答；原生提问协议需进一步核实。
 - B11–B16/C7：未验证的原生能力不等于原生不支持；完整委派、用量、自主 Turn、Subagent 不作完成声明。
@@ -83,7 +84,7 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| Adapter 公共行为 | `npx vitest run --config tests/vitest.config.js packages/adapters/devin/test` | 97 项通过（6 个文件）；含 Thinking、原生历史路径、执行策略、运行中 Model、权限状态保留与故障/关闭期间 snapshot 拒绝 |
+| Adapter 公共行为 | `npx vitest run --config tests/vitest.config.js packages/adapters/devin/test` | 104 项通过（6 个文件）；含 Thinking、原生历史路径、执行策略、运行中 Model、权限状态保留与故障/关闭期间 snapshot 拒绝 |
 | 原生边界 | Mock ACP；test/fixtures/configuration-acp.mjs、history-acp.mjs 合成 stdio 进程 | 请求驱动的配置通知、native history RPC wire/边界/错误与子进程退出；不读取凭据、不启动真实 Devin，非真实 CLI 验收 |
 | 插件加载 | installed-harness-plugins.test.ts，筛选 `loads all preinstalled plugin factories without static registration or executable discovery` | 1 项通过，22 项因名称筛选跳过；加载构建产物，不发现或启动原生可执行文件 |
 | 构建与静态检查 | npm run typecheck；npm run build:typescript；npm run lint；改动文件 Prettier；git diff --check | 全部通过；依赖用 npm ci --ignore-scripts 安装；未运行全量测试、真实 Devin 或 Desktop |

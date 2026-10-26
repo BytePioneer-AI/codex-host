@@ -263,11 +263,31 @@ export class DevinAdapter implements HarnessAdapter {
     );
     if (live) return live.withHistory(() => deriveDevinHistory(input, live.transport, options));
     const source = new DevinTransport(options);
+    let derived: Awaited<ReturnType<typeof deriveDevinHistory>> | undefined;
+    let derivationError: unknown;
     try {
       await source.open(input.sourceRef.nativeSessionId, true);
-      return await deriveDevinHistory(input, source, options);
+      derived = await deriveDevinHistory(input, source, options);
+      return derived;
+    } catch (error) {
+      derivationError = error;
+      throw error;
     } finally {
-      await source.close();
+      try {
+        await source.close();
+      } catch (error) {
+        let message = `Releasing temporary Devin source failed: ${devinError(error).message}`;
+        if (derivationError) message = `${devinError(derivationError).message}; ${message}`;
+        if (derived) {
+          try {
+            await derived.transport.close();
+          } catch {
+            message += "; child resource cleanup failed";
+          }
+          message += `; native child ${derived.transport.sessionId} may remain on disk (safe deletion unavailable)`;
+        }
+        throw new DevinHistoryError(devinError(derivationError ?? error).code, message);
+      }
     }
   }
   /**
@@ -592,8 +612,8 @@ export class DevinSession implements HarnessSession {
             );
             if (checkpoint) outcome = { ...outcome, checkpoint };
           } catch (error) {
-            // Checkpoint discovery cannot change a settled native Turn's actual outcome.
-            fault = devinError(error);
+            // Optional checkpoint errors do not make a healthy transport unusable.
+            if (this.transport.isClosedOrFaulted) fault = devinError(error);
           }
         }
       } else if (outcome.status === "succeeded") {

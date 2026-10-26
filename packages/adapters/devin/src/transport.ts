@@ -52,6 +52,10 @@ export class DevinTransport {
     void this.#failed.catch(() => undefined);
   }
 
+  get isClosedOrFaulted(): boolean {
+    return this.#closed || this.#fault !== undefined || this.#connection?.signal.aborted === true;
+  }
+
   async #bounded<T>(work: Promise<T>, timeout = this.options.timeoutMs ?? 30_000): Promise<T> {
     if (this.#fault) throw this.#fault;
     let timer: ReturnType<typeof setTimeout> | undefined;

@@ -465,7 +465,7 @@ describe("Devin exact native history", () => {
     release();
     await deriving;
   });
-  it("reports checkpoint discovery failure without falsifying a settled Turn outcome", async () => {
+  it("keeps a healthy Session usable when optional checkpoint discovery fails", async () => {
     const source = await value(await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd }));
     const outputs: HarnessOutput[] = [];
     const done = (async () => {
@@ -483,7 +483,11 @@ describe("Devin exact native history", () => {
       turnId: hostTurnIdSchema.parse("settled"),
       input: [{ type: "text", text: "hello" }],
     });
-    await done;
+    await vi.waitFor(() =>
+      expect(
+        outputs.some((output) => output.kind === "event" && output.event.type === "turn.completed"),
+      ).toBe(true),
+    );
     expect(outputs).toContainEqual(
       expect.objectContaining({
         event: expect.objectContaining({
@@ -493,14 +497,88 @@ describe("Devin exact native history", () => {
         }),
       }),
     );
-    expect(outputs).toContainEqual(
-      expect.objectContaining({
-        event: expect.objectContaining({
-          type: "session.faulted",
-          error: expect.objectContaining({ message: "listSteps failed" }),
+    try {
+      expect(
+        outputs.some(
+          (output) => output.kind === "event" && output.event.type === "session.faulted",
+        ),
+      ).toBe(false);
+      expect(
+        await source.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("after-checkpoint-error"),
+          input: [{ type: "text", text: "continue" }],
         }),
-      }),
-    );
+      ).toMatchObject({ ok: true });
+    } finally {
+      await source.close();
+      await done;
+    }
+  });
+  it("closes the derived child if releasing the temporary source fails", async () => {
+    const close = vi.spyOn(DevinTransport.prototype, "close").mockImplementation(async function (
+      this: DevinTransport,
+    ) {
+      if (this.sessionId === "source") throw new Error("source close failed");
+    });
+    const result = await adapter.open({
+      kind: "fork",
+      sourceRef,
+      checkpoint: checkpoint("step-u2"),
+      cwd,
+    });
+    expect(result).toMatchObject({ ok: false });
+    expect(!result.ok && result.error.message).toContain("source close failed");
+    expect(!result.ok && result.error.message).toContain("native child child may remain on disk");
+    expect(
+      close.mock.contexts.some(
+        (transport) => transport instanceof DevinTransport && transport.sessionId === "child",
+      ),
+    ).toBe(true);
+  });
+  it("keeps the derivation error when temporary source cleanup also fails", async () => {
+    const close = vi.spyOn(DevinTransport.prototype, "close").mockImplementation(async function (
+      this: DevinTransport,
+    ) {
+      if (this.sessionId === "source") throw new Error("source close failed");
+    });
+    const result = await adapter.open({
+      kind: "fork",
+      sourceRef,
+      checkpoint: checkpoint("missing"),
+      cwd,
+    });
+    expect(result).toMatchObject({ ok: false });
+    expect(result).toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    expect(!result.ok && result.error.message).toContain("checkpoint is not on the source history");
+    expect(!result.ok && result.error.message).toContain("source close failed");
+    expect(
+      close.mock.contexts.some(
+        (transport) => transport instanceof DevinTransport && transport.sessionId === "child",
+      ),
+    ).toBe(false);
+  });
+  it("keeps the source release error and reports a child cleanup failure", async () => {
+    const close = vi.spyOn(DevinTransport.prototype, "close").mockImplementation(async function (
+      this: DevinTransport,
+    ) {
+      throw new Error(`${this.sessionId} close failed`);
+    });
+    const result = await adapter.open({
+      kind: "fork",
+      sourceRef,
+      checkpoint: checkpoint("step-u2"),
+      cwd,
+    });
+    expect(result).toMatchObject({ ok: false });
+    expect(!result.ok && result.error.message).toContain("source close failed");
+    expect(!result.ok && result.error.message).toContain("child resource cleanup failed");
+    expect(!result.ok && result.error.message).toContain("native child child may remain on disk");
+    expect(
+      close.mock.contexts.some(
+        (transport) => transport instanceof DevinTransport && transport.sessionId === "child",
+      ),
+    ).toBe(true);
   });
   it("rejects malformed and ambiguous native steps instead of guessing", async () => {
     expect(() => devinHistorySteps({ steps: [{ stepId: "s" }] })).toThrow();

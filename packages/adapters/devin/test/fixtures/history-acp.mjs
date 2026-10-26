@@ -112,6 +112,21 @@ for await (const line of createInterface({ input: process.stdin })) {
       };
       break;
     case "_cognition.ai/revert/listSteps":
+      if (continued) {
+        if (scenario === "checkpoint-exit") process.exit(7);
+        if (scenario === "checkpoint-timeout") continue;
+        if (scenario === "checkpoint-error") {
+          send({
+            id: message.id,
+            error: { code: -32602, message: "Synthetic protocol error: process exited" },
+          });
+          continue;
+        }
+        if (scenario === "checkpoint-schema") {
+          send({ id: message.id, result: { steps: null } });
+          continue;
+        }
+      }
       result = {
         steps: [...keys(), ...(continued ? ["next"] : [])].map((key, index) => ({
           stepId: `step-${key}`,

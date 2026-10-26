@@ -128,6 +128,61 @@ describe("synthetic Devin native history wire", () => {
       }
     },
   );
+  it.each(["checkpoint-error", "checkpoint-schema", "checkpoint-exit", "checkpoint-timeout"])(
+    "distinguishes optional discovery failure from transport failure: %s",
+    async (scenario) => {
+      environment.DEVIN_HISTORY_SCENARIO = scenario;
+      const opened = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: root });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      const outputs: HarnessOutput[] = [];
+      const done = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      const start = (id: string) =>
+        session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse(id),
+          input: [{ type: "text", text: "synthetic" }],
+        });
+      const completed = () =>
+        outputs.filter(
+          (output) => output.kind === "event" && output.event.type === "turn.completed",
+        );
+      try {
+        expect(await start("settled")).toMatchObject({ ok: true });
+        await vi.waitFor(() => expect(completed()).toHaveLength(1), { timeout: 4_000 });
+        expect(completed()[0]).toMatchObject({ event: { outcome: { status: "succeeded" } } });
+        expect(completed()[0]).not.toHaveProperty("event.outcome.checkpoint");
+        const fatal = scenario === "checkpoint-exit" || scenario === "checkpoint-timeout";
+        if (fatal) {
+          await done;
+          expect(outputs).toContainEqual(
+            expect.objectContaining({
+              event: expect.objectContaining({ type: "session.faulted" }),
+            }),
+          );
+          expect(await start("after-failure")).toMatchObject({
+            ok: false,
+            error: { code: "invalidState" },
+          });
+        } else {
+          expect(
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "session.faulted",
+            ),
+          ).toBe(false);
+          expect(await start("after-failure")).toMatchObject({ ok: true });
+          await vi.waitFor(() => expect(completed()).toHaveLength(2));
+          expect(completed()[1]).toMatchObject({ event: { outcome: { status: "succeeded" } } });
+          expect(completed()[1]).not.toHaveProperty("event.outcome.checkpoint");
+        }
+      } finally {
+        await session.close();
+        await done;
+      }
+    },
+  );
   it.each(["normal", "single"])(
     "rolls back %s history with confirmed configuration",
     async (scenario) => {

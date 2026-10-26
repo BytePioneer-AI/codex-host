@@ -129,8 +129,10 @@ there is no account-free-probe gate that disables every real Fork.
   becomes a checkpoint, using its native `stepId`. Missing mappings have no
   checkpoint; ambiguous/malformed mappings fail. Tool/question steps, positions,
   prompt text and hashes never manufacture a boundary. Live terminal checkpoints
-  use the same mapping; a discovery error reports a Session fault without inventing
-  a checkpoint or changing the already-settled native Turn outcome.
+  use the same mapping. An optional discovery RPC/schema error leaves a healthy
+  Session usable without a checkpoint or any change to the settled Turn outcome.
+  Actual transport failure (including process exit or a timeout that closes it)
+  still reports a Session fault.
 - Fork calls only `_cognition.ai/revert/forkFromStep({sessionId, stepId})` and
   requires a nonempty `forkedSessionId` different from the source. A new transport
   loads that exact ID. `session/list` must confirm the requested cwd for both
@@ -153,7 +155,9 @@ there is no account-free-probe gate that disables every real Fork.
 - No prompt replay, summary, database copy, standard `session/fork`, slash command,
   `execute`, `resume` extension or file undo is used. In particular `/revert` is
   not Host rollback. There are no speculative alternative RPCs on failure.
-- Failed children and temporary source transports are closed. Safe native deletion
+- Failed children and temporary source transports are closed. If releasing a
+  temporary source fails after derivation, its child is closed before returning
+  failure; cleanup errors do not replace the original derivation error. Safe native deletion
   is not wired: once a child ID is known, failure reports that its persistent data
   may remain on disk. Source data is never deleted or intentionally rewound.
 

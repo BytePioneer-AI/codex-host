@@ -12,7 +12,7 @@ import {
   hostTurnIdSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
@@ -1915,14 +1915,18 @@ process.stdin.on("end", () => process.exit(served ? 0 : 1));
           await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
         }
       };
-      // The driver ignores stdin ending and SIGTERM, so its exit can never be confirmed
-      // within the cleanup bound.
+      // The driver ignores stdin ending and SIGTERM, so its exit cannot be confirmed within
+      // the cleanup bound. SIGKILL still ends it, which is what lets the temp cwd be removed
+      // on Windows; the pid is recorded so the test can wait for that.
+      const pidFile = path.join(directory, "driver.pid");
       const scriptContent = `
+const fs = require("node:fs");
 if (process.argv.includes("models")) {
   process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
   process.exit(0);
 }
 if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 process.on("SIGTERM", () => undefined);
 let buffer = "";
 process.stdin.resume();
@@ -1985,6 +1989,19 @@ setInterval(() => undefined, 1000);
         expect(fork.ok).toBe(false);
       } finally {
         await adapter.close();
+        // The escalation SIGKILLs the driver; wait for it to actually disappear before
+        // removing its cwd, which Windows keeps locked while the process exists.
+        const pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
+        if (Number.isInteger(pid) && pid > 0) {
+          await vi
+            .waitFor(
+              () => {
+                expect(() => process.kill(pid, 0)).toThrow();
+              },
+              { timeout: 10_000 },
+            )
+            .catch(() => undefined);
+        }
         await cleanup();
       }
     });

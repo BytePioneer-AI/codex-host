@@ -3045,6 +3045,8 @@ export class AppServerHost {
       params: { threadId: updated.record.hostThreadId },
     });
     if (archived) {
+      // Defer release to next tick so that the current archive request's runOperation
+      // tracking clears from externalRuntime.idleRelease before evaluating safeToRelease.
       setImmediate(() => {
         this.#externalRuntime.idleRelease.releaseIfIdle(updated.record.hostThreadId);
       });

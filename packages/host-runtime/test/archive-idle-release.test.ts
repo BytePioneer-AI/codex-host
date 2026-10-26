@@ -116,4 +116,17 @@ describe("External thread release on archive (#424)", () => {
     expect(f.close).not.toHaveBeenCalled();
     expect(f.runtime.get(f.id)).toBeDefined();
   });
+
+  it("diagnoses error but does not set closeFailed when release fails upon archive", async () => {
+    const f = await fixture(true);
+    f.close.mockRejectedValueOnce(new Error("Close failed"));
+
+    f.idle.releaseIfIdle(f.id);
+    await f.queue.drain();
+
+    expect(f.close).toHaveBeenCalledTimes(1);
+    expect(f.diagnose).toHaveBeenCalled();
+    // Archive-triggered release is best-effort and does not set closeFailed
+    expect(f.idle.failure(f.thread)).toBeUndefined();
+  });
 });

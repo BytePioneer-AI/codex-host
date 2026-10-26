@@ -194,7 +194,10 @@ describe("Host stop-then-start coordination", () => {
       const ack = Promise.withResolvers<Awaited<ReturnType<Cancel>>>();
       if (waitingFor === "acknowledgement") f.execute.mockReturnValue(ack.promise);
       const result = f.coordinator.run(f.thread, f.params, f.start, f.insert);
-      const rejected = expect(result).rejects.toThrow("Timed out");
+      const rejected = expect(result).rejects.toMatchObject({
+        message: expect.stringContaining("Timed out"),
+        notStarted: true,
+      });
       await vi.advanceTimersByTimeAsync(50);
       await rejected;
       f.complete();
@@ -204,6 +207,17 @@ describe("Host stop-then-start coordination", () => {
       expect(f.coordinator.hasPending()).toBe(false);
     },
   );
+
+  it("keeps the input retryable when explicitly stopped before replacement starts", async () => {
+    const f = fixture();
+    const result = f.coordinator.run(f.thread, f.params, f.start, f.insert);
+    f.coordinator.interrupt("thread", "old");
+    await expect(result).rejects.toMatchObject({
+      message: expect.stringContaining("stopped before starting"),
+      notStarted: true,
+    });
+    expect(f.start).not.toHaveBeenCalled();
+  });
 
   it.each(["close", "fault", "failed", "persistence", "autonomous", "interrupt"])(
     "does not replace after %s",

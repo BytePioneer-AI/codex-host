@@ -388,6 +388,8 @@ export interface AppServerHostOptions {
   spawnOfficial?: typeof spawn;
   /** Grace period for each official app-server stop step. Tests shorten it. */
   officialCloseTimeoutMs?: number;
+  /** Stop/restart deadline for external steering. Tests shorten it. */
+  externalSteerTimeoutMs?: number;
   createOfficialConnection?: () =>
     OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
   accountControl?: CodexAccountControl;
@@ -670,7 +672,7 @@ export class AppServerHost {
   #externalRuntime!: ExternalThreadRuntime;
   readonly #executionHosts = new WeakMap<ExternalThread, string>();
   readonly #externalPrewarms = new ExternalThreadPrewarms();
-  readonly #externalSteering = new ExternalTurnSteering();
+  readonly #externalSteering: ExternalTurnSteering;
   readonly #liveCommandCache = new LiveCommandCatalogCache();
   readonly #skills: SkillLibrary | undefined;
   readonly #modelPrices: ModelPriceCatalog;
@@ -737,6 +739,7 @@ export class AppServerHost {
       diagnosticOutput: process.stderr,
       ...options,
     };
+    this.#externalSteering = new ExternalTurnSteering(options.externalSteerTimeoutMs);
     this.#modelPrices = options.modelPrices ?? new ModelPriceCatalog();
     this.#observedSessionUsage = new ObservedSessionUsage(
       () =>
@@ -5129,6 +5132,11 @@ export class AppServerHost {
       );
       started.gate.resolve();
       return started.turnId;
+    } catch (error) {
+      if (error instanceof ExternalSteerError && error.notStarted) {
+        throw new DelegationControlError("DELEGATION_FAILED", error.message, { notStarted: true });
+      }
+      throw error;
     } finally {
       this.#signalActiveWorkChanged();
     }

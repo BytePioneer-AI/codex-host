@@ -1,6 +1,6 @@
 name: Compat Daily
 
-# Compare public ChatGPT/Codex Desktop Sparkle latest to Renderer voice pins.
+# Compare macOS ChatGPT/Codex Desktop Sparkle latest to Renderer voice pins.
 # Opens one GitHub issue per surface when a pin is behind. Does not download the .app.
 
 on:
@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   pins:
-    name: Desktop voice pins
+    name: macOS voice release pins
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -60,12 +60,13 @@ jobs:
           node tools/compat-daily/run.mjs | tee compat-daily.json
 
       - name: Open or update issues on pin drift
-        if: failure() && steps.compare.outcome == 'failure' && github.event_name != 'pull_request'
+        if: failure() && steps.compare.outcome == 'failure' && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const report = JSON.parse(fs.readFileSync('compat-daily.json', 'utf8'));
+            if (report.error) return;
             const findings = Array.isArray(report.findings) ? report.findings : [];
             if (findings.length === 0) return;
             const owner = context.repo.owner;
@@ -98,8 +99,9 @@ jobs:
               const body = [
                 finding.detail,
                 '',
-                `- Desktop: \`${report.latest?.version ?? 'unknown'}\` build \`${report.latest?.build ?? 'unknown'}\``,
+                `- macOS Desktop: \`${report.latest?.version ?? 'unknown'}\` build \`${report.latest?.build ?? 'unknown'}\``,
                 `- Event: \`${context.eventName}\``,
+                `- Checked commit: \`${context.sha}\` (\`${context.ref}\`)`,
                 `- Run: ${runUrl}`,
                 '',
                 'Auto-opened by `.github/workflows/compat-daily.yml` on this repository.',
@@ -109,7 +111,7 @@ jobs:
                   owner,
                   repo,
                   issue_number: dup.number,
-                  body: `Re-failed ${new Date().toISOString().slice(0, 10)} — ${runUrl}`,
+                  body: `macOS pin drift re-failed ${new Date().toISOString().slice(0, 10)} — ${runUrl}\n\nChecked commit: \`${context.sha}\` (\`${context.ref}\`)`,
                 });
               } else {
                 await github.rest.issues.create({
@@ -123,13 +125,13 @@ jobs:
             }
 
       - name: Comment on matching voice pins
-        if: always() && (steps.compare.outcome == 'success' || steps.compare.outcome == 'failure') && github.event_name != 'pull_request'
+        if: always() && (steps.compare.outcome == 'success' || steps.compare.outcome == 'failure') && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const report = JSON.parse(fs.readFileSync('compat-daily.json', 'utf8'));
-            if (!report.latest || !report.pins) return;
+            if (report.error || !report.latest || !report.pins) return;
             const { recoveredPinIssues } = await import(`${process.env.GITHUB_WORKSPACE}/tools/compat-daily/run.mjs`);
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -144,7 +146,7 @@ jobs:
               if (comments.some(comment => comment.user?.type === 'Bot' && comment.body?.includes(marker))) continue;
               await github.rest.issues.createComment({
                 owner, repo, issue_number: issue.number,
-                body: `${marker}\nThe ${issue.surface} pin is now ${issue.version}, matching this issue's tracked Desktop target or the current Sparkle release. Current Sparkle: ${report.latest.version}. Any newer version drift is reported separately. This check does not verify microphone capture, connected audio or conversation lifecycle; the issue remains open for acceptance review.\n\nRun: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+                body: `${marker}\nThe macOS ${issue.surface} pin is now ${issue.version}, matching this issue's tracked Desktop target or the current macOS Sparkle release. Current macOS Sparkle: ${report.latest.version}. Any newer version drift is reported separately. This check does not verify microphone capture, connected audio or conversation lifecycle; the issue remains open for acceptance review.\n\nChecked commit: \`${context.sha}\` (\`${context.ref}\`)\nRun: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
               });
             }
 

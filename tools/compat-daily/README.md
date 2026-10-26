@@ -1,19 +1,26 @@
 # Compat daily
 
-Compares the public ChatGPT/Codex Desktop Sparkle appcast to Renderer voice pins. It does not download ChatGPT.app. Sparkle reports macOS releases; it is not a Windows MSIX release feed. A separate daily Windows job checks bounded ASAR metadata, registered/portable MSIX discovery, platform profile selection and Controller bootstrap against fixtures. It does not claim to monitor the latest Windows Store release.
+Compares the public macOS ChatGPT/Codex Desktop Sparkle appcast to Renderer voice pins. It does not download ChatGPT.app. Sparkle is not a Windows MSIX release feed. A separate daily Windows job checks bounded ASAR metadata, registered/portable MSIX discovery, platform profile selection and Controller bootstrap against fixtures. It does not claim to monitor the latest Windows Store release or verify a live voice call.
 
 ```bash
 npm run compat:daily:test
 npm run compat:daily
 ```
 
-GitHub: `.github/workflows/compat-daily.yml` (daily 07:17 UTC, `workflow_dispatch`, and path-filtered push). Pin drift opens or comments `compat-broken` issues on this repository.
+GitHub: `.github/workflows/compat-daily.yml` (daily 07:17 UTC, `workflow_dispatch`, and path-filtered push/PR). macOS pin drift opens or comments `compat-broken` issues on this repository.
 
 The local command prints JSON containing `latest`, `pins` and `findings`. It exits
-with status 1 when either surface differs from Sparkle latest; fetch or parse
-errors also fail the command. Running it locally does not create GitHub issues.
-The workflow creates or comments on issues in its own repository on failing
-non-PR runs. A separate recovery step adds one deduplicated bot comment when a
+with status 1 when macOS Sparkle latest is numerically newer than either surface's
+pin. Equal or older feed versions produce no drift findings. Version comparison
+uses three numeric components; malformed versions are operational errors. This
+release alert does not evaluate every retained profile or change runtime eligibility.
+Fetch, parse and pin-loading errors also fail the command, printing JSON with
+`error` and an empty `findings` array plus the diagnostic on stderr. Successful
+reports retain `latest`, `pins` and `findings`. Running locally does not create issues.
+The workflow creates or comments on issues only on non-PR runs of the repository's
+default branch, and skips all issue updates for operational errors. Reports include
+the checked commit and ref. Other branches still run checks without publishing issue
+status. A separate recovery step adds one deduplicated bot comment when a
 voice pin matches an open issue’s tracked Desktop target or Sparkle latest. It
 leaves the issue open for live acceptance and reports newer drift separately.
 No command here updates pins or enables a Desktop build.

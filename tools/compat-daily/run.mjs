@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Compact ChatGPT/Codex Desktop pin check. Fetches the public Sparkle appcast
+ * macOS ChatGPT/Codex Desktop pin check. Fetches the public Sparkle appcast
  * and compares it to Renderer voice pins. Does not download the .app zip.
  */
 import { readFile } from "node:fs/promises";
@@ -55,20 +55,37 @@ export function parseAppcast(xml) {
   return { version, build };
 }
 
+function versionParts(version) {
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/u.test(version)) {
+    throw new Error(`Invalid Desktop version: ${version}`);
+  }
+  return version.split(".").map((part) => BigInt(part));
+}
+
+function isNewer(latest, pin) {
+  for (let index = 0; index < latest.length; index += 1) {
+    if (latest[index] !== pin[index]) return latest[index] > pin[index];
+  }
+  return false;
+}
+
 export function evaluate(pins, latest) {
+  const latestParts = versionParts(latest.version);
+  const workParts = versionParts(pins.workVersion);
+  const chatParts = versionParts(pins.chatVersion);
   const findings = [];
-  if (latest.version !== pins.workVersion) {
+  if (isNewer(latestParts, workParts)) {
     findings.push({
       surface: "work-voice",
       title: `compat-daily/work-voice: pin ${pins.workVersion} behind desktop ${latest.version}`,
-      detail: `Work/gateway voice is pinned to ${pins.workVersion} (${pins.workInitial}${pins.overlayAsset ? `, overlay ${pins.overlayAsset}` : ""}). Sparkle latest is ${latest.version} build ${latest.build}.`,
+      detail: `Work/gateway voice is pinned to ${pins.workVersion} (${pins.workInitial}${pins.overlayAsset ? `, overlay ${pins.overlayAsset}` : ""}). macOS Sparkle latest is ${latest.version} build ${latest.build}.`,
     });
   }
-  if (latest.version !== pins.chatVersion) {
+  if (isNewer(latestParts, chatParts)) {
     findings.push({
       surface: "chat-voice",
       title: `compat-daily/chat-voice: pin ${pins.chatVersion} behind desktop ${latest.version}`,
-      detail: `ChatGPT Chat voice is pinned to ${pins.chatVersion} (${pins.chatInitial}, ${pins.chatStart}). Sparkle latest is ${latest.version} build ${latest.build}. Native Chat start/prewarm on this Desktop is unqualified.`,
+      detail: `ChatGPT Chat voice is pinned to ${pins.chatVersion} (${pins.chatInitial}, ${pins.chatStart}). macOS Sparkle latest is ${latest.version} build ${latest.build}. Native Chat start/prewarm on this macOS Desktop is unqualified.`,
     });
   }
   return { latest, pins, findings };
@@ -125,7 +142,9 @@ async function main() {
 const invoked = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invoked) {
   main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    process.stdout.write(`${JSON.stringify({ error: message, findings: [] }, null, 2)}\n`);
+    process.stderr.write(`${message}\n`);
     process.exitCode = 1;
   });
 }

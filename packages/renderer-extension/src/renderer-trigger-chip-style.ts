@@ -23,6 +23,8 @@
 const STYLE_ATTRIBUTE = "data-codexhost-trigger-chip-style";
 export const TRIGGER_CHIP_CLASS = "codexhost-trigger-chip";
 export const TRIGGER_CHIP_ROOT_CLASS = "codexhost-trigger-chip-root";
+const COMPACT_COMPOSER_ATTRIBUTE = "data-codexhost-compact-composer";
+const COMPACT_COMPOSER_WIDTH = 420;
 
 /** Floor so a squeezed chip remains clickable. */
 export const TRIGGER_CHIP_SQUEEZE_MIN_WIDTH = "48px";
@@ -76,6 +78,27 @@ export function applyRendererTriggerChipSqueezeTrigger(trigger: HTMLElement): vo
   trigger.style.overflow = "hidden";
 }
 
+/** Follow the Composer width, which also changes when a sidebar opens. */
+export function observeRendererCompactComposer(composer: Element): () => void {
+  const update = (width: number): void => {
+    if (width > 0) {
+      composer.toggleAttribute(COMPACT_COMPOSER_ATTRIBUTE, width <= COMPACT_COMPOSER_WIDTH);
+    }
+  };
+  update(composer.getBoundingClientRect().width);
+  if (typeof ResizeObserver === "undefined")
+    return () => composer.removeAttribute(COMPACT_COMPOSER_ATTRIBUTE);
+  const observer = new ResizeObserver((entries) => {
+    const entry = entries[0];
+    if (entry) update(entry.contentRect.width);
+  });
+  observer.observe(composer);
+  return () => {
+    observer.disconnect();
+    composer.removeAttribute(COMPACT_COMPOSER_ATTRIBUTE);
+  };
+}
+
 export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
   if (ownerDocument.querySelector(`style[${STYLE_ATTRIBUTE}]`)) return;
   const style = ownerDocument.createElement("style");
@@ -113,6 +136,41 @@ export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
     .${TRIGGER_CHIP_CLASS}:disabled {
       cursor: not-allowed;
       opacity: 0.4;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-model-control] [data-codexhost-model-thinking] {
+      display: none !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control] {
+      min-width: 30px !important;
+      max-width: 30px !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control] .${TRIGGER_CHIP_CLASS} {
+      padding-inline: 6px !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-label],
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-chevron],
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-credits-label],
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-usage-label] {
+      display: none !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control]:has([data-codexhost-permission-lock]:not([hidden])) [data-codexhost-permission-shield],
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control]:has([data-codexhost-permission-error]:not([hidden])) [data-codexhost-permission-shield] {
+      display: none !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-credits-control],
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-usage-control] {
+      min-width: 28px !important;
+      max-width: 28px !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-credits-control] .${TRIGGER_CHIP_CLASS},
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-usage-control] .${TRIGGER_CHIP_CLASS} {
+      padding-inline: 6px !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-usage-icon] {
+      display: inline-flex !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-agent-control] {
+      margin-inline: 0 !important;
     }
   `;
   (ownerDocument.head ?? ownerDocument.documentElement).append(style);

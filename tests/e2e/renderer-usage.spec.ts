@@ -17,6 +17,7 @@ const { outputFiles } = await build({
         mountRendererUsageControl,
         renderRendererUsageControl,
       } from "./packages/renderer-extension/src/renderer-usage-control.ts";
+      import { observeRendererCompactComposer } from "./packages/renderer-extension/src/renderer-trigger-chip-style.ts";
 
       globalThis.setupRendererUsage = () => {
         const toolbar = document.createElement("div");
@@ -35,6 +36,7 @@ const { outputFiles } = await build({
         model.append(modelButton);
         toolbar.append(plus, model);
         document.body.append(toolbar);
+        globalThis.observeRendererUsageWidth = () => observeRendererCompactComposer(toolbar);
 
         const usage = mountRendererUsageControl("usage-composer");
         let exactRefreshes = 0;
@@ -210,7 +212,7 @@ for (const width of [1280, 375]) {
     const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
     await expect(usage).toBeVisible();
     await expect(usage).toHaveText("0.059 credits");
-    await expect(usage.locator("svg")).toHaveCount(0);
+    await expect(usage.locator("svg")).not.toBeVisible();
     await expect(usage.locator("button")).toHaveAttribute(
       "aria-label",
       "对话用量: 0.059 credits; 上下文 9.6%",
@@ -243,6 +245,45 @@ for (const width of [1280, 375]) {
   });
 }
 
+test("keeps Usage usable while the composer shrinks and expands", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.setContent(
+    '<!doctype html><body style="margin:12px;padding-top:280px;font:14px system-ui"></body>',
+  );
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    Reflect.get(globalThis, "setupRendererUsage")();
+    Reflect.get(globalThis, "updateRendererUsage")();
+    Reflect.get(globalThis, "observeRendererUsageWidth")();
+  });
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  const label = usage.locator("[data-codexhost-usage-label]");
+  const icon = usage.locator("svg");
+  const trigger = usage.locator("button");
+  await expect(label).toBeVisible();
+  await expect(icon).not.toBeVisible();
+
+  await page.setViewportSize({ width: 380, height: 600 });
+  await expect(label).not.toBeVisible();
+  await expect(icon).toBeVisible();
+  await expect(trigger).toHaveAttribute("aria-label", "Thread Usage: CH 99.9% · $0.822");
+  await expect
+    .poll(() => usage.evaluate((element) => element.getBoundingClientRect().width))
+    .toBeLessThanOrEqual(28);
+  const popover = page.getByRole("dialog", { name: "Thread Usage details" });
+  await trigger.hover();
+  await expect(popover).toBeVisible();
+  await trigger.click();
+  await expect(popover).not.toBeVisible();
+  await trigger.click();
+  await expect(popover).toBeVisible();
+
+  await page.setViewportSize({ width: 800, height: 600 });
+  await expect(label).toBeVisible();
+  await expect(label).toHaveText("CH 99.9% · $0.822");
+  await expect(icon).not.toBeVisible();
+});
+
 test("renders Usage immediately to the left of the model control", async ({ page }) => {
   await page.setContent('<!doctype html><body style="margin:0"></body>');
   await page.addScriptTag({ content: browserBundle });
@@ -266,7 +307,7 @@ test("renders Usage immediately to the left of the model control", async ({ page
     "aria-label",
     "Thread Usage: CH 99.9% · $0.822",
   );
-  await expect(usage.locator("svg")).toHaveCount(0);
+  await expect(usage.locator("svg")).not.toBeVisible();
   const [usageBox, modelBox] = await Promise.all([usage.boundingBox(), model.boundingBox()]);
   if (!usageBox || !modelBox) throw new Error("Usage geometry is unavailable");
   expect(

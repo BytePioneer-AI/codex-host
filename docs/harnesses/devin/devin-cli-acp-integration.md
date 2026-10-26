@@ -3,14 +3,19 @@
 Devin runs as an independent Harness through codexhost's public Harness plugin
 contract. The adapter lives in `packages/adapters/devin/` and is loaded through
 the dynamic plugin Loader like every other plugin; Host Runtime, Protocol Core
-and Renderer do not import it.
+and Renderer do not import it. See the [capability inventory](../../../packages/adapters/devin/CAPABILITIES.md)
+for implementation evidence and outstanding validation.
 
 ## Transport choice
 
 The adapter launches `devin acp` and uses the official ACP SDK over stdio. This
 preserves Devin's own stored authentication (`devin auth login`), native tools
 and permission requests. Devin-specific translation remains inside
-`@codexhost/adapter-devin`. The plugin never reads or copies user credentials.
+`@codexhost/adapter-devin`. For the explicit ACP authentication handshake, the
+plugin reads `CODEXHOST_DEVIN_API_KEY`, then `DEVIN_API_KEY`, or the
+`windsurf_api_key` field in Devin's `credentials.toml` under
+`${XDG_DATA_HOME:-~/.local/share}/devin`. It passes that key to the local Devin
+process without copying it to Host storage or implicitly opening browser login.
 
 `devin acp` (CLI `3000.10.31`) reports `protocolVersion: 1` with
 `agentCapabilities.loadSession: true`, image prompt support, and session
@@ -26,9 +31,15 @@ catalog (385 entries when tested) and the permission modes `accept-edits`,
 - Dynamic native model catalog. Native model values are encoded into
   transport-safe opaque Host refs (`devin.<base64url>`) without losing the
   original value; `model.select` resolves them back and rejects models outside
-  the session's native catalog.
+  the session's native catalog. Selection during an active Turn goes directly
+  to the native configuration interface; Devin determines when it takes effect.
+  Native rejection or missing confirmation leaves Host state unchanged. Parallel
+  configuration writes and history reads remain mutually exclusive; a second
+  Turn and permission-mode changes remain blocked during an active Turn.
 - Native permission modes, confirmed by the ACP configuration response before
-  Host state changes. Unsupported or unconfirmed values fail closed.
+  Host state changes. Unsupported or unconfirmed values fail closed. Creating
+  with `unattended-full-access` selects and confirms native `bypass`; an explicit
+  non-bypass permission mode is rejected before opening native resources.
 - Native permission requests surface as Host Approval interactions with exact
   correlation, response validation and cancellation cleanup.
 - Structured `fileChange` Items for tools carrying native ACP diff content, in
@@ -67,12 +78,9 @@ been established.
 
 ## Current limitations
 
-- Devin is wired into the Desktop picker through the existing static Renderer
-  lists (agent selection state, route construction, binding probe, sidebar
-  icons, Connections install link and the production `enabledAgents` list).
-  There is no Devin-specific Host branch; the Thread rides the shared
-  plugin route like the other plugin Harnesses.
-- Fork, rollback, independent thinking selection, usage/account reporting,
+- Desktop discovery, icons and installation links use the dynamic plugin
+  catalog and shared route. There is no Devin-specific Host or Renderer branch.
+- Fork, rollback, steering, independent thinking selection, usage/account reporting,
   native session deletion wiring and subagent transcript browsing are
   not advertised. `devin auth status` exposes identity and plan but no valid
   usage percentage, so no `inspectAccount()` credits are fabricated. Image

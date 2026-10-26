@@ -140,6 +140,13 @@ export class DevinAdapter implements HarnessAdapter {
       return rejected("unsupported", "Devin ACP has no independent thinking selector");
     if (input.kind === "resume" && input.nativeRef.harnessId !== this.harnessId)
       return rejected("invalidRequest", "Session belongs to another Harness");
+    if (
+      input.kind === "create" &&
+      input.executionPolicy === "unattended-full-access" &&
+      input.permissionModeId !== undefined &&
+      input.permissionModeId !== "bypass"
+    )
+      return rejected("invalidRequest", "unattended-full-access requires Devin bypass mode");
     const options = this.transportOptions(input.cwd, input.environment);
     const transport = new DevinTransport(options);
     try {
@@ -345,7 +352,11 @@ export class DevinSession implements HarnessSession {
       void active.task.finally(() => clearTimeout(timer));
       return { ok: true, value: { cancellationRequested: true } };
     }
-    if (this.#active || this.#configuring) return rejected("sessionBusy", "Devin session is busy");
+    if (
+      this.#configuring ||
+      (this.#active && command.type !== "model.select" && command.type !== "thinking.select")
+    )
+      return rejected("sessionBusy", "Devin session is busy");
     if (command.type === "turn.start") {
       if (this.#submitted.has(command.turnId))
         return rejected("invalidState", "Devin turn was already submitted");

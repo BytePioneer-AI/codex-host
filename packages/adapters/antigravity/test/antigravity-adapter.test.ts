@@ -1967,8 +1967,50 @@ process.stdin.on("end", () => process.exit(served ? 0 : 1));
           },
         }),
       ];
+      const turn3 = [
+        JSON.stringify({
+          event: "init",
+          conversation_id: "conv-replay",
+          init: { permission_mode: "dangerously-skip-permissions" },
+        }),
+        step(1, "third_tool"),
+        step(2, "fourth_tool"),
+        step(1, "first_tool"),
+        step(2, "fifth_tool"),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-replay",
+            status: "SUCCESS",
+            num_turns: 3,
+            response: "three",
+          },
+        }),
+      ];
+      // Turn 4 replays first_tool/fifth_tool and then emits first_tool again as its own
+      // first step. Matching a replay must consume it, or this identical new step is lost.
+      const turn4 = [
+        JSON.stringify({
+          event: "init",
+          conversation_id: "conv-replay",
+          init: { permission_mode: "dangerously-skip-permissions" },
+        }),
+        step(1, "first_tool"),
+        step(2, "fifth_tool"),
+        step(1, "first_tool"),
+        step(2, "sixth_tool"),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-replay",
+            status: "SUCCESS",
+            num_turns: 4,
+            response: "four",
+          },
+        }),
+      ];
       const scriptContent = `
-const turns = ${JSON.stringify([turn1, turn2])};
+const turns = ${JSON.stringify([turn1, turn2, turn3, turn4])};
 if (process.argv.includes("models")) {
   process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
   process.exit(0);
@@ -2027,6 +2069,10 @@ process.stdin.on("end", () => process.exit(0));
         // The replayed pair is dropped; the Turn's own two steps survive despite reusing
         // indices 1 and 2.
         expect(await toolNames("turn-replay-2", "two")).toEqual(["third_tool", "fourth_tool"]);
+        // A third Turn replays third/fourth and then repeats first_tool verbatim as its own
+        // first step: each replay is consumed once, so this one must still be delivered.
+        expect(await toolNames("turn-replay-3", "three")).toEqual(["first_tool", "fifth_tool"]);
+        expect(await toolNames("turn-replay-4", "four")).toEqual(["first_tool", "sixth_tool"]);
         await session.close();
       } finally {
         await adapter.close();

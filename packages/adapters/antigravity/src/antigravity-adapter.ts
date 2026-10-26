@@ -140,11 +140,11 @@ interface ActiveTurn {
   /** Raw step lines this Turn emitted, keyed by index, to recognise a replay later. */
   stepLines: Map<number, string>;
   /**
-   * True while the Turn is still reading the previous Turn's replayed steps. agy emits
-   * them as one contiguous run before any new step, so once a step differs the rest of
-   * the Turn is new even if it repeats an earlier line verbatim.
+   * Previous-Turn step lines this Turn has not yet matched as a replay, keyed by index.
+   * Entries are consumed as they match, so a new Turn whose own first step happens to be
+   * byte-identical to the previous Turn's still gets delivered once the replay is spent.
    */
-  replayingSteps: boolean;
+  replayedSteps: Map<number, string>;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
   tools: Map<number, HostItem>;
@@ -669,8 +669,8 @@ class AntigravitySession implements HarnessSession {
    * rollback copy the Conversation's database, which a live agy keeps writing, so the copy
    * is only taken once no process can touch it.
    */
-  async releaseIdleDriver(): Promise<void> {
-    await this.#disposeTransport(this.#transport);
+  async releaseIdleDriver(): Promise<boolean> {
+    return this.#disposeTransport(this.#transport);
   }
 
   subagentState(id: string): HostSubagentState | undefined {
@@ -813,17 +813,21 @@ class AntigravitySession implements HarnessSession {
       },
     };
     this.#preparingQuestions = reusable
-      ? Promise.resolve(reusable.questions.rebind(questionOptions))
+      ? Promise.resolve().then(() => reusable.questions.rebind(questionOptions))
       : AntigravityQuestionBridge.create(questionOptions);
     try {
       questions = await this.#preparingQuestions;
     } catch (error) {
+      // A bridge that was disposed or is still busy cannot serve this driver again, so a
+      // retry would fail identically: release the driver and report a permanent failure.
+      const permanent = reusable !== null && /disposed|busy/u.test(errorMessage(error));
+      if (permanent) await this.#disposeTransport(reusable);
       return {
         ok: false,
         error: {
-          code: "nativeFailure",
+          code: permanent ? "invalidState" : "nativeFailure",
           message: `Question bridge setup failed: ${errorMessage(error)}`,
-          retryable: true,
+          retryable: !permanent,
         },
       };
     } finally {
@@ -915,7 +919,7 @@ class AntigravitySession implements HarnessSession {
       logPath,
       transport,
       stepLines: new Map(),
-      replayingSteps: reusable !== null,
+      replayedSteps: reusable ? new Map(reusable.lastTurnStepLines) : new Map(),
       agentItem: null,
       agentText: "",
       tools: new Map(),
@@ -973,13 +977,14 @@ class AntigravitySession implements HarnessSession {
         if (event.event === "step_update") {
           const index = event.step_update.step_index;
           if (Number.isInteger(index)) {
-            // A replayed step is byte-identical to the same index of the previous Turn.
-            // Comparing content rather than index order is what makes this safe whether
-            // agy continues numbering across stdin messages or restarts at 1: a genuinely
-            // new step never repeats an earlier line, and a replay always does.
-            if (turn.replayingSteps) {
-              if (transport.lastTurnStepLines.get(index) === line) return;
-              turn.replayingSteps = false;
+            // A replayed step is byte-identical to the same index of the previous Turn,
+            // and each replay is consumed once. Matching on content rather than index
+            // order is what makes this correct whether agy continues numbering across
+            // stdin messages or restarts at 1; consuming the match is what keeps a new
+            // Turn's own step from being dropped when it repeats the previous line.
+            if (turn.replayedSteps.get(index) === line) {
+              turn.replayedSteps.delete(index);
+              return;
             }
             turn.stepLines.set(index, line);
           }
@@ -1505,9 +1510,13 @@ class AntigravitySession implements HarnessSession {
     });
   }
 
-  /** Releases a native driver: stop its bridge, end stdin, then kill if it lingers. */
-  async #disposeTransport(transport: AntigravityTransport | null): Promise<void> {
-    if (!transport) return;
+  /**
+   * Releases a native driver: stop its bridge, end stdin, then kill if it lingers.
+   * Resolves true only once the process has actually exited, so a caller that is about to
+   * read the Conversation database knows no process can still be writing it.
+   */
+  async #disposeTransport(transport: AntigravityTransport | null): Promise<boolean> {
+    if (!transport) return true;
     if (this.#transport === transport) this.#transport = null;
     transport.questions.stop();
     if (transport.process.stdin.writable) transport.process.stdin.end();
@@ -1529,6 +1538,7 @@ class AntigravitySession implements HarnessSession {
       await transport.questions.dispose();
       await unlink(transport.logPath).catch(() => undefined);
     }
+    return transport.process.exitCode !== null || transport.process.signalCode !== null;
   }
 
   #completeItem(active: ActiveTurn, item: HostItem, outcome: HostItemOutcome): void {
@@ -1938,8 +1948,17 @@ export class AntigravityAdapter implements HarnessAdapter {
 
     if (input.kind === "fork") {
       const sourceSession = this.#findSession(input.sourceRef.nativeSessionId);
-      // The source's database is copied below; a retained driver would still be writing it.
-      if (!sourceSession?.isActive) await sourceSession?.releaseIdleDriver();
+      // The source's database is copied below, so no process may still be writing it.
+      if (sourceSession && !sourceSession.isActive && !(await sourceSession.releaseIdleDriver())) {
+        return {
+          ok: false,
+          error: {
+            code: "sessionBusy",
+            message: "Antigravity Session driver could not be stopped before forking",
+            retryable: true,
+          },
+        };
+      }
       return forkAntigravitySession({
         harnessId: this.harnessId,
         input,
@@ -1980,8 +1999,17 @@ export class AntigravityAdapter implements HarnessAdapter {
 
     if (input.kind === "rollbackLastTurn") {
       const sourceSession = this.#findSession(input.sourceRef.nativeSessionId);
-      // The source's database is copied below; a retained driver would still be writing it.
-      if (!sourceSession?.isActive) await sourceSession?.releaseIdleDriver();
+      // The source's database is copied below, so no process may still be writing it.
+      if (sourceSession && !sourceSession.isActive && !(await sourceSession.releaseIdleDriver())) {
+        return {
+          ok: false,
+          error: {
+            code: "sessionBusy",
+            message: "Antigravity Session driver could not be stopped before rolling back",
+            retryable: true,
+          },
+        };
+      }
       return rollbackAntigravityLastTurn({
         harnessId: this.harnessId,
         input,

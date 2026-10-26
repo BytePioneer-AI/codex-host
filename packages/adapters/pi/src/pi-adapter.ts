@@ -79,6 +79,7 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import { piMessageItemId, type PiMessageIdentity } from "./pi-message-item-id.js";
 import { resolvePiInspectCwd } from "./command.js";
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
 import { piToolFileChanges } from "./pi-file-change.js";
@@ -1393,11 +1394,13 @@ class PiHarnessSession implements HarnessSession {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     switch (event.type) {
       case "text.delta":
-        this.#activateAgentMessage(active, event.messageId);
+        this.#activateAgentMessage(active, event.messageId, event.nativeMessageIdentity);
+        active.sawAssistantMessage = true;
         this.#appendText(active, event.delta);
         return;
       case "reasoning.delta":
-        this.#appendReasoning(active, event.delta);
+        this.#activateAgentMessage(active, event.messageId, event.nativeMessageIdentity);
+        this.#appendReasoning(active, event.delta, event.nativeMessageIdentity);
         return;
       case "reasoning.completed":
         this.#completeReasoning(active, { status: "succeeded" });
@@ -1543,16 +1546,25 @@ class PiHarnessSession implements HarnessSession {
     });
   }
 
-  #activateAgentMessage(active: ActiveTurn, messageId: string): void {
+  #activateAgentMessage(
+    active: ActiveTurn,
+    messageId: string,
+    nativeMessageIdentity?: PiMessageIdentity,
+  ): void {
     if (active.agentMessageId === messageId) return;
+    const nativeItemId = piMessageItemId(nativeMessageIdentity, "assistant");
+    if (nativeItemId && active.agentMessageId === null && active.agentItem?.text === "") {
+      // The projector has not put this empty placeholder on the wire.
+      this.#completeAgentItem(active, { status: "succeeded" }, true);
+    }
     if (active.agentMessageId !== null) {
       this.#completeReasoning(active, { status: "succeeded" });
-      this.#completeAgentItem(active, { status: "succeeded" }, false);
+      this.#completeAgentItem(active, { status: "succeeded" }, true);
     }
     if (!active.agentItem) {
       active.agentItem = {
         type: "agentMessage",
-        itemId: this.#newItemId(),
+        itemId: nativeItemId ?? this.#newItemId(),
         text: "",
       };
       this.#event({
@@ -1562,7 +1574,6 @@ class PiHarnessSession implements HarnessSession {
       });
     }
     active.agentMessageId = messageId;
-    active.sawAssistantMessage = true;
   }
 
   #appendText(active: ActiveTurn, text: string): void {
@@ -1586,12 +1597,16 @@ class PiHarnessSession implements HarnessSession {
     this.#completeItem(active, item, outcome);
   }
 
-  #appendReasoning(active: ActiveTurn, text: string): void {
+  #appendReasoning(
+    active: ActiveTurn,
+    text: string,
+    nativeMessageIdentity?: PiMessageIdentity,
+  ): void {
     if (text.length === 0) return;
     if (!active.reasoningItem) {
       active.reasoningItem = {
         type: "reasoning",
-        itemId: this.#newItemId(),
+        itemId: piMessageItemId(nativeMessageIdentity, "reasoning") ?? this.#newItemId(),
         text: "",
       };
       this.#event({

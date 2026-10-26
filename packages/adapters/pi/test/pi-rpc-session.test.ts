@@ -1,11 +1,15 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
-import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
+import { harnessThinkingOptionIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
-import type { PiSessionHistory } from "../src/pi-history.js";
+import { mapPiSnapshot, type PiSessionHistory } from "../src/pi-history.js";
+import { piMessageItemId } from "../src/pi-message-item-id.js";
+import { PiAdapter } from "../src/pi-adapter.js";
+import { CodexTurnProjector } from "@codexhost/protocol-core";
 
 import {
   PiRpcSession,
@@ -18,6 +22,10 @@ import {
 import type { PiUsageObservation } from "../src/pi-usage.js";
 
 type Scenario =
+  | "compact-native-wire"
+  | "native-id-before-text"
+  | "native-id-before-reasoning"
+  | "native-id-after-text"
   | "final-only"
   | "fast"
   | "fast-no-ack"
@@ -65,6 +73,9 @@ class FakePiRpcProcess extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   fastEnabled = false;
+  readonly commands: string[] = [];
+  holdEntries = false;
+  #heldEntries: Record<string, unknown>[] = [];
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #promptCount = 0;
   #sessionId = "synthetic-session";
@@ -77,6 +88,20 @@ class FakePiRpcProcess extends EventEmitter {
   readonly #scenario: Scenario;
   readonly #compactionDelayMs: number | undefined;
 
+  releaseEntries(): void {
+    this.holdEntries = false;
+    for (const command of this.#heldEntries.splice(0)) this.#handle(command);
+  }
+
+  restoreNativeHistory(history: PiSessionHistory, sessionId = "synthetic-session"): void {
+    this.autonomousHistory = structuredClone(history);
+    this.#sessionId = sessionId;
+    this.#promptCount = history.entries.filter((entry) => {
+      const message = entry.message as { role?: string } | undefined;
+      return message?.role === "user";
+    }).length;
+  }
+
   setNativeModel(provider: string, modelId: string): void {
     this.#provider = provider;
     this.#modelId = modelId;
@@ -85,6 +110,7 @@ class FakePiRpcProcess extends EventEmitter {
   constructor(scenario: Scenario, compactionDelayMs?: number) {
     super();
     this.#scenario = scenario;
+    if (scenario === "compact-native-wire") this.autonomousHistory = { entries: [], leafId: null };
     this.#compactionDelayMs = compactionDelayMs;
     this.stdin.on("data", (chunk: Buffer) => this.#push(chunk));
     this.stdin.once("finish", () => {
@@ -221,6 +247,11 @@ class FakePiRpcProcess extends EventEmitter {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return;
     const command = value as Record<string, unknown>;
     if (typeof command.id !== "string" || typeof command.type !== "string") return;
+    this.commands.push(command.type);
+    if (command.type === "get_entries" && this.holdEntries) {
+      this.#heldEntries.push(command);
+      return;
+    }
     if (command.type === "extension_ui_response") {
       if (
         (this.#scenario === "interaction" &&
@@ -528,6 +559,69 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type !== "prompt") return;
     this.#promptCount += 1;
+    if (this.#scenario === "compact-native-wire") {
+      // Captured from Pi 1.4: message_update has neither message nor partial.
+      const frames = JSON.parse(
+        readFileSync(new URL("fixtures/pi-1.4-compact-text-stream.json", import.meta.url), "utf8"),
+      ) as Record<string, unknown>[];
+      const history = this.autonomousHistory;
+      if (!history) throw new Error("Missing compact wire history");
+      const userId = `compact-user-${this.#promptCount}`;
+      const assistantId = `compact-assistant-${this.#promptCount}`;
+      history.entries.push({
+        id: userId,
+        parentId: history.leafId,
+        type: "message",
+        message: { role: "user", content: String(command.message) },
+      });
+      for (const frame of frames) {
+        const message = frame.message as Record<string, unknown> | undefined;
+        if (message?.responseId) message.responseId = `${message.responseId}-${this.#promptCount}`;
+        this.#output(frame);
+        if (frame.type === "message_end")
+          history.entries.push({
+            id: assistantId,
+            parentId: userId,
+            type: "message",
+            message: JSON.parse(JSON.stringify(message)),
+          });
+      }
+      history.leafId = assistantId;
+      this.#settleAgent();
+      return;
+    }
+    if (this.#scenario.startsWith("native-id-")) {
+      const responseId = "native-response-1";
+      const firstIsReasoning = this.#scenario === "native-id-before-reasoning";
+      const lateId = this.#scenario === "native-id-after-text";
+      this.#output({ type: "message_start", message: { role: "assistant", content: [] } });
+      this.#output({
+        type: "message_update",
+        message: { role: "assistant", ...(lateId ? {} : { responseId }) },
+        assistantMessageEvent: {
+          type: firstIsReasoning ? "thinking_delta" : "text_delta",
+          delta: firstIsReasoning ? "thinking" : "ans",
+        },
+      });
+      this.#output({
+        type: "message_update",
+        message: { role: "assistant", responseId },
+        assistantMessageEvent: { type: "text_delta", delta: firstIsReasoning ? "answer" : "wer" },
+      });
+      this.#output({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          responseId,
+          content: [
+            ...(firstIsReasoning ? [{ type: "thinking", thinking: "thinking" }] : []),
+            { type: "text", text: "answer" },
+          ],
+        },
+      });
+      this.#settleAgent();
+      return;
+    }
     if (this.#scenario === "reasoning" || this.#scenario === "reasoning-multiple-blocks") {
       const thinkingBlocks =
         this.#scenario === "reasoning"
@@ -1615,6 +1709,244 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
+  it("matches live wire and native history IDs for the captured Pi 1.4 compact stream", async () => {
+    const adapter = new PiAdapter(
+      {},
+      {
+        createTransport: (options) =>
+          new PiRpcSession(options, {
+            spawn: () =>
+              new FakePiRpcProcess(
+                "compact-native-wire",
+              ) as unknown as ChildProcessWithoutNullStreams,
+          }),
+      },
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const liveIds: string[][] = [];
+    try {
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      for (const ordinal of [1, 2]) {
+        const turnId = hostTurnIdSchema.parse(`compact-turn-${ordinal}`);
+        const projector = new CodexTurnProjector({
+          threadId: "compact-thread",
+          turnId,
+          cwd: "/synthetic",
+          startedAtMs: 0,
+        });
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "Reply exactly PI_WIRE_OK" }],
+        });
+        const ids = new Set<string>();
+        for (;;) {
+          const output = await iterator.next();
+          if (output.done) throw new Error("Turn ended without completion");
+          if (output.value.kind !== "event") continue;
+          const event = output.value.event;
+          if (
+            [
+              "turn.started",
+              "item.started",
+              "item.updated",
+              "item.completed",
+              "turn.completed",
+            ].includes(event.type)
+          ) {
+            for (const notification of projector.project(
+              event as Parameters<CodexTurnProjector["project"]>[0],
+            ).messages) {
+              if (notification.method !== "item/completed") continue;
+              const params = notification.params as {
+                item: { type: string; id: string; text?: string };
+              };
+              if (params.item.type === "agentMessage") {
+                expect(params.item.text).toBe("PI_WIRE_OK");
+                ids.add(params.item.id);
+              }
+            }
+          }
+          if (event.type === "turn.completed") break;
+        }
+        liveIds.push([...ids]);
+      }
+      const snapshot = await session.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      expect(snapshot.value.turns.map((turn) => turn.items.map(({ item }) => item.itemId))).toEqual(
+        liveIds,
+      );
+      expect(new Set(liveIds.flat()).size).toBe(2);
+    } finally {
+      await session.close();
+      await adapter.close();
+    }
+  });
+
+  it("does not place a history-read gap between accepting a Turn and dispatching its cancellable prompt", async () => {
+    const process = new FakePiRpcProcess("compact-native-wire");
+    const rpc = new PiRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 100 },
+      {
+        spawn: () => process as unknown as ChildProcessWithoutNullStreams,
+      },
+    );
+    await rpc.start();
+    process.holdEntries = true;
+    try {
+      const running = rpc.runTurn("Reply exactly PI_WIRE_OK", () => undefined);
+      const cancelling = rpc.abort();
+      process.releaseEntries();
+      await cancelling;
+      await expect(running).resolves.toMatchObject({ cancelled: true });
+      expect(process.commands.indexOf("prompt")).toBeLessThan(process.commands.indexOf("abort"));
+    } finally {
+      process.releaseEntries();
+      await rpc.close();
+    }
+  });
+
+  it("rebuilds compact-stream identities from persisted tool/error messages on cold resume and branch rollback", async () => {
+    const timestamp = 1792994079878; // The timestamp in the captured compact RPC fixture.
+    const seed: PiSessionHistory = {
+      entries: [
+        {
+          id: "seed-user",
+          parentId: null,
+          type: "message",
+          message: { role: "user", content: "seed" },
+        },
+        {
+          id: "seed-tool",
+          parentId: "seed-user",
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp,
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "tool", name: "read", arguments: { path: "x" } }],
+          },
+        },
+        {
+          id: "seed-error",
+          parentId: "seed-tool",
+          type: "message",
+          message: { role: "assistant", timestamp, stopReason: "error", content: [] },
+        },
+        {
+          id: "seed-answer",
+          parentId: "seed-error",
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp,
+            stopReason: "stop",
+            content: [{ type: "text", text: "old" }],
+          },
+        },
+      ],
+      leafId: "seed-answer",
+    };
+    const create = (history: PiSessionHistory, sessionId?: string) => {
+      const process = new FakePiRpcProcess("compact-native-wire");
+      process.restoreNativeHistory(history, sessionId);
+      const rpc = new PiRpcSession(
+        { cwd: "/synthetic", commandTimeoutMs: 100 },
+        {
+          spawn: () => process as unknown as ChildProcessWithoutNullStreams,
+        },
+      );
+      return { process, rpc };
+    };
+    const run = async (rpc: PiRpcSession, occurrence: number) => {
+      const events: PiTurnEvent[] = [];
+      await rpc.runTurn("Reply exactly PI_WIRE_OK", (event) => events.push(event));
+      const delta = events.find((event) => event.type === "text.delta");
+      if (!delta || delta.type !== "text.delta") throw new Error("Missing native delta");
+      expect(delta.nativeMessageIdentity).toEqual({
+        sessionId: rpc.state.sessionId,
+        timestamp,
+        occurrence,
+      });
+      const id = piMessageItemId(delta.nativeMessageIdentity, "assistant");
+      const history = await rpc.getEntries();
+      const snapshot = mapPiSnapshot(history, { sessionId: rpc.state.sessionId, model: null });
+      expect(snapshot.turns.at(-1)?.items.at(-1)?.item.itemId).toBe(id);
+      return { id, history };
+    };
+    const first = create(seed);
+    await first.rpc.start();
+    let persisted: PiSessionHistory;
+    try {
+      persisted = (await run(first.rpc, 3)).history;
+    } finally {
+      await first.rpc.close();
+    }
+    const cold = create(persisted);
+    await cold.rpc.start();
+    try {
+      await run(cold.rpc, 4);
+      // The inactive descendants remain in the file, but no longer in the branch.
+      cold.process.restoreNativeHistory({ ...persisted, leafId: "seed-tool" });
+      // The Adapter reads the new branch before accepting the next Turn.
+      await cold.rpc.getEntries();
+      await run(cold.rpc, 1);
+    } finally {
+      await cold.rpc.close();
+    }
+    const fork = create(seed, "forked-native-session");
+    await fork.rpc.start();
+    try {
+      const { id } = await run(fork.rpc, 3);
+      expect(id).not.toBe(
+        piMessageItemId({ sessionId: "synthetic-session", timestamp, occurrence: 3 }, "assistant"),
+      );
+    } finally {
+      await fork.rpc.close();
+    }
+  });
+
+  it.each(["native-id-before-text", "native-id-before-reasoning"] as const)(
+    "adopts a native responseId before the first visible delta (%s)",
+    async (scenario) => {
+      const rpc = session(scenario);
+      const events: PiTurnEvent[] = [];
+      await rpc.start();
+      await rpc.runTurn("synthetic", (event) => events.push(event));
+      const visible = events.filter(
+        (event) => event.type === "text.delta" || event.type === "reasoning.delta",
+      );
+      expect(visible.length).toBeGreaterThan(0);
+      expect(visible.map((event) => event.messageId)).toEqual(
+        visible.map(() => "native-response-1"),
+      );
+      expect(
+        visible.every(
+          (event) =>
+            event.nativeMessageIdentity &&
+            "responseId" in event.nativeMessageIdentity &&
+            event.nativeMessageIdentity.responseId === "native-response-1",
+        ),
+      ).toBe(true);
+      await rpc.close();
+    },
+  );
+
+  it("does not change a message identity after a visible delta", async () => {
+    const rpc = session("native-id-after-text");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+    await rpc.runTurn("synthetic", (event) => events.push(event));
+    const visible = events.filter((event) => event.type === "text.delta");
+    expect(visible).toHaveLength(2);
+    expect(visible[0]?.messageId).not.toBe("native-response-1");
+    expect(visible[1]?.messageId).toBe(visible[0]?.messageId);
+    expect(visible.every((event) => event.nativeMessageIdentity === undefined)).toBe(true);
+    await rpc.close();
+  });
+
   it("validates and correlates interleaved Tool lifecycles", async () => {
     const rpc = session("tools");
     const events: PiTurnEvent[] = [];
@@ -1639,8 +1971,18 @@ describe("Pi RPC Turn aggregation", () => {
     ]);
     const textEvents = events.filter((event) => event.type === "text.delta");
     expect(textEvents).toEqual([
-      { type: "text.delta", messageId: "before-tools", delta: "before tools" },
-      { type: "text.delta", messageId: "after-tools", delta: "tools complete" },
+      {
+        type: "text.delta",
+        messageId: "before-tools",
+        nativeMessageIdentity: { responseId: "before-tools" },
+        delta: "before tools",
+      },
+      {
+        type: "text.delta",
+        messageId: "after-tools",
+        nativeMessageIdentity: { responseId: "after-tools" },
+        delta: "tools complete",
+      },
     ]);
     expect(
       events.filter((event) => event.type === "tool.updated" && event.callId === "custom-1"),

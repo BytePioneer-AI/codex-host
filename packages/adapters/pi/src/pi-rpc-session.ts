@@ -11,6 +11,11 @@ import {
   type JsonValue,
 } from "@codexhost/shared-contracts";
 
+import {
+  piHistoryMessageIdentities,
+  piMessageIdentity,
+  type PiMessageIdentity,
+} from "./pi-message-item-id.js";
 import { parsePiNativeCommands, type PiNativeCommand } from "./pi-slash-commands.js";
 import { ensurePiFastExtension, PI_FAST_ACK, PI_FAST_COMMAND } from "./pi-fast-mode.js";
 import type { PiEmptySessionConfiguration } from "./pi-empty-session.js";
@@ -75,8 +80,18 @@ export type PiInteractionResponse =
   | { requestId: string; confirmed: boolean };
 
 export type PiTurnEvent =
-  | { type: "text.delta"; messageId: string; delta: string }
-  | { type: "reasoning.delta"; messageId: string; delta: string }
+  | {
+      type: "text.delta";
+      messageId: string;
+      nativeMessageIdentity?: PiMessageIdentity;
+      delta: string;
+    }
+  | {
+      type: "reasoning.delta";
+      messageId: string;
+      nativeMessageIdentity?: PiMessageIdentity;
+      delta: string;
+    }
   | { type: "reasoning.completed"; messageId: string }
   | { type: "message.completed"; messageId: string }
   | { type: "compaction.started" }
@@ -192,6 +207,7 @@ interface ActiveTurn {
   nativeCancellationObserved: boolean;
   text: string;
   assistantMessageId: string | null;
+  assistantNativeMessageIdentity: PiMessageIdentity | undefined;
   sawStreamedMessageText: boolean;
   sawStreamedMessageReasoning: boolean;
   lastFinalizedMessageText: string | null;
@@ -208,6 +224,12 @@ interface ActiveTurn {
   cancellation: "none" | "requesting" | "accepted";
   cancellationTimeout: NodeJS.Timeout | null;
   abortPromise: Promise<void> | null;
+}
+
+function nativeMessageIdentity(active: ActiveTurn): { nativeMessageIdentity?: PiMessageIdentity } {
+  return active.assistantNativeMessageIdentity
+    ? { nativeMessageIdentity: active.assistantNativeMessageIdentity }
+    : {};
 }
 
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -494,6 +516,7 @@ export class PiRpcSession {
     PiRpcSessionOptions;
   readonly #processAdapter: PiRpcProcessAdapter;
   #activeTurn: ActiveTurn | null = null;
+  #messageTimestampCounts = new Map<number, number>();
   #autonomousTurnHandler: ((turn: PiAutonomousTurn) => void) | null = null;
   #usageHandler: ((observation: PiUsageObservation) => void) | null = null;
   #usageRequestStartedAtMs: number | null = null;
@@ -665,6 +688,7 @@ export class PiRpcSession {
     ]);
     try {
       this.#state = parseSessionState(await this.#send("get_state", {}));
+      await this.getEntries();
     } catch (error) {
       const fault =
         error instanceof PiRpcFaultError
@@ -683,7 +707,17 @@ export class PiRpcSession {
 
   async getEntries(): Promise<PiSessionHistory> {
     try {
-      return parseSessionHistory(await this.#send("get_entries", {}));
+      const history = parseSessionHistory(await this.#send("get_entries", {}));
+      // The Adapter already reads history before accepting each requested Turn.
+      // Refresh while idle so runTurn can dispatch its prompt without a new await
+      // in which cancellation could overtake the prompt.
+      if (!this.#activeTurn && this.#state) {
+        this.#messageTimestampCounts = piHistoryMessageIdentities(
+          this.state.sessionId,
+          activePiEntries(history),
+        ).timestampCounts;
+      }
+      return history;
     } catch (error) {
       if (error instanceof PiRpcFaultError) this.#fail(error);
       throw error;
@@ -757,12 +791,16 @@ export class PiRpcSession {
   async fork(entryId: string): Promise<PiSessionState> {
     if (entryId.length === 0) throw new Error("Pi Fork Entry ID must not be empty");
     await this.#send("fork", { entryId });
-    return this.#refreshState("Fork");
+    const state = await this.#refreshState("Fork");
+    await this.getEntries();
+    return state;
   }
 
   async clone(): Promise<PiSessionState> {
     await this.#send("clone", {});
-    return this.#refreshState("Clone");
+    const state = await this.#refreshState("Clone");
+    await this.getEntries();
+    return state;
   }
 
   verifySessionCwd(expectedCwd: string): Promise<void> {
@@ -875,6 +913,7 @@ export class PiRpcSession {
         nativeCancellationObserved: false,
         text: "",
         assistantMessageId: null,
+        assistantNativeMessageIdentity: undefined,
         sawStreamedMessageText: false,
         sawStreamedMessageReasoning: false,
         lastFinalizedMessageText: null,
@@ -1164,12 +1203,17 @@ export class PiRpcSession {
         const messageId = this.#ensureAssistantMessage(active, value.message);
         active.reasoningMessageOpen = true;
         active.sawStreamedMessageReasoning = true;
-        active.onEvent({ type: "reasoning.delta", messageId, delta });
+        active.onEvent({
+          type: "reasoning.delta",
+          messageId,
+          ...nativeMessageIdentity(active),
+          delta,
+        });
       } else if (isText && delta !== null && delta.length > 0) {
         const messageId = this.#ensureAssistantMessage(active, value.message);
         active.text += delta;
         active.sawStreamedMessageText = true;
-        active.onEvent({ type: "text.delta", messageId, delta });
+        active.onEvent({ type: "text.delta", messageId, ...nativeMessageIdentity(active), delta });
       } else if (event.type === "error") {
         this.#ensureAssistantMessage(active, value.message);
         active.failure =
@@ -1216,6 +1260,7 @@ export class PiRpcSession {
       nativeCancellationObserved: false,
       text: "",
       assistantMessageId: null,
+      assistantNativeMessageIdentity: undefined,
       sawStreamedMessageText: false,
       sawStreamedMessageReasoning: false,
       lastFinalizedMessageText: null,
@@ -1542,8 +1587,14 @@ export class PiRpcSession {
     if (active.assistantMessageId !== null && active.reasoningMessageOpen) {
       active.onEvent({ type: "reasoning.completed", messageId: active.assistantMessageId });
     }
-    const messageId = assistantMessageId(value) ?? randomUUID();
+    const nativeResponseId = assistantMessageId(value);
+    const messageId = nativeResponseId ?? randomUUID();
     active.assistantMessageId = messageId;
+    active.assistantNativeMessageIdentity = piMessageIdentity(
+      this.state.sessionId,
+      value,
+      this.#messageTimestampCounts,
+    );
     active.sawStreamedMessageText = false;
     active.sawStreamedMessageReasoning = false;
     active.reasoningMessageOpen = false;
@@ -1551,7 +1602,17 @@ export class PiRpcSession {
   }
 
   #ensureAssistantMessage(active: ActiveTurn, value: unknown): string {
-    return active.assistantMessageId ?? this.#startAssistantMessage(active, value);
+    if (active.assistantMessageId === null) return this.#startAssistantMessage(active, value);
+    // Pi can emit message_start before the provider's response.created frame.
+    // Select its durable identity before publishing text or reasoning, never mid-item.
+    if (!active.sawStreamedMessageText && !active.sawStreamedMessageReasoning) {
+      const nativeResponseId = assistantMessageId(value);
+      if (nativeResponseId) {
+        active.assistantMessageId = nativeResponseId;
+        active.assistantNativeMessageIdentity ??= { responseId: nativeResponseId };
+      }
+    }
+    return active.assistantMessageId;
   }
 
   #finalizeAssistantMessage(active: ActiveTurn, value: unknown): void {
@@ -1578,7 +1639,12 @@ export class PiRpcSession {
     const messageId = this.#ensureAssistantMessage(active, value);
     if (!active.sawStreamedMessageReasoning && finalReasoning.length > 0) {
       active.reasoningMessageOpen = true;
-      active.onEvent({ type: "reasoning.delta", messageId, delta: finalReasoning });
+      active.onEvent({
+        type: "reasoning.delta",
+        messageId,
+        ...nativeMessageIdentity(active),
+        delta: finalReasoning,
+      });
     }
     if (active.reasoningMessageOpen && active.failure === null) {
       active.onEvent({ type: "reasoning.completed", messageId });
@@ -1586,10 +1652,16 @@ export class PiRpcSession {
 
     if (!active.sawStreamedMessageText && finalText.length > 0) {
       active.text += finalText;
-      active.onEvent({ type: "text.delta", messageId, delta: finalText });
+      active.onEvent({
+        type: "text.delta",
+        messageId,
+        ...nativeMessageIdentity(active),
+        delta: finalText,
+      });
     }
 
     active.assistantMessageId = null;
+    active.assistantNativeMessageIdentity = undefined;
     active.sawStreamedMessageText = false;
     active.sawStreamedMessageReasoning = false;
     active.reasoningMessageOpen = false;

@@ -32,7 +32,7 @@ import {
   type PiSubagentInspection,
   type PiSubagentNode,
 } from "../src/pi-subagents.js";
-import type { PiSessionHistory } from "../src/pi-history.js";
+import { mapPiSnapshot, type PiSessionHistory } from "../src/pi-history.js";
 import type { PiUsageObservation } from "../src/pi-usage.js";
 import { encodePiModelRef } from "../src/pi-model-catalog.js";
 import type { PiNativeCommand } from "../src/pi-slash-commands.js";
@@ -1877,6 +1877,247 @@ describe("Pi HarnessAdapter Session", () => {
     await session.close();
   });
 
+  it("keeps native response Item identities across live output, history, and cold replay", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const liveIds: string[][] = [];
+    for (const ordinal of [1, 2]) {
+      const turnId = hostTurnIdSchema.parse(`native-identity-${ordinal}`);
+      const projector = new CodexTurnProjector({
+        threadId: "pi-thread",
+        turnId,
+        cwd: "/workspace",
+        startedAtMs: 0,
+      });
+      const visibleMessageIds = new Set<string>();
+      await session.execute(textTurn(turnId));
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake transport was not created");
+      const responseId = `resp-native-${ordinal}`;
+      transport.event({
+        type: "reasoning.delta",
+        messageId: responseId,
+        nativeMessageIdentity: { responseId: responseId },
+        delta: "same reasoning",
+      });
+      transport.event({ type: "reasoning.completed", messageId: responseId });
+      transport.event({
+        type: "text.delta",
+        messageId: responseId,
+        nativeMessageIdentity: { responseId: responseId },
+        delta: "same answer",
+      });
+      transport.succeed("same answer");
+      const entry = transport.history.entries.at(-1);
+      if (!entry) throw new Error("Fake history has no Assistant entry");
+      entry.message = {
+        role: "assistant",
+        responseId,
+        stopReason: "stop",
+        content: [
+          { type: "thinking", thinking: "same reasoning" },
+          { type: "text", text: "same answer" },
+        ],
+      };
+      const ids: string[] = [];
+      for (;;) {
+        const event = await nextEvent(iterator);
+        if (
+          event.type === "turn.started" ||
+          event.type === "item.started" ||
+          event.type === "item.updated" ||
+          event.type === "item.completed" ||
+          event.type === "turn.completed"
+        ) {
+          for (const message of projector.project(event).messages) {
+            const params = message.params;
+            const item =
+              params && typeof params === "object" && !Array.isArray(params) ? params.item : null;
+            if (
+              item &&
+              typeof item === "object" &&
+              !Array.isArray(item) &&
+              item.type === "agentMessage" &&
+              typeof item.id === "string"
+            )
+              visibleMessageIds.add(item.id);
+          }
+        }
+        if (
+          event.type === "item.completed" &&
+          (event.snapshot.item.type === "agentMessage" ||
+            event.snapshot.item.type === "reasoning") &&
+          event.snapshot.item.text.length > 0
+        )
+          ids.push(event.snapshot.item.itemId);
+        if (event.type === "turn.completed") break;
+      }
+      expect(visibleMessageIds.size).toBe(1);
+      liveIds.push(ids);
+    }
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    const projectedIds = snapshot.value.turns.map((turn) =>
+      turn.items.map(({ item }) => item.itemId),
+    );
+    expect(projectedIds).toEqual(liveIds);
+    expect(new Set(liveIds.flat()).size).toBe(4);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+    const cold = mapPiSnapshot(JSON.parse(JSON.stringify(transport.history)), {
+      sessionId: transport.state.sessionId,
+      model: null,
+    });
+    expect(cold.turns.map((turn) => turn.items.map(({ item }) => item.itemId))).toEqual(liveIds);
+    await session.close();
+  });
+
+  it.each(["text", "reasoning"] as const)(
+    "keeps native response lifecycles distinct after a %s-only preceding message",
+    async (firstKind) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      const turnId = hostTurnIdSchema.parse("native-boundaries");
+      const projector = new CodexTurnProjector({
+        threadId: "pi-thread",
+        turnId,
+        cwd: "/workspace",
+        startedAtMs: 0,
+      });
+      await session.execute(textTurn(turnId));
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake transport was not created");
+      transport.event({
+        type: firstKind === "text" ? "text.delta" : "reasoning.delta",
+        messageId: "response-a",
+        nativeMessageIdentity: { responseId: "response-a" },
+        delta: "first",
+      });
+      for (const [type, delta] of [
+        ["reasoning.delta", "think "],
+        ["text.delta", "answer"],
+        ["reasoning.delta", "more"],
+      ] as const) {
+        transport.event({
+          type,
+          messageId: "response-b",
+          nativeMessageIdentity: { responseId: "response-b" },
+          delta,
+        });
+      }
+      transport.succeed("answer");
+      const startedIds: string[] = [];
+      const completed: { type: string; text: string }[] = [];
+      const visibleIds = new Set<string>();
+      for (;;) {
+        const event = await nextEvent(iterator);
+        if (event.type === "item.started") startedIds.push(event.item.itemId);
+        if (
+          event.type === "item.completed" &&
+          (event.snapshot.item.type === "agentMessage" ||
+            event.snapshot.item.type === "reasoning") &&
+          event.snapshot.item.text.length > 0
+        )
+          completed.push({ type: event.snapshot.item.type, text: event.snapshot.item.text });
+        if (
+          event.type === "turn.started" ||
+          event.type === "item.started" ||
+          event.type === "item.updated" ||
+          event.type === "item.completed" ||
+          event.type === "turn.completed"
+        ) {
+          for (const message of projector.project(event).messages) {
+            const params = message.params;
+            const item =
+              params && typeof params === "object" && !Array.isArray(params) ? params.item : null;
+            if (
+              item &&
+              typeof item === "object" &&
+              !Array.isArray(item) &&
+              item.type === "agentMessage" &&
+              typeof item.id === "string"
+            )
+              visibleIds.add(item.id);
+          }
+        }
+        if (event.type === "turn.completed") break;
+      }
+      expect(new Set(startedIds).size).toBe(startedIds.length);
+      expect(completed).toEqual([
+        { type: firstKind === "text" ? "agentMessage" : "reasoning", text: "first" },
+        { type: "reasoning", text: "think more" },
+        { type: "agentMessage", text: "answer" },
+      ]);
+      expect(visibleIds.size).toBe(firstKind === "text" ? 2 : 1);
+      await session.close();
+    },
+  );
+
+  it.each(["succeeded", "cancelled", "failed"] as const)(
+    "closes a native reasoning-only response when the Turn is %s without an empty wire message",
+    async (status) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      const turnId = hostTurnIdSchema.parse("native-reasoning-terminal");
+      const projector = new CodexTurnProjector({
+        threadId: "pi-thread",
+        turnId,
+        cwd: "/workspace",
+        startedAtMs: 0,
+      });
+      await session.execute(textTurn(turnId));
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake transport was not created");
+      transport.event({
+        type: "reasoning.delta",
+        messageId: "response",
+        nativeMessageIdentity: { responseId: "response" },
+        delta: "thinking",
+      });
+      if (status === "failed") transport.fail(new Error("native failure"));
+      else transport.succeed("", status === "cancelled");
+      let reasoningOutcome: string | undefined;
+      const wireMessageIds: string[] = [];
+      for (;;) {
+        const event = await nextEvent(iterator);
+        if (event.type === "item.completed" && event.snapshot.item.type === "reasoning") {
+          reasoningOutcome = event.snapshot.outcome.status;
+        }
+        if (
+          event.type === "turn.started" ||
+          event.type === "item.started" ||
+          event.type === "item.updated" ||
+          event.type === "item.completed" ||
+          event.type === "turn.completed"
+        ) {
+          for (const message of projector.project(event).messages) {
+            const params = message.params;
+            const item =
+              params && typeof params === "object" && !Array.isArray(params) ? params.item : null;
+            if (
+              item &&
+              typeof item === "object" &&
+              !Array.isArray(item) &&
+              item.type === "agentMessage" &&
+              typeof item.id === "string"
+            )
+              wireMessageIds.push(item.id);
+          }
+        }
+        if (event.type === "turn.completed") {
+          expect(event.outcome.status).toBe(status);
+          break;
+        }
+      }
+      expect(reasoningOutcome).toBe(status);
+      expect(wireMessageIds).toEqual([]);
+      await session.close();
+    },
+  );
+
   it("keeps Assistant messages separate across interleaved Tool calls", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -1987,6 +2228,14 @@ describe("Pi HarnessAdapter Session", () => {
       type: "reasoning.delta",
       messageId: "reasoning-2",
       delta: "second analysis",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "agentMessage", text: "" },
     });
     const secondStarted = await nextEvent(iterator);
     expect(secondStarted).toMatchObject({ type: "item.started", item: { type: "reasoning" } });

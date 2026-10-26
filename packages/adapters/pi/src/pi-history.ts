@@ -22,6 +22,11 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { piNestedCallFileChanges, piToolFileChanges } from "./pi-file-change.js";
+import {
+  piHistoryMessageIdentities,
+  piMessageItemId,
+  type PiMessageIdentity,
+} from "./pi-message-item-id.js";
 import { PiSubagents } from "./pi-subagents.js";
 import { encodePiModelRef, type PiNativeModelRef } from "./pi-model-catalog.js";
 
@@ -197,6 +202,7 @@ function historicalFileChanges(
 
 function snapshotItems(
   entries: PiEntry[],
+  messageIdentities: Map<string, PiMessageIdentity>,
   outcome: HistoricalTurnOutcome,
   subagents?: PiSubagents,
   cwd?: string,
@@ -220,7 +226,9 @@ function snapshotItems(
         if (part.type === "thinking" && !projectedReasoning && reasoning.length > 0) {
           const item: HostReasoningItem = {
             type: "reasoning",
-            itemId: itemId(entry.id, "reasoning", 0),
+            itemId:
+              piMessageItemId(messageIdentities.get(entry.id), "reasoning") ??
+              itemId(entry.id, "reasoning", 0),
             text: reasoning,
           };
           snapshots.push({ item, outcome: itemOutcome(outcome) });
@@ -230,7 +238,9 @@ function snapshotItems(
         if (part.type === "text" && !projectedText && text.length > 0) {
           const item: HostAgentMessageItem = {
             type: "agentMessage",
-            itemId: itemId(entry.id, "assistant", 0),
+            itemId:
+              piMessageItemId(messageIdentities.get(entry.id), "assistant") ??
+              itemId(entry.id, "assistant", 0),
             text,
           };
           snapshots.push({ item, outcome: itemOutcome(outcome) });
@@ -339,6 +349,7 @@ export function mapPiSnapshot(
   subagents: PiSubagents = new PiSubagents(() => undefined),
 ): HostThreadSnapshot {
   const active = activePiEntries(history);
+  const { identities } = piHistoryMessageIdentities(state.sessionId, active);
   const turns: HostThreadSnapshot["turns"] = [];
   const starts = turnStarts(active);
   const byIndex = new Map(starts.map((start, ordinal) => [start.index, ordinal]));
@@ -377,7 +388,7 @@ export function mapPiSnapshot(
       nativeTurnRef,
       ...(!next || messageRole(next.entry) === "user" ? { checkpoint } : {}),
       input: messageRole(user) === "user" ? [{ type: "text", text: userText }] : [],
-      items: snapshotItems(entries, outcome, subagents, state.cwd),
+      items: snapshotItems(entries, identities, outcome, subagents, state.cwd),
       outcome,
       ...(effectiveModel ? { model: encodePiModelRef(effectiveModel) } : {}),
     });

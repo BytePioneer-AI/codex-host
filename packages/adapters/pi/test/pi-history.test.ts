@@ -89,6 +89,69 @@ const state = {
 };
 
 describe("Pi active-branch history", () => {
+  it.each([undefined, 1000])(
+    "preserves separate native responses with identical text within and across Turns (timestamp=%s)",
+    (timestamp) => {
+      const source: PiSessionHistory = {
+        entries: [
+          {
+            id: "u1",
+            parentId: null,
+            type: "message",
+            message: { role: "user", content: "first" },
+          },
+          ...["r1", "r2"].map((responseId, index) => ({
+            id: `a${index + 1}`,
+            parentId: index === 0 ? "u1" : "a1",
+            type: "message",
+            message: {
+              role: "assistant",
+              responseId,
+              ...(timestamp === undefined ? {} : { timestamp }),
+              stopReason: "stop",
+              content: [
+                { type: "thinking", thinking: "same" },
+                { type: "text", text: "same" },
+              ],
+            },
+          })),
+        ],
+        leafId: "a2",
+      };
+      const first = mapPiSnapshot(source, state);
+      const firstIds = first.turns.flatMap((turn) => turn.items.map(({ item }) => item.itemId));
+      expect(firstIds).toHaveLength(4);
+      expect(new Set(firstIds).size).toBe(4);
+      source.entries.push(
+        { id: "u2", parentId: "a2", type: "message", message: { role: "user", content: "next" } },
+        {
+          id: "a3",
+          parentId: "u2",
+          type: "message",
+          message: {
+            role: "assistant",
+            responseId: "r3",
+            ...(timestamp === undefined ? {} : { timestamp }),
+            stopReason: "stop",
+            content: [{ type: "text", text: "same" }],
+          },
+        },
+      );
+      source.leafId = "a3";
+      const appended = mapPiSnapshot(source, state);
+      expect(appended.turns[0]?.items.map(({ item }) => item.itemId)).toEqual(firstIds);
+      expect(
+        new Set(appended.turns.flatMap((turn) => turn.items.map(({ item }) => item.itemId))).size,
+      ).toBe(5);
+      expect(appended.turns[0]?.items.map(({ item }) => item.type)).toEqual([
+        "reasoning",
+        "agentMessage",
+        "reasoning",
+        "agentMessage",
+      ]);
+    },
+  );
+
   it("walks only the parent chain ending at leafId", () => {
     expect(activePiEntries(history).map(({ id }) => id)).toEqual([
       "model-1",

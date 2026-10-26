@@ -1,0 +1,234 @@
+[
+  {
+    "type": "message_start",
+    "message": {
+      "role": "assistant",
+      "content": [],
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "model": "gpt-6-astra",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "pending",
+      "timestamp": 1792994079878
+    }
+  },
+  {
+    "type": "message_update",
+    "usage": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 0,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "assistantMessageEvent": {
+      "type": "text_start",
+      "contentIndex": 0
+    }
+  },
+  {
+    "type": "message_update",
+    "usage": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 0,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "assistantMessageEvent": {
+      "type": "text_delta",
+      "contentIndex": 0,
+      "delta": "PI"
+    }
+  },
+  {
+    "type": "message_update",
+    "usage": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 0,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "assistantMessageEvent": {
+      "type": "text_delta",
+      "contentIndex": 0,
+      "delta": "_W"
+    }
+  },
+  {
+    "type": "message_update",
+    "usage": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 0,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "assistantMessageEvent": {
+      "type": "text_delta",
+      "contentIndex": 0,
+      "delta": "IRE"
+    }
+  },
+  {
+    "type": "message_update",
+    "usage": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 0,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "assistantMessageEvent": {
+      "type": "text_delta",
+      "contentIndex": 0,
+      "delta": "_OK"
+    }
+  },
+  {
+    "type": "message_update",
+    "usage": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 0,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "assistantMessageEvent": {
+      "type": "text_end",
+      "contentIndex": 0,
+      "content": "PI_WIRE_OK"
+    }
+  },
+  {
+    "type": "message_end",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "PI_WIRE_OK",
+          "textSignature": "{\"v\":1,\"id\":\"msg_09dddabc1372368b016adeeb2f56048191911cb195ecc3aceb\",\"phase\":\"final_answer\"}"
+        }
+      ],
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "model": "gpt-6-astra",
+      "usage": {
+        "input": 10583,
+        "output": 8,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 10591,
+        "cost": {
+          "input": 0.10583000000000001,
+          "output": 0.0004,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.10623
+        }
+      },
+      "stopReason": "stop",
+      "timestamp": 1792994079878,
+      "responseId": "resp_09dddabc1372368b016adeeb2e077c8191a50e524dc5c2314a",
+      "rawStopReason": "completed",
+      "durationMs": 15667,
+      "thinkingLevel": "high"
+    }
+  },
+  {
+    "type": "turn_end",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "PI_WIRE_OK",
+          "textSignature": "{\"v\":1,\"id\":\"msg_09dddabc1372368b016adeeb2f56048191911cb195ecc3aceb\",\"phase\":\"final_answer\"}"
+        }
+      ],
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "model": "gpt-6-astra",
+      "usage": {
+        "input": 10583,
+        "output": 8,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 10591,
+        "cost": {
+          "input": 0.10583000000000001,
+          "output": 0.0004,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.10623
+        }
+      },
+      "stopReason": "stop",
+      "timestamp": 1792994079878,
+      "responseId": "resp_09dddabc1372368b016adeeb2e077c8191a50e524dc5c2314a",
+      "rawStopReason": "completed",
+      "durationMs": 15667,
+      "thinkingLevel": "high"
+    },
+    "toolResults": []
+  }
+]

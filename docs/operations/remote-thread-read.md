@@ -24,8 +24,8 @@ previous context; a later context-free submission clears it. Registered Harness
 commands (such as `/init`) use the same context update and rollback boundary as
 ordinary prompt Turns, before invoking the native command. A command without
 source context clears the prior identity too. Standalone CLI
-commands without caller context use the bare Thread ID or `--host local` on the
-owning machine. Foreign reads still require a Desktop connection and never fall
+commands without caller context use the bare Thread ID on the owning machine.
+Explicit foreign Host reads still require a Desktop connection and never fall
 back to local history. Context is in memory and is restored by the next Desktop
 submission after a Runtime restart.
 
@@ -55,10 +55,45 @@ transport deadline, allowing the underlying 30-second Desktop RPC to finish.
 Other renderer management operations retain their 8-second deadline. Expiry does
 not cancel an already dispatched native read and never triggers a retry.
 
+## Desktop-local references from a remote Agent
+
+An explicit `hostId=local` reference (including `--host local`) first reads the
+executing Runtime's local history. Only a not-found or not-loaded error triggers
+fallback: the Runtime tries its currently attached Desktop connections in
+registration order and returns the first successful read of that Desktop's local
+Host. Bare IDs remain machine-local; explicit non-local Host IDs keep their
+existing routing. Permission, storage, invalid-reply and size errors do not
+trigger further probing. Missing Threads, disconnected Desktops and unanswered
+callbacks allow the next connection to be tried.
+
+The callback uses a fixed read notification and reply RPC on each existing
+connection. It does not open SSH connections, scan machines, retain a
+Thread-to-source mapping, or expose arbitrary RPC execution. The Desktop uses
+`codexhost/thread/delegation-read` directly, so a callback cannot recursively
+trigger fallback. Shared external Thread owners use their attached GUI sessions
+for these callbacks, not their internal owner stream.
+
+Both the requesting Runtime and Desktop renderer/local Host must be updated.
+Each Desktop attempt expires after 35 seconds; disconnect closes its pending
+reads. Old renderers may not answer and therefore incur that deadline. Replies
+are bounded to 16 MiB and their Thread identity is validated. No Turn is started.
+The returned JSON and compact output include `readSource: "connected-desktop"`
+when fallback succeeds, and preserve the `hostId=local` link for subsequent reads.
+
+This is deliberately first-success probing, not source affinity. If several
+machines contain the same Thread ID, local history wins, then the first
+successful Desktop. Each page repeats that selection; connection changes or
+replicated histories may change which copy answers. Only use this fallback with
+trusted attached Desktops: their local Thread reads are available to the connected
+Host, not restricted to references in the most recent prompt.
+
 ## Validation boundary
 
-Source regression tests cover CLI Host preservation, explicit remote routing,
-no local fallback, strict operation validation and renderer Host selection.
+Source regression tests cover CLI Host preservation, explicit remote routing
+without local fallback, strict operation validation, renderer Host selection,
+Desktop-local fallback ordering, callback correlation, disconnect/timeout cleanup,
+and a CLI-to-Host callback round trip. A browser fixture covers real window
+notification delivery; it does not validate installed Desktop transport.
 Before deployment, additionally validate Windows-to-macOS real native and external
 Harness reads, pagination, active-turn observation, disconnected/old Hosts,
 shared owner routing and post-restart behavior. Unit tests are not evidence of

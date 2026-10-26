@@ -1,6 +1,9 @@
 import {
   DELEGATION_READ_METHOD,
+  DESKTOP_THREAD_READ_METHOD,
+  DESKTOP_THREAD_READ_REPLY_METHOD,
   delegationReadParamsSchema,
+  type DelegationReadParams,
   EXTERNAL_THREAD_PREWARM_PARAM,
   THREAD_PREWARM_DISCARD_METHOD,
   threadPrewarmDiscardParamsSchema,
@@ -12,6 +15,7 @@ import {
   remoteUpdateParamsSchema,
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
+import { DesktopThreadReader } from "./desktop-thread-reader.js";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
@@ -657,6 +661,7 @@ export class AppServerHost {
   #nextOfficialServerRequestId = 0;
   #sectionMoves: Promise<void> = Promise.resolve();
   #writer: OrderedWriter;
+  readonly #desktopThreadReader: DesktopThreadReader;
   /** Console requests share Desktop handling; their replies return to the console. */
   readonly #consoleRequestPrefix = `codexhost-console:${randomUUID()}:`;
   readonly #consoleReplies = new Map<string, (message: JsonValue) => void>();
@@ -693,6 +698,12 @@ export class AppServerHost {
       this.#noteDesktopReply(value);
       return this.#takeConsoleReply(value);
     });
+    this.#desktopThreadReader = new DesktopThreadReader((params) =>
+      this.#writer.json({
+        method: DESKTOP_THREAD_READ_METHOD,
+        params: jsonValueSchema.parse(params),
+      }),
+    );
     const environment = this.#options.environment ?? process.env;
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
@@ -854,6 +865,12 @@ export class AppServerHost {
       cancel: (input) =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.cancel(input)),
       read: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.read(input)),
+      ...(!options.externalOnly
+        ? {
+            readConnectedDesktop: (input: DelegationReadParams) =>
+              this.#desktopThreadReader.read(input),
+          }
+        : {}),
       wait: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.wait(input)),
       list: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.list(input)),
       canHandleStart: (input) => this.#canHandleDelegationStart(input),
@@ -870,6 +887,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#desktopThreadReader.close();
     this.#options.sharedThreads?.close();
     this.#externalRuntime.idleRelease.disable();
     this.#pluginLoadAbort.abort();
@@ -969,6 +987,7 @@ export class AppServerHost {
       await this.#repository.initialize();
     } catch (error) {
       this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
+      this.#desktopThreadReader.close();
       this.#pluginLoadAbort.abort();
       await this.#pluginLoading;
       await this.#closeAdapters();
@@ -1011,6 +1030,7 @@ export class AppServerHost {
       await this.#closeOfficialRuntime();
       return this.#closeRequested ? 0 : 1;
     } finally {
+      this.#desktopThreadReader.close();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
       // Stop replacement waiters before waiting for their tracked Host operations.
@@ -1220,6 +1240,7 @@ export class AppServerHost {
       );
     }
     this.#desktopInputEnded = true;
+    this.#desktopThreadReader.close();
     this.#externalRuntime.idleRelease.disable();
     // Cancel loading before draining requests that may be waiting for it.
     this.#pluginLoadAbort.abort();
@@ -1281,6 +1302,11 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    if (request.method === DESKTOP_THREAD_READ_REPLY_METHOD) {
+      this.#desktopThreadReader.reply(request.params);
+      await this.#writer.json(rpcEnvelope(request, { result: null }));
+      return;
+    }
     if (
       request.method === RUNTIME_STATUS_METHOD ||
       request.method === REMOTE_UPDATE_METHOD ||
@@ -1314,19 +1340,24 @@ export class AppServerHost {
         await this.#writer.json(rpcError(request, -32602, "Invalid Thread read request"));
         return;
       }
-      const shared = await this.#options.sharedThreads?.route(request);
-      if (shared) {
-        await this.#writer.json(shared);
-        return;
+      try {
+        const shared = await this.#options.sharedThreads?.route(request);
+        if (shared) {
+          await this.#writer.json(shared);
+          return;
+        }
+        await this.#waitForPlugins();
+        const result = await this.#delegationCoordinator.read({
+          threadId: parsed.data.threadId,
+          view: parsed.data.view,
+          ...(parsed.data.cursor !== undefined ? { cursor: parsed.data.cursor } : {}),
+          ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+        });
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch (error) {
+        // Preserve read failures so the Desktop callback can distinguish absence from denial.
+        await this.#writer.json(rpcError(request, -32090, errorMessage(error)));
       }
-      await this.#waitForPlugins();
-      const result = await this.#delegationCoordinator.read({
-        threadId: parsed.data.threadId,
-        view: parsed.data.view,
-        ...(parsed.data.cursor !== undefined ? { cursor: parsed.data.cursor } : {}),
-        ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
-      });
-      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {

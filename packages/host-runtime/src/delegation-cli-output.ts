@@ -59,6 +59,7 @@ function snapshotOutput(
     thread: snapshot.hostId
       ? `thread://${snapshot.threadId}?hostId=${encodeURIComponent(snapshot.hostId)}`
       : threadLink(snapshot.threadId),
+    ...(snapshot.readSource ? { readSource: snapshot.readSource } : {}),
     harnessId: snapshot.harnessId,
     status: snapshot.status,
     ...(snapshot.timedOut !== undefined ? { timedOut: snapshot.timedOut } : {}),

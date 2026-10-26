@@ -23,6 +23,7 @@ Request cancellation of the active Turn while preserving the Thread and history.
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
   "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
 Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
+Explicit --host local / hostId=local first reads this Runtime, then tries attached Desktops' local history only if the Thread is missing or not loaded. First success wins; readSource=connected-desktop marks fallback. Bare IDs stay machine-local. Both ends must be updated; each Desktop attempt may take 35 seconds.
 The default result view reports the latest Turn's status and result.
 The messages view pages visible user/Agent messages, oldest first. Default limit 25, maximum 100; --cursor and --limit require --view messages.
 hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.

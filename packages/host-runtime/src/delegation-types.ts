@@ -1,3 +1,4 @@
+import type { DelegationReadParams } from "@codexhost/shared-contracts";
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
 import type {
   HarnessInspection,
@@ -41,6 +42,7 @@ export interface DelegationProgress {
 
 export interface DelegationThreadSnapshot {
   hostId?: string;
+  readSource?: "connected-desktop";
   threadId: string;
   harnessId: RoutedHarnessId;
   status: DelegationThreadStatus;
@@ -240,6 +242,7 @@ export interface DelegationControlApi {
 }
 
 export interface DelegationControlRegistration extends DelegationControlApi {
+  readConnectedDesktop?(input: DelegationReadParams): Promise<DelegationThreadSnapshot>;
   executionHostId?(threadId: string): string | undefined;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;

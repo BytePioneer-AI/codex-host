@@ -11,6 +11,7 @@ import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
 import { createRemoteAttachmentSender } from "./renderer-remote-attachments.js";
 import { restoreThreadReferenceCapability } from "./renderer-thread-reference-capability.js";
+import { installRendererDesktopThreadRead } from "./renderer-desktop-thread-read.js";
 import { createThreadReferenceContext } from "./renderer-thread-reference-context.js";
 import {
   installRendererManualCompaction,
@@ -25,6 +26,7 @@ export function createRendererHostClients(
   messages: RendererMessageTarget | null = null,
 ) {
   let disposed = false;
+  const disposeDesktopThreadRead = installRendererDesktopThreadRead(messages, readRouting);
   const entries = new Map<
     string,
     {
@@ -158,6 +160,7 @@ export function createRendererHostClients(
     dispose() {
       if (disposed) return;
       disposed = true;
+      disposeDesktopThreadRead();
       for (const hostId of entries.keys()) retire(hostId);
     },
   };

@@ -182,9 +182,10 @@ describe("renderer manual compaction registration", () => {
     } as unknown as RendererHostRouting;
     const window = new FakeWindow();
     const clients = createRendererHostClients(() => routing, window);
+    const connectionIndependentListeners = window.listeners.size;
     try {
       expect(clients.forHost("ssh:remote")).not.toBeNull();
-      expect(window.listeners.size).toBe(1);
+      expect(window.listeners.size).toBe(connectionIndependentListeners + 1);
       window.notify(started("external"), { hostId: "local" });
       expect(managers.get("ssh:remote")?.registered).toEqual([]);
       window.notify(started("external"), { hostId: "ssh:remote" });

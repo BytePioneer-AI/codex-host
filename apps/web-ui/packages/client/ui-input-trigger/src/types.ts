@@ -42,7 +42,7 @@ export interface ClientSessionContext {
 }
 
 /** Trigger character a source binds to. */
-export type TriggerChar = "/" | "@";
+export type TriggerChar = "/" | "@" | "#";
 
 /** Where the trigger token sits in the draft: leading (trimmed draft starts with it) or inline. */
 export type TriggerPosition = "leading" | "inline";
@@ -71,6 +71,8 @@ export interface InputTriggerCandidate {
   /** Reference glyph token, or an icon component from the shared icon set. */
   readonly icon?: InputTriggerCandidateIcon | ComponentType<IconProps>;
   readonly hint?: string;
+  /** Visible explanation for a row that cannot be selected. */
+  readonly disabledReason?: string;
   /** Optional visual heading shared by adjacent candidates; sectioned groups omit their source-title row. */
   readonly section?: string;
   /** Opaque source-owned pick payload. */
@@ -123,6 +125,8 @@ export interface SubmitEnvelope {
 
 /** Candidate request passed to a source. The signal is superseded on query change / menu close. */
 export interface CandidateRequest {
+  /** Stable for one menu opening; query refinement keeps this identity. */
+  readonly menuEpoch?: object;
   readonly query: string;
   /** Whether the active @file token is an open quoted path. */
   readonly quoted?: boolean;
@@ -170,10 +174,14 @@ export interface ReferenceCodec {
  */
 export interface InputTriggerSource {
   readonly trigger: TriggerChar;
+  /** Additional menu triggers for this same source; submission hooks keep the primary invocation. */
+  readonly aliases?: readonly TriggerChar[];
   /** Menu group label; unique per trigger — duplicate registration throws. */
   readonly name: string;
   /** Menu group display order (lower = higher in the list; default 0). */
   readonly order?: number;
+  /** Join an existing programmatic launcher without claiming its execution semantics. */
+  readonly launcher?: string;
   /** Whether the menu renders the source-title row; defaults to true. */
   readonly showGroupTitle?: boolean;
   candidates(
@@ -251,10 +259,12 @@ export interface InputTriggerSource {
   ): boolean;
   /** Reference codec; required for sources producing insert outcomes. */
   readonly codec?: ReferenceCodec;
+  /** Refresh visible candidates when their backing facts change; never prewarms. */
+  subscribeCandidates?(session: ClientSessionContext, listener: () => void): () => void;
 }
 
 /** Trigger availability tier, derived from the input phase by the wiring layer. */
 export interface TriggerGuard {
-  /** plain: '/' and '@' live; claimed: '/' suppressed, '@' live; frozen: none. */
+  /** plain: '/', '@' and '#' live; claimed: command menus suppressed, '@' live; frozen: none. */
   readonly tier: "plain" | "claimed" | "frozen";
 }

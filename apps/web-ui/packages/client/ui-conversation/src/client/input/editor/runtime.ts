@@ -38,7 +38,7 @@ import { $composerLayout, $projectComposer, detectOffsetOfClipboardOffset } from
 import { $replaceDetectSpanWithNodes, $replaceDetectSpanWithText } from "./span-map.ts";
 import type { DetectSpan } from "./span-map.ts";
 
-type Lexicon = ReadonlyMap<"/" | "@", readonly string[]>;
+type Lexicon = ReadonlyMap<"/" | "@" | "#", readonly string[]>;
 
 /** Model callbacks read at the same editor registration and update points. */
 interface DraftEditorRuntimeDeps {

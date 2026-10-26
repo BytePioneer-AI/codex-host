@@ -217,7 +217,12 @@ export class SubmitMachine {
     const flight = this.inflight;
     if (this.phase !== "adjudicating" || flight === undefined || flight.attempt.seq !== attempt.seq)
       return [];
-    if (outcome !== undefined && outcome !== "handled" && "claim" in outcome) {
+    if (
+      outcome !== undefined &&
+      outcome !== "handled" &&
+      outcome !== "refresh" &&
+      "claim" in outcome
+    ) {
       this.claim = outcome.claim;
       this.phase = "submitting";
       return [

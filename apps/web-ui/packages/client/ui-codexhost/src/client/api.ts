@@ -66,3 +66,18 @@ export const sentMessageEditApi = {
       { request: { sessionId, atSeq, text } },
     ),
 };
+
+/** Thread-only discovery; never falls back to a draft Harness query. */
+export const harnessCommandApi = {
+  inspect: (sessionId: string) =>
+    call<import("@codexhost/shared-contracts").HarnessCommandCatalog>("codexhost/threadCommands", {
+      request: { sessionId },
+    }),
+  execute: (sessionId: string, commandId: string) =>
+    call<import("@codexhost/shared-contracts").ThreadCommandExecuteResult>(
+      "codexhost/executeThreadCommand",
+      {
+        request: { sessionId, commandId },
+      },
+    ),
+};

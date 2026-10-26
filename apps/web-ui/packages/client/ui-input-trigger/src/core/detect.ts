@@ -34,7 +34,7 @@ function boundaryOk(draft: string, index: number, char: TriggerChar): boolean {
  * including an open quoted token that may span whitespace. Slash detection
  * scans left to the first whitespace; slashes failing the word boundary are
  * treated as ordinary token chars and the scan continues (URL slashes).
- * Guard tiers: plain = both chars live; claimed = '/' fully suppressed,
+ * Guard tiers: plain = all triggers live; claimed = '/' and '#' suppressed,
  * '@' live; frozen = none.
  *
  * @param draft - Full draft text.
@@ -54,6 +54,27 @@ export const detectTrigger: DetectTrigger = (draft, caret, guard) => {
       trigger: "@",
       query: at.query,
       quoted: at.quoted,
+      position: draft.search(/\S/) === start ? "leading" : "inline",
+      span: { start, end: caret, draftRev: 0 },
+    };
+  }
+  // Match GUI word-start # queries without treating URL fragments or Markdown headings as menus.
+  const hashToken = /(?:^|\s)(\S*#\S*)$/u.exec(draft.slice(0, caret))?.[1];
+  if (hashToken !== undefined && !hashToken.startsWith("/")) {
+    const query = hashToken.slice(1);
+    if (
+      guard.tier !== "plain" ||
+      !hashToken.startsWith("#") ||
+      query.includes("#") ||
+      /^\d/u.test(query) ||
+      query.length > 32
+    )
+      return null;
+    const start = caret - hashToken.length;
+    return {
+      trigger: "#",
+      query,
+      quoted: false,
       position: draft.search(/\S/) === start ? "leading" : "inline",
       span: { start, end: caret, draftRev: 0 },
     };

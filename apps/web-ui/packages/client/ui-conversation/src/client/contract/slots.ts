@@ -442,7 +442,7 @@ export interface ComposerBarInjected {
     /** Live per-draft upload states for file-kind drafts. */
     fileUploads: ObservableSnapshot<DraftFileUploads>;
     notices: ObservableSnapshot<InputNotice | null>;
-    lexicon: ObservableSnapshot<ReadonlyMap<"/" | "@", readonly string[]>>;
+    lexicon: ObservableSnapshot<ReadonlyMap<"/" | "@" | "#", readonly string[]>>;
     menuLauncher: ObservableSnapshot<string | null>;
   };
 }

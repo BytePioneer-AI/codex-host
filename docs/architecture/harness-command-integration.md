@@ -171,3 +171,47 @@ The public `/dsh-goal` invocation avoids Codex Desktop's built-in `/goal` comman
 - Shared contracts remain Harness-neutral.
 - Renderer code must not parse or execute Harness `SKILL.md` files.
 - UI DOM selectors are compatibility details, not command contract requirements.
+
+## Web discovery
+
+Web reuses one menu with `/` and `#` triggers plus the existing plus launcher.
+Interface operations stay on `/` and plus; `#` is a GUI-compatible alias for the same
+delegation Agents, native commands and Skills. Each source registers once, declaring
+`#` as a menu alias, so its catalog cache, codec, subscriptions and disposal are shared.
+A word-start `#` or `#query` follows the GUI limit of 32 query characters; digit-leading
+references, repeated hashes, escaped text and word/URL fragments do not trigger. A
+following space closes the menu for Markdown headings without editing the draft.
+
+`ChHarnessCommands` forwards the public catalog unchanged
+through `codexhost/thread/commands/inspect`; execution addresses the stable command ID
+through `codexhost/thread/command/execute`. It first confirms an existing local external
+Thread and direct input eligibility. Unbound drafts, child/read-only Threads and official
+Codex/remote sources do not gain discovery. Reads never create or resume a Session, and
+Web does not expose `codexhost/harness/commands/inspect` or extend the client allowlist.
+
+Each menu opening refreshes the Thread catalog; search filters that snapshot locally.
+Thread and connection generations fence late results. A static source has an explicit
+project-command loading hint, an omitted source does not imply loading, and query errors
+remain visible with retry alongside interface operations and ready delegation candidates.
+Invocation collisions with interface commands disable only the conflicting native rows.
+
+Menu `/compact` and `argumentMode: "none"` selections execute without draft arguments,
+attachment submission, stopping or queueing. Busy/offline/in-flight requests disable direct
+execution. `accepted` means admission only; native progress and outcomes use the existing
+Thread projection. An uncertain write is never retried automatically. Other text selections
+insert an editable reference showing the native invocation, using the public
+`subagent://codexhost-command.<name>` carrier and the existing reference codec. Text, other
+reference chips and attachments remain intact. Explicit send uses the ordinary
+prompt/queue/Steer path; after Web attachment context is prepared, the existing Host
+`restoreHarnessCommandMentions` restores the invocation to the beginning before catalog
+matching. File and image context therefore remains in the command arguments instead of
+hiding a plain slash token behind `# Files mentioned by the user`. Internal argument
+spaces, tabs and indentation are preserved; carrier separators follow the existing Host
+normalization. Copy and saved drafts retain the carrier, and undo/removal stays local.
+Manual `/compact arguments` retains that ordinary submission behavior. Web neither registers
+native entries with the DSH interface command executor nor reads Skill bodies.
+
+Delegation candidates consume the model selector's already confirmed ready session-Harness
+catalog, names, icons and display order. Selection inserts the shared
+`formatDelegationMentionLink` carrier as an editable reference; ordinary submission hands it
+to the existing Host rewrite and Agent Skill/CLI flow. Web does not run delegation itself.

@@ -126,7 +126,7 @@ function projectionContentChanged(prev: EditorProjection, next: EditorProjection
 const EMPTY_QUEUE: InboxState["next-turn"] = [];
 
 /** Unavailable catalogs contain no named text references. */
-const EMPTY_LEXICON: ReadonlyMap<"/" | "@", readonly string[]> = new Map();
+const EMPTY_LEXICON: ReadonlyMap<"/" | "@" | "#", readonly string[]> = new Map();
 
 /** Editor and attachment snapshot owned by one detached default send. */
 interface DetachedDraft {
@@ -532,7 +532,7 @@ export class SessionInputShell implements SessionInput {
    * identity per shell; without a pipeline the snapshot is the empty Map and
    * subscribers never fire.
    */
-  readonly lexicon: ObservableSnapshot<ReadonlyMap<"/" | "@", readonly string[]>> = {
+  readonly lexicon: ObservableSnapshot<ReadonlyMap<"/" | "@" | "#", readonly string[]>> = {
     getSnapshot: () => this.deps.inputTriggers?.()?.lexicon.getSnapshot() ?? EMPTY_LEXICON,
     subscribe: (fn) => this.deps.inputTriggers?.()?.lexicon.subscribe(fn) ?? (() => {}),
   };

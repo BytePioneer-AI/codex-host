@@ -97,7 +97,7 @@ const ABSENT_BLOCK = {
   getSnapshot: (): ComposerBlock | undefined => undefined,
   subscribe: () => () => {},
 };
-const EMPTY_LEXICON: ReadonlyMap<"/" | "@", readonly string[]> = new Map();
+const EMPTY_LEXICON: ReadonlyMap<"/" | "@" | "#", readonly string[]> = new Map();
 const ABSENT_LEXICON = {
   getSnapshot: () => EMPTY_LEXICON,
   subscribe: () => () => {},

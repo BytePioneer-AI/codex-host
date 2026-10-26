@@ -150,6 +150,17 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
     });
   }
 
+  /** Invocation names owned by interface commands; discovery must not override them. */
+  async reservedNames(session: ClientSessionContext): Promise<ReadonlySet<string>> {
+    const host = await this.directory.ensureReady(session.sessionId, new AbortController().signal);
+    return new Set([
+      ...host.map((command) => `/${command.name}`),
+      ...[...this.live.contributions.values()]
+        .filter((item) => item.available(session))
+        .map((item) => `/${item.name}`),
+    ]);
+  }
+
   /**
    * Register one client command contribution; effect disposer (rides the
    * caller's fiber). Duplicate names throw.

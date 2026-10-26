@@ -196,6 +196,8 @@ export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t
                         type="button"
                         role="option"
                         aria-selected={active}
+                        aria-disabled={item.disabledReason !== undefined || undefined}
+                        title={item.disabledReason}
                         className={clsx(css.item, active && css.active)}
                         // mousedown, not click: the textarea keeps focus (combobox
                         // pattern) — preventing default stops the focus steal, and the
@@ -229,9 +231,13 @@ export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t
                           item.label.toLowerCase() !== item.name.toLowerCase() && (
                             <span className={css.itemAlias}>{item.name}</span>
                           )}
-                        {item.description !== undefined && (
-                          <span className={css.itemDescription}>{item.description}</span>
-                        )}
+                        {(item.disabledReason ?? item.description) !== undefined &&
+                          (item.disabledReason ?? item.description) !==
+                            (item.label ?? item.name) && (
+                            <span className={css.itemDescription}>
+                              {item.disabledReason ?? item.description}
+                            </span>
+                          )}
                         {item.drill === true && (
                           <span className={css.trailing}>
                             {/* Visual hint only: Tab drills the highlighted row (the

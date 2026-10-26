@@ -11,6 +11,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
 import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
+import { registerHarnessDiscovery } from "./harness-discovery.tsx";
 import { sentMessageEditApi } from "./api.ts";
 import { ImportIcon } from "./ImportIcon.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
@@ -76,6 +77,9 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-codexhost: dictionaries");
   const t = ctx.locale.bind(NS);
   ctx.provide("chatMessageEditing", sentMessageEditApi);
+  ctx.inject(["connection", "modelDirectories", "commandUi"], (scope) =>
+    registerHarnessDiscovery(scope),
+  );
   ctx.provide("chatLinks", {
     resolve: Object.assign(
       (href: string) => {

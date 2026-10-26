@@ -1,5 +1,21 @@
 /** Copy for the CodexHost import panel. */
 export const en = {
+  "discovery.agents": "Delegation Agents",
+  "discovery.commands": "Native commands",
+  "discovery.skills": "Skills",
+  "discovery.offline": "Host disconnected",
+  "discovery.pending": "A command request is pending",
+  "discovery.busy": "Thread busy; direct commands cannot be queued",
+  "discovery.stale": "The selection expired. Open the menu and select again.",
+  "discovery.accepted": "Command accepted. Follow progress in this Thread.",
+  "discovery.unconfirmed":
+    "Command not confirmed. Check Thread progress before retrying; no automatic resend.",
+  "discovery.conflict": "Invocation conflicts with an interface command",
+  "discovery.static": "Static catalog: project commands and Skills load after the session starts.",
+  "discovery.empty": "No native commands advertised.",
+  "discovery.retry": "Retry native commands",
+  "discovery.failed": "Native command catalog unavailable:",
+
   "settings.connections": "Connections",
   "settings.resources": "Resources",
   "settings.accounts": "Accounts",
@@ -76,6 +92,21 @@ export const en = {
 export type ImportLocaleKey = keyof typeof en;
 
 export const zh: Record<ImportLocaleKey, string> = {
+  "discovery.agents": "委派 Agent",
+  "discovery.commands": "原生命令",
+  "discovery.skills": "Skills",
+  "discovery.offline": "Host 已断线",
+  "discovery.pending": "命令请求正在提交",
+  "discovery.busy": "会话正忙，直接命令不能排队",
+  "discovery.stale": "选择已失效，请重新打开菜单选择。",
+  "discovery.accepted": "命令已接受，请在当前会话查看执行进度。",
+  "discovery.unconfirmed": "命令结果未确认，请先检查会话进度再决定是否重试；不会自动重发。",
+  "discovery.conflict": "调用名与界面命令冲突",
+  "discovery.static": "静态目录：项目命令和 Skills 在会话启动后加载。",
+  "discovery.empty": "未提供原生命令。",
+  "discovery.retry": "重试原生命令目录",
+  "discovery.failed": "原生命令目录不可用：",
+
   "settings.connections": "连接",
   "settings.resources": "资源管理",
   "settings.accounts": "账号",

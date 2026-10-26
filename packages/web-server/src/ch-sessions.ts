@@ -24,6 +24,7 @@ import { projectGroupRoot } from "./ch-project-groups.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { WebThreadStates, type UsageLoad } from "./web-thread-state.ts";
+import { ChHarnessCommands } from "./ch-harness-commands.ts";
 import { ChThreadEditing } from "./ch-thread-edit.ts";
 import { editedNativeInput } from "./native-user-input.ts";
 import { forkChThread, forkUnavailable } from "./ch-thread-fork.ts";
@@ -256,6 +257,7 @@ export class ChSessions {
       row.updatedAt,
       row.status.type,
       row.parentThreadId ?? null,
+      row.canAcceptDirectInput !== false,
       this.threads.harnessId(row.id),
     ]);
   }
@@ -381,6 +383,10 @@ export class ChSessions {
     }
     if (this.threads.view(id) !== view)
       throw new RpcError("host/resync", "Host snapshot was superseded by a new generation");
+    view.log.setProjection(
+      "nativeDiscovery",
+      !view.thread.parentThreadId && view.thread.canAcceptDirectInput !== false,
+    );
     if (view.ownerSnapshot && this.hostOnline && !this.closed)
       this.interactions?.update(view.ownerSnapshot);
     if (this.realtime)
@@ -499,6 +505,7 @@ export class ChSessions {
             imageLimits: WEB_IMAGE_LIMITS,
           }
         : {}),
+      nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
       harnessIdentity: { id: harnessId, name: await this.catalog.name(harnessId) },
@@ -1187,6 +1194,35 @@ export class ChSessions {
   }
 
   registerCommands(rpc: RpcRegistry): void {
+    const native = new ChHarnessCommands(this.host, async (sessionId) => {
+      const id = this.id(sessionId);
+      if (
+        typeof sessionId !== "string" ||
+        !sessionId ||
+        (this.drafts.has(sessionId) && !this.drafts.get(sessionId)?.canonicalId)
+      )
+        throw new RpcError("command/unavailable", "Commands require an existing external Thread.");
+      if (this.closed || !this.hostOnline)
+        throw new RpcError("host/offline", "The Host is disconnected.");
+      await this.owner(id);
+      const { thread } = await this.host.request<{ thread: ChThread }>("thread/read", {
+        threadId: id,
+        includeTurns: false,
+      });
+      if (thread.id !== id || thread.parentThreadId || thread.canAcceptDirectInput === false)
+        throw new RpcError(
+          "command/unavailable",
+          "Commands require an editable local external Thread.",
+        );
+      return thread;
+    });
+    rpc.register("codexhost/threadCommands", (args) =>
+      native.inspect(requestOf<{ sessionId: string }>(args).sessionId),
+    );
+    rpc.register("codexhost/executeThreadCommand", (args) => {
+      const { sessionId, commandId } = requestOf<{ sessionId: string; commandId: string }>(args);
+      return native.execute(sessionId, commandId);
+    });
     rpc.register("permissionPresets/catalog", () => ({
       options: [],
       defaultOptions: [],

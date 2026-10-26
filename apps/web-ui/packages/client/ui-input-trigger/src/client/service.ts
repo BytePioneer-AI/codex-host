@@ -12,6 +12,7 @@ import type { ISessions, SessionBinding } from "@deepseek-ai/dsh-api-session-con
 import { WeakMapWithValues } from "@deepseek-ai/dsh-util-values";
 import type {} from "@deepseek-ai/dsh-client-locale/client";
 import type { InputTriggerSource } from "../types.ts";
+import { sourceMatchesTrigger } from "../core/source.ts";
 import { InputTriggerController } from "./controller.ts";
 import type { InputTriggerServiceContract } from "./contract.ts";
 
@@ -55,7 +56,13 @@ export class InputTriggerService extends Service implements InputTriggerServiceC
    */
   registerSource(src: InputTriggerSource): () => void {
     const { live } = this;
-    if (live.sources.some((s) => s.trigger === src.trigger && s.name === src.name)) {
+    if (
+      live.sources.some(
+        (s) =>
+          s.name === src.name &&
+          [src.trigger, ...(src.aliases ?? [])].some((trigger) => sourceMatchesTrigger(s, trigger)),
+      )
+    ) {
       throw new Error(`slash source "${src.trigger}${src.name}" is already registered`);
     }
     live.sources.push(src);
@@ -106,7 +113,7 @@ export class InputTriggerService extends Service implements InputTriggerServiceC
       roster: {
         sources: (trigger) =>
           live.sources
-            .filter((s) => s.trigger === trigger)
+            .filter((s) => sourceMatchesTrigger(s, trigger))
             .sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
         all: () => live.sources,
       },

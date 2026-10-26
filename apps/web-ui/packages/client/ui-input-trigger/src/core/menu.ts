@@ -58,7 +58,10 @@ const closed = (state: MenuState): MenuState =>
 /** First item of the first non-empty ready group, or null. */
 function firstHighlight(groups: MenuState["groups"]): MenuState["highlight"] {
   for (const g of groups) {
-    if (g.status === "ready" && g.items.length > 0) return { source: g.source, index: 0 };
+    if (g.status === "ready") {
+      const index = g.items.findIndex((item) => item.disabledReason === undefined);
+      if (index >= 0) return { source: g.source, index };
+    }
   }
   return null;
 }
@@ -70,7 +73,12 @@ function validHighlight(
 ): MenuState["highlight"] {
   if (!highlight) return null;
   const g = groups.find((x) => x.source === highlight.source);
-  return g && g.status === "ready" && highlight.index < g.items.length ? highlight : null;
+  return g &&
+    g.status === "ready" &&
+    highlight.index < g.items.length &&
+    g.items[highlight.index]?.disabledReason === undefined
+    ? highlight
+    : null;
 }
 
 /** Flatten ready items into (source, index) positions in group order. */
@@ -78,7 +86,8 @@ function positions(groups: MenuState["groups"]): { source: string; index: number
   const out: { source: string; index: number }[] = [];
   for (const g of groups) {
     if (g.status !== "ready") continue;
-    for (let i = 0; i < g.items.length; i++) out.push({ source: g.source, index: i });
+    for (let i = 0; i < g.items.length; i++)
+      if (g.items[i]?.disabledReason === undefined) out.push({ source: g.source, index: i });
   }
   return out;
 }

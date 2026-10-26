@@ -42,7 +42,7 @@ const SLASH_TOKEN_END_RE = /^(?:\s|$)/;
  */
 export function scanTextRefs(
   draft: string,
-  lexicon: ReadonlyMap<"/" | "@", readonly string[]>,
+  lexicon: ReadonlyMap<"/" | "@" | "#", readonly string[]>,
 ): TextRefRange[] {
   if (draft === "") return [];
   const out: TextRefRange[] = [];

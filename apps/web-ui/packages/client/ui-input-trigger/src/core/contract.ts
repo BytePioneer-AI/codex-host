@@ -28,7 +28,8 @@ export interface TriggerHit {
 /**
  * Detect a trigger token at the caret under the given guard tier.
  * `@` uses the shared file-reference start/whitespace grammar; `/` accepts
- * punctuation boundaries with URL carve-outs. `user@host` and URL `/` do not
+ * punctuation boundaries with URL carve-outs. `#` follows GUI word-start and query boundaries.
+ * `user@host` and URL `/` do not
  * trigger.
  * Returns null when no trigger is live at the caret.
  */

@@ -279,3 +279,11 @@
   display: inline-flex;
   color: var(--dsw-alias-menu-icon);
 }
+
+.item[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+.item[aria-disabled="true"] .itemDescription {
+  white-space: normal;
+}

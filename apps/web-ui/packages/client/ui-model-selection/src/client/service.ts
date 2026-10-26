@@ -41,6 +41,11 @@ export class ModelDirectoryResolver extends Service {
   private readonly live: LiveState = { directories: new WeakMapWithValues() };
   private readonly catalog: ModelCatalogDirectory;
 
+  /** Existing ready Harness groups, shared with discovery surfaces without another catalog read. */
+  get harnessCatalog() {
+    return this.catalog.store;
+  }
+
   /**
    * @param ctx - owning root context (the service registers itself as `models`).
    */

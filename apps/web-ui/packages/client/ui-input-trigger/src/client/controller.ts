@@ -16,6 +16,7 @@ import type {
   ReferenceInsert,
 } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import { sourceMatchesTrigger } from "../core/source.ts";
 import { detectTrigger } from "../core/detect.ts";
 import { MENU_CLOSED, menuReduce, seedGroups } from "../core/menu.ts";
 import type { MenuEvent, MenuState, TriggerHit } from "../core/contract.ts";
@@ -114,6 +115,7 @@ export class InputTriggerController {
   private drilled = false;
   private fetch: AbortController | null = null;
   private disposed = false;
+  private menuEpoch: object = {};
   /** Per-source lexicon unsubscribers (sources without the hook never enter). */
   private readonly lexiconOffs = new Map<InputTriggerSource, () => void>();
 
@@ -192,6 +194,7 @@ export class InputTriggerController {
       return;
     }
     if (launched || !prev.open || prev.hit === null || prev.hit.trigger !== hit.trigger) {
+      this.menuEpoch = {};
       this.menu.set(seedGroups(this.menu.getSnapshot(), roster));
     }
     this.reduce({ type: "hit", hit });
@@ -200,7 +203,7 @@ export class InputTriggerController {
   }
 
   /**
-   * Toggle a menu containing exactly one registered source. The supplied hit
+   * Toggle a registered source and any sources joining its launcher. The supplied hit
    * is a synthetic selection span rather than a typed trigger token, but
    * picks deliberately reuse the ordinary source callback and scoped input
    * mutation pipeline.
@@ -221,10 +224,14 @@ export class InputTriggerController {
     this.stopFetch();
     this.hit = hit;
     this.launcher.set(source);
-    this.menu.set(seedGroups(this.menu.getSnapshot(), [match]));
+    const roster = this.deps.roster
+      .sources(hit.trigger)
+      .filter((item) => item === match || item.launcher === source);
+    this.menuEpoch = {};
+    this.menu.set(seedGroups(this.menu.getSnapshot(), roster));
     this.reduce({ type: "hit", hit });
-    this.refreshHeaders(hit, [match]);
-    this.fetchCandidates(hit, [match]);
+    this.refreshHeaders(hit, roster);
+    this.fetchCandidates(hit, roster);
   }
 
   /**
@@ -351,7 +358,7 @@ export class InputTriggerController {
       if (src.matchSpace === undefined) continue;
       const outcome = src.matchSpace(projection, token);
       if (outcome === undefined) continue;
-      if (outcome === "handled") return true;
+      if (outcome === "handled" || outcome === "refresh") return true;
       return this.execute(outcome, hit.span);
     }
     return false;
@@ -437,7 +444,7 @@ export class InputTriggerController {
    */
   sourceRemoved(source: InputTriggerSource): void {
     const state = this.menu.getSnapshot();
-    if (state.open && state.hit !== null && state.hit.trigger === source.trigger) {
+    if (state.open && state.hit !== null && sourceMatchesTrigger(source, state.hit.trigger)) {
       this.reduce({ type: "source-failed", generation: state.generation, source: source.name });
     }
     this.lexiconOffs.get(source)?.();
@@ -473,7 +480,9 @@ export class InputTriggerController {
     const launched = this.launcher.getSnapshot();
     const roster = this.deps.roster
       .sources(this.hit.trigger)
-      .filter((source) => launched === null || source.name === launched);
+      .filter(
+        (source) => launched === null || source.name === launched || source.launcher === launched,
+      );
     if (roster.length === 0) return;
     this.fetchCandidates(this.hit, roster);
   }
@@ -496,7 +505,7 @@ export class InputTriggerController {
   /** Execute a claim/insert/text outcome via the scoped input events (actx as dispatch subject); true = the input applied it. */
   private execute(outcome: PickOutcome, span: import("../types.ts").TokenSpan): boolean {
     const { actx } = this.deps;
-    if (outcome === undefined || outcome === "handled") return false;
+    if (outcome === undefined || outcome === "handled" || outcome === "refresh") return false;
     if ("claim" in outcome) {
       return actx.bail(actx, "slash/input-begin-command", { claim: outcome.claim, span }) === true;
     }
@@ -539,13 +548,21 @@ export class InputTriggerController {
 
   /** Wire one source's lexicon invalidation channel into refresh (hookless or roll-less sources never notify). */
   private watchLexicon(source: InputTriggerSource, projection: ClientSessionContext): void {
-    if (source.lexicon === undefined || source.subscribeLexicon === undefined) return;
+    const subscribe =
+      source.subscribeCandidates ??
+      (source.lexicon === undefined ? undefined : source.subscribeLexicon);
+    if (subscribe === undefined) return;
     this.lexiconOffs.set(
       source,
-      source.subscribeLexicon(projection, () => {
+      subscribe(projection, () => {
         this.refreshLexicon();
         const hit = this.hit;
-        if (hit === null || !this.menu.getSnapshot().open || hit.trigger !== source.trigger) return;
+        if (
+          hit === null ||
+          !this.menu.getSnapshot().open ||
+          !sourceMatchesTrigger(source, hit.trigger)
+        )
+          return;
         // Let every source process the same invalidation before rebuilding the
         // open menu, so one source cannot contribute its previous catalog.
         void Promise.resolve().then(() => {
@@ -566,6 +583,7 @@ export class InputTriggerController {
     for (const source of roster) {
       void source
         .candidates(projection, {
+          menuEpoch: this.menuEpoch,
           query: hit.query,
           quoted: hit.quoted,
           position: hit.position,
@@ -608,6 +626,7 @@ export class InputTriggerController {
     hit: TriggerHit,
     action: PickAction,
   ): void {
+    if (candidate.disabledReason !== undefined) return;
     const outcome = src.onPick({
       candidate,
       session: this.project(),
@@ -616,6 +635,10 @@ export class InputTriggerController {
       action,
       span: hit.span,
     });
+    if (outcome === "refresh") {
+      this.refreshOpenMenu();
+      return;
+    }
     this.stopFetch();
     // A settling pick is the user's decision about this token: the menu stays
     // closed for it until the text changes, so a settled command that opens a

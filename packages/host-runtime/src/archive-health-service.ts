@@ -147,7 +147,7 @@ export async function defaultListProcesses(): Promise<
         "-Command",
         "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress",
       ],
-      { timeout: 20_000, maxBuffer: 16 * 1024 * 1024 },
+      { timeout: 10_000, maxBuffer: 16 * 1024 * 1024 },
     );
     const parsed: unknown = JSON.parse(stdout);
     const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
@@ -162,7 +162,7 @@ export async function defaultListProcesses(): Promise<
     return results;
   }
   const { stdout } = await execFileAsync("ps", ["-eo", "pid,ppid,command"], {
-    timeout: 20_000,
+    timeout: 10_000,
     maxBuffer: 16 * 1024 * 1024,
   });
   const results: Array<{ pid: number; ppid: number; command: string }> = [];
@@ -249,18 +249,26 @@ export class ArchiveHealthService {
     }
 
     const officialProcesses: ArchiveHealthProcess[] = [];
+    let processScan: ArchiveHealthResult["summary"]["processScan"] = "skipped";
     if (params?.includeOfficial !== false) {
       const listProcesses = this.options.listProcesses ?? defaultListProcesses;
-      const listed = await listProcesses();
-      const excluded = descendantsOf(listed, process.pid);
-      for (const candidate of listed) {
-        if (candidate.pid === process.pid || excluded.has(candidate.pid)) continue;
-        if (!isCodexProcess(candidate.command)) continue;
-        officialProcesses.push({
-          pid: candidate.pid,
-          command: candidate.command,
-          hint: `Process PID ${candidate.pid} is running: '${candidate.command}'. Terminate it (e.g. ${terminationHint(candidate.pid)}) to release the official session lock.`,
-        });
+      try {
+        const listed = await listProcesses();
+        const excluded = descendantsOf(listed, process.pid);
+        for (const candidate of listed) {
+          if (candidate.pid === process.pid || excluded.has(candidate.pid)) continue;
+          if (!isCodexProcess(candidate.command)) continue;
+          officialProcesses.push({
+            pid: candidate.pid,
+            command: candidate.command,
+            hint: `Process PID ${candidate.pid} is running: '${candidate.command}'. Terminate it (e.g. ${terminationHint(candidate.pid)}) to release the official session lock.`,
+          });
+        }
+        processScan = "ok";
+      } catch (error) {
+        // A failed scan is not "no official sessions are occupied"; say so explicitly.
+        this.options.diagnose?.(error);
+        processScan = "failed";
       }
     }
 
@@ -271,6 +279,7 @@ export class ArchiveHealthService {
         totalInconsistent: inconsistentThreads.length,
         officialOccupied: officialProcesses.length,
         externalRecoverable: inconsistentThreads.filter((thread) => thread.recoverable).length,
+        processScan,
       },
     };
   }

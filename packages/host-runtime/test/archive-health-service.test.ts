@@ -225,6 +225,7 @@ describe("archive health inspection", () => {
       command: "/usr/local/bin/codex exec --model gpt-5",
     });
     expect(report.summary.officialOccupied).toBe(1);
+    expect(report.summary.processScan).toBe("ok");
   });
 
   it("skips process inspection when includeOfficial is false", async () => {
@@ -237,6 +238,19 @@ describe("archive health inspection", () => {
     const report = await f.service.inspect({ includeOfficial: false });
     expect(report.officialProcesses).toHaveLength(0);
     expect(report.summary.officialOccupied).toBe(0);
+    expect(report.summary.processScan).toBe("skipped");
+  });
+
+  it("reports a failed process scan instead of an empty but healthy one", async () => {
+    const f = await createFixture({
+      listProcesses: async () => {
+        throw new Error("ps unavailable");
+      },
+    });
+
+    const report = await f.service.inspect();
+    expect(report.officialProcesses).toHaveLength(0);
+    expect(report.summary.processScan).toBe("failed");
   });
 
   it("surfaces a MappingStore read failure instead of reporting a healthy Host", async () => {

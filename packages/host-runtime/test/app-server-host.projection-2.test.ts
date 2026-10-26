@@ -2401,11 +2401,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);
 
-    // Health inspect
+    // Health inspect. The process scan is skipped here so this RPC test stays about the
+    // Host's routing and MappingStore, not the runner's process table.
     writeRequest(fixture.desktopInput, {
       id: 540,
       method: "codexhost/archive/health",
-      params: {},
+      params: { includeOfficial: false },
     });
     const healthReply = await fixture.collector.waitFor((message) => requestId(message, 540));
     expect(healthReply).toMatchObject({
@@ -2413,7 +2414,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: {
         inconsistentThreads: expect.any(Array),
         officialProcesses: expect.any(Array),
-        summary: expect.any(Object),
+        summary: expect.objectContaining({ processScan: "skipped" }),
       },
     });
 

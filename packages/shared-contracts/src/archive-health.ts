@@ -36,6 +36,11 @@ export const archiveHealthResultSchema = z.strictObject({
     totalInconsistent: z.number(),
     officialOccupied: z.number(),
     externalRecoverable: z.number(),
+    /**
+     * Whether the official-process scan actually ran. A failed scan must not read as
+     * "no official sessions are occupied".
+     */
+    processScan: z.enum(["ok", "failed", "skipped"]),
   }),
 });
 

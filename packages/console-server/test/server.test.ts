@@ -375,7 +375,12 @@ describe("console server", () => {
     const healthResult = {
       inconsistentThreads: [],
       officialProcesses: [],
-      summary: { totalInconsistent: 0, officialOccupied: 0, externalRecoverable: 0 },
+      summary: {
+        totalInconsistent: 0,
+        officialOccupied: 0,
+        externalRecoverable: 0,
+        processScan: "ok" as const,
+      },
     };
     const forceResult = { ok: true, threadId: "t-1", archived: true };
     const request = vi.fn(async (method: string) => {

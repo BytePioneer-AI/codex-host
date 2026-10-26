@@ -59,6 +59,7 @@ const METHODS = new Set([
   "thread/list",
   "thread/read",
   "thread/turns/list",
+  "thread/revert",
   "thread/start",
   "thread/resume",
   "thread/name/set",

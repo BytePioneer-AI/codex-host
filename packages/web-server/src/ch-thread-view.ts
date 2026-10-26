@@ -39,6 +39,7 @@ export interface ChThread {
   updatedAt: number;
   status: { type: string };
   turns: ChTurn[];
+  historyMode?: "legacy" | "paginated";
   parentThreadId?: string | null;
   canAcceptDirectInput?: boolean;
 }
@@ -228,6 +229,29 @@ export class ChThreadView {
     const turn = (end.data as { turn: number }).turn;
     for (const [id, view] of this.turns) if (view.done && view.projector.turn === turn) return id;
     return undefined;
+  }
+
+  /** Exact user/message coordinate of the settled native tail, never a Web Turn number. */
+  editableMessage(): { seq: number; turnId: string; input: unknown[] } | undefined {
+    this.ensureCurrent();
+    const turn = this.thread.turns.at(-1);
+    if (
+      this.thread.historyMode !== "paginated" ||
+      !turn ||
+      !finished(turn.status) ||
+      this.thread.status.type === "active"
+    )
+      return;
+    const messages = turn.items.filter((item) => item.type === "userMessage");
+    if (messages.length !== 1 || !Array.isArray(messages[0]?.content)) return;
+    const view = this.turns.get(turn.id);
+    if (!view?.done) return;
+    let currentTurn: number | undefined;
+    for (const event of this.log.events) {
+      if (event.type === "turn/start") currentTurn = (event.data as { turn: number }).turn;
+      if (currentTurn === view.projector.turn && event.type === "user/message")
+        return { seq: event.seq, turnId: turn.id, input: messages[0].content };
+    }
   }
 
   /** Older native pages are projected separately, without changing the visible tail. */

@@ -142,6 +142,16 @@ Web 编辑排队文本消息时，先请求 Shared Host 删除原条目，确认
 
 通用 App 可通过 Web 原有认证访问 `/api/ch/v1/{events,rpc,snapshot,respond}`，不需要理解 DSH 渲染日志，也拿不到 Host 私有 token。协议、恢复顺序和部署边界见[客户端通道](../architecture/host-client-channel.md)。本地草稿、滚动位置和当前选中会话不共享。旧 CDP 模式的审批仍在 GUI 处理；共享 Web 的通用文件预览/下载、完整子会话/后台任务投影仍有边界。公开远程 Host 通道、原生 App、真机后台与推送生命周期不在本次接入内。
 
+### 编辑已发送消息
+
+Web 首次发送草稿时通过既有 `thread/start` 参数显式请求 `historyMode: "paginated"`，选中工作区和无项目创建均使用分页历史。已有 `legacy` 会话保持原模式，不显示已发送消息的编辑入口，也不自动迁移历史。
+
+最后一个已结束 Turn 的用户消息提供“编辑消息”，原位显示编辑框及“取消 / 发送”，与 Codex GUI 的编辑入口一致。Enter 发送、Shift+Enter 换行；取消或 Escape 只撤下编辑框；普通 Composer 的草稿、引用和附件不受影响。发送期间冻结编辑操作。正在运行、有待发送队列、本地发送尚未确认、只读或子会话不开放入口；不支持回退最后一轮的 Harness、包含多个用户消息或多个文本输入的 Turn 也不开放。入口要求分页历史，复用已有 Harness 目录声明的 `history.rollbackLastTurn`，不为普通快照刷新额外查询 Thread；提交时通过 `codexhost/thread/inspect` 重新确认当前 Thread 的实际能力，不推广到任意历史位置。
+
+Web 的 `user/message` seq 和分页 Turn 坐标只用于解析当前内存展示窗口。网关经 `ChThreadView` 找到 canonical Thread/Turn，调用 GUI 同用的 `thread/revert { threadId, beforeTurnId }`，确认响应中的 Thread 身份后才调用既有 `turn/start`；不使用普通 Fork，不新建 Thread，不复制或持久化另一套历史。原生图片输入和完整文件附件 envelope 保留，只替换用户正文并清空旧正文的 `text_elements`。旧 Host 未开放 client channel 的 `thread/revert` 时会拒绝编辑，不退化成 Fork 或按数量猜测回退。
+
+同一网关只阻止同一 Thread 的重复编辑；普通发送、停止、队列及配置操作保持既有 Host 校验，不因编辑或其后的历史刷新被网关锁住。回退和重跑请求结束即释放编辑在途标记。活动与过期 Turn 边界继续由 Host 拒绝；回退与重跑是既有的两个操作，不是跨客户端原子事务，并发操作可能令回退或重跑被拒绝。回退或重跑结果未知时不重试、不自动重发，保留编辑文本及原消息的附件展示引用并禁用该次发送；明确显示是否已经确认回退，要求核对当前历史。编辑失败前的能力或边界校验不改变历史。Host 历史重写后，所有 Web 订阅通过既有快照重新打开，投影水位递增；前端不自行截断历史或伪造回退完成。编辑草稿只在当前聊天视图中保留，不跨浏览器同步或持久化。
+
 ### 会话引用
 
 侧栏已创建的本地共享 CH external Thread 可拖入整个聊天主区域，包括正文、留白与 Composer。悬停时整个可接收区域有浅蓝色覆盖，明确显示“松开以引用聊天”及会话图标、标题预览；覆盖层不参与鼠标命中，跨内部元素移动不闪烁，离开、取消、拖动结束、窗口失焦或目标切换后撤下。只有当前 Composer 可编辑且来源受支持时才显示和接收，文件拖放沿用原有入口。

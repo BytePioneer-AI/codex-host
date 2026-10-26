@@ -1,4 +1,4 @@
-/** Presentation-only parsing of native user input; never rewrite the Harness execution prompt. */
+/** Parsing native user input for presentation and retaining attachment envelopes during edits. */
 import { isAbsolute, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -155,5 +155,24 @@ export function nativeUserInput(content: readonly unknown[]): NativeUserPart[] {
   return parsed.filter((part) => {
     if (part.type === "nativeImage") return structured.includes(part);
     return part.type !== "nativeFile" || !paths.has(part.path);
+  });
+}
+
+/** Replace the single editable text body while retaining native attachment context verbatim. */
+export function editedNativeInput(
+  content: readonly unknown[],
+  text: string,
+): unknown[] | undefined {
+  const parts = content as Array<Record<string, unknown>>;
+  if (parts.some((part) => !part || typeof part !== "object")) return;
+  const texts = parts.filter((part) => part.type === "text");
+  if (texts.length > 1 || texts.some((part) => typeof part.text !== "string")) return;
+  if (!texts.length) return [{ type: "text", text, text_elements: [] }, ...content];
+  return parts.map((part) => {
+    if (part.type !== "text") return part;
+    const original = part.text as string;
+    const files = envelope(original);
+    const prefix = files ? original.slice(0, original.length - files.request.length) : "";
+    return { ...part, text: prefix + text, text_elements: [] };
   });
 }

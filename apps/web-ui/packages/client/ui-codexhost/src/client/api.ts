@@ -57,3 +57,12 @@ export const importApi = {
       request: { harnessId, nativeSessionId },
     }),
 };
+
+/** Edits address a displayed occurrence; the gateway resolves its native identity. */
+export const sentMessageEditApi = {
+  send: (sessionId: string, atSeq: number, text: string) =>
+    call<{ status: "accepted" | "rejected" | "unconfirmed" | "reverted"; message?: string }>(
+      "codexhost/editMessage",
+      { request: { sessionId, atSeq, text } },
+    ),
+};

@@ -17,7 +17,11 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChatViewSlotProps, OpenFileOptions } from "../contract/slots.ts";
 import type { ChatSnapshot } from "../contract/snapshot.ts";
-import { PendingSteeringBubble, PendingSubmissionBubble } from "./MessageItem.tsx";
+import {
+  PendingSteeringBubble,
+  PendingSubmissionBubble,
+  SentMessageRecovery,
+} from "./MessageItem.tsx";
 import { ChatNodeSeat } from "./ChatNodeSeat.tsx";
 import { ChatGroupSeat } from "./ChatGroupSeat.tsx";
 import { chatRenderKey } from "./render-entry.ts";
@@ -27,6 +31,7 @@ import { RunningStatus } from "./RunningStatus.tsx";
 import { mergeTurnRailItems } from "./turn-rail-items.ts";
 import { useChatScroll } from "./use-chat-scroll.ts";
 import { fileMediaUrl, resolveWorkspacePath } from "@deepseek-ai/dsh-util-workspace-path";
+import { useSentMessageEditing } from "./SentMessageEditor.tsx";
 import css from "./ChatView.module.css";
 
 /** Host/OS refusal text for the file-open dialog; empty throws keep a locale fallback. */
@@ -164,6 +169,7 @@ export function ChatView({
   inspectCall,
   chatScroll,
   forkAt,
+  editMessage,
   fileMentions,
   usePresentation,
   useProjection,
@@ -260,6 +266,18 @@ export function ChatView({
     [inbox],
   );
   const pendingSubmissions = useSession((s) => s.pendingSubmissions);
+  const editTarget = useProjection("sentMessageEdit");
+  const messageEditing = useSentMessageEditing(
+    editMessage,
+    editTarget?.seq ?? null,
+    running || pendingSubmissions.length > 0 || (inbox?.["next-turn"].length ?? 0) > 0,
+  );
+  const editNodeVisible =
+    messageEditing.draft &&
+    order.some((key) => {
+      const node = nodeStore.get(key);
+      return node?.kind === "user" && node.data.seq === messageEditing.draft?.seq;
+    });
   // A local non-queued submission is visible immediately, before Host admission
   // can report authoritative running state. Keep Stop tied to `running`, but do
   // not leave the transcript looking idle during that round-trip.
@@ -390,6 +408,7 @@ export function ChatView({
                 openSkill={openSkill}
                 inspectCall={inspectCall}
                 forkAt={forkAt}
+                messageEditing={messageEditing}
                 loadImage={loadImage}
                 renderMessageImages={renderMessageImages}
                 fileMentions={fileMentions}
@@ -397,6 +416,13 @@ export function ChatView({
                 t={t}
               />
             </MarkdownDelegateProvider>
+            {messageEditing.draft && !editNodeVisible && (
+              <SentMessageRecovery
+                editing={messageEditing}
+                renderMessageImages={renderMessageImages}
+                t={t}
+              />
+            )}
             {showRunningStatus && <RunningStatus startTime={runningStartTime} t={t} />}
             {/* No pending placeholders: questions (ui-user-questions) and approvals
                 (ApprovalPanel) both take over the composer, so a flow card would

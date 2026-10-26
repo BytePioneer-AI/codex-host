@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { PendingSubmission } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { MessageImageSource } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import {
+  IconEditOutlineRegular,
   fileExtension,
   FileTypeIcon,
   fileSizeText,
@@ -12,6 +13,7 @@ import {
   TextShimmer,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
+  SentMessageEditing,
   ChatNodeOwnerProps,
   ChatNodeViewProps,
   ChatViewSlotProps,
@@ -20,6 +22,7 @@ import type { ModelRetryNode, TurnErrorNode, UserMessageNode } from "../contract
 import { CompactionItem } from "./CompactionItem.tsx";
 import { ContextInjectionRow } from "./ContextInjectionRow.tsx";
 import { MessageIconActions } from "./MessageIconActions.tsx";
+import { SentMessageEditor } from "./SentMessageEditor.tsx";
 import css from "./MessageItem.module.css";
 
 type UserImage = Extract<UserMessageNode["content"][number], { type: "image" }>;
@@ -184,9 +187,11 @@ function UserStyleBubble({
   skillNames = [],
   previewAttachments,
   references,
+  editor,
   t,
 }: {
   content: readonly unknown[];
+  editor?: ReactNode;
   renderMessageImages: ChatNodeOwnerProps["renderMessageImages"];
   /** Optional IconActions (or similar) below the bubble; receives the joined text. */
   actions?: (text: string) => ReactNode;
@@ -251,19 +256,20 @@ function UserStyleBubble({
             )}
           </div>
         )}
-        {showBubble && (
-          <div className={css.bubble}>
-            {projectUserText(text, referenceLabels, skillNames, "skill", references)}
-            {rest.map((block, i) => (
-              <JsonBlock
-                key={i}
-                label={t("message.extraBlock")}
-                payload={block}
-                truncatedLabel={truncated}
-              />
-            ))}
-          </div>
-        )}
+        {editor ??
+          (showBubble && (
+            <div className={css.bubble}>
+              {projectUserText(text, referenceLabels, skillNames, "skill", references)}
+              {rest.map((block, i) => (
+                <JsonBlock
+                  key={i}
+                  label={t("message.extraBlock")}
+                  payload={block}
+                  truncatedLabel={truncated}
+                />
+              ))}
+            </div>
+          ))}
         {referenceLabels.length > 0 && (
           <div className={css.referenceSummary}>
             {t("message.referenceSummary", {
@@ -376,12 +382,18 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
   renderMessageImages,
   openFile,
   openSkill,
+  messageEditing,
   t,
 }: ChatNodeViewProps<"user" | "steering">) {
   const data = node.data;
   return (
     <UserStyleBubble
       content={data.content}
+      editor={
+        messageEditing?.draft?.seq === data.seq ? (
+          <SentMessageEditor editing={messageEditing} t={t} />
+        ) : undefined
+      }
       references={{ openFile, openSkill }}
       renderMessageImages={renderMessageImages}
       {...(data.referenceLabels === undefined ? {} : { referenceLabels: data.referenceLabels })}
@@ -389,6 +401,21 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
       t={t}
       actions={(text) => (
         <MessageIconActions
+          extraActions={
+            node.kind === "user" &&
+            messageEditing?.targetSeq === data.seq &&
+            !messageEditing.draft ? (
+              <button
+                type="button"
+                className={css.editAction}
+                aria-label={t("message.edit")}
+                title={t("message.edit")}
+                onClick={() => messageEditing.begin(data.seq, text, data.content)}
+              >
+                <IconEditOutlineRegular />
+              </button>
+            ) : null
+          }
           text={text}
           time={data.time}
           clock="start"
@@ -399,6 +426,26 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
     />
   );
 });
+
+/** Retain the edited message's attachment presentation if Host removed its transcript node. */
+export function SentMessageRecovery({
+  editing,
+  renderMessageImages,
+  t,
+}: {
+  editing: SentMessageEditing;
+  renderMessageImages: ChatNodeOwnerProps["renderMessageImages"];
+  t: ChatViewSlotProps["t"];
+}) {
+  return (
+    <UserStyleBubble
+      content={editing.draft?.content ?? []}
+      renderMessageImages={renderMessageImages}
+      editor={<SentMessageEditor editing={editing} t={t} />}
+      t={t}
+    />
+  );
+}
 
 /** Injected-context keyed Chat renderer. */
 export const ContextMessageNodeView = memo(function ContextMessageNodeView({

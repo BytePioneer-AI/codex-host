@@ -65,6 +65,7 @@ export class FakeChHost implements ChHostClient {
       id,
       cwd,
       modelProvider: "codexhost",
+      historyMode: "legacy",
       name: title,
       createdAt: 1000,
       updatedAt: 2000,
@@ -194,6 +195,7 @@ export class FakeChHost implements ChHostClient {
         if (projectless) created.workspaceKind = "projectless";
         else
           this.projectSnapshot.projectless.splice(this.projectSnapshot.projectless.indexOf(id), 1);
+        created.historyMode = params.historyMode === "paginated" ? "paginated" : "legacy";
         created.turns = [];
         value = { thread: structuredClone(created) };
         break;
@@ -212,6 +214,22 @@ export class FakeChHost implements ChHostClient {
         value = { threadId: id };
         break;
       }
+      case "thread/queue/list":
+        value = { data: [], nextCursor: null };
+        break;
+      case "thread/revert":
+        if (
+          !row ||
+          row.historyMode !== "paginated" ||
+          !this.inspection.capabilities.history.rollbackLastTurn ||
+          row.status.type === "active" ||
+          row.turns.at(-1)?.id !== params.beforeTurnId
+        )
+          throw new Error("External Revert boundary is unavailable");
+        row.turns.pop();
+        row.updatedAt++;
+        value = { thread: { ...structuredClone(row), turns: [] } };
+        break;
       case "turn/start": {
         if (!row) throw new Error("Missing CH Thread");
         const id = "turn-" + (row.turns.length + 1);

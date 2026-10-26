@@ -48,9 +48,9 @@ it("keeps queue projection watermarks increasing after native history is rebuilt
   for (let generation = 0; generation < 2; generation++) {
     row.turns = [{ ...original, id: `replacement-${generation}` }];
     row.updatedAt++;
-    const rejected = await read();
-    assert.equal(rejected.ok, false);
-    if (!rejected.ok) assert.equal(rejected.error.code, "host/history-changed");
+    const reopened = await baseline();
+    assert.ok(reopened.asOfSeq > previous.asOfSeq);
+    assert.deepEqual(reopened.values.inbox["next-turn"], []);
     queue = {
       pausedReason: null,
       items: [

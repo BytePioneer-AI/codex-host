@@ -14,6 +14,9 @@ import { startClientChannelServer } from "../src/client-channel-server.js";
 import {
   createFixture,
   startPiThread,
+  startExternalThread,
+  completePiTurn,
+  rollbackCapableAdapter,
   startPiTurn,
   stopFixture,
   writeRequest,
@@ -24,8 +27,8 @@ const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
-async function setup() {
-  const fixture = createFixture();
+async function setup(options: Parameters<typeof createFixture>[0] = {}) {
+  const fixture = createFixture(options);
   cleanup.push(() => stopFixture(fixture));
   await fixture.ready;
   const directory = mkdtempSync(path.join(tmpdir(), "client-channel-"));
@@ -54,6 +57,30 @@ function current(fixture: ReturnType<typeof createFixture>) {
 }
 
 describe("public authenticated owner channel", () => {
+  it("forwards the GUI's paginated Revert with canonical identities and notifies both clients", async () => {
+    const adapter = rollbackCapableAdapter();
+    const { fixture, a, b, events } = await setup({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const first = await completePiTurn(fixture, threadId, 2);
+    const last = await completePiTurn(fixture, threadId, 3);
+    await expect(a.request("thread/revert", { threadId, beforeTurnId: "stale" })).rejects.toThrow(
+      "boundary",
+    );
+    expect(adapter.sessions).toHaveLength(1);
+    await expect(
+      a.request("thread/revert", { threadId, beforeTurnId: last }),
+    ).resolves.toMatchObject({ thread: { id: threadId, turns: [] } });
+    await vi.waitFor(() =>
+      expect(
+        events.some((event) => event.type === "changed" && event.method === "thread/reverted"),
+      ).toBe(true),
+    );
+    expect((await b.snapshot(threadId)).turnsPage.data.map((turn) => turn.id)).toEqual([first]);
+    expect(adapter.sessions).toHaveLength(2);
+  });
+
   it("shares confirmed display order across Desktop, Web and Console without Harness execution", async () => {
     const { fixture, a, b, events } = await setup();
     const get = "codexhost/harness/display-settings/get";

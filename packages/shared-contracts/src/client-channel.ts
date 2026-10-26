@@ -14,6 +14,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "thread/list",
   "thread/read",
   "thread/turns/list",
+  "thread/revert",
   "thread/items/list",
   "thread/start",
   "thread/name/set",

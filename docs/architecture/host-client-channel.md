@@ -56,6 +56,8 @@ Host 只监听 `127.0.0.1`，使用随机 Bearer token，拒绝带 Origin 的直
 
 POST 使用 JSON，正文上限 1 MiB；返回 `{result: …}` 或 `{error: {code, message}}`。RPC 参数为 `{method, params}`，快照参数为 `{threadId, knownTurns?, truncateToolOutput?}`（可选项见下文“快照的可选精简”），回答参数为 `{epoch, threadId, requestId, result}`。可用 RPC 在 `CLIENT_CHANNEL_METHODS` 中；不允许 `thread/resume`、官方 Codex 创建或非本地 external Thread 操作。具体 Harness 能力仍须通过已有 inspect 契约查询，不能因 RPC 在名单内便假定该 Harness 支持它。
 
+client channel 透传既有的 `thread/revert {threadId, beforeTurnId}`。它与 GUI 共用分页历史回退路由；请求携带 canonical Turn ID，过期边界或活动 Turn 由 Host 拒绝。Web 编辑只对当前 Thread 声明 `history.rollbackLastTurn` 的最后一轮开放，回退确认后再通过 `turn/start` 重跑；这两个操作不构成新的原子编辑契约，结果未知不重试。详见[独立 Web 的已发送消息编辑](../product/standalone-web.md#编辑已发送消息)。
+
 本地 external `thread/start` 可传 `{model, projectlessWorkspace: {prompt?}}` 明确不选项目，由执行 Host 在创建时独占分配默认 `~/Documents/Codex/<日期>/<名称>/`；不能同时传 cwd 或 ephemeral，客户端不能指定生成根目录。cwd 是会话目录，`outputs/`、`work/` 只是其子目录。Host 将路径/无项目事实写入现有 Mapping Store metadata sidecar 后发布 Thread；普通选中目录仍传 cwd，真实 Harness 的执行与权限能力不改变。Web 在首次发送前仅持有无 cwd 草稿，不自行分配目录、不注册生成目录为项目；不读取或修改 Electron 私有根目录设置。创建结果未知不重发，也不自动删除可能已被 Native Session 引用的路径。详细目录/侧栏行为见[独立 Web](../product/standalone-web.md#新会话与无工作区目录)。
 
 通知是 `application/x-ndjson`，空行是心跳，不是事件。慢消费者超过有界写缓冲时断开，不能阻塞 GUI。Node 通道断线重新发现描述文件；网关在底层 Host 离线时结束 App 的通知流，App 可携带游标重新连接。

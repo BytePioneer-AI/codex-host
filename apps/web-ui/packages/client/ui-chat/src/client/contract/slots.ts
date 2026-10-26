@@ -176,6 +176,39 @@ export interface ChatNodeInjected {
   };
 }
 
+export interface SentMessageEditReceipt {
+  status: "accepted" | "rejected" | "unconfirmed" | "reverted";
+  message?: string;
+}
+export interface SentMessageEditing {
+  targetSeq: number | null;
+  draft: {
+    seq: number;
+    text: string;
+    content: readonly unknown[];
+    pending: boolean;
+    blocked: boolean;
+    error?: string;
+  } | null;
+  begin(seq: number, text: string, content: readonly unknown[]): void;
+  change(text: string): void;
+  cancel(): void;
+  send(): void;
+}
+
+declare module "@deepseek-ai/cordis" {
+  interface Context {
+    chatMessageEditing: {
+      send(sessionId: string, atSeq: number, text: string): Promise<SentMessageEditReceipt>;
+    };
+  }
+}
+declare module "@deepseek-ai/dsh-session-projection/types" {
+  interface SessionProjectionMap {
+    sentMessageEdit: { seq: number | null };
+  }
+}
+
 /** Stable owner currency delivered to a keyed Chat renderer. */
 export interface ChatNodeOwnerProps {
   /** Renderer-owned Node portion selected by the grouping Definition. */
@@ -186,6 +219,7 @@ export interface ChatNodeOwnerProps {
   openFile: (path: string, options?: OpenFileOptions) => void;
   inspectCall: ((callId: ToolCallId) => void) | undefined;
   forkAt: (seq: number) => Promise<void>;
+  messageEditing?: SentMessageEditing | undefined;
   /**
    * Session-authorized image loader, down-threaded from the Chat view so a
    * chat-node renderer can render the attachment presentation slot directly
@@ -275,6 +309,7 @@ export interface ChatViewInjected {
     read: () => ChatScrollPosition | null;
   };
   forkAt: (seq: number) => Promise<void>;
+  editMessage?: ((seq: number, text: string) => Promise<SentMessageEditReceipt>) | undefined;
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined;
 }
 

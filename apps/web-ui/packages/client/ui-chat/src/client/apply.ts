@@ -226,6 +226,7 @@ export function apply(ctx: Context): void {
           const session = binding.session;
           const chat = chatSource(binding);
           const conversation = ctx.uiConversation.binding(binding);
+          const messageEditing = ctx.get("chatMessageEditing");
           return {
             hooks: { presentation },
             keyedHooks: {
@@ -296,6 +297,9 @@ export function apply(ctx: Context): void {
               },
               read: () => chatScrollPositions.get(sessionId) ?? null,
             },
+            editMessage: messageEditing
+              ? (seq, text) => messageEditing.send(sessionId, seq, text)
+              : undefined,
             forkAt: (seq) => {
               const turn = [...chat.getSnapshot().timeline.turns.values()].find(
                 (turn) => turn.end?.seq === seq,

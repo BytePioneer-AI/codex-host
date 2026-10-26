@@ -362,3 +362,63 @@
   font-size: 12px;
   line-height: 15px;
 }
+
+.editAction {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--dsw-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.editAction:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.editAction svg {
+  width: 15px;
+  height: 15px;
+}
+
+.userStack:has(.sentEditor) {
+  width: 100%;
+}
+
+.sentEditor {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-main);
+  border-radius: 12px;
+}
+
+.sentEditor textarea {
+  width: 100%;
+  min-height: 100px;
+  resize: vertical;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  box-sizing: border-box;
+  border: 0;
+  outline: 0;
+  line-height: 1.6;
+}
+
+.sentEditor:focus-within {
+  outline: 1.5px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
+.sentEditorActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}

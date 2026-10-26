@@ -24,6 +24,8 @@ import { projectGroupRoot } from "./ch-project-groups.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { WebThreadStates, type UsageLoad } from "./web-thread-state.ts";
+import { ChThreadEditing } from "./ch-thread-edit.ts";
+import { editedNativeInput } from "./native-user-input.ts";
 import { forkChThread, forkUnavailable } from "./ch-thread-fork.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
@@ -57,6 +59,7 @@ interface Draft {
 
 export class ChSessions {
   readonly catalog: ChHarnessCatalog;
+  private readonly editing = new ChThreadEditing();
   private readonly pins: ChPinnedThreads;
   private readonly attachments: ChAttachments | undefined;
   private readonly fileInputs: ChFileInputs | undefined;
@@ -371,11 +374,8 @@ export class ChSessions {
         // Browsers retain per-key projection watermarks across Thread reopening.
         // Rebuilt history must not make fresh queue/control values look stale.
         this.threads.discardView(id, view);
-        if (error.code === "host/items-replaced") {
-          view.log.reconnectFollowers();
-          return this.readView(id, true);
-        }
-        view.log.invalidate(error.code, error.message);
+        view.log.reconnectFollowers();
+        return this.readView(id, true);
       }
       throw error;
     }
@@ -450,6 +450,18 @@ export class ChSessions {
           this.threads.get(id)?.controls !== loading
         )
           return;
+        const target = view.editableMessage();
+        view.log.setProjection("sentMessageEdit", {
+          seq:
+            target &&
+            inspection.status === "ready" &&
+            inspection.capabilities.history.rollbackLastTurn &&
+            !view.thread.parentThreadId &&
+            view.thread.canAcceptDirectInput !== false &&
+            editedNativeInput(target.input, "")
+              ? target.seq
+              : null,
+        });
         view.log.setProjection(
           "nativePermissions",
           nativePermissionView(harnessId, inspection as Inspection, true),
@@ -605,6 +617,7 @@ export class ChSessions {
     if (draft.canonicalId) return draft.canonicalId;
     draft.creating ??= (async () => {
       const result = await this.host.request<{ thread: ChThread }>("thread/start", {
+        historyMode: "paginated",
         ...(draft.cwd
           ? { cwd: draft.cwd }
           : { projectlessWorkspace: { prompt: prompt.slice(0, 16_384) } }),
@@ -713,6 +726,38 @@ export class ChSessions {
 
   register(rpc: RpcRegistry, streams: StreamRegistry): void {
     this.fileInputs?.register(rpc);
+    rpc.register("codexhost/editMessage", async (args) => {
+      const request = requestOf<{ sessionId: string; atSeq: number; text: string }>(args);
+      if (
+        typeof request.sessionId !== "string" ||
+        !request.sessionId ||
+        !Number.isSafeInteger(request.atSeq) ||
+        request.atSeq < 0 ||
+        typeof request.text !== "string" ||
+        !request.text.trim()
+      )
+        throw new RpcError("session/edit-invalid", "Invalid sent message edit.");
+      const id = this.id(request.sessionId);
+      if (this.drafts.has(id))
+        throw new RpcError("session/not-started", "This message has not been sent.");
+      return this.editing.edit({
+        host: this.host,
+        threadId: id,
+        seq: request.atSeq,
+        text: request.text,
+        displayed: this.threads.view(id),
+        read: () => this.view(id),
+        reconcile: async () => {
+          // Reopen from Host even after a rejected/unknown write; never synthesize a truncated log.
+          const old = this.threads.view(id);
+          if (old) {
+            this.threads.discardView(id, old);
+            old.log.reconnectFollowers();
+          }
+          await this.view(id);
+        },
+      });
+    });
     for (const [method, archived] of [
       ["workspace/archiveSession", true],
       ["workspace/unarchiveSession", false],

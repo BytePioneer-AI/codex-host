@@ -178,6 +178,8 @@ export async function accountConfig(
     states: Record<string, unknown>;
   };
   startPlan: boolean;
+  /** Whether ZCode Desktop has an active Zhipu account sign-in, entitled or not. */
+  signedIn: boolean;
   codingPlan: PersonalCodingPlanAccount;
 }> {
   const file = installation.builtinProviderConfig;
@@ -248,6 +250,7 @@ export async function accountConfig(
       states,
     },
     startPlan,
+    signedIn: Boolean(family),
     codingPlan,
   };
 }

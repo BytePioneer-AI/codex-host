@@ -284,6 +284,35 @@ describe("ZCode account configuration and Start Plan entitlement", () => {
     });
   });
 
+  it("signed-in account with no plans or balances stays signed in but not entitled", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ code: 0, msg: "", data: { server_time: 1, plans: [], balances: [] } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+
+    const result = await accountConfig(installation, env);
+    expect(result.signedIn).toBe(true);
+    expect(result.startPlan).toBe(false);
+    expect(result.params.states["account:zai-start-plan"]).toMatchObject({
+      availability: "unavailable",
+      unavailableReason: "not-entitled",
+    });
+  });
+
+  it("signed-out ZCode Desktop is reported as signed out", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await writeFile(path.join(installation.dataRoot, "credentials.json"), JSON.stringify({}));
+
+    const result = await accountConfig(installation, env);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.signedIn).toBe(false);
+    expect(result.startPlan).toBe(false);
+    expect(result.params.revision).toMatch(/^codexhost:signed-out:/);
+  });
+
   it("network error → not entitled, no models, unavailableReason: not-entitled", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network failure"));
 

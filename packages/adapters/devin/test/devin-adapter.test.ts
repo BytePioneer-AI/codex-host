@@ -211,6 +211,21 @@ describe("Devin inspection and configuration", () => {
 });
 
 describe("Devin turn lifecycle", () => {
+  it("rejects unsupported steering without configuring the native session", async () => {
+    const f = session();
+    const configure = vi.spyOn(f.transport, "configure");
+    try {
+      expect(await f.session.execute({ ...start, type: "turn.steer" })).toMatchObject({
+        ok: false,
+        error: { code: "unsupported" },
+      });
+      expect(configure).not.toHaveBeenCalled();
+      expect(f.output).toEqual([]);
+    } finally {
+      await f.session.close();
+      await f.done;
+    }
+  });
   it("emits one terminal with the native identity from the prompt response", async () => {
     const f = session();
     expect((await f.session.execute(start)).ok).toBe(true);

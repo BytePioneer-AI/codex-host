@@ -17,6 +17,8 @@ import {
   type TurnOutcome,
   type TurnStartCommand,
   type TurnStartAccepted,
+  type TurnSteerCommand,
+  type TurnSteerAccepted,
   type TurnCancelCommand,
   type TurnCancelAccepted,
   type InteractionRespondCommand,
@@ -301,6 +303,7 @@ export class DevinSession implements HarnessSession {
     }
   }
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -313,6 +316,7 @@ export class DevinSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -321,6 +325,8 @@ export class DevinSession implements HarnessSession {
     >
   > {
     if (this.#closed) return rejected("invalidState", "Devin session is closed");
+    if (command.type === "turn.steer")
+      return rejected("unsupported", "Devin ACP steering is not supported");
     if (command.type === "interaction.respond") return this.#interactions.respond(command);
     if (command.type === "turn.cancel") {
       if (!this.#active || this.#active.command.turnId !== command.turnId)

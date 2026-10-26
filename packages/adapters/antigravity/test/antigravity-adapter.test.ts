@@ -12,7 +12,7 @@ import {
   hostTurnIdSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
@@ -1910,14 +1910,23 @@ process.stdin.on("end", () => process.exit(served ? 0 : 1));
     it("refuses to copy the database while an idle driver has not confirmed exit", async () => {
       const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-exit-"));
       const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-exit-cwd-"));
+      // Best effort: this fixture deliberately leaves a driver that had to be SIGKILLed, and
+      // Windows can keep its working directory locked a little longer than the process. The
+      // assertions above already ran; failing the test on temp-directory cleanup would only
+      // report the OS timing, and the runner's temp directory is disposable.
       const cleanup = async (): Promise<void> => {
         for (const target of [directory, cwd]) {
-          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+          await rm(target, {
+            recursive: true,
+            force: true,
+            maxRetries: 20,
+            retryDelay: 250,
+          }).catch(() => undefined);
         }
       };
       // The driver ignores stdin ending and SIGTERM, so its exit cannot be confirmed within
-      // the cleanup bound. SIGKILL still ends it, which is what lets the temp cwd be removed
-      // on Windows; the pid is recorded so the test can wait for that.
+      // the cleanup bound. It does exit on its own after a few seconds, which bounds the
+      // test and lets the temp cwd be removed; the pid is recorded so cleanup can wait.
       const pidFile = path.join(directory, "driver.pid");
       const scriptContent = `
 const fs = require("node:fs");
@@ -1928,6 +1937,8 @@ if (process.argv.includes("models")) {
 if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
 fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 process.on("SIGTERM", () => undefined);
+// Outlives both bounded release waits, then ends so the test can clean up.
+setTimeout(() => process.exit(0), 6000);
 let buffer = "";
 process.stdin.resume();
 process.stdin.on("data", (chunk) => {
@@ -1989,22 +2000,23 @@ setInterval(() => undefined, 1000);
         expect(fork.ok).toBe(false);
       } finally {
         await adapter.close();
-        // The escalation SIGKILLs the driver; wait for it to actually disappear before
-        // removing its cwd, which Windows keeps locked while the process exists.
+        // The escalation SIGKILLs the driver; give it a moment to disappear before removing
+        // its cwd, which Windows keeps locked while the process exists. Bounded and best
+        // effort: the assertions above already ran, and the runner's temp dir is disposable.
         const pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
         if (Number.isInteger(pid) && pid > 0) {
-          await vi
-            .waitFor(
-              () => {
-                expect(() => process.kill(pid, 0)).toThrow();
-              },
-              { timeout: 10_000 },
-            )
-            .catch(() => undefined);
+          for (let attempt = 0; attempt < 80; attempt += 1) {
+            try {
+              process.kill(pid, 0);
+            } catch {
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
         }
         await cleanup();
       }
-    });
+    }, 20_000);
 
     it("drops only the replayed steps of the previous turn, whatever their numbering", async () => {
       const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-replay-"));

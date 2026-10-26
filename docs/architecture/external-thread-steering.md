@@ -5,7 +5,7 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 - **原生同轮插入**：Session 此刻声明 `capabilities.steer` 时，Host 发送公共命令 `turn.steer`，由 Adapter 调用 Harness 自己的插入原语，在原生安全边界把输入送入**当前 Turn**，不取消、不另起 Turn。
 - **停止后重发（退路）**：其余情况下，Host **取消当前 Turn，等待它终结，再自动执行本次新输入**。任何不确定能并入当前 Turn 的情况都走这条路径，保证不比没有原生插入时差。
 
-用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。当前只有 Claude Code 会声明 `capabilities.steer`，并且只在确定插入会并入当前 Turn 时声明；其条件与原生依据见 [`../harnesses/claude-code/claude-code-steer.md`](../harnesses/claude-code/claude-code-steer.md)；其他 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
+用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。Claude Code、Pi 和 OMP 按各自原生执行窗口动态声明 `capabilities.steer`；具体条件见 [Claude](../harnesses/claude-code/claude-code-steer.md)、[Pi](../harnesses/pi/pi-steer.md)、[OMP](../harnesses/omp/omp-steer.md)。其余 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
 
 ## 原生同轮插入
 
@@ -24,7 +24,7 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 
 ### 后续 Adapter 接入
 
-已有原生同轮插入能力的 Harness，只需在自己的 Adapter 中声明能力、处理 `turn.steer`、保证写入前校验与失败语义，并适配本 Harness 的原生历史读取。Host、Broker 和 Renderer 不按 Harness ID 增加分支。公共输入目前仅支持文本；非同轮的排队原语不能声明为此能力。真实原生执行、取消和历史行为仍需由各 Adapter 验证。
+已有原生同轮插入能力的 Harness，只需在自己的 Adapter 中声明能力、处理 `turn.steer`、保证写入前校验与失败语义，并适配本 Harness 的原生历史读取。Host、Broker 和 Renderer 不按 Harness ID 增加分支。公共输入目前仅支持文本；只有原生控制流能证明输入会进入尚未结束的当前 Turn 时，才可声明此能力；单纯 queued／入队回执不足。真实原生执行、取消和历史行为仍需由各 Adapter 验证。
 
 ### Fork 与撤销窗口
 
@@ -148,3 +148,9 @@ Codex Desktop **26.924.22138 / build 11645** 的本地队列在 `turnCompleted` 
 针对服务端队列回归，还在 Node VM 中回放了 26.903.61454 Bundle 的真实 Turn Coordinator：修复前复现 `thread/queue/list` 错误，修复后验证入队、编辑、重排、删除／恢复、每次终态后仅启动下一条消息，以及官方服务端队列保留。回放使用合成存储、传输和执行器，不调用原生 Harness。运行中只读探测另外确认了真实 Thread 元数据及开关；用隔离的后端对象验证外部 Thread 被排除、官方 Thread 保持启用，没有修改用户窗口的队列或发送消息。
 
 以上合成测试和只读 RPC 检查不替代真实 Desktop 与各原生 Harness 验收。发布验收应覆盖流式文本、工具运行、Question/Approval、连续提交、已有队列、取消失败、刷新历史，以及多窗口和远端连接。不得把类型检查或合成测试通过称为所有 Harness 的实机兼容性证明。
+
+### Pi / OMP Adapter 实机 Gate
+
+`tools/gate-steer/adapter.real.test.mjs` 默认跳过。先运行 `npm run typecheck`，再用 `CODEXHOST_STEER_REAL_HARNESSES=pi,omp npx vitest run --config tests/vitest.config.js tools/gate-steer/adapter.real.test.mjs` 选择实际安装的 Harness；`CODEXHOST_STEER_REAL_MODEL` 可指定原生目录中的完整模型显示名。Gate 不修改模型配置，但会使用现有登录和模型额度，留下原生 Session。
+
+默认执行 `single`、`double`、`near-terminal` 三种场景，也可用 `CODEXHOST_STEER_REAL_SCENARIOS` 选择。测试只要求在临时目录执行前台 sleep 命令，并检查单次/连续插入、原工具完成、错误目标/空文本/终态后的拒绝及原生历史身份。工具结束附近的场景继续观察 30 秒：接纳的输入必须在目标 Host Turn 回复一次；明确拒绝的输入不能执行。原生 Session 和记录保留在 `.codexhost/native-steer-real/<harness>/`，临时工作目录清理。未安装、缺凭据或超时都不能算作通过，且该 Gate 不验证 Desktop GUI。

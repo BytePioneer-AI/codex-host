@@ -189,6 +189,9 @@ export class PiRpcFaultError extends Error {
   }
 }
 
+/** A correlated native response explicitly refused steer before acceptance. */
+export class PiRpcSteerRejectedError extends Error {}
+
 export class PiRpcUnsupportedCommandError extends Error {
   constructor(readonly command: string) {
     super(`Pi RPC does not support '${command}'`);
@@ -1017,6 +1020,22 @@ export class PiRpcSession {
     }
   }
 
+  async steer(message: string): Promise<void> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Pi RPC Session is unavailable");
+    }
+    if (message.length === 0) throw new Error("Pi steer text must not be empty");
+    const response = await this.#send("steer", { message });
+    if (
+      isRecord(response.data) &&
+      response.data.disposition !== undefined &&
+      response.data.disposition !== "queued"
+    ) {
+      // An input hook may have handled it already; retrying could repeat its effects.
+      throw new Error("Pi steer was handled without confirming same-Turn queue admission");
+    }
+  }
+
   async runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult> {
     if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Pi RPC Session is unavailable");
@@ -1702,7 +1721,12 @@ export class PiRpcSession {
     if (value.success === true) pending.resolve(value);
     else {
       const error = typeof value.error === "string" ? value.error : "Pi RPC command failed";
-      if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
+      if (pending.command === "steer" && value.command === "steer" && value.success === false) {
+        pending.reject(new PiRpcSteerRejectedError(error));
+      } else if (
+        value.command === pending.command &&
+        error === `Unknown command: ${pending.command}`
+      ) {
         pending.reject(new PiRpcUnsupportedCommandError(pending.command));
       } else {
         pending.reject(new Error(error));

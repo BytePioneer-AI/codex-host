@@ -1974,8 +1974,8 @@ setInterval(() => undefined, 1000);
         expect(await session2.releaseIdleDriver()).toBe(false);
         expect(await session2.releaseIdleDriver()).toBe(false);
 
-        // Once the escalation does kill it, the fork may proceed; the fixture has no native
-        // database, so it still fails, but never with the busy code.
+        // Two consecutive false results are the invariant under test. The fork below may run
+        // after the escalation finally kills the driver, so its failure code is not asserted.
         const fork = await adapter.open({
           kind: "fork",
           cwd,

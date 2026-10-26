@@ -132,7 +132,6 @@ interface ActiveTurn {
   /** Model passed to this CLI invocation, independent of later selections. */
   model: HarnessModelRef | undefined;
   process: ChildProcessByStdio<Writable, Readable, Readable>;
-  exited: Promise<void>;
   questions: AntigravityQuestionBridge;
   subagents: AntigravitySubagents;
   logPath: string;
@@ -855,7 +854,6 @@ class AntigravitySession implements HarnessSession {
       command,
       model: this.#model,
       process: child,
-      exited: transport.exited,
       questions,
       subagents: new AntigravitySubagents({
         turnId: command.turnId,

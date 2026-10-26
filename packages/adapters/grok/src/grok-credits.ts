@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { HarnessAccountSnapshot } from "@codexhost/shared-contracts";
+import type { HarnessAccountSnapshot, HarnessLocalizations } from "@codexhost/shared-contracts";
 import os from "node:os";
 import path from "node:path";
 
@@ -8,6 +8,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 
 export interface GrokProductUsage {
   product: string;
+  localizations?: HarnessLocalizations | undefined;
   usagePercent: number;
 }
 
@@ -15,7 +16,7 @@ export interface GrokCreditsSnapshot {
   usedPercent: number;
   resetsAt?: string;
   periodType: "weekly" | "monthly" | "unknown";
-  productUsage?: ReadonlyArray<GrokProductUsage>;
+  productUsage?: GrokProductUsage[];
   fetchedAt: string;
 }
 
@@ -64,7 +65,22 @@ function productUsageFrom(value: unknown): GrokProductUsage[] | undefined {
   const products = value.flatMap((entry) => {
     if (!isRecord(entry) || typeof entry.product !== "string") return [];
     const usagePercent = finitePercent(entry.usagePercent);
-    return usagePercent === undefined ? [] : [{ product: entry.product, usagePercent }];
+    const labels: Readonly<Record<string, string>> = {
+      GrokBuild: "Build",
+      GrokChat: "Chat",
+      GrokImagine: "Imagine",
+      GrokVoice: "Voice",
+    };
+    const label = Object.hasOwn(labels, entry.product) ? labels[entry.product] : undefined;
+    return usagePercent === undefined
+      ? []
+      : [
+          {
+            product: entry.product,
+            ...(label ? { localizations: { en: { label }, "zh-CN": { label } } } : {}),
+            usagePercent,
+          },
+        ];
   });
   return products.length > 0 ? products : undefined;
 }

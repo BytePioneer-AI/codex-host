@@ -14,6 +14,19 @@ import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const runtimeLicenses = [
   {
+    packageName: "@github/copilot-sdk",
+    license: "MIT",
+    source: "scripts/release/licenses/copilot-sdk-1.0.25-MIT.txt",
+    output: "Copilot-SDK-LICENSE.txt",
+  },
+  { packageName: "koffi", license: "MIT", source: "LICENSE.txt", output: "Koffi-LICENSE.txt" },
+  {
+    packageName: "vscode-jsonrpc",
+    license: "MIT",
+    source: "License.txt",
+    output: "VSCode-JSONRPC-LICENSE.txt",
+  },
+  {
     packageName: "@deepseek-ai/cordis",
     license: "MIT",
     source: "LICENSE",
@@ -265,6 +278,9 @@ export function expectedPayloadPaths(target) {
     "app/renderer-extension.js",
     ...preinstalledHarnessPluginPaths(),
     "licenses/Node.js-LICENSE.txt",
+    "licenses/Copilot-SDK-LICENSE.txt",
+    "licenses/Koffi-LICENSE.txt",
+    "licenses/VSCode-JSONRPC-LICENSE.txt",
     "licenses/Agent-Client-Protocol-SDK-LICENSE.txt",
     "licenses/Anthropic-SDK-LICENSE.txt",
     "licenses/Claude-Agent-SDK-LICENSE.md",

@@ -78,8 +78,10 @@ Write-Output "codexhost dev: stopped $($desktopProcessIds.Count) Codex Desktop p
 const macOsDesktopCleanupScript = String.raw`
 set -eu
 
-system_desktop_pattern='^/Applications/(ChatGPT|Codex)\.app/Contents/'
-user_desktop_pattern="^$HOME/Applications/(ChatGPT|Codex)\.app/Contents/"
+# Bundled CLI and node_repl processes can belong to an independent Web Host.
+# Only the Desktop application executable is owned by this cleanup.
+system_desktop_pattern='^/Applications/(ChatGPT|Codex)\.app/Contents/MacOS/(ChatGPT|Codex)( |$)'
+user_desktop_pattern="^$HOME/Applications/(ChatGPT|Codex)\.app/Contents/MacOS/(ChatGPT|Codex)( |$)"
 desktop_running() {
   /usr/bin/pgrep -f "$system_desktop_pattern" >/dev/null 2>&1 ||
     /usr/bin/pgrep -f "$user_desktop_pattern" >/dev/null 2>&1
@@ -341,11 +343,12 @@ export function launcherInvocation(artifacts, piPath = null) {
   return { command: artifacts.launcher, arguments: arguments_ };
 }
 
-function runChild(invocation, root, spawnImplementation = spawn) {
+function runChild(invocation, root, spawnImplementation = spawn, environment = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawnImplementation(invocation.command, invocation.arguments, {
       cwd: root,
       stdio: "inherit",
+      env: environment,
       windowsHide: false,
     });
     child.once("error", reject);
@@ -417,6 +420,15 @@ export async function runDevelopmentDesktop({
     );
   }
 
+  // Keep environment proxy support enabled, but silence its experimental
+  // warning in build/runtime children. Preserve all existing Node options.
+  environment = {
+    ...environment,
+    NODE_OPTIONS: [environment.NODE_OPTIONS, "--disable-warning=UNDICI-EHPA"]
+      .filter(Boolean)
+      .join(" "),
+  };
+
   const startedAt = performance.now();
   const logElapsed = (label, since) => {
     console.log(`codexhost dev: ${label}: ${((performance.now() - since) / 1000).toFixed(2)}s`);
@@ -424,7 +436,7 @@ export async function runDevelopmentDesktop({
   const cleanupInvocation = runningDesktopCleanupInvocation(platform);
   if (cleanupInvocation) {
     console.log("codexhost dev: stopping any running Codex Desktop");
-    const cleanupResult = await runChild(cleanupInvocation, root, spawnImplementation);
+    const cleanupResult = await runChild(cleanupInvocation, root, spawnImplementation, environment);
     if (cleanupResult.code !== 0) {
       const reason = cleanupResult.signal
         ? `signal ${cleanupResult.signal}`
@@ -442,6 +454,7 @@ export async function runDevelopmentDesktop({
       npmBuildInvocation(environment, platform, nodePath),
       root,
       spawnImplementation,
+      environment,
     );
     logElapsed("build elapsed", buildStartedAt);
     if (buildResult.code !== 0) {
@@ -459,6 +472,16 @@ export async function runDevelopmentDesktop({
   else console.warn("codexhost dev: Pi was not found on PATH and will be unavailable");
 
   const launchEnvironment = { ...environment };
+  // A Harness launched by an npm installation may inherit its update routing. The Shim
+  // prefers that routing over --host-runtime; a source launch must use this worktree instead.
+  for (const name of [
+    "CODEXHOST_NPM_NODE_PATH",
+    "CODEXHOST_NPM_CLI_PATH",
+    "CODEXHOST_NPM_LAUNCHER_PATH",
+    "CODEXHOST_NPM_PACKAGE_ROOT",
+  ]) {
+    delete launchEnvironment[name];
+  }
   delete launchEnvironment.CODEXHOST_DEV_VERSION;
   if (options.version) {
     launchEnvironment.CODEXHOST_DEV_VERSION = options.version;

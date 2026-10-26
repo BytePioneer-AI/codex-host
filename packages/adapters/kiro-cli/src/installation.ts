@@ -15,6 +15,10 @@ export function createKiroInstallation(environment: NodeJS.ProcessEnv, command?:
       updateAvailable: false,
       canUpdate: false,
       messageCode: "kiro-native-updater",
+      notice: {
+        en: "Use Kiro CLI's original installer or native updater to check for and install updates.",
+        "zh-CN": "请使用 Kiro CLI 原安装程序或原生更新器检查并安装更新。",
+      },
       message:
         "Use Kiro CLI's original installer or native updater to check for and install updates.",
     };

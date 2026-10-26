@@ -43,6 +43,10 @@ import {
   renderRendererUsageControl,
   type RendererUsageControl,
 } from "./renderer-usage-control.js";
+import {
+  mountRendererComposerIndicators,
+  type RendererComposerIndicators,
+} from "./renderer-composer-indicators.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 import { isOrbitComposer } from "./renderer-composer-kind.js";
@@ -93,6 +97,7 @@ export interface ComposerAgentControl {
   nativeContextUsageControl?: NativeControlState | null;
   nativePermissionModeControlVerified: boolean;
   credits: RendererCreditsControl;
+  composerIndicators: RendererComposerIndicators;
   usage: RendererUsageControl | null;
   composerId: string;
   harnessCommands: RendererHarnessCommandControl;
@@ -126,6 +131,7 @@ function isOwnedRendererControl(element: Element): boolean {
     element.hasAttribute("data-codexhost-permission-mode-control") ||
     element.hasAttribute("data-codexhost-usage-control") ||
     element.hasAttribute("data-codexhost-credits-control") ||
+    element.hasAttribute("data-codexhost-composer-indicators") ||
     element.hasAttribute("data-codexhost-harness-command-control")
   );
 }
@@ -643,6 +649,11 @@ export function reconcileComposerNativeControls(
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
   refreshCreditsPlacement(control);
+  control.composerIndicators?.place(
+    control.nativePermissionModeControlVerified
+      ? (control.nativePermissionModeControl?.element ?? null)
+      : null,
+  );
   setNativeControlHidden(control.nativeModelControl, hideModel);
   // Context usage is shared by Codex and external Harnesses. External Usage
   // data is projected into the same native Codex indicator, so it must remain
@@ -691,6 +702,7 @@ export function mountComposerAgentControl(
     onSelectPermissionMode,
   );
   const credits = mountRendererCreditsControl(composerId);
+  const composerIndicators = mountRendererComposerIndicators(composer);
 
   const toolbar = sendButton.parentElement;
   const harnessCommands = mountRendererHarnessCommandControl(
@@ -713,7 +725,20 @@ export function mountComposerAgentControl(
     root: picker.root,
     picker,
     setPlugins(plugins: readonly HarnessPluginDescriptor[]) {
-      if (control.picker.plugins === plugins) return;
+      // Rendering can produce a new array (and remote presentation objects)
+      // without changing the catalog. Replacing the picker closes its popover.
+      const current = control.picker.plugins;
+      if (
+        current === plugins ||
+        (current.length === plugins.length &&
+          current.every(
+            (plugin, index) =>
+              plugin === plugins[index] ||
+              JSON.stringify(plugin) === JSON.stringify(plugins[index]),
+          ))
+      ) {
+        return;
+      }
       const next = mountRendererAgentPicker(
         composerId,
         ["codex", ...plugins.map(({ id }) => id)],
@@ -735,6 +760,7 @@ export function mountComposerAgentControl(
     nativeContextUsageControl,
     nativePermissionModeControlVerified,
     credits,
+    composerIndicators,
     usage: null,
     harnessCommands,
     sendButton,
@@ -842,15 +868,12 @@ export function renderComposerAgentControl(
     permissionModeVisible,
     locale,
   );
-  const selectedCodexAccount =
-    state.agent === "codex" && !ownershipError ? currentCodexAccount : undefined;
+  control.composerIndicators?.render(
+    permissionModeVisible ? (usage?.composerIndicators ?? []) : [],
+    locale,
+  );
   if (control.usage) {
-    renderRendererUsageControl(
-      control.usage,
-      usage,
-      locale,
-      selectedCodexAccount?.email ?? selectedCodexAccount?.label ?? null,
-    );
+    renderRendererUsageControl(control.usage, usage, locale);
   }
   control.harnessCommands.setLocale(locale);
   control.harnessCommands.root.hidden = state.agent === "codex";
@@ -869,6 +892,7 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
   restoreNativeControl(control.nativeModelControl);
   restoreNativeControl(control.nativeContextUsageControl);
   restoreNativeControl(control.nativePermissionModeControl);
+  control.composerIndicators?.dispose();
   control.credits.dispose();
   control.usage?.dispose();
   control.usage = null;

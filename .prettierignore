@@ -13,3 +13,5 @@ playwright-report/
 test-results/
 package-lock.json
 Cargo.lock
+# Generated models.dev price snapshot.
+packages/host-runtime/src/model-prices.generated.ts

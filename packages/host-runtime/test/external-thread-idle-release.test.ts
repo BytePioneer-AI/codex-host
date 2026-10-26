@@ -1,6 +1,6 @@
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
-import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopRequestQueue } from "../src/desktop-request-queue.js";
 import type { ExternalThreadRepository } from "../src/external-thread-repository.js";
@@ -154,6 +154,23 @@ describe("external Thread idle release", () => {
     );
     f.idle.stop();
     await first.thread.session.close();
+  });
+
+  it("preserves unread steer markers across idle release and Session restore", async () => {
+    const f = await fixture();
+    const turnId = hostTurnIdSchema.parse("steered-turn");
+    f.thread.steeredTurnIds.add(turnId);
+    f.idle.configure({ enabled: true, timeoutMinutes: 10 });
+
+    await vi.advanceTimersByTimeAsync(10 * MINUTE);
+    expect(f.runtime.get(f.id)).toBeUndefined();
+    const restored = await f.runtime.resolve(f.id);
+
+    expect(restored.kind).toBe("external");
+    if (restored.kind !== "external") throw new Error("Not restored");
+    expect(restored.thread.steeredTurnIds).toEqual(new Set([turnId]));
+    f.idle.stop();
+    await restored.thread.session.close();
   });
 
   it.each([

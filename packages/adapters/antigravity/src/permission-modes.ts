@@ -17,6 +17,13 @@ export const ANTIGRAVITY_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
       {
         id: "dangerously-skip-permissions",
         label: "Skip permissions",
+        localizations: {
+          "zh-CN": {
+            label: "跳过权限检查",
+            description:
+              "使用 --dangerously-skip-permissions 运行 Antigravity CLI；codexhost 不增加工具审批或工作区限制。",
+          },
+        },
         description:
           "Run Antigravity CLI with --dangerously-skip-permissions. codexhost adds no tool approval or workspace restrictions.",
         dangerous: true,

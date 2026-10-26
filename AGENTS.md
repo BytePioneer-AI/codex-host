@@ -51,22 +51,18 @@
 
 ## Repository Skills
 
-Use the applicable repository-local skills below when their task occurs; all ten support contextual invocation. Read the selected `SKILL.md` before using its workflow. Select by task rather than loading or executing every skill on every change. These guides supplement the ownership, scope, and validation rules in this file; copied examples do not establish installed tools or product capabilities.
+Use the applicable repository-local skills below when their task occurs; they support contextual invocation. Read the selected `SKILL.md` before using its workflow. Select by task rather than loading or executing every skill on every change. These guides supplement the ownership, scope, and validation rules in this file; copied examples do not establish installed tools or product capabilities.
 
 | Task | Skill |
 | --- | --- |
-| Production code changes and dependency boundaries | [architecture-governance](.agents/skills/architecture-governance/SKILL.md) |
-| Feature impact analysis, state ownership and implementation planning | [feature-boundary-planner](.agents/skills/feature-boundary-planner/SKILL.md) |
-| Export changes, reference tracing and code deletion | [dep-refs](.agents/skills/dep-refs/SKILL.md) |
-| React implementation and performance review | [react-best-practices](.agents/skills/react-best-practices/SKILL.md) |
-| AI chat components and conversation UI | [ai-elements](.agents/skills/ai-elements/SKILL.md) |
-| Browser interaction using the session's available tools | [control-browser](.agents/skills/control-browser/SKILL.md) |
-| Browser automation through the agent-browser CLI | [agent-browser](.agents/skills/agent-browser/SKILL.md) |
-| Electron application interaction and testing | [electron](.agents/skills/electron/SKILL.md) |
-| Exploratory application testing and issue reports | [dogfood](.agents/skills/dogfood/SKILL.md) |
-| GUI behavior and visual verification | [web-gui-tester](.agents/skills/web-gui-tester/SKILL.md) |
+| Version releases, Release Notes, preview channels, and release recovery | [codexhost-release](.agents/skills/codexhost-release/SKILL.md) |
+| Overview table of a batch of PRs with a 1–5 recommendation score | [codexhost-pr-overview](.agents/skills/codexhost-pr-overview/SKILL.md) |
+| Reviewing a PR or local diff for correctness and boundaries | [codexhost-code-review](.agents/skills/codexhost-code-review/SKILL.md) |
+| Selecting local checks before pushing or claiming checks pass | [codexhost-pre-push-checks](.agents/skills/codexhost-pre-push-checks/SKILL.md) |
+| Finding evidence-backed simplification candidates (read-only audit) | [codexhost-find-simplifications](.agents/skills/codexhost-find-simplifications/SKILL.md) |
+| Auditing comments and docs for reasoning-transcript leakage | [codexhost-trim-cot-leakage](.agents/skills/codexhost-trim-cot-leakage/SKILL.md) |
 
-Existing Harness integration and Desktop update audit skills remain applicable to their specialized tasks. Imported skill provenance and license information is in [.agents/skills/NOTICE.md](.agents/skills/NOTICE.md).
+Existing Harness integration and Desktop update audit skills remain applicable to their specialized tasks.
 
 ## Implementation Principles
 

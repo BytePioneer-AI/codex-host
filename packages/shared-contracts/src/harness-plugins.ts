@@ -59,6 +59,8 @@ const pluginPresentationShape = {
   id: harnessPluginIdSchema,
   name: z.string().trim().min(1).max(128),
   version: z.string().min(1).max(128),
+  /** Capability-only plugin; omitted for existing session-capable plugins. */
+  kind: z.literal("usage").optional(),
   /** Original image styling or bounded vector paths; never arbitrary CSS/SVG markup. */
   iconStyle: z
     .object({

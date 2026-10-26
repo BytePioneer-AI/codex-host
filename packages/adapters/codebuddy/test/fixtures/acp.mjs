@@ -1,6 +1,8 @@
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 const scenario = process.argv[2];
+if (scenario === "serve-banner")
+  process.stdout.write("Native HTTP Server\nPassword    fixture-password\n");
 for await (const line of createInterface({ input: process.stdin })) {
   const message = JSON.parse(line);
   if (message.id === undefined) continue;

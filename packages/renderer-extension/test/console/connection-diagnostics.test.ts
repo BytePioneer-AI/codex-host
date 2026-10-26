@@ -6,7 +6,10 @@ import type { RendererModelClient } from "../../src/renderer-model-client.js";
 function client(overrides: Partial<RendererModelClient>): RendererModelClient {
   return {
     listHarnessPlugins: async () => ({
-      plugins: ["pi", "grok", "hermes"].map((id) => ({ id, name: id, version: "1" })),
+      plugins: [
+        ...["pi", "grok", "hermes"].map((id) => ({ id, name: id, version: "1" })),
+        { id: "codex-usage", name: "Codex usage", version: "1", kind: "usage" as const },
+      ],
     }),
     ...overrides,
   } as RendererModelClient;

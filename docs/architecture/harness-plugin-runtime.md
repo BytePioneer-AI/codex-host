@@ -8,13 +8,13 @@
 
 16 个预装 Adapter 通过同样的 `manifest.json` 和 `createHarnessAdapter` 工厂加载；`adapter-composition.ts` 已删除，Host 源码、包依赖和 TypeScript references 不再直接引用具体 Adapter 包。预装集合仅由发行清单 [`scripts/release/harness-plugins.json`](../../scripts/release/harness-plugins.json) 决定。原生构造参数、预取和 Claude Code 的直接/Broker 选择仍由相应插件负责。
 
-本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Claude Code、Pi、Hermes 和 DSH 已提供实际实现。DSH 通过本机托管 Web 接入，只对接 V4；`0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` 已通过对应验证，低于 `0.1.7-rc.1` 的版本明确拒绝，其他 SemVer 版本可尝试连接，但仍须通过原生协议校验。Legacy 协议与 V0/V3 已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。普通 Agent Picker、Sidebar 和连接设置也读取同一 Host 的插件描述，不再内置外部 Harness 名单或图标。
+本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Claude Code、Pi、Hermes 和 DSH 已提供实际实现。DSH 通过本机托管 Web 接入，只对接 V4；`0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2` 已通过对应验证，低于 `0.1.7-rc.1` 的版本明确拒绝，其他 SemVer 版本可尝试连接，但仍须通过原生协议校验。Legacy 协议与 V0/V3 已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。普通 Agent Picker、Sidebar 和连接设置也读取同一 Host 的插件描述，不再内置外部 Harness 名单或图标。
 
 尚未实现的目标包括：
 
-- 清理 Credits 重试和 Pi 凭据导入等周边专属逻辑；这些仍不等同于通用插件扩展点。
+- 清理 Pi 凭据导入等周边专属逻辑；这些仍不等同于通用插件扩展点。权限/命令文案、安装更新说明和额度展示已由插件元数据驱动，见下文。
 - 完成旧协议载体迁移的原生验收。新请求统一写入共享插件载体；旧载体仍只读兼容，不能直接删除其解码器。
-- 会话 Credits 旧 duck-typed 路径的统一迁移、远程/Broker Session Import 接入、插件拥有的旧数据迁移。设置页已有公共只读账号额度接口（见下文），不代表所有 Credits 路径已迁移。
+- 远程/Broker Session Import 接入、插件拥有的旧数据迁移，以及外部 Thread 与历史 Account/Billing Source 的精确归属。正式缓存额度接口不意味着已经实现历史计费来源绑定。
 - 插件独立发布/升级/依赖安装机制，以及 Broker、远程配置和委派周边的完整去专属化。现有 npm/Installer 发行已携带独立插件 Bundle 和应用资源预装目录；Broker 协议和 CLI 入口仍保留现有 Claude Code 语义。
 - 原生 Harness、历史版本、协议代际、远程执行及安装产物的完整行为验收。
 
@@ -87,6 +87,7 @@ plugins/
 - `links.website/documentation/installation` 只接受不带用户凭据的 HTTPS 地址。
 - `installation` 提供展示用命令、下载链接和前后提示；`notice` 提供插件兼容性说明。文本以 `en` 为必需回退、`zh-CN` 为可选翻译。Renderer 仅展示/复制这些数据，绝不从元数据执行命令，自动安装仍走 Adapter 的公共原生能力。
 - 能力继续由 `HarnessAdapter.inspect()`、Session 能力和公共可选接口提供，不在 Manifest 复制第二份运行时能力真相。
+- `codexhost/harness/inspect` 可带 `purpose: "availability"`，表示调用方只使用状态和错误。Renderer 启动时对所有已注册 Harness 的后台可用性检测使用该标记；用户选中 Harness 后加载 Model 目录仍做完整 inspection。Adapter 可据此不启动原生 Session 回答，避免用户未选用的 Harness 执行 Session 启动副作用；这种结果可以缺少原生默认 Model 和 Thinking 选项，不得写入完整 inspection 的缓存。未处理该标记的 Adapter 照常做完整 inspection。旧版 Host 按未知参数以 -32602 拒绝时，Renderer 去掉该标记重试一次。目前 OMP 用 `omp models --json` 回答（不创建 Session，因此不触发 OMP 的 Provider 连接预热）；命令不可用、输出无法识别或列表为空时回到 Session inspection，由原生启动报告原因。
 - 命令目录由可选的静态 `HarnessAdapter.commandCatalog` 声明，通过 `codexhost/harness/commands/inspect` 查询；读取目录不检查原生运行时、不连接原生服务、不创建或恢复 Session。未声明时返回空目录，不通过启动会话回退发现。执行仍走 `session.commands`。
 
 入口导出 [`HarnessPluginModule`](../../packages/harness-adapter/src/plugin.ts) 定义的工厂，不通过模块全局副作用注册：
@@ -106,6 +107,30 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
 
 Context 包含环境变量快照、平台、是否为受管远程 Host，以及可选 Broker 描述符路径和本地页面服务。目录加载时环境快照被冻结；它不是凭据过滤器。`openLocalUrl` 经过 Native Launcher 的 loopback URL 校验，在系统浏览器打开页面。`openLocalPage` 通过既有认证 Controller 连接打开 Codex 内置浏览器的后台页面，返回 `show/close` 句柄；插件按请求持有并关闭它，连接断开也会释放所属页。该页面接口仅接受带显式端口的 `http://127.0.0.1/` 根地址，不向聊天页注入第三方脚本；需要当前可见的本地任务及可用的内置浏览器。受管远程 Host 不提供这两项本机服务。
 
+## 仅提供统计能力的插件
+
+不控制原生会话的插件可以在 Manifest 声明 `"kind": "usage"`，导出 `createUsageStatisticsAdapter(context)`，返回公共 `HarnessUsageStatisticsAdapter`：`harnessId`、`usageStatistics`、`close()`。没有 `inspect/open`，也不运行会话插件的 `warmup`。未声明 `kind` 的既有插件继续使用 `createHarnessAdapter`，无需迁移。
+
+这类插件复用同一可信目录、显式启用、身份校验、加载超时、失败隔离和关闭流程；目录描述保留 `kind: "usage"`。Registry 将其与可创建 Session 的 Adapter 分开，Host 把统计能力接入公共全局统计，可选的 `sessionUsage` 能力接入会话浮窗，不将它加入聊天、模型选择、会话导入或委派路由。加载失败通过统计失败信息报告，不伪造空结果或 Session 方法。
+
+预装的 `codex-usage`（显示名 Codex）是这种插件，实现在 `packages/adapters/codex-usage`。官方 `codex` 身份仍保留给原生路径；插件只读 rollout，并观察现有官方连接的会话用量与轮次通知，不改变 Codex 的聊天、分叉和恢复操作，也不读取账户配额。统计插件可以脱离 Desktop 加载，私有解析与公共 Host 汇总分离，详见[全局用量统计](../product/usage-statistics.md)。
+
+### 可选的独立会话用量
+
+普通 Adapter 和仅统计 Adapter 均可声明 `sessionUsage?: HarnessSessionUsageCapability`，不要求实现 `inspect/open/execute` 或创建假的 Session。类型从 `@codexhost/harness-adapter/plugin` 导出：
+
+- `observe(message)`：同步、无 I/O 地观察现有原生连接，忽略不认识的消息；插件解析私有协议，返回归一化的 Session ID、用量快照或轮次 started/output/completed 事实。目前 Host 在官方连接输出上提供此入口，不是任意原生连接的自动发现机制。
+- `read(sessionId, signal)`：返回替换式的完整请求历史、完整性标志及可选原生快照；无所属数据返回 `null`，不稳定或失败的读取拒绝。不能启动进程或写原生存储。返回的历史请求复用 `HostUsageRequest`，费用及缓存率由公共 `UsageMeter` 计算。
+- `requestOptions?({ method, params, initializeParams })`：可选的原生通知订阅参数补丁，仅用于遥测/通知选择，不得改变命令、模型或用户输入。Host 保留 method、ID 及其他参数；初始化订阅协商等待仅统计插件加载阶段完成（含既有加载失败/超时隔离），不等待随后加载的聊天插件；之后的命令不等待插件。插件缺失、未加载、返回 null 或抛错时原样透传。初始化成功后的有效原生参数（含补丁）作为后续协商依据，公共层不解析 Harness 私有开关。`reset?()` 用于重新初始化连接时丢弃插件的实时计时边界。
+- `shouldForwardNotification?(message)`：同步决定是否向原生客户端转发通知，只用于保持客户端原本的订阅意图。插件额外订阅的内部遥测可以返回 false，仍供 `observe` 计量；原本已订阅的通知继续转发。Host 仅对无 ID 的通知调用，不拦截 RPC 请求/响应；能力缺失或抛错时默认转发。
+- 观测结果可以提供独立的 `requestTiming`（Turn/请求身份、输出 Token、起止毫秒）或 `timingUnavailable`。Host 复用统一计量器累计速度，不把这些观测重复计入费用历史；缺失/含混区间会停止本轮速度更新，但保留该会话最近有效的显示值，直到新的有效测量覆盖。原生帧进入 Host 时的观测时间传给插件，不使用插件异步加载完成的时刻计速。
+- Host 按原生 Session ID 合并并发读取；同一 Session 的事实由同一个能力实例提供。实时快照优先于历史快照；跨越新用量通知的旧读取不得宣称历史完整。失败时隐藏旧总费用，不影响原生帧或已有实时 Token。TTFT 由 Host 用接收时刻计量，更新走现有会话用量通知。
+- 关闭会取消读取并丢弃迟到结果。未实现能力的既有插件无需修改；外部 `HarnessSession` 的原有用量事件路径不迁移。插件加载器校验可选能力的方法形状；此接口仍是可信进程内契约，不是安全沙箱。
+
+Codex 的会话用量解析已从公共协议层迁入 `codex-usage`，账户配额解析仍属于既有官方账户通路。具体指标和当前限制见[会话用量计量](../product/usage-metering.md#官方-codex-会话)。
+
+插件 Bundle 保留 `/*! ... */` 等第三方许可注释。
+
 ## 自定义启动路径设置
 
 连接设置页的本地 Host 右侧详情卡片为声明 `launchCommand` 的插件提供路径输入、保存和清除操作；不对远程/Broker 提供此入口。Manifest 可声明 `launchCommand: true`，该标记同时进入公开插件描述；Host 不维护具体 Harness 的命令变量名单。
@@ -118,9 +143,15 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 ## Harness CLI 版本与更新
 
-设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。首次选择详情时自动检查一次，不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。所选 Harness 的详情卡片标题旁提供官网外链图标，列表行及详情正文不重复提供通用官网或安装说明链接。未安装且有自动安装入口时显示下载图标；点击显式发起 CLI 安装，点击行本身查看手动安装命令、复制按钮、接入提示和「重新检测」，正文不提供额外的通用安装指南跳转入口。WorkBuddy 在详情正文提供一个「下载」按钮，跳转官网首页，并提示下载安装桌面应用，不提供分系统的安装指南链接。未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用，不回退更新本机的另一份安装。
+设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。进入连接页或切换 Host 时，自动检查当前 Host 列表中已安装且不在安装、检测中的 Harness，无须先选择详情；诊断完成后符合条件的 Harness 也会自动检查。有新版本时，列表操作区显示灰色「有更新」小字，悬停展示当前与最新版本；支持自动更新时在小字右侧提供更新按钮，点击后才调用该 Host 的原生更新能力，更新期间禁用重复操作。仅支持手动更新的安装保留「有更新」小字及详情中的原安装方式提示。不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。所选 Harness 的详情卡片标题旁提供官网外链图标，列表行及详情正文不重复提供通用官网或安装说明链接。未安装且有自动安装入口时显示下载图标；点击显式发起 CLI 安装，点击行本身查看手动安装命令、复制按钮、接入提示和「重新检测」，正文不提供额外的通用安装指南跳转入口。WorkBuddy 在详情正文提供一个「下载」按钮，跳转官网首页，并提示下载安装桌面应用，不提供分系统的安装指南链接。未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用，不回退更新本机的另一份安装。
 
-可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message?, messageCode?, latestVersionKind? }`。`message` 保留为 Adapter 诊断文本，不在界面原样拼接；内置 Adapter 用 `messageCode` 标识更新限制或渠道说明，Renderer 按当前中英文设置显示。`latestVersionKind` 可标识 `unknown` / `tracking-branch`，避免将非版本状态当成英文版本号展示；真实版本号及提交标识保持原样。旧插件的 `Unknown` / `Tracking branch (new commits)` 仍按当前语言展示，缺少或无法识别提示码时仅显示通用本地化说明，不展示未翻译的诊断文本。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
+Host 切换栏右侧提供「全部更新（数量）」，仅统计当前 Host 中检查结果已确认有新版本且支持自动更新的 Harness，包含「更多」分组；不安装缺失的 CLI，不纳入仅支持手动更新的安装。点击时固定本批次的 Host 与条目，同时调用各条目的同一更新入口，不设置并发上限，显示已完成数/总数，每项独立结算，失败不影响其他更新。单项与批量请求复用同一条目的进行中任务；存在单项更新时仍可启动批量更新。批量操作期间禁用该 Host 的重复批量操作，完成后按 Host 显示成功/失败数量，具体失败信息保留在各条目详情。切换 Host 不改变已开始批次的目标；关闭连接页停止页面反馈，Host 已接受的更新继续运行。
+
+Desktop 的检查、更新与安装通过 `codexhost/harness/installation/start` 提交 `{ harnessId, action }`，立即取得 `{ taskId, status }`；再以 `codexhost/harness/installation/status` 和 `{ taskId }` 读取 `running`、`succeeded`（含版本结果）或 `failed`（含脱敏错误）的任务状态。任务由目标 Host 持有，同一 Harness/action 的进行中提交复用任务，不设置跨 Harness 并发上限，完成结果保留 15 分钟。Renderer 每 500ms 读取一次状态，提交与状态请求采用 background 优先级及 15 秒传输超时；原生安装器的完整运行时间不占用 Desktop 的在途请求名额，给配置读取和消息提交保留通路。任务继续运行不依赖设置页保持打开。原 `codexhost/harness/installation` 保留给旧客户端及控制台；新版 Desktop 不向缺少任务接口的旧 Host 回退到长请求，需先升级目标 Host。
+
+可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message?, messageCode?, notice?, latestVersionKind?, manualUpdateUrl?, versionKind? }`。`message` 保留为 Adapter 诊断文本，不在界面原样拼接；专属更新限制与渠道说明由插件通过 `notice: { en, "zh-CN"?, ... }` 提供，Renderer 按当前语言选择，缺少翻译回退到英文。`messageCode` 仅保留通用 `original-installer` 的旧客户端文案路径，不再维护 Harness 专属提示码翻译表。`latestVersionKind` 可标识 `unknown` / `tracking-branch`，避免将非版本状态当成英文版本号展示；真实版本号及提交标识保持原样。旧插件的 `Unknown` / `Tracking branch (new commits)` 仍按当前语言展示，缺少或无法识别提示码时仅显示通用本地化说明，不展示未翻译的诊断文本。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
+
+`versionKind` 默认为 CLI，设为 `application` 时详情页标题为「应用版本」。插件可通过 `manualUpdateUrl` 提供有新版本时的官方安装包链接，限定为不含凭据的 HTTPS URL。详情页将自动更新按钮替换为「下载更新」，只打开下载，不提交更新任务或报告安装成功；`canUpdate: false` 的条目仍不参与「全部更新」。WorkBuddy 使用此入口查询桌面应用版本和官方安装包，内置 CLI 随应用更新，详见 [WorkBuddy 应用版本与手动更新](../harnesses/workbuddy/workbuddy-harness-integration.md#应用版本与手动更新)。
 
 DSH 的 npx 更新只在显式点击更新时执行 `npx --yes --prefer-online @deepseek-ai/dsh --version`，保留与普通离线启动相同的无版本包规格及 Host 环境（包括 npm 缓存配置），避免 `@latest` 或固定版本规格创建另一份缓存。先确认在线命令返回目标版本，再用原来的 `--offline --no-install @deepseek-ai/dsh --version` 回读，任一步失败或版本不匹配均不报告成功。版本查询失败不执行更新；普通诊断和启动仍保持离线，不改变现有会话或自动重启已运行的 Web 进程。npm 原生管理缓存，不直接编辑缓存目录，也不新增 Host 持久状态。
 
@@ -142,10 +173,11 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 | --- | --- |
 | Pi | `--version` 和 `pi.dev/api/latest-version`；执行原生 `pi update`。 |
 | Cursor CLI | 原生 `about --format json` / `update`，保留 Windows bundled Node 入口；macOS 受管远程 Broker 尚不转发该能力。 |
+| Copilot | 原生 `--version`；仅识别的 npm 全局安装通过原 prefix 检查并显式更新，其他安装使用原包管理器；不自动下载 SDK runtime。 |
 | Qoder 海外版 / 中国版 | 原生 `--version`、`update --check` / `update`；两版分别解析自己的安装入口，中国版先确认 CLI 支持 `--check`，旧版只显示已安装版本及手动更新说明。 |
 | Grok | 原生 `update --check --json` / `update`；npm 安装保留原生更新路径及所需安装脚本允许项。 |
 | Kimi Code | 原生 `--version` 和区域 CDN 最新版本；仅识别的全局 npm 安装或带手动更新能力的原生二进制允许更新，其他安装使用原安装方式。 |
-| Antigravity CLI | 原生 `--version` 与按 OS/CPU 的官方更新清单；执行 `agy update`。 |
+| Antigravity CLI | 原生 `--version` 与按 OS/CPU 的官方更新清单；执行 `agy update`。Host 在 Windows 和 macOS 上为自身启动的 CLI 进程默认设置 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，更新仍通过显式 `agy update` 执行；安装器和用户已有设置不变。 |
 | OMP | 原生 `update --check` / `update`，保留配置的 stable/canary 渠道；校验原生更新器在 PATH 中选择的目标与所选安装一致，Nix 和目标不一致的自定义入口保留手动更新。 |
 | OpenCode | `--version`；npm 安装查询原包版本并更新其准确 prefix，标准 `~/.opencode/bin/opencode` 原生安装查询官方 GitHub Release 并执行 `upgrade <version> --method curl`。其他包管理器、自定义安装和 Windows 原生安装只检查，不进入交互式安装回退。 |
 | Claude Code | `--version` 和官方 stable/latest 版本源；读取用户及本机文件型受管设置，使用原生 `claude update` 保留策略执行。识别的全局 npm 安装固定 npm prefix，标准原生 launcher 允许更新；版本限制、其他安装渠道及 macOS 受管远程 Broker 保留手动更新。 |
@@ -167,6 +199,8 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 每个 Host 连接有独立 Registry/Runtime；没有进程单例，也不将将来的进程级服务重复实例化到每个连接。只有 Harness 桥接层在本次接入；通知、诊断等插件尚未迁移。Host 先排空请求并关闭 Session/输出消费，再释放插件作用域。关闭幂等，失败收集为 Registry 清理错误。发现、显式信任、超时、迟到资源清理仍由加载器负责，Cordis 不是安全沙箱或包管理器。安装和升级需要重启，不热替换活动 Session。
 
 恢复时，Host 将旧映射解码为 Model、Thinking、Permission Mode 提示并传给 `open({ kind: "resume" })`。Adapter 决定恢复提示还是保留权威原生配置；Host 不再按 Harness ID 补发配置命令。OMP、DSH 在各自 Adapter 内恢复权限；OpenCode 保留原生确认的权限状态。成功读到原生配置后，Host 用共享载体保存确认值，旧映射仍可读取。
+
+Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶层字段：当前版本不使用它们，更新文件时原样保留，不因新增字段隔离会话。已知字段的类型、必填要求及身份和映射约束仍照常校验；已知元数据字段的清除不影响同文件中的未知字段。
 
 ## 加载与关闭行为
 
@@ -232,6 +266,22 @@ Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段�
 可选 `HarnessAdapter.inspectAccount()` 主动返回当前原生认证的 `HarnessAccountSnapshot`，无真实额度时返回 `null`；不得把会话花费当成账号额度、返回旧认证缓存或为查询发起模型 Turn。原生 SDK、认证和额度解析属于插件；实现负责限制查询耗时及关闭检查资源。该可选扩展兼容未实现能力的插件。
 
 `codexhost/harness/accounts/sources` 先返回当前连接中实现该能力的 Harness ID 与 Manifest 名称，Renderer 再为每个来源并行调用 `codexhost/harness/accounts/inspect`。Host 分别校验快照并隔离失败和超时，不透传原生错误或凭据；任一有效结果可立即显示，不等待其他 Harness。未实现、无数据或返回非法快照的插件不产生账号行。`codexhost/harness/accounts/list` 保留为旧 Renderer 的聚合兼容接口，新 Renderer 连接旧 Host 时也回退使用它。Renderer 在账号设置页只读展示，不注册 Codex 账号或参与多账号路由。Claude Code 的 Aqua Broker 转发 `adapter.inspectAccount`；旧 Broker 不支持时无数据。产品说明见[账号设置](../product/codex-accounts.md)。
+
+## 插件拥有的展示元数据
+
+权限模式和命令目录可提供 `localizations: { [locale]: { label?, description? } }`。公共 `localizeHarnessPresentation` 按精确 locale、语言、原文逐字段回退；不根据模式 ID、英文文案或 `/compact` 推断语义。插件拥有翻译、原生动态目录的已知文案映射及版本兼容，未知原生文案保留原样。元数据不允许覆盖 ID、危险标记、参数或执行行为，限制 locale 数量、键和文本长度。`atCreate` 的锁定提示属于通用能力说明，不点名某个 Harness。
+
+Thread 用量快照可选提供 `composerIndicators`（最多 2 个、ID 唯一），目前只支持 `{ kind: "countdown", id, expiresAtUnix, label?, tooltip? }`。文本复用 `HarnessLocalizedText`（英文回退；标签最多 256 字符、提示最多 1024 字符），仅供安全展示，不含动作或回调。Renderer 在外部 Harness 的权限控件旁以时钟和剩余分钟显示，每分钟本地刷新，过期隐藏，空间不足时优先让位于公共控件；官方 Codex Thread 不显示。Claude Code 仅在原生账号额度可用时提供提示词缓存倒计时，采用 Host 侧主会话最近一次 assistant 响应时间加固定一小时；恢复 Session 时读取原生历史时间，不从页面加载时重新计时。
+
+Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和命令。Web 等客户端需要在各自展示入口使用该函数，不能继续只读取 `label`；本主线不包含独立 Web UI 的适配。安装更新的专属说明使用 `localizeHarnessText`，安全展示文本与诊断错误分开，不能以原始 `message` 替代 `notice`。
+
+额度主窗口及 `productUsage` 可提供原生 `scope: { id, label, localizations? }`；每个附加窗口可提供自己的 `periodType`。客户端按 scope 的稳定 ID 分组，通过 `accountCreditsWindowLabel` 展示本地化范围与公共周期，不解析产品名称中的 `7-day` 等字符串。缺少新元数据的旧插件仍显示原文和数值，不猜周期；未知或自定义的主窗口标签不会被公共周期覆盖。Grok 账号概览由插件只提供共享套餐额度，产品细分仍保留在会话额度浮窗，不再由 Renderer 根据 Grok ID 过滤。
+
+`HarnessAdapter.credits?()` / `refreshCredits?()` 是正式可选接口：前者无 I/O 地同步读取账号级缓存，后者异步刷新同一缓存，原生认证、有效期、并发合并及失效策略仍归插件。Host 不等待刷新，读取后校验公开结构，隔离同步读取异常与刷新拒绝；旧缓存的私有 `fetchedAt` 不传给客户端。`inspectAccount(s)` 继续负责设置页的新鲜账号查询，不用当前账号额度替代历史 Thread 的实际计费事实。
+
+`thread/usage/inspect` 的结果通过可选 `accountCreditsSupported` 告诉客户端是否应在会话用量已到达后继续等待额度；无需 Harness 名单。旧 Host 未给此字段时不额外等待账号额度。Broker 插件通过构造选项 `accountCredits` 声明是否暴露缓存能力，不支持的 CodeBuddy/WorkBuddy/Cursor 路径不会假报可用；为兼容既有调用方该选项默认 true。Broker 的 Credits 转发保留刷新合并、无数据清空、失败保留最近值的既有行为，不等于其他可选能力已经全部转发。
+
+以上字段对新 Host 是可选扩展，旧插件仍可加载。新增元数据须配合同版本 Host/客户端共享 schema 部署；旧版严格 schema 不保证接受新字段。本阶段没有引入 API 版本范围协商、插件热替换或原生会话迁移。安装未知 ID 的插件，经真实 Loader、Host RPC 和共享展示函数的测试覆盖权限、命令、更新说明、额度，以及缺失/失败能力；模拟验收不等于所有 Harness 的原生或 GUI 验收。
 
 ## 运行中切换 Model / Thinking
 

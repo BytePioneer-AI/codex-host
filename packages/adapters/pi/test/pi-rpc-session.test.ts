@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
+import type { PiSessionHistory } from "../src/pi-history.js";
 
 import {
   PiRpcSession,
@@ -14,6 +15,7 @@ import {
   type PiRpcProcessOptions,
   type PiTurnEvent,
 } from "../src/pi-rpc-session.js";
+import type { PiUsageObservation } from "../src/pi-usage.js";
 
 type Scenario =
   | "final-only"
@@ -94,6 +96,8 @@ class FakePiRpcProcess extends EventEmitter {
     queueMicrotask(() => this.emit("spawn"));
   }
 
+  autonomousHistory: PiSessionHistory | null = null;
+
   emitAutonomousTurn(
     options: {
       responseId?: string | null;
@@ -108,12 +112,27 @@ class FakePiRpcProcess extends EventEmitter {
     const message = {
       role: "assistant",
       ...(responseId ? { responseId } : {}),
+      timestamp: 123456,
       stopReason,
       ...(stopReason === "error" ? { errorMessage: "autonomous failure" } : {}),
       content: [
         { type: "thinking", thinking: "autonomous reasoning" },
         { type: "text", text: "autonomous text" },
       ],
+    };
+    this.autonomousHistory = {
+      entries: [
+        {
+          id: "native-custom-entry",
+          parentId: null,
+          type: "custom_message",
+          customType: "intercom_message",
+          content: "background result",
+          display: false,
+        },
+        { id: "native-assistant-entry", parentId: "native-custom-entry", type: "message", message },
+      ],
+      leafId: "native-assistant-entry",
     };
     this.#isStreaming = true;
     this.#output({ type: "message_start", message });
@@ -150,6 +169,11 @@ class FakePiRpcProcess extends EventEmitter {
     this.#output({ type: "message_end", message });
     this.#isStreaming = options.streamingAtSettle === true;
     this.#output({ type: "agent_settled" });
+  }
+
+  /** Writes one raw RPC frame, for timing tests that interleave real waits. */
+  emitFrame(value: unknown): void {
+    this.#output(value);
   }
 
   emitAutonomousStart(responseId = "autonomous-pending"): void {
@@ -302,6 +326,10 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     if (command.type === "get_entries") {
+      if (this.autonomousHistory) {
+        this.#respond(command, this.autonomousHistory);
+        return;
+      }
       const user = {
         id: "user-1",
         parentId: null,
@@ -969,7 +997,59 @@ describe("Pi RPC Turn aggregation", () => {
     }
   });
 
-  it("aggregates an idle autonomous Assistant/Tool Turn once with response identity", async () => {
+  it("reports each finished assistant message with its request timing for usage metering", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const observations: PiUsageObservation[] = [];
+    rpc.setUsageHandler((observation) => observations.push(observation));
+    rpc.setAutonomousTurnHandler(() => undefined);
+    await rpc.start();
+    try {
+      fakeProcess().emitAutonomousTurn({ includeTool: true });
+      await waitFor(() => observations.length === 1);
+      expect(observations[0]).toMatchObject({
+        message: { role: "assistant", responseId: "autonomous-response" },
+        startedAtMs: expect.any(Number),
+        completedAtMs: expect.any(Number),
+      });
+      const [observation] = observations;
+      expect(observation?.completedAtMs).toBeGreaterThanOrEqual(
+        observation?.startedAtMs ?? Infinity,
+      );
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("times a request from its first output token, excluding prefill", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const observations: PiUsageObservation[] = [];
+    rpc.setUsageHandler((observation) => observations.push(observation));
+    rpc.setAutonomousTurnHandler(() => undefined);
+    await rpc.start();
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    try {
+      const message = { role: "assistant", responseId: "tool-only", content: [] };
+      fakeProcess().emitFrame({ type: "message_start", message });
+      await sleep(120);
+      // A tool-call-only reply still starts generating at its tool-call block.
+      fakeProcess().emitFrame({
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+        message,
+      });
+      await sleep(20);
+      fakeProcess().emitFrame({ type: "message_end", message });
+      fakeProcess().emitAgentSettled();
+      await waitFor(() => observations.length === 1);
+      const [observation] = observations;
+      if (!observation?.startedAtMs) throw new Error("Request timing is missing");
+      expect(observation.completedAtMs - observation.startedAtMs).toBeLessThan(100);
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("uses the persisted custom Entry identity rather than a provider response ID", async () => {
     const { rpc, process: fakeProcess, onFault } = autonomousSession();
     const turns: PiAutonomousTurn[] = [];
     rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
@@ -979,7 +1059,7 @@ describe("Pi RPC Turn aggregation", () => {
     await waitFor(() => turns.length === 1);
 
     expect(turns[0]).toMatchObject({
-      nativeTurnKey: "autonomous-response",
+      nativeTurnKey: "native-custom-entry",
       result: { status: "succeeded", text: "autonomous text" },
     });
     expect(turns[0]?.events.map(({ type }) => type)).toEqual([
@@ -998,7 +1078,7 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("generates one stable autonomous key without responseId and classifies native abort", async () => {
+  it("keeps the native Entry key without responseId and classifies native abort", async () => {
     const { rpc, process: fakeProcess } = autonomousSession();
     const turns: PiAutonomousTurn[] = [];
     rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
@@ -1007,12 +1087,30 @@ describe("Pi RPC Turn aggregation", () => {
     fakeProcess().emitAutonomousTurn({ responseId: null, stopReason: "aborted" });
     await waitFor(() => turns.length === 1);
 
-    expect(turns[0]?.nativeTurnKey).toMatch(/^[0-9a-f-]{36}$/);
+    expect(turns[0]?.nativeTurnKey).toBe("native-custom-entry");
     expect(turns[0]?.result).toEqual({
       status: "cancelled",
       text: "autonomous text",
       reason: "Pi autonomous Assistant was aborted",
     });
+    await rpc.close();
+  });
+
+  it("does not reuse a stale autonomous history boundary", async () => {
+    const { rpc, process: fakeProcess, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fakeProcess().emitAutonomousTurn();
+    const history = fakeProcess().autonomousHistory;
+    if (!history) throw new Error("Missing synthetic native history");
+    const assistant = history.entries[1]?.message;
+    if (!assistant || typeof assistant !== "object" || Array.isArray(assistant))
+      throw new Error("Missing Assistant");
+    assistant.responseId = "stale-response";
+    await waitFor(() => turns.length === 1);
+    expect(turns[0]).toMatchObject({ nativeTurnKey: null, result: { status: "failed" } });
+    expect(onFault).toHaveBeenCalledOnce();
     await rpc.close();
   });
 

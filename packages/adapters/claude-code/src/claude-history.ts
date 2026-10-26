@@ -12,7 +12,8 @@ import {
   type HarnessId,
 } from "@codexhost/shared-contracts";
 
-import { CLAUDE_SUBAGENT_TOOLS } from "./native-message.js";
+import { CLAUDE_SUBAGENT_TOOLS, ClaudeNativeTurnAccumulator } from "./native-message.js";
+import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 
 interface ClaudeHistoryMessage {
@@ -23,6 +24,7 @@ interface ClaudeHistoryMessage {
   nested: boolean;
   syntheticUser: boolean;
   interrupted: boolean;
+  startsTurn: boolean;
 }
 
 const claudeCodeHarnessId: HarnessId = harnessIdSchema.parse("claude-code");
@@ -79,6 +81,27 @@ function displayedUserText(text: string): string {
   return text;
 }
 
+const WORKFLOW_TASK_FRAME = "[Workflow harness \u2014 computed task]";
+const WORKFLOW_TASK_MARKER = "The computed task text follows:\n";
+const WORKFLOW_REQUEST_FRAME = "[Workflow harness \u2014 user request]";
+
+/**
+ * A Workflow agent receives its computed task inside a native frame that indents every
+ * line. Show the task itself; keep the native text when the frame is not recognized.
+ */
+function workflowTaskText(text: string): string {
+  if (!text.startsWith(WORKFLOW_TASK_FRAME)) return text;
+  const marker = text.indexOf(WORKFLOW_TASK_MARKER);
+  if (marker < 0) return text;
+  const lines = text.slice(marker + WORKFLOW_TASK_MARKER.length).split("\n");
+  if (!lines.every((line) => line.trim().length === 0 || line.startsWith("  "))) return text;
+  const task = lines
+    .map((line) => line.slice(2))
+    .join("\n")
+    .trim();
+  return task.length > 0 ? task : text;
+}
+
 function localCommandStdoutText(text: string): string | null {
   const match = localCommandStdoutPattern.exec(text);
   if (!match) return null;
@@ -120,6 +143,10 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
   const messages: ClaudeHistoryMessage[] = [];
   const ids = new Set<string>();
   let promptId: string | null = null;
+  const occupancy = new ClaudeBackgroundOccupancy();
+  let accumulator = new ClaudeNativeTurnAccumulator();
+  const sends = new Set<string>();
+  let pendingNotification = false;
   for (const value of values) {
     if (!isRecord(value)) throw new Error("Claude history contains a malformed message");
     if (value.type === "system") continue;
@@ -144,6 +171,7 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
       message: value.message,
       nested: typeof value.parent_tool_use_id === "string" && value.parent_tool_use_id.length > 0,
       interrupted,
+      startsTurn: false,
       syntheticUser:
         value.type === "user" &&
         (interrupted ||
@@ -152,6 +180,47 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
           isTaskNotificationOrigin(value) ||
           (value.toolUseResult !== undefined && value.toolUseResult !== null)),
     };
+    const notification =
+      message.type === "user" &&
+      !message.nested &&
+      (isTaskNotificationOrigin(value) ||
+        textParts(message.message.content).some(isTaskNotificationRecord));
+    message.startsTurn =
+      isHumanUser(message) || (notification && !occupancy.unsettled && !pendingNotification);
+    if (message.startsTurn) {
+      occupancy.clear();
+      sends.clear();
+      accumulator = new ClaudeNativeTurnAccumulator();
+    }
+    for (const event of accumulator.consume(value).events) {
+      if (event.type === "subagent.started") {
+        if (event.operation === "send") {
+          sends.add(event.callId);
+          if (event.nativeSubagentId) occupancy.occupyAgent(event.nativeSubagentId);
+        } else if (event.background) occupancy.occupySpawn(event.callId, event.nativeSubagentId);
+      } else if (event.type === "subagent.completed") {
+        if (!event.isError && (event.continuesInBackground || sends.has(event.callId))) {
+          occupancy.occupySpawn(event.callId, event.nativeSubagentId);
+        } else occupancy.release(event.callId, event.nativeSubagentId);
+        sends.delete(event.callId);
+      } else if (event.type === "workflow.launched" && event.background && !event.isError) {
+        occupancy.occupySpawn(event.callId, event.taskId);
+      } else if (event.type === "subagent.settled") {
+        occupancy.notify(event.callId, event.nativeSubagentId);
+      }
+    }
+    if (notification) pendingNotification = true;
+    if (message.type === "assistant" && !message.nested) {
+      pendingNotification = false;
+      // Result frames are not persisted. A terminal Root message ends the
+      // notified tasks' continuation; still-running tasks retain occupancy.
+      if (
+        ["end_turn", "stop_sequence", "max_tokens"].includes(String(message.message.stop_reason))
+      ) {
+        occupancy.releaseContinuations();
+      }
+    }
+    if (interrupted) occupancy.clear();
     messages.push(message);
     if (isHumanUser(message)) {
       promptId =
@@ -163,6 +232,24 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
 
 function isHumanUser(message: ClaudeHistoryMessage): boolean {
   return visibleUserTextParts(message).length > 0;
+}
+
+/**
+ * Ultracode relays the user request that triggered a Workflow ahead of the agent's computed
+ * task. The parent Thread already shows that request, so the agent's Thread starts at the task.
+ */
+function isWorkflowRequestRelay(
+  message: ClaudeHistoryMessage,
+  next: ClaudeHistoryMessage | undefined,
+): boolean {
+  const parts = visibleUserTextParts(message);
+  if (parts.length === 0 || !parts.every((part) => part.startsWith(WORKFLOW_REQUEST_FRAME))) {
+    return false;
+  }
+  return (
+    next !== undefined &&
+    visibleUserTextParts(next).some((part) => part.startsWith(WORKFLOW_TASK_FRAME))
+  );
 }
 
 function turnOutcome(messages: ClaudeHistoryMessage[]): HistoricalTurnOutcome {
@@ -204,17 +291,17 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
   const turns: HostThreadSnapshot["turns"] = [];
   for (let index = 0; index < messages.length;) {
     const user = messages[index];
-    if (!user || !isHumanUser(user)) {
+    if (!user || !user.startsTurn) {
       index += 1;
       continue;
     }
     let end = index + 1;
-    while (end < messages.length && !isHumanUser(messages[end] as ClaudeHistoryMessage)) end += 1;
+    while (end < messages.length && !messages[end]?.startsTurn) end += 1;
     const turnMessages = messages.slice(index, end);
     const outcome = turnOutcome(turnMessages);
     const results = toolResultBlocks(turnMessages);
     const checkpointMessage = turnMessages.findLast(
-      ({ type, interrupted }) => type === "assistant" || interrupted,
+      ({ type, interrupted, nested }) => !nested && (type === "assistant" || interrupted),
     );
     let agentMessageOrdinal = 0;
     let reasoningOrdinal = 0;
@@ -469,6 +556,10 @@ export function mapClaudeSubagentSnapshot(
       index += 1;
       continue;
     }
+    if (user && turns.length === 0 && isWorkflowRequestRelay(user, messages[index + 1])) {
+      index += 1;
+      continue;
+    }
     let end = index + 1;
     while (end < messages.length && !isHumanUser(messages[end] as ClaudeHistoryMessage)) end += 1;
     const turnMessages = messages.slice(index, end);
@@ -580,7 +671,10 @@ export function mapClaudeSubagentSnapshot(
           }
         : {}),
       input: user
-        ? visibleUserTextParts(user).map((text) => ({ type: "text", text }))
+        ? visibleUserTextParts(user).map((text) => ({
+            type: "text",
+            text: turns.length === 0 ? workflowTaskText(text) : text,
+          }))
         : turns.length === 0
           ? [subagentPrompt(parentValues, nativeSubagentId)]
               .filter((text): text is string => text !== undefined)

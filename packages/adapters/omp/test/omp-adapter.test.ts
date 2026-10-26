@@ -269,6 +269,115 @@ afterEach(async () => {
 });
 
 describe("OMP Adapter Session environment", () => {
+  it.each([
+    { effective: "xhigh", levels: ["low", "high", "max"], expected: "high" },
+    { effective: null, levels: ["low", "high"], expected: "high" },
+    { effective: "xhigh", levels: ["off", "low"], expected: "low" },
+  ])(
+    "reconciles requested Thinking after native selection returns $effective with $levels",
+    async ({ effective, levels, expected }) => {
+      const transport = new FakeOmpTransport();
+      const requested = harnessThinkingOptionIdSchema.parse("xhigh");
+      const supported = levels.map((level) => harnessThinkingOptionIdSchema.parse(level));
+      const fallback = harnessThinkingOptionIdSchema.parse(expected);
+      vi.spyOn(transport, "getAvailableThinkingLevels")
+        .mockResolvedValueOnce([requested])
+        .mockResolvedValue(supported);
+      const selectThinking = vi
+        .spyOn(transport as OmpTurnTransport, "selectThinkingOption")
+        .mockImplementation(async (level) => {
+          transport.state = {
+            ...transport.state,
+            thinkingLevel:
+              level === requested
+                ? effective === null
+                  ? null
+                  : harnessThinkingOptionIdSchema.parse(effective)
+                : level,
+            availableThinkingLevels: supported,
+          };
+          return transport.state;
+        });
+      const adapter = new OmpAdapter({}, { createTransport: () => transport });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          thinkingOptionId: requested,
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const snapshot = await opened.value.readSnapshot();
+        expect(snapshot).toMatchObject({
+          ok: true,
+          value: {
+            state: {
+              effectiveThinkingOptionId: fallback,
+              availableThinkingOptions: supported.map((id) => ({ id })),
+            },
+          },
+        });
+        expect(selectThinking.mock.calls).toEqual([[requested], [fallback]]);
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
+  it("preserves a supported effective Thinking level after requested selection", async () => {
+    const transport = new FakeOmpTransport();
+    const requested = harnessThinkingOptionIdSchema.parse("high");
+    const effective = harnessThinkingOptionIdSchema.parse("low");
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue([effective, requested]);
+    const selectThinking = vi
+      .spyOn(transport, "selectThinkingOption")
+      .mockImplementation(async () => {
+        transport.state = { ...transport.state, thinkingLevel: effective };
+        return transport.state;
+      });
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: requested,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { state: { effectiveThinkingOptionId: effective } },
+      });
+      expect(selectThinking.mock.calls).toEqual([[requested]]);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("does not reconcile a failed requested Thinking selection", async () => {
+    const transport = new FakeOmpTransport();
+    const requested = harnessThinkingOptionIdSchema.parse("xhigh");
+    const selectThinking = vi
+      .spyOn(transport, "selectThinkingOption")
+      .mockRejectedValue(new Error("Native Thinking selection failed"));
+    const closeTransport = vi.spyOn(transport, "close");
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: requested,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "nativeFailure", message: "Native Thinking selection failed" },
+      });
+      expect(selectThinking.mock.calls).toEqual([[requested]]);
+      expect(closeTransport).toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("starts a non-reasoning Model with Off without requiring a native Thinking selector", async () => {
     const transport = new FakeOmpTransport();
     transport.state = {
@@ -613,6 +722,173 @@ describe("OMP Adapter inspection", () => {
   });
 });
 
+describe("OMP Adapter availability inspection", () => {
+  const listedModels: OmpNativeModel[] = [
+    { provider: "openai-codex", id: "gpt-5.6-luna", reasoning: true },
+  ];
+
+  it("answers from the Model list without starting a Session or caching the result", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn().mockResolvedValue({ kind: "models", models: listedModels });
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      await expect(
+        adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+      ).resolves.toMatchObject({
+        status: "ready",
+        catalog: { models: [expect.objectContaining({ label: "openai-codex / gpt-5.6-luna" })] },
+      });
+      expect(listModels).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/synthetic" }));
+      expect(createTransport).not.toHaveBeenCalled();
+
+      // A full inspection still starts a Session: the availability result is not its cache.
+      await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+        status: "ready",
+      });
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("reuses a cached full inspection instead of listing Models", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn();
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const full = await adapter.inspect({ cwd: "/synthetic" });
+      await expect(adapter.inspect({ cwd: "/synthetic", purpose: "availability" })).resolves.toBe(
+        full,
+      );
+      expect(listModels).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each([
+    [{ kind: "notInstalled", message: "omp missing" }, "notInstalled", "notInstalled", false],
+    [{ kind: "timedOut" }, "error", "unavailable", true],
+  ] as const)("reports %j without starting a Session", async (listed, status, code, retryable) => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const adapter = new OmpAdapter({}, { createTransport, listModels: async () => listed });
+    try {
+      await expect(
+        adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+      ).resolves.toMatchObject({ status, error: { code, retryable, stage: "model-list" } });
+      expect(createTransport).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("makes an explicit availability re-check drop the cached full catalog", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn().mockResolvedValue({ kind: "models", models: listedModels });
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      await adapter.inspect({ cwd: "/synthetic" });
+      await adapter.inspect({ cwd: "/synthetic", purpose: "availability", refresh: true });
+      expect(listModels).toHaveBeenCalledOnce();
+      await adapter.inspect({ cwd: "/synthetic" });
+      expect(createTransport).toHaveBeenCalledTimes(2);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("stops a pending Model list on close and starts no Session afterwards", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let aborted = false;
+    const listModels = vi.fn(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve({ kind: "unanswered" });
+          });
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    const pending = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+    await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+    await adapter.close();
+
+    await expect(pending).resolves.toMatchObject({
+      status: "unavailable",
+      error: { code: "invalidState" },
+    });
+    expect(aborted).toBe(true);
+    expect(createTransport).not.toHaveBeenCalled();
+  });
+
+  it("shares one Model list and joins the in-flight full inspection on fallback", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let answer: (value: { kind: "unanswered" }) => void = () => undefined;
+    const listModels = vi.fn(
+      () =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const first = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      const second = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+      const full = adapter.inspect({ cwd: "/synthetic" });
+      answer({ kind: "unanswered" });
+
+      const [firstResult, secondResult, fullResult] = await Promise.all([first, second, full]);
+      expect(firstResult).toBe(fullResult);
+      expect(secondResult).toBe(fullResult);
+      expect(listModels).toHaveBeenCalledOnce();
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("reuses a full inspection that finished while the Model list ran", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let answer: (value: { kind: "unanswered" }) => void = () => undefined;
+    const listModels = vi.fn(
+      () =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const availability = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+      const full = await adapter.inspect({ cwd: "/synthetic" });
+      answer({ kind: "unanswered" });
+
+      await expect(availability).resolves.toBe(full);
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each([{ kind: "unanswered" }, { kind: "models", models: [] }] as const)(
+    "falls back to Session inspection for %j",
+    async (listed) => {
+      const createTransport = vi.fn(() => new FakeOmpTransport());
+      const adapter = new OmpAdapter({}, { createTransport, listModels: async () => listed });
+      try {
+        await expect(
+          adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+        ).resolves.toMatchObject({ status: "ready" });
+        expect(createTransport).toHaveBeenCalledOnce();
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+});
+
 describe("OMP Adapter Fork", () => {
   it("forks the requested completed prefix from the next OMP User Entry", async () => {
     const firstTurn = historyTurn({
@@ -705,6 +981,13 @@ function outputs(session: { outputs: AsyncIterable<HarnessOutput> }): HarnessOut
     for await (const output of session.outputs) values.push(output);
   })();
   return values;
+}
+
+function isUsageMetering(output: HarnessOutput): boolean {
+  return (
+    output.kind === "event" &&
+    (output.event.type === "usage.request" || output.event.type === "usage.history")
+  );
 }
 
 describe("OMP faulted history", () => {
@@ -813,10 +1096,13 @@ describe("OMP faulted history", () => {
   );
 });
 
+/** Lifecycle assertions skip Host usage metering events, which have their own tests. */
 async function nextOutput(iterator: AsyncIterator<HarnessOutput>): Promise<HarnessOutput> {
-  const result = await iterator.next();
-  if (result.done) throw new Error("Harness output stream ended unexpectedly");
-  return result.value;
+  for (;;) {
+    const result = await iterator.next();
+    if (result.done) throw new Error("Harness output stream ended unexpectedly");
+    if (!isUsageMetering(result.value)) return result.value;
+  }
 }
 
 async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
@@ -824,6 +1110,64 @@ async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
   if (output.kind !== "event") throw new Error("Expected a Harness event output");
   return output.event;
 }
+
+describe("OMP Adapter usage metering", () => {
+  it("declares empty history on create and meters live assistant messages", async () => {
+    const transport = new FakeOmpTransport();
+    let onUsage: OmpRpcSessionOptions["onUsage"];
+    const adapter = new OmpAdapter(
+      {},
+      {
+        createTransport: (options: OmpRpcSessionOptions) => {
+          onUsage = options.onUsage;
+          return transport;
+        },
+      },
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toEqual({
+      kind: "event",
+      event: { type: "usage.history", complete: true },
+    });
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-usage" as HostTurnId,
+      input: [{ type: "text", text: "hi" }],
+    });
+    if (!onUsage) throw new Error("Omp transport did not receive a usage callback");
+    onUsage({
+      message: {
+        role: "assistant",
+        model: "gpt-5",
+        responseId: "resp-live",
+        usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 0 },
+      },
+      startedAtMs: 10,
+      completedAtMs: 20,
+    });
+    let event = (await iterator.next()).value;
+    while (event?.kind !== "event" || event.event.type !== "usage.request") {
+      event = (await iterator.next()).value;
+    }
+    expect(event.event).toEqual({
+      type: "usage.request",
+      request: {
+        requestId: "resp-live",
+        model: "gpt-5",
+        inputTokens: 4,
+        cachedInputTokens: 3,
+        cacheWriteInputTokens: 0,
+        outputTokens: 2,
+        startedAtMs: 10,
+        completedAtMs: 20,
+      },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+});
 
 async function nextTurnEvents(iterator: AsyncIterator<HarnessOutput>): Promise<HostEvent[]> {
   const events: HostEvent[] = [];
@@ -1073,6 +1417,7 @@ describe("OMP Adapter Subagents", () => {
           {
             id: "omp.compact",
             invocation: "/compact",
+            localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
             label: "Compact context",
             description: "Compact the current conversation context",
             argumentMode: "text",
@@ -1232,7 +1577,7 @@ describe("OMP Adapter Subagents", () => {
     await adapter.close();
   });
 
-  it("materializes a background Subagent that starts after the parent Turn is idle", async () => {
+  it("reports idle Subagent notifications without inventing a Root Turn", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
       createTransport: (options: OmpRpcSessionOptions) => {
@@ -1252,6 +1597,16 @@ describe("OMP Adapter Subagents", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    const beforeBackground = await opened.value.readSnapshot();
+    expect(beforeBackground.ok).toBe(true);
+    const parentCompletion = observed.find(
+      (output) => output.kind === "event" && output.event.type === "turn.completed",
+    );
+    expect(parentCompletion).toMatchObject({
+      event: { nativeTurnRef: { nativeTurnKey: "user-1" } },
+    });
+    expect(parentCompletion).not.toHaveProperty("event.ephemeral");
+
     transport.onSubagentEvent?.({
       type: "subagent.started",
       callId: "background-tool",
@@ -1268,22 +1623,12 @@ describe("OMP Adapter Subagents", () => {
       )
       .map((output) => output.event);
     const autonomous = startedEvents.find((event) => event.type === "turn.autonomous.started");
-    expect(autonomous).toMatchObject({ type: "turn.autonomous.started" });
-    expect(startedEvents).toContainEqual(
-      expect.objectContaining({
-        type: "item.started",
-        item: expect.objectContaining({
-          type: "subagentDelegation",
-          subagents: [
-            expect.objectContaining({
-              nativeSubagentId: "background-subagent",
-              status: "running",
-              background: true,
-            }),
-          ],
-        }),
-      }),
-    );
+    expect(autonomous).toBeUndefined();
+    expect(startedEvents).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: "background-subagent",
+      status: "running",
+    });
 
     transport.onSubagentEvent?.({
       type: "subagent.completed",
@@ -1298,23 +1643,19 @@ describe("OMP Adapter Subagents", () => {
         (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
       )
       .map((output) => output.event);
-    expect(completedEvents).toContainEqual(
-      expect.objectContaining({
-        type: "item.completed",
-        snapshot: expect.objectContaining({
-          item: expect.objectContaining({
-            type: "subagentDelegation",
-            subagents: [expect.objectContaining({ status: "completed" })],
-          }),
-        }),
-      }),
-    );
-    expect(completedEvents.some((event) => event.type === "turn.completed")).toBe(true);
+    expect(completedEvents).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: "background-subagent",
+      status: "completed",
+      resultSummary: "finished in background",
+    });
+    expect(completedEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(await opened.value.readSnapshot()).toEqual(beforeBackground);
     await opened.value.close();
     await adapter.close();
   });
 
-  it("keeps an autonomous Turn open until all background Subagents settle", async () => {
+  it("keeps idle notifications from multiple Subagents out of Root history", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
       createTransport: (options: OmpRpcSessionOptions) => {
@@ -1366,11 +1707,14 @@ describe("OMP Adapter Subagents", () => {
           event.type === "turn.autonomous.started",
       )
       .map((event) => event.turnId);
-    expect(
-      afterFirst.filter(
-        (event) => event.type === "turn.completed" && autonomousTurnIds.includes(event.turnId),
-      ),
-    ).toHaveLength(0);
+    expect(autonomousTurnIds).toEqual([]);
+    expect(afterFirst).toContainEqual(
+      expect.objectContaining({
+        type: "subagent.state.changed",
+        nativeSubagentId: "background-subagent-1",
+        status: "completed",
+      }),
+    );
     transport.onSubagentEvent?.({
       type: "subagent.completed",
       callId: "background-tool-2",
@@ -1379,16 +1723,22 @@ describe("OMP Adapter Subagents", () => {
       resultSummary: "failed",
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const completed = observed
+    const events = observed
       .filter(
         (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
       )
-      .map((output) => output.event)
-      .filter(
-        (event) => event.type === "turn.completed" && autonomousTurnIds.includes(event.turnId),
-      );
-    expect(completed).toHaveLength(1);
-    expect(completed[0]).toMatchObject({ outcome: { status: "failed" } });
+      .map((output) => output.event);
+    expect(events.filter((event) => event.type === "turn.autonomous.started")).toHaveLength(0);
+    expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(observed).toContainEqual({
+      kind: "event",
+      event: {
+        type: "subagent.state.changed",
+        nativeSubagentId: "background-subagent-2",
+        status: "failed",
+        resultSummary: "failed",
+      },
+    });
     await opened.value.close();
     await adapter.close();
   });

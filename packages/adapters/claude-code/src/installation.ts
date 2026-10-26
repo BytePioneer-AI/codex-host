@@ -105,6 +105,14 @@ export function createClaudeInstallation(environment: NodeJS.ProcessEnv, command
         ...(!canUpdate
           ? {
               messageCode: blocked ? "claude-policy-restricted" : "original-installer",
+              ...(blocked
+                ? {
+                    notice: {
+                      en: "Claude updates are restricted by the installation's settings or policy.",
+                      "zh-CN": "此 Claude 安装的设置或策略限制了更新。",
+                    },
+                  }
+                : {}),
               message: blocked
                 ? "Claude updates are restricted by the installation's settings or policy."
                 : "Use the original installer or package manager for this Claude installation.",

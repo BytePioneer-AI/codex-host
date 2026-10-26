@@ -1,4 +1,6 @@
 import { catalogModelForRef } from "@codexhost/shared-contracts";
+import createElement from "lucide/dist/esm/createElement.mjs";
+import CircleAlert from "lucide/dist/esm/icons/circle-alert.mjs";
 import {
   mountRendererModelFastControl,
   type RendererModelFastControl,
@@ -25,8 +27,14 @@ import {
   TRIGGER_CHIP_CLASS,
 } from "./renderer-trigger-chip-style.js";
 
+import { rendererHarnessMessages } from "./renderer-harness-localization.js";
 import { readModelFavorites, writeModelFavorites } from "./renderer-model-favorites.js";
 import { createModelFavoriteIcon, ensureModelOptionStyle } from "./renderer-model-option-style.js";
+import {
+  mountRendererModelSelectionNotice,
+  type RendererModelSelectionNotice,
+} from "./renderer-model-selection-notice.js";
+import type { RendererSettingsLocale } from "./settings/localization.js";
 
 const MENU_CLASSES =
   "fixed z-50 overflow-hidden rounded-xl bg-token-dropdown-background/90 text-token-foreground shadow-lg backdrop-blur-xl";
@@ -48,6 +56,13 @@ export interface RendererModelControlView {
   resolvedModelLabel?: string;
   thinkingSelectionSupported?: boolean;
   error?: string;
+  /**
+   * Which user choice Host rejected. Set only for a rejected Model or Thinking
+   * selection, never when the catalog or Thread inspection failed to load.
+   */
+  selectionRejected?: "model" | "thinking";
+  /** Unique per rejection, so repeating a rejected choice shows its notice again. */
+  selectionErrorId?: number;
 }
 
 export interface RendererModelPickerPresentation {
@@ -79,6 +94,10 @@ export interface RendererModelPickerControl {
   trigger: HTMLButtonElement;
   label: HTMLElement;
   thinkingLabel: HTMLElement;
+  errorMark: HTMLElement;
+  selectionNotice: RendererModelSelectionNotice;
+  /** Newest `selectionErrorId` this control has presented (or skipped while its menu was open). */
+  lastSelectionErrorId: number;
   menu: HTMLElement;
   modelMenu: HTMLElement;
   modelButton: HTMLButtonElement;
@@ -92,6 +111,10 @@ export interface RendererModelPickerControl {
   close(): void;
   dispose(): void;
 }
+
+// A Composer remount inherits its previous Model view. New controls start from
+// the newest rejection already presented, so a remount never replays a notice.
+let latestPresentedSelectionErrorId = 0;
 
 function popoverOpen(menu: HTMLElement): boolean {
   return menu.matches(":popover-open");
@@ -158,6 +181,40 @@ export function shouldCloseRendererModelPicker(view: RendererModelControlView): 
 
 function isTransientPickerState(view: RendererModelControlView): boolean {
   return view.status === "idle" || view.status === "loading";
+}
+
+/**
+ * A rejected selection reverts the trigger to the confirmed choice, so the label
+ * alone looks unchanged. Mark the trigger until the next selection or reload.
+ */
+export function rendererModelSelectionFailed(view: RendererModelControlView): boolean {
+  return view.status === "error" && view.selectionRejected !== undefined && Boolean(view.error);
+}
+
+/** Only a rejection newer than the last presented one opens the notice; re-renders never do. */
+export function shouldOpenRendererModelSelectionNotice(
+  view: RendererModelControlView,
+  lastPresentedErrorId: number,
+): view is RendererModelControlView & { selectionErrorId: number } {
+  return (
+    rendererModelSelectionFailed(view) &&
+    view.selectionErrorId !== undefined &&
+    view.selectionErrorId > lastPresentedErrorId
+  );
+}
+
+export function rendererModelSelectionNoticeContent(
+  view: RendererModelControlView,
+  locale: RendererSettingsLocale = "en",
+): { heading: string; message: string } {
+  const messages = rendererHarnessMessages(locale);
+  return {
+    heading:
+      view.selectionRejected === "thinking"
+        ? messages.thinkingSelectionRejected
+        : messages.modelSelectionRejected,
+    message: view.error ?? "",
+  };
 }
 
 export function rendererModelPickerPresentation(
@@ -344,7 +401,26 @@ export function mountRendererModelPicker(
   thinkingLabel.style.whiteSpace = "nowrap";
   thinkingLabel.hidden = true;
 
-  trigger.append(label, thinkingLabel);
+  const errorMark = document.createElement("span");
+  // Visibility is set in render together with `hidden`: an inline display would
+  // otherwise override the hidden attribute.
+  errorMark.style.display = "none";
+  errorMark.style.flex = "none";
+  errorMark.style.alignItems = "center";
+  errorMark.style.color = "var(--color-text-danger, #c2413b)";
+  errorMark.hidden = true;
+  errorMark.append(
+    createElement(CircleAlert, {
+      width: 14,
+      height: 14,
+      "aria-hidden": "true",
+      focusable: "false",
+      "stroke-width": 1.8,
+    }),
+  );
+
+  trigger.append(label, thinkingLabel, errorMark);
+  const selectionNotice = mountRendererModelSelectionNotice(trigger);
 
   const menu = document.createElement("div");
   menu.id = `${composerId}-model-menu`;
@@ -480,6 +556,7 @@ export function mountRendererModelPicker(
   };
   const open = (): void => {
     if (trigger.disabled || pickerOpen()) return;
+    selectionNotice.hide();
     if (control.thinkingOptions.size === 0) {
       openModelMenu(true);
       return;
@@ -593,6 +670,9 @@ export function mountRendererModelPicker(
     trigger,
     label,
     thinkingLabel,
+    errorMark,
+    selectionNotice,
+    lastSelectionErrorId: latestPresentedSelectionErrorId,
     menu,
     modelMenu,
     modelButton,
@@ -606,6 +686,7 @@ export function mountRendererModelPicker(
     close,
     dispose() {
       close();
+      selectionNotice.dispose();
       fast.dispose();
       trigger.removeEventListener("click", onTriggerClick);
       menu.removeEventListener("toggle", onToggle);
@@ -717,15 +798,41 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
   if (popoverOpen(control.modelMenu)) control.searchInput.focus();
 }
 
+function syncModelSelectionNotice(
+  control: RendererModelPickerControl,
+  view: RendererModelControlView,
+  locale: RendererSettingsLocale,
+): void {
+  if (!rendererModelSelectionFailed(view)) {
+    control.selectionNotice.hide();
+    return;
+  }
+  if (!shouldOpenRendererModelSelectionNotice(view, control.lastSelectionErrorId)) {
+    // Same rejection as before: keep any open notice beside the trigger.
+    control.selectionNotice.reposition();
+    return;
+  }
+  control.lastSelectionErrorId = view.selectionErrorId;
+  latestPresentedSelectionErrorId = Math.max(
+    latestPresentedSelectionErrorId,
+    view.selectionErrorId,
+  );
+  // An open menu covers the notice's place; the trigger mark and title remain.
+  if (popoverOpen(control.menu) || popoverOpen(control.modelMenu)) return;
+  const content = rendererModelSelectionNoticeContent(view, locale);
+  control.selectionNotice.show(content.heading, content.message);
+}
+
 export function renderRendererModelPicker(
   control: RendererModelPickerControl,
   view: RendererModelControlView,
   visible: boolean,
   harnessId = "",
-  locale = "en",
+  locale: RendererSettingsLocale = "en",
 ): void {
   if (control.harnessId !== harnessId) {
     control.close();
+    control.selectionNotice.hide();
     control.harnessId = harnessId;
     control.favorites = readModelFavorites(harnessId);
     delete control.root.dataset.catalogSignature;
@@ -739,6 +846,7 @@ export function renderRendererModelPicker(
   if (!visible) {
     control.close();
     control.fast.close();
+    control.selectionNotice.hide();
     return;
   }
   const presentation = rendererModelPickerPresentation(view);
@@ -767,7 +875,13 @@ export function renderRendererModelPicker(
     ? `${presentation.modelLabel}, ${secondaryLabel}`
     : presentation.modelLabel;
   control.trigger.title = view.error ?? accessibleLabel;
-  control.trigger.setAttribute("aria-label", `Model: ${accessibleLabel}`);
+  const selectionFailed = rendererModelSelectionFailed(view);
+  control.errorMark.hidden = !selectionFailed;
+  control.errorMark.style.display = selectionFailed ? "inline-flex" : "none";
+  control.trigger.setAttribute(
+    "aria-label",
+    selectionFailed ? `Model: ${accessibleLabel}: ${view.error}` : `Model: ${accessibleLabel}`,
+  );
   control.trigger.setAttribute(
     "aria-busy",
     String(view.status === "loading" || view.status === "selecting"),
@@ -798,4 +912,6 @@ export function renderRendererModelPicker(
     option.button.disabled = control.trigger.disabled || !presentation.thinkingSelectionEnabled;
     option.check.style.visibility = selected ? "visible" : "hidden";
   }
+  // Last, so the notice anchors to the trigger's final layout for this render.
+  syncModelSelectionNotice(control, view, locale);
 }

@@ -41,7 +41,8 @@ export async function buildHarnessPlugin({ pluginRoot, outputRoot, allowedRuntim
     metafile: true,
     treeShaking: true,
     charset: "utf8",
-    legalComments: "none",
+    // Preserve license notices in adapted plugin code as well as third-party dependencies.
+    legalComments: "inline",
     banner: {
       js: 'import { createRequire as __codexhostCreateRequire } from "node:module"; const require = __codexhostCreateRequire(import.meta.url);',
     },

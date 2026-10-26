@@ -16,11 +16,14 @@
     "packages/adapters/qoder",
     "packages/adapters/qoder-cn",
     "packages/adapters/kimi-code",
-    "packages/adapters/zcode"
+    "packages/adapters/zcode",
+    "packages/adapters/copilot",
+    "packages/adapters/codex-usage"
   ],
   "runtimePackages": [
     "@agentclientprotocol/sdk",
     "@anthropic-ai/claude-agent-sdk",
+    "@github/copilot-sdk",
     "@hono/node-server",
     "@modelcontextprotocol/sdk",
     "@opencode-ai/sdk",
@@ -35,7 +38,9 @@
     "fast-uri",
     "hono",
     "json-schema-traverse",
+    "koffi",
     "smol-toml",
+    "vscode-jsonrpc",
     "ws",
     "zod",
     "zod-to-json-schema"

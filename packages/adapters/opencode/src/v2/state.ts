@@ -140,11 +140,24 @@ export function v2State(
           availableThinkingOptions: catalog.thinkingOptions.filter((v) =>
             entry.supportedThinkingOptionIds?.includes(v.id),
           ),
-          effectiveThinkingOptionId: encodeOpenCodeVariant(session.model?.variant),
+          effectiveThinkingOptionId: effectiveVariant(session.model?.variant, entry),
         }
       : {}),
     effectivePermissionModeId: decodeMode(mode?.effect),
   };
+}
+/**
+ * OpenCode v2 reads its default variant back as the string "default"; it is
+ * the catalog's Default option unless the model names a variant "default".
+ */
+function effectiveVariant(
+  variant: string | undefined,
+  entry: HarnessModelCatalog["models"][number],
+) {
+  const id = encodeOpenCodeVariant(variant);
+  return variant === "default" && !entry.supportedThinkingOptionIds?.includes(id)
+    ? encodeOpenCodeVariant(undefined)
+    : id;
 }
 function decodeMode(effect?: string) {
   return effect === "allow" || effect === "ask"

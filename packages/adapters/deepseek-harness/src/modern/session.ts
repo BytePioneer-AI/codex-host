@@ -1,7 +1,9 @@
+import { deepSeekUsageHistory, deepSeekUsageRecord } from "./usage-metering.js";
 import { randomUUID as nodeRandomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   validateHostInteractionResponse,
   type HarnessCommandAccepted,
@@ -41,6 +43,8 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
@@ -474,6 +478,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.#fallbackThinkingOptionId = configuration.state.effectiveThinkingOptionId;
     this.capabilities = modernSessionCapabilities(this.#permissionModes);
     this.outputs = this.#channel.outputs;
+    // Every request already in the journal, replayed for Host usage metering.
+    const usageHistory = deepSeekUsageHistory(this.#events);
+    for (const request of usageHistory.requests) this.#emit({ type: "usage.request", request });
+    this.#emit({ type: "usage.history", complete: usageHistory.complete });
     this.commands = {
       list: () => this.#listHarnessCommands(),
       execute: (command) => this.#executeHarnessCommand(command),
@@ -556,6 +564,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -568,6 +577,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -579,6 +589,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     switch (command.type) {
       case "turn.start":
         return this.#start(command);
+      case "turn.steer":
+        return Promise.resolve(unsupportedSteer("DeepSeek Harness"));
       case "turn.cancel":
         return this.#cancel(command);
       case "interaction.respond":
@@ -1728,6 +1740,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.#validator.accept(event);
     this.#observeAssistantSettlement(event);
     this.#events.push(event);
+    this.#meterUsage(event);
     this.#historyBytes += bytes;
     this.#receive(event);
   }
@@ -3030,6 +3043,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
 
   #emit(event: Extract<HarnessOutput, { kind: "event" }>["event"]): void {
     this.#channel.emit({ kind: "event", event });
+  }
+
+  /** Publishes a live model request settled in the journal to Host usage metering. */
+  #meterUsage(event: ModernJournalEvent): void {
+    const record = deepSeekUsageRecord(event, false);
+    if (record.kind === "request") this.#emit({ type: "usage.request", request: record.request });
+    else if (record.kind === "missing") this.#emit({ type: "usage.history", complete: false });
   }
 }
 

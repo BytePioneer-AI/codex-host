@@ -197,10 +197,17 @@ export interface RendererSettingsMessages {
   readonly connectionInstallRunning: string;
   readonly harnessVersion: HarnessVersionMessages;
   readonly harnessVersionTitle: string;
+  readonly harnessVersionApplicationTitle: string;
   readonly harnessVersionCurrent: string;
   readonly harnessVersionLatest: string;
   readonly harnessVersionChecking: string;
+  readonly harnessVersionAvailable: string;
   readonly harnessVersionUpdate: string;
+  readonly harnessVersionDownloadUpdate: string;
+  readonly harnessUpdateAll: string;
+  readonly harnessUpdateAllProgress: string;
+  readonly harnessUpdateAllDescription: string;
+  readonly harnessUpdateAllResult: string;
   readonly harnessVersionUpdating: string;
   readonly harnessVersionUpToDate: string;
   readonly harnessVersionUpdated: string;
@@ -471,17 +478,24 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOfficialWebsite: "Visit official website",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1 and 0.2.0-rc.2. Versions newer than 0.2.0-rc.2 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
+    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1, 0.2.0-rc.2, 0.2.1-rc.1 and 0.2.1-rc.2. Versions newer than 0.2.1-rc.2 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
   connectionInstall: "Install",
   connectionInstallDescription: "This Harness was not detected.",
   connectionInstallRunning:
     "Installing on the selected Host. You can leave this page; login or setup may still be required afterward.",
   harnessVersion: harnessVersionEnglish,
   harnessVersionTitle: "Harness CLI version",
+  harnessVersionApplicationTitle: "Application version",
   harnessVersionCurrent: "Current version",
   harnessVersionLatest: "Latest version",
   harnessVersionChecking: "Checking versions…",
+  harnessVersionAvailable: "Update available",
   harnessVersionUpdate: "Update",
+  harnessVersionDownloadUpdate: "Download update",
+  harnessUpdateAll: "Update all",
+  harnessUpdateAllProgress: "Updating",
+  harnessUpdateAllDescription: "Update all eligible Harnesses on the selected Host.",
+  harnessUpdateAllResult: "Updated {succeeded}; failed {failed}.",
   harnessVersionUpdating: "Updating…",
   harnessVersionUpToDate: "Up to date",
   harnessVersionUpdated: "Update verified. New sessions will use the new version.",
@@ -580,6 +594,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     appearance: "General",
     accounts: "Accounts",
     "session-import": "Session Import",
+    "usage-statistics": "Usage statistics",
     updates: "Updates",
     about: "About",
   }),
@@ -767,16 +782,23 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
+    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1、0.2.0-rc.2、0.2.1-rc.1 和 0.2.1-rc.2。高于 0.2.1-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
   connectionInstallRunning: "正在所选 Host 上安装，离开页面不会中断。安装后可能仍需登录或配置。",
   harnessVersion: harnessVersionChinese,
   harnessVersionTitle: "Harness CLI 版本",
+  harnessVersionApplicationTitle: "应用版本",
   harnessVersionCurrent: "当前版本",
   harnessVersionLatest: "最新版本",
   harnessVersionChecking: "正在检查版本…",
+  harnessVersionAvailable: "有更新",
   harnessVersionUpdate: "更新",
+  harnessVersionDownloadUpdate: "下载更新",
+  harnessUpdateAll: "全部更新",
+  harnessUpdateAllProgress: "更新中",
+  harnessUpdateAllDescription: "更新当前 Host 上支持自动更新且有新版本的 Harness。",
+  harnessUpdateAllResult: "已更新 {succeeded} 项，{failed} 项失败。",
   harnessVersionUpdating: "正在更新…",
   harnessVersionUpToDate: "已是最新",
   harnessVersionUpdated: "已确认更新成功，新会话将使用新版本。",
@@ -869,6 +891,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     appearance: "通用",
     accounts: "账号",
     "session-import": "会话导入",
+    "usage-statistics": "用量统计",
     updates: "更新",
     about: "关于",
   }),

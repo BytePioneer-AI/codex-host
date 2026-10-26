@@ -407,13 +407,12 @@ describe("Renderer Composer DOM behavior", () => {
   });
 
   it("retries external Usage after an early empty inspection", () => {
-    expect(shouldRetryExternalThreadUsage("pi", null)).toBe(true);
-    expect(shouldRetryExternalThreadUsage("claude-code", null)).toBe(true);
-    expect(shouldRetryExternalThreadUsage("codex", null)).toBe(true);
-    expect(shouldRetryExternalThreadUsage("codex", { totalCostUsd: 0.168 })).toBe(true);
+    expect(shouldRetryExternalThreadUsage(false, null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage(true, null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage(true, { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(
-        "codex",
+        true,
         { totalCostUsd: 0.168 },
         {
           usedPercent: 33,
@@ -421,11 +420,11 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toBe(false);
-    expect(shouldRetryExternalThreadUsage("pi", { totalCostUsd: 0.168 })).toBe(false);
-    expect(shouldRetryExternalThreadUsage("grok", { totalCostUsd: 0.168 })).toBe(true);
+    expect(shouldRetryExternalThreadUsage(false, { totalCostUsd: 0.168 })).toBe(false);
+    expect(shouldRetryExternalThreadUsage(true, { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(
-        "grok",
+        true,
         { totalCostUsd: 0.168 },
         {
           usedPercent: 33,
@@ -433,13 +432,11 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toBe(false);
-    // Same "keep retrying for Account Credits" carve-out Grok gets: without it, revisiting a
-    // Claude Code Thread whose Usage was already known (so the initial retry never engaged)
-    // would leave the credits pill permanently blank.
-    expect(shouldRetryExternalThreadUsage("claude-code", { totalCostUsd: 0.168 })).toBe(true);
+    // Any plugin advertising quota gets the same retry, even after Usage has arrived.
+    expect(shouldRetryExternalThreadUsage(true, { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(
-        "claude-code",
+        true,
         { totalCostUsd: 0.168 },
         { usedPercent: 62, periodType: "five_hour" },
       ),
@@ -693,12 +690,12 @@ describe("Renderer Composer DOM behavior", () => {
 
     expect(isNativeContextUsageControlCandidate(native)).toBe(true);
     expect(nativeContextUsageControlForComposer(composer)).toBe(native);
-    expect(formatRendererCacheHitRate(99.9)).toBe("CH 99.9%");
+    expect(formatRendererCacheHitRate(99.9)).toBe("99.9%");
     expect(formatRendererCost(0.168)).toBe("$0.168");
-    expect(formatRendererTokenCount(87000)).toBe("87k");
-    expect(formatRendererTokenCount(6700)).toBe("6.7k");
-    expect(formatRendererTokenCount(375000)).toBe("375k");
-    expect(rendererUsageTriggerMaxWidth()).toBe("min(140px, 22vw)");
+    expect(formatRendererTokenCount(87000)).toBe("87K");
+    expect(formatRendererTokenCount(6700)).toBe("6.7K");
+    expect(formatRendererTokenCount(375000)).toBe("375K");
+    expect(rendererUsageTriggerMaxWidth()).toBe("min(240px, 30vw)");
   });
 
   it("places Usage beside the native context wrapper when it is present", () => {
@@ -1441,7 +1438,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "locked")).toBe(
       "transfer",
     );
-    expect(shouldRetryExternalThreadUsage("pi", null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage(false, null)).toBe(true);
     expect(lateConversationTargetResolution(defaultTarget, defaultTarget, "draft")).toBe("none");
     expect(isLateConversationTarget(conversationTarget, conversationTarget)).toBe(false);
     expect(isLateConversationTarget(conversationTarget, ["conversation", "opaque-2"])).toBe(true);

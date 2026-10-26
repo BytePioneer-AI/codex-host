@@ -1,12 +1,13 @@
+import { createPiUsageStatistics } from "./pi-usage-statistics.js";
 import { fetchPiAccounts } from "./account-balance.js";
 import { createPiCredentialImports } from "./pi-credential-imports.js";
 import { PI_FAST_COMMAND, piFastModelKeys, withPiFast } from "./pi-fast-mode.js";
 import { persistEmptyPiSession, readPiEmptySessionConfiguration } from "./pi-empty-session.js";
-import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   validateHostQuestionResponse,
   type HarnessAdapter,
@@ -31,7 +32,6 @@ import {
   type HostCommandExecutionItem,
   type HostContextCompactionItem,
   type HostEvent,
-  type HostFileChange,
   type HostItem,
   type HostItemOutcome,
   type HostQuestionInteraction,
@@ -47,12 +47,15 @@ import {
   type PermissionModeSelectCompleted,
   type HostThreadSnapshot,
   type HostUsage,
+  type HostUsageRequest,
   type ThinkingSelectCommand,
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
   type TurnCancelCommand,
   type TurnOutcome,
   type TurnStartAccepted,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
@@ -78,6 +81,7 @@ import {
 
 import { resolvePiInspectCwd } from "./command.js";
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
+import { piToolFileChanges } from "./pi-file-change.js";
 import {
   PiSubagents,
   parsePiSubagentId,
@@ -113,6 +117,7 @@ import {
   type PiNativeModel,
   type PiNativeModelRef,
 } from "./pi-model-catalog.js";
+import { piUsageHistory, piUsageRecord, type PiUsageObservation } from "./pi-usage.js";
 import {
   piDynamicCommandPrompt,
   piLiveCommandCatalog,
@@ -134,6 +139,8 @@ export interface PiTurnTransport {
   setSubagentStatusHandler?(handler: (runs: PiSubagentNode[]) => void): void;
   inspectSubagent?(id: string): Promise<PiSubagentInspection>;
   setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void;
+  /** Finished assistant messages, for Host usage metering; absent on transports without it. */
+  setUsageHandler?(handler: (observation: PiUsageObservation) => void): void;
   start(): Promise<unknown>;
   getAvailableModels(): Promise<PiNativeModel[]>;
   getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null>;
@@ -197,6 +204,7 @@ const piCommandCatalog = harnessCommandCatalogSchema.parse({
     {
       id: "pi.compact",
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact context",
       description: "Compact the current conversation context",
       argumentMode: "text",
@@ -373,26 +381,6 @@ function numberField(value: JsonValue, key: string): number | null | undefined {
   return typeof field === "number" || field === null ? field : undefined;
 }
 
-function stripDiffPrefix(pathString: string | undefined): string {
-  if (typeof pathString !== "string" || pathString.length === 0) return "";
-  return pathString.startsWith("a/") || pathString.startsWith("b/")
-    ? pathString.slice(2)
-    : pathString;
-}
-
-function displayPath(nativePath: string, cwd: string): { path: string; absolute: boolean } | null {
-  const resolvedCwd = path.resolve(cwd);
-  const resolvedPath = path.isAbsolute(nativePath)
-    ? path.resolve(nativePath)
-    : path.resolve(cwd, nativePath);
-  const relative = path.relative(resolvedCwd, resolvedPath);
-  const inside = relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`);
-  const selected = inside ? relative : resolvedPath;
-  const normalized = selected.replaceAll("\\", "/");
-  if (normalized.length === 0 || normalized === ".") return null;
-  return { path: normalized, absolute: !inside };
-}
-
 function normalizeToolName(name: string): string {
   const lower = name.toLowerCase();
   switch (lower) {
@@ -428,147 +416,6 @@ function normalizeToolName(name: string): string {
     default:
       return name.length > 0 ? `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}` : name;
   }
-}
-
-function fileMutatingKind(toolName: string): "edit" | "write" | null {
-  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
-  if (
-    [
-      "edit",
-      "editfile",
-      "fileedit",
-      "strreplace",
-      "searchreplace",
-      "applypatch",
-      "replace",
-    ].includes(lower)
-  ) {
-    return "edit";
-  }
-  if (["write", "writefile", "filewrite", "create", "createfile"].includes(lower)) return "write";
-  return null;
-}
-
-function nestedToolString(value: unknown, keys: readonly string[]): string | undefined {
-  if (!isRecord(value)) return undefined;
-  for (const key of keys) {
-    const field = value[key];
-    if (typeof field === "string" && field.length > 0) return field;
-  }
-  for (const wrapper of ["input", "arguments", "params", "details"] as const) {
-    const nested = nestedToolString(value[wrapper], keys);
-    if (nested) return nested;
-  }
-  return undefined;
-}
-
-function patchFromResult(result: JsonValue): string | undefined {
-  if (!isRecord(result)) return undefined;
-  for (const key of ["patch", "diff", "unifiedDiff"] as const) {
-    const field = result[key];
-    if (typeof field === "string" && field.length > 0) return field;
-  }
-  if (isRecord(result.details)) {
-    for (const key of ["patch", "diff", "unifiedDiff"] as const) {
-      const field = result.details[key];
-      if (typeof field === "string" && field.length > 0) return field;
-    }
-  }
-  return undefined;
-}
-
-function fileChangeFromPatch(patch: string, cwd: string): HostFileChange[] | null {
-  let parsed: ReturnType<typeof parsePatch>;
-  try {
-    parsed = parsePatch(patch);
-  } catch {
-    return null;
-  }
-  const file = parsed[0];
-  if (parsed.length !== 1 || !file) return null;
-  const oldFile = typeof file.oldFileName === "string" ? file.oldFileName : undefined;
-  const newFile = typeof file.newFileName === "string" ? file.newFileName : undefined;
-  if (!oldFile && !newFile) return null;
-  const kind =
-    oldFile === "/dev/null" || !oldFile
-      ? "add"
-      : newFile === "/dev/null" || !newFile
-        ? "delete"
-        : "update";
-  const candidate = kind === "delete" ? oldFile : (newFile ?? oldFile);
-  const rawPath = stripDiffPrefix(candidate);
-  if (!rawPath || rawPath === "/dev/null") return null;
-  const displayed = displayPath(rawPath, cwd);
-  if (!displayed) return null;
-  return [{ path: displayed.path, kind, unifiedDiff: patch }];
-}
-
-function synthesizeFileChange(
-  kind: "edit" | "write",
-  args: unknown,
-  cwd: string,
-): HostFileChange[] | null {
-  const filePath = nestedToolString(args, ["path", "file_path", "filePath", "file"]);
-  if (!filePath) return null;
-  const displayed = displayPath(filePath, cwd);
-  if (!displayed) return null;
-  if (kind === "write") {
-    const content = nestedToolString(args, [
-      "content",
-      "new_string",
-      "newString",
-      "newText",
-      "text",
-    ]);
-    if (content === undefined) return null;
-    const oldHeader = "/dev/null";
-    const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
-    return [
-      {
-        path: displayed.path,
-        kind: "add",
-        unifiedDiff: createTwoFilesPatch(oldHeader, newHeader, "", content, "", "", { context: 3 }),
-        diffScope: "fragment",
-      },
-    ];
-  }
-  const oldText = nestedToolString(args, ["old_string", "oldString", "oldText", "old_text"]);
-  const newText = nestedToolString(args, [
-    "new_string",
-    "newString",
-    "newText",
-    "new_text",
-    "content",
-  ]);
-  if (oldText === undefined || newText === undefined) return null;
-  const oldHeader = displayed.absolute ? displayed.path : `a/${displayed.path}`;
-  const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
-  return [
-    {
-      path: displayed.path,
-      kind: "update",
-      unifiedDiff: createTwoFilesPatch(oldHeader, newHeader, oldText, newText, "", "", {
-        context: 3,
-      }),
-      diffScope: "fragment",
-    },
-  ];
-}
-
-function reliableFileChange(
-  toolName: string,
-  args: unknown,
-  result: JsonValue,
-  cwd: string,
-): HostFileChange[] | null {
-  const kind = fileMutatingKind(toolName);
-  if (!kind) return null;
-  const patch = patchFromResult(result);
-  if (patch) {
-    const fromPatch = fileChangeFromPatch(patch, cwd);
-    if (fromPatch) return fromPatch;
-  }
-  return synthesizeFileChange(kind, args, cwd) ?? synthesizeFileChange(kind, result, cwd);
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -621,6 +468,7 @@ class PiHarnessSession implements HarnessSession {
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ) {
     this.#cwd = cwd;
@@ -654,6 +502,14 @@ class PiHarnessSession implements HarnessSession {
     this.#usage = this.initialUsage;
     this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
+    // A created Session has no native history yet; an opened one replays it for Host metering.
+    const usageHistory =
+      options.usageHistory ??
+      (options.startedTransport
+        ? { requests: [], complete: false }
+        : { requests: [], complete: true });
+    for (const request of usageHistory.requests) this.#event({ type: "usage.request", request });
+    this.#event({ type: "usage.history", complete: usageHistory.complete });
     if (this.#transport) this.#bindAutonomousTurnHandler(this.#transport);
   }
 
@@ -708,6 +564,7 @@ class PiHarnessSession implements HarnessSession {
             {
               sessionId: transport.state.sessionId,
               model: nativeModelForHistory(transport.state),
+              cwd: this.#cwd,
             },
             this.#subagents,
           ),
@@ -720,6 +577,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -732,6 +590,7 @@ class PiHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -742,6 +601,7 @@ class PiHarnessSession implements HarnessSession {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Pi Session is not open") };
     }
+    if (command.type === "turn.steer") return unsupportedSteer("Pi");
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
@@ -1331,6 +1191,13 @@ class PiHarnessSession implements HarnessSession {
       if (this.#transport !== transport) this.#pendingSubagentStatus = runs;
       else this.#subagents.observe(runs);
     });
+    transport.setUsageHandler?.((observation) => {
+      if (this.#phase !== "open") return;
+      const record = piUsageRecord(observation.message, observation);
+      if (record?.kind === "request")
+        this.#event({ type: "usage.request", request: record.request });
+      else if (record?.kind === "missing") this.#event({ type: "usage.history", complete: false });
+    });
     transport.setAutonomousTurnHandler((turn) => {
       if (this.#phase !== "open") return;
       if (this.#transport !== transport) {
@@ -1406,12 +1273,22 @@ class PiHarnessSession implements HarnessSession {
       completion,
       resolveCompletion,
     };
-    const nativeTurnRef = nativeTurnRefSchema.parse({
-      harnessId: this.harnessId,
-      nativeSessionId: transport.state.sessionId,
-      nativeTurnKey: turn.nativeTurnKey,
-      formatVersion: 1,
-    });
+    const nativeTurnRef = turn.nativeTurnKey
+      ? nativeTurnRefSchema.parse({
+          harnessId: this.harnessId,
+          nativeSessionId: transport.state.sessionId,
+          nativeTurnKey: turn.nativeTurnKey,
+          formatVersion: 1,
+        })
+      : undefined;
+    const checkpoint = nativeTurnRef
+      ? nativeCheckpointRefSchema.parse({
+          harnessId: this.harnessId,
+          nativeSessionId: transport.state.sessionId,
+          checkpointId: nativeTurnRef.nativeTurnKey,
+          formatVersion: 1,
+        })
+      : undefined;
     this.#active = active;
     this.#event({ type: "turn.autonomous.started", turnId, input: [] });
     this.#event({ type: "turn.started", turnId });
@@ -1420,18 +1297,32 @@ class PiHarnessSession implements HarnessSession {
     try {
       for (const event of turn.events) this.#handleTurnEvent(active, event);
       if (turn.result.status === "succeeded") {
-        this.#completeTurn(active, { status: "succeeded" }, turn.result.text, nativeTurnRef);
+        if (!nativeTurnRef) throw new Error("Pi autonomous Turn has no native identity");
+        this.#completeTurn(
+          active,
+          { status: "succeeded", ...(checkpoint ? { checkpoint } : {}) },
+          turn.result.text,
+          nativeTurnRef,
+        );
       } else if (turn.result.status === "cancelled") {
         this.#completeTurn(
           active,
-          { status: "cancelled", reason: turn.result.reason },
+          {
+            status: "cancelled",
+            reason: turn.result.reason,
+            ...(checkpoint ? { checkpoint } : {}),
+          },
           turn.result.text,
           nativeTurnRef,
         );
       } else {
         this.#completeTurn(
           active,
-          { status: "failed", error: normalizedError(turn.result.error, "nativeFailure") },
+          {
+            status: "failed",
+            error: normalizedError(turn.result.error, "nativeFailure"),
+            ...(checkpoint ? { checkpoint } : {}),
+          },
           turn.result.text,
           nativeTurnRef,
         );
@@ -1621,7 +1512,9 @@ class PiHarnessSession implements HarnessSession {
       type: "question",
       interactionId,
       turnId: active.command.turnId,
-      ...(associatedTool ? { itemId: associatedTool.item.itemId } : {}),
+      ...(associatedTool?.item.type === "toolExecution"
+        ? { itemId: associatedTool.item.itemId }
+        : {}),
       title: "Pi",
       questions: [question],
       ...(request.timeoutMs !== undefined
@@ -1840,12 +1733,8 @@ class PiHarnessSession implements HarnessSession {
 
     if (!event.isError) {
       try {
-        const kind = fileMutatingKind(event.toolName);
         const args = tool.item.type === "toolExecution" ? tool.item.arguments : {};
-        if (kind && !patchFromResult(event.result) && synthesizeFileChange(kind, args, this.#cwd)) {
-          return;
-        }
-        const changes = reliableFileChange(event.toolName, args, event.result, this.#cwd);
+        const changes = piToolFileChanges(event.toolName, args, event.result, this.#cwd);
         if (changes) {
           const fileItem: HostItem = {
             type: "fileChange",
@@ -2070,6 +1959,7 @@ export class PiAdapter implements HarnessAdapter {
       }
     },
   };
+  readonly usageStatistics: ReturnType<typeof createPiUsageStatistics>;
   readonly sessionImport = Object.freeze({
     listCandidates: async () => {
       const result = await this.#importScope.read((signal) => this.#importIndex.list(signal));
@@ -2120,6 +2010,7 @@ export class PiAdapter implements HarnessAdapter {
     this.#createTransport = dependencies.createTransport;
     this.#environment = options.environment ?? process.env;
     this.#importIndex = new PiSessionImportIndex({ ...process.env, ...options.environment });
+    this.usageStatistics = createPiUsageStatistics({ ...process.env, ...options.environment });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
@@ -2186,7 +2077,7 @@ export class PiAdapter implements HarnessAdapter {
         transport.state.thinkingLevel,
       );
       const fastModels = (await transport.supportsFastMode?.())
-        ? await piFastModelKeys(models, this.#environment)
+        ? piFastModelKeys(models)
         : new Set<string>();
       const catalog = withPiFast(normalized, fastModels);
       await transport.close();
@@ -2399,8 +2290,11 @@ export class PiAdapter implements HarnessAdapter {
         );
         if (!rolledBack.ok) {
           throw new PiAdapterFaultError({
-            code: "invalidState",
-            message: "Pi Native Session has no Turn to roll back",
+            code: rolledBack.reason === "unsupported" ? "unsupported" : "invalidState",
+            message:
+              rolledBack.reason === "unsupported"
+                ? "Pi cannot roll back a custom-triggered Turn at an exact native boundary"
+                : "Pi Native Session has no Turn to roll back",
             retryable: false,
           });
         }
@@ -2462,7 +2356,12 @@ export class PiAdapter implements HarnessAdapter {
       const startedThinkingLevels = await transport.getAvailableThinkingLevels();
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
       const initialUsage = await transport.getSessionUsage().catch(() => null);
+      const usageHistory = await transport
+        .getEntries()
+        .then(piUsageHistory)
+        .catch(() => ({ requests: [], complete: false }));
       session = this.#trackSession(input.cwd, {
+        usageHistory,
         ...(input.environment ? { environment: input.environment } : {}),
         startedTransport: transport,
         startedThinkingLevels,
@@ -2494,6 +2393,7 @@ export class PiAdapter implements HarnessAdapter {
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ): PiHarnessSession {
     const environment = options.environment;
@@ -2517,10 +2417,7 @@ export class PiAdapter implements HarnessAdapter {
           // The picker may have inspected another cwd. Check the live Session instead
           // of treating a cache miss as unsupported or spawning another Pi process.
           if (!(await transport.supportsFastMode?.())) return false;
-          const fastModels = await piFastModelKeys(
-            await transport.getAvailableModels(),
-            environment ?? this.#environment,
-          );
+          const fastModels = piFastModelKeys(await transport.getAvailableModels());
           return fastModels.has(encodePiModelRef({ ...decodePiModelRef(ref), fast: false }).id);
         },
         ...(options.startedTransport ? { startedTransport: options.startedTransport } : {}),
@@ -2528,6 +2425,7 @@ export class PiAdapter implements HarnessAdapter {
           ? { startedThinkingLevels: options.startedThinkingLevels }
           : {}),
         ...(options.initialUsage !== undefined ? { initialUsage: options.initialUsage } : {}),
+        ...(options.usageHistory ? { usageHistory: options.usageHistory } : {}),
       },
     );
     this.#sessions.add(session);

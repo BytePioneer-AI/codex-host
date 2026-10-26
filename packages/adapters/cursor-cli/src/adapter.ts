@@ -2,6 +2,7 @@ import path from "node:path";
 import { fetchCursorAccount } from "./account-usage.js";
 import { CursorSessionImport } from "./session-import.js";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   sanitizeDiagnosticTail,
   type HarnessAdapter,
@@ -22,6 +23,8 @@ import {
   type TurnStartCommand,
   type TurnStartAccepted,
   type TurnCancelCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnCancelAccepted,
   type InteractionRespondCommand,
   type InteractionRespondAccepted,
@@ -62,7 +65,7 @@ import { cursorThinking, cursorThinkingState } from "./thinking.js";
 import { CURSOR_COMMAND_CATALOG, cursorCommands, cursorCommandPrompt } from "./slash-commands.js";
 import { CursorInteractions } from "./interactions.js";
 import { cursorExecutionPolicy, cursorNativeSessionRef } from "./session-ref.js";
-import { forkCursorSession, validateCursorFork } from "./fork.js";
+import { cursorTurnsStartWith, forkCursorSession, validateCursorFork } from "./fork.js";
 import { cursorForkAvailable, cursorCheckpoint } from "./fork-support.js";
 import { type CursorSubagents, cursorTaskAddress } from "./subagents.js";
 import type { HarnessExecutionPolicy, HarnessSubagentCapability } from "@codexhost/harness-adapter";
@@ -116,7 +119,6 @@ export class CursorAdapter implements HarnessAdapter {
         const before = readCursorNativeTurns(parent.nativeSessionId, cwd, options.environment);
         replay = new CursorTransport({
           ...options,
-          delegation: false,
           executionPolicy: "default",
           loadModelCatalog: false,
         });
@@ -227,7 +229,6 @@ export class CursorAdapter implements HarnessAdapter {
     }
     const options = {
       ...this.transportOptions(input.cwd, input.environment),
-      delegation: true,
       executionPolicy,
     };
     const transport = prepared ?? new CursorTransport(options);
@@ -322,8 +323,12 @@ export class CursorAdapter implements HarnessAdapter {
     );
     if (source && !cursorSameWorkspace(source.transport.options.cwd, input.cwd))
       return rejected("unsupported", "Cursor Fork does not support changing workspace");
-    const release = source?.lockForFork();
-    if (source && !release) return rejected("sessionBusy", "Cursor source session is busy");
+    // A completed boundary can be forked while a later source Turn keeps running. Only the
+    // retained native prefix must stay stable; the running Turn is never paused or locked.
+    const sourceRunning = input.kind === "fork" && source?.turnRunningForFork() === true;
+    const release = sourceRunning ? undefined : source?.lockForFork();
+    if (source && !release && !sourceRunning)
+      return rejected("sessionBusy", "Cursor source session is busy");
     let derived: Awaited<ReturnType<typeof forkCursorSession>> | undefined;
     let session: HarnessSession | undefined;
     let transport: CursorTransport | undefined;
@@ -359,7 +364,7 @@ export class CursorAdapter implements HarnessAdapter {
           ...new Set([...Object.keys(sourceEnvironment), ...Object.keys(options.environment)]),
         ].every((key) => sourceEnvironment[key] === options.environment[key]);
       transport = new CursorTransport(
-        { ...options, delegation: true, executionPolicy },
+        { ...options, executionPolicy },
         sameEnvironment ? source?.info.nativeModels : undefined,
       );
       // Authentication needs no target ID; overlap it with the native CLI transaction.
@@ -374,6 +379,7 @@ export class CursorAdapter implements HarnessAdapter {
           input.kind === "fork" ? input.checkpoint : undefined,
           options,
           signal,
+          { sourceRunning },
         ).catch(abort),
         transport.prepare().catch(abort),
       ]);
@@ -414,10 +420,15 @@ export class CursorAdapter implements HarnessAdapter {
         JSON.stringify(derived.expected)
       )
         throw new Error("Cursor derived history changed during ACP adoption");
+      const sourceTurns = readCursorNativeTurns(
+        input.sourceRef.nativeSessionId,
+        input.cwd,
+        options.environment,
+      );
       if (
-        JSON.stringify(
-          readCursorNativeTurns(input.sourceRef.nativeSessionId, input.cwd, options.environment),
-        ) !== JSON.stringify(derived.sourceTurns)
+        sourceRunning
+          ? !cursorTurnsStartWith(sourceTurns, derived.expected)
+          : JSON.stringify(sourceTurns) !== JSON.stringify(derived.sourceTurns)
       )
         throw new Error("Cursor source changed before fork adoption");
       derived.commit();
@@ -484,6 +495,10 @@ export class CursorSession implements HarnessSession {
   #fresh: boolean;
   #snapshot: CursorLoadedSnapshot | undefined;
   #subagentOutput: CursorSubagents | undefined;
+  /** A Turn is running and no configuration change is in flight. */
+  turnRunningForFork(): boolean {
+    return !this.#closed && !this.#configuring && this.#active !== undefined;
+  }
   lockForFork(): (() => void) | undefined {
     if (this.#closed || this.#active || this.#configuring) return;
     this.#configuring = true;
@@ -558,7 +573,6 @@ export class CursorSession implements HarnessSession {
       if (!this.#snapshot || !before.revision || this.#snapshot.revision !== before.revision) {
         replay = new CursorTransport({
           ...this.transport.options,
-          delegation: false,
           executionPolicy: "default",
           loadModelCatalog: false,
         });
@@ -586,6 +600,7 @@ export class CursorSession implements HarnessSession {
     }
   }
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -598,6 +613,7 @@ export class CursorSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -607,6 +623,8 @@ export class CursorSession implements HarnessSession {
   > {
     if (this.#closed) return rejected("invalidState", "Cursor session is closed");
     if (command.type === "interaction.respond") return this.#interactions.respond(command);
+    // Cursor ACP cancels the running prompt on a second session/prompt; it has no native steer.
+    if (command.type === "turn.steer") return unsupportedSteer("Cursor ACP");
     if (command.type === "turn.cancel") {
       if (!this.#active || this.#active.command.turnId !== command.turnId)
         return rejected("invalidState", "Cursor turn is not active");

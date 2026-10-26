@@ -59,6 +59,8 @@ export interface DelegationThreadSnapshot {
 export interface DelegationStartInput {
   harnessId: RoutedHarnessId;
   task: string;
+  /** Short display name; the full task remains the initial message. */
+  taskName?: string;
   cwd?: string;
   parentThreadId?: string;
   requestId?: string;
@@ -129,6 +131,8 @@ export interface ThreadCancelResult {
 }
 
 export interface ThreadReadInput {
+  /** Internal caller context from the CLI; not forwarded to another Host. */
+  callerThreadId?: string;
   /** Explicit Desktop Host identity; never inferred from the Thread ID. */
   hostId?: string;
   threadId: string;
@@ -236,6 +240,7 @@ export interface DelegationControlApi {
 }
 
 export interface DelegationControlRegistration extends DelegationControlApi {
+  executionHostId?(threadId: string): string | undefined;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;
 }

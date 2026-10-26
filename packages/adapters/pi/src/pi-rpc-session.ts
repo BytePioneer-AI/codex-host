@@ -15,13 +15,14 @@ import { parsePiNativeCommands, type PiNativeCommand } from "./pi-slash-commands
 import { ensurePiFastExtension, PI_FAST_ACK, PI_FAST_COMMAND } from "./pi-fast-mode.js";
 import type { PiEmptySessionConfiguration } from "./pi-empty-session.js";
 import { resolvePiExecutable, withNodeRuntimeOnPath } from "./command.js";
-import type { PiSessionHistory } from "./pi-history.js";
+import { activePiEntries, mapPiSnapshot, type PiSessionHistory } from "./pi-history.js";
 import {
   latestPiCacheHitRatePercent,
   optionalPiCacheHitRatePercent,
   optionalPiStateContextUsage,
   parsePiSessionUsage,
   parsePiStateContextUsage,
+  type PiUsageObservation,
 } from "./pi-usage.js";
 import type { PiNativeModel, PiNativeModelRef } from "./pi-model-catalog.js";
 import { verifyPiSessionCwd } from "./pi-session-file.js";
@@ -111,7 +112,7 @@ export type PiAutonomousTurnResult =
   | { status: "failed"; text: string; error: Error };
 
 export interface PiAutonomousTurn {
-  nativeTurnKey: string;
+  nativeTurnKey: string | null;
   events: PiTurnEvent[];
   result: PiAutonomousTurnResult;
 }
@@ -186,6 +187,7 @@ interface ManualCompaction {
 interface ActiveTurn {
   origin: "requested" | "autonomous";
   autonomousEvents: PiTurnEvent[] | null;
+  autonomousMessage?: Record<string, unknown>;
   nativeTurnKey: string | null;
   nativeCancellationObserved: boolean;
   text: string;
@@ -493,6 +495,8 @@ export class PiRpcSession {
   readonly #processAdapter: PiRpcProcessAdapter;
   #activeTurn: ActiveTurn | null = null;
   #autonomousTurnHandler: ((turn: PiAutonomousTurn) => void) | null = null;
+  #usageHandler: ((observation: PiUsageObservation) => void) | null = null;
+  #usageRequestStartedAtMs: number | null = null;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
@@ -555,6 +559,42 @@ export class PiRpcSession {
 
   inspectSubagent(id: string): Promise<PiSubagentInspection> {
     return this.#subagents.inspect(id);
+  }
+
+  setUsageHandler(handler: (observation: PiUsageObservation) => void): void {
+    this.#usageHandler = handler;
+  }
+
+  /** Every finished assistant message is one model request, with or without an active Turn. */
+  #observeUsage(value: Record<string, unknown>): void {
+    if (value.type === "message_start") {
+      this.#usageRequestStartedAtMs = null;
+      return;
+    }
+    // Generation starts at the first output token: the first thinking, text or tool-call block
+    // or delta. Prefill before it is excluded, as in DeepSeek dsh's decode time.
+    if (value.type === "message_update") {
+      const event = value.assistantMessageEvent;
+      if (
+        this.#usageRequestStartedAtMs === null &&
+        isRecord(event) &&
+        typeof event.type === "string" &&
+        /^(text|thinking|reasoning|thought|toolcall)_(start|delta)$/u.test(event.type)
+      ) {
+        this.#usageRequestStartedAtMs = Date.now();
+      }
+      return;
+    }
+    if (value.type === "message_end" && isRecord(value.message)) {
+      if (value.message.role !== "assistant") return;
+      const startedAtMs = this.#usageRequestStartedAtMs;
+      this.#usageRequestStartedAtMs = null;
+      this.#usageHandler?.({
+        message: value.message,
+        startedAtMs,
+        completedAtMs: Date.now(),
+      });
+    }
   }
 
   setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void {
@@ -1013,6 +1053,7 @@ export class PiRpcSession {
       return;
     }
     if (this.#subagents.handle(value)) return;
+    this.#observeUsage(value);
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
       this.#compactionTurn = this.#activeTurn;
@@ -1170,7 +1211,8 @@ export class PiRpcSession {
     const active: ActiveTurn = {
       origin: "autonomous",
       autonomousEvents: events,
-      nativeTurnKey: assistantMessageId(value) ?? randomUUID(),
+      ...(isRecord(value) ? { autonomousMessage: value } : {}),
+      nativeTurnKey: null,
       nativeCancellationObserved: false,
       text: "",
       assistantMessageId: null,
@@ -1197,12 +1239,7 @@ export class PiRpcSession {
 
   #emitAutonomousTurn(active: ActiveTurn, result: PiAutonomousTurnResult): void {
     const handler = this.#autonomousTurnHandler;
-    if (
-      active.origin !== "autonomous" ||
-      !active.nativeTurnKey ||
-      !active.autonomousEvents ||
-      !handler
-    ) {
+    if (active.origin !== "autonomous" || !active.autonomousEvents || !handler) {
       return;
     }
     try {
@@ -1403,6 +1440,31 @@ export class PiRpcSession {
       const state = parseSessionState(response);
       if (parseSessionStreaming(response)) {
         throw new PiRpcFaultError("protocolError", "Pi RPC agent_settled state is still Streaming");
+      }
+      if (this.#activeTurn !== active) return;
+      if (active.origin === "autonomous") {
+        const history = await this.getEntries();
+        const snapshot = mapPiSnapshot(history, { sessionId: state.sessionId, model: null });
+        const turn = snapshot.turns.at(-1);
+        const entries = activePiEntries(history);
+        const start = entries.findIndex((entry) => entry.id === turn?.nativeTurnRef.nativeTurnKey);
+        const firstAssistant = entries
+          .slice(start + 1)
+          .find((entry) => isRecord(entry.message) && entry.message.role === "assistant")?.message;
+        const live = active.autonomousMessage;
+        const responseId = assistantMessageId(live);
+        const matches =
+          isRecord(firstAssistant) &&
+          (responseId
+            ? assistantMessageId(firstAssistant) === responseId
+            : typeof live?.timestamp === "number" && firstAssistant.timestamp === live.timestamp);
+        if (!turn || turn.input.length !== 0 || !matches) {
+          throw new PiRpcFaultError(
+            "protocolError",
+            "Pi autonomous Turn has no matching persisted custom Entry",
+          );
+        }
+        active.nativeTurnKey = turn.nativeTurnRef.nativeTurnKey;
       }
       if (this.#activeTurn !== active) return;
       this.#state = state;

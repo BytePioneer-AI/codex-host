@@ -1,5 +1,5 @@
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
-import { isOrbitComposer } from "./renderer-composer-kind.js";
+import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
   catalogModelForRef,
@@ -89,12 +89,16 @@ import {
   writeNewThreadAgentPreference,
   writeNewThreadExternalConfigurationPreference,
 } from "./renderer-new-thread-preference.js";
-import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
+import {
+  installRendererSidebarAgentIcons,
+  SIDEBAR_THREAD_ROW_SELECTOR,
+} from "./renderer-sidebar-agent-icons.js";
 import {
   rendererHarnessCommandExecutesDirectly,
   routeRendererHarnessCommandSelection,
 } from "./renderer-harness-command-claim.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
+import { createRendererUsageStatisticsSource } from "./renderer-usage-statistics-source.js";
 import {
   installRendererDelegationMention,
   type RendererDelegationMentionControl,
@@ -194,22 +198,13 @@ export function rendererUsageRefreshDelay(attempt: number): number {
   return rendererUsageRefreshDelays[index] ?? rendererUsageRefreshDelays[0];
 }
 
-/**
- * Agents that can produce account-wide Credits independently of a Thread
- * Usage snapshot. These are the only ones where it is worth retrying purely
- * to pick up account limits after Usage has already arrived.
- */
-function externalAgentHasAccountCredits(agent: RendererAgent): boolean {
-  return agent === "codex" || agent === "grok" || agent === "claude-code";
-}
-
+/** Retry quota only when the Host confirms that this source supplies it. */
 export function shouldRetryExternalThreadUsage(
-  agent: RendererAgent,
+  accountCreditsSupported: boolean,
   usage: ThreadUsageSnapshot | null,
   accountCredits: AccountCreditsSnapshot | null = null,
 ): boolean {
-  if (usage === null) return true;
-  return externalAgentHasAccountCredits(agent) && accountCredits === null;
+  return usage === null || (accountCreditsSupported && accountCredits === null);
 }
 
 export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
@@ -223,6 +218,10 @@ export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
   const initialDiscoveryReady = previous === "checking" && next === "ready";
   return explicitRefresh || (!initialDiscoveryReady && previous !== next) || !configurationReady;
 }
+
+// Unique per rejected Model or Thinking choice, so the picker shows its notice
+// again when the user repeats a choice that Host rejects with the same message.
+let nextModelSelectionErrorId = 0;
 
 function isExternalConfigurationReadyView(
   modelView: ExternalModelControlView,
@@ -581,6 +580,7 @@ interface MountedComposer {
   threadConfiguration: HarnessModelSelectionState | undefined;
   usage: ThreadUsageSnapshot | null;
   accountCredits: AccountCreditsSnapshot | null;
+  accountCreditsSupported: boolean;
   hostId: string | null;
   usageRequestGeneration: number;
   commandRequestGeneration: number;
@@ -679,13 +679,14 @@ export function mutationMayAffectComposer(mutation: MutationRecord): boolean {
   if (target.closest(CODEX_COMPOSER_SELECTOR)) return true;
   if (mutation.type === "characterData") return false;
   if (
-    !target.closest(`${TRANSCRIPT_ITEM_SELECTOR}, [data-turn-key], [data-content-search-turn-key]`)
+    !target.closest(
+      `${TRANSCRIPT_ITEM_SELECTOR}, [data-turn-key], [data-content-search-turn-key], [data-app-action-sidebar-scroll], [data-app-action-sidebar-section], ${SIDEBAR_THREAD_ROW_SELECTOR}`,
+    )
   )
     return true;
-  // A disclosure containing an inline Composer can change its visibility.
+  // Transcript/sidebar updates do not change Composer ownership. Still handle
+  // actual Composer insertion/removal and visibility changes of their ancestors.
   if (mutation.type === "attributes") return target.querySelector(CODEX_COMPOSER_SELECTOR) !== null;
-  // Transcript text and tool output do not replace the Composer. Still handle
-  // inline Composers added or removed with a transcript.
   return (
     mutation.type === "childList" &&
     [...mutation.addedNodes, ...mutation.removedNodes].some(
@@ -790,7 +791,7 @@ export function installRendererBindingProbe(
   };
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: (hostId) => modelClientForHost(hostId),
-    getPlugin: (hostId, agent) => {
+    getPlugins: (hostId) => {
       const state = hostHarnessAvailabilityState(hostId);
       const client = modelClientForHost(hostId);
       // Sidebar ownership is enough to discover this Host's artwork; opening a Composer
@@ -801,18 +802,27 @@ export function installRendererBindingProbe(
       ) {
         void refreshHarnessAvailabilityForHost(hostId);
       }
-      return state.directoryClient === client ? pluginForHost(hostId, agent) : undefined;
+      return state.directoryClient === client
+        ? state.plugins?.map((plugin) => pluginForHost(hostId, plugin.id) ?? plugin)
+        : undefined;
     },
     getLocalAgent: localAgentForSidebarThread,
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
+  const usageStatistics = createRendererUsageStatisticsSource({
+    routing: () => window.__codexhostHostRoutingV1,
+    listConnections: () => remoteConnections.ssh.list(),
+    disposed: () => disposed,
+  });
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getRemoteConnections: () => remoteConnections,
     getUpdateClient: () => modelControl,
     getAccountClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,
     getLoadedSessionsClient: () => modelClientForHost("local"),
+    requestUsageStatistics: usageStatistics.request,
+    usageStatisticsHosts: usageStatistics.hosts,
     getSessionImportClient: () => {
       const client = modelClientForHost("local");
       const sources = client?.listSessionImportSources;
@@ -900,10 +910,18 @@ export function installRendererBindingProbe(
   const usageRefreshTimers = new Map<Element, number>();
   const usageRefreshAttempts = new Map<Element, number>();
 
+  // Re-read requests that settle while a retained root cannot be classified.
+  const ownershipRecovery = new WeakMap<MountedComposer, number>();
+  const modelRecovery = new WeakMap<MountedComposer, number>();
+  const isRetainedComposer = (mounted: MountedComposer): boolean =>
+    mounted.composer.isConnected &&
+    mounted.composer.matches(CODEX_COMPOSER_SELECTOR) &&
+    mountedByComposer.get(mounted.composer) === mounted;
+
   const isMountedComposer = (composer: Element): boolean =>
     composer.isConnected &&
     composer.matches(CODEX_COMPOSER_SELECTOR) &&
-    !isOrbitComposer(composer) &&
+    orbitComposerKind(composer) === "codex" &&
     mountedByComposer.has(composer);
 
   const isCurrentModelRequest = (mounted: MountedComposer, generation: number): boolean =>
@@ -916,11 +934,26 @@ export function installRendererBindingProbe(
     mountedByComposer.get(mounted.composer) === mounted &&
     controller.isCurrentOwnershipRequest(mounted.composer, generation);
 
+  const finishModelRequest = (mounted: MountedComposer, generation: number): void => {
+    if (isCurrentModelRequest(mounted, generation)) {
+      renderMounted(mounted);
+    } else if (
+      isRetainedComposer(mounted) &&
+      controller.isCurrentModelRequest(mounted.composer, generation) &&
+      orbitComposerKind(mounted.composer) === "unknown"
+    ) {
+      modelRecovery.set(mounted, generation);
+      scheduleScan();
+    }
+  };
+
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
     const state = controller.recordSubmission(composer);
+    // Follow-ups in an existing Thread must not change which Agent a new Thread starts with.
+    const createsThread = state.phase === "draft";
     const preferenceStorage = rendererNewThreadPreferenceStorage(activeModelHostId(composer));
-    writeNewThreadAgentPreference(state.agent, preferenceStorage);
-    if (state.agent !== "codex") {
+    if (createsThread) writeNewThreadAgentPreference(state.agent, preferenceStorage);
+    if (createsThread && state.agent !== "codex") {
       const model = controller.modelForAgent(composer, state.agent);
       if (model) {
         writeNewThreadExternalConfigurationPreference(
@@ -1114,6 +1147,8 @@ export function installRendererBindingProbe(
       mounted.usageRequestGeneration += 1;
       mounted.usage = update.usage;
       mounted.accountCredits = update.accountCredits ?? null;
+      if (update.accountCreditsSupported !== undefined)
+        mounted.accountCreditsSupported = update.accountCreditsSupported;
       usageRefreshAttempts.delete(mounted.composer);
       renderMounted(mounted);
     }
@@ -1198,17 +1233,14 @@ export function installRendererBindingProbe(
       }
       mounted.usage = result.usage;
       mounted.accountCredits = result.accountCredits ?? null;
-      const agent = controller.get(mounted.composer).agent;
-      if (
-        result.usage !== null &&
-        (!externalAgentHasAccountCredits(agent) || result.accountCredits)
-      ) {
+      mounted.accountCreditsSupported = result.accountCreditsSupported ?? false;
+      if (result.usage !== null && (!mounted.accountCreditsSupported || result.accountCredits)) {
         usageRefreshAttempts.delete(mounted.composer);
       }
       renderMounted(mounted);
       if (
         shouldRetryExternalThreadUsage(
-          controller.get(mounted.composer).agent,
+          mounted.accountCreditsSupported,
           result.usage,
           result.accountCredits ?? null,
         )
@@ -1223,7 +1255,7 @@ export function installRendererBindingProbe(
         renderMounted(mounted);
         if (
           !(error instanceof RendererMethodUnavailableError) &&
-          shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null, null)
+          shouldRetryExternalThreadUsage(mounted.accountCreditsSupported, null, null)
         ) {
           scheduleThreadUsageRefresh(mounted);
         }
@@ -1289,6 +1321,8 @@ export function installRendererBindingProbe(
 
   const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
     if (!isMountedComposer(mounted.composer)) return;
+    ownershipRecovery.delete(mounted);
+    modelRecovery.delete(mounted);
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (!threadId) {
       mounted.ownershipStatus = "not-required";
@@ -1366,14 +1400,16 @@ export function installRendererBindingProbe(
         renderMounted(mounted);
         if (mounted.ownershipStatus !== "error") void refreshCommands(mounted);
         sidebarAgentIcons.refresh();
-        if (mounted.ownershipStatus !== "error") {
-          const agent = controller.get(mounted.composer).agent;
-          if (agent === "codex") {
-            void refreshThreadUsage(mounted);
-          } else if (shouldRetryExternalThreadUsage(agent, mounted.usage, mounted.accountCredits)) {
-            scheduleThreadUsageRefresh(mounted);
-          }
-        }
+        // Ownership can already contain Usage, but only usage inspection tells
+        // us whether this (possibly unknown) plugin also supplies account quota.
+        if (mounted.ownershipStatus !== "error") void refreshThreadUsage(mounted);
+      } else if (
+        isRetainedComposer(mounted) &&
+        controller.isCurrentOwnershipRequest(mounted.composer, generation) &&
+        orbitComposerKind(mounted.composer) === "unknown"
+      ) {
+        ownershipRecovery.set(mounted, generation);
+        scheduleScan();
       }
     }
   };
@@ -1405,7 +1441,7 @@ export function installRendererBindingProbe(
     if (resolution === "transfer") {
       mounted.ownershipStatus = "ready";
       renderMounted(mounted);
-      if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null, null)) {
+      if (shouldRetryExternalThreadUsage(mounted.accountCreditsSupported, null, null)) {
         scheduleThreadUsageRefresh(mounted);
       }
     } else {
@@ -1426,6 +1462,8 @@ export function installRendererBindingProbe(
   };
 
   const loadExternalCatalog = async (mounted: MountedComposer): Promise<void> => {
+    if (!isMountedComposer(mounted.composer)) return;
+    modelRecovery.delete(mounted);
     void refreshCommands(mounted);
     const state = controller.get(mounted.composer);
     if (state.agent === "codex") return;
@@ -1696,7 +1734,7 @@ export function installRendererBindingProbe(
       if (catalogRequest && catalogRequests.get(mounted) === catalogRequest) {
         catalogRequests.delete(mounted);
       }
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -1850,9 +1888,11 @@ export function installRendererBindingProbe(
         ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
         thinkingSelectionSupported: supportsThinkingSelection,
         error: error instanceof Error ? error.message : String(error),
+        selectionRejected: "model",
+        selectionErrorId: ++nextModelSelectionErrorId,
       };
     } finally {
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -1987,7 +2027,7 @@ export function installRendererBindingProbe(
         selectionRejected: true,
       };
     } finally {
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -2121,9 +2161,11 @@ export function installRendererBindingProbe(
         ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
         thinkingSelectionSupported: true,
         error: error instanceof Error ? error.message : String(error),
+        selectionRejected: "thinking",
+        selectionErrorId: ++nextModelSelectionErrorId,
       };
     } finally {
-      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+      finishModelRequest(mounted, generation);
     }
   };
 
@@ -2292,9 +2334,10 @@ export function installRendererBindingProbe(
             modelClientForHost(hostId) !== client
           )
             return;
-          state.plugins = options.enabledAgents
-            ? plugins.filter(({ id }) => options.enabledAgents?.includes(id))
-            : plugins;
+          state.plugins = plugins.filter(
+            ({ id, kind }) =>
+              kind !== "usage" && (!options.enabledAgents || options.enabledAgents.includes(id)),
+          );
           delete state.directoryError;
           state.availability = Object.fromEntries(
             state.plugins.map(({ id }) => [id, state.availability[id] ?? "checking"]),
@@ -2339,8 +2382,9 @@ export function installRendererBindingProbe(
           try {
             // Bulk discovery must not occupy the native interactive slots needed
             // to identify the visible Thread and load its selected configuration.
+            // Availability only: the selected Harness loads its catalog through full inspection.
             const inspection = await client.inspectHarness(
-              { harnessId: harnessIdSchema.parse(agent), refresh },
+              { harnessId: harnessIdSchema.parse(agent), refresh, purpose: "availability" },
               { priority: "background" },
             );
             status = inspection.status === "ready" ? "ready" : inspection.status;
@@ -2427,9 +2471,11 @@ export function installRendererBindingProbe(
   }
 
   const reloadMountedOwnershipForHost = (): void => {
+    let changed = false;
     for (const mounted of mountedByComposer.values()) {
       const hostId = activeModelHostId(mounted.composer);
       if (!hostId || mounted.hostId === hostId) continue;
+      changed = true;
       if (!threadIdFromComposerModelTarget(mounted.modelTarget)) {
         controller.clearPendingSubmission(mounted.composer);
         controller.beginModelRequest(mounted.composer);
@@ -2471,7 +2517,7 @@ export function installRendererBindingProbe(
       renderMounted(mounted);
       void loadThreadOwnership(mounted);
     }
-    sidebarAgentIcons.refresh();
+    if (changed) sidebarAgentIcons.refresh();
   };
 
   function reconcileHarnessAvailabilityHost(): void {
@@ -2483,11 +2529,13 @@ export function installRendererBindingProbe(
     // Hidden/native Composers can belong to a different Host. Never rebind
     // every Thread to the globally selected Host when navigating between them.
     reloadMountedOwnershipForHost();
+    let connectionsChanged = false;
     for (const target of new Set([...mountedByComposer.values()].map((m) => m.hostId))) {
       if (!target) continue;
       const client = modelClientForHost(target);
       const previous = usageSubscriptions.get(target);
       if (previous?.client === client) continue;
+      connectionsChanged ||= previous !== undefined;
       previous?.dispose();
       usageSubscriptions.delete(target);
       if (!client?.subscribeThreadUsage) continue;
@@ -2498,10 +2546,13 @@ export function installRendererBindingProbe(
           applyThreadUsageUpdate(target, update);
         });
         usageSubscriptions.set(target, { client, dispose });
+        connectionsChanged = true;
       } catch {
         // A missing notification channel must not block request-based usage reads.
       }
     }
+    // A reconnect can replace the client without changing the Composer's Host ID.
+    if (connectionsChanged) sidebarAgentIcons.refresh();
     const hostId = activeModelHostId();
     if (
       !hostId ||
@@ -2612,7 +2663,7 @@ export function installRendererBindingProbe(
     if (
       mountedByComposer.has(composer) ||
       !composer.isConnected ||
-      isOrbitComposer(composer) ||
+      orbitComposerKind(composer) !== "codex" ||
       !composer.matches(CODEX_COMPOSER_SELECTOR)
     ) {
       return;
@@ -2685,6 +2736,7 @@ export function installRendererBindingProbe(
       threadConfiguration: inherited?.threadConfiguration,
       usage: inherited?.usage ?? null,
       accountCredits: inherited?.accountCredits ?? null,
+      accountCreditsSupported: inherited?.accountCreditsSupported ?? false,
       hostId: inherited?.hostId ?? hostId,
       usageRequestGeneration: 0,
       commandRequestGeneration: 0,
@@ -2700,7 +2752,11 @@ export function installRendererBindingProbe(
     } else if (
       threadIdFromComposerModelTarget(modelTarget) &&
       inherited &&
-      shouldRetryExternalThreadUsage(state.agent, mounted.usage, mounted.accountCredits)
+      shouldRetryExternalThreadUsage(
+        mounted.accountCreditsSupported,
+        mounted.usage,
+        mounted.accountCredits,
+      )
     ) {
       scheduleThreadUsageRefresh(mounted);
     } else if (
@@ -2725,7 +2781,7 @@ export function installRendererBindingProbe(
       const replacementTarget = findComposerModelTarget(target);
       const replacementHostId = activeModelHostId(target);
       if (
-        isOrbitComposer(target) ||
+        orbitComposerKind(target) !== "codex" ||
         !shouldTransferComposerState(
           replacement.sourceModelTarget,
           replacementTarget,
@@ -2744,9 +2800,10 @@ export function installRendererBindingProbe(
       }
     }
     for (const [composer, mounted] of mountedByComposer) {
+      const kind = orbitComposerKind(composer);
       if (
         !composer.isConnected ||
-        isOrbitComposer(composer) ||
+        kind === "orbit" ||
         !composer.matches(CODEX_COMPOSER_SELECTOR) ||
         !mounted.control.root.isConnected
       ) {
@@ -2759,14 +2816,36 @@ export function installRendererBindingProbe(
         }
         mounted.codexUsageGate.dispose();
         disposeComposerAgentControl(mounted.control);
+        ownershipRecovery.delete(mounted);
+        modelRecovery.delete(mounted);
         mountedByComposer.delete(composer);
         controller.detach(composer, transferredComposers.has(composer));
         continue;
       }
+      // Unknown roots retain state, but cannot derive targets or retry requests.
+      if (kind === "unknown") continue;
+      if (refreshTargets) refreshMountedConversationTarget(mounted);
+      const ownershipGeneration = ownershipRecovery.get(mounted);
+      const modelGeneration = modelRecovery.get(mounted);
+      ownershipRecovery.delete(mounted);
+      modelRecovery.delete(mounted);
+      const recoverOwnership =
+        ownershipGeneration !== undefined &&
+        controller.isCurrentOwnershipRequest(composer, ownershipGeneration);
+      const recoverModel =
+        modelGeneration !== undefined &&
+        controller.isCurrentModelRequest(composer, modelGeneration);
+      if (
+        recoverOwnership ||
+        (recoverModel && threadIdFromComposerModelTarget(mounted.modelTarget))
+      ) {
+        void loadThreadOwnership(mounted);
+      } else if (recoverModel) {
+        void loadExternalCatalog(mounted);
+      }
       const state = controller.get(composer);
       const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
-      if (refreshTargets) refreshMountedConversationTarget(mounted);
       showCodexUsageGateStatus(mounted, mounted.codexUsageGate.refresh());
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {

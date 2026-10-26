@@ -1,5 +1,11 @@
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+vi.mock("node:fs", async (original) => ({
+  ...(await original<object>()),
+  statSync: () => {
+    throw new Error("No native installation in this fixture");
+  },
+}));
 import {
   WORKBUDDY_MACOS_CLI,
   WORKBUDDY_MACOS_ELECTRON,
@@ -43,6 +49,77 @@ const productConfigDirectoryMetadata = () =>
   productConfigMetadata({ directory: true, file: false, mode: 0o40700 });
 
 describe("WorkBuddy command invocation", () => {
+  it.each([
+    ["darwin", WORKBUDDY_MACOS_ELECTRON],
+    ["win32", "D:\\WorkBuddy\\WorkBuddyAI.exe"],
+  ] as const)(
+    "starts the %s lite-only bundle with authenticated loopback ACP",
+    (platform, executable) => {
+      const invocation = workBuddyInvocation(
+        {
+          HOME: "/Users/test",
+          USERPROFILE: "C:\\Users\\test",
+          CODEXHOST_WORKBUDDY_COMMAND: executable,
+          CODEBUDDY_GATEWAY_PASSWORD: "inherited-password",
+          CODEBUDDY_GATEWAY_AUTH: "none",
+        },
+        true,
+        {
+          platform,
+          isExecutable: () => true,
+          isDirectory: () => false,
+          isFile: (candidate) => candidate.endsWith("codebuddy-lite-wb.mjs"),
+        },
+      );
+      expect(invocation.arguments).toEqual([
+        "--eval",
+        expect.any(String),
+        expect.any(String),
+        "--acp",
+        "--no-session-persistence",
+        "--serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+        "--auth",
+        "password",
+      ]);
+      expect(invocation.environment.CODEBUDDY_FORCE_LITE_WB_BUNDLE).toBe("1");
+      expect(invocation.environment.CODEBUDDY_GATEWAY_AUTH).toBe("password");
+      const password = invocation.environment.CODEBUDDY_GATEWAY_PASSWORD;
+      expect(password).toMatch(/^[\w-]{43}$/u);
+      expect(password).not.toBe("inherited-password");
+      expect(invocation.arguments.join(" ")).not.toContain(password);
+    },
+  );
+
+  it("keeps classic bundles on standalone ACP when both distributions are present", () => {
+    const invocation = workBuddyInvocation({}, true, {
+      platform: "darwin",
+      isExecutable: isBundledExecutable,
+      isFile: () => true,
+    });
+    expect(invocation.arguments).not.toContain("--serve");
+    expect(invocation.environment).not.toHaveProperty("CODEBUDDY_FORCE_LITE_WB_BUNDLE");
+  });
+
+  it("keeps the temporary-copy server's own password and arguments", () => {
+    const args = ["--acp", "--serve", "--host", "127.0.0.1", "--port", "0", "--auth", "password"];
+    const invocation = workBuddyInvocation(
+      { CODEBUDDY_GATEWAY_PASSWORD: "copy-owned-password" },
+      true,
+      {
+        platform: "darwin",
+        isExecutable: isBundledExecutable,
+        isFile: (candidate) => candidate.endsWith("codebuddy-lite-wb.mjs"),
+      },
+      args,
+    );
+    expect(invocation.arguments.slice(3)).toEqual(args);
+    expect(invocation.environment.CODEBUDDY_GATEWAY_PASSWORD).toBe("copy-owned-password");
+  });
+
   it("uses only the macOS app-owned Electron and CLI by default", () => {
     const seen: string[] = [];
     const invocation = workBuddyInvocation({ HOME: "/Users/test", PATH: "/ordinary/bin" }, true, {
@@ -55,6 +132,8 @@ describe("WorkBuddy command invocation", () => {
 
     expect(invocation.command).toBe(WORKBUDDY_MACOS_ELECTRON);
     expect(invocation.arguments).toEqual([
+      "--eval",
+      expect.any(String),
       WORKBUDDY_MACOS_CLI,
       "--acp",
       "--no-session-persistence",
@@ -264,6 +343,8 @@ describe("WorkBuddy command invocation", () => {
 
     expect(invocation.command).toBe(WORKBUDDY_MACOS_ELECTRON);
     expect(invocation.arguments).toEqual([
+      "--eval",
+      expect.any(String),
       WORKBUDDY_MACOS_CLI,
       "--resume",
       "source",
@@ -375,7 +456,12 @@ describe("WorkBuddy model-free history copy startup", () => {
     const environment = { HOME: "/Users/test" };
     const copy = workBuddyInvocation(environment, false, dependencies, copyArguments);
     expect(copy.environment.DISABLE_TELEMETRY).toBe("1");
-    expect(copy.arguments).toEqual([WORKBUDDY_MACOS_CLI, ...copyArguments]);
+    expect(copy.arguments).toEqual([
+      "--eval",
+      expect.any(String),
+      WORKBUDDY_MACOS_CLI,
+      ...copyArguments,
+    ]);
     expect(environment).not.toHaveProperty("DISABLE_TELEMETRY");
     for (const args of [undefined, ["--acp", "--serve"], ["--print"], ["--fork-session"]]) {
       expect(

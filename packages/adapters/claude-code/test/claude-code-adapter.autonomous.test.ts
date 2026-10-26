@@ -15,9 +15,10 @@ const SESSION_ID = "00000000-0000-4000-8000-000000000001";
 /** A real Claude Adapter over the real SDK Transport; only the native Query is scripted. */
 async function liveSession() {
   const fakeQuery = new FakeQuery();
+  const history: unknown[] = [];
   let uuid = 0;
   const dependencies: ClaudeAdapterDependencies = {
-    randomUUID: () => `claude-id-${++uuid}`,
+    randomUUID: () => (++uuid === 1 ? SESSION_ID : `claude-id-${uuid}`),
     bypassPermissionsAvailable: () => true,
     inspectInstallation: () => undefined,
     createInspector: () => ({
@@ -31,7 +32,7 @@ async function liveSession() {
     deleteSession: async () => undefined,
     forkSession: async () => ({ sessionId: "derived-session" }),
     getSessionInfo: async () => ({ cwd: "/synthetic" }),
-    readSessionMessages: async () => [],
+    readSessionMessages: async () => structuredClone(history),
     readSubagentMessages: async () => [],
     createTransport: (input) =>
       new ClaudeSdkTransport({
@@ -58,6 +59,7 @@ async function liveSession() {
   return {
     events,
     fakeQuery,
+    history,
     session,
     async close() {
       await session.close();
@@ -176,6 +178,254 @@ function completion(events: readonly HostEvent[], turnId: string) {
 }
 
 describe("Claude live autonomous continuation (issue #495)", () => {
+  it.each([false, true])(
+    "reads history after a failed autonomous Turn using only transcript message IDs (user UUID: %s)",
+    async (hasUserMessage) => {
+      const live = await liveSession();
+      try {
+        await live.session.execute(textTurn("run-tests"));
+        backgroundCommandTurn(live.fakeQuery, "bash-call-1", "bash-task-1");
+        await vi.waitFor(() => expect(completion(live.events, "run-tests")).toBeDefined());
+        const requested = completion(live.events, "run-tests");
+        if (
+          requested?.type !== "turn.completed" ||
+          !requested.nativeTurnRef ||
+          !requested.outcome.checkpoint
+        ) {
+          throw new Error("Requested Turn has no native identity or checkpoint");
+        }
+
+        const userMessageId = "00000000-0000-4000-8000-0000000000a1";
+        const checkpointId = "00000000-0000-4000-8000-0000000000a2";
+        if (hasUserMessage) {
+          commandNotification(live.fakeQuery, userMessageId, "bash-call-1", "bash-task-1");
+        } else {
+          // Native quota failures can answer a task notification without a streamed User UUID.
+          push(live.fakeQuery, {
+            type: "system",
+            subtype: "task_notification",
+            task_id: "bash-task-1",
+            tool_use_id: "bash-call-1",
+            status: "failed",
+            summary: "Background command timed out",
+          });
+        }
+        assistantText(live.fakeQuery, checkpointId, "You've hit your session limit");
+        result(live.fakeQuery, "error_during_execution");
+        await vi.waitFor(() => expect(autonomousTurnIds(live.events)).toHaveLength(1));
+        const [turnId] = autonomousTurnIds(live.events);
+        if (!turnId) throw new Error("Autonomous Turn did not start");
+        await vi.waitFor(() =>
+          expect(completion(live.events, turnId)).toMatchObject({
+            nativeTurnRef: {
+              nativeTurnKey: hasUserMessage ? userMessageId : expect.stringMatching(/^autonomous-/),
+            },
+            outcome: { status: "failed", checkpoint: { checkpointId } },
+          }),
+        );
+
+        // A real Assistant checkpoint still must reach native history before a read succeeds.
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+        live.history.push({
+          type: "assistant",
+          uuid: checkpointId,
+          session_id: SESSION_ID,
+          message: { role: "assistant", content: "You've hit your session limit" },
+        });
+        if (hasUserMessage) {
+          await expect(live.session.readSnapshot()).resolves.toMatchObject({
+            ok: false,
+            error: { code: "sessionBusy" },
+          });
+          live.history.unshift({
+            type: "user",
+            uuid: userMessageId,
+            session_id: SESSION_ID,
+            message: { role: "user", content: "Background command completed" },
+          });
+        }
+        // The autonomous messages cannot confirm that the previous requested Turn was saved.
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+        live.history.unshift({
+          type: "user",
+          uuid: requested.nativeTurnRef.nativeTurnKey,
+          session_id: SESSION_ID,
+          message: { role: "user", content: "run-tests" },
+        });
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+        live.history.splice(1, 0, {
+          type: "assistant",
+          uuid: requested.outcome.checkpoint.checkpointId,
+          session_id: SESSION_ID,
+          message: { role: "assistant", content: "Tests are running in the background." },
+        });
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { turns: [{ input: [{ text: "run-tests" }] }, ...(hasUserMessage ? [{}] : [])] },
+        });
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({ ok: true });
+        await expect(live.session.execute(textTurn("continue"))).resolves.toMatchObject({
+          ok: true,
+        });
+      } finally {
+        await live.close();
+      }
+    },
+  );
+
+  it("preserves pending transcript IDs when an autonomous failure has no checkpoint", async () => {
+    const live = await liveSession();
+    try {
+      await live.session.execute(textTurn("start"));
+      assistantText(live.fakeQuery, "start-checkpoint", "Started");
+      result(live.fakeQuery);
+      await vi.waitFor(() => expect(completion(live.events, "start")).toBeDefined());
+      const started = completion(live.events, "start");
+      if (started?.type !== "turn.completed" || !started.nativeTurnRef) {
+        throw new Error("Requested Turn has no native identity");
+      }
+      result(live.fakeQuery, "error_during_execution");
+      await vi.waitFor(() => expect(autonomousTurnIds(live.events)).toHaveLength(1));
+      const [turnId] = autonomousTurnIds(live.events);
+      if (!turnId) throw new Error("Autonomous Turn did not start");
+      await vi.waitFor(() =>
+        expect(completion(live.events, turnId)).toMatchObject({ outcome: { status: "failed" } }),
+      );
+      await expect(live.session.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      live.history.push({
+        type: "user",
+        uuid: started.nativeTurnRef.nativeTurnKey,
+        session_id: SESSION_ID,
+        message: { role: "user", content: "start" },
+      });
+      await expect(live.session.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      live.history.push({
+        type: "assistant",
+        uuid: "start-checkpoint",
+        session_id: SESSION_ID,
+        message: { role: "assistant", content: "Started" },
+      });
+      await expect(live.session.readSnapshot()).resolves.toMatchObject({ ok: true });
+    } finally {
+      await live.close();
+    }
+  });
+
+  it.each([true, false])(
+    "rereads an occupancy-held Agent continuation on its live Turn (explicit background=%s)",
+    async (background) => {
+      const live = await liveSession();
+      try {
+        await live.session.execute(textTurn("held-agent"));
+        const launch = [
+          {
+            type: "assistant",
+            uuid: "agent-launch",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "agent-call",
+                  name: "Agent",
+                  input: { prompt: "inspect", run_in_background: background },
+                },
+              ],
+            },
+          },
+          {
+            type: "user",
+            uuid: "agent-result",
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "agent-call",
+                  content: "The agent is working in the background.",
+                  is_error: false,
+                },
+              ],
+            },
+            tool_use_result: { isAsync: true, agentId: "agent-1" },
+          },
+          {
+            type: "assistant",
+            uuid: "agent-waiting",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "waiting" }],
+              stop_reason: "end_turn",
+            },
+          },
+        ];
+        for (const entry of launch) push(live.fakeQuery, entry);
+        result(live.fakeQuery);
+        await vi.waitFor(() => expect(turnTexts(live.events, "held-agent")).toContain("waiting"));
+        expect(completion(live.events, "held-agent")).toBeUndefined();
+        commandNotification(live.fakeQuery, "agent-notification", "agent-call", "agent-1");
+        assistantText(live.fakeQuery, "agent-continuation", "finished");
+        result(live.fakeQuery);
+        await vi.waitFor(() => expect(completion(live.events, "held-agent")).toBeDefined());
+        const terminal = completion(live.events, "held-agent");
+        if (terminal?.type !== "turn.completed" || !terminal.nativeTurnRef)
+          throw new Error("Missing native Turn");
+        live.history.push(
+          {
+            type: "user",
+            uuid: terminal.nativeTurnRef.nativeTurnKey,
+            session_id: SESSION_ID,
+            message: { role: "user", content: "held-agent" },
+          },
+          ...launch.map((entry) => ({ ...entry, session_id: SESSION_ID })),
+          {
+            type: "user",
+            uuid: "agent-notification",
+            session_id: SESSION_ID,
+            origin: { kind: "task-notification" },
+            message: {
+              role: "user",
+              content:
+                "<task-notification><task-id>agent-1</task-id><tool-use-id>agent-call</tool-use-id><status>completed</status></task-notification>",
+            },
+          },
+          {
+            type: "assistant",
+            uuid: "agent-continuation",
+            session_id: SESSION_ID,
+            message: { role: "assistant", content: "finished", stop_reason: "end_turn" },
+          },
+        );
+        expect(autonomousTurnIds(live.events)).toEqual([]);
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: {
+            turns: [
+              { nativeTurnRef: terminal.nativeTurnRef, checkpoint: terminal.outcome.checkpoint },
+            ],
+          },
+        });
+      } finally {
+        await live.close();
+      }
+    },
+  );
+
   it("shows a background command continuation live and keeps each Segment in its own Turn", async () => {
     const live = await liveSession();
     try {

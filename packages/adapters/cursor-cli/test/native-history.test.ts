@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -68,6 +68,18 @@ describe("Cursor read-only native identity", () => {
     const link = path.join(f.home, "workspace-link");
     symlinkSync(f.home, link, "junction");
     expect(readCursorNativeTurns(f.sessionId, link, { HOME: f.home })).toEqual(f.turns);
+  });
+  it("accepts the native on-disk case of a case-insensitive workspace path", (context) => {
+    const f = fixture();
+    const workspace = path.join(f.home, "Github", "project");
+    mkdirSync(workspace, { recursive: true });
+    const requested = path.join(f.home, "github", "project");
+    if (!existsSync(requested)) context.skip();
+    writeFileSync(
+      path.join(f.home, ".cursor", "acp-sessions", f.sessionId, "meta.json"),
+      JSON.stringify({ cwd: workspace }),
+    );
+    expect(readCursorNativeTurns(f.sessionId, requested, { HOME: f.home })).toEqual(f.turns);
   });
   it("allows a new empty history without inventing IDs", () => {
     const f = fixture([]);

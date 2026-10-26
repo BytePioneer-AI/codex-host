@@ -40,11 +40,14 @@ describe("WorkBuddy cross-Harness delegation", () => {
   it("exposes fixed native instructions while keeping Runtime credentials in the ACP environment", () => {
     const invocation = workBuddyInvocation({ HOME: "/Users/test", ...runtimeEnvironment }, false, {
       platform: "darwin",
+      isFile: () => false,
       isExecutable: (candidate) =>
         candidate === WORKBUDDY_MACOS_ELECTRON || candidate === WORKBUDDY_MACOS_CLI,
     });
     const instructions = WORKBUDDY_DELEGATION_INSTRUCTIONS;
     expect(invocation.arguments).toEqual([
+      "--eval",
+      expect.any(String),
       WORKBUDDY_MACOS_CLI,
       "--acp",
       "--append-system-prompt",
@@ -79,9 +82,16 @@ describe("WorkBuddy cross-Harness delegation", () => {
     expect(
       workBuddyInvocation({ HOME: "/Users/test", ...runtimeEnvironment }, true, {
         platform: "darwin",
+        isFile: () => false,
         isExecutable: () => true,
       }).arguments,
-    ).toEqual([WORKBUDDY_MACOS_CLI, "--acp", "--no-session-persistence"]);
+    ).toEqual([
+      "--eval",
+      expect.any(String),
+      WORKBUDDY_MACOS_CLI,
+      "--acp",
+      "--no-session-persistence",
+    ]);
     expect(
       workBuddyInvocation(
         {
@@ -90,9 +100,9 @@ describe("WorkBuddy cross-Harness delegation", () => {
           CODEXHOST_RUNTIME_TOKEN: undefined,
         },
         false,
-        { platform: "darwin", isExecutable: () => true },
+        { platform: "darwin", isExecutable: () => true, isFile: () => false },
       ).arguments,
-    ).toEqual([WORKBUDDY_MACOS_CLI, "--acp"]);
+    ).toEqual(["--eval", expect.any(String), WORKBUDDY_MACOS_CLI, "--acp"]);
   });
 
   it("preserves per-Thread delegation environment across create and resume", async () => {

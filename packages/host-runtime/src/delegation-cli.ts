@@ -238,6 +238,7 @@ export async function runDelegationCli(input: {
       rejectUnknown(parsed, [
         "--harness",
         "--task",
+        "--task-name",
         "--cwd",
         "--model",
         "--thinking",
@@ -272,6 +273,9 @@ export async function runDelegationCli(input: {
           body: {
             harnessId,
             task,
+            ...(value(parsed, "--task-name") !== undefined
+              ? { taskName: value(parsed, "--task-name") }
+              : {}),
             ...(value(parsed, "--cwd") ? { cwd: value(parsed, "--cwd") } : {}),
             ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
             ...(value(parsed, "--thinking")
@@ -381,9 +385,11 @@ export async function runDelegationCli(input: {
           "INVALID_ARGUMENT",
           "--host conflicts with the Thread reference",
         );
+      const caller = command === "read" ? callerThreadId(environment) : undefined;
       const body = {
         ...reference,
         ...(hostId ? { hostId } : {}),
+        ...(caller ? { callerThreadId: normalizeThreadId(caller) } : {}),
         view,
         ...(value(parsed, "--cursor") ? { cursor: value(parsed, "--cursor") } : {}),
         ...(value(parsed, "--limit")

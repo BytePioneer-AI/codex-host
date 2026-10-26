@@ -1,0 +1,280 @@
+/* Shared blocks */
+
+.console-panel {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 18px;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 12px;
+}
+
+.console-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.console-panel__title {
+  margin: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.console-muted {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.console-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  color: var(--settings-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  background: var(--settings-surface);
+  border-radius: 999px;
+}
+
+.console-badge.is-ok {
+  color: var(--settings-success);
+  background: color-mix(in srgb, var(--settings-success) 12%, transparent);
+}
+
+.console-badge.is-warn {
+  color: var(--settings-warning);
+  background: var(--settings-warning-bg);
+}
+
+.console-badge.is-bad {
+  color: var(--settings-danger);
+  background: var(--settings-danger-bg);
+}
+
+.console-badge.is-info {
+  color: var(--settings-focus);
+  background: color-mix(in srgb, var(--settings-focus) 12%, transparent);
+}
+
+.console-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 18px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.console-facts dt {
+  color: var(--settings-muted);
+}
+
+.console-facts dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.console-pre {
+  max-height: 360px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--settings-text);
+  font:
+    12px/18px ui-monospace,
+    "SFMono-Regular",
+    Consolas,
+    "Liberation Mono",
+    monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--settings-inset);
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
+}
+
+.console-input {
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  color: var(--settings-text);
+  font: inherit;
+  font-size: 12px;
+  background: var(--settings-inset);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+
+.console-input:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 1px;
+}
+
+.console-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--settings-focus);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.console-link:hover {
+  text-decoration: underline;
+}
+
+.console-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--settings-surface);
+  border-radius: 10px;
+}
+
+/* Model-row price dialog */
+
+.console-model-prices {
+  box-sizing: border-box;
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 24px;
+  overflow: auto;
+  color: var(--settings-text);
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 16px;
+}
+
+.console-model-prices::backdrop {
+  background: rgb(0 0 0 / 35%);
+}
+
+.console-model-prices [hidden] {
+  display: none;
+}
+
+.console-model-prices__body {
+  display: grid;
+  gap: 14px;
+}
+
+.console-model-price__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.console-model-price__grid.is-prices {
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+
+.console-model-price__field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.console-model-price-suggestions {
+  display: grid;
+  gap: 10px;
+  max-height: 260px;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  overscroll-behavior-y: contain;
+  border-top: 1px solid var(--settings-border);
+  padding: 12px 10px 0 0;
+}
+
+/* Explicit Chromium scrollbar styling keeps the affordance visible on macOS,
+   rather than inheriting the system's transient overlay scrollbar. */
+.console-model-price-suggestions::-webkit-scrollbar {
+  width: 6px;
+}
+
+.console-model-price-suggestions::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--settings-text) 5%, transparent);
+  border-radius: 999px;
+}
+
+.console-model-price-suggestions::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--settings-text) 28%, transparent);
+  border-radius: 999px;
+  min-height: 32px;
+}
+
+.console-model-price-suggestions::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--settings-text) 42%, transparent);
+}
+
+.console-model-price-suggestions h3,
+.console-model-price-suggestions p {
+  margin: 0;
+}
+
+.console-model-price-suggestion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--settings-border);
+  overflow-wrap: anywhere;
+}
+
+.console-model-price-official {
+  display: inline-block;
+  margin-inline-start: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--settings-border);
+  border-radius: 4px;
+  color: var(--settings-text);
+  background: color-mix(in srgb, var(--settings-text) 6%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.console-model-price-suggestion > div {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.console-model-price__error:empty {
+  display: none;
+}
+
+.console-model-price__error,
+.console-muted[data-tone="bad"] {
+  margin: 0;
+  color: var(--settings-danger);
+  font-size: 12px;
+}
+
+.console-notice[hidden] {
+  display: none;
+}

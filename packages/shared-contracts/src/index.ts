@@ -2,6 +2,10 @@ import { z } from "zod";
 export * from "./delegation-read.js";
 export * from "./credential-imports.js";
 export * from "./harness-display-settings.js";
+export * from "./harness-presentation.js";
+export * from "./account-credits-presentation.js";
+export * from "./model-price-overrides.js";
+export * from "./usage-statistics.js";
 export * from "./thread-prewarm.js";
 export {
   CONSOLE_HOST_METHODS,
@@ -199,6 +203,10 @@ export {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  threadSteeringInspectParamsSchema,
+  threadSteeringInspectResultSchema,
+  THREAD_STEER_DELIVERY_PARAM,
+  threadSteerDeliverySchema,
   threadOwnershipSchema,
 } from "./harness-models.js";
 export type {
@@ -223,6 +231,8 @@ export type {
   ThreadOwnership,
   ThreadOwnershipListParams,
   ThreadOwnershipListResult,
+  ThreadSteeringInspectResult,
+  ThreadSteerDelivery,
 } from "./harness-models.js";
 export {
   harnessCommandCatalogSchema,
@@ -244,6 +254,7 @@ export {
   accountCreditsProductUsageSchema,
   accountResetCreditsSchema,
   accountCreditsSnapshotSchema,
+  composerIndicatorsSchema,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
   threadUsageSnapshotSchema,

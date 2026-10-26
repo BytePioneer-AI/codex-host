@@ -201,6 +201,12 @@ fn configure_managed_desktop_environment(
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
     managed: &[(OsString, OsString)],
 ) {
+    // Desktop is a local GUI session, even when launched over SSH. Otherwise its
+    // child shells can reapply the remote bootstrap and overwrite the Host paths.
+    // Keep SSH_AUTH_SOCK so Git and other tools can still use the user's agent.
+    for name in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
+        command.env_remove(name);
+    }
     let inherited = inherited.into_iter().collect::<Vec<_>>();
     let inherited_remote_profile = inherited
         .iter()
@@ -1412,6 +1418,55 @@ mod tests {
         assert!(!environment.contains("CODEX_INSTALL_DIR="));
         assert!(!environment.contains("/remote/data"));
         assert!(!environment.contains("/remote/runtime"));
+    }
+
+    #[test]
+    fn managed_launch_does_not_reactivate_remote_profile_in_child_shell() {
+        for runtime in [
+            "/source/packages/host-runtime/dist/main.js",
+            "/local/app/host-runtime.mjs",
+        ] {
+            for ssh_marker in ["SSH_CONNECTION", "SSH_CLIENT"] {
+                let inherited = [
+                    (
+                        OsString::from(ssh_marker),
+                        OsString::from("synthetic-ssh-session"),
+                    ),
+                    (OsString::from("SSH_TTY"), OsString::from("/dev/ttys001")),
+                    (
+                        OsString::from("SSH_AUTH_SOCK"),
+                        OsString::from("/local/agent.sock"),
+                    ),
+                ];
+                let mut command = Command::new("/bin/sh");
+                command.env_clear().envs(inherited.clone());
+                configure_managed_desktop_environment(
+                    &mut command,
+                    inherited,
+                    &[(
+                        OsString::from("CODEXHOST_HOST_RUNTIME_PATH"),
+                        OsString::from(runtime),
+                    )],
+                );
+                // Match the remote bootstrap guard evaluated by Desktop's child shell.
+                command.args([
+                    "-c",
+                    r#"
+                    if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_CLIENT:-}" ]; then
+                        export CODEXHOST_HOST_RUNTIME_PATH=/remote/app/host-runtime.mjs
+                    fi
+                    printf '%s\n' "$CODEXHOST_HOST_RUNTIME_PATH" "${SSH_TTY:-}" "$SSH_AUTH_SOCK"
+                "#,
+                ]);
+                let output = command.output().expect("run managed child shell");
+                assert!(output.status.success());
+                assert_eq!(
+                    String::from_utf8(output.stdout).expect("UTF-8 environment"),
+                    format!("{runtime}\n\n/local/agent.sock\n"),
+                    "remote profile reactivated through {ssh_marker}",
+                );
+            }
+        }
     }
 
     #[test]

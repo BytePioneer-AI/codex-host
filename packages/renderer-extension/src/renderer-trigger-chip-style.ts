@@ -36,7 +36,7 @@ export function rendererPermissionModeTriggerMaxWidth(): string {
 }
 
 export function rendererUsageTriggerMaxWidth(): string {
-  return "min(140px, 22vw)";
+  return "min(240px, 30vw)";
 }
 
 export function rendererCreditsTriggerMaxWidth(): string {

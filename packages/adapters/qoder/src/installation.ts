@@ -33,6 +33,10 @@ export function createQoderInstallation(
           updateAvailable: false,
           canUpdate: false,
           messageCode: "qoder-check-unavailable",
+          notice: {
+            en: "This Qoder China release does not expose a non-installing update check. Use its original installer.",
+            "zh-CN": "此 Qoder 中国版尚不支持只检查、不安装的更新查询，请使用原安装方式更新。",
+          },
           message:
             "This Qoder China release does not expose a non-installing update check. Use its original installer.",
         };

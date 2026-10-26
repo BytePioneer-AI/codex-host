@@ -1,3 +1,4 @@
+import type { ClaudeUsageRecord } from "./claude-usage.js";
 import type {
   HarnessAccountSnapshot,
   HarnessThinkingOptionId,
@@ -64,6 +65,21 @@ export type ClaudeInteractionResponse =
   | { type: "question"; requestId: string; answers: Record<string, string> }
   | { type: "question"; requestId: string; cancelled: true };
 
+/** One agent of a native Workflow run, as its latest `workflow_progress` entry reports it. */
+export interface ClaudeWorkflowAgent {
+  /** Native 1-based ordinal of the agent call within the run; stable for the run. */
+  index: number;
+  label: string;
+  /** `queued` until the agent starts; `running` covers native `start` and `progress`. */
+  state: "queued" | "running" | "done" | "error";
+  agentId?: string;
+  phaseTitle?: string;
+  agentType?: string;
+  model?: string;
+  resultPreview?: string;
+  error?: string;
+}
+
 export interface ClaudeLastRequestUsage {
   requestId?: string;
   model?: string;
@@ -85,6 +101,8 @@ export type ClaudeTurnEvent =
   | {
       type: "message.completed";
       messageId: string;
+      /** Local slash-command output is not an assistant response. */
+      localCommand?: true;
       checkpointId?: string;
       lastRequestUsage?: ClaudeLastRequestUsage;
     }
@@ -144,16 +162,56 @@ export type ClaudeTurnEvent =
       outputFile?: string;
     }
   | { type: "subagent.transcript.changed"; callId: string }
-  | { type: "interaction.requested"; request: ClaudeInteractionRequest }
+  /** The Root called the native Workflow tool; its run has not been registered yet. */
+  | { type: "workflow.started"; callId: string; name?: string }
+  /**
+   * Native task frames of a Workflow run. `agents` lists only the agents this frame reports;
+   * a frame without it still carries the run identity.
+   */
+  | {
+      type: "workflow.updated";
+      callId: string;
+      taskId?: string;
+      description?: string;
+      agents?: ClaudeWorkflowAgent[];
+    }
+  /** Agent activity inside a run that reports no agent state, such as a tool call. */
+  | { type: "workflow.activity"; callId: string }
+  /** The Workflow tool returned; a launched run keeps working in the background. */
+  | {
+      type: "workflow.launched";
+      callId: string;
+      isError: boolean;
+      background: boolean;
+      taskId?: string;
+      resultSummary?: string;
+    }
+  | {
+      type: "interaction.requested";
+      request: ClaudeInteractionRequest;
+      /**
+       * Requested by a native agent rather than the Root. It stays pending across the Root
+       * terminal while that agent keeps running.
+       */
+      agentScoped?: boolean;
+    }
   | {
       type: "interaction.closed";
       requestId: string;
       reason: "responded" | "cancelled" | "superseded";
     }
+  /** One finished native model request, for Host usage metering. */
+  | { type: "usage.request"; record: ClaudeUsageRecord }
   | {
       type: "usage.result";
       totalCostUsd?: number;
-      modelUsage?: Array<{ inputTokens: number; outputTokens: number }>;
+      modelUsage?: Array<{
+        model: string;
+        inputTokens: number;
+        outputTokens: number;
+        promptTokens?: number;
+        contextWindowTokens?: number;
+      }>;
       lastRequestUsage?: ClaudeLastRequestUsage;
     };
 
@@ -188,7 +246,16 @@ export interface ClaudeIdleTurnHandler {
  * Terminal without any; the Segment's events and Terminal then follow live.
  */
 export interface ClaudeAutonomousTurnHandler extends ClaudeIdleTurnHandler {
-  start(nativeTurnKey: string): void;
+  /** The opaque Turn key may be synthetic; only an observed User UUID belongs in native history. */
+  start(nativeTurnKey: string, userMessageId: string | null): void;
+}
+
+/** No running Turn could take this steer, or the transport closed before Claude accepted it. */
+export class ClaudeSteerMissedTurnError extends Error {
+  constructor() {
+    super("Claude Code steer missed the active Turn");
+    this.name = "ClaudeSteerMissedTurnError";
+  }
 }
 
 export interface ClaudeTurnTransport {
@@ -208,10 +275,25 @@ export interface ClaudeTurnTransport {
   hasBackgroundTasks(): boolean;
   /** Requests a native stop; the task still settles through its `task_notification`. */
   stopBackgroundTask(taskId: string): Promise<void>;
+  /**
+   * Stops native background tasks and resolves once Claude Code reports that each one ended.
+   * A task that already ended needs no stop; a stop Claude Code does not confirm rejects.
+   */
+  stopTasks(taskIds: readonly string[]): Promise<void>;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   /** Live slash commands of the started native Session, when known. */
   slashCommands?(): ClaudeSlashCommandSnapshot | null;
+  /**
+   * True once the running CLI reports `msg_lifecycle_v1` in `system/init`: it then emits the
+   * `command_lifecycle` receipts that confirm a steer. False before init and on CLIs without it.
+   */
+  supportsNativeSteer?(): boolean;
+  /**
+   * True while a requested Turn has a root tool call running on a CLI that confirms steers. A
+   * steer written now joins this Turn after that tool call; otherwise it may run as the next Turn.
+   */
+  canSteerActiveTurn?(): boolean;
   getPermissionMode(): ClaudePermissionMode;
   setModel(model?: string): Promise<void>;
   setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;
@@ -239,9 +321,23 @@ export interface ClaudeTurnTransport {
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
+  /**
+   * Inserts text into the active Turn at Claude's tool boundary (`priority: "next"`).
+   * Resolves when Claude emits `command_lifecycle` `queued` for that message, or after a bounded
+   * wait once it is written: from then on Claude owns its delivery, joining the running Turn after
+   * the current tool call, or running it next. The Turn ending first does not reject a written
+   * message. Rejects with {@link ClaudeSteerMissedTurnError} when no Turn is active, the message
+   * cannot be written, or the transport closes or faults before acceptance.
+   */
+  steer(text: string, messageId: string): Promise<void>;
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void>;
   /** Interrupts the running requested or autonomous Turn; its Terminal still follows. */
   abort(): Promise<void>;
+  /**
+   * Interrupts the Root Segment Claude Code runs after the requested Turn's Result, such as
+   * its answer to a task notification. Its terminal reaches the idle Turn handler.
+   */
+  abortContinuation(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -284,7 +380,8 @@ export interface ClaudeAdapterDependencies {
   }): Promise<{ sessionId: string }>;
   getSessionInfo(input: { sessionId: string }): Promise<{ cwd?: string } | undefined>;
   inspectInstallation(): void;
-  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[]>;
+  /** Null means the native transcript is absent, not a successfully read empty history. */
+  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[] | null>;
   readSubagentMessages(input: {
     cwd: string;
     sessionId: string;

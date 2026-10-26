@@ -13,9 +13,6 @@ import {
   type RuntimeStatus,
 } from "@codexhost/shared-contracts";
 import {
-  HARNESS_INSTALLATION_METHOD,
-  harnessInstallationParamsSchema,
-  harnessInstallationStateSchema,
   type HarnessInstallationParams,
   type HarnessInstallationState,
   HARNESS_DISPLAY_GET_METHOD,
@@ -113,6 +110,7 @@ import {
   type UpdateStartResult,
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
+import { runRendererInstallation } from "./renderer-installation-client.js";
 
 import {
   createRendererRequestSender,
@@ -152,10 +150,10 @@ export const THREAD_USAGE_INSPECT_METHOD = "codexhost/thread/usage/inspect";
 export const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 export const THREAD_TOKEN_USAGE_UPDATED_METHOD = "thread/tokenUsage/updated";
 /**
- * Codex Desktop does not dispatch the custom `codexhost/thread/usage/updated`
- * notification to renderer callbacks, and the native token-usage carrier is
- * only projected once Context usage is known. Turn completion is dispatched,
- * so it is the guaranteed point to re-read account quota after a reply.
+ * Desktop filters custom usage notifications before native manager callbacks;
+ * renderer-host-clients also observes their raw per-Host window messages.
+ * Native Token updates and Turn completion remain fallback refresh signals,
+ * including for account quota after a reply.
  */
 export const TURN_COMPLETED_METHOD = "turn/completed";
 const THREAD_USAGE_REFRESH_METHODS = [
@@ -325,7 +323,16 @@ export function createRendererModelClient(
     options?: RendererRequestOptions,
   ): Promise<HarnessInspection> => {
     const params = harnessInspectParamsSchema.parse(input);
-    const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    let result: unknown;
+    try {
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    } catch (error) {
+      // Hosts that predate `purpose` reject it as an unknown param; they only run full inspection.
+      if (!params.purpose || !isInvalidParams(error)) throw error;
+      const full = { ...params };
+      delete full.purpose;
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, full, options);
+    }
     return harnessInspectionSchema.parse(result);
   };
   const inspectHarnessCommands = async (
@@ -380,13 +387,7 @@ export function createRendererModelClient(
 
   return Object.freeze({
     async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
-      return harnessInstallationStateSchema.parse(
-        await manager.sendRequest(
-          HARNESS_INSTALLATION_METHOD,
-          harnessInstallationParamsSchema.parse(input),
-          { priority: "interactive" },
-        ),
-      );
+      return runRendererInstallation(manager.sendRequest, input);
     },
     async getHarnessDisplaySettings() {
       return harnessDisplaySettingsSchema.parse(
@@ -627,4 +628,8 @@ export function createRendererModelClient(
       });
     },
   });
+}
+
+function isInvalidParams(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === -32602;
 }

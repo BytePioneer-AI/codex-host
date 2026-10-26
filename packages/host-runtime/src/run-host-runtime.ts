@@ -1,5 +1,6 @@
 import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { randomBytes } from "node:crypto";
+import { statSync } from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -47,6 +48,8 @@ import { remoteOfficialAppServerSocketPath } from "./remote-official-app-server.
 import { startConsoleControlServer } from "./console-control-server.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
+import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
+import { UsageStatistics } from "./usage-statistics.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
@@ -106,10 +109,31 @@ function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
  * The CLI stays the native Launcher. npm packages ship no Node, so the Launcher
  * runs the delegation CLI with the Node that started this npm installation.
  */
-export function delegationCliEnvironment(environment: NodeJS.ProcessEnv): Record<string, string> {
+export function delegationCliEnvironment(
+  environment: NodeJS.ProcessEnv,
+  hostRuntimePath?: string,
+): Record<string, string> {
+  let packagedCli: string | undefined;
+  if (hostRuntimePath && path.isAbsolute(hostRuntimePath)) {
+    const candidate = path.resolve(
+      path.dirname(hostRuntimePath),
+      "../bin",
+      process.platform === "win32" ? "codexhost.exe" : "codexhost",
+    );
+    try {
+      if (statSync(candidate).isFile()) packagedCli = candidate;
+    } catch {
+      /* Source-only runtimes may have no packaged Launcher. */
+    }
+  }
   const cliPath =
-    environment[DELEGATION_CLI_PATH_ENV] ?? environment[UPDATE_RUNTIME_ENV.launcherExecutable];
-  const nodePath = environment[UPDATE_RUNTIME_ENV.npmNodePath];
+    environment[DELEGATION_CLI_PATH_ENV] ??
+    environment[UPDATE_RUNTIME_ENV.launcherExecutable] ??
+    packagedCli;
+  const nodePath =
+    environment[DELEGATION_CLI_NODE_PATH_ENV] ??
+    environment[UPDATE_RUNTIME_ENV.npmNodePath] ??
+    (packagedCli && cliPath === packagedCli ? process.execPath : undefined);
   return {
     ...(cliPath ? { [DELEGATION_CLI_PATH_ENV]: cliPath } : {}),
     ...(nodePath && path.isAbsolute(nodePath) ? { [DELEGATION_CLI_NODE_PATH_ENV]: nodePath } : {}),
@@ -118,6 +142,7 @@ export function delegationCliEnvironment(environment: NodeJS.ProcessEnv): Record
 
 async function prepareDelegationRuntime(input: {
   environment: NodeJS.ProcessEnv;
+  hostRuntimePath?: string;
   createHost(
     environment: NodeJS.ProcessEnv,
     onDelegationApi: (api: DelegationControlRegistration) => (() => void) | undefined,
@@ -135,7 +160,7 @@ async function prepareDelegationRuntime(input: {
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
   const environment = {
     ...input.environment,
-    ...delegationCliEnvironment(input.environment),
+    ...delegationCliEnvironment(input.environment, input.hostRuntimePath),
     [DELEGATION_RUNTIME_ENDPOINT_ENV]: server.endpoint,
     [DELEGATION_RUNTIME_TOKEN_ENV]: token,
   };
@@ -200,6 +225,17 @@ export async function runHostRuntime(input: {
         environment: input.environment,
       })
     : undefined;
+  // One price table per runtime; it refreshes in the background and never blocks startup.
+  const modelPrices = new ModelPriceCatalog({
+    directory: defaultModelPriceDirectory(input.environment),
+    diagnose: (message) => process.stderr.write(`codexhost Host Runtime: ${message}\n`),
+  });
+  void modelPrices.start();
+  const usageStatistics = new UsageStatistics({
+    directory: path.join(defaultModelPriceDirectory(input.environment), "usage-statistics"),
+    prices: modelPrices,
+    diagnose: (message) => process.stderr.write(`codexhost Host Runtime: ${message}\n`),
+  });
   const updateCoordinator =
     input.updateCoordinator ??
     (hostRuntimePath && hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
@@ -221,6 +257,8 @@ export async function runHostRuntime(input: {
   const consoleOpener = consoleEntry
     ? createHostConsoleOpener({ entrypoint: consoleEntry, environment: input.environment })
     : undefined;
+  // The local console reads the statistics; read the native storage ahead of its first visit.
+  if (consoleOpener) usageStatistics.warm();
 
   if (!isRemoteUnixListenerInvocation(input.arguments)) {
     const remoteControlPlan = createRemoteControlAppServerPlan({
@@ -231,6 +269,7 @@ export async function runHostRuntime(input: {
     const environment = remoteControlPlan?.environment ?? input.environment;
     return prepareDelegationRuntime({
       environment,
+      ...(hostRuntimePath ? { hostRuntimePath } : {}),
       createHost: async (delegationEnvironment, onDelegationApi, registry) => {
         const official = await prepareLocalCodex({
           stockCodexPath,
@@ -246,6 +285,8 @@ export async function runHostRuntime(input: {
           try {
             const host = new AppServerHost({
               ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+              modelPrices,
+              usageStatistics,
               ...(process.platform !== "win32"
                 ? {
                     sharedThreads: new SharedThreadBridge({
@@ -290,6 +331,8 @@ export async function runHostRuntime(input: {
           };
           const host = new AppServerHost({
             ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+            modelPrices,
+            usageStatistics,
             ...common,
             arguments: input.arguments,
             onDelegationApi,
@@ -300,6 +343,8 @@ export async function runHostRuntime(input: {
             createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) =>
               new AppServerHost({
                 ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+                modelPrices,
+                usageStatistics,
                 ...common,
                 arguments: [],
                 desktopInput,
@@ -338,6 +383,7 @@ export async function runHostRuntime(input: {
   if (!listenUrl) throw new Error("Remote app-server listener URL is unavailable");
   return prepareDelegationRuntime({
     environment: input.environment,
+    ...(hostRuntimePath ? { hostRuntimePath } : {}),
     createHost: async (delegationEnvironment, _onDelegationApi, registry) => {
       const socketPath = remoteAppServerSocketPath(delegationEnvironment, listenUrl);
       const officialPlan = createRemoteOfficialAppServerPlan(input.arguments, socketPath);
@@ -371,6 +417,8 @@ export async function runHostRuntime(input: {
       let sharedDelegation: DelegationControlRegistration | undefined;
       const externalHost = new AppServerHost({
         ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+        modelPrices,
+        usageStatistics,
         stockCodexPath,
         arguments: [],
         environment: delegationEnvironment,
@@ -400,6 +448,8 @@ export async function runHostRuntime(input: {
         createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
           return new AppServerHost({
             ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+            modelPrices,
+            usageStatistics,
             ...(sharedDelegation ? { sharedDelegation } : {}),
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),

@@ -19,7 +19,7 @@ export async function runUpdateCommand(
   const { status } = await updates.start(target);
   if (status.phase === "failed") throw new Error(status.error ?? "Update failed");
   write(
-    `Update ${status.version}: ${status.phase}. The background updater will finish installation and restart codexhost.`,
+    `Update ${status.version}: ${status.phase}. The background updater has accepted the handoff; installation is not complete yet. It will install the update and restart codexhost.`,
   );
 }
 

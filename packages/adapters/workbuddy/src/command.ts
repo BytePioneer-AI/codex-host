@@ -1,4 +1,5 @@
-import { lstatSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { CodeBuddyError, type CodeBuddyInvocationFactory } from "@codexhost/adapter-codebuddy";
 import {
@@ -12,6 +13,7 @@ import {
   type HarnessDiscoverySpec,
 } from "@codexhost/harness-discovery";
 import { workBuddyDelegationArguments } from "./delegation.js";
+import { WORKBUDDY_CREDENTIAL_PRELOAD } from "./credential-bootstrap.js";
 import {
   resolveWorkBuddyBundle,
   resolveWorkBuddyInstallDirectory,
@@ -39,6 +41,7 @@ interface WorkBuddyInvocationDependencies {
     uid: number;
   };
   getuid?: () => number | undefined;
+  isFile?: (candidate: string) => boolean;
 }
 
 const WORKBUDDY_PRODUCT_CONFIG_PATH_ENV = "ACC_PRODUCT_CONFIG_PATH";
@@ -107,16 +110,11 @@ export function workBuddyEnvironment(
   };
 }
 
-export function workBuddyInvocation(
+/** Select the same installation for native startup and application version checks. */
+export function resolveWorkBuddyLaunch(
   environment: NodeJS.ProcessEnv,
-  ephemeral: boolean,
-  dependenciesOrArguments: WorkBuddyInvocationDependencies | string[] = {},
-  argumentsOverride?: string[],
-): ReturnType<CodeBuddyInvocationFactory> {
-  const dependencies = Array.isArray(dependenciesOrArguments) ? {} : dependenciesOrArguments;
-  const nativeArguments = Array.isArray(dependenciesOrArguments)
-    ? dependenciesOrArguments
-    : argumentsOverride;
+  dependencies: WorkBuddyInvocationDependencies = {},
+) {
   const platform = dependencies.platform ?? process.platform;
   const configured =
     environmentValue(environment, "CODEXHOST_WORKBUDDY_COMMAND")?.trim() || undefined;
@@ -157,6 +155,45 @@ export function workBuddyInvocation(
   if (!executable)
     throw new CodeBuddyError("notInstalled", "WorkBuddy AI app or its bundled CLI is unavailable");
 
+  return { executable, bundle };
+}
+
+export function workBuddyInvocation(
+  environment: NodeJS.ProcessEnv,
+  ephemeral: boolean,
+  dependenciesOrArguments: WorkBuddyInvocationDependencies | string[] = {},
+  argumentsOverride?: string[],
+): ReturnType<CodeBuddyInvocationFactory> {
+  const dependencies = Array.isArray(dependenciesOrArguments) ? {} : dependenciesOrArguments;
+  const nativeArguments = Array.isArray(dependenciesOrArguments)
+    ? dependenciesOrArguments
+    : argumentsOverride;
+  const platform = dependencies.platform ?? process.platform;
+  const { executable, bundle } = resolveWorkBuddyLaunch(environment, dependencies);
+  const paths = targetPath(platform);
+  const cliDist = bundle && paths.join(paths.dirname(paths.dirname(bundle.cli)), "dist");
+  const isFile =
+    dependencies.isFile ??
+    ((candidate: string) => {
+      try {
+        return statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    });
+  const liteOnly = Boolean(
+    cliDist &&
+    isFile(paths.join(cliDist, "codebuddy-lite-wb.mjs")) &&
+    !isFile(paths.join(cliDist, "codebuddy.js")) &&
+    !isFile(paths.join(cliDist, "codebuddy-headless.js")),
+  );
+  const acpArguments = nativeArguments ?? [
+    "--acp",
+    ...(ephemeral ? ["--no-session-persistence"] : []),
+    ...workBuddyDelegationArguments(environment, ephemeral),
+  ];
+  const serve = liteOnly && acpArguments.includes("--acp") && !acpArguments.includes("--serve");
+
   const configuredEnvironment = withNodeRuntimeOnPath(
     workBuddyEnvironment(environment, platform),
     process.execPath,
@@ -176,6 +213,14 @@ export function workBuddyInvocation(
           ? { DISABLE_TELEMETRY: "1" }
           : {}),
         ...(productConfigPath ? { [WORKBUDDY_PRODUCT_CONFIG_PATH_ENV]: productConfigPath } : {}),
+        ...(liteOnly ? { CODEBUDDY_FORCE_LITE_WB_BUNDLE: "1" } : {}),
+        ...(serve
+          ? {
+              CODEBUDDY_GATEWAY_AUTH: "password",
+              CODEBUDDY_GATEWAY_PASSWORD: randomBytes(32).toString("base64url"),
+              CODEBUDDY_GATEWAY_BASE_PATH: "",
+            }
+          : {}),
         ELECTRON_RUN_AS_NODE: "1",
       }
     : configuredEnvironment;
@@ -183,12 +228,11 @@ export function workBuddyInvocation(
     ...commandInvocation(
       executable,
       [
-        ...(bundle ? [bundle.cli] : []),
-        ...(nativeArguments ?? [
-          "--acp",
-          ...(ephemeral ? ["--no-session-persistence"] : []),
-          ...workBuddyDelegationArguments(childEnvironment, ephemeral),
-        ]),
+        ...(bundle
+          ? ["--eval", `${WORKBUDDY_CREDENTIAL_PRELOAD}\nrequire(process.argv[1]);`, bundle.cli]
+          : []),
+        ...acpArguments,
+        ...(serve ? ["--serve", "--host", "127.0.0.1", "--port", "0", "--auth", "password"] : []),
       ],
       childEnvironment,
       platform,

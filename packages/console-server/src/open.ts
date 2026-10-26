@@ -5,7 +5,7 @@ import { readRuntimeMetadata } from "@codexhost/update-manager";
 
 import { consoleBundleCandidates } from "./page.js";
 import { CONSOLE_REQUEST_HEADER } from "./request-guard.js";
-import { CONSOLE_PORT_ENV, consolePort } from "./paths.js";
+import { CONSOLE_PORT_ENV, consolePort, dataDirectory } from "./paths.js";
 import { CONSOLE_SERVICE } from "./server.js";
 
 export type ConsoleProbe =
@@ -79,7 +79,7 @@ export interface OpenConsoleOptions {
   browser?: boolean;
 }
 
-/** Changes when the server/page bundle is replaced or the source launch version changes. */
+/** Identity for reuse: the build/version and the data directory used to discover Hosts. */
 export async function consoleBuildId(
   entryPath: string,
   environment: NodeJS.ProcessEnv = process.env,
@@ -92,7 +92,7 @@ export async function consoleBuildId(
   }
   const runtime = await readRuntimeMetadata(entryPath, environment).catch(() => null);
   if (runtime?.distribution === "development") parts.push(runtime.version);
-  return parts.join(".");
+  return JSON.stringify([parts.join("."), dataDirectory(environment)]);
 }
 
 function startDetachedServer(entryPath: string, environment: NodeJS.ProcessEnv): void {
@@ -120,7 +120,7 @@ function openWithLauncher(launcherExecutable: string, url: string): Promise<bool
 
 /**
  * Ensures exactly one console answers on the configured port, restarting it
- * when it belongs to a different installation. Returns the port.
+ * when it belongs to a different installation or data directory. Returns the port.
  */
 export async function ensureConsole(
   options: Pick<OpenConsoleOptions, "appDirectory" | "entryPath" | "environment">,

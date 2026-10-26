@@ -12,6 +12,30 @@ it("opens the overview containing diagnostics", () => {
 });
 
 describe("console instance identity", () => {
+  it("does not reuse a console that discovers Hosts in a different data directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-console-data-"));
+    try {
+      const entry = path.join(root, "console-server.mjs");
+      await writeFile(entry, "same build");
+      const local = { CODEXHOST_DATA_DIR: path.join(root, "local") };
+      const remote = { CODEXHOST_DATA_DIR: path.join(root, "remote") };
+      const localId = await consoleBuildId(entry, local);
+      expect(await consoleBuildId(entry, remote)).not.toBe(localId);
+      expect(await consoleBuildId(entry, local)).toBe(localId);
+      expect(
+        await consoleBuildId(entry, {
+          CODEXHOST_DATA_DIR: path.join(root, "local", "child", ".."),
+        }),
+      ).toBe(localId);
+      expect(await consoleBuildId(entry, {})).toBe(
+        await consoleBuildId(entry, {
+          CODEXHOST_DATA_DIR: path.join(os.homedir(), ".codexhost"),
+        }),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it("replaces a source console when only the launch version changes", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-console-version-"));
     try {

@@ -19,6 +19,10 @@
       "types": "./dist/session-import.d.ts",
       "import": "./dist/session-import.js"
     },
+    "./usage-statistics": {
+      "types": "./dist/usage-statistics.d.ts",
+      "import": "./dist/usage-statistics.js"
+    },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"

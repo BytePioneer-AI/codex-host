@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promise
 import net, { type Server, type Socket } from "node:net";
 import path from "node:path";
 
+import { parseHarnessAccountCredits } from "@codexhost/harness-adapter";
 import type {
   HarnessAdapter,
   HarnessError,
@@ -12,7 +13,6 @@ import type {
 } from "@codexhost/harness-adapter";
 
 import {
-  accountCreditsSnapshotSchema,
   harnessAccountListParamsSchema,
   harnessAccountSnapshotSchema,
   harnessPluginIdSchema,
@@ -178,6 +178,7 @@ function sessionMetadata(record: ServerSession): object {
     sessionId: record.id,
     sessionGeneration: record.generation,
     capabilities: record.session.capabilities,
+    readCapabilities: true,
     initialState: {
       ...initialState,
       ...(record.nativeRef ? { nativeRef: record.nativeRef } : {}),
@@ -500,8 +501,10 @@ export async function startHarnessBrokerServer(input: {
       if (request.method === "adapter.open") retireWhenIdle = false;
       if (request.method === "adapter.credits") {
         harnessAccountListParamsSchema.parse(request.params);
-        const adapter = input.adapter as HarnessAdapter & { credits?: () => unknown };
-        return accountCreditsSnapshotSchema.nullable().parse(adapter.credits?.() ?? null);
+        const value = input.adapter.credits?.();
+        const credits = parseHarnessAccountCredits(value);
+        if (value != null && !credits) throw new Error("Invalid account credits snapshot");
+        return credits;
       }
       if (request.method === "adapter.inspectAccount") {
         harnessAccountListParamsSchema.parse(request.params);
@@ -744,6 +747,7 @@ export async function startHarnessBrokerServer(input: {
         }
         let result;
         if (command.type === "turn.start") result = await record.session.execute(command);
+        else if (command.type === "turn.steer") result = await record.session.execute(command);
         else if (command.type === "turn.cancel") result = await record.session.execute(command);
         else if (command.type === "interaction.respond") {
           result = await record.session.execute({
@@ -779,6 +783,10 @@ export async function startHarnessBrokerServer(input: {
             record.selection.permissionModeId = command.permissionModeId;
         }
         return result;
+      }
+      if (request.method === "session.readCapabilities") {
+        const session = requireSession(request.params).session;
+        return session.readCapabilities ? session.readCapabilities() : session.capabilities;
       }
       if (request.method === "session.readSnapshot") {
         return requireSession(request.params).session.readSnapshot();

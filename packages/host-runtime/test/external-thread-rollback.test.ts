@@ -45,7 +45,7 @@ function snapshot(sessionId: string, count: number): HostThreadSnapshot {
 }
 
 describe.each(["last-Turn", "Fork-derived"] as const)("%s rollback preparation", (kind) => {
-  it("rejects a candidate if the Runtime record changes while native open is pending", async () => {
+  it.each(["record changed", "old close failed"])("%s", async (failure) => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-rollback-cas-"));
     const store = new MappingStore({ directory });
     const repository = new ExternalThreadRepository(store);
@@ -128,9 +128,16 @@ describe.each(["last-Turn", "Fork-derived"] as const)("%s rollback preparation",
       const target = resolved.thread;
       const open = vi.spyOn(adapter, "open").mockImplementation(async () => {
         // Models a concurrent Host metadata/configuration path replacing the loaded record.
-        target.record = await store.setTitle(target.id, "Updated while deriving");
+        if (failure === "record changed") {
+          target.record = await store.setTitle(target.id, "Updated while deriving");
+        }
         return { ok: true, value: candidate };
       });
+      if (failure === "old close failed") {
+        vi.spyOn(target.session, "close").mockRejectedValueOnce(
+          new Error("old process still alive"),
+        );
+      }
       const result = await executeExternalThreadRollback({
         derived: target,
         rollback: { threadId: target.id, numTurns: 1 },
@@ -142,6 +149,19 @@ describe.each(["last-Turn", "Fork-derived"] as const)("%s rollback preparation",
       expect(open).toHaveBeenCalledWith(
         expect.objectContaining({ kind: kind === "last-Turn" ? "rollbackLastTurn" : "fork" }),
       );
+      if (failure === "old close failed") {
+        // Commit precedes replace: legacy close failure must not abandon the committed candidate.
+        expect(result).toMatchObject({ ok: true });
+        expect(runtime.get(target.id)?.session).toBe(candidate);
+        expect(runtime.get(target.id)?.record).toEqual(await store.getThread(target.id));
+        await expect(candidate.readSnapshot()).resolves.toMatchObject({ ok: true });
+        const recovered = await runtime.resolve(target.id);
+        expect(recovered.kind).toBe("external");
+        if (recovered.kind === "external") expect(recovered.thread.session).toBe(candidate);
+        expect(open).toHaveBeenCalledOnce();
+        await target.session.close();
+        return;
+      }
       expect(result).toMatchObject({ ok: false, error: { code: -32081 } });
       await expect(store.getThread(target.id)).resolves.toMatchObject({
         title: "Updated while deriving",

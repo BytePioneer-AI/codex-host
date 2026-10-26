@@ -1,4 +1,5 @@
 import { cp, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -71,6 +72,143 @@ afterEach(async () => {
 });
 
 describe("Harness plugin discovery and loading", () => {
+  it.each(["credits", "refreshCredits"])(
+    "rejects malformed optional %s capabilities",
+    async (method) => {
+      const directory = await root(["broken-quota"]);
+      await plugin(directory, "broken-quota", {
+        code: `
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      export function createHarnessAdapter() {
+        return Object.assign(new FakeHarnessAdapter("broken-quota"), { ${method}: "not-callable" });
+      }
+    `,
+      });
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect(await [...registry.adapters.values()][0]?.inspect()).toMatchObject({
+          status: "unavailable",
+        });
+      } finally {
+        await registry.close();
+      }
+    },
+  );
+  it("loads usage-only plugins without manufacturing session methods and closes them", async () => {
+    const directory = await root(["local-usage"]);
+    const marker = path.join(directory, "closed");
+    await plugin(directory, "local-usage", {
+      manifest: { kind: "usage" },
+      code: `
+        import { writeFile } from "node:fs/promises";
+        export function createUsageStatisticsAdapter() {
+          return { harnessId: "local-usage", usageStatistics: {
+            listSources: async () => [], readSource: async () => []
+          }, close: async () => writeFile(${JSON.stringify(marker)}, "closed") };
+        }
+        export function warmup() { throw new Error("usage plugins must not warm native processes"); }
+      `,
+    });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    expect(registry.adapters.size).toBe(0);
+    expect(registry.usageAdapters.size).toBe(1);
+    expect(registry.list()).toMatchObject([{ id: "local-usage", kind: "usage" }]);
+    expect([...registry.usageAdapters.values()][0]).not.toHaveProperty("open");
+    expect(diagnose).not.toHaveBeenCalled();
+    await registry.close();
+    await registry.close();
+    expect(await readFile(marker, "utf8")).toBe("closed");
+  });
+
+  it("settles statistics before importing Session plugins, including failed statistics plugins", async () => {
+    const directory = await root(["usage-agent", "broken-usage", "chat-agent"]);
+    const marker = path.join(directory, "chat-imported");
+    await plugin(directory, "usage-agent", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() { return {
+        harnessId: "usage-agent", close: async () => {},
+        usageStatistics: { listSources: async () => [], readSource: async () => [] }
+      }; }`,
+    });
+    await plugin(directory, "broken-usage", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() { throw new Error("failed"); }`,
+    });
+    await plugin(directory, "chat-agent", {
+      code: `import { writeFileSync } from "node:fs";
+        import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+        writeFileSync(${JSON.stringify(marker)}, "started");
+        export function createHarnessAdapter() { return new FakeHarnessAdapter("chat-agent"); }`,
+    });
+    const ready = vi.fn((adapters) => {
+      expect([...adapters.keys()].sort()).toEqual(["broken-usage", "usage-agent"]);
+      expect(existsSync(marker)).toBe(false);
+    });
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      onUsageAdaptersLoaded: ready,
+    });
+    try {
+      expect(ready).toHaveBeenCalledOnce();
+      expect(existsSync(marker)).toBe(true);
+      expect([...registry.adapters.keys()]).toContain("chat-agent");
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it("rejects malformed optional session usage capabilities", async () => {
+    const directory = await root(["broken-usage"]);
+    await plugin(directory, "broken-usage", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() {
+        return { harnessId: "broken-usage", close: async () => {},
+          usageStatistics: { listSources: async () => [], readSource: async () => [] },
+          sessionUsage: { read: async () => null }
+        };
+      }`,
+    });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    try {
+      expect(diagnose).toHaveBeenCalledWith({ code: "loadFailed", id: "broken-usage" });
+      expect([...registry.usageAdapters.values()][0]?.sessionUsage).toBeUndefined();
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it.each(["throw", "invalid", "incompatible"])(
+    "isolates %s usage plugins without adding a chat route",
+    async (failure) => {
+      const directory = await root(["broken-usage", "healthy-agent"]);
+      await plugin(directory, "broken-usage", {
+        manifest: {
+          kind: "usage",
+          ...(failure === "incompatible" ? { adapterApiVersion: 999 } : {}),
+        },
+        code:
+          failure === "throw"
+            ? 'export function createUsageStatisticsAdapter() { throw new Error("private detail"); }'
+            : 'export function createUsageStatisticsAdapter() { return { harnessId: "broken-usage", close: async () => {} }; }',
+      });
+      await plugin(directory, "healthy-agent");
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect([...registry.adapters.keys()]).toEqual(["healthy-agent"]);
+        const broken = [...registry.usageAdapters.values()][0];
+        expect(broken).toBeDefined();
+        await expect(
+          broken?.usageStatistics.listSources(new AbortController().signal),
+        ).rejects.toThrow("unavailable");
+      } finally {
+        await registry.close();
+      }
+    },
+  );
+
   it("passes saved commands only to opted-in local factories and exposes the setting", async () => {
     const directory = await root(["custom-agent", "ordinary-agent"]);
     const saved = "/custom/entry";

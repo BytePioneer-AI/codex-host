@@ -7,7 +7,7 @@
 
 ### Requirement: DeepSeek Harness uses the shared Adapter contract
 
-The system SHALL provide one public `deepseek-harness` implementation of `HarnessAdapter` and `HarnessSession`. It SHALL use the single V4 native protocol profile for verified DSH `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, and `0.2.0-rc.2`. Other SemVer runtimes at or above `0.1.7-rc.1` SHALL pass native protocol validation before being reported ready; runtimes below `0.1.7-rc.1` SHALL be rejected as unsupported before the managed Web starts. DSH Remote methods, event names and the protocol profile MUST remain internal to the Adapter package.
+The system SHALL provide one public `deepseek-harness` implementation of `HarnessAdapter` and `HarnessSession`. It SHALL use the single V4 native protocol profile for verified DSH `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-rc.1`, and `0.2.1-rc.2`. Other SemVer runtimes at or above `0.1.7-rc.1` SHALL pass native protocol validation before being reported ready; runtimes below `0.1.7-rc.1` SHALL be rejected as unsupported before the managed Web starts. DSH Remote methods, event names and the protocol profile MUST remain internal to the Adapter package.
 
 #### Scenario: New DeepSeek Session opens
 - **WHEN** Host opens the DeepSeek Adapter with a create input and a runtime whose Web and native protocol checks pass

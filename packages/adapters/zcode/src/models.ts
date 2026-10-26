@@ -99,11 +99,19 @@ const modeLabels = {
   yolo: "Full access",
   auto: "Auto",
 };
+const chineseModeLabels: Readonly<Record<string, string>> = {
+  build: "确认变更",
+  edit: "自动编辑",
+  plan: "规划模式",
+  yolo: "完全访问",
+  auto: "自动",
+};
 export function permissionModes(current: NativeSettings["mode"]["current"] = "build") {
   return harnessPermissionModeCatalogSchema.parse({
     modes: Object.entries(modeLabels).map(([id, label]) => ({
       id,
       label,
+      localizations: { "zh-CN": { label: chineseModeLabels[id] } },
       ...(id === "yolo" ? { dangerous: true } : {}),
     })),
     defaultModeId: current,

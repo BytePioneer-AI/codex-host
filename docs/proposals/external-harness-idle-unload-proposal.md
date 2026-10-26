@@ -111,6 +111,10 @@
 - 现有恢复路径保证 Native Session 身份一致（`alignSnapshot()` 校验）；不保证 cwd、Model、Thinking 与释放前完全一致，例如 OMP、OpenCode 恢复时可能静默替换 Model 并持久化实际状态。这与 Host 重启后的恢复行为一致，本方案不额外承诺。
 - 不通知 Desktop：Desktop 中该 Thread 保持原状态；用户下一次操作触发恢复，期间等待 Harness 启动。
 
+故障恢复不依赖自动释放开关。`ExternalThreadLifecycle` 在 Host 内按 Thread 串行协调故障 discard、关闭与输出 drain、子线程清理、resolve restore 和 refresh 原地 revival；等待者进入屏障后重新检查当前实例，不复用等待前取得的恢复判断。`session.faulted` 输出回调只启动 discard，不能等待包含自身 `outputTask` 的清理。定时空闲释放避开生命周期操作及故障实例，已开始的空闲释放则由恢复入口等待。
+
+故障恢复的每次 Session 关闭与输出 drain 合计最多等待 60 秒；失败或超时返回 `-32075`，保留旧所有权，不启动新 Session。后续请求可以重试确认：未完成的 close 继续等待原 Promise，不并行调用第二次 close；已拒绝的 close 可以再次调用，但只有成功关闭并 drain 后才允许恢复。Adapter 若缓存永久关闭失败，重试仍返回错误，需要停止残留进程并重启 Host。恢复初始化失败时尚未注册的 Session 同样必须完成清理。迟到关闭不会自行移除或恢复实例；被替换对象上的 refresh 返回带重试提示的 `-32076`。这不改变定时空闲释放失败后的保守阻断策略。rollback 的 `replace()` 不属于这条故障恢复事务：调用方已先打开并提交 replacement，仍保留既有的尽力关闭、记录异常后接管已提交 Session 的语义，不在提交后新增关闭失败出口。其旧资源释放失败风险不由本次 #513 修复解决。Host 的 lifecycle drain 只等待任务结束，不代表失败的资源释放已获确认；未注册恢复候选仍由释放记录和 Adapter 持有，最终资源关闭由 Adapter 负责。
+
 ## 4. 用户可见影响与风险
 
 | 影响 | 说明 | 处理 |
@@ -142,7 +146,7 @@
 
 ### 5.2 Host 恢复入口
 
-所有需要执行对象的入口都经过 `resolve()`。合成探针（Fake Adapter，冷态为“Store 有记录、Runtime 未加载”）确认以下请求会触发恢复：含 Turns 的 `thread/read`、`thread/turns/list`、`thread/items/list`、`thread/resume`、`codexhost/thread/inspect`、`codexhost/thread/usage/inspect`；不含 Turns 的 `thread/read`、`thread/name/set`、`codexhost/thread/commands/inspect`、`thread/unsubscribe` 不触发。源码核对 fork、rollback、`turn/start`、`turn/steer`、`turn/interrupt`、配置选择、命令执行和委派 CLI 也经过 `resolve()`。冷态 `thread/resume` 只恢复一次，并发恢复由 `#restores` 合并。
+所有需要执行对象的入口都经过 `resolve()`。合成探针（Fake Adapter，冷态为“Store 有记录、Runtime 未加载”）确认以下请求会触发恢复：含 Turns 的 `thread/read`、`thread/turns/list`、`thread/items/list`、`thread/resume`、`codexhost/thread/inspect`、`codexhost/thread/usage/inspect`；不含 Turns 的 `thread/read`、`thread/name/set`、`codexhost/thread/commands/inspect`、`thread/unsubscribe` 不触发。源码核对 fork、rollback、`turn/start`、`turn/steer`、`turn/interrupt`、配置选择、命令执行和委派 CLI 也经过 `resolve()`。冷态 `thread/resume` 的并发调用经同一生命周期屏障重查注册状态，复用已恢复的 Session。
 
 ### 5.3 Host 数据模型
 

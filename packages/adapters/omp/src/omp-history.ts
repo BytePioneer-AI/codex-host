@@ -25,6 +25,8 @@ import { projectOmpToolItem } from "./omp-tool-presentation.js";
 export interface OmpSessionHistory {
   entries: JsonObject[];
   leafId: string | null;
+  /** The tolerant transcript reader skipped invalid records; usage must not claim completeness. */
+  incomplete?: boolean;
 }
 
 export interface OmpHistoryState {

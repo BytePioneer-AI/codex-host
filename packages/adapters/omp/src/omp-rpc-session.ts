@@ -22,6 +22,7 @@ import {
   optionalOmpStateContextUsage,
   parseOmpSessionUsage,
   parseOmpStateContextUsage,
+  type OmpUsageObservation,
 } from "./omp-usage.js";
 import type { OmpNativeModel, OmpNativeModelRef } from "./omp-model-catalog.js";
 import type { OmpPermissionMode } from "./omp-permission-modes.js";
@@ -183,6 +184,8 @@ export interface OmpRpcSessionOptions {
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   onSubagentEvent?: (event: OmpTurnEvent) => void;
+  /** Finished assistant messages, for Host usage metering. */
+  onUsage?: (observation: OmpUsageObservation) => void;
   /**
    * Subscribe to native subagent frames during startup (default true). Short-lived
    * transports that never run Turns, such as inspection or transcript reads, opt out.
@@ -425,7 +428,11 @@ function assistantFailure(value: unknown): Error | null | undefined {
   return new Error(nonBlankString(value.errorMessage) ? value.errorMessage : fallback);
 }
 
-function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+/** Signals the whole process tree; on Windows this also reaches OMP behind a `.cmd` shim. */
+export function signalProcessTree(
+  child: { readonly pid?: number | undefined },
+  signal: NodeJS.Signals,
+): void {
   if (!child.pid) return;
   if (process.platform === "win32") {
     spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
@@ -550,6 +557,7 @@ export class OmpRpcSession {
   #availableCommands: OmpAvailableCommand[] | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
   #manualCompaction: ManualCompaction | null = null;
+  #usageRequestStartedAtMs: number | null = null;
   #stderrTail = "";
   #frameDecoder = new OmpFrameDecoder();
   #startupFaultResolve: ((error: OmpRpcFaultError) => void) | null = null;
@@ -1177,6 +1185,7 @@ export class OmpRpcSession {
     }
     const active = this.#activeTurn;
     if (this.#handleSubagentFrame(active, value)) return;
+    this.#observeUsage(value);
     if (value.type === "agent_start" && active) active.terminalEnd = false;
     if (
       (value.type === "session_settled" || value.type === "agent_start") &&
@@ -1316,6 +1325,38 @@ export class OmpRpcSession {
       if (active.settlement !== "pending") return;
       active.settlement = "confirming";
       void this.#confirmSettledTurn(active);
+    }
+  }
+
+  /** Every finished assistant message is one model request, with or without an active Turn. */
+  #observeUsage(value: Record<string, unknown>): void {
+    if (value.type === "message_start") {
+      this.#usageRequestStartedAtMs = null;
+      return;
+    }
+    // Generation starts at the first output token: the first thinking, text or tool-call block
+    // or delta. Prefill before it is excluded, as in DeepSeek dsh's decode time.
+    if (value.type === "message_update") {
+      const event = value.assistantMessageEvent;
+      if (
+        this.#usageRequestStartedAtMs === null &&
+        isRecord(event) &&
+        typeof event.type === "string" &&
+        /^(text|thinking|reasoning|thought|toolcall)_(start|delta)$/u.test(event.type)
+      ) {
+        this.#usageRequestStartedAtMs = Date.now();
+      }
+      return;
+    }
+    if (value.type === "message_end" && isRecord(value.message)) {
+      if (value.message.role !== "assistant") return;
+      const startedAtMs = this.#usageRequestStartedAtMs;
+      this.#usageRequestStartedAtMs = null;
+      this.#options.onUsage?.({
+        message: value.message,
+        startedAtMs,
+        completedAtMs: Date.now(),
+      });
     }
   }
 

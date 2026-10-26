@@ -65,10 +65,13 @@ const { outputFiles } = await build({
             periodType: "weekly",
             resetsAt: "2026-08-31T16:00:00.000Z",
             productUsage: [
-              { product: "GrokBuild", usagePercent: 82, resetsAt: "2027-03-15T10:00:00.000Z" },
-              { product: "GrokChat", usagePercent: 45 },
+              { product: "Build", usagePercent: 82, resetsAt: "2027-03-15T10:00:00.000Z" },
+              { product: "Chat", usagePercent: 45 },
             ],
           });
+        };
+        globalThis.updateRendererCreditsPercent = (usedPercent) => {
+          renderRendererCreditsControl(credits, { usedPercent, periodType: "unknown" });
         };
         globalThis.updateRendererCreditsChinese = () => {
           renderRendererCreditsControl(credits, {
@@ -76,7 +79,7 @@ const { outputFiles } = await build({
             periodType: "five_hour",
             resetsAt: "2026-08-31T16:00:00.000Z",
             productUsage: [
-              { product: "7-day window", usagePercent: 73, resetsAt: "2026-09-05T18:00:00.000Z" },
+              { product: "7-day window", periodType: "seven_day", usagePercent: 73, resetsAt: "2026-09-05T18:00:00.000Z" },
             ],
           }, "zh-CN");
         };
@@ -88,6 +91,49 @@ const { outputFiles } = await build({
             planSevenDayUsedPercent: 12,
             planFiveHourResetsAtUnix: 1_756_130_400,
           });
+        };
+        globalThis.updateRendererGrokUsage = (locale) => {
+          renderRendererUsageControl(usage, {
+            apiOutputTokensPerSecond: 1571 / 19.057,
+            timeToFirstOutputMs: 1250,
+            totalCostUsd: 0.09920104,
+            costSource: "native",
+            inputTokens: 78636,
+            outputTokens: 1571,
+          }, locale);
+        };
+        globalThis.updateRendererUsageMetered = () => {
+          renderRendererUsageControl(usage, {
+            cacheHitRatePercent: 92.9,
+            sessionCacheHitRatePercent: 81.25,
+            outputTokensPerSecond: 64.2,
+            timeToFirstOutputMs: 1250,
+            inputTokens: 62300,
+            outputTokens: 7600,
+            totalCostUsd: 0.78,
+            costSource: "publicPrice",
+          }, "zh-CN");
+        };
+        globalThis.updateRendererCopilotUsage = () => {
+          renderRendererUsageControl(usage, {
+            outputTokensPerSecond: 236 / (5.557 - 3.111924417),
+            apiOutputTokensPerSecond: 236 / 5.557,
+            cacheHitRatePercent: 0,
+            sessionCacheHitRatePercent: 0,
+            totalCredits: 0.173055,
+            inputTokens: 12901,
+            outputTokens: 236,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 12898,
+          }, "zh-CN");
+        };
+        globalThis.updateRendererUsagePartialCost = () => {
+          renderRendererUsageControl(usage, {
+            cacheHitRatePercent: 99.6,
+            totalCostUsd: 12.232,
+            costSource: "publicPrice",
+            unpricedModels: ["gpt-5.3-codex-spark"],
+          }, "zh-CN");
         };
         globalThis.updateRendererUsageChinese = () => {
           renderRendererUsageControl(usage, {
@@ -117,6 +163,36 @@ const { outputFiles } = await build({
 
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer Usage bundle was not generated");
+
+for (const locale of ["zh-CN", "en"]) {
+  test(`Grok API average speed is not generation TPS (${locale})`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 650, height: 650 });
+    await page.setContent(
+      '<!doctype html><body style="margin:16px;padding-top:350px;font:14px system-ui"></body>',
+    );
+    await page.addScriptTag({ content: browserBundle });
+    await page.evaluate((language) => {
+      Reflect.get(globalThis, "setupRendererUsage")();
+      Reflect.get(globalThis, "updateRendererGrokUsage")(language);
+    }, locale);
+    const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+    await expect(usage).toContainText("API 82.4 tok/s");
+    await expect(usage).toContainText("$0.099");
+    await usage.hover();
+    const popover = page.getByRole("dialog");
+    await expect(popover).toBeVisible();
+    await expect(popover).toContainText(locale === "zh-CN" ? "API 平均速度" : "API average speed");
+    await expect(popover).toContainText(
+      locale === "zh-CN" ? "含首字等待" : "including first-token wait",
+    );
+    await expect(popover).not.toContainText(
+      locale === "zh-CN" ? "输出速度（TPS）" : "Output speed (TPS)",
+    );
+    await expect(popover).toContainText("TTFT");
+    await expect(popover).toContainText(locale === "zh-CN" ? "1.3 秒" : "1.3s");
+    await page.screenshot({ path: testInfo.outputPath(`grok-api-${locale}.png`) });
+  });
+}
 
 for (const width of [1280, 375]) {
   test(`Kiro credits and context popover at ${width}px`, async ({ page }, testInfo) => {
@@ -213,15 +289,15 @@ test("renders Usage immediately to the left of the model control", async ({ page
   if (!popoverBox || !triggerBox) throw new Error("Usage popover geometry is unavailable");
   expect(popoverBox.y + popoverBox.height).toBeLessThanOrEqual(triggerBox.y + 1);
   await expect(popover).toContainText("Context");
-  await expect(popover).toContainText("29.3% / 272k");
+  await expect(popover).toContainText("29.3% / 272K");
   await expect(popover).toContainText("Latest cache hit");
   await expect(popover).toContainText("Cache read");
-  await expect(popover).toContainText("375k");
-  await expect(popover).toContainText("Cache write");
-  await expect(popover).toContainText("1.2k");
+  await expect(popover).toContainText("375K");
+  await expect(popover).toContainText("Cache read / write");
+  await expect(popover).toContainText("1.2K");
   await expect(popover).toContainText("Input / output");
-  await expect(popover).toContainText("87k / 6.7k");
-  await expect(popover).toContainText("Session cost estimate");
+  await expect(popover).toContainText("87K / 6.7K");
+  await expect(popover).toContainText("Cost estimate");
   await expect(popover).toContainText("$0.822");
   await expect
     .poll(() =>
@@ -262,7 +338,8 @@ test("keeps Usage in place and shows credits after the leading composer control"
   const trigger = usage.locator("button");
   await expect(usage).toHaveText("CH 99.9% · $0.822");
   await expect(credits).toBeHidden();
-  await expect(trigger).toHaveCSS("max-width", "180px");
+  await expect(usage).toHaveCSS("max-width", "240px");
+  await expect(trigger).toHaveCSS("max-width", "100%");
   await expect(usage.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
     "data-codexhost-model-control",
     "usage-composer",
@@ -278,7 +355,8 @@ test("keeps Usage in place and shows credits after the leading composer control"
   await expect(credits).toHaveText("53%");
   await expect(credits.locator("button")).toHaveAttribute("aria-label", "Weekly limit 53%");
   await expect(credits.locator("[data-codexhost-credits-ring] svg")).toHaveCount(1);
-  await expect(trigger).toHaveCSS("max-width", "180px");
+  await expect(usage).toHaveCSS("max-width", "240px");
+  await expect(trigger).toHaveCSS("max-width", "100%");
   await expect(usage.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
     "data-codexhost-model-control",
     "usage-composer",
@@ -305,6 +383,47 @@ test("keeps Usage in place and shows credits after the leading composer control"
   // One "Resets" line under the headline, one under the Build tile (Chat has none).
   await expect(popover.getByText("Resets", { exact: false })).toHaveCount(2);
 });
+
+for (const width of [650, 1024]) {
+  test(`rounds the account button percentage and retains popover precision at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 600 });
+    await page.setContent('<!doctype html><body style="margin:8px;padding-top:300px"></body>');
+    await page.addScriptTag({ content: browserBundle });
+    await page.evaluate(() => {
+      Reflect.get(globalThis, "setupRendererUsage")();
+      Reflect.get(globalThis, "updateRendererUsage")();
+    });
+    const credits = page.locator('[data-codexhost-credits-control="usage-composer"]');
+    const label = credits.locator("[data-codexhost-credits-label]");
+    for (const [usedPercent, remaining] of [
+      [6.4, "94%"],
+      [6.6, "93%"],
+      [0, "100%"],
+      [100, "0%"],
+    ] as const) {
+      await page.evaluate(
+        (value) => Reflect.get(globalThis, "updateRendererCreditsPercent")(value),
+        usedPercent,
+      );
+      await expect(label).toHaveText(remaining);
+      if (usedPercent === 6.4) {
+        await expect(credits.locator("button")).toHaveAttribute("title", "Account limit 93.6%");
+        await credits.hover();
+        await expect(page.getByRole("dialog", { name: "Account limit details" })).toContainText(
+          "Remaining 93.6%",
+        );
+      }
+      expect(await label.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+        true,
+      );
+      const box = await credits.boundingBox();
+      if (!box) throw new Error("Credits geometry is unavailable");
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+    }
+  });
+}
 
 test("renders remaining five-hour and seven-day credits clearly in Chinese", async ({ page }) => {
   await page.setContent('<!doctype html><body style="margin:0"></body>');
@@ -356,13 +475,61 @@ test("renders the Usage popover in Chinese when the settings locale is Chinese",
   await expect(popover).toBeVisible();
   await expect(popover).toContainText("用量");
   await expect(popover).toContainText("上下文");
-  await expect(popover).toContainText("最近缓存命中率");
+  await expect(popover).toContainText("最近缓存命中");
   await expect(popover).toContainText("缓存读取");
-  await expect(popover).toContainText("缓存写入");
-  await expect(popover).toContainText("Token 总数");
+  await expect(popover).not.toContainText("缓存读取 / 写入");
+  await expect(popover).toContainText("缓存读取");
+  await expect(popover).toContainText("总数");
   await expect(popover).toContainText("输入 / 输出");
-  await expect(popover).toContainText("会话费用估算");
+  await expect(popover).toContainText("费用估算");
   await expect(popover).not.toContainText("Latest cache hit");
+});
+
+test("shows Host-metered usage rows", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0;padding-top:320px"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererUsageMetered");
+    if (typeof update !== "function") throw new Error("Metered Usage update is unavailable");
+    update();
+  });
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText("最近缓存命中（CH）92.9%");
+  await expect(popover).toContainText("平均缓存命中81.3%");
+  await expect(popover).toContainText("输出速度（TPS）64.2 tok/s");
+  await expect(popover).toContainText("首 token（TTFT）1.3 秒");
+  await expect(popover.locator("[data-codexhost-usage-group]")).toHaveText([
+    "会话",
+    "本轮",
+    "Token",
+  ]);
+  await expect(popover).toContainText("费用估算$0.780");
+  await expect(popover).not.toContainText("按公开 API 价格计算");
+});
+
+test("marks a cost that leaves unpriced Models out as a lower bound", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0;padding-top:320px"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererUsagePartialCost");
+    if (typeof update !== "function") throw new Error("Partial cost update is unavailable");
+    update();
+  });
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await expect(usage).toHaveText("CH 99.6% · ≥$12.23");
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
+  await expect(popover).toContainText("费用估算≥$12.23");
+  await expect(popover).toContainText("未计价：gpt-5.3-codex-spark");
 });
 
 test("omits plan limits from the Usage trigger and popover", async ({ page }) => {
@@ -379,7 +546,7 @@ test("omits plan limits from the Usage trigger and popover", async ({ page }) =>
 
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
   await expect(usage).toBeVisible();
-  await expect(usage).toHaveText("CH 99% · $1.373");
+  await expect(usage).toHaveText("CH 99% · $1.37");
   await expect(usage).not.toContainText("5-hour");
   await expect(usage).not.toContainText("45%");
 
@@ -390,4 +557,20 @@ test("omits plan limits from the Usage trigger and popover", async ({ page }) =>
   await expect(popover).not.toContainText("45%");
   await expect(popover).not.toContainText("12%");
   await expect(popover).not.toContainText("7-day limit");
+});
+
+test("shows Copilot generation/API rates and known-zero cache rates", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0;padding-top:320px"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    Reflect.get(globalThis, "setupRendererUsage")();
+    Reflect.get(globalThis, "updateRendererCopilotUsage")();
+  });
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
+  await expect(popover).toContainText("输出速度（TPS）96.5 tok/s");
+  await expect(popover).toContainText("API 平均速度42.5 tok/s");
+  await expect(popover).toContainText("最近缓存命中（CH）0%");
+  await expect(popover).toContainText("平均缓存命中0%");
 });

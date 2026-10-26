@@ -6,6 +6,7 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  decodeExternalTransportSelection,
   encodeClaudeTransportModel,
   encodePiTransportModel,
   type ExternalHarnessId,
@@ -1027,9 +1028,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const replacementId = (response.result as JsonObject).turnId;
     expect(typeof replacementId).toBe("string");
     expect(replacementId).not.toBe(oldTurnId);
+    expect(response).toMatchObject({ result: { turnId: replacementId, delivery: "newTurn" } });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 101)),
-    ).resolves.toMatchObject({ result: { turnId: replacementId } });
+    ).resolves.toMatchObject({
+      result: { turnId: replacementId, delivery: "newTurn" },
+    });
     await fixture.collector.waitFor((message) =>
       turnEvent(message, "turn/started", String(replacementId)),
     );
@@ -1093,7 +1097,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: { threadId, expectedTurnId: oldTurnId, input: [{ type: "text", text: "new" }] },
     });
     const response = await fixture.collector.waitFor((message) => requestId(message, 102));
-    expect(response).toHaveProperty("result.turnId");
+    expect(response).toMatchObject({ result: { turnId: expect.any(String), delivery: "newTurn" } });
     session.succeedTurn();
     await stopFixture(fixture);
   });
@@ -1300,11 +1304,20 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({
       result: {
         harnessId: "claude-code",
-        transportModelId: encodeClaudeTransportModel(secondModel),
         effectiveModel: firstModel,
         resolvedModelLabel: "fake-runtime-primary",
       },
     });
+    // The confirmed selection is the Thread's own; the other Claude Thread keeps its Model.
+    const persistedModel = async (threadId: string) =>
+      decodeExternalTransportSelection(
+        "claude-code",
+        (await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)))
+          ?.transportModelId,
+      )?.model;
+    await expect(persistedModel(firstThreadId)).resolves.toEqual(firstModel);
+    await expect(persistedModel(secondThreadId)).resolves.toEqual(firstModel);
+    expect(claudeAdapter.sessions[1]?.state.effectiveModel).toEqual(firstModel);
 
     writeRequest(fixture.desktopInput, {
       id: 24,

@@ -716,7 +716,11 @@ function validateV4Event(event: ModernJournalEvent): void {
       break;
     case "subagent/catalog":
       requiredOptionalKeys(data, ["version", "childId", "childCreatedAt", "mode"], ["label"]);
-      if (data.version !== 0 || (data.mode !== "one-shot" && data.mode !== "continuable"))
+      // DSH 0.2.1 records executions delegated to an external agent as v2.
+      if (!(
+        (data.version === 0 && (data.mode === "one-shot" || data.mode === "continuable")) ||
+        (data.version === 2 && data.mode === "external")
+      ))
         throw invalid("subagent catalog");
       identifier(data.childId, "subagent catalog childId");
       nonNegativeInteger(data.childCreatedAt, "subagent catalog childCreatedAt");

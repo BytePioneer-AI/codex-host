@@ -142,7 +142,13 @@ describe("Grok credits parsing", () => {
       usedPercent: 33,
       resetsAt: "2026-08-20T03:32:07.498525+00:00",
       periodType: "weekly",
-      productUsage: [{ product: "GrokBuild", usagePercent: 32 }],
+      productUsage: [
+        {
+          product: "GrokBuild",
+          usagePercent: 32,
+          localizations: { en: { label: "Build" }, "zh-CN": { label: "Build" } },
+        },
+      ],
       fetchedAt: "2026-08-15T00:00:00.000Z",
     });
   });

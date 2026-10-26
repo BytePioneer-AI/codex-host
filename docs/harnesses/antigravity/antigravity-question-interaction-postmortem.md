@@ -204,10 +204,10 @@ if (isAntigravityQuestionTool(rawToolName)) { ... }
 
 ### 8.2 当前实现
 
-- `packages/adapters/antigravity/src/question-bridge.ts`：每个 Turn 创建独立的本地桥，仅监听 `127.0.0.1`，使用内存中的随机鉴权值，验证原生会话身份并拒绝重复或重叠请求。
+- `packages/adapters/antigravity/src/question-bridge.ts`：本地桥仅监听 `127.0.0.1`，使用内存中的随机鉴权值，验证原生会话身份并拒绝重复或重叠请求。成功的 Turn 会保留驱动与桥供下一轮复用，此时桥在 `rebind` 中换绑新的 Turn 身份并自增代际；携带旧代际的在途请求一律拒绝，不会被归到新 Turn。
 - `question-hook-client.ts`：内嵌的轻量 Hook 客户端，随发布 Bundle 打包；运行时写入 Hook 目录，不需要额外安装依赖。
 - Hook 目录通过 `--add-dir` 加入每次 CLI 运行。真实 `/hooks` 查询已验证附加目录可以提供 Hooks，不修改项目或全局 `hooks.json`。
-- 有 Thread ID 时，每个 Thread 固定使用 `<数据目录>/antigravity-history/hooks/<Thread ID>`，跨 Turn 及恢复会话保留，每轮只重写其中的 Hook 文件。下一轮先等上一轮的清理（CLI 退出、桥关闭）完成再准备。清理在 CLI 收到结束信号后最多再等 5 秒进程关闭，避免占着输出不退出的子进程卡住后续轮次和关闭会话；保留的目录不会被删除。同一原生会话的后续 Turn 仍可能引用此前加入的目录：每轮删除再换新目录时，曾出现终端命令以已删除的 Hook 目录为工作目录而失败。目录中不保存鉴权值；没有 Thread ID 时退回每轮私有临时目录，Turn 结束后删除；这个目录不与其他 Turn 共用，所以下一轮无需等待上一轮清理。
+- 有 Thread ID 时，每个 Thread 固定使用 `<数据目录>/antigravity-history/hooks/<Thread ID>`，跨 Turn 及恢复会话保留，每轮只重写其中的 Hook 文件。成功的 Turn 不关闭 CLI，下一轮直接写入同一 stdin；只有失败、取消、关闭会话或切换模型/档位/权限时才清理驱动，且下一轮会先等这次清理完成再准备。清理在 CLI 收到结束信号后最多再等 5 秒进程关闭，避免占着输出不退出的子进程卡住后续轮次和关闭会话；保留的目录不会被删除。同一原生会话的后续 Turn 仍可能引用此前加入的目录：每轮删除再换新目录时，曾出现终端命令以已删除的 Hook 目录为工作目录而失败。目录中不保存鉴权值；没有 Thread ID 时退回每轮私有临时目录，Turn 结束后删除；这个目录不与其他 Turn 共用，所以下一轮无需等待上一轮清理。
 - Adapter 通过已有 `HostQuestionInteraction`、`interaction.respond`、`interaction.closed` 和 `CodexTurnProjector` 完成双向交互，Host 与 Renderer 不新增 Antigravity 专用请求分支。
 - 桥接条目命名为 `codexhost.ask_question`，保存问题与响应，明确区分桥接动作和原生工具结果。
 - 当前支持一批单选或文本问题，单选允许自由填写其他答案。现有 Desktop 投影没有多选字段，因此多选请求明确拒绝，不静默伪装成单选。

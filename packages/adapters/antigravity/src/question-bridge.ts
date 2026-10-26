@@ -49,6 +49,7 @@ const responseSchema = z
     cancelled: z.boolean().optional(),
   })
   .strict();
+/** Internal to the Antigravity Session; not part of the public Harness contract. */
 export interface BridgeOptions {
   /**
    * A directory the caller keeps across Turns. The bridge writes its Hook files there and leaves

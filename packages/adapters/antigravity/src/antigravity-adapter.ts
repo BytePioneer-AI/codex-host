@@ -137,8 +137,14 @@ interface ActiveTurn {
   logPath: string;
   /** The native driver this Turn runs on; a successful Turn hands it to the next one. */
   transport: AntigravityTransport;
-  /** Steps below this index belong to an earlier Turn on a reused driver. */
-  firstStepIndex: number;
+  /** Raw step lines this Turn emitted, keyed by index, to recognise a replay later. */
+  stepLines: Map<number, string>;
+  /**
+   * True while the Turn is still reading the previous Turn's replayed steps. agy emits
+   * them as one contiguous run before any new step, so once a step differs the rest of
+   * the Turn is new even if it repeats an earlier line verbatim.
+   */
+  replayingSteps: boolean;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
   tools: Map<number, HostItem>;
@@ -191,8 +197,8 @@ interface AntigravityTransport {
   lastResultTurn: number;
   /** Fingerprint of the last successful result, to ignore a replayed one. */
   lastResultJSON: string | null;
-  /** Highest step index this process already reported. */
-  lastStepIndex: number;
+  /** Raw step lines the most recent successful Turn emitted on this process. */
+  lastTurnStepLines: Map<number, string>;
 }
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
@@ -658,6 +664,15 @@ class AntigravitySession implements HarnessSession {
     );
   }
 
+  /**
+   * Releases the driver an idle Session kept for its next Turn, if there is one. fork and
+   * rollback copy the Conversation's database, which a live agy keeps writing, so the copy
+   * is only taken once no process can touch it.
+   */
+  async releaseIdleDriver(): Promise<void> {
+    await this.#disposeTransport(this.#transport);
+  }
+
   subagentState(id: string): HostSubagentState | undefined {
     for (const observer of [...this.#subagentObservers].reverse()) {
       const state = observer.state(id);
@@ -747,6 +762,11 @@ class AntigravitySession implements HarnessSession {
   ): Promise<HarnessResult<TurnStartAccepted>> {
     let questions: AntigravityQuestionBridge;
     const hookDirectory = antigravityHookDirectory(this.#environment);
+    // A successful Turn keeps its driver, bridge, and log alive for the next Turn, so a
+    // continued conversation skips CLI, Language Server, and customization startup. A
+    // different model/effort/permission selection, or a dead or unwritable process, starts
+    // a fresh driver. The previous Turn's cleanup is awaited first so a retained bridge is
+    // never rebound while its old driver is still being torn down.
     const transportKey = JSON.stringify([
       this.#model?.id ?? null,
       this.#thinkingOptionId ?? null,
@@ -861,7 +881,7 @@ class AntigravitySession implements HarnessSession {
       codeActionCursor: 0,
       lastResultTurn: -1,
       lastResultJSON: null,
-      lastStepIndex: -1,
+      lastTurnStepLines: new Map(),
     };
     const active: ActiveTurn = {
       command,
@@ -894,7 +914,8 @@ class AntigravitySession implements HarnessSession {
       }),
       logPath,
       transport,
-      firstStepIndex: reusable ? reusable.lastStepIndex + 1 : 0,
+      stepLines: new Map(),
+      replayingSteps: reusable !== null,
       agentItem: null,
       agentText: "",
       tools: new Map(),
@@ -952,8 +973,15 @@ class AntigravitySession implements HarnessSession {
         if (event.event === "step_update") {
           const index = event.step_update.step_index;
           if (Number.isInteger(index)) {
-            if (index < turn.firstStepIndex) return;
-            transport.lastStepIndex = Math.max(transport.lastStepIndex, index);
+            // A replayed step is byte-identical to the same index of the previous Turn.
+            // Comparing content rather than index order is what makes this safe whether
+            // agy continues numbering across stdin messages or restarts at 1: a genuinely
+            // new step never repeats an earlier line, and a replay always does.
+            if (turn.replayingSteps) {
+              if (transport.lastTurnStepLines.get(index) === line) return;
+              turn.replayingSteps = false;
+            }
+            turn.stepLines.set(index, line);
           }
         }
         this.#enqueue(turn, () => this.#handleEvent(turn, event));
@@ -1415,9 +1443,12 @@ class AntigravitySession implements HarnessSession {
       active.process.signalCode === null &&
       active.process.stdin.writable;
     if (keepTransport) {
+      // The port belongs to the process; the cursor belongs to the Conversation's
+      // trajectory, so a turn that resolved edits advances it for the next Turn.
       transport.httpsPort = active.httpsPort ?? transport.httpsPort;
       transport.codeActionCursor = active.codeActionCursor;
       transport.nativePermissionMode = active.nativePermissionMode;
+      transport.lastTurnStepLines = active.stepLines;
     }
     this.#questionCleanup = this.#questionCleanup
       .then(async () => {
@@ -1481,17 +1512,20 @@ class AntigravitySession implements HarnessSession {
     transport.questions.stop();
     if (transport.process.stdin.writable) transport.process.stdin.end();
     const timer = setTimeout(() => transport.process.kill(), NATIVE_EXIT_GRACE_MS);
-    const hardTimer = setTimeout(
-      () => transport.process.kill("SIGKILL"),
-      NATIVE_EXIT_GRACE_MS + 5_000,
-    );
+    // The escalation is scheduled after the bounded wait, not merely alongside it: a Turn
+    // cleanup wait shorter than the escalation would otherwise cancel the SIGKILL and leave
+    // an unresponsive agy with no owner.
     try {
       // A process that keeps agy's output open can delay `close` indefinitely, and later
       // Turns' cleanup and close() queue behind this one.
       await settledWithin(transport.exited, NATIVE_EXIT_GRACE_MS + this.#turnCleanupWaitMs);
     } finally {
       clearTimeout(timer);
-      clearTimeout(hardTimer);
+      if (transport.process.exitCode === null && transport.process.signalCode === null) {
+        // Still alive after the bounded wait: escalate, and keep the timer past this
+        // function so a stuck agy is not left running with no owner.
+        setTimeout(() => transport.process.kill("SIGKILL"), NATIVE_EXIT_GRACE_MS).unref();
+      }
       await transport.questions.dispose();
       await unlink(transport.logPath).catch(() => undefined);
     }
@@ -1904,6 +1938,8 @@ export class AntigravityAdapter implements HarnessAdapter {
 
     if (input.kind === "fork") {
       const sourceSession = this.#findSession(input.sourceRef.nativeSessionId);
+      // The source's database is copied below; a retained driver would still be writing it.
+      if (!sourceSession?.isActive) await sourceSession?.releaseIdleDriver();
       return forkAntigravitySession({
         harnessId: this.harnessId,
         input,
@@ -1944,6 +1980,8 @@ export class AntigravityAdapter implements HarnessAdapter {
 
     if (input.kind === "rollbackLastTurn") {
       const sourceSession = this.#findSession(input.sourceRef.nativeSessionId);
+      // The source's database is copied below; a retained driver would still be writing it.
+      if (!sourceSession?.isActive) await sourceSession?.releaseIdleDriver();
       return rollbackAntigravityLastTurn({
         harnessId: this.harnessId,
         input,

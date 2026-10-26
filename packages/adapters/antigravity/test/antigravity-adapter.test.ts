@@ -1906,6 +1906,134 @@ process.stdin.on("end", () => process.exit(served ? 0 : 1));
       }
     });
 
+    it("drops only the replayed steps of the previous turn, whatever their numbering", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-replay-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-replay-cwd-"));
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      // Turn 1 emits steps 1..2. Turn 2 replays those same lines and then emits its own
+      // steps starting again at 1, the numbering an agy that restarts per stdin message
+      // would use; a reused driver must keep exactly the new ones.
+      const step = (index: number, tool: string) =>
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-replay",
+            step_index: index,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: tool,
+            tool_info: { parameters: { Note: tool } },
+          },
+        });
+      const turn1 = [
+        JSON.stringify({
+          event: "init",
+          conversation_id: "conv-replay",
+          init: { permission_mode: "dangerously-skip-permissions" },
+        }),
+        step(1, "first_tool"),
+        step(2, "second_tool"),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-replay",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "one",
+          },
+        }),
+      ];
+      const turn2 = [
+        JSON.stringify({
+          event: "init",
+          conversation_id: "conv-replay",
+          init: { permission_mode: "dangerously-skip-permissions" },
+        }),
+        step(1, "first_tool"),
+        step(2, "second_tool"),
+        step(1, "third_tool"),
+        step(2, "fourth_tool"),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-replay",
+            status: "SUCCESS",
+            num_turns: 2,
+            response: "two",
+          },
+        }),
+      ];
+      const scriptContent = `
+const turns = ${JSON.stringify([turn1, turn2])};
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+let index = 0;
+let buffer = "";
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    const lines = turns[index] ?? [];
+    index += 1;
+    for (const line of lines) process.stdout.write(line + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const toolNames = async (turnId: string, text: string): Promise<string[]> => {
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse(turnId),
+            input: [{ type: "text", text }],
+          });
+          const names: string[] = [];
+          while (true) {
+            const event = await nextEvent(iterator);
+            if (event.type === "item.started" && event.item.type === "toolExecution") {
+              names.push(event.item.toolName);
+            }
+            if (event.type === "turn.completed") return names;
+          }
+        };
+
+        expect(await toolNames("turn-replay-1", "one")).toEqual(["first_tool", "second_tool"]);
+        // The replayed pair is dropped; the Turn's own two steps survive despite reusing
+        // indices 1 and 2.
+        expect(await toolNames("turn-replay-2", "two")).toEqual(["third_tool", "fourth_tool"]);
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
     it("projects file steps as Tool Executions when the applied patch cannot be read", async () => {
       const streamLines = [
         JSON.stringify({

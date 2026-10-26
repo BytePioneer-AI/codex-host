@@ -31,6 +31,8 @@ export interface ArchiveHealthServiceOptions {
   canRelease?(thread: ExternalThread): boolean;
   diagnose?(error: unknown): void;
   listProcesses?(): Promise<Array<{ pid: number; ppid: number; command: string }>>;
+  /** Bound for confirming a forced close. Defaults to {@link CLOSE_TIMEOUT_MS}. */
+  closeTimeoutMs?: number;
 }
 
 /** The executable token, honouring a leading quoted path. */
@@ -42,6 +44,27 @@ export function executablePath(command: string): string {
     if (end > 0) return trimmed.slice(1, end);
   }
   return trimmed.split(/\s+/)[0] ?? "";
+}
+
+/** Splits a command tail on whitespace, keeping double-quoted groups together. */
+function splitArguments(input: string): string[] {
+  const values: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (const character of input) {
+    if (character === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (!quoted && /\s/u.test(character)) {
+      if (current) values.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  if (current) values.push(current);
+  return values;
 }
 
 /** Arguments after the executable, with surrounding quotes removed. */
@@ -56,11 +79,7 @@ export function commandArguments(command: string): string[] {
     const match = /^\S+/.exec(trimmed);
     rest = match ? trimmed.slice(match[0].length) : "";
   }
-  return rest
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((value) => (value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value));
+  return splitArguments(rest);
 }
 
 const INTERPRETERS = new Set(["node", "node.exe", "bun", "bun.exe", "deno"]);
@@ -299,7 +318,7 @@ export class ArchiveHealthService {
           new Promise<never>((_, reject) => {
             timeout = setTimeout(
               () => reject(new Error("Session release timed out")),
-              CLOSE_TIMEOUT_MS,
+              this.options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS,
             );
             timeout.unref();
           }),

@@ -2440,4 +2440,28 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
     await stopFixture(fixture);
   });
+
+  it("rejects a force-archive Thread ID with surrounding whitespace", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+
+    writeRequest(fixture.desktopInput, {
+      id: 550,
+      method: "codexhost/archive/force",
+      params: { threadId: ` ${threadId} ` },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 550)),
+    ).resolves.toMatchObject({
+      id: 550,
+      error: { code: -32602 },
+    });
+
+    // The canonical Thread is untouched and still loaded.
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({ archived: false });
+
+    await stopFixture(fixture);
+  });
 });

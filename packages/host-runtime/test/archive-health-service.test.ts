@@ -21,6 +21,7 @@ async function createFixture(
     listProcesses?: () => Promise<Listed[]>;
     canRelease?: () => boolean;
     failStoreRead?: boolean;
+    closeTimeoutMs?: number;
   } = {},
 ) {
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
@@ -96,6 +97,7 @@ async function createFixture(
       notifiedArchived.push(archivedId);
     },
     ...(options.canRelease ? { canRelease: options.canRelease } : {}),
+    ...(options.closeTimeoutMs === undefined ? {} : { closeTimeoutMs: options.closeTimeoutMs }),
     diagnose: vi.fn(),
     listProcesses: options.listProcesses ?? (async () => []),
   });
@@ -124,6 +126,11 @@ describe("Codex process recognition", () => {
   it("parses quoted executables and their arguments", () => {
     expect(executablePath('"/opt/my codex/bin/codex" exec')).toBe("/opt/my codex/bin/codex");
     expect(commandArguments('"/opt/my codex/bin/codex" exec --flag')).toEqual(["exec", "--flag"]);
+    expect(commandArguments('node "/opt/my tools/codex.js" app-server')).toEqual([
+      "/opt/my tools/codex.js",
+      "app-server",
+    ]);
+    expect(isCodexProcess('node "/opt/my tools/codex.js" app-server')).toBe(true);
     expect(executablePath("   ")).toBe("");
   });
 
@@ -264,6 +271,26 @@ describe("safe forced archive", () => {
     expect(f.runtime.get(f.id)).toBeDefined();
     expect(f.record.archived).toBe(false);
     expect(f.notifiedArchived).toHaveLength(0);
+  });
+
+  it("keeps the instance loaded when the close never settles", async () => {
+    const f = await createFixture({ closeTimeoutMs: 20 });
+    vi.spyOn(f.thread.session, "close").mockReturnValue(new Promise<void>(() => undefined));
+
+    await expect(f.service.forceArchive(f.id)).rejects.toMatchObject({ code: -32075 });
+    expect(f.runtime.get(f.id)).toBeDefined();
+    expect(f.record.archived).toBe(false);
+    expect(f.notifiedArchived).toHaveLength(0);
+  });
+
+  it("keeps the instance loaded when the output drain never settles", async () => {
+    const f = await createFixture({ closeTimeoutMs: 20 });
+    f.thread.outputTask = new Promise<void>(() => undefined);
+    vi.spyOn(f.thread.session, "close").mockResolvedValue(undefined);
+
+    await expect(f.service.forceArchive(f.id)).rejects.toMatchObject({ code: -32075 });
+    expect(f.runtime.get(f.id)).toBeDefined();
+    expect(f.record.archived).toBe(false);
   });
 
   it("detaches a pure in-memory orphan without a MappingStore record", async () => {

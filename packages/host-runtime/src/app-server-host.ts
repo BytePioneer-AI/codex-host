@@ -1154,12 +1154,14 @@ export class AppServerHost {
       );
     });
     // A console force-archive owns the Thread exactly like a Desktop request: it joins
-    // the per-Thread queue and idle-release operations before touching the Session.
+    // the per-Thread queue and idle-release operations before touching the Session. The
+    // queue key is the exact ID the handler will accept, so a padded ID cannot open a
+    // second lane for the same Thread; `#forceArchiveThread` rejects it as invalid.
     const consoleThreadId =
       method === "codexhost/archive/force" &&
       isRecord(params) &&
       typeof params.threadId === "string"
-        ? params.threadId
+        ? params.threadId.trim()
         : undefined;
     this.#dispatchDesktopRequest(() =>
       this.#desktopRequests.run(consoleThreadId, () =>
@@ -3436,9 +3438,18 @@ export class AppServerHost {
   }
 
   async #forceArchiveThread(request: JsonRpcRequest): Promise<void> {
+    const rawThreadId = isRecord(request.params) ? request.params.threadId : undefined;
     const params = archiveForceParamsSchema.safeParse(request.params);
     if (!params.success) {
       await this.#writer.json(rpcError(request, -32602, "Invalid force archive params"));
+      return;
+    }
+    // The per-Thread queue is keyed by the request's raw ID, so a padded ID would open a
+    // second lane for the same Thread. Only the canonical ID may operate.
+    if (rawThreadId !== params.data.threadId) {
+      await this.#writer.json(
+        rpcError(request, -32602, "Thread ID must not contain surrounding whitespace"),
+      );
       return;
     }
     try {

@@ -801,28 +801,15 @@ export class AppServerHost {
               await this.#resolveDesktopQuestion(pending.interaction.interactionId);
           }
         },
-        canRelease: (thread) =>
-          !this.#hasRunningSubagents(thread.id) &&
-          !thread.session.hasBackgroundWork?.() &&
-          !this.#externalSteering.hasPending(thread.id) &&
-          !this.#pendingExternalCommandRequests.has(thread.id) &&
-          ![...this.#pendingDesktopApprovals.values()].some(
-            (pending) => pending.thread === thread,
-          ) &&
-          ![...this.#pendingDesktopQuestions.values()].some((pending) => pending.thread === thread),
+        canRelease: this.#externalThreadReleasable,
       },
     });
     this.#archiveHealthService = new ArchiveHealthService({
       repository: this.#repository,
       runtime: this.#externalRuntime,
-      canRelease: (thread) =>
-        !this.#hasRunningSubagents(thread.id) &&
-        !thread.session.hasBackgroundWork?.() &&
-        !this.#externalSteering.hasPending(thread.id) &&
-        !this.#pendingExternalCommandRequests.has(thread.id) &&
-        ![...this.#pendingDesktopApprovals.values()].some((pending) => pending.thread === thread) &&
-        ![...this.#pendingDesktopQuestions.values()].some((pending) => pending.thread === thread),
+      canRelease: this.#externalThreadReleasable,
       diagnose: (error) => this.#diagnose(error),
+      forgetThread: (threadId) => this.#routeObservationTracker.forgetThread(threadId),
       notifyArchived: async (threadId) => {
         await this.#writer.json({
           method: "thread/archived",
@@ -3433,7 +3420,14 @@ export class AppServerHost {
       const result = await this.#archiveHealthService.inspect(params.data);
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
     } catch (error) {
-      await this.#writer.json(rpcError(request, -32603, errorMessage(error)));
+      this.#diagnose(error);
+      await this.#writer.json(
+        rpcError(
+          request,
+          error instanceof ArchiveHealthError ? error.code : -32603,
+          errorMessage(error),
+        ),
+      );
     }
   }
 
@@ -5965,6 +5959,18 @@ export class AppServerHost {
       this.#diagnose(error);
     }
   }
+
+  /**
+   * What counts as an idle External Thread: one policy for both automatic idle release and
+   * archive-health forced archive, so the two cannot drift when a new pending state appears.
+   */
+  readonly #externalThreadReleasable = (thread: ExternalThread): boolean =>
+    !this.#hasRunningSubagents(thread.id) &&
+    !thread.session.hasBackgroundWork?.() &&
+    !this.#externalSteering.hasPending(thread.id) &&
+    !this.#pendingExternalCommandRequests.has(thread.id) &&
+    ![...this.#pendingDesktopApprovals.values()].some((pending) => pending.thread === thread) &&
+    ![...this.#pendingDesktopQuestions.values()].some((pending) => pending.thread === thread);
 
   #diagnose(error: unknown): void {
     this.#options.diagnosticOutput.write(`codexhost Host Runtime: ${errorMessage(error)}\n`);

@@ -28,6 +28,8 @@ export interface ArchiveHealthServiceOptions {
   repository: ExternalThreadRepository;
   runtime: ExternalThreadRuntime;
   notifyArchived(threadId: string): Promise<void>;
+  /** Mirrors the delete path: a detached Thread no longer needs route observation. */
+  forgetThread?(threadId: string): void;
   canRelease?(thread: ExternalThread): boolean;
   diagnose?(error: unknown): void;
   listProcesses?(): Promise<Array<{ pid: number; ppid: number; command: string }>>;
@@ -88,14 +90,29 @@ const INTERPRETERS = new Set(["node", "node.exe", "bun", "bun.exe", "deno"]);
  * A live Codex CLI process, as opposed to the Desktop GUI, its helpers, a
  * codexhost-owned backend, or an unrelated process that merely mentions codex.
  */
+/**
+ * Paths that belong to Codex Desktop rather than to a user-installed CLI. Desktop ships its
+ * own CLI copy — `app/resources/codex.exe` on Windows, `CodexCLI.app/.../codex` or a flat
+ * `Contents/Resources/codex` on macOS — and caches a downloaded one under `OpenAI/Codex/bin`.
+ * Killing those breaks the user's own official channel, so they are never reported.
+ */
+const DESKTOP_CLI_PATHS = [
+  /(?:^|\/)app\/resources\/codex(?:\.exe)?$/u,
+  /codexcli\.app\/contents\/macos\/codex$/u,
+  /(?:^|\/)contents\/resources\/codex(?:\.exe)?$/u,
+  /openai\/codex\/bin\//u,
+];
+
 export function isCodexProcess(command: string): boolean {
   const exec = executablePath(command);
   if (!exec) return false;
-  const lowerExec = exec.toLowerCase();
+  const lowerExec = exec.toLowerCase().replaceAll("\\", "/");
   // Desktop app bundle (main binary, helpers, renderer) and its framework.
   if (lowerExec.includes(".app/")) return false;
   // Host-owned processes and shims.
   if (lowerExec.includes("codexhost") || lowerExec.includes("codex-host")) return false;
+  // A CLI copy that ships with, or is managed by, Desktop itself.
+  if (DESKTOP_CLI_PATHS.some((pattern) => pattern.test(lowerExec))) return false;
 
   const base = path.basename(lowerExec);
   if (INTERPRETERS.has(base)) {
@@ -147,7 +164,7 @@ export async function defaultListProcesses(): Promise<
         "-Command",
         "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress",
       ],
-      { timeout: 10_000, maxBuffer: 16 * 1024 * 1024 },
+      { timeout: 10_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
     );
     const parsed: unknown = JSON.parse(stdout);
     const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
@@ -189,7 +206,17 @@ export class ArchiveHealthService {
 
   async inspect(params?: ArchiveHealthParams): Promise<ArchiveHealthResult> {
     const inconsistentThreads: ArchiveHealthInconsistentThread[] = [];
-    const repositoryThreads = await this.options.repository.list();
+    // A store that cannot be read is not a healthy Host; use the same code the ownership
+    // contract assigns to Mapping Store read failures.
+    let repositoryThreads: Awaited<ReturnType<ExternalThreadRepository["list"]>>;
+    try {
+      repositoryThreads = await this.options.repository.list();
+    } catch (error) {
+      throw new ArchiveHealthError(
+        -32081,
+        `External Thread ownership could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     const inMemoryThreads = this.options.runtime.values();
 
     for (const record of repositoryThreads) {
@@ -301,6 +328,7 @@ export class ArchiveHealthService {
     if (!record && !thread) {
       throw new ArchiveHealthError(-32602, `Thread '${trimmedId}' was not found`);
     }
+    let closedSessionRef: ExternalThread["session"] | undefined;
 
     if (thread) {
       if (thread.running || thread.activeTurnId !== null) {
@@ -315,8 +343,12 @@ export class ArchiveHealthService {
           `External Thread '${trimmedId}' has background work or pending interactions and cannot be force-archived.`,
         );
       }
-      // A confirmed close is required before detaching: releasing an instance that
-      // still owns the native session would allow a second writer after recovery.
+      // A confirmed close is required before detaching: releasing an instance that still
+      // owns the native session would allow a second writer after recovery. The Session we
+      // closed is recorded because a delegation request can revive the Thread in place
+      // (`#reviveIdleSession` swaps `thread.session` on the same object) while the archive
+      // write is in flight; object identity alone cannot detect that.
+      const closedSession = thread.session;
       let timeout: NodeJS.Timeout | undefined;
       try {
         await Promise.race([
@@ -341,10 +373,11 @@ export class ArchiveHealthService {
       } finally {
         if (timeout) clearTimeout(timeout);
       }
-      if (this.options.runtime.get(trimmedId) !== thread) {
+      closedSessionRef = closedSession;
+      if (this.options.runtime.get(trimmedId) !== thread || thread.session !== closedSession) {
         throw new ArchiveHealthError(
           -32076,
-          `External Thread '${trimmedId}' changed while closing; retry the request.`,
+          `External Thread '${trimmedId}' was revived while archiving; retry the request.`,
         );
       }
     }
@@ -362,8 +395,24 @@ export class ArchiveHealthService {
         );
       }
     }
-    if (thread && this.options.runtime.get(trimmedId) === thread) {
+    // Detach only if this Thread still owns the Session we closed. A revival during the
+    // archive write replaces `thread.session`; removing it then would drop a live native
+    // session with no owner, and the next resume would open a second writer.
+    if (
+      thread &&
+      this.options.runtime.get(trimmedId) === thread &&
+      thread.session === closedSessionRef
+    ) {
       this.options.runtime.remove(trimmedId);
+      this.options.forgetThread?.(trimmedId);
+    } else if (thread) {
+      // The archive write landed, but a delegation request revived the Thread meanwhile.
+      // Keeping the live Session is the only safe option; a retry closes it and re-applies
+      // the (already idempotent) archive, so say so instead of reporting a clean success.
+      throw new ArchiveHealthError(
+        -32076,
+        `External Thread '${trimmedId}' was archived but revived concurrently; retry force-archive to release the new Session.`,
+      );
     }
 
     // The archive state is already durable; a failed notification must not report

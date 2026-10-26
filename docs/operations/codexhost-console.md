@@ -94,7 +94,7 @@ Desktop Controller 在注入失败时仍会让 Codex 正常运行并在后台重
 
 ## 与运行中的 codexhost 连接
 
-Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控制通道，把端口与随机令牌写入 `<数据目录>/console/hosts/host-<进程号>.json`（`0600`），退出时删除。控制台读取该文件，把设置请求转发给 Host，由 Host 按 Codex 设置页相同的逻辑处理；只接受 `CONSOLE_HOST_METHODS` 列出的设置方法，不接受 Thread 或 Turn 操作。
+Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控制通道，把端口与随机令牌写入 `<数据目录>/console/hosts/host-<进程号>.json`（`0600`），退出时删除。控制台读取该文件，把设置请求转发给 Host，由 Host 按 Codex 设置页相同的逻辑处理；只接受 `CONSOLE_HOST_METHODS` 列出的方法，不转发任意 Thread 或 Turn 请求。该名单以设置方法为主，另有 `codexhost/archive/health` 与 `codexhost/archive/force` 两个归档维护入口（见「归档体检与强制归档」）。
 
 - codexhost 未运行：连接页显示离线的插件列表并可修改安装路径；远程连接、账号、会话导入提示先启动 codexhost。
 - codexhost 运行但控制通道不可用（例如旧版本）：提示重新启动 codexhost。

@@ -22,6 +22,7 @@ async function createFixture(
     canRelease?: () => boolean;
     failStoreRead?: boolean;
     closeTimeoutMs?: number;
+    forgetThread?: (threadId: string) => void;
   } = {},
 ) {
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
@@ -98,6 +99,7 @@ async function createFixture(
     },
     ...(options.canRelease ? { canRelease: options.canRelease } : {}),
     ...(options.closeTimeoutMs === undefined ? {} : { closeTimeoutMs: options.closeTimeoutMs }),
+    ...(options.forgetThread ? { forgetThread: options.forgetThread } : {}),
     diagnose: vi.fn(),
     listProcesses: options.listProcesses ?? (async () => []),
   });
@@ -121,6 +123,20 @@ describe("Codex process recognition", () => {
 
     // A prompt that happens to mention codexhost must not hide a real CLI.
     expect(isCodexProcess("/usr/local/bin/codex exec --prompt codexhost")).toBe(true);
+
+    // Desktop ships, and also caches, its own CLI copy; killing one breaks the official channel.
+    expect(
+      isCodexProcess("C:\\Program Files\\Codex Desktop\\app\\resources\\codex.exe app-server"),
+    ).toBe(false);
+    expect(
+      isCodexProcess("C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin\\1.2.3\\codex.exe exec"),
+    ).toBe(false);
+    expect(
+      isCodexProcess(
+        "/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+      ),
+    ).toBe(false);
+    expect(isCodexProcess("/Applications/Codex.app/Contents/Resources/codex")).toBe(false);
   });
 
   it("parses quoted executables and their arguments", () => {
@@ -369,6 +385,44 @@ describe("safe forced archive", () => {
     await expect(background.service.forceArchive(background.id)).rejects.toMatchObject({
       code: -32072,
     });
+  });
+
+  it("keeps a Session revived during the archive write and reports it", async () => {
+    const f = await createFixture();
+    // A delegation request revives the Thread in place while setArchived is in flight.
+    const record = f.record;
+    vi.spyOn(f.repository, "setArchived").mockImplementation(async () => {
+      const replacement = await f.adapter.open({ kind: "create", cwd: "/synthetic-revived" });
+      if (!replacement.ok) throw new Error(replacement.error.message);
+      f.thread.session = replacement.value;
+      record.archived = true;
+      return record;
+    });
+
+    await expect(f.service.forceArchive(f.id)).rejects.toMatchObject({ code: -32076 });
+    expect(f.record.archived).toBe(true);
+    // The revived Session still has an owner: dropping it would leave an unwatched native
+    // session and allow a second writer on the next resume.
+    expect(f.runtime.get(f.id)).toBe(f.thread);
+    expect(f.notifiedArchived).toHaveLength(0);
+  });
+
+  it("forgets route observation only when the Thread is really detached", async () => {
+    const forgotten: string[] = [];
+    const detached = await createFixture({ forgetThread: (id) => forgotten.push(id) });
+    await detached.service.forceArchive(detached.id);
+    expect(forgotten).toEqual([detached.id]);
+
+    const revived = await createFixture({ forgetThread: (id) => forgotten.push(id) });
+    vi.spyOn(revived.repository, "setArchived").mockImplementation(async () => {
+      const replacement = await revived.adapter.open({ kind: "create", cwd: "/synthetic-r2" });
+      if (!replacement.ok) throw new Error(replacement.error.message);
+      revived.thread.session = replacement.value;
+      return revived.record;
+    });
+    await expect(revived.service.forceArchive(revived.id)).rejects.toMatchObject({ code: -32076 });
+    // A Thread that kept its live Session must not lose its observation entry.
+    expect(forgotten).toEqual([detached.id]);
   });
 
   it("rejects unknown threads", async () => {

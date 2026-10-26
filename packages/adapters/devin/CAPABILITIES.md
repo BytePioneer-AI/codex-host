@@ -62,7 +62,7 @@
 - A3/A4：inspect 调用 session/new 获取目录；原生空 Session 的持久化和预热丢弃行为未验证，不能宣称满足无用户会话副作用要求。
 - A6/A8：已有取消与身份回放 mock 测试；真实取消后继续、压缩历史、重载持久性尚未验证。
 - B1/B4：活动 Turn 配置和无人值守显式权限冲突由 hermetic 回归测试覆盖；真实运行中切换及 bypass 工具执行仍需 CLI 验收。
-- B5–B7：官方交互命令和 changelog 表明原生有 Fork/revert，不能据旧版 ACP 探测认定原生不支持。SDK 1.3.0 的实验性 session/fork 没有精确边界字段；Devin 的 step 与 Host Turn 对齐、命令分发、派生身份、历史回放和配置保留尚无充分协议依据。P1 历史能力未完成；验收矩阵和脱敏证据要求见集成记录「History derivation」。不得使用会撤销文件的 `/revert` 实现 Host rollback。
+- B5–B7：官方交互命令和 changelog 表明原生有 Fork/revert，不能据旧版 ACP 探测认定原生不支持。SDK 1.3.0 的实验性 session/fork 没有精确边界字段；Devin 的 step 与 Host Turn 对齐、命令分发、派生身份、历史回放和配置保留尚无充分协议依据。P1 历史能力未完成；验收清单和脱敏证据要求见集成记录「History derivation」。不得使用会撤销文件的 `/revert` 实现 Host rollback。
 - B10：未映射的扩展明确报错，不自动代答；原生提问协议需进一步核实。
 - B11–B16/C7：未验证的原生能力不等于原生不支持；完整委派、用量、自主 Turn、Subagent 不作完成声明。
 - C3：缺少版本检查与更新，仍是 P1 交付缺口。C5 仅支持环境变量命令覆盖。
@@ -82,7 +82,7 @@
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
 | Adapter 公共行为 | Vitest，`tests/vitest.config.js`，`packages/adapters/devin/test` | 32 项通过；配置回归 14 项中 9 项在修复前失败 |
-| 历史能力边界 | `npx tsc -b packages/adapters/devin --pretty false`；Vitest 聚焦 `test/history.test.ts`、`test/devin-adapter.test.ts`、`test/configuration.test.ts` | 构建及 42 项测试通过（新增历史边界 10 项）；仅证明能力关闭、无原生启动及不伪造 checkpoint，不代表原生 Fork/rollback 验收 |
+| 历史能力边界 | Vitest 聚焦 `test/history.test.ts`、`test/devin-adapter.test.ts`、`test/configuration.test.ts` | 36 项测试通过（历史边界 4 项）；仅验证能力关闭、无原生启动及不伪造 checkpoint，不代表原生 Fork/rollback 验收 |
 | 原生边界 | Mock ACP 回放、权限和终态 | 非真实 CLI 验收 |
 | 插件加载 | installed-harness-plugins.test.ts | 与 Devin、host-bundle 聚焦检查合计 64 项通过、1 项跳过；跳过的是未配置 CODEXHOST_OPENCODE_REAL_COMMAND 的原生测试 |
 | Host 集成 | typecheck、build:typescript、lint | 通过；turn.steer 显式返回 unsupported |

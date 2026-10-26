@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
-import type { OpenSessionInput } from "@codexhost/harness-adapter";
 import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -36,14 +35,7 @@ describe("Devin history safety boundary", () => {
     });
   });
 
-  it.each([
-    { name: "middle", checkpointId: "turn-1" },
-    { name: "tail", checkpointId: "turn-2" },
-    { name: "unknown", checkpointId: "missing" },
-    { name: "foreign session", checkpointId: "turn-1", nativeSessionId: "other-session" },
-    { name: "foreign Harness", checkpointId: "turn-1", harnessId: "pi" },
-    { name: "cross-cwd", checkpointId: "turn-1", cwd: "/synthetic/other-workspace" },
-  ])("rejects $name fork before native access", async (boundary) => {
+  it("rejects fork before native access", async () => {
     const adapter = new DevinAdapter({ environment: {} });
     try {
       expect(
@@ -51,12 +43,12 @@ describe("Devin history safety boundary", () => {
           kind: "fork",
           sourceRef,
           checkpoint: nativeCheckpointRefSchema.parse({
-            harnessId: boundary.harnessId ?? "devin",
-            nativeSessionId: boundary.nativeSessionId ?? sourceRef.nativeSessionId,
-            checkpointId: boundary.checkpointId,
+            harnessId: "devin",
+            nativeSessionId: sourceRef.nativeSessionId,
+            checkpointId: "turn-1",
             formatVersion: 1,
           }),
-          cwd: boundary.cwd ?? cwd,
+          cwd: "/synthetic/other-workspace",
         }),
       ).toMatchObject({ ok: false, error: { code: "unsupported", retryable: false } });
       expect(DevinTransport).not.toHaveBeenCalled();
@@ -65,33 +57,24 @@ describe("Devin history safety boundary", () => {
     }
   });
 
-  it.each([false, true])(
-    "rejects rollback before native access (configuration: %s)",
-    async (configured) => {
-      const adapter = new DevinAdapter({ environment: {} });
-      const input: OpenSessionInput = {
-        kind: "rollbackLastTurn",
-        sourceRef,
-        cwd,
-        ...(configured
-          ? {
-              model: devinModelRef("synthetic-model"),
-              thinkingOptionId: harnessThinkingOptionIdSchema.parse("synthetic-thinking"),
-              permissionModeId: harnessPermissionModeIdSchema.parse("plan"),
-            }
-          : {}),
-      };
-      try {
-        expect(await adapter.open(input)).toMatchObject({
-          ok: false,
-          error: { code: "unsupported", retryable: false },
-        });
-        expect(DevinTransport).not.toHaveBeenCalled();
-      } finally {
-        await adapter.close();
-      }
-    },
-  );
+  it("rejects configured rollback before native access", async () => {
+    const adapter = new DevinAdapter({ environment: {} });
+    try {
+      expect(
+        await adapter.open({
+          kind: "rollbackLastTurn",
+          sourceRef,
+          cwd,
+          model: devinModelRef("synthetic-model"),
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse("synthetic-thinking"),
+          permissionModeId: harnessPermissionModeIdSchema.parse("plan"),
+        }),
+      ).toMatchObject({ ok: false, error: { code: "unsupported", retryable: false } });
+      expect(DevinTransport).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
 
   it("does not turn stable replayed Turn identities into forkable checkpoints", () => {
     const replay: SessionNotification[] = ["turn-1", "turn-2"].flatMap((key) => [

@@ -78,88 +78,48 @@ been established.
 
 ## History derivation
 
-`history.fork`, `forkAcrossCwd` and `rollbackLastTurn` remain **false**.
-Both derivation open branches return `unsupported` before starting a transport;
-replayed Turn identities are not published as checkpoints. This is an unverified
-integration boundary, not a claim that native Devin lacks Fork.
+`history.fork`, `forkAcrossCwd` and `rollbackLastTurn` are **false**.
+Derivation returns `unsupported` before transport startup; replayed Turn
+identities are not checkpoints.
 
 ### Official evidence and protocol gaps
 
-- [Commands & Flags](https://docs.devin.ai/cli/reference/commands#session-management)
-  documents interactive `/fork [step]` (a new Session), `/steps`, and
-  `/revert <step>` (rewind to **before** that step **and revert file changes**).
-  It does not specify whether `/fork [step]` includes the selected step, step
-  identity persistence, or machine-readable results. `/revert` cannot implement
-  Host rollback, even on a copied Session: the workspace would still be changed.
+- ACP SDK **1.3.0** exposes experimental `session/fork`, but its
+  `ForkSessionRequest` has **no boundary field**; the response supplies a new
+  `sessionId` and optional configuration, not proof of the retained prefix.
+  See the SDK's `dist/schema/types.gen.d.ts`. Method availability does not prove
+  Devin support, and no documented Devin exact-boundary request/return contract
+  establishes a usable `_meta` key or slash-command result format.
 - The [stable changelog](https://docs.devin.ai/cli/changelog/stable),
-  v3000.4.16, says `/fork` defaults to the latest step and ACP revert can cancel
-  an active Turn. Completed `ask_user_question` prompts also become steps.
-  Another entry documents steps surviving compaction. A step therefore cannot
-  be assumed to equal a user Turn, replay index, or the existing
-  `cognition.ai/clientMessageId` / `userMessageId` identity.
-- The commands reference identifies `devin acp` as the stdio JSON-RPC entry
-  point. [ACP slash commands](https://agentclientprotocol.com/protocol/slash-commands)
-  defines command discovery via `available_commands_update` and invocation as
-  text in `session/prompt`. However, Devin's documented ACP command table does
-  not explicitly list `/fork`, `/steps` or `/revert`. Neither that table nor the
-  changelog defines their request extensions, completion payloads, new-session
-  routing or a no-inference guarantee. Sending guessed slash text through the
-  ordinary prompt path is not a safe capability probe.
-- The pinned `@agentclientprotocol/sdk` **1.3.0** exposes experimental
-  `ClientSideConnection.unstable_forkSession` (`session/fork`). Its
-  `ForkSessionRequest` has `sessionId`, `cwd`, optional `additionalDirectories`,
-  `mcpServers` and opaque `_meta`; **no step/checkpoint boundary field**.
-  `ForkSessionResponse` has a new `sessionId` and optional `modes` / `configOptions`;
-  it proves neither the retained prefix nor configuration preservation. See
-  `dist/schema/types.gen.d.ts` and `dist/acp.d.ts` in the installed SDK.
-  SDK method availability is not Devin support; even advertised whole-session
-  Fork would not establish exact middle-Turn Fork or rollback. No `_meta` key or
-  command output parser is inferred from these types.
-
-The fetched Devin documentation matches the supplied documentation copies;
-no native history derivation was executed. The existing real-run record above
-does not cover derivation. `test/history.test.ts` covers the disabled gates and
-checkpoint omission, not successful native Fork or rollback.
+  v3000.4.16, includes completed `ask_user_question` prompts as steps and says
+  `/fork` defaults to the latest step. A step is not necessarily a Host Turn;
+  its mapping to replayed user-message IDs and Fork inclusion boundary is unknown.
+- [Commands & Flags](https://docs.devin.ai/cli/reference/commands#session-management)
+  documents `/fork [step]`, `/steps` and `/revert <step>`. Revert rewinds to before
+  the step **and changes workspace files**, so it cannot implement Host rollback,
+  even on a copied Session.
 
 ### Evidence required from the PR author
 
-Read-only discovery can start with `devin --version`, `devin --help` and an ACP
-`initialize` exchange only, followed by closing the process. Do not create a
-Session, authenticate through a captured request, submit a prompt or invoke an
-experimental method merely to discover support. Return the CLI/SDK versions,
-platform, advertised session capabilities and any official history API reference.
-Missing advertisement is not proof that every CLI surface lacks the capability.
+Return CLI/SDK versions, platform, advertised capabilities and redacted native
+request/response/notification traces proving:
 
-Exact-boundary acceptance requires an explicitly authorized **disposable**
-workspace and synthetic native history. The author must first establish the
-supported invocation and whether it can trigger inference; unknown commands
-must not be tried against real sessions or a paid model. `/steps` via
-`session/prompt` is not assumed read-only. No `/revert`, database editing, prompt
-replay, summary reconstruction or destructive cleanup is part of this plan.
+- Supported invocation, step-to-Turn mapping and inclusive/exclusive boundaries,
+  including question/tool steps and compacted history.
+- Middle/tail Fork into a distinct, resumable/writable Session with exactly the
+  retained prefix; source history and workspace files stay unchanged.
+- Rollback removes one complete Turn, preserves current Model/Thinking/Permission
+  Mode, handles single-Turn to persistent empty Session, and rejects empty history.
+- Invalid/stale checkpoints, active Turns and native failures leave the source
+  intact; child routing, restart persistence and resource cleanup are verified.
+  Cross-cwd support additionally requires native confirmation of the target cwd.
 
-Return redacted request/response/notification traces for the supported path,
-including errors. Omit authentication payloads, credentials, account data,
-private prompts, tool contents and real paths. Replace session/step/message IDs
-consistently so equality and boundary relationships remain verifiable; retain
-method names, field names, value types, ordering and selected synthetic content.
-The evidence must establish:
-
-| Case | Required result |
-| --- | --- |
-| Boundary identity | Native step discovery and exact mapping to completed logical Turns; before/after semantics, tool/question steps and compaction; no guessed IDs or positions. |
-| Middle and tail Fork | A different, independently resumable/writable native Session; its replay exactly equals the requested Turn prefix, including input and Items, not just the Turn count. No command bookkeeping Turn or duplicated context. |
-| Source and workspace isolation | Source replay remains identical before/after success and failure; workspace file bytes, path set and relevant metadata remain unchanged, including unrelated dirty files and newly created files. |
-| Rollback | Fork to before the last complete Turn; exactly one fewer logical Turn. Multi-Turn, single-Turn to persistently empty/continuable Session, and empty-history rejection. |
-| Configuration | Model, Thinking and Permission Mode supplied to rollback are natively confirmed on the child, even when different from the retained historical settings; no work starts before confirmation. Missing/unsupported confirmation fails closed. |
-| Invalid/busy cases | Foreign Harness/Session checkpoint, missing/stale boundary and active Turn are rejected without source mutation; cancellation/incomplete history is not guessed into a complete Turn. |
-| Routing and failure | Child identity and notification routing, same-process source lock behavior, close/reopen persistence, native failure and resource cleanup. Report orphan child Sessions if safe cleanup is unavailable; never delete the source. |
-| Cross-cwd (only if advertised) | Native confirmation of the child's target cwd, not just the subprocess cwd; inherited history still matches the exact prefix. |
-
-Continuation may use author-provided existing traces; any new model execution
-requires separate explicit authorization. None was performed locally. Pi's
-`pi-history.ts`, `pi-last-turn-rollback.ts` and corresponding Adapter/history
-tests inform these invariants only; its Entry IDs, RPC commands and native file
-format are not Devin protocol evidence.
+Use explicitly authorized disposable workspaces and synthetic history; establish
+whether the invocation triggers inference before executing it. Unknown slash
+commands, including `/steps` via `session/prompt`, are not read-only probes.
+Paid model execution requires separate authorization. Remove credentials,
+authentication payloads, account data, private content and real paths from traces;
+pseudonymize IDs consistently while retaining field names, types and ordering.
 
 ## Current limitations
 

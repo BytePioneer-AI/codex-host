@@ -84,6 +84,65 @@ async function question(outputs: HarnessOutput[]): Promise<HostQuestionInteracti
 }
 
 describe("Antigravity question Hook bridge", () => {
+  it("refuses to reuse a bridge that still owns a pending question", async () => {
+    const { bridge, outputs } = await fixture();
+    try {
+      const done = runHook(bridge);
+      await question(outputs);
+      expect(() =>
+        bridge.rebind({
+          turnId: hostTurnIdSchema.parse("turn-next"),
+          nativeSessionId: () => input.conversationId,
+          schedule: (action) => action(),
+          emit: () => undefined,
+        }),
+      ).toThrow("busy");
+      bridge.stop();
+      await done;
+    } finally {
+      await bridge.dispose();
+    }
+  });
+
+  it("rejects a request that arrives before a rebind instead of attributing it to the next Turn", async () => {
+    const { bridge, outputs } = await fixture();
+    try {
+      // Hold the scheduled work so the request is in flight across the rebind.
+      let release: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const pending: (() => void)[] = [];
+      bridge.rebind({
+        turnId: hostTurnIdSchema.parse("turn-before"),
+        nativeSessionId: () => input.conversationId,
+        schedule: (action) => pending.push(action),
+        emit: (output) => outputs.push(output),
+      });
+      const done = runHook(bridge);
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+
+      bridge.stop();
+      bridge.rebind({
+        turnId: hostTurnIdSchema.parse("turn-after"),
+        nativeSessionId: () => input.conversationId,
+        schedule: (action) => action(),
+        emit: (output) => outputs.push(output),
+      });
+      release?.();
+      await held;
+      // Run the stale scheduled work only after the bridge belongs to the next Turn.
+      for (const action of pending) action();
+
+      const reply = JSON.parse((await done).stdout) as { decision: string; reason: string };
+      expect(reply.decision).toBe("deny");
+      expect(reply.reason).toContain("does not belong to the active codexhost Turn");
+      expect(outputs.some(({ kind }) => kind === "interaction")).toBe(false);
+    } finally {
+      await bridge.dispose();
+    }
+  });
+
   it("rejects answers past the announced deadline even before the timer callback runs", async () => {
     const { bridge, outputs } = await fixture();
     try {

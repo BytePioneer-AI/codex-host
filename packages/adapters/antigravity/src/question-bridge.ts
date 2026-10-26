@@ -89,6 +89,12 @@ export class AntigravityQuestionBridge {
   readonly #pending = new Map<string, PendingQuestion>();
   readonly #seenSteps = new Set<string>();
   #stopped = false;
+  /**
+   * Bumped on every rebind. A request received before the bump is stale: it belongs to the
+   * Turn that was driving when the hook process made it, and must not be attributed to the
+   * Turn now owning the bridge.
+   */
+  #generation = 0;
   #disposal: Promise<void> | null = null;
 
   private constructor(directory: string, options: BridgeOptions) {
@@ -158,6 +164,9 @@ export class AntigravityQuestionBridge {
   }
 
   #receive(request: IncomingMessage, response: ServerResponse): void {
+    // The hook process is spawned per Turn by agy; capturing the generation here means a
+    // request that straddles a rebind cannot be answered by the next Turn.
+    const generation = this.#generation;
     const auth = Buffer.from(request.headers.authorization ?? "");
     const expected = Buffer.from(`Bearer ${this.#token}`);
     if (
@@ -198,13 +207,14 @@ export class AntigravityQuestionBridge {
         return;
       }
       const payload = parsed.data;
-      this.#options.schedule(() => this.#ask(payload, response));
+      this.#options.schedule(() => this.#ask(payload, response, generation));
     });
   }
 
-  #ask(payload: z.infer<typeof requestSchema>, response: ServerResponse): void {
+  #ask(payload: z.infer<typeof requestSchema>, response: ServerResponse, generation: number): void {
     if (
       this.#stopped ||
+      generation !== this.#generation ||
       response.destroyed ||
       payload.conversationId !== this.#options.nativeSessionId()
     ) {
@@ -392,6 +402,7 @@ export class AntigravityQuestionBridge {
     if (options.timeoutMs !== undefined) this.#options.timeoutMs = options.timeoutMs;
     this.#stopped = false;
     this.#seenSteps.clear();
+    this.#generation += 1;
     return this;
   }
 

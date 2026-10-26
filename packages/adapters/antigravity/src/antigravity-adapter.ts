@@ -576,6 +576,8 @@ class AntigravitySession implements HarnessSession {
   readonly #history: AntigravityHistory;
   readonly #subagentObservers = new Set<AntigravitySubagents>();
   #active: ActiveTurn | null = null;
+  /** Set from the moment a turn.start is accepted until it finishes starting. */
+  #starting = false;
   /** The driver a successful Turn kept for this Session's next Turn. */
   #transport: AntigravityTransport | null = null;
   #preparingQuestions: Promise<AntigravityQuestionBridge> | null = null;
@@ -650,6 +652,7 @@ class AntigravitySession implements HarnessSession {
   get isActive(): boolean {
     return (
       this.#active !== null ||
+      this.#starting ||
       this.#preparingQuestions !== null ||
       [...this.#subagentObservers].some((observer) => observer.running)
     );
@@ -728,12 +731,22 @@ class AntigravitySession implements HarnessSession {
       };
     }
 
+    // Claim the Session synchronously, before any await, so two concurrent starts cannot
+    // both pass the busy check and overwrite #active. Every exit path releases the claim.
+    this.#starting = true;
+    try {
+      return await this.#startTurn(command, text);
+    } finally {
+      this.#starting = false;
+    }
+  }
+
+  async #startTurn(
+    command: TurnStartCommand,
+    text: string,
+  ): Promise<HarnessResult<TurnStartAccepted>> {
     let questions: AntigravityQuestionBridge;
     const hookDirectory = antigravityHookDirectory(this.#environment);
-    // A successful Turn keeps its driver, bridge, and log alive for the next Turn, so a
-    // continued conversation skips CLI, Language Server, and customization startup. A
-    // different model/effort/permission selection, a dead or unwritable process, or any
-    // earlier cleanup still in flight falls back to a fresh driver.
     const transportKey = JSON.stringify([
       this.#model?.id ?? null,
       this.#thinkingOptionId ?? null,
@@ -919,12 +932,15 @@ class AntigravitySession implements HarnessSession {
           if (line.trim()) turn.stderr = (turn.stderr + `\n${line}`).slice(-8_000);
           return;
         }
-        // agy replays the previous successful result and old steps when it starts the
-        // next stdin message, so only genuinely new Turn output reaches the Host.
+        // agy replays the previous Turn's result and old steps when it starts the next
+        // stdin message, so only genuinely new Turn output reaches the Host. A replay is
+        // filtered whatever its status: a native ERROR that the Host accepted as a
+        // success (a replied Turn repeating an earlier Conversation error) still keeps
+        // this driver, so its replay would otherwise fail the next Turn before its own
+        // result arrived.
         if (event.event === "result" && Number.isInteger(event.result.num_turns)) {
           const fingerprint = JSON.stringify(event.result);
           if (
-            event.result.status === "SUCCESS" &&
             event.result.num_turns <= transport.lastResultTurn &&
             fingerprint === transport.lastResultJSON
           ) {
@@ -956,7 +972,12 @@ class AntigravitySession implements HarnessSession {
       child.once("close", (code) => {
         if (this.#transport === transport) this.#transport = null;
         const turn = this.#active;
-        if (!turn || turn.process !== child) return;
+        if (!turn || turn.process !== child) {
+          // An idle driver exited between Turns. Nothing else will release its bridge and
+          // log, so do it here rather than leaking an HTTP server and a temp file.
+          void this.#disposeTransport(transport);
+          return;
+        }
         this.#enqueue(turn, () => {
           if (turn.subagents.running) void turn.subagents.cancel();
           else turn.subagents.stop();
@@ -1400,11 +1421,11 @@ class AntigravitySession implements HarnessSession {
     }
     this.#questionCleanup = this.#questionCleanup
       .then(async () => {
+        // Cancel first: a failed Turn's Subagents may stay observable as running, and
+        // `settled` would then never resolve, stranding the driver.
+        if (!keepTransport && outcome.status !== "succeeded") await active.subagents.cancel();
         await active.subagents.settled;
-        if (!keepTransport) {
-          if (outcome.status !== "succeeded") await active.subagents.cancel();
-          await this.#disposeTransport(transport);
-        }
+        if (!keepTransport) await this.#disposeTransport(transport);
         this.#subagentObservers.delete(active.subagents);
       })
       .catch(() => undefined);

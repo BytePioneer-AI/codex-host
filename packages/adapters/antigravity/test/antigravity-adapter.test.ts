@@ -1759,6 +1759,153 @@ process.stdin.on("end", () => process.exit(0));
       }
     });
 
+    it("refuses a second turn.start that starts while the first is still preparing", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-race-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-race-cwd-"));
+      const cleanups = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      const scriptContent = `
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+let buffer = "";
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-race", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+    process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-race", status: "SUCCESS", num_turns: 1, response: "ok" } }) + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        // Both starts are issued before either can await anything.
+        const [first, second] = await Promise.all([
+          session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-race-1"),
+            input: [{ type: "text", text: "first" }],
+          }),
+          session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-race-2"),
+            input: [{ type: "text", text: "second" }],
+          }),
+        ]);
+        expect(first.ok).toBe(true);
+        expect(second).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanups();
+      }
+    });
+
+    it("releases an idle driver that exits between turns", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-idle-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-idle-cwd-"));
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      const scriptContent = `
+const fs = require("node:fs");
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+// The log file is the driver's; its removal by the parent proves the release ran.
+for (const arg of process.argv) {
+  if (arg.endsWith(".log")) fs.writeFileSync(arg, "started\\n");
+}
+let served = false;
+let buffer = "";
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    served = true;
+    process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-idle", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+    process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-idle", status: "SUCCESS", num_turns: 1, response: "ok" } }) + "\\n");
+    // Exit on its own once the Turn is answered, like a native driver that idles out.
+    setTimeout(() => process.exit(0), 50);
+  }
+});
+process.stdin.on("end", () => process.exit(served ? 0 : 1));
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-idle-1"),
+          input: [{ type: "text", text: "one" }],
+        });
+        while ((await nextEvent(iterator)).type !== "turn.completed") {
+          // Remaining events are not under test.
+        }
+        // The driver exits on its own shortly after answering; the next Turn must start a
+        // fresh one rather than write into the dead process.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        const second = await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-idle-2"),
+          input: [{ type: "text", text: "two" }],
+        });
+        expect(second.ok).toBe(true);
+        while ((await nextEvent(iterator)).type !== "turn.completed") {
+          // The replacement driver answers the second Turn.
+        }
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
     it("projects file steps as Tool Executions when the applied patch cannot be read", async () => {
       const streamLines = [
         JSON.stringify({

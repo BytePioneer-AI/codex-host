@@ -1153,9 +1153,21 @@ export class AppServerHost {
         timeoutMs,
       );
     });
+    // A console force-archive owns the Thread exactly like a Desktop request: it joins
+    // the per-Thread queue and idle-release operations before touching the Session.
+    const consoleThreadId =
+      method === "codexhost/archive/force" &&
+      isRecord(params) &&
+      typeof params.threadId === "string"
+        ? params.threadId
+        : undefined;
     this.#dispatchDesktopRequest(() =>
-      this.#guardReply(request, () =>
-        this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+      this.#desktopRequests.run(consoleThreadId, () =>
+        this.#externalRuntime.idleRelease.runOperation(consoleThreadId, () =>
+          this.#guardReply(request, () =>
+            this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+          ),
+        ),
       ),
     );
     try {

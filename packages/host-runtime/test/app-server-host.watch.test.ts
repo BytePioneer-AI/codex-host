@@ -63,6 +63,39 @@ async function watchFixture() {
 }
 
 describe("watch delivery through native Codex resume", () => {
+  it("steers a running native parent without resuming or starting another Turn", async () => {
+    const value = await watchFixture();
+    try {
+      const read = await readJsonLine(value.fixture.official.stdin);
+      expect(read.method).toBe("thread/read");
+      value.answer(read.id, {
+        result: {
+          thread: {
+            id: "native-parent",
+            status: { type: "active" },
+            turns: [{ id: "running-parent-turn", status: "inProgress", items: [] }],
+          },
+        },
+      });
+      const steer = await readJsonLine(value.fixture.official.stdin);
+      expect(steer).toMatchObject({
+        method: "turn/steer",
+        params: {
+          threadId: "native-parent",
+          expectedTurnId: "running-parent-turn",
+          input: [{ type: "text", text: expect.stringContaining("(thread://child): completed") }],
+        },
+      });
+      value.answer(steer.id, { result: { turnId: "running-parent-turn" } });
+      await vi.waitFor(async () => expect((await value.service.watches()).watches).toEqual([]));
+      expect(value.send).toHaveBeenCalledWith(expect.objectContaining({ steer: true }));
+      expect(value.fixture.official.stdin.read()).toBeNull();
+    } finally {
+      value.service.close();
+      await stopFixture(value.fixture);
+    }
+  });
+
   it.each<{ label: string; response: JsonObject }>([
     { label: "rejected", response: { error: { code: -32603, message: "resume unavailable" } } },
     { label: "missing result", response: {} },

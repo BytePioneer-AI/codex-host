@@ -70,6 +70,9 @@ async function fixture(
       });
       if (!result.ok) throw new Error(result.error.message);
     },
+    steerExternalTurn: async () => {
+      throw new Error("Steering belongs to the Host integration fixture");
+    },
     notifyThreadStarted: async (thread) => {
       notifications.push(thread);
     },

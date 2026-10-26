@@ -124,6 +124,8 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   async send(input: Parameters<DelegationControlApi["send"]>[0]) {
     if (input.interrupt !== undefined && typeof input.interrupt !== "boolean")
       throw new DelegationControlError("INVALID_ARGUMENT", "interrupt must be a boolean");
+    if (input.steer && input.interrupt)
+      throw new DelegationControlError("INVALID_ARGUMENT", "steer and interrupt are mutually exclusive");
     const registration = await this.#registrationForThread(input.threadId);
     if (!input.interrupt) return registration.send(input);
     const send = { threadId: input.threadId, message: input.message };

@@ -176,7 +176,7 @@ Harnesses integrate with Codex Desktop's native UI according to their capabiliti
 | Streaming responses | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Tool status | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Edit Diff | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Questions / cancellation | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Questions / cancellation | ✅ | ✅ | ✅ | ✅ | ◐ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Model / Thinking selection | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Tool approvals | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Permission modes | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -186,6 +186,21 @@ Harnesses integrate with Codex Desktop's native UI according to their capabiliti
 | Context compaction | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ |
 | Slash commands | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Edit previous message | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Live voice chat | ? | ? | ✅ | ? | ◐ | ? | ? | ? | ? | ? | ? | ? | ? | ? |
+| Multi-select questions | — | ◐ | ◐ | ◐ | — | ◐ | — | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ |
+| Subagents | ✅ | ✅ | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ◐ | — | — | — | — |
+| Computer Use / in-app browser | — | — | — | — | ◐ | — | — | — | — | — | — | — | — | — |
+| Generated images | — | — | — | — | ◐ | — | — | — | — | — | — | — | — | — |
+
+Legend: ✅ supported integration · ◐ partial, degraded, or saved intent only · — not exposed through the current plugin · ? unverified.
+
+- **Live voice chat** uses this fork's version-audited Desktop hook and a configured gateway. The Host `thread/realtime/*` path and new-chat Harness inheritance are generic. Claude Code has a documented attended Desktop call; Grok is ◐ because verification covers a real gateway call and an isolated Host trial with the public plugin, rather than installed Desktop button acceptance. Other Harnesses are unverified (?). See [CPA live-voice Desktop hook](docs/operations/cpa-live-voice-desktop-hook.md).
+- **Multi-select questions** do not have a multi-select Desktop card. The shared projector omits `multiple` while the Host contract retains it. In the reported delegated Claude Code test, `AskUserQuestion` with `multiSelect: true` and Alpha/Beta/Gamma rendered as single-choice and returned one string (`"Alpha"`), with no Host error. Claude Code, OpenCode, DSH, CodeBuddy/WorkBuddy, Cursor, Hermes, Qoder, Kimi Code and Copilot elicitation forms are ◐ because their adapters preserve native multi-select intent but cannot project it faithfully; only Claude Code was live-tested. OMP is ◐ for its documented native composition of separate single-choice/text interactions, not a multi-select card. Pi hardcodes single-choice; Antigravity explicitly rejects multi-select. See [Antigravity question interaction postmortem](docs/harnesses/antigravity/antigravity-question-interaction-postmortem.md) and [OMP interactions](docs/harnesses/omp/omp-interactions.md).
+- **Grok build and questions**: this fork uses a patched **grokgod Grok build**; the patch-dependent behavior below is not a stock-Grok guarantee. Patch `0011-ask-question-timeout-action` adds configurable timeout selection and activity-based timeout reset to the existing native `ask_user_question`; it does not connect a Desktop card. In the reported grokgod ACP test, the call failed with `Failed to reach the client for user question: "Method not found": _x.ai/ask_user_question`. The Host ACP client handles only `_x.ai/mcp/elicit` extension requests, so no question card appears. Questions / cancellation stays ◐: turn cancellation and bounded MCP consent approvals have separate implemented paths. See [Harness capability boundaries](docs/harnesses/capability-boundaries.md).
+- **Grok MCP approval — Always allow** requires grokgod patch `0025-mcp-elicitation-persist` to forward the native persist offer and return the selected scope as MCP `_meta.persist`. Desktop offers it only when the request includes `always`; unpatched Grok has Allow once / Deny only. Allow this conversation is not exposed because native session lifetime is not qualified. See [Grok MCP elicitation](docs/harnesses/grok/mcp-elicitation.md).
+- **Subagents**: ✅ native status plus a read-only child transcript · ◐ native status only. Pi requires the supported `pi-subagents` extension protocol; OMP requires RPC subagent subscription support. These cells describe plugin projection, not whether an upstream Harness can run subagents internally.
+- **Computer Use / in-app browser** uses the user-installed Grok `cua_repl` MCP. This fork's Computer Use integration requires the patched grokgod Grok build with `0026-cua-turn-end-release`, including turn-boundary cleanup and the Mac Sky native release bridge, plus the installed ChatGPT Computer Use runtime. Stock-Grok parity is not established. IAB is saved intent only: the Host keeps its browser binding disabled pending Desktop authorization and a session-owned browser route. See [Grok Computer Use settings](docs/harnesses/grok/computer-use-settings.md).
+- **Generated images** describes Grok Imagine projection to Desktop `imageGeneration`, not general image-file creation. Grok is the only current adapter emitting this Item; the other cells mean no dedicated gallery projection. Projection has test coverage, but live gallery display remains unverified. See [Grok generated images](docs/harnesses/grok/generated-images.md).
 
 </details>
 

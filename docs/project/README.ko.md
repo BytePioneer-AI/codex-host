@@ -162,26 +162,41 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 ## 기능 상태
 
-모든 Harness에서 Codex Desktop 네이티브 Edit Diff, Fork, 메시지 수정, 슬래시 명령을 사용할 수 있습니다.
+각 Harness는 자체 기능에 따라 Codex Desktop 기본 UI와 통합됩니다. 지원 범위는 아래 표를 참조하세요.
 
 <details>
 <summary>전체 기능 매트릭스 보기</summary>
 
-| 기능 | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="../imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../../packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="../../packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 스트리밍 응답 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 도구 상태 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 질문 / 취소 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking 선택 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 도구 승인 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 권한 모드 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ |
-| Usage | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| Fork | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 컨텍스트 압축 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | — | ✅ | ✅ |
-| 슬래시 명령 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 이전 메시지 수정 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 기능 | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="../imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../../packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="../../packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> | <a href="https://moonshotai.github.io/kimi-code/"><img alt="Kimi Code" src="../../packages/adapters/kimi-code/assets/icon.svg" width="28" height="28" /></a> | <a href="../harnesses/copilot/copilot-harness-integration.md"><img alt="Copilot" src="../../packages/adapters/copilot/assets/icon.png" width="28" height="28" /></a> |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 스트리밍 응답 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 도구 상태 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 질문 / 취소 | ✅ | ✅ | ✅ | ✅ | ◐ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Model / Thinking 선택 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 도구 승인 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 권한 모드 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Usage | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ |
+| Fork | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ◐ | ✅ |
+| 컨텍스트 압축 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ |
+| 슬래시 명령 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| 이전 메시지 수정 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 실시간 음성 | ? | ? | ✅ | ? | ◐ | ? | ? | ? | ? | ? | ? | ? | ? | ? |
+| 다중 선택 질문 | — | ◐ | ◐ | ◐ | — | ◐ | — | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ |
+| 서브에이전트 | ✅ | ✅ | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ◐ | — | — | — | — |
+| Computer Use / 인앱 브라우저 | — | — | — | — | ◐ | — | — | — | — | — | — | — | — | — |
+| 생성 이미지 | — | — | — | — | ◐ | — | — | — | — | — | — | — | — | — |
+
+범례: ✅ 통합 지원 · ◐ 부분 지원, 기능 저하 또는 의향만 저장 · — 현재 플러그인에서 투영하지 않음 · ? 미검증.
+
+- **실시간 음성**은 이 fork의 Desktop 버전별로 검토된 hook과 설정된 gateway를 사용합니다. Host의 `thread/realtime/*` 경로와 새 채팅의 Harness 선택 상속은 범용입니다. Claude Code에는 기록된 유인 Desktop 통화 검증이 있습니다. Grok은 실제 gateway 통화와 공개 플러그인의 격리된 Host 시험까지 검증되었으며 설치된 Desktop 버튼 검증과는 다르므로 ◐입니다. 나머지 Harness는 미검증(?)입니다. 설명: [CPA live-voice Desktop hook](../operations/cpa-live-voice-desktop-hook.md).
+- **다중 선택 질문**에는 대응하는 Desktop 다중 선택 카드가 없습니다. 공유 투영은 `multiple`을 생략하지만 Host 계약은 필드를 유지합니다. 사용자가 보고한 위임 Claude Code 시험에서 `AskUserQuestion`에 `multiSelect: true`와 Alpha/Beta/Gamma를 주면 단일 선택으로 표시되고 Host 오류 없이 문자열 하나(`"Alpha"`)를 반환했습니다. Claude Code, OpenCode, DSH, CodeBuddy/WorkBuddy, Cursor, Hermes, Qoder, Kimi Code, Copilot elicitation 폼은 Adapter가 원시 다중 선택 의도를 보존하지만 충실히 투영하지 못하므로 ◐입니다. 실제 시험은 Claude Code만 수행했습니다. OMP의 ◐는 문서에 설명된 원시 단일 선택/텍스트 상호작용의 다단계 조합을 뜻하며 다중 선택 카드는 아닙니다. Pi는 단일 선택 고정이며 Antigravity는 다중 선택을 명시적으로 거부합니다. 설명: [Antigravity 질문 상호작용 회고](../harnesses/antigravity/antigravity-question-interaction-postmortem.md), [OMP 상호작용](../harnesses/omp/omp-interactions.md).
+- **Grok 빌드와 질문**: 이 fork는 패치된 **grokgod Grok build**를 사용합니다. 아래의 패치 의존 동작은 stock Grok의 기능 보장이 아닙니다. `0011-ask-question-timeout-action` 패치는 기존 원시 `ask_user_question`에 설정 가능한 시간 초과 선택과 활동 기반 타이머 재설정을 추가하며 Desktop 카드를 연결하지는 않습니다. 사용자가 보고한 grokgod ACP 시험은 `Failed to reach the client for user question: "Method not found": _x.ai/ask_user_question`으로 실패했습니다. Host ACP 클라이언트는 `_x.ai/mcp/elicit` 확장 요청만 처리하므로 질문 카드가 나타나지 않습니다. 질문 / 취소는 ◐입니다. Turn 취소와 제한된 MCP 동의 승인은 별도로 구현된 경로입니다. 설명: [Harness 기능 경계](../harnesses/capability-boundaries.md).
+- **Grok MCP 승인 — Always allow**에는 grokgod의 `0025-mcp-elicitation-persist` 패치가 필요합니다. 원시 persist 제안을 전달하고 선택한 범위를 MCP `_meta.persist`로 반환합니다. 요청이 `always`를 포함할 때만 Desktop이 이 옵션을 제공합니다. 패치하지 않은 Grok에는 Allow once / Deny만 있습니다. 원시 session 수명이 검증되지 않아 Allow this conversation은 제공하지 않습니다. 설명: [Grok MCP elicitation](../harnesses/grok/mcp-elicitation.md).
+- **서브에이전트**: ✅ 원시 상태와 읽기 전용 하위 Transcript · ◐ 원시 상태만. Pi에는 지원되는 `pi-subagents` 확장 프로토콜이 필요하며 OMP에는 RPC 서브에이전트 구독 지원이 필요합니다. 셀은 플러그인의 투영을 나타내며 상위 Harness 내부에서 서브에이전트를 실행할 수 있는지와는 별개입니다.
+- **Computer Use / 인앱 브라우저**는 사용자가 설치한 Grok `cua_repl` MCP를 사용합니다. 이 fork의 Computer Use 통합에는 패치된 grokgod Grok build의 `0026-cua-turn-end-release`와 설치된 ChatGPT Computer Use runtime이 필요합니다. 패치는 Turn 경계 정리와 Mac Sky 원시 해제 브리지를 포함합니다. Stock Grok의 동등한 동작은 검증되지 않았습니다. IAB는 의향만 저장하며 Desktop 승인과 세션 소유 브라우저 경로가 마련될 때까지 Host가 브라우저 바인딩을 비활성화합니다. 설명: [Grok Computer Use 설정](../harnesses/grok/computer-use-settings.md).
+- **생성 이미지**는 일반 이미지 파일 생성이 아니라 Grok Imagine을 Desktop `imageGeneration`으로 투영하는 기능입니다. 현재 이 Item을 내보내는 Adapter는 Grok뿐이며 나머지 셀은 전용 갤러리 투영이 없다는 뜻입니다. 투영은 테스트로 다루지만 실제 갤러리 표시는 미검증입니다. 설명: [Grok 생성 이미지](../harnesses/grok/generated-images.md).
 
 </details>
 

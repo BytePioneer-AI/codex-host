@@ -82,10 +82,10 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| Adapter 公共行为 | Vitest，`tests/vitest.config.js`，`packages/adapters/devin/test` | Thinking 聚焦回归 63 项通过；含执行策略、运行中 Model、权限状态保留与故障/关闭期间 snapshot 拒绝 |
+| Adapter 公共行为 | Vitest，`tests/vitest.config.js`，`packages/adapters/devin/test` | 整合后 67 项通过；含 Thinking、历史能力边界、执行策略、运行中 Model、权限状态保留与故障/关闭期间 snapshot 拒绝 |
 | 原生边界 | Mock ACP 回放、权限和终态；test/fixtures/configuration-acp.mjs 合成 stdio 进程 | 请求驱动的 idle/running 通知、权限状态与非法 load 配置响应；非真实 CLI 验收 |
-| 插件加载 | installed-harness-plugins.test.ts，按 factories / independent instances / explicit devin command 过滤 | 3 项通过；其余 20 项未选中；构建产物的真实 Loader 与合成缺失 CLI 检查，不启动真实 Devin |
-| 构建与静态检查 | npm run typecheck、npm run build:plugins；变更 TS/MJS 的 ESLint；tools/check-boundaries.mjs；变更文件 Prettier；git diff --check | 通过；未运行全量测试、完整 Host 集成或 Desktop |
+| 插件加载与发行包 | Devin 测试、installed-harness-plugins.test.ts、tests/release/host-bundle.test.mjs | 独立整合验收共 99 项通过、1 项跳过；跳过的是未配置 CODEXHOST_OPENCODE_REAL_COMMAND 的原生测试 |
+| 构建与静态检查 | npm run typecheck；npm run build:typescript；npm run lint；Devin 源码及测试 Prettier；git diff --check | 独立整合验收通过；未运行全量测试或 Desktop |
 | 历史能力边界 | test/history.test.ts | 4 项回归测试；仅验证能力关闭、无原生启动及不伪造 checkpoint，不代表原生 Fork/rollback 验收 |
 | 真实原生验收 | PR 集成记录中的 3000.10.31 / macOS / swe-2-high / accept-edits | 历史记录；本机无 CLI，未复验 |
 | Desktop / 委派 | — | 未执行 |

@@ -370,4 +370,35 @@ describe("console server", () => {
     expect(request).toHaveBeenCalledWith("codexhost/update/start", {});
     expect(updates.start).not.toHaveBeenCalled();
   });
+
+  it("routes archive health and force-archive requests to the Host", async () => {
+    const healthResult = {
+      inconsistentThreads: [],
+      officialProcesses: [],
+      summary: { totalInconsistent: 0, officialOccupied: 0, externalRecoverable: 0 },
+    };
+    const forceResult = { ok: true, threadId: "t-1", archived: true };
+    const request = vi.fn(async (method: string) => {
+      if (method === "codexhost/archive/health") return healthResult;
+      if (method === "codexhost/archive/force") return forceResult;
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const { base } = await start({ host: { available: async () => true, request } });
+
+    // GET /api/archive/health
+    const healthResponse = await fetch(`${base}/api/archive/health`);
+    expect(healthResponse.status).toBe(200);
+    expect(await healthResponse.json()).toEqual(healthResult);
+    expect(request).toHaveBeenCalledWith("codexhost/archive/health", {});
+
+    // POST /api/archive/force
+    const forceResponse = await fetch(`${base}/api/archive/force`, {
+      method: "POST",
+      headers: { origin: base, ...CHANGE },
+      body: JSON.stringify({ threadId: "t-1" }),
+    });
+    expect(forceResponse.status).toBe(200);
+    expect(await forceResponse.json()).toEqual(forceResult);
+    expect(request).toHaveBeenCalledWith("codexhost/archive/force", { threadId: "t-1" });
+  });
 });

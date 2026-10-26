@@ -1,4 +1,6 @@
 import {
+  archiveForceParamsSchema,
+  archiveHealthParamsSchema,
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
@@ -59,6 +61,7 @@ import {
   rewriteDelegationMentionText,
 } from "./delegation-mention-rewrite.js";
 import { managedDelegationSkillReference } from "./delegation-skill.js";
+import { ArchiveHealthService, ArchiveHealthError } from "./archive-health-service.js";
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import { NativeAccountObserver } from "./native-account-observer.js";
 import { nativeThreadSupportsReferences } from "./native-thread-reference-capability.js";
@@ -640,6 +643,7 @@ export class AppServerHost {
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
   #nextApprovalRequestId = HOST_APPROVAL_REQUEST_ID_MAX;
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
+  #archiveHealthService: ArchiveHealthService;
   #delegationCoordinator: HarnessDelegationCoordinator;
   #sessionImportRequests: SessionImportRequests | undefined;
   #unregisterDelegationApi: (() => void) | undefined;
@@ -806,6 +810,16 @@ export class AppServerHost {
             (pending) => pending.thread === thread,
           ) &&
           ![...this.#pendingDesktopQuestions.values()].some((pending) => pending.thread === thread),
+      },
+    });
+    this.#archiveHealthService = new ArchiveHealthService({
+      repository: this.#repository,
+      runtime: this.#externalRuntime,
+      notifyArchived: async (threadId) => {
+        await this.#writer.json({
+          method: "thread/archived",
+          params: { threadId },
+        });
       },
     });
     this.#delegationCoordinator = new HarnessDelegationCoordinator({
@@ -1731,6 +1745,14 @@ export class AppServerHost {
     }
     if (request.method === "codexhost/thread/command/execute") {
       await this.#executeThreadCommand(request);
+      return;
+    }
+    if (request.method === "codexhost/archive/health") {
+      await this.#inspectArchiveHealth(request);
+      return;
+    }
+    if (request.method === "codexhost/archive/force") {
+      await this.#forceArchiveThread(request);
       return;
     }
     if (request.method === "thread/list") {
@@ -3377,6 +3399,38 @@ export class AppServerHost {
           },
     );
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(inspection) }));
+  }
+
+  async #inspectArchiveHealth(request: JsonRpcRequest): Promise<void> {
+    const params = archiveHealthParamsSchema.safeParse(request.params ?? {});
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid archive health params"));
+      return;
+    }
+    try {
+      const result = await this.#archiveHealthService.inspect();
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32603, errorMessage(error)));
+    }
+  }
+
+  async #forceArchiveThread(request: JsonRpcRequest): Promise<void> {
+    const params = archiveForceParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid force archive params"));
+      return;
+    }
+    try {
+      const result = await this.#archiveHealthService.forceArchive(params.data.threadId);
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch (error) {
+      if (error instanceof ArchiveHealthError) {
+        await this.#writer.json(rpcError(request, error.code, error.message));
+      } else {
+        await this.#writer.json(rpcError(request, -32603, errorMessage(error)));
+      }
+    }
   }
 
   async #inspectThreadUsage(request: JsonRpcRequest): Promise<void> {

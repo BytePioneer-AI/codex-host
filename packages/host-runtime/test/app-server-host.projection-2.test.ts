@@ -2396,4 +2396,48 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
+
+  it("handles codexhost/archive/health and codexhost/archive/force RPCs", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+
+    // Health inspect
+    writeRequest(fixture.desktopInput, {
+      id: 540,
+      method: "codexhost/archive/health",
+      params: {},
+    });
+    const healthReply = await fixture.collector.waitFor((message) => requestId(message, 540));
+    expect(healthReply).toMatchObject({
+      id: 540,
+      result: {
+        inconsistentThreads: expect.any(Array),
+        officialProcesses: expect.any(Array),
+        summary: expect.any(Object),
+      },
+    });
+
+    // Safe force archive
+    writeRequest(fixture.desktopInput, {
+      id: 541,
+      method: "codexhost/archive/force",
+      params: { threadId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 541))).resolves.toEqual({
+      id: 541,
+      result: {
+        ok: true,
+        threadId,
+        archived: true,
+      },
+    });
+    await fixture.collector.waitFor((message) => method(message, "thread/archived"));
+
+    // Verify MappingStore record is archived
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({ archived: true });
+
+    await stopFixture(fixture);
+  });
 });

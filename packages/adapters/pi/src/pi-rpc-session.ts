@@ -39,6 +39,7 @@ import {
 } from "./pi-usage.js";
 import type { PiNativeModel, PiNativeModelRef } from "./pi-model-catalog.js";
 import { verifyPiSessionCwd } from "./pi-session-file.js";
+import { PiContentStream, PiContentStreamConflictError } from "./pi-content-stream.js";
 import { PiSubagentRpc } from "./pi-subagent-rpc.js";
 import type { PiSubagentInspection, PiSubagentNode } from "./pi-subagents.js";
 import {
@@ -226,6 +227,8 @@ interface ActiveTurn {
   text: string;
   assistantMessageId: string | null;
   assistantNativeMessageIdentity: PiMessageIdentity | undefined;
+  textStream: PiContentStream;
+  reasoningStream: PiContentStream;
   sawStreamedMessageText: boolean;
   sawStreamedMessageReasoning: boolean;
   lastFinalizedMessageText: string | null;
@@ -964,6 +967,8 @@ export class PiRpcSession {
         text: "",
         assistantMessageId: null,
         assistantNativeMessageIdentity: undefined,
+        textStream: new PiContentStream("text"),
+        reasoningStream: new PiContentStream("reasoning"),
         sawStreamedMessageText: false,
         sawStreamedMessageReasoning: false,
         lastFinalizedMessageText: null,
@@ -1122,7 +1127,9 @@ export class PiRpcSession {
             ? error
             : new PiRpcFaultError(
                 "protocolError",
-                `Pi RPC returned invalid JSONL: ${message(error)}`,
+                error instanceof PiContentStreamConflictError
+                  ? error.message
+                  : `Pi RPC returned invalid JSONL: ${message(error)}`,
               ),
         );
       }
@@ -1288,21 +1295,22 @@ export class PiRpcSession {
                     ? event.delta.text
                     : null;
 
-      if (isThinking && delta !== null && delta.length > 0) {
-        const messageId = this.#ensureAssistantMessage(active, value.message);
-        active.reasoningMessageOpen = true;
-        active.sawStreamedMessageReasoning = true;
-        active.onEvent({
-          type: "reasoning.delta",
-          messageId,
-          ...nativeMessageIdentity(active),
-          delta,
-        });
-      } else if (isText && delta !== null && delta.length > 0) {
-        const messageId = this.#ensureAssistantMessage(active, value.message);
-        active.text += delta;
-        active.sawStreamedMessageText = true;
-        active.onEvent({ type: "text.delta", messageId, ...nativeMessageIdentity(active), delta });
+      const endingReasoning = eventType === "thinking_end" || eventType === "reasoning_end";
+      const endingText = eventType === "text_end";
+      if ((endingReasoning || endingText) && typeof event.content === "string") {
+        this.#ensureAssistantMessage(active, value.message);
+        const stream = endingReasoning ? active.reasoningStream : active.textStream;
+        this.#emitContent(
+          active,
+          endingReasoning,
+          stream.complete(event.contentIndex, event.content),
+        );
+      } else if ((isThinking || isText) && delta !== null && delta.length > 0) {
+        this.#ensureAssistantMessage(active, value.message);
+        if (isThinking) active.sawStreamedMessageReasoning = true;
+        else active.sawStreamedMessageText = true;
+        const stream = isThinking ? active.reasoningStream : active.textStream;
+        this.#emitContent(active, isThinking, stream.append(event.contentIndex, delta));
       } else if (event.type === "error") {
         this.#ensureAssistantMessage(active, value.message);
         active.failure =
@@ -1351,6 +1359,8 @@ export class PiRpcSession {
       text: "",
       assistantMessageId: null,
       assistantNativeMessageIdentity: undefined,
+      textStream: new PiContentStream("text"),
+      reasoningStream: new PiContentStream("reasoning"),
       sawStreamedMessageText: false,
       sawStreamedMessageReasoning: false,
       lastFinalizedMessageText: null,
@@ -1823,6 +1833,25 @@ export class PiRpcSession {
     this.#drainDeferredRunFrames();
   }
 
+  #emitContent(active: ActiveTurn, reasoning: boolean, delta: string): void {
+    if (delta.length === 0) return;
+    const messageId = active.assistantMessageId;
+    if (messageId === null) throw new Error("Pi content arrived outside an Assistant message");
+    if (reasoning) {
+      active.reasoningMessageOpen = true;
+      active.sawStreamedMessageReasoning = true;
+    } else {
+      active.text += delta;
+      active.sawStreamedMessageText = true;
+    }
+    active.onEvent({
+      type: reasoning ? "reasoning.delta" : "text.delta",
+      messageId,
+      ...nativeMessageIdentity(active),
+      delta,
+    });
+  }
+
   #startAssistantMessage(active: ActiveTurn, value: unknown): string {
     if (active.assistantMessageId !== null && active.reasoningMessageOpen) {
       active.onEvent({ type: "reasoning.completed", messageId: active.assistantMessageId });
@@ -1835,6 +1864,8 @@ export class PiRpcSession {
       value,
       this.#messageTimestampCounts,
     );
+    active.textStream = new PiContentStream("text");
+    active.reasoningStream = new PiContentStream("reasoning");
     active.sawStreamedMessageText = false;
     active.sawStreamedMessageReasoning = false;
     active.reasoningMessageOpen = false;
@@ -1877,27 +1908,34 @@ export class PiRpcSession {
     }
     this.#latestCacheHitRatePercent = cacheHitRatePercent;
     const messageId = this.#ensureAssistantMessage(active, value);
-    if (!active.sawStreamedMessageReasoning && finalReasoning.length > 0) {
-      active.reasoningMessageOpen = true;
-      active.onEvent({
-        type: "reasoning.delta",
-        messageId,
-        ...nativeMessageIdentity(active),
-        delta: finalReasoning,
-      });
+    const content = (value as { content: unknown[] }).content;
+    if (failure === null || !active.sawStreamedMessageReasoning) {
+      this.#emitContent(
+        active,
+        true,
+        active.reasoningStream.finalize(
+          content.flatMap((part, index) => {
+            const text = extractReasoningText(part);
+            return text === null ? [] : [{ index, text }];
+          }),
+        ),
+      );
     }
     if (active.reasoningMessageOpen && active.failure === null) {
       active.onEvent({ type: "reasoning.completed", messageId });
     }
-
-    if (!active.sawStreamedMessageText && finalText.length > 0) {
-      active.text += finalText;
-      active.onEvent({
-        type: "text.delta",
-        messageId,
-        ...nativeMessageIdentity(active),
-        delta: finalText,
-      });
+    if (failure === null || !active.sawStreamedMessageText) {
+      this.#emitContent(
+        active,
+        false,
+        active.textStream.finalize(
+          content.flatMap((part, index) =>
+            isRecord(part) && part.type === "text" && typeof part.text === "string"
+              ? [{ index, text: part.text }]
+              : [],
+          ),
+        ),
+      );
     }
 
     active.assistantMessageId = null;

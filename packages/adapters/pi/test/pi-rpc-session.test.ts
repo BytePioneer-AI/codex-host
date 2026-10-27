@@ -667,7 +667,10 @@ class FakePiRpcProcess extends EventEmitter {
             thinking,
             thinkingSignature: "ignored",
           })),
-          { type: "text", text: "reasoned answer" },
+          {
+            type: "text",
+            text: this.#scenario === "reasoning" ? "streamed answer suffix" : "reasoned answer",
+          },
         ],
       };
       this.#output({ type: "message_start", message });
@@ -1972,31 +1975,32 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("uses streamed Assistant content without replaying the complete message", async () => {
+  it("reconciles authoritative final suffixes without replaying streamed prefixes", async () => {
     const rpc = session("reasoning");
     const events: PiTurnEvent[] = [];
     await rpc.start();
 
     await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
-      text: "streamed answer",
+      text: "streamed answer suffix",
       cancelled: false,
     });
     expect(events).toEqual([
       { type: "reasoning.delta", messageId: expect.any(String), delta: "streamed reasoning" },
       { type: "text.delta", messageId: expect.any(String), delta: "streamed answer" },
+      { type: "reasoning.delta", messageId: expect.any(String), delta: " suffix" },
       { type: "reasoning.completed", messageId: expect.any(String) },
+      { type: "text.delta", messageId: expect.any(String), delta: " suffix" },
       { type: "message.completed", messageId: expect.any(String) },
     ]);
     expect(
       new Set(events.flatMap((event) => ("messageId" in event ? [event.messageId] : []))).size,
     ).toBe(1);
-    expect(JSON.stringify(events)).not.toContain("suffix");
     expect(JSON.stringify(events)).not.toContain("reasoned answer");
     expect(JSON.stringify(events)).not.toContain("ignored");
     await rpc.close();
   });
 
-  it("does not compare streamed and complete content across thinking blocks", async () => {
+  it("reconciles thinking blocks by contentIndex without retaining removed summary separators", async () => {
     const rpc = session("reasoning-multiple-blocks");
     const events: PiTurnEvent[] = [];
     await rpc.start();
@@ -2006,10 +2010,107 @@ describe("Pi RPC Turn aggregation", () => {
       cancelled: false,
     });
     expect(
-      events.filter((event) => event.type === "reasoning.delta").map(({ delta }) => delta),
-    ).toEqual(["first block", "\n\n", "second block", "\n\n", "third block", "\n\n"]);
+      events
+        .filter((event) => event.type === "reasoning.delta")
+        .map(({ delta }) => delta)
+        .join(""),
+    ).toBe("first blocksecond blockthird block");
     expect(events.some(({ type }) => type === "reasoning.completed")).toBe(true);
     await rpc.close();
+  });
+
+  it("reconciles compact block-end events and resets each Assistant message", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const events: PiTurnEvent[] = [];
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    try {
+      const turn = rpc.runTurn("synthetic", (event) => events.push(event));
+      for (const responseId of ["first-response", "second-response"]) {
+        fake.emitFrame({
+          type: "message_start",
+          message: { role: "assistant", responseId, content: [] },
+        });
+        const content = [
+          { type: "thinking", thinking: "one\n\ntwo suffix" },
+          { type: "text", text: "answer suffix" },
+          { type: "thinking", thinking: "next" },
+          { type: "text", text: " second" },
+        ];
+        const update = (assistantMessageEvent: Record<string, unknown>) =>
+          fake.emitFrame({ type: "message_update", assistantMessageEvent });
+        update({ type: "thinking_delta", contentIndex: 0, delta: "one\n\n" });
+        update({ type: "thinking_delta", contentIndex: 0, delta: "two\n\n" });
+        update({ type: "thinking_end", contentIndex: 0, content: content[0]?.thinking });
+        update({ type: "text_delta", contentIndex: 1, delta: "answer" });
+        update({ type: "text_end", contentIndex: 1, content: content[1]?.text });
+        update({ type: "thinking_delta", contentIndex: 2, delta: "next\n\n" });
+        update({ type: "thinking_end", contentIndex: 2, content: content[2]?.thinking });
+        update({ type: "text_end", contentIndex: 3, content: content[3]?.text });
+        const message = { role: "assistant", responseId, content, stopReason: "stop" };
+        fake.emitFrame({ type: "message_end", message });
+        fake.emitFrame({ type: "turn_end", message });
+      }
+      fake.emitAgentSettled();
+      await expect(turn).resolves.toEqual({
+        text: "answer suffix secondanswer suffix second",
+        cancelled: false,
+      });
+      const messages = new Set(
+        events.flatMap((event) => ("messageId" in event ? [event.messageId] : [])),
+      );
+      expect(messages.size).toBe(2);
+      for (const messageId of messages) {
+        expect(
+          events
+            .filter((event) => event.type === "reasoning.delta" && event.messageId === messageId)
+            .map((event) => ("delta" in event ? event.delta : ""))
+            .join(""),
+        ).toBe("one\n\ntwo suffixnext");
+        expect(
+          events.filter(
+            (event) => event.type === "message.completed" && event.messageId === messageId,
+          ),
+        ).toHaveLength(1);
+      }
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("reports a protocol error when final text rewrites an already displayed prefix", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const onFault = vi.fn();
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500, onFault },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    try {
+      const turn = rpc.runTurn("synthetic", () => undefined);
+      fake.emitFrame({ type: "message_start", message: { role: "assistant", content: [] } });
+      fake.emitFrame({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "original" },
+      });
+      fake.emitFrame({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "replacement" }],
+        },
+      });
+      await expect(turn).rejects.toThrow(
+        "Pi text final content conflicts with already streamed content",
+      );
+      expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+    } finally {
+      await rpc.close();
+    }
   });
 
   it("faults when agent_settled does not agree with the native Streaming state", async () => {

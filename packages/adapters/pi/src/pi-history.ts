@@ -27,6 +27,7 @@ import {
   piMessageItemId,
   type PiMessageIdentity,
 } from "./pi-message-item-id.js";
+import { piAssistantWasAborted } from "./pi-assistant-outcome.js";
 import { PiSubagents } from "./pi-subagents.js";
 import { encodePiModelRef, type PiNativeModelRef } from "./pi-model-catalog.js";
 
@@ -131,7 +132,7 @@ function assistantOutcome(entries: PiEntry[]): HistoricalTurnOutcome {
   const final = assistants.at(-1);
   if (!final) return { status: "unknown", reason: "Pi history has no Assistant terminal" };
   const stopReason = final.stopReason;
-  if (stopReason === "aborted") {
+  if (piAssistantWasAborted(final)) {
     return { status: "cancelled", reason: "Pi Assistant was aborted" };
   }
   if (stopReason === "error") {
@@ -320,6 +321,16 @@ function modelChange(entry: PiEntry): PiNativeModelRef | null {
     : null;
 }
 
+/** Extensions may wake an idle model with an empty user message after their custom notice. */
+function isEmptyWakeup(entry: PiEntry): boolean {
+  const content = message(entry)?.content;
+  return (
+    content === "" ||
+    (Array.isArray(content) &&
+      content.every((part) => isRecord(part) && part.type === "text" && part.text === ""))
+  );
+}
+
 function turnStarts(active: PiEntry[]): { entry: PiEntry; index: number }[] {
   const starts: { entry: PiEntry; index: number }[] = [];
   let terminal = true;
@@ -327,6 +338,7 @@ function turnStarts(active: PiEntry[]): { entry: PiEntry; index: number }[] {
   for (const [index, entry] of active.entries()) {
     const role = messageRole(entry);
     if (role === "user") {
+      if (pending && isEmptyWakeup(entry)) continue;
       starts.push({ entry, index });
       pending = null;
       terminal = false;

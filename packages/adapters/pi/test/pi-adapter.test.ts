@@ -26,6 +26,12 @@ import {
   type PiAdapterOptions,
   type PiTurnTransport,
 } from "../src/pi-adapter.js";
+import {
+  gotgenesRecord,
+  gotgenesId,
+  type GotgenesRecord,
+  type GotgenesObservationOwner,
+} from "../src/pi-gotgenes-subagents.js";
 import { piWorkflowSubagentId } from "../src/pi-subagent-workflow.js";
 import {
   piSubagentId,
@@ -65,6 +71,12 @@ class FakePiTransport implements PiTurnTransport {
     thinkingLevel: harnessThinkingOptionIdSchema.parse("high"),
     contextUsage: { contextUsedTokens: 40, contextWindowTokens: 200 },
   };
+  gotgenesHandler: ((runs: GotgenesRecord[], owner: GotgenesObservationOwner) => void) | undefined;
+  readonly setGotgenesStatusHandler = vi.fn(
+    (handler: (runs: GotgenesRecord[], owner: GotgenesObservationOwner) => void) => {
+      this.gotgenesHandler = handler;
+    },
+  );
   subagentHandler: ((runs: PiSubagentNode[]) => void) | undefined;
   readonly setSubagentStatusHandler = vi.fn((handler: (runs: PiSubagentNode[]) => void) => {
     this.subagentHandler = handler;
@@ -451,6 +463,136 @@ describe("Pi adapter credential imports wiring", () => {
 });
 
 describe("Pi HarnessAdapter Session", () => {
+  it("routes gotgenes service states to native cards and reads a running child's real transcript", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "pi-gotgenes-live-"));
+    const file = path.join(directory, "child.jsonl");
+    const { adapter, transports } = fixture();
+    try {
+      await writeFile(
+        file,
+        [
+          {
+            type: "session",
+            version: 3,
+            id: "child-session",
+            parentSession: "pi-session-1",
+            cwd: "/synthetic",
+          },
+          {
+            type: "message",
+            id: "child-user",
+            parentId: null,
+            message: { role: "user", content: "Inspect", timestamp: 1 },
+          },
+          {
+            type: "message",
+            id: "child-answer",
+            parentId: "child-user",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Live child evidence" }],
+              stopReason: "stop",
+              timestamp: 2,
+            },
+          },
+        ]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n") + "\n",
+      );
+      const session = await openSession(adapter);
+      const output = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("gotgenes-turn"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Missing transport");
+      transport.event({
+        type: "tool.started",
+        callId: "call",
+        toolName: "subagent",
+        arguments: { description: "Review changes" },
+      });
+      const native = {
+        id: "real-child-id",
+        type: "Explore",
+        description: "Review changes",
+        status: "running",
+        isBackground: true,
+        outputFile: file,
+        toolUses: 2,
+      };
+      const running = gotgenesRecord(native);
+      if (!running) throw new Error("Invalid native fixture");
+      transport.gotgenesHandler?.([running], "requested");
+      transport.event({
+        type: "tool.completed",
+        callId: "call",
+        toolName: "subagent",
+        isError: false,
+        result: {
+          details: {
+            agentId: native.id,
+            displayName: "Explore",
+            subagentType: "Explore",
+            description: native.description,
+            status: "background",
+            modelName: "provider/model",
+          },
+        },
+      });
+      const parent = nativeSessionRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "pi-session-1",
+        formatVersion: 1,
+        locator: { sessionFile: "/synthetic/pi-session.jsonl" },
+      });
+      const read = await adapter.subagents.readSnapshot({
+        parent,
+        nativeSubagentId: gotgenesId(native.id),
+        cwd: "/synthetic",
+      });
+      expect(read).toMatchObject({ ok: true });
+      expect(JSON.stringify(read)).toContain("Live child evidence");
+      expect(transport.inspectSubagent).not.toHaveBeenCalled();
+      const completed = gotgenesRecord({ ...native, status: "completed", result: "Done" });
+      if (!completed) throw new Error("Invalid native fixture");
+      transport.gotgenesHandler?.([completed], "requested");
+      transport.succeed("Parent done");
+      const events = [];
+      for (;;) {
+        const event = await nextEvent(output);
+        events.push(event);
+        if (event.type === "turn.completed") break;
+      }
+      expect(
+        events.filter(
+          (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+        ),
+      ).toHaveLength(1);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          snapshot: {
+            item: expect.objectContaining({
+              type: "subagentDelegation",
+              subagents: [
+                expect.objectContaining({
+                  description: "Review changes",
+                  status: "completed",
+                  model: "provider/model",
+                  resultSummary: "Done",
+                }),
+              ],
+            }),
+            outcome: { status: "succeeded" },
+          },
+        }),
+      );
+      expect(transports).toHaveLength(1);
+    } finally {
+      await adapter.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("maps synchronous workflow partial results and reads the final child through the live parent", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -1690,6 +1832,99 @@ describe("Pi HarnessAdapter Session", () => {
       expect(completed).toHaveProperty("outcome.checkpoint.checkpointId", key);
     }
     await session.close();
+  });
+
+  it("publishes a deferred autonomous completion after the prior user Turn finishes its identity read", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("USER_STEER_MARKER"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Missing transport");
+    let release = (): void => undefined;
+    let reading = false;
+    transport.getEntries.mockImplementationOnce(async () => {
+      reading = true;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return structuredClone(transport.history);
+    });
+    transport.succeed("USER_RESPONSE_MARKER");
+    // RPC replays synchronously before the requested promise's .then can mark settling.
+    const child = gotgenesRecord({
+      id: "next-run-child",
+      type: "Explore",
+      description: "Autonomous child",
+      status: "completed",
+      isBackground: true,
+      toolUses: 1,
+    });
+    if (!child) throw new Error("Invalid child fixture");
+    transport.gotgenesHandler?.([child], "autonomous");
+    await vi.waitFor(() => expect(reading).toBe(true));
+    const autonomous = autonomousTurn("deferred-entry", {
+      status: "succeeded",
+      text: "AUTONOMOUS_MARKER",
+    });
+    transport.autonomous({
+      ...autonomous,
+      events: [
+        {
+          type: "tool.started",
+          callId: "new-call",
+          toolName: "subagent",
+          arguments: { description: "Autonomous child" },
+        },
+        {
+          type: "tool.completed",
+          callId: "new-call",
+          toolName: "subagent",
+          isError: false,
+          result: {
+            details: {
+              agentId: "next-run-child",
+              displayName: "Explore",
+              subagentType: "Explore",
+              description: "Autonomous child",
+              status: "background",
+            },
+          },
+        },
+        ...autonomous.events,
+      ],
+    });
+    release();
+    const events = [];
+    while (events.filter((event) => event.type === "turn.completed").length < 2)
+      events.push(await nextEvent(iterator));
+    const completions = events.filter((event) => event.type === "turn.completed");
+    expect(completions[0]).toMatchObject({
+      turnId: "USER_STEER_MARKER",
+      nativeTurnRef: { nativeTurnKey: "synthetic-user-1" },
+      outcome: { status: "succeeded" },
+    });
+    expect(completions[0]?.outcome).not.toHaveProperty("checkpoint");
+    expect(completions[1]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "deferred-entry" },
+      outcome: { status: "succeeded" },
+    });
+    const userMessages = events.filter(
+      (event) => event.type === "item.completed" && event.turnId === "USER_STEER_MARKER",
+    );
+    expect(JSON.stringify(userMessages)).toContain("USER_RESPONSE_MARKER");
+    expect(JSON.stringify(userMessages)).not.toContain("AUTONOMOUS_MARKER");
+    expect(events.some((event) => event.type === "session.faulted")).toBe(false);
+    const cards = events.filter(
+      (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ turnId: completions[1]?.turnId });
+    expect(cards[0]).not.toMatchObject({ turnId: "USER_STEER_MARKER" });
+    expect(cards[0]).toMatchObject({
+      item: { subagents: [{ description: "Autonomous child", status: "completed" }] },
+    });
+    await adapter.close();
   });
 
   it("faults instead of merging an autonomous callback with a requested Host Turn", async () => {

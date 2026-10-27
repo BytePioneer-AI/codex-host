@@ -92,6 +92,12 @@ import {
 } from "./pi-subagents.js";
 import { parsePiWorkflowSubagentId } from "./pi-subagent-workflow.js";
 import { readPiWorkflowChild } from "./pi-workflow-child-history.js";
+import {
+  parseGotgenesId,
+  type GotgenesRecord,
+  type GotgenesObservationOwner,
+} from "./pi-gotgenes-subagents.js";
+import { readGotgenesChild } from "./pi-gotgenes-history.js";
 import { restorePiSubagents } from "./pi-subagent-history.js";
 import { rollbackPiLastTurn } from "./pi-last-turn-rollback.js";
 import { PiSessionImportIndex } from "./pi-session-import.js";
@@ -137,6 +143,9 @@ export interface PiAdapterOptions {
 export interface PiTurnTransport {
   readonly state: PiSessionState;
   readonly stderrTail?: string;
+  setGotgenesStatusHandler?(
+    handler: (records: GotgenesRecord[], owner: GotgenesObservationOwner) => void,
+  ): void;
   setSubagentStatusHandler?(handler: (runs: PiSubagentNode[]) => void): void;
   inspectSubagent?(id: string): Promise<PiSubagentInspection>;
   setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void;
@@ -192,6 +201,7 @@ interface ActiveTurn {
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByNativeId: Map<string, HostInteractionId>;
   cancellationRequested: boolean;
+  settling: boolean;
   beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
   resolveCompletion(): void;
@@ -525,6 +535,18 @@ class PiHarnessSession implements HarnessSession {
     return (await this.#ensureTransport()).getEntries();
   }
 
+  async readGotgenesChild(id: string, cwd: string): Promise<HarnessResult<HostThreadSnapshot>> {
+    const history = await this.readSubagentHistory(cwd);
+    const transport = this.#transport;
+    if (!transport) throw new Error("Pi parent Session is closed");
+    return readGotgenesChild(
+      history,
+      transport.state.sessionId,
+      id,
+      this.#subagents.gotgenes.records.get(id),
+    );
+  }
+
   async inspectSubagent(id: string, cwd: string): Promise<PiSubagentInspection> {
     if (this.#phase !== "open" || path.resolve(cwd) !== path.resolve(this.#cwd)) {
       throw new Error("Pi Subagent parent workspace or Session is unavailable");
@@ -681,6 +703,7 @@ class PiHarnessSession implements HarnessSession {
         interactions: new Map(),
         interactionByNativeId: new Map(),
         cancellationRequested: false,
+        settling: false,
         beforeNativeTurnKeys: new Set(
           beforeHistory.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey),
         ),
@@ -694,6 +717,7 @@ class PiHarnessSession implements HarnessSession {
       void transport
         .runTurn(text, (event) => this.#handleTurnEvent(active, event))
         .then(async (result) => {
+          active.settling = true;
           try {
             const identity = await this.#completedTurnIdentity(active, transport);
             this.#completeTurn(
@@ -702,9 +726,12 @@ class PiHarnessSession implements HarnessSession {
                 ? {
                     status: "cancelled",
                     reason: "Cancelled by user",
-                    checkpoint: identity.checkpoint,
+                    ...(identity.checkpoint ? { checkpoint: identity.checkpoint } : {}),
                   }
-                : { status: "succeeded", checkpoint: identity.checkpoint },
+                : {
+                    status: "succeeded",
+                    ...(identity.checkpoint ? { checkpoint: identity.checkpoint } : {}),
+                  },
               result.text,
               identity.nativeTurnRef,
             );
@@ -716,8 +743,9 @@ class PiHarnessSession implements HarnessSession {
           }
         })
         .catch(async (error: unknown) => {
+          active.settling = true;
           let identity:
-            { nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef } | undefined;
+            { nativeTurnRef: NativeTurnRef; checkpoint?: NativeCheckpointRef } | undefined;
           try {
             identity = await this.#completedTurnIdentity(active, transport);
           } catch {
@@ -728,7 +756,7 @@ class PiHarnessSession implements HarnessSession {
             {
               status: "failed",
               error: normalizedError(error, "nativeFailure"),
-              ...(identity ? { checkpoint: identity.checkpoint } : {}),
+              ...(identity?.checkpoint ? { checkpoint: identity.checkpoint } : {}),
             },
             undefined,
             identity?.nativeTurnRef,
@@ -738,6 +766,7 @@ class PiHarnessSession implements HarnessSession {
       return { ok: true, value: { turnId: command.turnId } };
     } finally {
       this.#acceptingTurn = false;
+      if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
     }
   }
 
@@ -869,6 +898,7 @@ class PiHarnessSession implements HarnessSession {
       return { ok: true, value: { completed: true } };
     } finally {
       this.#configuring = false;
+      if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
     }
   }
 
@@ -946,6 +976,7 @@ class PiHarnessSession implements HarnessSession {
       return { ok: true, value: { completed: true } };
     } finally {
       this.#configuring = false;
+      if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
     }
   }
 
@@ -1084,6 +1115,7 @@ class PiHarnessSession implements HarnessSession {
         interactions: new Map(),
         interactionByNativeId: new Map(),
         cancellationRequested: false,
+        settling: false,
         beforeNativeTurnKeys: new Set(),
         completion,
         resolveCompletion,
@@ -1120,6 +1152,7 @@ class PiHarnessSession implements HarnessSession {
       return { ok: true, value: { turnId: command.turnId } };
     } finally {
       this.#acceptingTurn = false;
+      if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
     }
   }
 
@@ -1187,6 +1220,15 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #bindAutonomousTurnHandler(transport: PiTurnTransport): void {
+    transport.setGotgenesStatusHandler?.((records, owner) => {
+      if (this.#phase !== "open") return;
+      this.#subagents.observeGotgenes(
+        records,
+        owner === "requested" && this.#active && !this.#active.settling
+          ? { turnId: this.#active.command.turnId, nextItemId: () => this.#newItemId() }
+          : undefined,
+      );
+    });
     transport.setSubagentStatusHandler?.((runs) => {
       if (this.#phase !== "open") return;
       if (this.#transport !== transport) this.#pendingSubagentStatus = runs;
@@ -1210,6 +1252,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #drainPendingAutonomousTurns(transport: PiTurnTransport): void {
+    if (this.#phase !== "open" || this.#active || this.#acceptingTurn || this.#configuring) return;
     if (this.#pendingSubagentStatus) {
       this.#subagents.observe(this.#pendingSubagentStatus);
       this.#pendingSubagentStatus = null;
@@ -1238,7 +1281,7 @@ class PiHarnessSession implements HarnessSession {
       );
       return;
     }
-    if (this.#active || this.#acceptingTurn || this.#configuring) {
+    if (this.#active && !this.#active.settling) {
       this.#fault(
         new PiAdapterFaultError({
           code: "protocolError",
@@ -1246,6 +1289,20 @@ class PiHarnessSession implements HarnessSession {
           retryable: false,
         }),
       );
+      return;
+    }
+    if (this.#active || this.#acceptingTurn || this.#configuring) {
+      // Native deferred actions may finish while the prior requested Turn reads its identity.
+      // Preserve their own boundary and publish only after that Host operation has ended.
+      if (this.#pendingAutonomousTurns.length >= 128) {
+        this.#fault(
+          new PiAdapterFaultError({
+            code: "protocolError",
+            message: "Pi autonomous completion queue exceeded its bound",
+            retryable: false,
+          }),
+        );
+      } else this.#pendingAutonomousTurns.push({ transport, turn });
       return;
     }
 
@@ -1270,6 +1327,7 @@ class PiHarnessSession implements HarnessSession {
       interactions: new Map(),
       interactionByNativeId: new Map(),
       cancellationRequested: false,
+      settling: false,
       beforeNativeTurnKeys: new Set(),
       completion,
       resolveCompletion,
@@ -1794,13 +1852,14 @@ class PiHarnessSession implements HarnessSession {
   async #completedTurnIdentity(
     active: ActiveTurn,
     transport: PiTurnTransport,
-  ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef }> {
+  ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint?: NativeCheckpointRef }> {
     const snapshot = mapPiSnapshot(await transport.getEntries(), {
       sessionId: transport.state.sessionId,
       model: nativeModelForHistory(transport.state),
     });
     const created = snapshot.turns.filter(
-      (turn) => !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
+      (turn) =>
+        turn.input.length > 0 && !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
     );
     if (created.length !== 1) {
       throw new Error(
@@ -1808,8 +1867,11 @@ class PiHarnessSession implements HarnessSession {
       );
     }
     const turn = created[0];
-    if (!turn?.checkpoint) throw new Error("Pi Turn has no terminal Checkpoint identity");
-    return { nativeTurnRef: turn.nativeTurnRef, checkpoint: turn.checkpoint };
+    if (!turn) throw new Error("Pi Turn has no persisted User identity");
+    return {
+      nativeTurnRef: turn.nativeTurnRef,
+      ...(turn.checkpoint ? { checkpoint: turn.checkpoint } : {}),
+    };
   }
 
   #completeTurn(
@@ -1850,13 +1912,16 @@ class PiHarnessSession implements HarnessSession {
     });
     active.resolveCompletion();
     queueMicrotask(() => {
-      if (this.#phase === "open") void this.#refreshUsage(active.command.turnId);
+      if (this.#phase !== "open") return;
+      if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
+      void this.#refreshUsage(active.command.turnId);
     });
   }
 
   #fault(error: unknown): void {
     if (this.#phase === "closed" || this.#phase === "faulted") return;
     const normalized = normalizedError(error, "internalError");
+    this.#pendingAutonomousTurns = [];
     if (this.#active) {
       this.#completeTurn(this.#active, { status: "failed", error: normalized });
     }
@@ -1866,6 +1931,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   async #close(): Promise<void> {
+    this.#pendingAutonomousTurns = [];
     if (this.#phase === "closed") return;
     const wasFaulted = this.#phase === "faulted";
     if (!wasFaulted) this.#phase = "closing";
@@ -1914,13 +1980,15 @@ export class PiAdapter implements HarnessAdapter {
         if (this.#closePromise || parent.harnessId !== this.harnessId) {
           return { ok: false, error: invalidState("Pi Subagent parent is unavailable") };
         }
+        const gotgenes = parseGotgenesId(nativeSubagentId);
         const workflow = parsePiWorkflowSubagentId(nativeSubagentId);
-        if (!workflow) parsePiSubagentId(nativeSubagentId);
+        if (!workflow && !gotgenes) parsePiSubagentId(nativeSubagentId);
         const live = [...this.#sessions].find((session) =>
           session.ownsNativeSession(parent.nativeSessionId),
         );
         let reply: PiSubagentInspection;
         if (live) {
+          if (gotgenes) return await live.readGotgenesChild(gotgenes, cwd);
           if (workflow)
             return await readPiWorkflowChild(
               await live.readSubagentHistory(cwd),
@@ -1936,6 +2004,12 @@ export class PiAdapter implements HarnessAdapter {
           if (transport.state.sessionId !== parent.nativeSessionId)
             throw new Error("Pi Subagent parent identity mismatch");
           await transport.verifySessionCwd(cwd);
+          if (gotgenes)
+            return await readGotgenesChild(
+              await transport.getEntries(),
+              parent.nativeSessionId,
+              gotgenes,
+            );
           if (workflow)
             return await readPiWorkflowChild(
               await transport.getEntries(),

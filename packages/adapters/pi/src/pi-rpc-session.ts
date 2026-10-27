@@ -17,6 +17,13 @@ import {
   type PiMessageIdentity,
 } from "./pi-message-item-id.js";
 import { parsePiNativeCommands, type PiNativeCommand } from "./pi-slash-commands.js";
+import { piAssistantWasAborted } from "./pi-assistant-outcome.js";
+import { ensureGotgenesExtension, GOTGENES_WIDGET } from "./pi-gotgenes-extension.js";
+import {
+  parseGotgenesWidget,
+  type GotgenesRecord,
+  type GotgenesObservationOwner,
+} from "./pi-gotgenes-subagents.js";
 import { ensurePiFastExtension, PI_FAST_ACK, PI_FAST_COMMAND } from "./pi-fast-mode.js";
 import type { PiEmptySessionConfiguration } from "./pi-empty-session.js";
 import { resolvePiExecutable, withNodeRuntimeOnPath } from "./command.js";
@@ -174,6 +181,7 @@ export interface PiRpcSessionOptions {
 export interface PiRpcProcessOptions {
   cwd: string;
   fastExtension?: string;
+  subagentExtension?: string;
   command?: string;
   environment: NodeJS.ProcessEnv;
   sessionFile?: string;
@@ -201,6 +209,7 @@ interface ManualCompaction {
 
 interface ActiveTurn {
   origin: "requested" | "autonomous";
+  runGeneration: number;
   autonomousEvents: PiTurnEvent[] | null;
   autonomousMessage?: Record<string, unknown>;
   nativeTurnKey: string | null;
@@ -476,6 +485,7 @@ export function piRpcProcessCommand(
     : [];
   const arguments_ = [
     ...(options.fastExtension ? ["--extension", options.fastExtension] : []),
+    ...(options.subagentExtension ? ["--extension", options.subagentExtension] : []),
     "--mode",
     "rpc",
     ...modelArguments,
@@ -516,6 +526,10 @@ export class PiRpcSession {
     PiRpcSessionOptions;
   readonly #processAdapter: PiRpcProcessAdapter;
   #activeTurn: ActiveTurn | null = null;
+  #runGeneration = 0;
+  #deferredRunFrames: { value: Record<string, unknown>; generation: number }[] = [];
+  #deferredRunBytes = 0;
+  readonly #runWaiters = new Set<{ check(): void; reject(error: Error): void }>();
   #messageTimestampCounts = new Map<number, number>();
   #autonomousTurnHandler: ((turn: PiAutonomousTurn) => void) | null = null;
   #usageHandler: ((observation: PiUsageObservation) => void) | null = null;
@@ -535,6 +549,9 @@ export class PiRpcSession {
   #manualCompaction: ManualCompaction | null = null;
   #stderrTail = "";
   readonly #subagents: PiSubagentRpc;
+  #gotgenesHandler:
+    ((records: GotgenesRecord[], owner: GotgenesObservationOwner) => void) | undefined;
+  #gotgenesLatest: GotgenesRecord[] | undefined;
 
   constructor(
     options: PiRpcSessionOptions,
@@ -578,6 +595,14 @@ export class PiRpcSession {
 
   setSubagentStatusHandler(handler: (runs: PiSubagentNode[]) => void): void {
     this.#subagents.setHandler(handler);
+  }
+
+  setGotgenesStatusHandler(
+    handler: (records: GotgenesRecord[], owner: GotgenesObservationOwner) => void,
+  ): void {
+    this.#gotgenesHandler = handler;
+    // Replaying a retained snapshot does not establish ownership of a new Host Turn.
+    if (this.#gotgenesLatest) handler(this.#gotgenesLatest, "idle");
   }
 
   inspectSubagent(id: string): Promise<PiSubagentInspection> {
@@ -630,9 +655,14 @@ export class PiRpcSession {
       this.#processAdapter === nodeProcessAdapter
         ? await ensurePiFastExtension({ ...process.env, ...this.#options.environment })
         : undefined;
+    const subagentExtension =
+      this.#processAdapter === nodeProcessAdapter
+        ? await ensureGotgenesExtension({ ...process.env, ...this.#options.environment })
+        : undefined;
     const child = this.#processAdapter.spawn({
       cwd: this.#options.cwd,
       ...(fastExtension ? { fastExtension } : {}),
+      ...(subagentExtension ? { subagentExtension } : {}),
       ...(this.#options.command ? { command: this.#options.command } : {}),
       environment: withNodeRuntimeOnPath({
         ...process.env,
@@ -908,6 +938,7 @@ export class PiRpcSession {
     const settled = new Promise<PiTurnResult>((resolve, reject) => {
       this.#activeTurn = {
         origin: "requested",
+        runGeneration: this.#runGeneration,
         autonomousEvents: null,
         nativeTurnKey: null,
         nativeCancellationObserved: false,
@@ -1075,7 +1106,12 @@ export class PiRpcSession {
     }
   }
 
-  #handle(value: Record<string, unknown>): void {
+  #handle(value: Record<string, unknown>, observedGeneration?: number): void {
+    if (observedGeneration === undefined && value.type === "agent_start") {
+      this.#runGeneration += 1;
+      for (const waiter of this.#runWaiters) waiter.check();
+    }
+    const generation = observedGeneration ?? this.#runGeneration;
     if (
       value.type === "extension_ui_request" &&
       value.method === "notify" &&
@@ -1092,6 +1128,34 @@ export class PiRpcSession {
       return;
     }
     if (this.#subagents.handle(value)) return;
+    const settling = this.#activeTurn;
+    if (settling && settling.settlement !== "pending" && generation > settling.runGeneration) {
+      this.#deferredRunBytes += Buffer.byteLength(JSON.stringify(value));
+      if (this.#deferredRunBytes > 8 * 1024 * 1024) {
+        this.#fail(
+          new PiRpcFaultError("protocolError", "Pi deferred run exceeded its event buffer bound"),
+        );
+        return;
+      }
+      this.#deferredRunFrames.push({ value, generation });
+      return;
+    }
+    if (value.type === "agent_start") {
+      if (this.#activeTurn) this.#activeTurn.runGeneration = generation;
+      return;
+    }
+    if (
+      value.type === "extension_ui_request" &&
+      value.method === "setWidget" &&
+      value.widgetKey === GOTGENES_WIDGET
+    ) {
+      const records = parseGotgenesWidget(value);
+      if (records) {
+        this.#gotgenesLatest = records;
+        this.#gotgenesHandler?.(records, this.#activeTurn?.origin ?? "idle");
+      }
+      return;
+    }
     this.#observeUsage(value);
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
@@ -1142,7 +1206,7 @@ export class PiRpcSession {
       value.type === "message_start" &&
       assistantText(value.message) !== null
     ) {
-      active = this.#startAutonomousTurn(value.message);
+      active = this.#startAutonomousTurn(value.message, generation);
     }
     if (!active) {
       if (value.type === "extension_ui_request" && this.#isBlockingInteraction(value)) {
@@ -1246,14 +1310,15 @@ export class PiRpcSession {
     if (value.type === "agent_settled") {
       if (active.settlement !== "pending") return;
       active.settlement = "confirming";
-      void this.#confirmSettledTurn(active);
+      void this.#confirmSettledTurn(active, active.runGeneration);
     }
   }
 
-  #startAutonomousTurn(value: unknown): ActiveTurn {
+  #startAutonomousTurn(value: unknown, generation: number): ActiveTurn {
     const events: PiTurnEvent[] = [];
     const active: ActiveTurn = {
       origin: "autonomous",
+      runGeneration: generation,
       autonomousEvents: events,
       ...(isRecord(value) ? { autonomousMessage: value } : {}),
       nativeTurnKey: null,
@@ -1479,39 +1544,93 @@ export class PiRpcSession {
     });
   }
 
-  async #confirmSettledTurn(active: ActiveTurn): Promise<void> {
+  #isSettlementCurrent(active: ActiveTurn, generation: number): boolean {
+    return (
+      this.#activeTurn === active &&
+      active.runGeneration === generation &&
+      active.settlement === "confirming"
+    );
+  }
+
+  #waitForNextRun(generation: number): Promise<void> {
+    if (this.#runGeneration > generation) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const finish = (error?: Error): void => {
+        clearTimeout(timer);
+        this.#runWaiters.delete(waiter);
+        if (error) reject(error);
+        else resolve();
+      };
+      const waiter = {
+        check: () => {
+          if (this.#runGeneration > generation) finish();
+        },
+        reject: (error: Error) => finish(error),
+      };
+      const timer = setTimeout(
+        () =>
+          finish(
+            new PiRpcFaultError(
+              "protocolError",
+              "Pi RPC agent_settled state is still Streaming without a subsequent agent_start",
+            ),
+          ),
+        this.#options.commandTimeoutMs,
+      );
+      this.#runWaiters.add(waiter);
+    });
+  }
+
+  #drainDeferredRunFrames(): void {
+    const frames = this.#deferredRunFrames;
+    this.#deferredRunFrames = [];
+    this.#deferredRunBytes = 0;
+    for (const frame of frames) {
+      if (this.#closed || this.#failed) break;
+      this.#handle(frame.value, frame.generation);
+    }
+  }
+
+  async #confirmSettledTurn(active: ActiveTurn, generation: number): Promise<void> {
     try {
       const response = await this.#send("get_state", {});
       const state = parseSessionState(response);
-      if (parseSessionStreaming(response)) {
-        throw new PiRpcFaultError("protocolError", "Pi RPC agent_settled state is still Streaming");
-      }
-      if (this.#activeTurn !== active) return;
+      if (!this.#isSettlementCurrent(active, generation)) return;
+      // Pi's deferred settled actions may already have opened the next native run.
+      // Require its ordered agent_start fence; a bare Streaming disagreement still faults.
+      if (parseSessionStreaming(response)) await this.#waitForNextRun(generation);
+      if (!this.#isSettlementCurrent(active, generation)) return;
       if (active.origin === "autonomous") {
         const history = await this.getEntries();
         const snapshot = mapPiSnapshot(history, { sessionId: state.sessionId, model: null });
-        const turn = snapshot.turns.at(-1);
+        if (!this.#isSettlementCurrent(active, generation)) return;
         const entries = activePiEntries(history);
-        const start = entries.findIndex((entry) => entry.id === turn?.nativeTurnRef.nativeTurnKey);
-        const firstAssistant = entries
-          .slice(start + 1)
-          .find((entry) => isRecord(entry.message) && entry.message.role === "assistant")?.message;
         const live = active.autonomousMessage;
         const responseId = assistantMessageId(live);
-        const matches =
-          isRecord(firstAssistant) &&
-          (responseId
-            ? assistantMessageId(firstAssistant) === responseId
-            : typeof live?.timestamp === "number" && firstAssistant.timestamp === live.timestamp);
-        if (!turn || turn.input.length !== 0 || !matches) {
+        const matches = snapshot.turns.filter((turn) => {
+          if (turn.input.length !== 0) return false;
+          const start = entries.findIndex((entry) => entry.id === turn.nativeTurnRef.nativeTurnKey);
+          const firstAssistant = entries
+            .slice(start + 1)
+            .find(
+              (entry) => isRecord(entry.message) && entry.message.role === "assistant",
+            )?.message;
+          return (
+            isRecord(firstAssistant) &&
+            (responseId
+              ? assistantMessageId(firstAssistant) === responseId
+              : typeof live?.timestamp === "number" && firstAssistant.timestamp === live.timestamp)
+          );
+        });
+        const turn = matches.length === 1 ? matches[0] : undefined;
+        if (!turn)
           throw new PiRpcFaultError(
             "protocolError",
             "Pi autonomous Turn has no matching persisted custom Entry",
           );
-        }
         active.nativeTurnKey = turn.nativeTurnRef.nativeTurnKey;
       }
-      if (this.#activeTurn !== active) return;
+      if (!this.#isSettlementCurrent(active, generation)) return;
       this.#state = state;
       active.settlement = "confirmed";
       this.#finishSettledTurn(active);
@@ -1570,6 +1689,7 @@ export class PiRpcSession {
       } else {
         this.#emitAutonomousTurn(active, { status: "succeeded", text: active.text });
       }
+      this.#drainDeferredRunFrames();
       return;
     }
     if (active.cancellation === "accepted") {
@@ -1581,6 +1701,7 @@ export class PiRpcSession {
     } else {
       active.resolve({ text: active.text, cancelled: false });
     }
+    this.#drainDeferredRunFrames();
   }
 
   #startAssistantMessage(active: ActiveTurn, value: unknown): string {
@@ -1632,7 +1753,7 @@ export class PiRpcSession {
     }
 
     active.failure = failure;
-    if (active.origin === "autonomous" && isRecord(value) && value.stopReason === "aborted") {
+    if (active.origin === "autonomous" && piAssistantWasAborted(value)) {
       active.nativeCancellationObserved = true;
     }
     this.#latestCacheHitRatePercent = cacheHitRatePercent;
@@ -1773,10 +1894,16 @@ export class PiRpcSession {
     } else {
       active.reject(error);
     }
+    this.#drainDeferredRunFrames();
   }
 
   #rejectAll(error: Error): void {
+    for (const waiter of this.#runWaiters) waiter.reject(error);
+    this.#deferredRunFrames = [];
+    this.#deferredRunBytes = 0;
     this.#subagents.close(error);
+    this.#gotgenesHandler = undefined;
+    this.#gotgenesLatest = undefined;
     for (const pending of this.#pending.values()) {
       if (pending.timeout) clearTimeout(pending.timeout);
       pending.reject(error);

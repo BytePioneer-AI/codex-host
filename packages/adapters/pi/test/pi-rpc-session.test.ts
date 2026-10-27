@@ -22,6 +22,7 @@ import {
 import type { PiUsageObservation } from "../src/pi-usage.js";
 
 type Scenario =
+  | "manual-run"
   | "compact-native-wire"
   | "native-id-before-text"
   | "native-id-before-reasoning"
@@ -75,6 +76,10 @@ class FakePiRpcProcess extends EventEmitter {
   fastEnabled = false;
   readonly commands: string[] = [];
   holdEntries = false;
+  holdStates = false;
+  holdAborts = false;
+  #heldAborts: Record<string, unknown>[] = [];
+  #heldStates: Record<string, unknown>[] = [];
   #heldEntries: Record<string, unknown>[] = [];
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #promptCount = 0;
@@ -87,6 +92,20 @@ class FakePiRpcProcess extends EventEmitter {
   #thinkingLevel = "high";
   readonly #scenario: Scenario;
   readonly #compactionDelayMs: number | undefined;
+
+  releaseAborts(): void {
+    this.holdAborts = false;
+    for (const command of this.#heldAborts.splice(0)) this.#respond(command);
+  }
+
+  releaseStates(): void {
+    this.holdStates = false;
+    for (const command of this.#heldStates.splice(0)) this.#handle(command);
+  }
+  emitAgentStart(): void {
+    this.#isStreaming = true;
+    this.#output({ type: "agent_start" });
+  }
 
   releaseEntries(): void {
     this.holdEntries = false;
@@ -128,6 +147,7 @@ class FakePiRpcProcess extends EventEmitter {
     options: {
       responseId?: string | null;
       stopReason?: "stop" | "aborted" | "error";
+      errorMessage?: string;
       includeTool?: boolean;
       streamingAtSettle?: boolean;
     } = {},
@@ -140,7 +160,9 @@ class FakePiRpcProcess extends EventEmitter {
       ...(responseId ? { responseId } : {}),
       timestamp: 123456,
       stopReason,
-      ...(stopReason === "error" ? { errorMessage: "autonomous failure" } : {}),
+      ...(stopReason === "error"
+        ? { errorMessage: options.errorMessage ?? "autonomous failure" }
+        : {}),
       content: [
         { type: "thinking", thinking: "autonomous reasoning" },
         { type: "text", text: "autonomous text" },
@@ -248,6 +270,14 @@ class FakePiRpcProcess extends EventEmitter {
     const command = value as Record<string, unknown>;
     if (typeof command.id !== "string" || typeof command.type !== "string") return;
     this.commands.push(command.type);
+    if (command.type === "abort" && this.holdAborts) {
+      this.#heldAborts.push(command);
+      return;
+    }
+    if (command.type === "get_state" && this.holdStates) {
+      this.#heldStates.push(command);
+      return;
+    }
     if (command.type === "get_entries" && this.holdEntries) {
       this.#heldEntries.push(command);
       return;
@@ -559,6 +589,7 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type !== "prompt") return;
     this.#promptCount += 1;
+    if (this.#scenario === "manual-run") return;
     if (this.#scenario === "compact-native-wire") {
       // Captured from Pi 1.4: message_update has neither message nor partial.
       const frames = JSON.parse(
@@ -1000,7 +1031,10 @@ describe("Pi Fast command acknowledgement", () => {
   );
 });
 
-function autonomousSession(onFault = vi.fn()): {
+function autonomousSession(
+  onFault = vi.fn(),
+  commandTimeoutMs = 2_000,
+): {
   rpc: PiRpcSession;
   process(): FakePiRpcProcess;
   onFault: ReturnType<typeof vi.fn>;
@@ -1009,7 +1043,7 @@ function autonomousSession(onFault = vi.fn()): {
   const rpc = new PiRpcSession(
     {
       cwd: process.cwd(),
-      commandTimeoutMs: 2_000,
+      commandTimeoutMs,
       closeTimeoutMs: 500,
       onFault,
     },
@@ -1038,7 +1072,294 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
 }
 
+function appendDeferredRun(fake: FakePiRpcProcess, key: string, text: string, settle = true): void {
+  const history = fake.autonomousHistory ?? { entries: [], leafId: null };
+  const message = {
+    role: "assistant",
+    responseId: key + "-response",
+    timestamp: 123457 + history.entries.length,
+    content: [{ type: "text", text }],
+    stopReason: "stop",
+  };
+  history.entries.push(
+    {
+      id: key,
+      parentId: history.leafId,
+      type: "custom_message",
+      customType: "subagent:notification",
+      content: "Child done",
+    },
+    { id: key + "-answer", parentId: key, type: "message", message },
+  );
+  history.leafId = key + "-answer";
+  fake.autonomousHistory = history;
+  fake.emitAgentStart();
+  fake.emitFrame({ type: "message_start", message });
+  fake.emitFrame({ type: "message_end", message });
+  if (settle) fake.emitAgentSettled();
+}
+
 describe("Pi RPC Turn aggregation", () => {
+  it("confirms an autonomous custom notice followed by the native empty-user wakeup", async () => {
+    const { rpc, process: fake, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().holdEntries = true;
+    fake().emitAutonomousTurn();
+    const history = fake().autonomousHistory;
+    if (!history) throw new Error("Missing history");
+    const assistant = history.entries[1];
+    if (!assistant) throw new Error("Missing assistant");
+    assistant.parentId = "empty-wakeup";
+    history.entries.splice(1, 0, {
+      id: "empty-wakeup",
+      parentId: "native-custom-entry",
+      type: "message",
+      message: { role: "user", content: [{ type: "text", text: "" }] },
+    });
+    fake().releaseEntries();
+    await waitFor(() => turns.length === 1);
+    expect(turns[0]).toMatchObject({
+      nativeTurnKey: "native-custom-entry",
+      result: { status: "succeeded" },
+    });
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("keeps two settled generations separate when both arrive before the first state response", async () => {
+    const { rpc, process: fake, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().holdStates = true;
+    fake().emitAutonomousTurn();
+    appendDeferredRun(fake(), "next-control", "SECOND_RUN_MARKER");
+    expect(turns).toEqual([]);
+    fake().releaseStates();
+    await waitFor(() => turns.length === 2);
+    expect(turns.map((turn) => turn.nativeTurnKey)).toEqual([
+      "native-custom-entry",
+      "next-control",
+    ]);
+    expect(turns.map((turn) => turn.result.text)).toEqual(["autonomous text", "SECOND_RUN_MARKER"]);
+    expect(turns.every((turn) => turn.result.status === "succeeded")).toBe(true);
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("requires an ordered new-run fence when a late get_state sees Streaming before agent_start", async () => {
+    const { rpc, process: fake, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().emitAutonomousTurn({ streamingAtSettle: true });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(onFault).not.toHaveBeenCalled();
+    appendDeferredRun(fake(), "deferred-control", "DEFERRED_MARKER");
+    await waitFor(() => turns.length === 2);
+    expect(turns.map((turn) => turn.result.text)).toEqual(["autonomous text", "DEFERRED_MARKER"]);
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("keeps a late Abort acknowledgement and its timeout bound to the old requested generation", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const onFault = vi.fn();
+    const rpc = new PiRpcSession(
+      {
+        cwd: process.cwd(),
+        commandTimeoutMs: 500,
+        cancelTimeoutMs: 40,
+        closeTimeoutMs: 100,
+        onFault,
+      },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    const oldEvents: PiTurnEvent[] = [];
+    const requested = rpc.runTurn("USER_STEER_OLD", (event) => oldEvents.push(event));
+    fake.emitAgentStart();
+    const oldMessage = {
+      role: "assistant",
+      responseId: "old-response",
+      content: [{ type: "text", text: "OLD_MARKER" }],
+      stopReason: "aborted",
+    };
+    fake.emitFrame({ type: "message_start", message: oldMessage });
+    fake.emitFrame({ type: "message_end", message: oldMessage });
+    fake.holdAborts = true;
+    const aborting = rpc.abort();
+    fake.emitAgentSettled();
+    appendDeferredRun(fake, "after-abort", "NEW_RUN_MARKER", false);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(turns).toEqual([]);
+    fake.releaseAborts();
+    await aborting;
+    await expect(requested).resolves.toEqual({ text: "OLD_MARKER", cancelled: true });
+    expect(JSON.stringify(oldEvents)).not.toContain("NEW_RUN_MARKER");
+    await new Promise((resolve) => setTimeout(resolve, 55));
+    expect(onFault).not.toHaveBeenCalled();
+    fake.emitAgentSettled();
+    await waitFor(() => turns.length === 1);
+    expect(turns[0]).toMatchObject({
+      nativeTurnKey: "after-abort",
+      result: { status: "succeeded", text: "NEW_RUN_MARKER" },
+    });
+    await rpc.close();
+  });
+
+  it("discards buffered future-generation frames and pending confirmation on close", async () => {
+    const { rpc, process: fake } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().holdStates = true;
+    fake().emitAutonomousTurn();
+    appendDeferredRun(fake(), "never-replay", "MUST_NOT_REPLAY");
+    await rpc.close();
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.result.status).toBe("failed");
+    expect(JSON.stringify(turns)).not.toContain("MUST_NOT_REPLAY");
+    expect(fake().exitCode).toBe(0);
+  });
+
+  it("faults and clears a future-generation queue that exceeds its byte bound", async () => {
+    const { rpc, process: fake, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().holdStates = true;
+    fake().emitAutonomousTurn();
+    fake().emitAgentStart();
+    fake().emitFrame({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "x".repeat(8 * 1024 * 1024) },
+    });
+    await waitFor(() => onFault.mock.calls.length === 1);
+    expect(onFault).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Pi deferred run exceeded its event buffer bound" }),
+    );
+    expect(turns).toHaveLength(1);
+    await rpc.close();
+    expect(fake().exitCode).toBe(0);
+  });
+
+  it("fences a new-run child widget and preserves its autonomous owner across synchronous replay", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 500, closeTimeoutMs: 100 },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    rpc.setAutonomousTurnHandler(() => undefined);
+    let oldResolved = false;
+    const observed: { oldResolved: boolean; owner: string; child: string | undefined }[] = [];
+    rpc.setGotgenesStatusHandler((records, owner) =>
+      observed.push({ oldResolved, owner, child: records[0]?.id }),
+    );
+    await rpc.start();
+    const old = rpc
+      .runTurn("requested", () => undefined)
+      .then((result) => {
+        oldResolved = true;
+        return result;
+      });
+    fake.emitAgentStart();
+    const before = {
+      role: "assistant",
+      content: [{ type: "text", text: "old turn" }],
+      stopReason: "stop",
+    };
+    fake.emitFrame({ type: "message_start", message: before });
+    fake.emitFrame({ type: "message_end", message: before });
+    fake.holdStates = true;
+    fake.emitAgentSettled();
+    fake.emitAgentStart();
+    fake.emitFrame({
+      type: "message_start",
+      message: { role: "assistant", content: [], responseId: "next-run" },
+    });
+    fake.emitFrame({
+      type: "extension_ui_request",
+      method: "setWidget",
+      widgetKey: "codexhost-gotgenes-subagents",
+      widgetLines: [
+        "CODEXHOST_GOTGENES_SUBAGENTS_V1:" +
+          JSON.stringify({
+            version: 1,
+            agents: [
+              {
+                id: "new-child",
+                type: "Explore",
+                description: "Next run child",
+                status: "running",
+                isBackground: true,
+              },
+            ],
+          }),
+      ],
+    });
+    expect(observed).toEqual([]);
+    fake.releaseStates();
+    await expect(old).resolves.toEqual({ text: "old turn", cancelled: false });
+    expect(observed).toEqual([{ oldResolved: false, owner: "autonomous", child: "new-child" }]);
+    await rpc.close();
+  });
+
+  it("receives gotgenes observer snapshots independently of parent turns and drops malformed frames", async () => {
+    const { rpc, process: fakeProcess, onFault } = autonomousSession();
+    await rpc.start();
+    const status = vi.fn();
+    const autonomous = vi.fn();
+    rpc.setGotgenesStatusHandler(status);
+    rpc.setAutonomousTurnHandler(autonomous);
+    const send = (version: number) =>
+      fakeProcess().stdout.write(
+        JSON.stringify({
+          type: "extension_ui_request",
+          method: "setWidget",
+          widgetKey: "codexhost-gotgenes-subagents",
+          widgetLines: [
+            "CODEXHOST_GOTGENES_SUBAGENTS_V1:" +
+              JSON.stringify({
+                version,
+                agents: [
+                  {
+                    id: "worker",
+                    type: "Explore",
+                    description: "Review",
+                    status: "completed",
+                    isBackground: true,
+                    toolUses: 3,
+                  },
+                ],
+              }),
+          ],
+        }) + "\n",
+      );
+    send(2);
+    expect(status).not.toHaveBeenCalled();
+    send(1);
+    expect(status).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          id: "worker",
+          child: expect.objectContaining({ status: "completed", description: "Review" }),
+        }),
+      ],
+      "idle",
+    );
+    const late = vi.fn();
+    rpc.setGotgenesStatusHandler(late);
+    expect(late).toHaveBeenCalledTimes(1);
+    expect(autonomous).not.toHaveBeenCalled();
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
   it("observes versioned subagent widgets outside a model Turn without starting an autonomous Turn", async () => {
     const { rpc, process: fakeProcess, onFault } = autonomousSession();
     await rpc.start();
@@ -1190,6 +1511,23 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
+  it("classifies Pi 1.4's error-shaped AbortSignal terminal consistently in live and history", async () => {
+    const { rpc, process: fake } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().emitAutonomousTurn({ stopReason: "error", errorMessage: "This operation was aborted" });
+    await waitFor(() => turns.length === 1);
+    expect(turns[0]?.result.status).toBe("cancelled");
+    const history = fake().autonomousHistory;
+    if (!history) throw new Error("Missing history");
+    expect(
+      mapPiSnapshot(history, { sessionId: "synthetic-session", model: null }).turns[0]?.outcome
+        .status,
+    ).toBe("cancelled");
+    await rpc.close();
+  });
+
   it("does not reuse a stale autonomous history boundary", async () => {
     const { rpc, process: fakeProcess, onFault } = autonomousSession();
     const turns: PiAutonomousTurn[] = [];
@@ -1239,7 +1577,7 @@ describe("Pi RPC Turn aggregation", () => {
     );
     await blocking.rpc.close();
 
-    const streaming = autonomousSession();
+    const streaming = autonomousSession(vi.fn(), 50);
     const streamingTurns: PiAutonomousTurn[] = [];
     streaming.rpc.setAutonomousTurnHandler((turn) => streamingTurns.push(turn));
     await streaming.rpc.start();
@@ -1512,7 +1850,7 @@ describe("Pi RPC Turn aggregation", () => {
 
   it("faults when agent_settled does not agree with the native Streaming state", async () => {
     const onFault = vi.fn();
-    const rpc = session("settled-streaming", onFault);
+    const rpc = session("settled-streaming", onFault, { commandTimeoutMs: 50 });
     await rpc.start();
 
     await expect(rpc.runTurn("synthetic", () => undefined)).rejects.toThrow(

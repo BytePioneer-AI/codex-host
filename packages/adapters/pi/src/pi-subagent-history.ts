@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import path from "node:path";
 
+import { restoreGotgenes } from "./pi-gotgenes-history.js";
 import { activePiEntries, type PiSessionHistory } from "./pi-history.js";
 import { parsePiSubagentStatus, type PiSubagentNode, type PiSubagents } from "./pi-subagents.js";
 
@@ -69,6 +70,7 @@ export async function restorePiSubagents(
   parentSessionId: string,
   observer: PiSubagents,
 ): Promise<void> {
+  restoreGotgenes(history, observer.gotgenes);
   const receipts = new Map<string, string>();
   for (const entry of activePiEntries(history)) {
     if (

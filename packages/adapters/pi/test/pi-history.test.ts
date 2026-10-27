@@ -363,6 +363,91 @@ describe("Pi active-branch history", () => {
     });
   });
 
+  it.each([
+    ["This operation was aborted", "cancelled"],
+    ["fetch failed", "failed"],
+  ])(
+    "classifies the native error terminal %s without turning other failures into cancellation",
+    (errorMessage, status) => {
+      const history: PiSessionHistory = {
+        leafId: "answer",
+        entries: [
+          {
+            id: "request",
+            parentId: null,
+            type: "message",
+            message: { role: "user", content: "work" },
+          },
+          {
+            id: "answer",
+            parentId: "request",
+            type: "message",
+            message: { role: "assistant", content: [], stopReason: "error", errorMessage },
+          },
+        ],
+      };
+      expect(mapPiSnapshot(history, state).turns[0]?.outcome.status).toBe(status);
+    },
+  );
+
+  it("keeps a process custom notice as the autonomous boundary across its empty user wakeup", () => {
+    const entries: PiSessionHistory["entries"] = [
+      {
+        id: "user",
+        parentId: null,
+        type: "message",
+        message: { role: "user", content: "Start a background process" },
+      },
+      {
+        id: "before",
+        parentId: "user",
+        type: "message",
+        message: { role: "assistant", content: "Started", stopReason: "stop" },
+      },
+      {
+        id: "notice",
+        parentId: "before",
+        type: "custom_message",
+        customType: "ad-process:notification",
+        content: "Process complete",
+        display: true,
+      },
+      { id: "metadata", parentId: "notice", type: "custom", customType: "plugin-state", data: {} },
+      {
+        id: "wake",
+        parentId: "metadata",
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "" }] },
+      },
+      {
+        id: "after",
+        parentId: "wake",
+        type: "message",
+        message: { role: "assistant", content: "Follow-up", stopReason: "stop" },
+      },
+    ];
+    const history = { entries, leafId: "after" };
+    const snapshot = mapPiSnapshot(history, state);
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns[1]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "notice" },
+      input: [],
+      outcome: { status: "succeeded" },
+    });
+    expect(snapshot.turns[0]).not.toHaveProperty("checkpoint");
+    expect(resolvePiLastTurnBoundary(history)?.lastUserEntryId).toBeNull();
+    const noAssistant = mapPiSnapshot({ entries: entries.slice(0, -1), leafId: "wake" }, state);
+    expect(noAssistant.turns).toHaveLength(1);
+    const wake = entries[4];
+    if (!wake) throw new Error("Missing fixture wakeup");
+    wake.message = { role: "user", content: [{ type: "image", data: "image" }] };
+    expect(mapPiSnapshot(history, state).turns[1]?.nativeTurnRef.nativeTurnKey).toBe("wake");
+    wake.message = { role: "user", content: "Real follow-up request" };
+    expect(mapPiSnapshot(history, state).turns[1]?.input).toEqual([
+      { type: "text", text: "Real follow-up request" },
+    ]);
+  });
+
   it("does not split an in-run custom injection or an untriggered notification", () => {
     const entries = [
       { id: "user", parentId: null, type: "message", message: { role: "user", content: "work" } },

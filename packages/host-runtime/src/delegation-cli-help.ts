@@ -14,15 +14,16 @@ Omit --model and --thinking to use the Harness native defaults.
 Reuse --request-id for an idempotent retry. Identical recent parent/target/task/configuration requests are also deduplicated briefly.
 --watch true also registers thread watch on the child with the resolved parent as the notified Thread; the response's watch field reports whether it was registered.
 The response confirms cwd and parent. Use its Thread reference with thread read, wait, send, cancel, or watch.`,
-  "thread send": `codexhost thread send <thread> --message <text> [--format json|compact]
+  "thread send": `codexhost thread send <thread> --message <text> [--request-id <uuid>] [--format json|compact]
 Start a new Turn in an idle writable Thread and return immediately.
 THREAD_BUSY means the current Turn is still active: wait or cancel before sending. Messages are not queued.
-To be notified when that Turn ends, run thread watch after sending.`,
+Machine-qualified links work in either direction through a Desktop connected to both updated Hosts. Cross-machine sends return a requestId; repeat the same link/message with --request-id to recover its receipt without starting another Turn. OUTCOME_UNKNOWN means read the target before submitting a new request ID. A successful receipt confirms Turn submission, not task completion. Remote wait/watch/cancel are unavailable; read the full copied link to check progress.
+For local Threads, run thread watch after sending to be notified when the Turn ends.`,
   "thread cancel": `codexhost thread cancel <thread> [--format json|compact]
 Request cancellation of the active Turn while preserving the Thread and history.
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
   "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
-Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
+Read immediately without starting a Turn. Accepts copied thread://<id>?hostId=<encoded-host-id>&machineId=<uuid> links, codex://threads/<id> links, or --host with a bare ID. Machine-qualified links work in either direction through a Desktop connected to both Hosts; machineId takes precedence over the Desktop-specific hostId hint. Both Hosts and the Desktop extension must be updated and connected. Legacy hostId-only links use the originating Desktop connection. No local fallback on remote failure. Use thread send with a machine-qualified link to continue its task; remote wait/watch/cancel are not supported.
 The default result view reports the latest Turn's status and result.
 The messages view pages visible user/Agent messages, oldest first. Default limit 25, maximum 100; --cursor and --limit require --view messages.
 hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.

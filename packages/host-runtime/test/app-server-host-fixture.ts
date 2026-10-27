@@ -282,6 +282,7 @@ export function createFixture(
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
     runtimeMaintenance?: RuntimeMaintenance;
+    threadBridge?: AppServerHostOptions["threadBridge"];
     consoleOpener?: HostConsoleOpener;
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
@@ -325,6 +326,7 @@ export function createFixture(
   const createOfficialConnection = options.createOfficialConnection;
   if (options.officialRuntimeScope) startup.resolve(undefined);
   const host = new AppServerHost({
+    threadBridge: options.threadBridge,
     ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],

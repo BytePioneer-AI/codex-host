@@ -1,4 +1,13 @@
 import {
+  HOST_IDENTITY_METHOD,
+  DELEGATION_SEND_METHOD,
+  THREAD_BRIDGE_SEND_METHOD,
+  delegationSendParamsSchema,
+  THREAD_BRIDGE_ATTACH_METHOD,
+  THREAD_BRIDGE_READ_METHOD,
+  THREAD_BRIDGE_REPLY_METHOD,
+  threadBridgeAttachSchema,
+  threadBridgeReplySchema,
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
@@ -13,6 +22,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
+import type { ThreadBridge } from "./thread-bridge.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
@@ -324,6 +334,7 @@ import {
 } from "@codexhost/protocol-core";
 
 export interface AppServerHostOptions {
+  threadBridge?: ThreadBridge | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
   /** GUI connection to the single external-session owner. */
@@ -868,6 +879,7 @@ export class AppServerHost {
   }
 
   close(): void {
+    this.#options.threadBridge?.detach(this);
     if (this.#closeRequested) return;
     this.#closeRequested = true;
     this.#options.sharedThreads?.close();
@@ -888,6 +900,7 @@ export class AppServerHost {
   }
 
   disconnect(): void {
+    this.#options.threadBridge?.detach(this);
     if (this.#closeRequested || this.#desktopInputEnded || this.#drainActiveWorkOnInputEnd) return;
     this.#drainActiveWorkOnInputEnd = true;
     this.#externalSteering.close();
@@ -1012,6 +1025,7 @@ export class AppServerHost {
       return this.#closeRequested ? 0 : 1;
     } finally {
       this.#options.sharedThreads?.close();
+      this.#options.threadBridge?.detach(this);
       this.#pluginLoadAbort.abort();
       // Stop replacement waiters before waiting for their tracked Host operations.
       this.#externalSteering.close();
@@ -1220,6 +1234,7 @@ export class AppServerHost {
       );
     }
     this.#desktopInputEnded = true;
+    this.#options.threadBridge?.detach(this);
     this.#externalRuntime.idleRelease.disable();
     // Cancel loading before draining requests that may be waiting for it.
     this.#pluginLoadAbort.abort();
@@ -1282,6 +1297,45 @@ export class AppServerHost {
   ): Promise<void> {
     if (this.#closeRequested) return;
     if (
+      [HOST_IDENTITY_METHOD, THREAD_BRIDGE_ATTACH_METHOD, THREAD_BRIDGE_REPLY_METHOD].includes(
+        request.method,
+      )
+    ) {
+      const bridge = this.#options.threadBridge;
+      if (!bridge) {
+        await this.#writer.json(
+          rpcError(request, -32601, "Cross-machine Thread access is unavailable"),
+        );
+        return;
+      }
+      try {
+        if (request.method === THREAD_BRIDGE_ATTACH_METHOD) {
+          if (this.#desktopInputEnded || this.#drainActiveWorkOnInputEnd)
+            throw new Error("Desktop connection is closed");
+          const params = threadBridgeAttachSchema.parse(request.params);
+          bridge.attach(this, {
+            ...params,
+            send: async (read) => {
+              await this.#writer.json({
+                method: "operation" in read ? THREAD_BRIDGE_SEND_METHOD : THREAD_BRIDGE_READ_METHOD,
+                params: jsonValueSchema.parse(read),
+              });
+            },
+          });
+        } else if (request.method === THREAD_BRIDGE_REPLY_METHOD) {
+          bridge.reply(this, threadBridgeReplySchema.parse(request.params));
+        }
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: { machineId: bridge.machineId, sendSupported: bridge.receipts !== undefined },
+          }),
+        );
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+      }
+      return;
+    }
+    if (
       request.method === RUNTIME_STATUS_METHOD ||
       request.method === REMOTE_UPDATE_METHOD ||
       request.method === REMOTE_SSH_SETUP_METHOD
@@ -1308,10 +1362,72 @@ export class AppServerHost {
       );
       return;
     }
+    if (request.method === DELEGATION_SEND_METHOD) {
+      const parsed = delegationSendParamsSchema.safeParse(request.params);
+      const bridge = this.#options.threadBridge;
+      if (
+        !parsed.success ||
+        !bridge?.receipts ||
+        parsed.data.expectedMachineId !== bridge.machineId
+      ) {
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              error: {
+                code: "INVALID_ARGUMENT",
+                message: "Invalid send request, unsupported Host, or wrong destination machine",
+              },
+            },
+          }),
+        );
+        return;
+      }
+      try {
+        const shared = await this.#options.sharedThreads?.route(request);
+        if (shared) {
+          await this.#writer.json(shared);
+          return;
+        }
+        const outcome = await bridge.executeSend(parsed.data, async () => {
+          await this.#waitForPlugins();
+          return this.#delegationCoordinator.send({
+            threadId: parsed.data.threadId,
+            message: parsed.data.message,
+          });
+        });
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(outcome) }));
+      } catch {
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              error: {
+                code: "OUTCOME_UNKNOWN",
+                message:
+                  "Send outcome is unknown; read the Thread or retry the same request ID after reconnecting",
+              },
+            },
+          }),
+        );
+      }
+      return;
+    }
     if (request.method === DELEGATION_READ_METHOD) {
       const parsed = delegationReadParamsSchema.safeParse(request.params);
       if (!parsed.success) {
         await this.#writer.json(rpcError(request, -32602, "Invalid Thread read request"));
+        return;
+      }
+      if (
+        parsed.data.expectedMachineId !== undefined &&
+        parsed.data.expectedMachineId !== this.#options.threadBridge?.machineId
+      ) {
+        await this.#writer.json(
+          rpcError(
+            request,
+            -32602,
+            "Thread link belongs to a different machine; reconnect the Host",
+          ),
+        );
         return;
       }
       const shared = await this.#options.sharedThreads?.route(request);

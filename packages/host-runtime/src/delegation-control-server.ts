@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { machineIdSchema } from "@codexhost/shared-contracts";
 
 import {
   DelegationControlError,
@@ -138,6 +139,17 @@ export async function startDelegationControlServer(input: {
               ? await input.api.start(body as unknown as DelegationStartInput)
               : await startWithWatch(input.api, watchApi(input.watchApi), body),
           );
+          return;
+        // Scoped routes prevent older Runtimes from interpreting these requests as local.
+        case "/v1/thread/send-scoped":
+          if (!machineIdSchema.safeParse(body.requestId).success)
+            throw new DelegationControlError("INVALID_ARGUMENT", "A UUID request ID is required");
+          writeJson(response, 200, await input.api.send(body as unknown as ThreadSendInput));
+          return;
+        case "/v1/thread/read-scoped":
+          if (!machineIdSchema.safeParse(body.machineId).success)
+            throw new DelegationControlError("INVALID_ARGUMENT", "A machine identity is required");
+          writeJson(response, 200, await input.api.read(body as unknown as ThreadReadInput));
           return;
         case "/v1/thread/send":
           writeJson(response, 200, await input.api.send(body as unknown as ThreadSendInput));

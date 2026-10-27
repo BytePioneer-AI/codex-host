@@ -3,10 +3,11 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 10;
+const SKILL_VERSION = 11;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+  "242a07e7521949e5d651102f6b353c48e7575a679e3403c5c5db295abad9896b",
   "9d2f491850fb0b4084a31ba9b5e4a550b5e833747af322090d8ed0ff80b88c30",
   "2bb0aebb9b06febbc6c0c0bcdb0b32506c7cdbf8dc3b734cc6b2a86621270e4e",
   "aff258622dc8ff321f32b15620d081e578cb9c9ed1134d6a57f35ca8e7762c0a",
@@ -24,11 +25,13 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
 
 export const CODEXHOST_DELEGATION_SKILL = `---
 name: codexhost-delegation
-version: ${SKILL_VERSION}
+metadata:
+  version: ${SKILL_VERSION}
 description: >
   Delegate tasks to other coding agents, or read and follow up on existing
-  external agent sessions. Use when the user asks another agent (including
-  @agent) to independently perform a task, or asks to view a specified external
+  agent sessions, including local or remote Threads identified by a codexhost
+  cross-machine link. Use when the user asks another agent (including
+  @agent) to independently perform a task, or asks to view a specified
   session's content, progress, or results, send follow-up messages, wait, or
   cancel a task. Not for recapping the current conversation, discussing or
   configuring agents, or role-playing.
@@ -64,6 +67,20 @@ directly; it need not have been created by the current assistant. If the target
 is ambiguous, ask the user to identify it. Keep requests to view or summarize a
 session read-only.
 
+For a copied Thread link containing machineId, use CLI thread read with the
+complete quoted link to inspect it, or thread send when the user requests a
+follow-up message or continued execution. Preserve machineId, hostId and
+pagination cursors in later reads. The machine identity determines the owner; hostId=local in a copied link
+does not mean the machine running your session. Do not strip the identity or
+substitute a local lookup when a remote read fails. Both machines must be
+connected through an updated codexhost Desktop. Cross-machine send returns a
+requestId. If its outcome is unknown, read the target or repeat the same message
+and link with --request-id to recover the original receipt; never create a new
+request ID to blindly retry an uncertain send. A send receipt confirms submission,
+not task completion. THREAD_BUSY means read again later; do not interrupt the
+current Turn without instruction. Cross-machine cancel, wait and watch are not
+supported. A link alone is not an instruction to send a message.
+
 For a new or existing task, choose the appropriate next action based on the
 user’s request and the task:
 
@@ -90,7 +107,7 @@ function digest(value: string): string {
 }
 
 function managedVersion(value: string): number | null {
-  const match = /^version:\s*(\d+)\s*$/mu.exec(value);
+  const match = /^(?: {2})?version:\s*(\d+)\s*$/mu.exec(value);
   return match ? Number(match[1]) : null;
 }
 

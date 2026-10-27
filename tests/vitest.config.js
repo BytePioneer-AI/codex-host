@@ -8,6 +8,7 @@ const include = [
   "packages/**/test/**/*.test.ts",
   "packages/repository-automation/test/**/*.test.mjs",
   "tests/release/**/*.test.mjs",
+  "tests/integration/**/*.test.ts",
   "tools/**/*.test.mjs",
 ];
 

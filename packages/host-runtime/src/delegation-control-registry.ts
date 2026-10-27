@@ -11,6 +11,8 @@ import {
   type ThreadWatchInput,
 } from "./delegation-types.js";
 import { DelegationWatchService } from "./delegation-watch.js";
+import { machineIdSchema, delegationSendParamsSchema } from "@codexhost/shared-contracts";
+import type { ThreadBridge } from "./thread-bridge.js";
 
 function only<T>(values: readonly T[], message: string): T {
   const value = values.length === 1 ? values[0] : undefined;
@@ -23,6 +25,7 @@ function only<T>(values: readonly T[], message: string): T {
 }
 
 export class DelegationControlRegistry implements DelegationControlApi, DelegationWatchApi {
+  readonly threadBridge: ThreadBridge | undefined;
   readonly #registrations = new Set<DelegationControlRegistration>();
   #harnessCatalog: DelegationControlRegistration | undefined;
   // Watches sit above the sessions so either end may belong to any registered session.
@@ -34,10 +37,12 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   constructor(
     options: {
       diagnose?: (error: unknown) => void;
+      threadBridge?: ThreadBridge;
       remoteRead?: (input: ThreadReadInput) => ReturnType<DelegationControlApi["read"]>;
     } = {},
   ) {
     this.#remoteRead = options.remoteRead;
+    this.threadBridge = options.threadBridge;
     this.#watchService = new DelegationWatchService(this, options);
   }
 
@@ -79,6 +84,51 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async send(input: Parameters<DelegationControlApi["send"]>[0]) {
+    if (input.machineId !== undefined || input.requestId !== undefined) {
+      const bridge = this.threadBridge;
+      if (!bridge)
+        throw new DelegationControlError(
+          "RUNTIME_UNREACHABLE",
+          "Cross-machine sending is unavailable",
+        );
+      const machineId = input.machineId ?? bridge.machineId;
+      const parsed = delegationSendParamsSchema.safeParse({
+        threadId: input.threadId,
+        message: input.message,
+        requestId: input.requestId,
+        expectedMachineId: machineId,
+      });
+      if (!parsed.success)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "A valid machine identity, request ID and message are required",
+        );
+      if (!input.machineId && input.hostId && input.hostId !== "local")
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "Copy a machine-qualified link to send to another Host",
+        );
+      if (machineId !== bridge.machineId) return bridge.send({ ...input, machineId });
+      const outcome = await bridge.executeSend(parsed.data, async () =>
+        (await this.#registrationForThread(input.threadId)).send({
+          threadId: input.threadId,
+          message: input.message,
+        }),
+      );
+      if ("error" in outcome)
+        throw new DelegationControlError(outcome.error.code, outcome.error.message, {
+          requestId: input.requestId,
+        });
+      return bridge.qualifySend(
+        outcome.result as Awaited<ReturnType<DelegationControlApi["send"]>>,
+        { ...input, machineId },
+      );
+    }
+    if (input.hostId && input.hostId !== "local")
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Copy a machine-qualified link to send to another Host",
+      );
     return (await this.#registrationForThread(input.threadId)).send(input);
   }
 
@@ -87,6 +137,29 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async read(input: ThreadReadInput) {
+    if (input.machineId !== undefined) {
+      if (!machineIdSchema.safeParse(input.machineId).success)
+        throw new DelegationControlError("INVALID_ARGUMENT", "Invalid machine identity");
+      if (!this.threadBridge)
+        throw new DelegationControlError(
+          "RUNTIME_UNREACHABLE",
+          "Cross-machine Thread reads are unavailable",
+        );
+      if (input.machineId !== this.threadBridge.machineId) return this.threadBridge.read(input);
+      const snapshot = await (
+        await this.#registrationForThread(input.threadId)
+      ).read({
+        threadId: input.threadId,
+        view: input.view,
+        ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      });
+      return {
+        ...snapshot,
+        machineId: input.machineId,
+        ...(input.hostId ? { hostId: input.hostId } : {}),
+      };
+    }
     const { callerThreadId, ...read } = input;
     if (read.hostId !== undefined && read.hostId !== "local") {
       if (typeof callerThreadId === "string" && callerThreadId) {
@@ -114,6 +187,11 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async wait(input: ThreadWaitInput) {
+    if (input.machineId !== undefined)
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Machine-qualified links support thread read only",
+      );
     if (input.hostId !== undefined && input.hostId !== "local")
       throw new DelegationControlError("INVALID_ARGUMENT", "Remote Hosts support thread read only");
     return (await this.#registrationForThread(input.threadId)).wait(input);

@@ -20,6 +20,7 @@ import {
   type PiTurnEvent,
 } from "../src/pi-rpc-session.js";
 import type { PiUsageObservation } from "../src/pi-usage.js";
+import { piHistoryNotices } from "../src/pi-progress.js";
 
 type Scenario =
   | "manual-run"
@@ -1100,6 +1101,169 @@ function appendDeferredRun(fake: FakePiRpcProcess, key: string, text: string, se
 }
 
 describe("Pi RPC Turn aggregation", () => {
+  it("bounds idle progress without faulting, coalesces status and discloses omitted updates", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const onFault = vi.fn();
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500, onFault },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    for (let index = 0; index < 130; index++)
+      fake.emitFrame({
+        type: "extension_ui_request",
+        id: `notice-${index}`,
+        method: "notify",
+        message: `Update ${index}`,
+      });
+    for (let index = 0; index < 5; index++)
+      fake.emitFrame({
+        type: "extension_ui_request",
+        id: `status-${index}`,
+        method: "setStatus",
+        statusKey: "job",
+        statusText: `State ${index}`,
+      });
+    const events: PiTurnEvent[] = [];
+    const pending = rpc.runTurn("synthetic", (event) => events.push(event));
+    const progress = events.filter((event) => event.type === "progress.message");
+    expect(progress).toHaveLength(129);
+    expect(progress[0]?.text).toContain("3 earlier updates were not retained");
+    expect(progress.at(-1)?.text).toBe("Pi status (job)\n\nState 4");
+    expect(progress.some((event) => event.text.includes("Update 129"))).toBe(true);
+    expect(onFault).not.toHaveBeenCalled();
+    const message = {
+      role: "assistant",
+      responseId: "final",
+      content: [{ type: "text", text: "done" }],
+      stopReason: "stop",
+    };
+    fake.emitFrame({ type: "message_start", message });
+    fake.emitFrame({ type: "message_end", message });
+    fake.emitAgentSettled();
+    await expect(pending).resolves.toEqual({ text: "done", cancelled: false });
+    await rpc.close();
+  });
+
+  it("retains idle notices and streams visible custom/status messages exactly once in a real Turn", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const events: PiTurnEvent[] = [];
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      {
+        spawn: () => fake as unknown as ChildProcessWithoutNullStreams,
+      },
+    );
+    await rpc.start();
+    const notice = {
+      role: "custom",
+      customType: "ad-process:notification",
+      display: true,
+      content: "Process complete",
+      timestamp: 100,
+    };
+    const send = (value: unknown) => fake.emitFrame(value);
+    send({ type: "message_start", message: notice });
+    send({ type: "message_end", message: notice });
+    send({ type: "message_end", message: notice });
+    expect(events).toEqual([]);
+    const pending = rpc.runTurn("synthetic", (event) => events.push(event));
+    send({ type: "message_end", message: { ...notice, timestamp: 101, display: false } });
+    send({ type: "message_end", message: { ...notice, timestamp: 102 } });
+    send({
+      type: "extension_ui_request",
+      id: "notify",
+      method: "notify",
+      message: "Job running",
+      notifyType: "info",
+    });
+    send({
+      type: "extension_ui_request",
+      id: "status-1",
+      method: "setStatus",
+      statusKey: "job",
+      statusText: "Waiting",
+    });
+    send({
+      type: "extension_ui_request",
+      id: "status-2",
+      method: "setStatus",
+      statusKey: "job",
+      statusText: "Waiting",
+    });
+    const progress = events.filter((event) => event.type === "progress.message");
+    expect(progress).toHaveLength(4);
+    expect(new Set(progress.map((event) => event.itemId)).size).toBe(4);
+    expect(progress.map((event) => event.text)).toEqual([
+      "Pi notification (ad-process:notification)\n\nProcess complete",
+      "Pi notification (ad-process:notification)\n\nProcess complete",
+      "Pi notification (info)\n\nJob running",
+      "Pi status (job)\n\nWaiting",
+    ]);
+    const message = {
+      role: "assistant",
+      responseId: "final",
+      content: [{ type: "text", text: "done" }],
+      stopReason: "stop",
+    };
+    send({ type: "message_start", message });
+    send({ type: "message_end", message });
+    fake.emitAgentSettled();
+    await expect(pending).resolves.toEqual({ text: "done", cancelled: false });
+    await rpc.close();
+  });
+
+  it("primes visible custom identities from the resumed native branch", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const first = {
+      id: "prior-notice",
+      parentId: null,
+      type: "custom_message",
+      customType: "progress",
+      display: true,
+      content: "Same text",
+      timestamp: "2026-01-01T00:00:00Z",
+    };
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      {
+        spawn: () => {
+          fake.restoreNativeHistory({ entries: [first], leafId: first.id });
+          return fake as unknown as ChildProcessWithoutNullStreams;
+        },
+      },
+    );
+    await rpc.start();
+    const events: PiTurnEvent[] = [];
+    const pending = rpc.runTurn("synthetic", (event) => events.push(event));
+    fake.emitFrame({
+      type: "message_end",
+      message: {
+        role: "custom",
+        customType: "progress",
+        display: true,
+        content: "Same text",
+        timestamp: 200,
+      },
+    });
+    const expected = piHistoryNotices("synthetic-session", [
+      first,
+      { ...first, id: "new-notice", timestamp: "2026-02-01T00:00:00Z" },
+    ]);
+    expect(events[0]).toEqual(expected.notices.get("new-notice"));
+    const message = {
+      role: "assistant",
+      responseId: "final",
+      content: [{ type: "text", text: "done" }],
+      stopReason: "stop",
+    };
+    fake.emitFrame({ type: "message_start", message });
+    fake.emitFrame({ type: "message_end", message });
+    fake.emitAgentSettled();
+    await pending;
+    await rpc.close();
+  });
+
   it("confirms an autonomous custom notice followed by the native empty-user wakeup", async () => {
     const { rpc, process: fake, onFault } = autonomousSession();
     const turns: PiAutonomousTurn[] = [];
@@ -2031,8 +2195,14 @@ describe("Pi RPC Turn aggregation", () => {
     });
     expect(events).toEqual([
       { type: "message.completed", messageId: expect.any(String) },
+      {
+        type: "progress.message",
+        itemId: expect.any(String),
+        text: expect.stringContaining("Pi retry 1/3."),
+      },
       { type: "text.delta", messageId: expect.any(String), delta: "recovered" },
       { type: "message.completed", messageId: expect.any(String) },
+      { type: "progress.message", itemId: expect.any(String), text: "Pi retry succeeded." },
     ]);
     await rpc.close();
   });

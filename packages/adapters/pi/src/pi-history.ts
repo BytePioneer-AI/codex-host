@@ -1,5 +1,6 @@
 import type {
   HostAgentMessageItem,
+  HostCommandExecutionItem,
   HostFileChangeItem,
   HostItemOutcome,
   HostItemSnapshot,
@@ -30,6 +31,8 @@ import {
 import { piAssistantWasAborted } from "./pi-assistant-outcome.js";
 import { PiSubagents } from "./pi-subagents.js";
 import { encodePiModelRef, type PiNativeModelRef } from "./pi-model-catalog.js";
+import { piHistoryNotices, type PiProgressMessage } from "./pi-progress.js";
+import { piToolCommand } from "./pi-tool-command.js";
 
 export interface PiSessionHistory {
   entries: JsonObject[];
@@ -204,6 +207,7 @@ function historicalFileChanges(
 function snapshotItems(
   entries: PiEntry[],
   messageIdentities: Map<string, PiMessageIdentity>,
+  notices: Map<string, PiProgressMessage>,
   outcome: HistoricalTurnOutcome,
   subagents?: PiSubagents,
   cwd?: string,
@@ -214,6 +218,19 @@ function snapshotItems(
     { entryId: string; ordinal: number; name: string; arguments: JsonValue }
   >();
   for (const entry of entries) {
+    const notice = notices.get(entry.id);
+    if (notice) {
+      snapshots.push({
+        item: {
+          type: "agentMessage",
+          itemId: notice.itemId,
+          text: notice.text,
+          phase: "commentary",
+        },
+        outcome: { status: "succeeded" },
+      });
+      continue;
+    }
     const nativeMessage = message(entry);
     if (!nativeMessage) continue;
     const content = Array.isArray(nativeMessage.content) ? nativeMessage.content : [];
@@ -276,13 +293,38 @@ function snapshotItems(
     const call = toolCalls.get(nativeMessage.toolCallId);
     if (!call || call.name !== nativeMessage.toolName) continue;
     const output = toolOutput(nativeMessage.content);
-    const item: HostToolExecutionItem = {
-      type: "toolExecution",
+    const shell = piToolCommand(call.name, call.arguments);
+    const commandCwd = shell?.cwd ?? cwd;
+    const durationMs =
+      typeof nativeMessage.durationMs === "number" &&
+      Number.isFinite(nativeMessage.durationMs) &&
+      nativeMessage.durationMs >= 0
+        ? nativeMessage.durationMs
+        : undefined;
+    const base = {
       itemId: itemId(call.entryId, "tool", call.ordinal),
-      toolName: call.name,
-      arguments: call.arguments,
-      ...(output ? { output } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
     };
+    const exitCode =
+      typeof nativeMessage.exitCode === "number" && Number.isInteger(nativeMessage.exitCode)
+        ? nativeMessage.exitCode
+        : undefined;
+    const item: HostToolExecutionItem | HostCommandExecutionItem = shell
+      ? {
+          ...base,
+          type: "commandExecution",
+          command: shell.command,
+          ...(commandCwd ? { cwd: commandCwd } : {}),
+          ...(output ? { output: textContent(nativeMessage.content) } : {}),
+          ...(exitCode !== undefined ? { exitCode } : {}),
+        }
+      : {
+          ...base,
+          type: "toolExecution",
+          toolName: call.name,
+          arguments: call.arguments,
+          ...(output ? { output } : {}),
+        };
     const toolSucceeded = nativeMessage.isError === false;
     const delegation = subagents?.project(
       call.name,
@@ -362,6 +404,7 @@ export function mapPiSnapshot(
 ): HostThreadSnapshot {
   const active = activePiEntries(history);
   const { identities } = piHistoryMessageIdentities(state.sessionId, active);
+  const { notices } = piHistoryNotices(state.sessionId, active);
   const turns: HostThreadSnapshot["turns"] = [];
   const starts = turnStarts(active);
   const byIndex = new Map(starts.map((start, ordinal) => [start.index, ordinal]));
@@ -400,7 +443,7 @@ export function mapPiSnapshot(
       nativeTurnRef,
       ...(!next || messageRole(next.entry) === "user" ? { checkpoint } : {}),
       input: messageRole(user) === "user" ? [{ type: "text", text: userText }] : [],
-      items: snapshotItems(entries, identities, outcome, subagents, state.cwd),
+      items: snapshotItems(entries, identities, notices, outcome, subagents, state.cwd),
       outcome,
       ...(effectiveModel ? { model: encodePiModelRef(effectiveModel) } : {}),
     });

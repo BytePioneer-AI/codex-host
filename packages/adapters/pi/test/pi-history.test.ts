@@ -542,4 +542,136 @@ describe("Pi active-branch history", () => {
       "missing Entry",
     );
   });
+
+  it("preserves visible process notices before, during and after Assistant output without exposing controls", () => {
+    const entries = [
+      { id: "u", parentId: null, type: "message", message: { role: "user", content: "check" } },
+      {
+        id: "first",
+        parentId: "u",
+        type: "custom_message",
+        customType: "ad-process:notification",
+        display: true,
+        content: "Process matched",
+      },
+      {
+        id: "hidden",
+        parentId: "first",
+        type: "custom_message",
+        customType: "control",
+        display: false,
+        content: "SECRET_CONTROL",
+      },
+      {
+        id: "a",
+        parentId: "hidden",
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "answer" }],
+          stopReason: "stop",
+        },
+      },
+      {
+        id: "last",
+        parentId: "a",
+        type: "custom_message",
+        customType: "ad-process:notification",
+        display: true,
+        content: "Process exited with code 0",
+      },
+    ];
+    const snapshot = mapPiSnapshot({ entries, leafId: "last" }, state);
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]?.items.map(({ item }) => item)).toMatchObject([
+      {
+        type: "agentMessage",
+        phase: "commentary",
+        text: "Pi notification (ad-process:notification)\n\nProcess matched",
+      },
+      { type: "agentMessage", text: "answer" },
+      {
+        type: "agentMessage",
+        phase: "commentary",
+        text: "Pi notification (ad-process:notification)\n\nProcess exited with code 0",
+      },
+    ]);
+    expect(JSON.stringify(snapshot)).not.toContain("SECRET_CONTROL");
+  });
+
+  it.each([0, 2, undefined])(
+    "preserves shell result metadata without inventing exit code %s",
+    (exitCode) => {
+      const entries = [
+        { id: "u", parentId: null, type: "message", message: { role: "user", content: "run" } },
+        {
+          id: "a",
+          parentId: "u",
+          type: "message",
+          message: {
+            role: "assistant",
+            stopReason: "toolUse",
+            content: [
+              {
+                type: "toolCall",
+                id: "call",
+                name: "terminal",
+                arguments: { input: { cmd: "check", cwd: "/native" } },
+              },
+            ],
+          },
+        },
+        {
+          id: "r",
+          parentId: "a",
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolCallId: "call",
+            toolName: "terminal",
+            isError: exitCode === 2,
+            durationMs: 2805,
+            ...(exitCode === undefined ? {} : { exitCode }),
+            content: [{ type: "text", text: "result" }],
+          },
+        },
+        {
+          id: "f",
+          parentId: "r",
+          type: "message",
+          message: { role: "assistant", stopReason: "stop", content: "done" },
+        },
+      ];
+      const item = mapPiSnapshot({ entries, leafId: "f" }, state).turns[0]?.items[0]?.item;
+      expect(item).toEqual({
+        type: "commandExecution",
+        itemId: "pi-item-v1-a-tool-0",
+        command: "check",
+        cwd: "/native",
+        output: "result",
+        durationMs: 2805,
+        ...(exitCode === undefined ? {} : { exitCode }),
+      });
+    },
+  );
+
+  it("keeps valid durations on non-shell results and rejects invalid durations", () => {
+    const entries = structuredClone(history.entries);
+    const result = entries.find((entry) => entry.id === "tool-1");
+    if (
+      !result ||
+      typeof result.message !== "object" ||
+      result.message === null ||
+      Array.isArray(result.message)
+    )
+      throw new Error("Missing tool result fixture");
+    result.message.durationMs = 150;
+    const item = () =>
+      mapPiSnapshot({ entries, leafId: history.leafId }, state).turns[0]?.items.find(
+        ({ item }) => item.type === "toolExecution",
+      )?.item;
+    expect(item()).toHaveProperty("durationMs", 150);
+    result.message.durationMs = -1;
+    expect(item()).not.toHaveProperty("durationMs");
+  });
 });

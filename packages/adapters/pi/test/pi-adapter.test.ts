@@ -463,6 +463,39 @@ describe("Pi adapter credential imports wiring", () => {
 });
 
 describe("Pi HarnessAdapter Session", () => {
+  it("publishes native progress as commentary once without making it the Assistant answer", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("progress-turn"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Missing transport");
+    transport.delta("Actual answer");
+    const notice = {
+      type: "progress.message" as const,
+      itemId: hostItemIdSchema.parse("pi-notice-stable"),
+      text: "Pi notification\n\nProcess completed",
+    };
+    transport.event(notice);
+    transport.event(notice);
+    transport.succeed("Actual answer");
+    const completed = [];
+    for (;;) {
+      const event = await nextEvent(iterator);
+      if (event.type === "item.completed" && event.snapshot.item.type === "agentMessage")
+        completed.push(event.snapshot.item);
+      if (event.type === "turn.completed") break;
+    }
+    expect(completed.filter((item) => item.itemId === notice.itemId)).toEqual([
+      { type: "agentMessage", itemId: notice.itemId, text: notice.text, phase: "commentary" },
+    ]);
+    expect(completed.find((item) => item.text === "Actual answer")).not.toHaveProperty(
+      "phase",
+      "commentary",
+    );
+    await session.close();
+  });
+
   it("routes gotgenes service states to native cards and reads a running child's real transcript", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "pi-gotgenes-live-"));
     const file = path.join(directory, "child.jsonl");

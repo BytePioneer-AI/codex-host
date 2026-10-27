@@ -5,6 +5,7 @@ import path from "node:path";
 import { parseHostUsage, sanitizeDiagnosticTail, type HostUsage } from "@codexhost/harness-adapter";
 import {
   harnessThinkingOptionIdSchema,
+  hostItemIdSchema,
   jsonValueSchema,
   type HarnessThinkingOptionId,
   type JsonObject,
@@ -40,6 +41,13 @@ import type { PiNativeModel, PiNativeModelRef } from "./pi-model-catalog.js";
 import { verifyPiSessionCwd } from "./pi-session-file.js";
 import { PiSubagentRpc } from "./pi-subagent-rpc.js";
 import type { PiSubagentInspection, PiSubagentNode } from "./pi-subagents.js";
+import {
+  piCustomNotice,
+  piCustomNoticeKey,
+  piHistoryNotices,
+  piStatusText,
+  type PiProgressMessage,
+} from "./pi-progress.js";
 
 export interface PiSessionState {
   sessionId: string;
@@ -87,6 +95,7 @@ export type PiInteractionResponse =
   | { requestId: string; confirmed: boolean };
 
 export type PiTurnEvent =
+  | PiProgressMessage
   | {
       type: "text.delta";
       messageId: string;
@@ -547,6 +556,11 @@ export class PiRpcSession {
   #fastAcknowledgement: { message: string; received: boolean } | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
   #manualCompaction: ManualCompaction | null = null;
+  #noticeOccurrences = new Map<string, number>();
+  #seenNoticeFrames = new Set<string>();
+  #pendingProgress: { event: PiProgressMessage; statusKey?: string }[] = [];
+  #omittedProgress = 0;
+  #extensionStatuses = new Map<string, string>();
   #stderrTail = "";
   readonly #subagents: PiSubagentRpc;
   #gotgenesHandler:
@@ -616,7 +630,8 @@ export class PiRpcSession {
   /** Every finished assistant message is one model request, with or without an active Turn. */
   #observeUsage(value: Record<string, unknown>): void {
     if (value.type === "message_start") {
-      this.#usageRequestStartedAtMs = null;
+      if (isRecord(value.message) && value.message.role === "assistant")
+        this.#usageRequestStartedAtMs = null;
       return;
     }
     // Generation starts at the first output token: the first thinking, text or tool-call block
@@ -746,6 +761,10 @@ export class PiRpcSession {
           this.state.sessionId,
           activePiEntries(history),
         ).timestampCounts;
+        this.#noticeOccurrences = piHistoryNotices(
+          this.state.sessionId,
+          activePiEntries(history),
+        ).occurrences;
       }
       return history;
     } catch (error) {
@@ -964,6 +983,7 @@ export class PiRpcSession {
       };
     });
     try {
+      this.#drainProgress(onEvent);
       await this.#send("prompt", { message: text });
     } catch (error) {
       this.#rejectActiveTurn(error instanceof Error ? error : new Error(message(error)));
@@ -1057,6 +1077,10 @@ export class PiRpcSession {
   }
 
   close(): Promise<void> {
+    this.#pendingProgress = [];
+    this.#omittedProgress = 0;
+    this.#seenNoticeFrames.clear();
+    this.#extensionStatuses.clear();
     if (!this.#closed) {
       this.#closed = true;
       this.#rejectAll(new Error("Pi RPC Session closed"));
@@ -1156,6 +1180,7 @@ export class PiRpcSession {
       }
       return;
     }
+    if (this.#handleProgress(value)) return;
     this.#observeUsage(value);
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
@@ -1344,7 +1369,101 @@ export class PiRpcSession {
       abortPromise: null,
     };
     this.#activeTurn = active;
+    this.#drainProgress(active.onEvent);
     return active;
+  }
+
+  #handleProgress(value: Record<string, unknown>): boolean {
+    if (
+      (value.type === "message_start" || value.type === "message_end") &&
+      isRecord(value.message) &&
+      value.message.role === "custom"
+    ) {
+      // Start/end describe the same complete custom message. Only publish the terminal frame.
+      if (value.type !== "message_end" || !this.#state) return true;
+      const key = piCustomNoticeKey(value.message);
+      if (!key) return true;
+      const timestamp = value.message.timestamp;
+      if (
+        (typeof timestamp === "number" || typeof timestamp === "string") &&
+        !this.#acceptNoticeFrame(JSON.stringify([key, timestamp]))
+      )
+        return true;
+      const progress = piCustomNotice(value.message, this.state.sessionId, this.#noticeOccurrences);
+      if (progress) this.#publishProgress(progress);
+      return true;
+    }
+    if (value.type === "extension_ui_request" && value.method === "setStatus") {
+      if (typeof value.statusKey !== "string") return true;
+      if (typeof value.statusText !== "string" || !value.statusText.trim()) {
+        if (!this.#extensionStatuses.has(value.statusKey)) return true;
+        this.#extensionStatuses.delete(value.statusKey);
+      } else {
+        if (this.#extensionStatuses.get(value.statusKey) === value.statusText) return true;
+        this.#extensionStatuses.set(value.statusKey, value.statusText);
+      }
+    }
+    const text = piStatusText(value);
+    if (!text) return false;
+    if (
+      value.type === "extension_ui_request" &&
+      typeof value.id === "string" &&
+      !this.#acceptNoticeFrame(JSON.stringify([value.type, value.id]))
+    )
+      return true;
+    this.#publishProgress(
+      {
+        type: "progress.message",
+        itemId: hostItemIdSchema.parse(`pi-progress-${randomUUID()}`),
+        text,
+      },
+      value.method === "setStatus" && typeof value.statusKey === "string"
+        ? value.statusKey
+        : undefined,
+    );
+    return true;
+  }
+
+  #acceptNoticeFrame(key: string): boolean {
+    if (this.#seenNoticeFrames.has(key)) return false;
+    this.#seenNoticeFrames.add(key);
+    if (this.#seenNoticeFrames.size > 512)
+      this.#seenNoticeFrames.delete(this.#seenNoticeFrames.values().next().value as string);
+    return true;
+  }
+
+  #publishProgress(progress: PiProgressMessage, statusKey?: string): void {
+    if (this.#activeTurn?.settlement === "pending") {
+      this.#activeTurn.onEvent(progress);
+      return;
+    }
+    // Session-level notices have no public Item owner. Retain them until a real Turn opens.
+    if (statusKey !== undefined) {
+      const previous = this.#pendingProgress.findIndex(
+        (pending) => pending.statusKey === statusKey,
+      );
+      if (previous >= 0) this.#pendingProgress.splice(previous, 1);
+    }
+    if (this.#pendingProgress.length >= 128) {
+      this.#pendingProgress.shift();
+      this.#omittedProgress += 1;
+    }
+    this.#pendingProgress.push({
+      event: progress,
+      ...(statusKey !== undefined ? { statusKey } : {}),
+    });
+  }
+
+  #drainProgress(onEvent: (event: PiTurnEvent) => void): void {
+    if (this.#omittedProgress > 0) {
+      onEvent({
+        type: "progress.message",
+        itemId: hostItemIdSchema.parse(`pi-progress-${randomUUID()}`),
+        text: `Pi notifications: ${this.#omittedProgress} earlier updates were not retained while idle. Persisted notifications remain available in conversation history.`,
+      });
+      this.#omittedProgress = 0;
+    }
+    for (const pending of this.#pendingProgress.splice(0)) onEvent(pending.event);
   }
 
   #emitAutonomousTurn(active: ActiveTurn, result: PiAutonomousTurnResult): void {

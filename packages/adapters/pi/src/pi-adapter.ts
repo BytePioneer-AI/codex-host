@@ -83,6 +83,7 @@ import { piMessageItemId, type PiMessageIdentity } from "./pi-message-item-id.js
 import { resolvePiInspectCwd } from "./command.js";
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
 import { piToolFileChanges } from "./pi-file-change.js";
+import { piToolCommand } from "./pi-tool-command.js";
 import {
   PiSubagents,
   parsePiSubagentId,
@@ -203,6 +204,7 @@ interface ActiveTurn {
   cancellationRequested: boolean;
   settling: boolean;
   beforeNativeTurnKeys: Set<string>;
+  progressItems: Set<HostItemId>;
   completion: Promise<void>;
   resolveCompletion(): void;
 }
@@ -371,62 +373,10 @@ function outputText(output: HostToolOutput | undefined): string {
   );
 }
 
-function stringField(value: JsonValue, key: string): string | undefined {
-  if (!isRecord(value)) return undefined;
-  const field = value[key];
-  if (typeof field === "string" && field.length > 0) return field;
-  if (isRecord(value.input)) {
-    const nested = value.input[key];
-    if (typeof nested === "string" && nested.length > 0) return nested;
-  }
-  if (isRecord(value.arguments)) {
-    const nested = value.arguments[key];
-    if (typeof nested === "string" && nested.length > 0) return nested;
-  }
-  return undefined;
-}
-
 function numberField(value: JsonValue, key: string): number | null | undefined {
   if (!isRecord(value)) return undefined;
   const field = value[key];
   return typeof field === "number" || field === null ? field : undefined;
-}
-
-function normalizeToolName(name: string): string {
-  const lower = name.toLowerCase();
-  switch (lower) {
-    case "bash":
-    case "exec":
-    case "terminal":
-    case "run":
-      return "bash";
-    case "read":
-    case "read_file":
-    case "fileread":
-      return "Read";
-    case "edit":
-    case "edit_file":
-    case "fileedit":
-      return "Edit";
-    case "write":
-    case "write_file":
-    case "filewrite":
-      return "Write";
-    case "grep":
-    case "grep_search":
-      return "Grep";
-    case "find":
-    case "glob":
-    case "find_files":
-      return "Glob";
-    case "todo":
-      return "Todo";
-    case "web_search":
-    case "websearch":
-      return "WebSearch";
-    default:
-      return name.length > 0 ? `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}` : name;
-  }
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -707,6 +657,7 @@ class PiHarnessSession implements HarnessSession {
         beforeNativeTurnKeys: new Set(
           beforeHistory.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey),
         ),
+        progressItems: new Set(),
         completion,
         resolveCompletion,
       };
@@ -1117,6 +1068,7 @@ class PiHarnessSession implements HarnessSession {
         cancellationRequested: false,
         settling: false,
         beforeNativeTurnKeys: new Set(),
+        progressItems: new Set(),
         completion,
         resolveCompletion,
       };
@@ -1329,6 +1281,7 @@ class PiHarnessSession implements HarnessSession {
       cancellationRequested: false,
       settling: false,
       beforeNativeTurnKeys: new Set(),
+      progressItems: new Set(),
       completion,
       resolveCompletion,
     };
@@ -1451,6 +1404,19 @@ class PiHarnessSession implements HarnessSession {
   #handleTurnEvent(active: ActiveTurn, event: PiTurnEvent): void {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     switch (event.type) {
+      case "progress.message": {
+        if (active.progressItems.has(event.itemId)) return;
+        active.progressItems.add(event.itemId);
+        const item: HostAgentMessageItem = {
+          type: "agentMessage",
+          itemId: event.itemId,
+          text: event.text,
+          phase: "commentary",
+        };
+        this.#event({ type: "item.started", turnId: active.command.turnId, item });
+        this.#completeItem(active, item, { status: "succeeded" });
+        return;
+      }
       case "text.delta":
         this.#activateAgentMessage(active, event.messageId, event.nativeMessageIdentity);
         active.sawAssistantMessage = true;
@@ -1694,21 +1660,13 @@ class PiHarnessSession implements HarnessSession {
 
   #startTool(active: ActiveTurn, event: Extract<PiTurnEvent, { type: "tool.started" }>): void {
     if (active.tools.has(event.callId)) throw new Error("Pi Tool started more than once");
-    const normalizedName = normalizeToolName(event.toolName);
-    const command =
-      normalizedName === "bash"
-        ? (stringField(event.arguments, "command") ??
-          stringField(event.arguments, "cmd") ??
-          stringField(event.arguments, "script") ??
-          stringField(event.arguments, "commandLine") ??
-          stringField(event.arguments, "command_line"))
-        : undefined;
-    const item: HostCommandExecutionItem | HostToolExecutionItem = command
+    const shell = piToolCommand(event.toolName, event.arguments);
+    const item: HostCommandExecutionItem | HostToolExecutionItem = shell
       ? {
           type: "commandExecution",
           itemId: this.#newItemId(),
-          command,
-          cwd: stringField(event.arguments, "cwd") ?? this.#cwd,
+          command: shell.command,
+          cwd: shell.cwd ?? this.#cwd,
         }
       : {
           type: "toolExecution",

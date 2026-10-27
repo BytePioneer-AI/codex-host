@@ -16,7 +16,10 @@ import {
 
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/index.js";
-import { projectClaudePlanLimitToCredits } from "../src/claude-code-adapter.js";
+import {
+  planLimitFromAccountCredits,
+  projectClaudePlanLimitToCredits,
+} from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { ClaudeUltracodeUnavailableError } from "../src/ultracode.js";
 import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
@@ -327,6 +330,7 @@ function fixture(
   const inspectors: Array<{
     close: ReturnType<typeof vi.fn>;
     inspect: ReturnType<typeof vi.fn>;
+    inspectAccount: ReturnType<typeof vi.fn>;
   }> = [];
   const inspectInstallation = vi.fn();
   let uuid = 0;
@@ -831,6 +835,98 @@ describe("projectClaudePlanLimitToCredits", () => {
       periodType: "seven_day",
       resetsAt: new Date(1_756_648_800 * 1000).toISOString(),
     });
+  });
+});
+
+describe("planLimitFromAccountCredits", () => {
+  it("returns null when credits snapshot is null, undefined or empty", () => {
+    expect(planLimitFromAccountCredits(null)).toBeNull();
+    expect(planLimitFromAccountCredits(undefined)).toBeNull();
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 50,
+        periodType: "monthly",
+      }),
+    ).toBeNull();
+  });
+
+  it("extracts five-hour and seven-day windows from account credits", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 25,
+        periodType: "five_hour",
+        resetsAt: "2026-09-01T05:00:00.000Z",
+        productUsage: [
+          {
+            product: "7-day window",
+            periodType: "seven_day",
+            usagePercent: 60,
+            resetsAt: "2026-09-07T00:00:00.000Z",
+          },
+          {
+            product: "Sonnet · 7-day",
+            periodType: "seven_day",
+            scope: { id: "Sonnet", label: "Sonnet" },
+            usagePercent: 10,
+          },
+        ],
+      }),
+    ).toEqual({
+      fiveHour: { utilizationPercent: 25, resetsAtUnix: 1_788_238_800 },
+      sevenDay: { utilizationPercent: 60, resetsAtUnix: 1_788_739_200 },
+    });
+  });
+
+  it("extracts seven-day primary window alone when no five-hour window exists", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 41,
+        periodType: "seven_day",
+        resetsAt: "2026-09-07T00:00:00.000Z",
+      }),
+    ).toEqual({
+      sevenDay: { utilizationPercent: 41, resetsAtUnix: 1_788_739_200 },
+    });
+  });
+
+  it("ignores scoped or labeled primary windows", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 15,
+        periodType: "seven_day",
+        scope: { id: "Opus", label: "Opus" },
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects invalid or out-of-range percentages", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: -5,
+        periodType: "five_hour",
+      }),
+    ).toBeNull();
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 105,
+        periodType: "five_hour",
+      }),
+    ).toBeNull();
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: Number.NaN,
+        periodType: "five_hour",
+      }),
+    ).toBeNull();
+  });
+
+  it("round-trips cleanly with projectClaudePlanLimitToCredits", () => {
+    const original: ClaudePlanLimitEvent = {
+      fiveHour: { utilizationPercent: 30, resetsAtUnix: 1_756_130_400 },
+      sevenDay: { utilizationPercent: 70, resetsAtUnix: 1_756_648_800 },
+    };
+    const projected = projectClaudePlanLimitToCredits(original);
+    expect(planLimitFromAccountCredits(projected)).toEqual(original);
   });
 });
 
@@ -6593,6 +6689,271 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iteratorB);
     await sessionA.close();
     await sessionB.close();
+  });
+
+  it("populates credits snapshot when inspectAccount() succeeds (#600)", async () => {
+    const { adapter, dependencies } = fixture();
+    expect(adapter.credits()).toBeNull();
+
+    const accountSnapshot = {
+      email: "user@example.com",
+      plan: "pro",
+      credits: {
+        usedPercent: 40,
+        periodType: "five_hour" as const,
+        resetsAt: "2026-09-01T05:00:00.000Z",
+        productUsage: [
+          {
+            product: "7-day window",
+            periodType: "seven_day" as const,
+            usagePercent: 20,
+            resetsAt: "2026-09-07T00:00:00.000Z",
+          },
+        ],
+      },
+    };
+    vi.mocked(dependencies.createInspector).mockReturnValueOnce({
+      close: vi.fn(async () => undefined),
+      inspect: vi.fn(async () => ({
+        models: [],
+        canSelectModel: false,
+        canSelectPermissionMode: false,
+      })),
+      inspectAccount: vi.fn(async () => accountSnapshot),
+    });
+
+    const inspected = await adapter.inspectAccount();
+    expect(inspected).toEqual(accountSnapshot);
+    expect(adapter.credits()).toEqual({
+      usedPercent: 40,
+      periodType: "five_hour",
+      resetsAt: "2026-09-01T05:00:00.000Z",
+      productUsage: [
+        {
+          product: "7-day window",
+          periodType: "seven_day",
+          usagePercent: 20,
+          resetsAt: "2026-09-07T00:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  it("refreshes credits via refreshCredits(), coalescing concurrent calls (#600)", async () => {
+    const { adapter, dependencies } = fixture();
+    expect(adapter.credits()).toBeNull();
+
+    let accountCalls = 0;
+    const accountDeferred = Promise.withResolvers<{
+      email: string;
+      credits: { usedPercent: number; periodType: "five_hour" };
+    }>();
+    vi.mocked(dependencies.createInspector).mockReturnValue({
+      close: vi.fn(async () => undefined),
+      inspect: vi.fn(async () => ({
+        models: [],
+        canSelectModel: false,
+        canSelectPermissionMode: false,
+      })),
+      inspectAccount: vi.fn(async () => {
+        accountCalls += 1;
+        return accountDeferred.promise;
+      }),
+    });
+
+    const call1 = adapter.refreshCredits();
+    const call2 = adapter.refreshCredits();
+    const inspectCall = adapter.inspectAccount();
+
+    expect(accountCalls).toBe(1);
+
+    accountDeferred.resolve({
+      email: "user@example.com",
+      credits: { usedPercent: 15, periodType: "five_hour" },
+    });
+
+    const [res1, res2, resInspect] = await Promise.all([call1, call2, inspectCall]);
+    expect(res1).toEqual({ usedPercent: 15, periodType: "five_hour" });
+    expect(res2).toEqual({ usedPercent: 15, periodType: "five_hour" });
+    expect(resInspect?.credits).toEqual({ usedPercent: 15, periodType: "five_hour" });
+    expect(adapter.credits()).toEqual({ usedPercent: 15, periodType: "five_hour" });
+  });
+
+  it("publishes plan limit to active sessions when inspectAccount or refreshCredits completes (#600)", async () => {
+    const { adapter, dependencies } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    vi.mocked(dependencies.createInspector).mockReturnValueOnce({
+      close: vi.fn(async () => undefined),
+      inspect: vi.fn(async () => ({
+        models: [],
+        canSelectModel: false,
+        canSelectPermissionMode: false,
+      })),
+      inspectAccount: vi.fn(async () => ({
+        email: "user@example.com",
+        credits: {
+          usedPercent: 55,
+          periodType: "five_hour" as const,
+          resetsAt: "2026-09-01T05:00:00.000Z",
+        },
+      })),
+    });
+
+    await adapter.refreshCredits();
+
+    const event = await nextEvent(iterator);
+    expect(event).toMatchObject({
+      type: "session.usage.changed",
+      usage: {
+        planFiveHourUsedPercent: 55,
+        planFiveHourResetsAtUnix: 1_788_238_800,
+      },
+    });
+
+    await session.close();
+  });
+
+  it("publishes known plan limit to a newly opened session immediately (#600)", async () => {
+    const { adapter, dependencies } = fixture();
+
+    vi.mocked(dependencies.createInspector).mockReturnValueOnce({
+      close: vi.fn(async () => undefined),
+      inspect: vi.fn(async () => ({
+        models: [],
+        canSelectModel: false,
+        canSelectPermissionMode: false,
+      })),
+      inspectAccount: vi.fn(async () => ({
+        credits: { usedPercent: 35, periodType: "five_hour" as const },
+      })),
+    });
+
+    await adapter.refreshCredits();
+    expect(adapter.credits()).toEqual({ usedPercent: 35, periodType: "five_hour" });
+
+    // Open an old / existing session after Host has loaded credits:
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    const event = await nextEvent(iterator);
+    expect(event).toMatchObject({
+      type: "session.usage.changed",
+      usage: {
+        planFiveHourUsedPercent: 35,
+      },
+    });
+
+    await session.close();
+  });
+
+  it("does not let a stale inspection overwrite a newer real-time rate limit push (#600)", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("turn-stale-race"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    const inspectionDeferred = Promise.withResolvers<{
+      credits: { usedPercent: number; periodType: "five_hour" };
+    }>();
+    vi.mocked(dependencies.createInspector).mockReturnValueOnce({
+      close: vi.fn(async () => undefined),
+      inspect: vi.fn(async () => ({
+        models: [],
+        canSelectModel: false,
+        canSelectPermissionMode: false,
+      })),
+      inspectAccount: vi.fn(async () => inspectionDeferred.promise),
+    });
+
+    // 1. Account inspection starts in background:
+    const inspectionPromise = adapter.refreshCredits();
+
+    // 2. Real-time push arrives during active turn after inspection was started:
+    transport.planLimit({ fiveHour: { utilizationPercent: 50 } });
+    await nextEvent(iterator); // session.usage.changed with 50%
+    expect(adapter.credits()).toEqual({ usedPercent: 50, periodType: "five_hour" });
+
+    // 3. Inspection finishes with older data (e.g. 40%):
+    inspectionDeferred.resolve({
+      credits: { usedPercent: 40, periodType: "five_hour" },
+    });
+    await inspectionPromise;
+
+    // Stale 40% must NOT overwrite the live 50%:
+    expect(adapter.credits()).toEqual({ usedPercent: 50, periodType: "five_hour" });
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("merges non-conflicting windows between real-time push and inspection (#600)", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("turn-merge"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    const inspectionDeferred = Promise.withResolvers<{
+      credits: {
+        usedPercent: number;
+        periodType: "five_hour";
+        productUsage: Array<{ product: string; periodType: "seven_day"; usagePercent: number }>;
+      };
+    }>();
+    vi.mocked(dependencies.createInspector).mockReturnValueOnce({
+      close: vi.fn(async () => undefined),
+      inspect: vi.fn(async () => ({
+        models: [],
+        canSelectModel: false,
+        canSelectPermissionMode: false,
+      })),
+      inspectAccount: vi.fn(async () => inspectionDeferred.promise),
+    });
+
+    // 1. Account inspection starts:
+    const inspectionPromise = adapter.refreshCredits();
+
+    // 2. Real-time push arrives reporting ONLY fiveHour (60%):
+    transport.planLimit({ fiveHour: { utilizationPercent: 60 } });
+    await nextEvent(iterator);
+    expect(adapter.credits()).toEqual({ usedPercent: 60, periodType: "five_hour" });
+
+    // 3. Inspection completes, reporting fiveHour (50%) and sevenDay (30%):
+    inspectionDeferred.resolve({
+      credits: {
+        usedPercent: 50,
+        periodType: "five_hour",
+        productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 30 }],
+      },
+    });
+    await inspectionPromise;
+
+    // fiveHour stays 60% (newer push kept), sevenDay gets 30% (from inspection):
+    expect(adapter.credits()).toEqual({
+      usedPercent: 60,
+      periodType: "five_hour",
+      productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 30 }],
+    });
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
   });
 
   it("reuses one Transport and Native Session for sequential Turns", async () => {

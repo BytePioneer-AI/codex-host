@@ -1,4 +1,6 @@
 import {
+  archiveForceParamsSchema,
+  archiveHealthParamsSchema,
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
@@ -59,6 +61,7 @@ import {
   rewriteDelegationMentionText,
 } from "./delegation-mention-rewrite.js";
 import { managedDelegationSkillReference } from "./delegation-skill.js";
+import { ArchiveHealthService, ArchiveHealthError } from "./archive-health-service.js";
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import { NativeAccountObserver } from "./native-account-observer.js";
 import { nativeThreadSupportsReferences } from "./native-thread-reference-capability.js";
@@ -640,6 +643,7 @@ export class AppServerHost {
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
   #nextApprovalRequestId = HOST_APPROVAL_REQUEST_ID_MAX;
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
+  #archiveHealthService: ArchiveHealthService;
   #delegationCoordinator: HarnessDelegationCoordinator;
   #sessionImportRequests: SessionImportRequests | undefined;
   #unregisterDelegationApi: (() => void) | undefined;
@@ -797,15 +801,20 @@ export class AppServerHost {
               await this.#resolveDesktopQuestion(pending.interaction.interactionId);
           }
         },
-        canRelease: (thread) =>
-          !this.#hasRunningSubagents(thread.id) &&
-          !thread.session.hasBackgroundWork?.() &&
-          !this.#externalSteering.hasPending(thread.id) &&
-          !this.#pendingExternalCommandRequests.has(thread.id) &&
-          ![...this.#pendingDesktopApprovals.values()].some(
-            (pending) => pending.thread === thread,
-          ) &&
-          ![...this.#pendingDesktopQuestions.values()].some((pending) => pending.thread === thread),
+        canRelease: this.#externalThreadReleasable,
+      },
+    });
+    this.#archiveHealthService = new ArchiveHealthService({
+      repository: this.#repository,
+      runtime: this.#externalRuntime,
+      canRelease: this.#externalThreadReleasable,
+      diagnose: (error) => this.#diagnose(error),
+      forgetThread: (threadId) => this.#routeObservationTracker.forgetThread(threadId),
+      notifyArchived: async (threadId) => {
+        await this.#writer.json({
+          method: "thread/archived",
+          params: { threadId },
+        });
       },
     });
     this.#delegationCoordinator = new HarnessDelegationCoordinator({
@@ -1131,9 +1140,23 @@ export class AppServerHost {
         timeoutMs,
       );
     });
+    // A console force-archive owns the Thread exactly like a Desktop request: it joins
+    // the per-Thread queue and idle-release operations before touching the Session. The
+    // queue key is the exact ID the handler will accept, so a padded ID cannot open a
+    // second lane for the same Thread; `#forceArchiveThread` rejects it as invalid.
+    const consoleThreadId =
+      method === "codexhost/archive/force" &&
+      isRecord(params) &&
+      typeof params.threadId === "string"
+        ? params.threadId.trim()
+        : undefined;
     this.#dispatchDesktopRequest(() =>
-      this.#guardReply(request, () =>
-        this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+      this.#desktopRequests.run(consoleThreadId, () =>
+        this.#externalRuntime.idleRelease.runOperation(consoleThreadId, () =>
+          this.#guardReply(request, () =>
+            this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+          ),
+        ),
       ),
     );
     try {
@@ -1731,6 +1754,14 @@ export class AppServerHost {
     }
     if (request.method === "codexhost/thread/command/execute") {
       await this.#executeThreadCommand(request);
+      return;
+    }
+    if (request.method === "codexhost/archive/health") {
+      await this.#inspectArchiveHealth(request);
+      return;
+    }
+    if (request.method === "codexhost/archive/force") {
+      await this.#forceArchiveThread(request);
       return;
     }
     if (request.method === "thread/list") {
@@ -3377,6 +3408,54 @@ export class AppServerHost {
           },
     );
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(inspection) }));
+  }
+
+  async #inspectArchiveHealth(request: JsonRpcRequest): Promise<void> {
+    const params = archiveHealthParamsSchema.safeParse(request.params ?? {});
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid archive health params"));
+      return;
+    }
+    try {
+      const result = await this.#archiveHealthService.inspect(params.data);
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch (error) {
+      this.#diagnose(error);
+      await this.#writer.json(
+        rpcError(
+          request,
+          error instanceof ArchiveHealthError ? error.code : -32603,
+          errorMessage(error),
+        ),
+      );
+    }
+  }
+
+  async #forceArchiveThread(request: JsonRpcRequest): Promise<void> {
+    const rawThreadId = isRecord(request.params) ? request.params.threadId : undefined;
+    const params = archiveForceParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid force archive params"));
+      return;
+    }
+    // The per-Thread queue is keyed by the request's raw ID, so a padded ID would open a
+    // second lane for the same Thread. Only the canonical ID may operate.
+    if (rawThreadId !== params.data.threadId) {
+      await this.#writer.json(
+        rpcError(request, -32602, "Thread ID must not contain surrounding whitespace"),
+      );
+      return;
+    }
+    try {
+      const result = await this.#archiveHealthService.forceArchive(params.data.threadId);
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch (error) {
+      if (error instanceof ArchiveHealthError) {
+        await this.#writer.json(rpcError(request, error.code, error.message));
+      } else {
+        await this.#writer.json(rpcError(request, -32603, errorMessage(error)));
+      }
+    }
   }
 
   async #inspectThreadUsage(request: JsonRpcRequest): Promise<void> {
@@ -5880,6 +5959,18 @@ export class AppServerHost {
       this.#diagnose(error);
     }
   }
+
+  /**
+   * What counts as an idle External Thread: one policy for both automatic idle release and
+   * archive-health forced archive, so the two cannot drift when a new pending state appears.
+   */
+  readonly #externalThreadReleasable = (thread: ExternalThread): boolean =>
+    !this.#hasRunningSubagents(thread.id) &&
+    !thread.session.hasBackgroundWork?.() &&
+    !this.#externalSteering.hasPending(thread.id) &&
+    !this.#pendingExternalCommandRequests.has(thread.id) &&
+    ![...this.#pendingDesktopApprovals.values()].some((pending) => pending.thread === thread) &&
+    ![...this.#pendingDesktopQuestions.values()].some((pending) => pending.thread === thread);
 
   #diagnose(error: unknown): void {
     this.#options.diagnosticOutput.write(`codexhost Host Runtime: ${errorMessage(error)}\n`);

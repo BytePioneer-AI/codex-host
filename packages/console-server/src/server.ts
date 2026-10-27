@@ -314,6 +314,38 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       sendJson(response, 200, await overview());
       return;
     }
+    if (route === "GET /api/archive/health") {
+      try {
+        const reply = await options.host.request("codexhost/archive/health", {});
+        if ("error" in reply) {
+          sendJson(response, 500, { error: reply.error.message });
+        } else {
+          sendJson(response, 200, reply.result);
+        }
+      } catch (error) {
+        sendJson(response, error instanceof HostUnavailableError ? 503 : 500, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    if (route === "POST /api/archive/force") {
+      try {
+        const reply = await options.host.request("codexhost/archive/force", body);
+        if ("error" in reply) {
+          const status =
+            reply.error.code === -32602 ? 404 : reply.error.code === -32072 ? 409 : 500;
+          sendJson(response, status, { error: reply.error.message });
+        } else {
+          sendJson(response, 200, reply.result);
+        }
+      } catch (error) {
+        sendJson(response, error instanceof HostUnavailableError ? 503 : 500, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
     if (
       route === "POST /api/update/check" ||
       route === "GET /api/update/status" ||

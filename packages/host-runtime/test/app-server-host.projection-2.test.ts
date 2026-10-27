@@ -2396,4 +2396,73 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
+
+  it("handles codexhost/archive/health and codexhost/archive/force RPCs", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+
+    // Health inspect. The process scan is skipped here so this RPC test stays about the
+    // Host's routing and MappingStore, not the runner's process table.
+    writeRequest(fixture.desktopInput, {
+      id: 540,
+      method: "codexhost/archive/health",
+      params: { includeOfficial: false },
+    });
+    const healthReply = await fixture.collector.waitFor((message) => requestId(message, 540));
+    expect(healthReply).toMatchObject({
+      id: 540,
+      result: {
+        inconsistentThreads: expect.any(Array),
+        officialProcesses: expect.any(Array),
+        summary: expect.objectContaining({ processScan: "skipped" }),
+      },
+    });
+
+    // Safe force archive
+    writeRequest(fixture.desktopInput, {
+      id: 541,
+      method: "codexhost/archive/force",
+      params: { threadId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 541))).resolves.toEqual({
+      id: 541,
+      result: {
+        ok: true,
+        threadId,
+        archived: true,
+      },
+    });
+    await fixture.collector.waitFor((message) => method(message, "thread/archived"));
+
+    // Verify MappingStore record is archived
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({ archived: true });
+
+    await stopFixture(fixture);
+  });
+
+  it("rejects a force-archive Thread ID with surrounding whitespace", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+
+    writeRequest(fixture.desktopInput, {
+      id: 550,
+      method: "codexhost/archive/force",
+      params: { threadId: ` ${threadId} ` },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 550)),
+    ).resolves.toMatchObject({
+      id: 550,
+      error: { code: -32602 },
+    });
+
+    // The canonical Thread is untouched and still loaded.
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({ archived: false });
+
+    await stopFixture(fixture);
+  });
 });

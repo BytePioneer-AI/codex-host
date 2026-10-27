@@ -124,6 +124,22 @@ Host Runtime SHALL route `thread/archive` and `thread/unarchive` by persisted Th
 - **THEN** Host SHALL treat the operation as an idempotent success
 - **AND** it SHALL preserve response-before-notification ordering without changing Native state
 
+### Requirement: Archive health inspection and safe forced archive
+Host Runtime SHALL provide archive health inspection and safe force-archive entry points. It SHALL inspect inconsistent or failed external threads, detect live codex CLI processes holding official sessions, and provide safe forced archive for external threads without modifying native history or deleting turn records.
+
+#### Scenario: Archive health inspection identifies inconsistent threads and processes
+- **WHEN** Desktop or Console requests `codexhost/archive/health`
+- **THEN** Host SHALL inspect MappingStore and loaded runtime instances for release failures, session unavailabilities, and orphaned instances
+- **AND** it SHALL scan active processes to detect live codex CLI processes, returning PID, command line, and remediation instructions
+- **AND** it SHALL return summary metrics covering total inconsistent threads, occupied official sessions, and recoverable external threads
+
+#### Scenario: Safe forced archive updates external thread without data loss
+- **WHEN** Desktop or Console requests `codexhost/archive/force` for an idle External Thread
+- **THEN** Host SHALL update MappingStore `archived=true`, detach the loaded instance, and emit `thread/archived`
+- **AND** it SHALL NOT delete any transcripts, turns, or native session files
+- **AND** requests targeting non-existent threads SHALL fail with `-32602`
+- **AND** requests targeting threads with active turns or background work SHALL fail with `-32072`
+
 ### Requirement: Official Thread management remains transparent
 Host SHALL preserve original official Codex behavior for Thread list and management requests that do not target persisted External resources. Internal official list subrequests SHALL use an isolated ID namespace, SHALL be bounded, and SHALL not alter unrelated official responses or notifications.
 

@@ -94,7 +94,7 @@ Desktop Controller 在注入失败时仍会让 Codex 正常运行并在后台重
 
 ## 与运行中的 codexhost 连接
 
-Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控制通道，把端口与随机令牌写入 `<数据目录>/console/hosts/host-<进程号>.json`（`0600`），退出时删除。控制台读取该文件，把设置请求转发给 Host，由 Host 按 Codex 设置页相同的逻辑处理；只接受 `CONSOLE_HOST_METHODS` 列出的设置方法，不接受 Thread 或 Turn 操作。
+Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控制通道，把端口与随机令牌写入 `<数据目录>/console/hosts/host-<进程号>.json`（`0600`），退出时删除。控制台读取该文件，把设置请求转发给 Host，由 Host 按 Codex 设置页相同的逻辑处理；只接受 `CONSOLE_HOST_METHODS` 列出的方法，不转发任意 Thread 或 Turn 请求。该名单以设置方法为主，另有 `codexhost/archive/health` 与 `codexhost/archive/force` 两个归档维护入口（见「归档体检与强制归档」）。
 
 - codexhost 未运行：连接页显示离线的插件列表并可修改安装路径；远程连接、账号、会话导入提示先启动 codexhost。
 - codexhost 运行但控制通道不可用（例如旧版本）：提示重新启动 codexhost。
@@ -137,6 +137,14 @@ codexhost 未运行时，“连接”页列出已安装的插件（读取 `manif
 
 - “导出诊断包”下载 JSON：状态、Codex 与 codexhost 版本、最近 5 次启动记录、注入状态，以及最新两个 Host Runtime 日志的末尾 32 KiB。用户主目录替换为 `~`，其他内容（如日志中的项目路径）不做处理，分享前请检查。
 - “提交 Issue”打开 GitHub 新建 Issue 页面，预填版本、系统、状态和错误，不包含日志。
+
+## 归档体检与强制归档
+
+外部会话归档时，Host 会在安全且空闲的情况下异步释放它占用的 Harness 会话；释放失败不会阻断之后的读取、取消归档或删除。两个入口用于排查和修复归档异常：
+
+- `GET /api/archive/health`（Host 方法 `codexhost/archive/health`）返回 `inconsistentThreads`、`officialProcesses` 与 `summary`。外部会话按释放失败、会话不可用、未提交记录、内存孤儿分类；已归档记录与正常的预热草稿不会被报告。官方进程扫描只匹配真正的 Codex CLI 可执行文件，跳过 Codex.app、其辅助进程以及 Host 自身的整棵进程树，并给出对应平台的终止提示。`summary.processScan` 为 `ok` / `failed` / `skipped`：扫描无法执行时明确标记，不会显示成“没有会话被占用”。
+- `POST /api/archive/force`（Host 方法 `codexhost/archive/force`，参数 `{ "threadId": "..." }`）只修改映射存储里的归档标记并卸载内存实例，不删除任何转录本、Turn 或原生会话文件。运行中的 Turn、后台任务或待处理的审批/提问会以 `-32072` 拒绝；无法确认会话关闭时返回 `-32075` 并保留实例，避免同一原生会话出现第二个写入者；映射存储读取失败返回 `-32081`，归档写入失败同样返回 `-32081` 且不卸载实例。带首尾空白的线程 ID 一律以 `-32602` 拒绝。
+- 控制台 REST 将这些错误映射为真实状态码：`-32602` → 404，`-32072` → 409，其余 → 500；成功统一为 200。
 
 ## 其他命令
 

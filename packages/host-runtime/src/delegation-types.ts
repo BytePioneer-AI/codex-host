@@ -114,6 +114,8 @@ export interface DelegationStartResult {
 }
 
 export interface ThreadSendInput {
+  /** Calling Thread on the source Runtime; used to include a portable reply address. */
+  callerThreadId?: string;
   machineId?: string;
   hostId?: string;
   requestId?: string;

@@ -101,6 +101,16 @@ not invoke the Harness again. Inspect the Thread before deciding whether a new
 request is needed. This reservation protocol avoids automatic replay; it cannot
 atomically commit a filesystem receipt together with a native Harness operation.
 
+Messages sent from a Thread automatically include a `codexhost sender` header:
+the source Runtime's `machineId`, the calling `threadId`, and a machine-qualified
+`replyTo` link. The CLI identifies its caller from `CODEXHOST_THREAD_ID` (external
+Harness) or `CODEX_THREAD_ID` (native Codex). The recipient can send a requested
+reply with `codexhost thread send 'REPLY_TO_LINK' --message 'RESULT'`. This is
+routing context, not an authentication claim or an instruction to automatically
+acknowledge every message. Calls outside a Thread do not invent a sender. The
+sender header is part of the durable send receipt's payload, so a retry must
+come from the same calling Thread.
+
 ## Create and manage Threads
 
 Use a link from the destination machine to create an independent Thread there.

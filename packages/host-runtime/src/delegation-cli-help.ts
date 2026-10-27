@@ -31,6 +31,7 @@ Reuse --request-id for an idempotent retry. Identical recent parent/target/task/
 The response confirms cwd and parent. Use its Thread reference with thread read, wait, send, cancel, or watch.`,
   "thread send": `codexhost thread send <thread> --message <text> [--request-id <uuid>] [--format json|compact]
 Start a new Turn in an idle writable Thread and return immediately.
+When CODEXHOST_THREAD_ID or CODEX_THREAD_ID identifies the caller, the source Runtime prefixes the message with its machine ID, Thread ID and a portable replyTo link. Use thread send with that link to reply when requested; receiving a message alone does not require an acknowledgement. Calls outside a Thread have no inferred sender.
 THREAD_BUSY means the current Turn is still active: wait or cancel before sending. Messages are not queued.
 Machine-qualified links work in either direction through a Desktop connected to both updated Hosts. Cross-machine sends return a requestId; repeat the same link/message with --request-id to recover its receipt without starting another Turn. OUTCOME_UNKNOWN means read the target before submitting a new request ID. A successful receipt confirms Turn submission, not task completion. Remote wait/watch/cancel are unavailable; read the full copied link to check progress.
 For local Threads, run thread watch after sending to be notified when the Turn ends.`,

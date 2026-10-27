@@ -13,6 +13,8 @@ import {
 import { DelegationWatchService } from "./delegation-watch.js";
 import {
   machineIdSchema,
+  formatThreadReference,
+  parseThreadReference,
   delegationSendParamsSchema,
   threadManagementInputSchema,
   type ThreadManagementInput,
@@ -88,7 +90,27 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     return (await this.#registrationForStart(input)).start(input);
   }
 
-  async send(input: Parameters<DelegationControlApi["send"]>[0]) {
+  async send(raw: Parameters<DelegationControlApi["send"]>[0]) {
+    const { callerThreadId, ...input } = raw;
+    if (callerThreadId !== undefined) {
+      if (typeof input.message !== "string" || !input.message.trim())
+        throw new DelegationControlError("INVALID_ARGUMENT", "A nonempty message is required");
+      if (!this.threadBridge)
+        throw new DelegationControlError(
+          "RUNTIME_UNREACHABLE",
+          "Sender identity requires an updated Host",
+        );
+      try {
+        if (typeof callerThreadId !== "string")
+          throw new Error("Expected a local caller Thread ID");
+        const machineId = this.threadBridge.machineId;
+        const replyTo = formatThreadReference({ threadId: callerThreadId, machineId });
+        const sender = parseThreadReference(replyTo);
+        input.message = `[codexhost sender]\n${JSON.stringify({ machineId, threadId: sender.threadId, replyTo })}\n[/codexhost sender]\n\n${input.message}`;
+      } catch {
+        throw new DelegationControlError("INVALID_ARGUMENT", "Invalid sender Thread identity");
+      }
+    }
     if (input.machineId !== undefined || input.requestId !== undefined) {
       const bridge = this.threadBridge;
       if (!bridge)

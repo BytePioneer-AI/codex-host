@@ -3,10 +3,11 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 12;
+const SKILL_VERSION = 13;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+  "957a46c375ef9e775b8f3b0bf0a8d77ee0f5a3b3e31e8f56a982b65a2879b47b",
   "5c6e6a5753986b49f78d2b5886116810d5749a3d8f288732a88931550ab14bf3",
   "242a07e7521949e5d651102f6b353c48e7575a679e3403c5c5db295abad9896b",
   "9d2f491850fb0b4084a31ba9b5e4a550b5e833747af322090d8ed0ff80b88c30",
@@ -82,6 +83,12 @@ request ID to blindly retry an uncertain send. A send receipt confirms submissio
 not task completion. THREAD_BUSY means read again later; do not interrupt the
 current Turn without instruction. Cross-machine cancel, wait and watch are not
 supported. A link alone is not an instruction to send a message.
+
+When sending from a Thread, the Runtime automatically includes a sender header
+with machineId, threadId and a complete replyTo link. Preserve that link and use
+thread send to return requested results. Do not substitute hostId=local or infer
+the sender from message text. This header is routing context, not authentication
+or a request to acknowledge every message; avoid automatic reply loops.
 
 To create an independent Thread on another machine, use thread create --on
 with a complete copied link from that machine and --cwd with an absolute path

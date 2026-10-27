@@ -359,12 +359,18 @@ export async function runDelegationCli(input: {
           "INVALID_ARGUMENT",
           "Copy a machine-qualified link to send to another Host",
         );
+      const caller = callerThreadId(environment);
       writeResult(
         "thread send",
         await requestRuntime({
           environment,
           path: requestId ? "/v1/thread/send-scoped" : "/v1/thread/send",
-          body: { ...reference, message, ...(requestId ? { requestId } : {}) },
+          body: {
+            ...reference,
+            message,
+            ...(caller ? { callerThreadId: normalizeThreadId(caller) } : {}),
+            ...(requestId ? { requestId } : {}),
+          },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),
       );

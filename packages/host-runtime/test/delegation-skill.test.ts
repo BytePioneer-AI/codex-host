@@ -59,6 +59,7 @@ describe("delegation Skill installation", () => {
   });
 
   it.each([
+    ["v12 Skill without sender reply guidance", "codexhost-delegation-v12.md"],
     ["v11 Skill without Thread lifecycle commands", "codexhost-delegation-v11.md"],
     ["v4 Skill shipped in v0.4.0-v0.6.0", "codexhost-delegation-v4.md"],
     ["v8 Skill that ran codexhost from PATH", "codexhost-delegation-v8.md"],
@@ -90,7 +91,7 @@ describe("delegation Skill installation", () => {
     await writeFile(agents, userContent, "utf8");
     const results = await installDelegationSkills({ homeDirectory: root });
     expect(results.map((result) => result.status)).toEqual(["conflict", "installed"]);
-    expect(results[0]?.version).toBe(12);
+    expect(results[0]?.version).toBe(13);
     await expect(readFile(agents, "utf8")).resolves.toBe(userContent);
   });
 
@@ -103,7 +104,7 @@ describe("delegation Skill installation", () => {
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 12");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 13");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");

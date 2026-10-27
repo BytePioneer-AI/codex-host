@@ -78,6 +78,53 @@ function registration(threadId: string): DelegationControlRegistration {
 }
 
 describe("DelegationControlRegistry", () => {
+  it("adds the source identity before local or remote dispatch and binds retries to it", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "registry-sender-"));
+    const machineId = randomUUID();
+    const bridge = new ThreadBridge(machineId, new ThreadSendReceipts(directory));
+    const registry = new DelegationControlRegistry({ threadBridge: bridge });
+    const target = registration("target");
+    registry.register(target);
+    const input = {
+      callerThreadId: "sender",
+      threadId: "target",
+      machineId,
+      requestId: randomUUID(),
+      message: "Please return the result",
+    };
+    try {
+      await registry.send(input);
+      await registry.send(input);
+      expect(target.send).toHaveBeenCalledOnce();
+      const message = vi.mocked(target.send).mock.calls[0]?.[0].message ?? "";
+      expect(message).toContain(
+        JSON.stringify({
+          machineId,
+          threadId: "sender",
+          replyTo: `thread://sender?machineId=${machineId}`,
+        }),
+      );
+      expect(message).toMatch(/\n\nPlease return the result$/u);
+      await expect(registry.send({ ...input, callerThreadId: "different" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      const remote = vi
+        .spyOn(bridge, "send")
+        .mockResolvedValue(await target.send({ threadId: "target", message: "fixture" }));
+      await registry.send({ ...input, machineId: randomUUID() });
+      expect(remote.mock.calls[0]?.[0].message).toBe(message);
+      expect(remote.mock.calls[0]?.[0]).not.toHaveProperty("callerThreadId");
+      await expect(registry.send({ ...input, message: " " })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      await expect(
+        registry.send({ ...input, callerThreadId: "bad\nidentity" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    } finally {
+      registry.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
   it("routes machine-qualified sends without trusting host hints and keeps the request receipt", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "registry-send-"));
     const machineId = randomUUID();

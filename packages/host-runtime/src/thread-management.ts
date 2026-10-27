@@ -30,7 +30,7 @@ export async function manageThread(
           cwd: action.cwd,
           ephemeral: false,
           ...(action.harnessId === "codex"
-            ? {}
+            ? { historyMode: "legacy" }
             : { model: transportModelIdForHarness(action.harnessId as ExternalHarnessId) }),
         }
       : {

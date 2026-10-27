@@ -2901,24 +2901,20 @@ export class AppServerHost {
     if (this.#activeOfficialTurns.has(input.threadId)) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }
-    const current = await this.#requestOfficial("thread/read", {
-      threadId: input.threadId,
-      includeTurns: true,
-    });
-    if (isRecord(current.error)) throw officialThreadReadError(current.error);
-    if (!isRecord(current.result)) {
-      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no result");
-    }
-    const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
+    const { thread: currentThread, unmaterialized } = await this.#readOfficialThreadHistory(
+      input.threadId,
+    );
     if (officialThreadBusy(currentThread)) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }
     // Read stays idle after unsubscribe and does not resubscribe. Resume does, and
     // excludeTurns keeps paginated history out of the response without replacing config.
-    const resumed = await this.#requestOfficial("thread/resume", {
-      threadId: input.threadId,
-      excludeTurns: true,
-    });
+    const resumed: JsonObject = unmaterialized
+      ? { result: { thread: currentThread } }
+      : await this.#requestOfficial("thread/resume", {
+          threadId: input.threadId,
+          excludeTurns: true,
+        });
     if (isRecord(resumed.error) || !isRecord(resumed.result)) {
       throw new DelegationControlError(
         "DELEGATION_FAILED",
@@ -3014,15 +3010,7 @@ export class AppServerHost {
   }
 
   async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
-    const response = await this.#requestOfficial("thread/read", {
-      threadId: input.threadId,
-      includeTurns: true,
-    });
-    if (isRecord(response.error)) throw officialThreadReadError(response.error);
-    const result = isRecord(response.result) ? response.result : null;
-    const thread = result && isRecord(result.thread) ? result.thread : null;
-    if (!thread)
-      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no Thread");
+    const { thread } = await this.#readOfficialThreadHistory(input.threadId);
     const turns = Array.isArray(thread.turns)
       ? thread.turns.filter((turn): turn is JsonObject => isRecord(turn))
       : [];
@@ -3046,6 +3034,30 @@ export class AppServerHost {
       await this.#repository.setDelegationStatus(delegation.delegationId, snapshot.status);
     }
     return snapshot;
+  }
+
+  async #readOfficialThreadHistory(threadId: string) {
+    let response = await this.#requestOfficial("thread/read", { threadId, includeTurns: true });
+    // Native Codex keeps a new Thread loaded but has no rollout to read or resume
+    // until its first user message. Only that explicit error permits metadata-only access.
+    const unmaterialized =
+      isRecord(response.error) &&
+      response.error.code === -32600 &&
+      typeof response.error.message === "string" &&
+      /not materialized yet; includeTurns is unavailable before first user message/u.test(
+        response.error.message,
+      );
+    if (unmaterialized)
+      response = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
+    if (isRecord(response.error)) throw officialThreadReadError(response.error);
+    const result = isRecord(response.result) ? response.result : null;
+    const thread = result && isRecord(result.thread) ? result.thread : null;
+    if (!thread || thread.id !== threadId)
+      throw new DelegationControlError(
+        "INTERNAL_ERROR",
+        "Official Thread read returned no matching Thread",
+      );
+    return { thread, unmaterialized };
   }
 
   async #listDelegationThreads(input: ThreadListInput): Promise<DelegationThreadListResult> {

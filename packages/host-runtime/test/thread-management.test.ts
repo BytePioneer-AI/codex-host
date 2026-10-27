@@ -9,6 +9,7 @@ import { ThreadBridge } from "../src/thread-bridge.js";
 import { ThreadSendReceipts } from "../src/thread-send-receipts.js";
 import { runDelegationCli } from "../src/delegation-cli.js";
 import { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
+import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import {
   createFixture,
   stopFixture,
@@ -68,6 +69,56 @@ it("does not repeat a create whose reply was lost", async () => {
   expect(create).toHaveBeenCalledOnce();
 });
 
+it("reads an empty native Thread and sends its first Turn without resuming a missing rollout", async () => {
+  let api: DelegationControlRegistration | undefined;
+  const fixture = createFixture({
+    onDelegationApi: (registration) => {
+      api = registration;
+      return undefined;
+    },
+  });
+  try {
+    await fixture.ready;
+    if (!api) throw new Error("Missing registration");
+    for (const operation of ["read", "send"] as const) {
+      const result =
+        operation === "read"
+          ? api.read({ threadId: "fresh", view: "messages" })
+          : api.send({ threadId: "fresh", message: "first task" });
+      const read = await readJsonLine(fixture.official.stdin);
+      expect(read).toMatchObject({ method: "thread/read", params: { includeTurns: true } });
+      writeRequest(fixture.official.stdout, {
+        id: requiredMessageId(read),
+        error: {
+          code: -32600,
+          message:
+            "thread fresh is not materialized yet; includeTurns is unavailable before first user message",
+        },
+      });
+      const metadata = await readJsonLine(fixture.official.stdin);
+      expect(metadata).toMatchObject({ method: "thread/read", params: { includeTurns: false } });
+      writeRequest(fixture.official.stdout, {
+        id: requiredMessageId(metadata),
+        result: { thread: { id: "fresh", status: { type: "idle" }, turns: [] } },
+      });
+      if (operation === "send") {
+        const start = await readJsonLine(fixture.official.stdin);
+        expect(start).toMatchObject({
+          method: "turn/start",
+          params: { threadId: "fresh", input: [{ type: "text", text: "first task" }] },
+        });
+        writeRequest(fixture.official.stdout, {
+          id: requiredMessageId(start),
+          result: { turn: { id: "first-turn" } },
+        });
+        await expect(result).resolves.toHaveProperty("turnId", "first-turn");
+      } else await expect(result).resolves.toHaveProperty("messages", []);
+    }
+  } finally {
+    await stopFixture(fixture);
+  }
+});
+
 it.each([false, true])(
   "validates target identity and native lifecycle operations (shared owner: %s)",
   async (externalOnly) => {
@@ -125,7 +176,7 @@ it.each([false, true])(
       const start = await readJsonLine(fixture.official.stdin);
       expect(start).toMatchObject({
         method: "thread/start",
-        params: { cwd: "/work", ephemeral: false },
+        params: { cwd: "/work", ephemeral: false, historyMode: "legacy" },
       });
       expect(start.params).not.toHaveProperty("sandbox");
       expect(start.params).not.toHaveProperty("approvalPolicy");

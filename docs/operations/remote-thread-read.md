@@ -127,6 +127,10 @@ installed external Harnesses use their existing Desktop creation path. Creation
 returns an idle Thread and a machine-qualified `thread` link. Use `thread send`
 with that link to submit its first task. Native creation defaults apply; the Host
 does not raise permissions or start an implicit Turn.
+Native Threads use the `legacy` history contract consumed by Host read/send.
+An empty native Thread may not survive a Runtime restart before its first Turn;
+submit the first task before restarting. A recovered creation receipt identifies
+the original Thread and never recreates a lost empty Thread.
 
 Use the returned link for the remaining lifecycle operations:
 

@@ -28,50 +28,53 @@ interface Scope {
   queryClient: { invalidateQueries(input: { queryKey: unknown }): Promise<unknown> };
 }
 interface NativeManager {
+  requestClient: unknown;
   getHostId(): string;
   createProjectlessThreadWorkspace(title: string): Promise<{ cwd: string; workspaceRoot: string }>;
   startConversation(input: unknown, options: unknown): Promise<unknown>;
   sendRequest(method: string, input: unknown): Promise<unknown>;
   getConversation(threadId: string): unknown;
 }
-interface ReviewedModules {
-  shared: RecordValue;
-  initial: RecordValue;
-  primary: RecordValue;
+/** Only the native operations used by this page cross the Renderer boundary. */
+export interface DesktopScheduleNativeServices {
+  localAutomations: {
+    list(): unknown;
+    update(input: unknown): unknown;
+    delete(input: { id: string }): unknown;
+    create?(input: unknown): unknown;
+  };
+  isPrimaryWindow: boolean;
 }
-const assets = {
-  shared: "app-shared-2cae01273bae.js",
-  initial: "app-initial-feb30b196d11.js",
-  primary: "app-primary-7d7313419f84.js",
-} as const;
+export type DesktopScheduleCreationInputsFactory = (scope: unknown, hostId: string) => unknown;
+interface CreationInputs {
+  readCreationInputs(input: unknown, mode: unknown): unknown;
+}
 
-/** Exact module exports reviewed in Desktop 26.1021.31345. Other builds fail
- * closed rather than searching for arbitrary callable objects. */
 export async function connectDesktopHarnessSchedules(
-  root: RendererHostRoot & { baseURI: string },
+  root: RendererHostRoot,
   routing: RendererHostRouting,
+  native: DesktopScheduleNativeServices,
+  creationInputsFactory: DesktopScheduleCreationInputsFactory | null,
 ): Promise<DesktopHarnessSchedules> {
-  const modules = Object.fromEntries(
-    await Promise.all(
-      Object.entries(assets).map(async ([key, name]) => {
-        const url = new URL(`./assets/${name}`, root.baseURI).href;
-        return [key, (await import(/* @vite-ignore */ url)) as RecordValue];
-      }),
-    ),
-  ) as unknown as ReviewedModules;
   let discovery = discoverRendererHosts(root);
-  // Native settings destinations may have no Composer. Their main content
-  // still descends from the same Host registry provider.
   if (discovery.registries.length === 0)
     discovery = discoverRendererHosts({ querySelectorAll: () => root.querySelectorAll("main") });
   const route = routing.forHost("local");
   const services = bindReviewedDesktopScheduleServices(
-    modules,
+    native,
     resolveDesktopScheduleScope(discovery.registries, route?.manager),
     routing,
+    creationInputsFactory,
   );
   return {
-    createSession: () => createDesktopHarnessScheduleSession(services),
+    ...(services.creationUnavailableReason
+      ? { creationUnavailableReason: services.creationUnavailableReason }
+      : {}),
+    createSession: () =>
+      createDesktopHarnessScheduleSession({
+        ...services,
+        assertAvailable: services.assertCreationAvailable,
+      }),
     ...createDesktopScheduleManagement(services),
   };
 }
@@ -91,83 +94,104 @@ export function resolveDesktopScheduleScope(
       }
     }),
   );
-  if (scopes.size !== 1) throw new Error("Desktop local chat service is missing or ambiguous");
+  if (scopes.size !== 1)
+    throw new Error("Local Desktop Host registry scope is missing or ambiguous in this window");
   return scopes.values().next().value;
 }
 
-/** Kept internal to desktop-control; fixtures exercise the reviewed service
- * shape without starting a real task or replacing native scheduler policy. */
+/** RPC calls are disposable thenables in Desktop, including callable proxies. */
+async function nativeResult(value: unknown): Promise<unknown> {
+  try {
+    return await value;
+  } finally {
+    (value as { [Symbol.dispose]?: () => void } | null)?.[Symbol.dispose]?.();
+  }
+}
+
 export function bindReviewedDesktopScheduleServices(
-  modules: ReviewedModules,
+  native: DesktopScheduleNativeServices,
   candidateScope: unknown,
   routing: RendererHostRouting,
-): DesktopScheduleServices & DesktopScheduleManagementServices {
-  const { shared, initial, primary } = modules;
+  creationInputsFactory: DesktopScheduleCreationInputsFactory | null = null,
+): DesktopScheduleServices &
+  DesktopScheduleManagementServices & {
+    creationUnavailableReason: string | null;
+    assertCreationAvailable(): void;
+  } {
   const route = routing.forHost("local");
   const candidate = route?.manager as unknown;
-  const services = shared.Qot;
+  const automations = native.localAutomations;
+  const missing: string[] = [];
+  if (!record(candidate)) missing.push("local Host manager");
+  for (const key of ["getHostId", "sendRequest"])
+    if (!record(candidate) || typeof candidate[key] !== "function") missing.push(`manager.${key}`);
   if (
-    !route?.policy.scopedCreation ||
-    !record(candidate) ||
     !record(candidateScope) ||
-    typeof candidateScope.get !== "function" ||
     !record(candidateScope.queryClient) ||
-    typeof candidateScope.queryClient.invalidateQueries !== "function" ||
-    !record(services) ||
-    !services.localAutomationsScheduler ||
-    !record(services.localAutomations) ||
-    typeof services.localAutomations.create !== "function" ||
-    !["list", "update", "delete"].every(
-      (key) => typeof (services.localAutomations as RecordValue)[key] === "function",
-    ) ||
-    !record(services.projectlessThreads) ||
-    typeof services.projectlessThreads.createPaths !== "function" ||
-    typeof shared.Yat !== "function" ||
-    typeof initial.GW !== "function" ||
-    typeof initial.irr !== "function" ||
-    !initial.xSn ||
-    !primary.OT ||
-    !Array.isArray(initial.jzn) ||
-    initial.jzn.join("/") !== "vscode/list-automations" ||
-    ![
-      "getHostId",
-      "createProjectlessThreadWorkspace",
-      "startConversation",
-      "sendRequest",
-      "getConversation",
-    ].every((key) => typeof candidate[key] === "function")
+    typeof candidateScope.queryClient.invalidateQueries !== "function"
   )
-    throw new Error(
-      "This Desktop build does not expose the required local schedule and chat services",
-    );
+    missing.push("Host scope.queryClient.invalidateQueries");
+  for (const key of ["list", "update", "delete"] as const)
+    if (typeof automations?.[key] !== "function") missing.push(`localAutomations.${key}`);
+  if (missing.length)
+    throw new Error(`Local schedule management is unavailable: missing ${missing.join(", ")}`);
   const scope = candidateScope as unknown as Scope;
   const manager = candidate as unknown as NativeManager;
-  const resolveManager = initial.irr as (scope: Scope, host: string) => unknown;
-  const creationInputs = initial.GW as (
-    scope: Scope,
-    host: string,
-  ) => { readCreationInputs(input: unknown, mode: unknown): unknown };
-  const unwrap = shared.Yat as (value: unknown) => Promise<unknown>;
-  const automations = services.localAutomations as {
-    create(input: unknown): unknown;
-    list(): unknown;
-    update(input: unknown): unknown;
-    delete(input: { id: string }): unknown;
-  };
   const assertAvailable = () => {
-    if (
-      manager.getHostId() !== "local" ||
-      routing.forHost("local") !== route ||
-      resolveManager(scope, "local") !== manager
-    )
-      throw new Error("The local Desktop connection changed; reopen schedule creation");
+    if (manager.getHostId() !== "local" || routing.forHost("local")?.manager !== candidate)
+      throw new Error("The local Desktop Host connection changed; reopen the schedules page");
   };
   assertAvailable();
+
+  const creationMissing: string[] = [];
+  if (!native.isPrimaryWindow) creationMissing.push("main-window heartbeat observer");
+  if (!route?.policy.scopedCreation) creationMissing.push("scoped empty-chat/prewarm binding");
+  for (const key of ["createProjectlessThreadWorkspace", "startConversation", "getConversation"])
+    if (typeof (candidate as RecordValue)[key] !== "function")
+      creationMissing.push(`manager.${key}`);
+  if (typeof scope.get !== "function") creationMissing.push("Host scope.get");
+  if (typeof automations.create !== "function") creationMissing.push("localAutomations.create");
+  let reader: CreationInputs | null = null;
+  if (!creationInputsFactory)
+    creationMissing.push("native chat creation-input factory (missing or ambiguous)");
+  else if (!creationMissing.length) {
+    try {
+      const value = creationInputsFactory(scope, "local");
+      if (
+        !record(value) ||
+        !record(value.params) ||
+        value.params.scope !== scope ||
+        value.params.hostId !== "local" ||
+        value.params.requestClient !== manager.requestClient ||
+        !["readCreationInputs", "readPrewarmInputs", "readInputs"].every(
+          (key) => typeof value[key] === "function",
+        )
+      )
+        creationMissing.push("native creation-input reader ownership");
+      else reader = value as unknown as CreationInputs;
+    } catch {
+      creationMissing.push("native creation-input reader initialization");
+    }
+  }
+  const creationUnavailableReason = creationMissing.length
+    ? `Schedule creation is unavailable in this window: ${creationMissing.join(", ")}. Reopen in the main Desktop window once its chat services are ready.`
+    : null;
+  const assertCreationAvailable = () => {
+    assertAvailable();
+    if (creationUnavailableReason)
+      throw new DesktopScheduleRejectedError(creationUnavailableReason);
+    if (!routing.forHost("local")?.policy.scopedCreation)
+      throw new DesktopScheduleRejectedError(
+        "Native scoped empty-chat/prewarm binding is no longer ready",
+      );
+  };
   return {
+    creationUnavailableReason,
     assertAvailable,
-    listAutomations: () => unwrap(automations.list()),
-    updateAutomation: (input) => unwrap(automations.update(input)),
-    deleteAutomation: (id) => unwrap(automations.delete({ id })),
+    assertCreationAvailable,
+    listAutomations: () => nativeResult(automations.list()),
+    updateAutomation: (input) => nativeResult(automations.update(input)),
+    deleteAutomation: (id) => nativeResult(automations.delete({ id })),
     async readOwnership(threadId) {
       const { threads } = threadOwnershipListResultSchema.parse(
         await manager.sendRequest("codexhost/thread/ownership/list", { threadIds: [threadId] }),
@@ -184,14 +208,22 @@ export function bindReviewedDesktopScheduleServices(
         }),
       );
     },
-    allocate: (title) => manager.createProjectlessThreadWorkspace(title),
+    allocate(title) {
+      assertCreationAvailable();
+      return manager.createProjectlessThreadWorkspace(title);
+    },
     async validateDirectory(cwd) {
       const listing = await manager.sendRequest("fs/readDirectory", { path: cwd });
       if (!record(listing) || !Array.isArray(listing.entries))
         throw new Error("The working directory could not be verified");
     },
     createThread({ cwd, workspaceRoot, projectless, model, title }) {
-      return route.policy.createScheduledConversation(
+      assertCreationAvailable();
+      const currentRoute = routing.forHost("local");
+      const creationReader = reader;
+      if (!currentRoute || !creationReader)
+        throw new DesktopScheduleRejectedError("Native empty-chat creation binding is unavailable");
+      return currentRoute.policy.createScheduledConversation(
         {
           cwd,
           workspaceRoots: [workspaceRoot],
@@ -203,8 +235,7 @@ export function bindReviewedDesktopScheduleServices(
             settings: { model, reasoning_effort: null, developer_instructions: null },
           },
         },
-        (input: unknown, mode: unknown) =>
-          creationInputs(scope, "local").readCreationInputs(input, mode),
+        (input: unknown, mode: unknown) => creationReader.readCreationInputs(input, mode),
       );
     },
     async inspectThread(threadId) {
@@ -214,26 +245,33 @@ export function bindReviewedDesktopScheduleServices(
     },
     isThreadReady(threadId) {
       const conversation = manager.getConversation(threadId);
-      const mode = scope.get(initial.xSn, threadId);
-      const eligible = scope.get(primary.OT, threadId);
+      const mode = record(conversation) ? conversation.latestCollaborationMode : null;
+      // Only a newly registered, empty native chat is accepted here. The native
+      // heartbeat observer owns subsequent eligibility and permission updates.
       return (
         record(conversation) &&
         conversation.resumeState === "resumed" &&
+        conversation.mode === "default" &&
+        conversation.ephemeral !== true &&
+        conversation.sideConversation !== true &&
         record(conversation.currentPermissions) &&
         record(mode) &&
         record(mode.settings) &&
         typeof mode.settings.model === "string" &&
         mode.settings.model.length > 0 &&
-        record(eligible) &&
-        eligible.isEligible === true
+        Array.isArray(conversation.turns) &&
+        conversation.turns.length === 0 &&
+        Array.isArray(conversation.requests) &&
+        conversation.requests.length === 0 &&
+        conversation.pendingRequest == null
       );
     },
     async save(input) {
+      if (typeof automations.create !== "function")
+        throw new DesktopScheduleRejectedError("Native localAutomations.create is unavailable");
       try {
-        return await unwrap(automations.create(input));
+        return await nativeResult(automations.create(input));
       } catch (error) {
-        // These reviewed errors originate before the native service writes.
-        // All transport and other persistence failures have unknown outcomes.
         if (
           error instanceof Error &&
           [
@@ -246,7 +284,7 @@ export function bindReviewedDesktopScheduleServices(
       }
     },
     async refreshList() {
-      await scope.queryClient.invalidateQueries({ queryKey: initial.jzn });
+      await scope.queryClient.invalidateQueries({ queryKey: ["vscode", "list-automations"] });
     },
   };
 }

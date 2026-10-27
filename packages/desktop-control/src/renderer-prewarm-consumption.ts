@@ -1,6 +1,6 @@
-/** Desktop 26.1021 keeps a cwd-keyed pool shared by all creation entry points.
- * Give each invocation its own consumption check; no ambient selection is read
- * after an asynchronous native preparation step.
+/** Bind Desktop 26.1021 external draft creation and isolate its cwd-keyed pool.
+ * Each invocation captures its route and prewarm consumption check before native
+ * preparation awaits.
  * Self-contained because the controller embeds this installer in the Renderer.
  */
 export function isolateRendererPrewarmConsumption(
@@ -11,9 +11,11 @@ export function isolateRendererPrewarmConsumption(
     value !== null && typeof value === "object";
   if (!record(manager) || !record(manager.threadCreation)) return null;
   const creation = manager.threadCreation;
+  const originalStart = manager.startConversation;
   const original = creation.createConversation;
   const params = creation.params;
-  if (typeof original !== "function" || !record(params)) return null;
+  if (typeof originalStart !== "function" || typeof original !== "function" || !record(params))
+    return null;
   const prototype: unknown = Object.getPrototypeOf(creation);
   if (!record(prototype) || typeof prototype.constructor !== "function") return null;
   // An invocation view is safe only for the reviewed params-only native class.
@@ -34,8 +36,42 @@ export function isolateRendererPrewarmConsumption(
   const consume = pool.consumePrewarmedThread;
   const hasPrewarm = pool.hasPrewarmedThread;
   const freshModes = new WeakSet<object>();
+  const draftModels = new Map<string, string>();
+  const draftIdentity = Symbol("codexhost draft creation");
   const external = (model: unknown): model is string =>
     typeof model === "string" && model.startsWith("codexhost/");
+  const routedStart = function (
+    this: unknown,
+    input: unknown,
+    options: unknown,
+    ...args: unknown[]
+  ) {
+    const draftId = record(options) ? options.clientThreadId : null;
+    const mode = record(input) && record(input.collaborationMode) ? input.collaborationMode : null;
+    const origin = mode ? Reflect.get(mode, draftIdentity) : undefined;
+    if (mode && record(mode.settings) && external(mode.settings.model))
+      return originalStart.call(this, input, options, ...args);
+    const model =
+      (typeof draftId === "string" ? draftModels.get(draftId) : undefined) ??
+      (typeof origin === "string" ? draftModels.get(origin) : undefined);
+    if (!model) return originalStart.call(this, input, options, ...args);
+    if (
+      !record(input) ||
+      !record(input.collaborationMode) ||
+      !record(input.collaborationMode.settings)
+    )
+      throw new Error("External draft creation is missing its native Model settings");
+    // Capture this draft's route before native preparation awaits. Codex reserve
+    // fallback is Account-wide and cannot select the owner of an external Thread.
+    const routed = {
+      ...input,
+      collaborationMode: {
+        ...input.collaborationMode,
+        settings: { ...input.collaborationMode.settings, model },
+      },
+    };
+    return originalStart.call(this, routed, options, ...args);
+  };
   const wrapped = function (this: unknown, input: unknown, ...args: unknown[]) {
     const mode = record(input) && record(input.collaborationMode) ? input.collaborationMode : null;
     const expected = mode && record(mode.settings) ? mode.settings.model : null;
@@ -66,7 +102,30 @@ export function isolateRendererPrewarmConsumption(
     return original.call(invocation, input, ...args);
   };
   creation.createConversation = wrapped;
+  manager.startConversation = routedStart;
   return {
+    selectDraft(
+      draftId: string | undefined,
+      model: string | null,
+      creationModes: readonly Record<string, unknown>[] = [],
+    ): void {
+      if (draftId === undefined) {
+        if (model === null) draftModels.clear();
+      } else if (model === null) draftModels.delete(draftId);
+      else {
+        if (!draftId.startsWith("client-new-thread:") || !external(model))
+          throw new Error("External draft route is missing its client Thread identity");
+        draftModels.set(draftId, model);
+        // Native preparation shallow-copies modes when it overrides effort.
+        // Symbols survive those copies and are omitted from RPC JSON.
+        for (const mode of creationModes)
+          Object.defineProperty(mode, draftIdentity, {
+            configurable: true,
+            enumerable: true,
+            value: draftId,
+          });
+      }
+    },
     async createScheduledConversation(
       input: Record<string, unknown>,
       readThreadCreationInputs: unknown,
@@ -93,6 +152,8 @@ export function isolateRendererPrewarmConsumption(
       }
     },
     dispose() {
+      draftModels.clear();
+      if (manager.startConversation === routedStart) manager.startConversation = originalStart;
       if (creation.createConversation === wrapped) creation.createConversation = original;
     },
   };

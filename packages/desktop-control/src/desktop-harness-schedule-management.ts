@@ -13,6 +13,7 @@ import {
 import type { DesktopHarnessScheduleSession } from "./desktop-harness-schedule-creation.js";
 
 export interface DesktopHarnessSchedules {
+  readonly creationUnavailableReason?: string;
   createSession(): DesktopHarnessScheduleSession;
   list(signal: AbortSignal): Promise<HarnessScheduleList>;
   update(

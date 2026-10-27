@@ -265,13 +265,9 @@ describe("fixed chat schedule creation", () => {
 });
 
 function nativeFixture() {
-  const modeAtom = {},
-    eligibleAtom = {};
-  const create = vi.fn(async () => ({
-    item: { id: "new", kind: "heartbeat", targetThreadId: threadId },
-  }));
   const readInputs = vi.fn();
   const manager = {
+    requestClient: {},
     getHostId: () => "local",
     createProjectlessThreadWorkspace: vi.fn(async () => ({
       cwd: "/configured-root/day/name",
@@ -281,59 +277,58 @@ function nativeFixture() {
     sendRequest: vi.fn<(method: string, input: unknown) => Promise<unknown>>(async () => ({
       entries: [],
     })),
-    getConversation: vi.fn(() => ({
+    getConversation: vi.fn<() => unknown>(() => ({
       resumeState: "resumed",
+      mode: "default",
+      turns: [],
+      requests: [],
       currentPermissions: { approvalPolicy: "on-request" },
+      latestCollaborationMode: { mode: "default", settings: { model: "codexhost/pi-native" } },
     })),
   };
-  const scope = {
-    get: vi.fn((atom: unknown): unknown =>
-      atom === modeAtom
-        ? { settings: { model: "codexhost/pi-native" } }
-        : { isEligible: atom === eligibleAtom },
-    ),
-    queryClient: { invalidateQueries: vi.fn(async () => {}) },
-  };
+  const scope = { get: vi.fn(), queryClient: { invalidateQueries: vi.fn(async () => {}) } };
   const route = {
     hostId: "local",
     manager,
     policy: {
       scopedCreation: true,
-      createScheduledConversation: vi.fn(async (input: unknown, read: unknown) => {
-        return { input, read };
-      }),
+      createScheduledConversation: vi.fn(async (input: unknown, read: unknown) => ({
+        input,
+        read,
+      })),
     },
   };
   const routing = { forHost: vi.fn(() => route) } as unknown as RendererHostRouting;
-  const modules = {
-    shared: {
-      Qot: {
-        localAutomationsScheduler: {},
-        localAutomations: {
-          create,
-          list: vi.fn(async () => ({ items: [] })),
-          update: vi.fn(),
-          delete: vi.fn(),
-        },
-        projectlessThreads: { createPaths: vi.fn() },
-      },
-      Yat: async (value: unknown) => value,
-    },
-    initial: {
-      GW: () => ({ readCreationInputs: readInputs }),
-      irr: () => manager,
-      xSn: modeAtom,
-      jzn: ["vscode", "list-automations"],
-    },
-    primary: { OT: eligibleAtom },
+  const native = {
+    isPrimaryWindow: true,
+    localAutomations: Object.assign(() => {}, {
+      create: vi.fn(async () => ({
+        item: { id: "new", kind: "heartbeat", targetThreadId: threadId },
+      })),
+      list: vi.fn<() => unknown>(async () => ({ items: [] })),
+      update: vi.fn(),
+      delete: vi.fn(),
+    }),
   };
-  return { modules, scope, route, routing, manager, create, readInputs };
+  const reader = {
+    params: { scope, hostId: "local", requestClient: manager.requestClient },
+    readCreationInputs: readInputs,
+    readPrewarmInputs: vi.fn(),
+    readInputs: vi.fn(),
+  };
+  const factory = vi.fn((): unknown => reader);
+  const bind = () => bindReviewedDesktopScheduleServices(native, scope, routing, factory);
+  return { native, scope, route, routing, manager, reader, factory, readInputs, bind };
 }
 describe("reviewed Desktop 26.1021 services", () => {
-  it("binds list/update/delete to the same native service and reads persisted ownership", async () => {
+  it("accepts the callable native RPC namespaces observed in the running Desktop", () => {
     const f = nativeFixture();
-    const service = bindReviewedDesktopScheduleServices(f.modules, f.scope, f.routing);
-    const native = f.modules.shared.Qot.localAutomations;
+    expect(f.bind().creationUnavailableReason).toBeNull();
+  });
+  it("binds list/update/delete to the same native service and reads persisted ownership", async () => {
+    const f = nativeFixture(),
+      service = f.bind(),
+      native = f.native.localAutomations;
     expect(await service.listAutomations()).toEqual({ items: [] });
     f.manager.sendRequest.mockResolvedValueOnce({
       threads: [{ threadId, owner: "external", harnessId: "pi" }],
@@ -355,26 +350,74 @@ describe("reviewed Desktop 26.1021 services", () => {
     expect(native.delete).toHaveBeenCalledExactlyOnceWith({ id: "existing" });
     expect(native.create).not.toHaveBeenCalled();
   });
-  it.each(["list", "update", "delete"])("rejects a Desktop service missing %s", (method) => {
-    const f = nativeFixture();
-    Reflect.deleteProperty(f.modules.shared.Qot.localAutomations, method);
-    expect(() => bindReviewedDesktopScheduleServices(f.modules, f.scope, f.routing)).toThrow(
-      "required local",
+  it("disposes the native RPC thenable after reading it", async () => {
+    const f = nativeFixture(),
+      dispose = vi.fn();
+    f.native.localAutomations.list.mockReturnValueOnce(
+      Object.assign(Promise.resolve({ items: [] }), { [Symbol.dispose]: dispose }),
     );
+    expect(await f.bind().listAutomations()).toEqual({ items: [] });
+    expect(dispose).toHaveBeenCalledOnce();
   });
+  it.each(["list", "update", "delete"])("diagnoses a missing management method: %s", (method) => {
+    const f = nativeFixture();
+    Reflect.deleteProperty(f.native.localAutomations, method);
+    expect(f.bind).toThrow(`localAutomations.${method}`);
+  });
+  it("keeps management available without primary-window creation/prewarm services", async () => {
+    const f = nativeFixture();
+    f.native.isPrimaryWindow = false;
+    f.route.policy.scopedCreation = false;
+    const service = f.bind();
+    expect(service.creationUnavailableReason).toContain("main-window heartbeat observer");
+    expect(service.creationUnavailableReason).toContain("scoped empty-chat/prewarm binding");
+    expect(await service.listAutomations()).toEqual({ items: [] });
+    await service.updateAutomation({ id: "existing" });
+    await service.deleteAutomation("existing");
+    expect(service.assertCreationAvailable).toThrow("creation is unavailable");
+    expect(f.factory).not.toHaveBeenCalled();
+    expect(f.manager.startConversation).not.toHaveBeenCalled();
+  });
+  it("allows management when the creation factory is absent, and accepts it on a later connection", () => {
+    const f = nativeFixture();
+    const service = bindReviewedDesktopScheduleServices(f.native, f.scope, f.routing);
+    expect(service.creationUnavailableReason).toContain("creation-input factory");
+    expect(service.assertCreationAvailable).toThrow("creation-input factory");
+    expect(f.bind().creationUnavailableReason).toBeNull();
+  });
+  it.each(["createProjectlessThreadWorkspace", "startConversation", "getConversation"])(
+    "keeps management available without creation-only manager.%s",
+    async (method) => {
+      const f = nativeFixture();
+      Reflect.deleteProperty(f.manager, method);
+      const service = f.bind();
+      expect(service.creationUnavailableReason).toContain(`manager.${method}`);
+      expect(await service.listAutomations()).toEqual({ items: [] });
+      expect(f.factory).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["scope", "hostId", "requestClient"])(
+    "rejects mismatched native input-reader %s ownership",
+    (key) => {
+      const f = nativeFixture();
+      Reflect.set(f.reader.params, key, {});
+      expect(f.bind().creationUnavailableReason).toContain("reader ownership");
+      expect(f.native.localAutomations.create).not.toHaveBeenCalled();
+    },
+  );
   it("rejects missing or ambiguous native owner scopes", () => {
     const manager = {},
-      scope = {};
-    const registry = { scope, getForHostId: () => manager };
+      scope = {},
+      registry = { scope, getForHostId: () => manager };
     expect(resolveDesktopScheduleScope([registry, registry], manager)).toBe(scope);
     expect(() => resolveDesktopScheduleScope([], manager)).toThrow("missing or ambiguous");
     expect(() =>
       resolveDesktopScheduleScope([registry, { scope: {}, getForHostId: () => manager }], manager),
     ).toThrow("missing or ambiguous");
   });
-  it("uses native workspace allocation, creation callbacks and readiness", async () => {
-    const f = nativeFixture();
-    const service = bindReviewedDesktopScheduleServices(f.modules, f.scope, f.routing);
+  it("uses native workspace allocation, owned creation inputs and native empty-chat readiness", async () => {
+    const f = nativeFixture(),
+      service = f.bind();
     expect(await service.allocate("title")).toEqual({
       cwd: "/configured-root/day/name",
       workspaceRoot: "/configured-root/day/name",
@@ -398,30 +441,28 @@ describe("reviewed Desktop 26.1021 services", () => {
     (read as (input: unknown, mode: unknown) => unknown)({}, "default");
     expect(f.readInputs).toHaveBeenCalledWith({}, "default");
     expect(service.isThreadReady(threadId)).toBe(true);
-    f.scope.get.mockReturnValueOnce(null);
-    expect(service.isThreadReady(threadId)).toBe(false);
+    const conversation = f.manager.getConversation();
+    for (const patch of [
+      { resumeState: "resuming" },
+      { turns: [{}] },
+      { requests: [{}] },
+      { pendingRequest: {} },
+      { latestCollaborationMode: null },
+      { currentPermissions: null },
+    ]) {
+      f.manager.getConversation.mockReturnValueOnce({ ...(conversation as object), ...patch });
+      expect(service.isThreadReady(threadId)).toBe(false);
+    }
   });
-  it("rejects missing native services, nonlocal or replaced managers", () => {
-    const f = nativeFixture();
-    expect(() =>
-      bindReviewedDesktopScheduleServices({ ...f.modules, primary: {} }, f.scope, f.routing),
-    ).toThrow("required local");
-    const service = bindReviewedDesktopScheduleServices(f.modules, f.scope, f.routing);
+  it("rejects nonlocal or replaced managers", () => {
+    const f = nativeFixture(),
+      service = f.bind();
     vi.mocked(f.routing.forHost).mockReturnValue(null);
     expect(service.assertAvailable).toThrow("connection changed");
     vi.mocked(f.routing.forHost).mockReturnValue(
       f.route as unknown as ReturnType<RendererHostRouting["forHost"]>,
     );
     f.manager.getHostId = () => "remote";
-    expect(() => bindReviewedDesktopScheduleServices(f.modules, f.scope, f.routing)).toThrow(
-      "connection changed",
-    );
-  });
-  it("requires the primary-window scheduler service", () => {
-    const f = nativeFixture();
-    Reflect.deleteProperty(f.modules.shared.Qot, "localAutomationsScheduler");
-    expect(() => bindReviewedDesktopScheduleServices(f.modules, f.scope, f.routing)).toThrow(
-      "required local",
-    );
+    expect(f.bind).toThrow("connection changed");
   });
 });

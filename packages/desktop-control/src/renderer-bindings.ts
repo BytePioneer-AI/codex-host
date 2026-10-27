@@ -5,9 +5,13 @@ export {
 } from "./renderer-react-ownership.js";
 export type { RendererHostRoute, RendererHostRouting } from "./renderer-host-routing.js";
 export {
-  findScopedDraftUpdater,
+  findScopedDraftModelBinding,
   createScopedDraftModelWriter,
 } from "./renderer-scoped-draft-model.js";
 export { connectDesktopHarnessSchedules } from "./desktop-harness-schedules.js";
+export type {
+  DesktopScheduleNativeServices,
+  DesktopScheduleCreationInputsFactory,
+} from "./desktop-harness-schedules.js";
 export type { DesktopHarnessScheduleSession } from "./desktop-harness-schedule-creation.js";
 export type { DesktopHarnessSchedules } from "./desktop-harness-schedule-management.js";

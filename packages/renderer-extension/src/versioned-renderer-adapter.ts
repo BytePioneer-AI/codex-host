@@ -4,7 +4,7 @@ import { getSharedAgentGroupPreferenceStore } from "./agent-group-preference.js"
 import {
   committedReactAncestors,
   createScopedDraftModelWriter,
-  findScopedDraftUpdater,
+  findScopedDraftModelBinding,
   REACT_FIBER_WALK_LIMIT_EVENT,
   type RendererHostRoute,
   type RendererHostRouting,
@@ -142,7 +142,11 @@ export interface RendererDraftPrewarmPolicy {
   state: "ready";
   hostId: string;
   readonly requestTarget?: () => unknown;
-  select(model: string | null): boolean;
+  select(
+    model: string | null,
+    draftId?: string,
+    creationModes?: readonly Record<string, unknown>[],
+  ): boolean;
   clear(): Promise<void>;
 }
 
@@ -1086,12 +1090,12 @@ export function installCurrentRendererAdapter(): {
       if (target?.[0] === "conversation") return true;
       if (target?.[0] !== "default" || typeof target[1] !== "string" || !composer)
         return agent === "codex";
-      const update = findScopedDraftUpdater(composer, target[1]);
+      const binding = findScopedDraftModelBinding(composer, target[1]);
       const draftKey = target[1];
-      if (!update || !route.policy.scopedCreation)
+      if (!binding || !route.policy.scopedCreation)
         return agent === "codex" && !draftModels.has(draftKey);
-      draftModels.apply(draftKey, update, carrier ?? null);
-      if (route.policy.select(carrier ?? null)) {
+      draftModels.apply(draftKey, binding, carrier ?? null);
+      if (route.policy.select(carrier ?? null, draftKey, binding.creationModes)) {
         modelUpdates += 1;
         liveStatus.modelUpdates = modelUpdates;
       }

@@ -4,16 +4,24 @@ type Draft = Record<string, unknown>;
 type UpdateDraft = (update: (current: Draft) => Draft) => void;
 interface DraftElement {
   parentElement: DraftElement | null;
+  querySelector?(selector: string): DraftElement | null;
+}
+interface ScopedDraftModelBinding {
+  update: UpdateDraft;
+  usesAccountPreferences: boolean;
+  creationModes?: readonly Draft[];
 }
 
-/** The 26.1021 Sfa memo tuple contains both the client Thread identity and
- * its bound draft setter. Never use the official default Model setter.
+/** Desktop 26.1021 memo tuples bind the client Thread identity, draft setter
+ * and current Model settings mode. Never use the official default Model setter.
  */
-export function findScopedDraftUpdater(
+export function findScopedDraftModelBinding(
   composer: DraftElement,
   draftId: string,
-): UpdateDraft | null {
-  let element: DraftElement | null = composer;
+): ScopedDraftModelBinding | null {
+  let element: DraftElement | null =
+    composer.querySelector?.('[data-codex-composer], [contenteditable="true"][role="textbox"]') ??
+    composer;
   let fiber: unknown;
   while (element && !fiber) {
     const key = Object.getOwnPropertyNames(element).find((name) =>
@@ -22,9 +30,15 @@ export function findScopedDraftUpdater(
     if (key) fiber = Object.getOwnPropertyDescriptor(element, key)?.value;
     element = element.parentElement;
   }
+  const rows: unknown[][] = [];
+  const groups = new Map<unknown[], unknown[][]>();
+  const updates = new Set<UpdateDraft>();
   for (const ancestor of committedReactAncestors(fiber)) {
     const queue = ancestor.updateQueue as { memoCache?: { data?: unknown[] } } | null;
-    for (const row of queue?.memoCache?.data ?? []) {
+    const data = (queue?.memoCache?.data ?? []).filter(Array.isArray);
+    for (const row of data) {
+      rows.push(row);
+      groups.set(row, data);
       if (!Array.isArray(row) || row.length !== 14 || row[6] !== draftId || row[7] !== draftId)
         continue;
       const result = row[13] as {
@@ -40,10 +54,67 @@ export function findScopedDraftUpdater(
         row[9] === row[12] &&
         typeof row[9] === "function"
       )
-        return row[9] as UpdateDraft;
+        updates.add(row[9] as UpdateDraft);
     }
   }
-  return null;
+  let update: UpdateDraft | undefined;
+  const modes = new Set<boolean>();
+  const creationModes = new Set<Draft>();
+  // The 26.1021 Model hook pairs its current settings mode with this exact
+  // draft setter. A stored draft's mode can belong to an earlier Account.
+  for (const row of rows) {
+    if (
+      row.length !== 24 ||
+      row[7] !== null ||
+      row[10] !== true ||
+      !updates.has(row[13] as UpdateDraft)
+    )
+      continue;
+    const context = row[12] as Draft | null;
+    const result = row[23] as Draft | null;
+    if (
+      context &&
+      context === row[21] &&
+      typeof context.usesAccountPreferences === "boolean" &&
+      result?.usesAccountPreferences === context.usesAccountPreferences &&
+      typeof row[14] === "function" &&
+      row[14] === row[20] &&
+      result.setModelAndReasoningEffort === row[14]
+    ) {
+      // Each native hook can create its own setter for the same draft atom.
+      // Bind through its reviewed draft identity and Model context, not through
+      // function identity shared by every hook in the Composer.
+      update ??= row[13] as UpdateDraft;
+      modes.add(context.usesAccountPreferences);
+      // Background creation receives a new client Thread id. The reviewed
+      // collaboration-mode memo retains the originating draft's Model hook.
+      const settings = result.modelSettings as Draft | null;
+      const group = groups.get(row);
+      const candidate = group?.[group.indexOf(row) - 1];
+      const mode = candidate?.[44] as Draft | null;
+      const value = candidate?.[51] as Draft | null;
+      if (
+        candidate?.length === 52 &&
+        settings &&
+        candidate[39] === settings.model &&
+        candidate[40] === settings.reasoningEffort &&
+        mode &&
+        mode === candidate[49] &&
+        mode.settings === candidate[41] &&
+        (mode.settings as Draft | null)?.model === settings.model &&
+        value?.activeMode === mode
+      )
+        creationModes.add(mode);
+    }
+  }
+  const [usesAccountPreferences] = modes;
+  return update && modes.size === 1 && usesAccountPreferences !== undefined
+    ? {
+        update,
+        usesAccountPreferences,
+        ...(creationModes.size ? { creationModes: [...creationModes] } : {}),
+      }
+    : null;
 }
 
 export function createScopedDraftModelWriter() {
@@ -68,16 +139,21 @@ export function createScopedDraftModelWriter() {
     has(key: string): boolean {
       return captured.has(key);
     },
-    apply(key: string, update: UpdateDraft, model: string | null): void {
+    apply(key: string, binding: ScopedDraftModelBinding, model: string | null): void {
       if (model === null) {
         restore(key);
         return;
       }
+      const { update, usesAccountPreferences } = binding;
       update((current) => {
         const previous = captured.get(key);
         captured.set(key, { update, original: previous?.original ?? current, model });
         const settings = current.modelSettings as Draft | null;
-        if (settings?.model === model && current.modelSettingsPersistAsDefault === false)
+        if (
+          settings?.model === model &&
+          settings.usesAccountPreferences === usesAccountPreferences &&
+          current.modelSettingsPersistAsDefault === false
+        )
           return current;
         return {
           ...current,
@@ -88,6 +164,7 @@ export function createScopedDraftModelWriter() {
             model,
             reasoningEffort: settings?.reasoningEffort ?? null,
             profile: settings?.profile ?? null,
+            usesAccountPreferences,
           },
         };
       });

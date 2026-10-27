@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { isolateRendererPrewarmConsumption } from "../src/renderer-prewarm-consumption.js";
 import {
   createScopedDraftModelWriter,
-  findScopedDraftUpdater,
+  findScopedDraftModelBinding,
 } from "../src/renderer-scoped-draft-model.js";
 
 const mode = (model: string) => ({ collaborationMode: { settings: { model } } });
@@ -23,7 +23,10 @@ function fixture() {
       return this.params.prewarmedThreadManager.consumePrewarmedThread("/same-cwd");
     },
   };
-  const restore = isolateRendererPrewarmConsumption({ threadCreation: creation }, discarded);
+  const restore = isolateRendererPrewarmConsumption(
+    { threadCreation: creation, startConversation: vi.fn() },
+    discarded,
+  );
   return { creation, consume, discarded, deleted, restore };
 }
 
@@ -119,14 +122,60 @@ it("binds the reviewed draft setter tuple to its exact client identity", () => {
     12: update,
     13: { draftSettings: draft, isNewThreadDraft: true, updateDraftSettings: update },
   });
+  const context = { usesAccountPreferences: true };
+  const setModel = vi.fn();
+  const modelRow = Array<unknown>(24).fill(null);
+  Object.assign(modelRow, {
+    7: null,
+    10: true,
+    12: context,
+    13: update,
+    14: setModel,
+    20: setModel,
+    21: context,
+    23: { ...context, setModelAndReasoningEffort: setModel },
+  });
+  const data = [row, modelRow];
   const element = {
     parentElement: null,
-    __reactFiber$test: { updateQueue: { memoCache: { data: [row] } } },
+    __reactFiber$test: { updateQueue: { memoCache: { data } } },
   };
-  expect(findScopedDraftUpdater(element, "client-new-thread:a")).toBe(update);
-  expect(findScopedDraftUpdater(element, "client-new-thread:b")).toBeNull();
+  expect(findScopedDraftModelBinding(element, "client-new-thread:a")).toEqual({
+    update,
+    usesAccountPreferences: true,
+  });
+  const otherUpdate = vi.fn();
+  const otherDraftRow = Object.assign([...row], {
+    9: otherUpdate,
+    12: otherUpdate,
+    13: { draftSettings: draft, isNewThreadDraft: true, updateDraftSettings: otherUpdate },
+  });
+  data.push(otherDraftRow, Object.assign([...modelRow], { 13: otherUpdate }));
+  expect(findScopedDraftModelBinding(element, "client-new-thread:a")).toMatchObject({
+    usesAccountPreferences: true,
+  });
+  data.pop();
+  data.pop();
+  const root = { parentElement: null, querySelector: () => element, __reactFiber$root: {} };
+  expect(findScopedDraftModelBinding(root, "client-new-thread:a")).toMatchObject({
+    usesAccountPreferences: true,
+  });
+  modelRow[13] = vi.fn();
+  expect(findScopedDraftModelBinding(element, "client-new-thread:a")).toBeNull();
+  modelRow[13] = update;
+  const conflicting = { usesAccountPreferences: false };
+  data.push(
+    Object.assign([...modelRow], {
+      12: conflicting,
+      21: conflicting,
+      23: { ...conflicting, setModelAndReasoningEffort: setModel },
+    }),
+  );
+  expect(findScopedDraftModelBinding(element, "client-new-thread:a")).toBeNull();
+  data.pop();
+  expect(findScopedDraftModelBinding(element, "client-new-thread:b")).toBeNull();
   row[12] = vi.fn();
-  expect(findScopedDraftUpdater(element, "client-new-thread:a")).toBeNull();
+  expect(findScopedDraftModelBinding(element, "client-new-thread:a")).toBeNull();
 });
 it("keeps drafts independent and restores native settings without default persistence", () => {
   const writer = createScopedDraftModelWriter();
@@ -142,13 +191,37 @@ it("keeps drafts independent and restores native settings without default persis
   const setB = (f: (value: typeof b) => typeof b) => {
     b = f(b);
   };
-  writer.apply("a", setA, "codexhost/pi-native");
+  writer.apply("a", { update: setA, usesAccountPreferences: false }, "codexhost/pi-native");
   expect(a.modelSettingsPersistAsDefault).toBe(false);
   expect(b).toBe(original);
-  writer.apply("b", setB, "codexhost/claude-code-native");
-  writer.apply("a", setA, null);
+  writer.apply("b", { update: setB, usesAccountPreferences: true }, "codexhost/claude-code-native");
+  writer.apply("a", { update: setA, usesAccountPreferences: false }, null);
   expect(a.modelSettings).toBe(original.modelSettings);
   expect((b.modelSettings as { model: string }).model).toBe("codexhost/claude-code-native");
   writer.dispose();
   expect(b.modelSettings).toBe(original.modelSettings);
 });
+
+it.each([false, true])(
+  "updates the native settings mode even when the transport Model is unchanged (%s)",
+  (usesAccountPreferences) => {
+    const writer = createScopedDraftModelWriter();
+    const original = { modelSettings: null, isManuallyChanged: false };
+    let draft: Record<string, unknown> = original;
+    const update = (f: (current: typeof draft) => typeof draft) => {
+      draft = f(draft);
+    };
+    writer.apply(
+      "draft",
+      { update, usesAccountPreferences: !usesAccountPreferences },
+      "codexhost/pi-native",
+    );
+    writer.apply("draft", { update, usesAccountPreferences }, "codexhost/pi-native");
+    expect(draft.modelSettings).toMatchObject({
+      model: "codexhost/pi-native",
+      usesAccountPreferences,
+    });
+    writer.dispose();
+    expect(draft.modelSettings).toBeNull();
+  },
+);

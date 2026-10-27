@@ -15,7 +15,9 @@ Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和
 
 ## Desktop 创建入口
 
-Renderer 请求桥不使用 Host 上最后一次选择覆盖 `thread/start`。普通外部草稿通过当前 `client-new-thread` 身份绑定的原生草稿 setter 携带 transport Model，设置 `modelSettingsPersistAsDefault: false`，不修改官方默认 Model；切回 Codex 时恢复该草稿的原始设置。无法验证草稿 setter 或原生创建接入时，外部草稿不可提交。已有 Thread 继续依据持久化归属，不写入草稿设置。
+Renderer 请求桥不使用 Host 上最后一次选择覆盖 `thread/start`。普通外部草稿通过当前 `client-new-thread` 身份绑定的原生草稿 setter 携带 transport Model，同时携带与该 setter 关联的当前 `usesAccountPreferences` 模式，设置 `modelSettingsPersistAsDefault: false`，不修改官方默认 Model；切回 Codex 时恢复该草稿的原始设置。无法验证草稿 setter、当前账号设置模式或原生创建接入时，外部草稿不可提交。同一草稿可以对应多个 Hook setter，绑定按每个 setter 的草稿身份及 Model 上下文验证，不要求整个 Composer 只有一个 setter。已有 Thread 继续依据持久化归属，不写入草稿设置。
+
+普通草稿的 transport Model 同时按本地 Host 连接和 `client-new-thread` 身份登记。原生 `startConversation` 进入时读取本次创建的 `clientThreadId`，在异步准备前捕获对应的路由，只替换这次创建的 Model，保留权限、工作区、输入、Thinking 和原生回调。后台发送派生新客户端身份时，通过同一草稿的原生 collaboration-mode 对象关联来源；该关联使用不进入 JSON 协议的 Symbol，并随原生浅复制保留。Codex 的备用额度模式不能改变外部 Thread 的 Harness。官方创建、其他草稿与显式定时任务没有该草稿关联时，保持传入配置；切回 Codex、Adapter 卸载和连接释放会清理路由。
 
 Desktop 26.1021 的原生预热池按工作目录匹配。每次创建使用独立的消费检查：官方创建不能消费外部预热，外部创建只能消费与本次 transport Model 一致的预热。检查读取本次创建参数，异步准备期间不依赖全局选择。错配的外部预热通过既有未提交预热释放接口清理；普通草稿的配置失效和预热接管规则保持不变。显式任务创建使用独立创建操作跳过普通草稿预热，正文不在创建时执行。
 

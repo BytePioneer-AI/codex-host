@@ -14,6 +14,8 @@ const { outputFiles } = await build({
     import { createRendererSettingsPageRegistry } from "./packages/renderer-extension/src/settings/core.ts";
     import { rendererSettingsMessages } from "./packages/renderer-extension/src/settings/localization.ts";
     import { mountRendererSettingsShell } from "./packages/renderer-extension/src/settings/shell.ts";
+    import { installRendererSettingsLifecycle } from "./packages/renderer-extension/src/renderer-settings-lifecycle.ts";
+    import { openCodexLocalThread } from "./packages/renderer-extension/src/codex-thread-navigation.ts";
     globalThis.setupSchedules = (config = {}) => {
       document.documentElement.style.colorScheme = config.scheme ?? "light";
       const calls = [], opened = [], writes = [];
@@ -43,7 +45,7 @@ const { outputFiles } = await build({
         async deleteAutomation(id) { writes.push({ method: "delete", id }); items = items.filter(item => item.id !== id); return { success: true, status: "deleted" }; },
         async refreshList() {},
       };
-      const connection = { ...createDesktopScheduleManagement(native), createSession: () => ({
+      const connection = { ...createDesktopScheduleManagement(native), creationUnavailableReason: config.creationUnavailableReason, createSession: () => ({
         submit(input, signal) {
           calls.push(input); signal.addEventListener("abort", () => aborted = true);
           return new Promise(resolve => {
@@ -63,8 +65,33 @@ const { outputFiles } = await build({
         getModelClient: () => client,
         connect: async () => { if (config.unavailable) throw Error("Unsupported Desktop build"); return connection; },
       }, async id => { if (config.failOpen) throw Error("Chat opener unavailable"); opened.push(id); });
-      const shell = mountRendererSettingsShell(createRendererSettingsPageRegistry([page]), document, rendererSettingsMessages(config.locale ?? "en"));
-      shell.openSettings();
+      let shell;
+      if (config.nativeNavigation) {
+        globalThis.nativeNavigationBus = {
+          handlers: new Map([["navigate-to-route", new Set()]]),
+          dispatchHostMessage(message) {
+            opened.push(message.path);
+            if (config.failOpen) throw Error("Native router unavailable");
+            if (config.ignoreOpen) return;
+            setTimeout(() => {
+              history.pushState({}, "", message.path);
+              document.querySelector("main").textContent = "Opened scheduled chat";
+            }, 10);
+          },
+        };
+        const preload = document.createElement("link");
+        preload.rel = "modulepreload";
+        preload.href = "/assets/native-navigation.js";
+        document.head.append(preload);
+        installRendererSettingsLifecycle(window, {
+          harnessSchedules: { getModelClient: () => client, connect: async () => connection },
+          openImportedThread: (id, signal) => openCodexLocalThread(id, signal),
+        });
+        shell = window.__codexhostSettingsShellV1;
+      } else {
+        shell = mountRendererSettingsShell(createRendererSettingsPageRegistry([page]), document, rendererSettingsMessages(config.locale ?? "en"));
+      }
+      shell.openSettings(undefined, config.nativeNavigation ? "harness-schedules" : undefined);
       globalThis.scheduleFixture = { calls, opened, writes, shell, nativeItems: () => structuredClone(items), replaceItems: value => items = value, listCount: () => listCount, holdNextList: () => holdNextList = true, releaseList: () => releaseList?.(), releaseWrite: () => releaseWrite?.(), complete: () => complete?.(), aborted: () => aborted,
         consolePageIds: createDefaultRendererSettingsPages().map(p => p.id) };
     };
@@ -85,7 +112,15 @@ const bundle = outputFiles[0]?.text ?? "";
 if (!bundle) throw new Error("Schedule fixture bundle is missing");
 async function setup(page: Page, config: Record<string, unknown> = {}) {
   await page.route("https://codexhost.test/**", (route) =>
-    route.fulfill({ contentType: "text/html", body: "<!doctype html><html><body></body></html>" }),
+    route.request().url().endsWith("/assets/native-navigation.js")
+      ? route.fulfill({
+          contentType: "text/javascript",
+          body: "export const bus = globalThis.nativeNavigationBus;",
+        })
+      : route.fulfill({
+          contentType: "text/html",
+          body: "<!doctype html><html><body><main>Native chat</main></body></html>",
+        }),
   );
   await page.goto("https://codexhost.test/");
   await page.evaluate(() => localStorage.setItem("ordinary-harness", "untouched"));
@@ -371,6 +406,23 @@ test("keeps keyboard focus visible between list actions", async ({ page }) => {
   expect(await create.evaluate((element) => element.matches(":focus-visible"))).toBe(true);
 });
 
+test("keeps verified schedule management available when only creation is unavailable", async ({
+  page,
+}) => {
+  await setup(page, {
+    items: [existingTask],
+    creationUnavailableReason: "scoped empty-chat/prewarm binding is not ready",
+  });
+  await expect(page.getByRole("article")).toBeVisible();
+  await expect(page.getByRole("button", { name: "New schedule", exact: true })).toBeDisabled();
+  await expect(page.getByRole("status")).toContainText("scoped empty-chat/prewarm binding");
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await expect(page.getByRole("article")).toContainText("Paused");
+  expect(await page.evaluate(() => Reflect.get(globalThis, "scheduleFixture").calls.length)).toBe(
+    0,
+  );
+});
+
 test("opens and manages a Codex schedule without creating an external Thread", async ({ page }) => {
   const codexTask = {
     ...existingTask,
@@ -580,4 +632,49 @@ test("open chat failure makes the previously hidden status visible", async ({ pa
   await page.getByRole("button", { name: "Open chat", exact: true }).click();
   await expect(page.getByRole("status")).toBeVisible();
   await expect(page.getByRole("status")).toHaveText("Open this chat from the sidebar.");
+});
+
+for (const official of [false, true]) {
+  test(`opens a ${official ? "Codex" : "Harness"} scheduled chat through the native router without a sidebar row`, async ({
+    page,
+  }) => {
+    await setup(page, { items: [{ ...existingTask, official }], nativeNavigation: true });
+    await expect(page.locator("[data-app-action-sidebar-thread-row]")).toHaveCount(0);
+    await expect(page.locator(".codexhost-settings-page")).toBeVisible();
+    await page.getByRole("button", { name: "Open chat", exact: true }).click();
+    await expect(page).toHaveURL(`https://codexhost.test/local/${existingTask.targetThreadId}`);
+    await expect(page.locator(".codexhost-settings-page")).toBeHidden();
+    await expect(page.locator("body > main")).toHaveText("Opened scheduled chat");
+    const state = await page.evaluate(() => {
+      const f = Reflect.get(globalThis, "scheduleFixture");
+      return { routes: f.opened, writes: f.writes, creates: f.calls.length };
+    });
+    expect(state).toEqual({
+      routes: [`/local/${existingTask.targetThreadId}`],
+      writes: [],
+      creates: 0,
+    });
+  });
+}
+
+test("keeps schedules open and reports a native navigation failure", async ({ page }) => {
+  await setup(page, { items: [existingTask], nativeNavigation: true, failOpen: true });
+  await page.getByRole("button", { name: "Open chat", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText("Open this chat from the sidebar.");
+  await expect(page.locator(".codexhost-settings-page")).toBeVisible();
+  await expect(page).toHaveURL("https://codexhost.test/");
+});
+
+test("does not report an unacknowledged native navigation as success", async ({ page }) => {
+  await setup(page, { items: [existingTask], nativeNavigation: true, ignoreOpen: true });
+  await page.clock.install();
+  await page.getByRole("button", { name: "Open chat", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(globalThis, "scheduleFixture").opened.length))
+    .toBe(1);
+  await expect(page.locator(".codexhost-settings-page")).toBeVisible();
+  await page.clock.runFor(5_100);
+  await expect(page.getByRole("status")).toHaveText("Open this chat from the sidebar.");
+  await expect(page.locator(".codexhost-settings-page")).toBeVisible();
+  await expect(page).toHaveURL("https://codexhost.test/");
 });

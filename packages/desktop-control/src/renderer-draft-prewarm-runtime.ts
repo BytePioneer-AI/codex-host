@@ -692,12 +692,17 @@ export function createDraftPrewarmPolicyBridge(
         throw new Error("Renderer request manager is retired");
       return manager;
     },
-    select(model: string | null): boolean {
+    select(
+      model: string | null,
+      draftId?: string,
+      creationModes?: readonly Record<string, unknown>[],
+    ): boolean {
       if (disposed || (isCurrentManager && !isCurrentManager()))
         throw new Error("Renderer request manager is retired");
       if (model !== null && (typeof model !== "string" || !model.startsWith("codexhost/"))) {
         throw new Error("Draft route Model must be a codexhost transport carrier");
       }
+      restoreConsumption?.selectDraft(draftId, model, creationModes);
       if (selectedModel === model) return false;
       selectedModel = model;
       prewarmGeneration += 1;

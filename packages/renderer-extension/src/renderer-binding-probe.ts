@@ -104,7 +104,7 @@ import {
   type RendererDelegationMentionControl,
 } from "./renderer-delegation-mention.js";
 import { compatibleRendererPluginPresentation, rendererAgentLabel } from "./renderer-agent-icon.js";
-import { openRendererThread } from "./renderer-fork-control.js";
+import { openCodexLocalThread } from "./codex-thread-navigation.js";
 import type {
   RendererConnectionDiagnostics,
   RendererConnectionSnapshot,
@@ -818,10 +818,18 @@ export function installRendererBindingProbe(
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     harnessSchedules: {
       getModelClient: () => modelClientForHost("local"),
-      connect: () => {
+      connect: async () => {
         const routing = window.__codexhostHostRoutingV1;
         if (!routing) return Promise.reject(new Error("Desktop local connection is unavailable"));
-        return connectDesktopHarnessSchedules(window.document, routing);
+        const native = await loadCodexScheduleServices(window);
+        if (!native)
+          throw new Error(
+            "Native localAutomations list/update/delete registry is unavailable in this window",
+          );
+        const creationInputs = await loadCodexScheduleCreationInputsFactory(window).catch(
+          () => null,
+        );
+        return connectDesktopHarnessSchedules(window.document, routing, native, creationInputs);
       },
     },
     getRemoteConnections: () => remoteConnections,
@@ -843,8 +851,7 @@ export function installRendererBindingProbe(
         importHarnessSession: (input) => importSession(input),
       };
     },
-    openImportedThread: (threadId, signal) =>
-      openRendererThread(threadId, { hostId: "local", signal }),
+    openImportedThread: (threadId, signal) => openCodexLocalThread(threadId, signal),
     onLocaleChange() {
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },
@@ -3359,3 +3366,7 @@ export function installRendererBindingProbe(
   return api;
 }
 import { connectDesktopHarnessSchedules } from "@codexhost/desktop-control/renderer-bindings";
+import {
+  loadCodexScheduleServices,
+  loadCodexScheduleCreationInputsFactory,
+} from "./codex-schedule-services.js";

@@ -94,3 +94,13 @@
 - 新中文混合列表 fixture 截图（已检查）：`.codexhost/harness-schedules-codex-mixed-zh/schedules-zh-light-1100.png`、`.codexhost/harness-schedules-codex-mixed-zh/schedules-zh-dark-1100.png`。真实 3.1/3.2 仍未验收；没有重启 Desktop 或读写真实用户日程。
 
 真实 3.1/3.2 继续未勾选。本轮没有重启、停止或热替换 Desktop，没有真实日程写操作，没有提交、推送或归档。
+
+## 真实窗口不可用修正（同版本 callable RPC）
+
+- 起点为用户已提交的 `5eca2ea1`，初始工作区干净；未重置或改写提交。实测安装版仍为 Desktop 26.1021.31345 / 21828，Chromium 156.0.8078.48。逐项 guard 结果保存在忽略目录 `.codexhost/update-impact/26.1021.31345/schedules-runtime-readonly.json`，安装包身份另见 `schedules-manifest.json`。
+- 主窗口的 local manager、scope/queryClient、scopedCreation 及原生导出存在；明确失败项是 `localAutomations` 与 `projectlessThreads` 都为 callable proxy，原 `record()` 对二者返回 false。另一个 Renderer 有 local manager/CRUD，但没有 codexhost routing 与主窗口观察器；第三个没有 local manager。没有把任一窗口强行视为主窗口。
+- 复用 `loadCodexNativeServices` 的同源 modulepreload 发现及缺失/歧义处理，按 owning registry 和固定 CRUD 方法接受 callable namespace。Renderer 向 desktop-control 传入固定日程能力；去除定时任务路径的打包哈希及 `Qot/Yat/GW/irr/xSn/OT/jzn` 别名依赖。RPC thenable 按原生语义释放。
+- 管理单独校验 local manager/scope 和 CRUD。创建额外校验主窗口观察器、scoped empty-chat/prewarm、native reader 和 create；缺少创建能力仅禁用新建并显示具体缺项。工作区与模式读取复用 manager，manager 归属由既有 routing/registry 对象身份确认。创建输入工厂通过已核对的窄源码结构识别，返回后复核 scope/local Host/requestClient 身份；这仍是私有版本依赖。
+- 原生 reader 的发现及三项身份已只读确认；未调用其 readCreationInputs、startConversation 或任何创建/修改/删除日程接口。只读 list 返回 3 条 ACTIVE heartbeat。空聊天 readiness 采用 manager 中的原生 resumed/mode/permissions/空 Turn/无待处理请求，原生观察器继续负责后续 eligibility。实际创建及调度尚未加载验证。
+- 实测 callable 形状回归在修复前失败。修复后 4 个聚焦 Vitest 文件共 76 项通过（创建/P1、native schedule discovery、既有 SSH/locale consumers）；设置页 23 项 E2E 通过，包含仅缺创建时仍可列表/暂停及 New 禁用。`npm run build:typescript`、`npm run typecheck`、`npm run build:renderer`、相关文件 ESLint/Prettier、`tools/check-boundaries.mjs` 和 `git diff --check` 通过；本 change strict 校验在交付前执行。
+- 工作区同时出现的主会话草稿关联修正保持原样。没有停止、重启或热替换 Desktop，没有真实用户日程写操作，没有提交、推送或归档。3.1/3.2 继续未勾选；修复加载与真实执行验收由主会话安排。

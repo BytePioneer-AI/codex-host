@@ -94,6 +94,9 @@ export function createHarnessSchedulesPage(
           t("新建任务", "New schedule"),
         );
         create.type = "button";
+        create.disabled = Boolean(connection.creationUnavailableReason);
+        if (connection.creationUnavailableReason)
+          create.title = connection.creationUnavailableReason;
         create.prepend(createRendererSettingsIcon("add", 16));
         toolbar.append(refresh, create);
         header.append(heading, toolbar);
@@ -111,7 +114,8 @@ export function createHarnessSchedulesPage(
         let pending = false;
         const busy = (value: boolean) => {
           pending = value;
-          rows.disabled = refresh.disabled = create.disabled = value;
+          rows.disabled = refresh.disabled = value;
+          create.disabled = value || Boolean(connection.creationUnavailableReason);
         };
         create.addEventListener("click", () => showForm(connection));
         refresh.addEventListener("click", () => showList(connection));
@@ -163,6 +167,9 @@ export function createHarnessSchedulesPage(
           success(result) {
             status.textContent = [
               message,
+              connection.creationUnavailableReason
+                ? `${t("新建暂不可用。", "New schedules are unavailable.")} ${connection.creationUnavailableReason}`
+                : "",
               result.unresolved
                 ? t(
                     `有 ${result.unresolved} 个任务的归属或数据未能确认，未开放操作。请刷新重试。`,

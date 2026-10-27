@@ -7,7 +7,7 @@
 | Harness ID | pi |
 | 原生接口与传输方式 | Pi 原生 RPC；gotgenes 公开服务与生命周期事件 |
 | 已验证的原生版本 | Pi 1.4.0 / @gotgenes/pi-subagents 25.0.1 源码与父子历史 |
-| 交付范围 | 既有 Pi Adapter 的原生子代理适配修复 |
+| 交付范围 | 既有 Pi Adapter 的原生子代理、可见进度和流式内容修复 |
 | 参考插件 | 复用现有 Pi nicobailon 子代理公共映射及只读 transcript |
 | 最后验证 | 2026-10-27，macOS；现有 Codex 订阅 Astra/high |
 
@@ -57,11 +57,11 @@
 
 ## 受限与已知缺口
 
-本清单补记于既有 Adapter 修复；未影响的能力本轮不重新验收，因此明确列为待验证，不代表原实现不支持。只声明子代理修复实际覆盖范围。Desktop 真实显示由集成负责人验证。
+本清单补记于既有 Adapter 修复；未影响的能力本轮不重新验收，因此明确列为待验证，不代表原实现不支持。声明子代理修复及下述输出修复实际覆盖范围。Desktop 应用待空闲时重启并验收，不把候选插件通过验证当作已生效。
 
 ## 插件外改动
 
-对应 docs/harnesses/pi/pi-subagents.md 功能说明及 docs/index.md 链接描述；不新增公共合同或 Harness 专用 Host/Renderer 分支。
+对应 docs/harnesses/pi/pi-subagents.md、pi-progress.md 功能说明及 docs/index.md 链接描述；不新增公共合同或 Harness 专用 Host/Renderer 分支。
 
 ## 验证记录
 
@@ -71,3 +71,12 @@
 
 
 - 真实组合测试验证 process 自动唤醒、子代理通知与取消交错、deferred 自主轮及用户替换输入；Pi 1.4 原型无模型复现保留了 agent_settled 后 get_state 为 Streaming 的合法事件次序。精确 AbortSignal error 形状经原始历史重放核对，取消状态不再被重开误标为失败。
+
+## 可见输出验证范围
+
+- `display:true` custom 通知在活动回合和历史恢复中映射为 `commentary`，隐藏消息不展示；原生重试与非阻塞扩展状态显示来源和实际内容。
+- 最终正文保留原生 phase，通知出现在正文之后也不会把答复降为普通进度。流式内容按块核对完成态，补齐合法后缀，已展示内容发生冲突时明确报错。
+- 历史命令保留原生有效耗时和退出码；缺失退出码保持未知。
+- 限制：完全 idle 时通知保留到下个真实回合，队列溢出明确提示；未持久化的状态不补造历史。
+- Node 24.19.0：Pi 四个相关测试文件 183 项通过；流式 helper 与公共投影三个文件 51 项通过；Pi 生产构建、Pi 测试专项类型检查、Host Runtime TypeScript 构建通过。
+- 候选 bundle 经公共 Loader 冷加载成功；真实既有历史的两条后台通知恢复为 commentary，命令耗时恢复为 2211ms，最终答复 phase 保持 final_answer；候选 RPC 隔离回放补齐正文和摘要后缀，未调用模型或改动安装文件。

@@ -80,6 +80,7 @@
 | [`harnesses/pi/pi-edit-recovery.md`](harnesses/pi/pi-edit-recovery.md) | Pi 空历史编辑、原生文件发布和生命周期 Gate；修改 Pi 恢复时阅读。 |
 | [`harnesses/pi/pi-subagents.md`](harnesses/pi/pi-subagents.md) | Pi 的 gotgenes / nicobailon 子代理身份、实时状态、只读子会话与适配边界。 |
 | [`harnesses/pi/pi-fast.md`](harnesses/pi/pi-fast.md) | Pi Codex Fast 闪电开关、别名 Provider 能力判定、自动加载和 priority 请求边界。 |
+| [`harnesses/pi/pi-progress.md`](harnesses/pi/pi-progress.md) | Pi 可见通知、重试状态、流式完成态核对及历史恢复边界。 |
 
 ### OMP
 

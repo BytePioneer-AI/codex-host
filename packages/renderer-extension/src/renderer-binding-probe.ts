@@ -107,6 +107,7 @@ import {
   routeRendererHarnessCommandSelection,
 } from "./renderer-harness-command-claim.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
+import { createRendererUsageStatisticsSource } from "./renderer-usage-statistics-source.js";
 import {
   installRendererDelegationMention,
   type RendererDelegationMentionControl,
@@ -821,17 +822,19 @@ export function installRendererBindingProbe(
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
+  const usageStatistics = createRendererUsageStatisticsSource({
+    routing: () => window.__codexhostHostRoutingV1,
+    listConnections: () => remoteConnections.ssh.list(),
+    disposed: () => disposed,
+  });
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getRemoteConnections: () => remoteConnections,
     getUpdateClient: () => modelControl,
     getAccountClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,
     getLoadedSessionsClient: () => modelClientForHost("local"),
-    async requestUsageStatistics(method, params) {
-      const route = window.__codexhostHostRoutingV1?.forHost("local");
-      if (disposed || !route) throw new Error("Local Host connection is unavailable");
-      return route.manager.sendRequest(method, params);
-    },
+    requestUsageStatistics: usageStatistics.request,
+    usageStatisticsHosts: usageStatistics.hosts,
     getSessionImportClient: () => {
       const client = modelClientForHost("local");
       const sources = client?.listSessionImportSources;
@@ -958,9 +961,11 @@ export function installRendererBindingProbe(
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
     const state = controller.recordSubmission(composer);
+    // Follow-ups in an existing Thread must not change which Agent a new Thread starts with.
+    const createsThread = state.phase === "draft";
     const preferenceStorage = rendererNewThreadPreferenceStorage(activeModelHostId(composer));
-    writeNewThreadAgentPreference(state.agent, preferenceStorage);
-    if (state.agent !== "codex") {
+    if (createsThread) writeNewThreadAgentPreference(state.agent, preferenceStorage);
+    if (createsThread && state.agent !== "codex") {
       const model = controller.modelForAgent(composer, state.agent);
       if (model) {
         writeNewThreadExternalConfigurationPreference(
@@ -2414,8 +2419,9 @@ export function installRendererBindingProbe(
           try {
             // Bulk discovery must not occupy the native interactive slots needed
             // to identify the visible Thread and load its selected configuration.
+            // Availability only: the selected Harness loads its catalog through full inspection.
             const inspection = await client.inspectHarness(
-              { harnessId: harnessIdSchema.parse(agent), refresh },
+              { harnessId: harnessIdSchema.parse(agent), refresh, purpose: "availability" },
               { priority: "background" },
             );
             status = inspection.status === "ready" ? "ready" : inspection.status;

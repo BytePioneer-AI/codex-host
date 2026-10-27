@@ -107,6 +107,8 @@ describe("delegation CLI", () => {
           "claude-code",
           "--task",
           "review auth",
+          "--task-name",
+          "Auth review",
           "--cwd",
           "/workspace/project",
           "--model",
@@ -129,6 +131,7 @@ describe("delegation CLI", () => {
     expect(JSON.parse(String(init?.body))).toMatchObject({
       harnessId: "claude-code",
       task: "review auth",
+      taskName: "Auth review",
       cwd: "/workspace/project",
       parentThreadId: "parent-1",
       requestId: "request-1",

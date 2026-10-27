@@ -43,6 +43,10 @@ import {
   renderRendererUsageControl,
   type RendererUsageControl,
 } from "./renderer-usage-control.js";
+import {
+  mountRendererComposerIndicators,
+  type RendererComposerIndicators,
+} from "./renderer-composer-indicators.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 import { isOrbitComposer } from "./renderer-composer-kind.js";
@@ -50,6 +54,7 @@ import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
+import { observeRendererCompactComposer } from "./renderer-trigger-chip-style.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -93,11 +98,13 @@ export interface ComposerAgentControl {
   nativeContextUsageControl?: NativeControlState | null;
   nativePermissionModeControlVerified: boolean;
   credits: RendererCreditsControl;
+  composerIndicators: RendererComposerIndicators;
   usage: RendererUsageControl | null;
   composerId: string;
   harnessCommands: RendererHarnessCommandControl;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
+  stopCompactLayout?: () => void;
 }
 
 export function eventElement(target: EventTarget | null): Element | null {
@@ -128,6 +135,7 @@ function isOwnedRendererControl(element: Element): boolean {
     element.hasAttribute("data-codexhost-credits-control") ||
     element.hasAttribute("data-codexhost-native-provider-continuation") ||
     element.hasAttribute("data-codexhost-native-provider-continuation-action") ||
+    element.hasAttribute("data-codexhost-composer-indicators") ||
     element.hasAttribute("data-codexhost-harness-command-control")
   );
 }
@@ -646,6 +654,11 @@ export function reconcileComposerNativeControls(
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
   refreshCreditsPlacement(control);
+  control.composerIndicators?.place(
+    control.nativePermissionModeControlVerified
+      ? (control.nativePermissionModeControl?.element ?? null)
+      : null,
+  );
   setNativeControlHidden(control.nativeModelControl, hideModel);
   // Context usage is shared by Codex and external Harnesses. External Usage
   // data is projected into the same native Codex indicator, so it must remain
@@ -694,6 +707,7 @@ export function mountComposerAgentControl(
     onSelectPermissionMode,
   );
   const credits = mountRendererCreditsControl(composerId);
+  const composerIndicators = mountRendererComposerIndicators(composer);
 
   const toolbar = sendButton.parentElement;
   const harnessCommands = mountRendererHarnessCommandControl(
@@ -710,7 +724,7 @@ export function mountComposerAgentControl(
   }
 
   if (!toolbar) composer.append(modelPicker.root, picker.root);
-  const control = {
+  const control: ComposerAgentControl = {
     composer,
     composerId,
     root: picker.root,
@@ -751,14 +765,16 @@ export function mountComposerAgentControl(
     nativeContextUsageControl,
     nativePermissionModeControlVerified,
     credits,
+    composerIndicators,
     usage: null,
     harnessCommands,
     sendButton,
     sendDisabledBeforeSwitch: null,
-  } satisfies ComposerAgentControl;
+  };
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
   refreshCreditsPlacement(control);
+  control.stopCompactLayout = observeRendererCompactComposer(composer);
   return control;
 }
 
@@ -860,6 +876,10 @@ export function renderComposerAgentControl(
     permissionModeVisible,
     locale,
   );
+  control.composerIndicators?.render(
+    permissionModeVisible ? (usage?.composerIndicators ?? []) : [],
+    locale,
+  );
   if (control.usage) {
     renderRendererUsageControl(control.usage, usage, locale);
   }
@@ -871,6 +891,7 @@ export function renderComposerAgentControl(
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
+  control.stopCompactLayout?.();
   if (control.sendDisabledBeforeSwitch !== null) {
     control.sendButton.disabled = nativeSendDisabled(
       control.sendButton,
@@ -880,6 +901,7 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
   restoreNativeControl(control.nativeModelControl);
   restoreNativeControl(control.nativeContextUsageControl);
   restoreNativeControl(control.nativePermissionModeControl);
+  control.composerIndicators?.dispose();
   control.credits.dispose();
   control.usage?.dispose();
   control.usage = null;

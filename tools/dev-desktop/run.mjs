@@ -78,8 +78,10 @@ Write-Output "codexhost dev: stopped $($desktopProcessIds.Count) Codex Desktop p
 const macOsDesktopCleanupScript = String.raw`
 set -eu
 
-system_desktop_pattern='^/Applications/(ChatGPT|Codex)\.app/Contents/'
-user_desktop_pattern="^$HOME/Applications/(ChatGPT|Codex)\.app/Contents/"
+# Bundled CLI and node_repl processes can belong to an independent Web Host.
+# Only the Desktop application executable is owned by this cleanup.
+system_desktop_pattern='^/Applications/(ChatGPT|Codex)\.app/Contents/MacOS/(ChatGPT|Codex)( |$)'
+user_desktop_pattern="^$HOME/Applications/(ChatGPT|Codex)\.app/Contents/MacOS/(ChatGPT|Codex)( |$)"
 desktop_running() {
   /usr/bin/pgrep -f "$system_desktop_pattern" >/dev/null 2>&1 ||
     /usr/bin/pgrep -f "$user_desktop_pattern" >/dev/null 2>&1

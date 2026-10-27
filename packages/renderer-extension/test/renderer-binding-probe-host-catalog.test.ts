@@ -435,7 +435,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         expect.objectContaining({ harnessId: "codex-usage" }),
       );
       expect(remote.inspectHarness).toHaveBeenCalledWith(
-        { harnessId: "unseen-remote", refresh: true },
+        { harnessId: "unseen-remote", refresh: true, purpose: "availability" },
         { priority: "background" },
       );
       localPlugins = [];
@@ -508,15 +508,15 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
           });
         });
         expect(remote.inspectHarness).toHaveBeenCalledWith(
-          { harnessId: "pi", refresh: false },
+          { harnessId: "pi", refresh: false, purpose: "availability" },
           { priority: "background" },
         );
         expect(remote.inspectHarness).toHaveBeenCalledWith(
-          { harnessId: "claude-code", refresh: false },
+          { harnessId: "claude-code", refresh: false, purpose: "availability" },
           { priority: "background" },
         );
         expect(local.inspectHarness).toHaveBeenCalledWith(
-          { harnessId: "pi", refresh: false },
+          { harnessId: "pi", refresh: false, purpose: "availability" },
           { priority: "background" },
         );
         expect(remote.inspectThread).toHaveBeenCalledWith({ threadId: "thread-a" });
@@ -599,7 +599,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     const diagnostics = testState.getConnectionDiagnostics?.();
     await diagnostics?.refresh();
     expect(remote.inspectHarness).toHaveBeenCalledWith(
-      { harnessId: "pi", refresh: true },
+      { harnessId: "pi", refresh: true, purpose: "availability" },
       expect.anything(),
     );
     expect(diagnostics?.snapshot().hosts.map(({ hostId }) => hostId)).toEqual([

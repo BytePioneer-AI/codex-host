@@ -10,6 +10,8 @@ CodexHost stores its own application data locally on the machine running the Hos
 
 CodexHost connects the Desktop interface to your selected Harness, forwarding prompts, generated output, tool status, approvals, and diffs as needed to run and display tasks. Model requests and tool access follow that Harness's configuration and permissions, using your selected services, such as OpenAI, Anthropic, xAI, or other Providers. These services manage their own data under their respective policies; CodexHost does not operate their storage or set their retention rules.
 
+To show which installed Harnesses are available, CodexHost checks them when Codex Desktop starts. Some checks start the Harness's native process, which runs that Harness's own startup behavior, such as loading extensions or connecting to its configured Providers. Where a Harness offers a lighter native command, CodexHost uses it instead; Oh My Pi is checked with `omp models --json`, which starts no session.
+
 If you use remote features, task content travels between your computers through SSH or official Codex Desktop Remote Control. The controlled host runs the tasks, while the authorized controller can submit instructions, view results, and respond to approvals. Official Remote Control manages pairing and relay transport; CodexHost does not operate a separate relay.
 
 Account features may query the corresponding service for identity and usage information. Installation and updates use GitHub or your configured package registry. These services receive the connection and request information needed to provide those functions.

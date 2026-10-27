@@ -400,7 +400,7 @@ describe("ExternalThreadRuntime register", () => {
         null,
         permissionModes,
         false,
-        "atCreate",
+        "live",
       );
       const model = adapter.catalog.defaultModel;
       if (!model) throw new Error("Fake Grok catalog has no default Model");
@@ -462,7 +462,7 @@ describe("ExternalThreadRuntime register", () => {
       expect(resolved.kind).toBe("external");
       if (resolved.kind !== "external") throw new Error("Grok Thread did not restore");
       expect(execute).not.toHaveBeenCalled();
-      expect(session.capabilities.configuration.permissionModeScope).toBe("atCreate");
+      expect(session.capabilities.configuration.permissionModeScope).toBe("live");
       expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(storedMode);
       expect(resolved.thread.record.transportModelId).toBe(
         encodeGrokTransportModel(model, storedMode),

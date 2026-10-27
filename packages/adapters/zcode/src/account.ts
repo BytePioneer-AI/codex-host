@@ -178,6 +178,13 @@ export async function accountConfig(
     states: Record<string, unknown>;
   };
   startPlan: boolean;
+  /** Whether ZCode Desktop has an active Zhipu account sign-in, entitled or not. */
+  signedIn: boolean;
+  /**
+   * Whether the Start Plan entitlement is known. False when signed in but the balance request
+   * failed, so an empty Start Plan means "could not check", not "no plan".
+   */
+  startPlanChecked: boolean;
   codingPlan: PersonalCodingPlanAccount;
 }> {
   const file = installation.builtinProviderConfig;
@@ -248,6 +255,8 @@ export async function accountConfig(
       states,
     },
     startPlan,
+    signedIn: Boolean(family),
+    startPlanChecked: !family || balanceData !== undefined,
     codingPlan,
   };
 }

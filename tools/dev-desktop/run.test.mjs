@@ -231,6 +231,33 @@ describe("development Desktop start", () => {
     expect(runningDesktopCleanupInvocation("linux")).toBeNull();
   });
 
+  it("limits macOS cleanup to Desktop executables, not bundled Web Host subprocesses", () => {
+    const script = runningDesktopCleanupInvocation("darwin").arguments.at(-1);
+    const systemPattern = script.match(/system_desktop_pattern='([^']+)'/u)?.[1];
+    const userPattern = script.match(/user_desktop_pattern="([^"]+)"/u)?.[1];
+    expect(systemPattern).toBeDefined();
+    expect(userPattern).toBeDefined();
+    for (const [pattern, prefix] of [
+      [systemPattern, "/Applications"],
+      [userPattern.replace("$HOME", "/Users/tester"), "/Users/tester/Applications"],
+    ]) {
+      const matcher = new RegExp(pattern);
+      for (const name of ["ChatGPT", "Codex"]) {
+        const app = `${prefix}/${name}.app/Contents`;
+        expect(matcher.test(`${app}/MacOS/${name}`)).toBe(true);
+        expect(matcher.test(`${app}/MacOS/${name} --remote-debugging-port=9222`)).toBe(true);
+        expect(matcher.test(`${app}/Resources/cua_node/bin/node_repl`)).toBe(false);
+        expect(
+          matcher.test(`${app}/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex app-server`),
+        ).toBe(false);
+        expect(matcher.test(`${app}/Resources/codex app-server`)).toBe(false);
+        expect(matcher.test(`/usr/bin/node server.js --codex-command ${app}/MacOS/${name}`)).toBe(
+          false,
+        );
+      }
+    }
+  });
+
   it("constructs npm and native launcher commands without internal Host environment", () => {
     expect(npmBuildInvocation({ npm_execpath: "/npm/npm-cli.js" }, "linux", "/node")).toEqual({
       command: "/node",

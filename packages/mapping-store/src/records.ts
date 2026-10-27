@@ -41,7 +41,7 @@ const storedGitInfoV1Schema = z
   })
   .strict();
 
-/** Fields of the Thread record file; must stay readable by releases without Desktop metadata. */
+/** Fields owned by the Thread record file; Desktop metadata is stored separately. */
 const storedThreadCoreV1Shape = {
   formatVersion: z.literal(1),
   revision: z.number().int().positive(),
@@ -77,8 +77,7 @@ const storedThreadCoreV1Shape = {
 };
 
 /**
- * Desktop organization metadata. It lives in a separate per-Thread file so that the
- * strict Thread record keeps its pre-metadata shape and an older release can still load it.
+ * Desktop organization metadata, stored separately from the Thread's identity and mappings.
  */
 const storedThreadMetadataFieldsShape = {
   projectId: nonBlankTextSchema.max(1_024).optional(),
@@ -94,7 +93,7 @@ export const storedThreadMetadataV1Schema = z
     hostThreadId: storedHostThreadIdSchema,
     ...storedThreadMetadataFieldsShape,
   })
-  .strict();
+  .passthrough();
 
 export type StoredThreadMetadataV1 = z.infer<typeof storedThreadMetadataV1Schema>;
 
@@ -162,10 +161,10 @@ function refineThreadRecord(
   }
 }
 
-/** The on-disk Thread record, exactly as releases before Desktop metadata wrote it. */
+/** On-disk Thread fields. Unknown fields are retained for forward-compatible writes. */
 export const storedThreadCoreV1Schema = z
   .object(storedThreadCoreV1Shape)
-  .strict()
+  .passthrough()
   .superRefine(refineThreadRecord);
 
 /**
@@ -174,7 +173,7 @@ export const storedThreadCoreV1Schema = z
  */
 export const storedThreadRecordV1Schema = z
   .object({ ...storedThreadCoreV1Shape, ...storedThreadMetadataFieldsShape })
-  .strict()
+  .passthrough()
   .superRefine(refineThreadRecord);
 
 export type StoredThreadRecordV1 = z.infer<typeof storedThreadRecordV1Schema>;

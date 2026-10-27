@@ -3,6 +3,7 @@
  * capacity remains reserved for native Thread/Turn lifecycle operations. */
 export interface RendererRequestOptions {
   readonly priority: "background" | "interactive";
+  readonly timeoutMs?: number;
 }
 
 export class RendererMethodUnavailableError extends Error {

@@ -71,6 +71,13 @@ export type HarnessResult<T> = { ok: true; value: T } | { ok: false; error: Harn
 export interface InspectHarnessInput {
   cwd?: string;
   refresh?: boolean;
+  /**
+   * `availability`: the caller uses only the status and error. An Adapter may then answer
+   * without starting a native Session, so Harnesses the user has not chosen incur no Session
+   * startup work. Its catalog may omit the native default Model and Thinking option, so it must
+   * not stand in for a full inspection.
+   */
+  purpose?: "availability";
 }
 
 export type HarnessExecutionPolicy = "default" | "unattended-full-access";
@@ -139,6 +146,19 @@ export interface HostTextInput {
 
 export interface TurnStartCommand {
   type: "turn.start";
+  turnId: HostTurnId;
+  input: HostTextInput[];
+}
+
+/**
+ * Native same-Turn input. Capability inspection is advisory; the Adapter must recheck the target
+ * and native admission conditions before writing. A failure result guarantees input was not taken.
+ * Once written, an uncertain receipt must not be reported as rejection or retried automatically.
+ * The Harness takes input at its safe boundary without cancelling the Turn. The Host shows accepted
+ * input live; history snapshots group it however the native history does.
+ */
+export interface TurnSteerCommand {
+  type: "turn.steer";
   turnId: HostTurnId;
   input: HostTextInput[];
 }
@@ -257,6 +277,7 @@ export interface HarnessCommandCapability {
 
 export type HostCommand =
   | TurnStartCommand
+  | TurnSteerCommand
   | TurnCancelCommand
   | InteractionRespondCommand
   | ModelSelectCommand
@@ -265,6 +286,10 @@ export type HostCommand =
 
 export interface TurnStartAccepted {
   turnId: HostTurnId;
+}
+
+export interface TurnSteerAccepted {
+  accepted: true;
 }
 
 export interface TurnCancelAccepted {
@@ -297,6 +322,13 @@ export interface HostAgentMessageItem {
    * Set `commentary` to keep such a message out of that inference.
    */
   phase?: "commentary" | "final_answer";
+}
+
+/** User input steered into a running Turn; the Host publishes it when the Harness accepts it. */
+export interface HostUserMessageItem {
+  type: "userMessage";
+  itemId: HostItemId;
+  input: HostTextInput[];
 }
 
 export interface HostReasoningItem {
@@ -379,6 +411,7 @@ export interface HostSubagentDelegationItem {
 }
 
 export type HostItem =
+  | HostUserMessageItem
   | HostAgentMessageItem
   | HostReasoningItem
   | HostContextCompactionItem
@@ -567,6 +600,12 @@ export interface HarnessSession {
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly commands?: HarnessCommandCapability;
 
+  /**
+   * Fresh capabilities for transports whose synchronous property is only an open-time snapshot.
+   * Direct Adapters may omit this and expose live capabilities through the property instead.
+   * A read is advisory: turn.steer must recheck admission before handing input to the Harness.
+   */
+  readCapabilities?(): Promise<HarnessSessionCapabilities>;
   refreshUsage?(): Promise<void>;
   /** Native background work (e.g. a background command) is still running; the Session must not be released. */
   hasBackgroundWork?(): boolean;
@@ -574,6 +613,7 @@ export interface HarnessSession {
   stopBackgroundWork?(): Promise<HarnessResult<void>>;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;

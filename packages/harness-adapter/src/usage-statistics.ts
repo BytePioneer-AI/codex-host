@@ -17,8 +17,25 @@ export interface HarnessUsageStatisticsCapability {
   readModelLabels?(signal: AbortSignal): Promise<Readonly<Record<string, string>>>;
   /** Every unit of native storage that may hold usage, with a fingerprint read without content. */
   listSources(signal: AbortSignal): Promise<readonly HarnessUsageSource[]>;
-  /** The usage entries in one unit. A copied history (a fork) may repeat entry IDs. */
+  /** The usage entries in one unit. A copied history (a fork) may repeat entry IDs.
+   * Throw HarnessUsageSourceChangedError if the listed fingerprint no longer describes the read.
+   */
   readSource(id: string, signal: AbortSignal): Promise<readonly HarnessUsageEntry[]>;
+}
+
+/** A read whose source changed; callers must list sources again before retrying it. */
+export class HarnessUsageSourceChangedError extends Error {
+  readonly code = "HARNESS_USAGE_SOURCE_CHANGED";
+
+  /** Plugins may bundle their own copy of this contract, so instanceof is insufficient. */
+  static is(error: unknown): error is HarnessUsageSourceChangedError {
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "HARNESS_USAGE_SOURCE_CHANGED"
+    );
+  }
 }
 
 export interface HarnessUsageSource {
@@ -77,7 +94,7 @@ export interface HarnessUsageSession {
 
 const MAX_SESSION_ID_LENGTH = 512;
 const MAX_CWD_LENGTH = 4096;
-/** Matches magpie's Codex index cap; long first prompts are cut on a character. */
+/** Match the statistics schema's UTF-16 limit without splitting a code point. */
 const MAX_SESSION_TITLE_LENGTH = 200;
 
 /** Single-line session name, or undefined when the storage has none the Host can show. */
@@ -86,12 +103,12 @@ export function usageSessionTitle(value: unknown): string | undefined {
   const normalized = value.replaceAll("\0", "").replaceAll(/\s+/gu, " ").trim();
   if (!normalized) return undefined;
   if (normalized.length <= MAX_SESSION_TITLE_LENGTH) return normalized;
-  const characters = [...normalized];
-  if (characters.length <= MAX_SESSION_TITLE_LENGTH) return normalized;
-  return `${characters
-    .slice(0, MAX_SESSION_TITLE_LENGTH - 1)
-    .join("")
-    .trimEnd()}…`;
+  let title = "";
+  for (const character of normalized) {
+    if (title.length + character.length >= MAX_SESSION_TITLE_LENGTH) break;
+    title += character;
+  }
+  return `${title.trimEnd()}…`;
 }
 
 function sessionIdOk(value: unknown): value is string {

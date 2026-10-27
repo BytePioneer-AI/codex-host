@@ -393,6 +393,7 @@ export function mountRendererModelPicker(
   label.style.whiteSpace = "nowrap";
 
   const thinkingLabel = document.createElement("span");
+  thinkingLabel.dataset.codexhostModelThinking = "";
   thinkingLabel.style.color = "var(--color-text-tertiary, #8f8f8f)";
   thinkingLabel.style.flex = "0 1 auto";
   thinkingLabel.style.maxWidth = "72px";

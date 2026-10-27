@@ -819,4 +819,71 @@ describe("macOS Aqua Harness broker", () => {
     await adapter.close();
     await server.close();
   });
+
+  it("reads live capabilities and forwards steer without treating a lost reply as rejection", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-harness-broker-"));
+    roots.push(root);
+    const descriptorPath = path.join(root, "broker-v1.json");
+    const socketPath =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\codexhost-harness-broker-${process.pid}-${randomUUID()}`
+        : path.join(root, "broker.sock");
+    const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    native.supportsSteer = true;
+    const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
+    const adapter = new BrokeredHarnessAdapter({ descriptorPath });
+    try {
+      const opened = await adapter.open({ kind: "create", cwd: root });
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.capabilities.steer).toBe(true);
+      const session = native.sessions[0];
+      if (!session) throw new Error("Native Session was not opened");
+      session.capabilities.steer = false;
+      await expect(opened.value.readCapabilities?.()).resolves.toMatchObject({ steer: false });
+      session.capabilities.steer = true;
+      await expect(opened.value.readCapabilities?.()).resolves.toMatchObject({ steer: true });
+      const turnId = hostTurnIdSchema.parse("broker-steer-turn");
+      await expect(
+        opened.value.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "ping" }],
+        }),
+      ).resolves.toEqual({ ok: true, value: { turnId } });
+      await expect(
+        opened.value.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "now" }],
+        }),
+      ).resolves.toEqual({ ok: true, value: { accepted: true } });
+      expect(native.sessions[0]?.steers).toEqual([
+        {
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "now" }],
+        },
+      ]);
+      const execute = session.execute.bind(session);
+      vi.spyOn(session, "execute").mockImplementationOnce(async (command: HostCommand) => {
+        if (command.type !== "turn.steer") throw new Error("expected steer");
+        await execute(command);
+        throw new Error("lost native receipt");
+      });
+      await expect(
+        opened.value.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "receipt lost" }],
+        }),
+      ).rejects.toThrow("lost native receipt");
+      expect(session.steers).toHaveLength(2);
+      await opened.value.close();
+      await expect(opened.value.readCapabilities?.()).rejects.toThrow();
+    } finally {
+      await adapter.close();
+      await server.close();
+    }
+  });
 });

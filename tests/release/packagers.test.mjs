@@ -120,6 +120,9 @@ describe("platform packagers", () => {
     expect(installer).toContain("DefaultDirName={localappdata}\\Programs\\codexhost");
     expect(installer).toContain("PrivilegesRequired=lowest");
     expect(installer).toContain("DisableProgramGroupPage=yes");
+    expect(installer.split(/\r?\n/)).toContain(
+      'Name: "{userdesktop}\\codexhost"; Filename: "{app}\\bin\\codexhost-start.exe"; WorkingDir: "{app}"',
+    );
     expect(installer).toContain("ArchitecturesAllowed=x64compatible");
     expect(installer).toContain("ArchitecturesAllowed=arm64");
   });

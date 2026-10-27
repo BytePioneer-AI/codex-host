@@ -1,14 +1,37 @@
 import { z } from "zod";
 
-import { harnessLocalizationsSchema } from "./harness-presentation.js";
+import { harnessLocalizedTextSchema, harnessLocalizationsSchema } from "./harness-presentation.js";
 import { hostThreadIdSchema } from "./ids.js";
 
 const nonNegativeSafeIntegerSchema = z.number().int().safe().nonnegative();
 const finiteNonNegativeNumberSchema = z.number().finite().nonnegative();
 const cacheHitRatePercentSchema = z.number().finite().min(0).max(100);
 
+const indicatorTextSchema = (maximum: number) =>
+  harnessLocalizedTextSchema.refine((entries) =>
+    Object.values(entries).every((text) => text.length <= maximum),
+  );
+
+export const composerIndicatorsSchema = z
+  .array(
+    z
+      .object({
+        kind: z.literal("countdown"),
+        id: z.string().min(1).max(64),
+        expiresAtUnix: nonNegativeSafeIntegerSchema,
+        label: indicatorTextSchema(256).optional(),
+        tooltip: indicatorTextSchema(1_024).optional(),
+      })
+      .strict(),
+  )
+  .max(2)
+  .refine((entries) => new Set(entries.map(({ id }) => id)).size === entries.length, {
+    message: "Composer indicator IDs must be unique",
+  });
+
 export const threadUsageSnapshotSchema = z
   .object({
+    composerIndicators: composerIndicatorsSchema.optional(),
     inputTokens: nonNegativeSafeIntegerSchema.optional(),
     cachedInputTokens: nonNegativeSafeIntegerSchema.optional(),
     cacheWriteInputTokens: nonNegativeSafeIntegerSchema.optional(),

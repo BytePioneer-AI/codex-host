@@ -10,6 +10,7 @@ import type {
   HarnessUsageStatisticsCapability,
 } from "@codexhost/harness-adapter";
 import {
+  HarnessUsageSourceChangedError,
   jsonlRecords,
   nativeTimeMs,
   parseHarnessUsageEntry,
@@ -36,6 +37,9 @@ const ROW_KINDS = new Set([
 ]);
 const HEAD_TYPE = /"type"\s*:\s*"([^"]+)"/u;
 const TAIL_TYPE = /"type"\s*:\s*"([^"]+)"\s*\}\s*$/u;
+const USER_ROLE = /"role"\s*:\s*"user"/u;
+const EVENT_OF_INTEREST =
+  /"type"\s*:\s*"(?:token_count|task_started|thread_settings_applied|user_message)"/u;
 
 /**
  * Cheap top-level row type guess, confirmed by JSON.parse later. Most rows lead with `type`,
@@ -46,6 +50,11 @@ function rowKind(line: string): string | undefined {
   const head = HEAD_TYPE.exec(line.slice(0, 1024))?.[1];
   if (head && ROW_KINDS.has(head)) return head;
   return TAIL_TYPE.exec(line.slice(-1024))?.[1] ?? head;
+}
+
+/** Whether a marker sits in the head, or at the tail once the row kind is already known. */
+function markerIn(pattern: RegExp, line: string): boolean {
+  return pattern.test(line.slice(0, 1024)) || pattern.test(line.slice(-1024));
 }
 async function stamp(file: string): Promise<string> {
   const s = await lstat(file, { bigint: true });
@@ -129,14 +138,9 @@ export async function readCodexRollouts(
       if (!kind && line.trim()) options.onIncomplete?.();
       if (!kind || !ROW_KINDS.has(kind)) continue;
       // Avoid decoding large tool outputs or conversation bodies which cannot contain usage.
-      if (kind === "response_item" && !/"role"\s*:\s*"user"/u.test(line.slice(0, 1024))) continue;
-      if (
-        kind === "event_msg" &&
-        !/"type"\s*:\s*"(?:token_count|task_started|thread_settings_applied|user_message)"/u.test(
-          line.slice(0, 1024),
-        )
-      )
-        continue;
+      // The row kind is already known, so a marker pushed past 1 KiB can still match the tail.
+      if (kind === "response_item" && !markerIn(USER_ROLE, line)) continue;
+      if (kind === "event_msg" && !markerIn(EVENT_OF_INTEREST, line)) continue;
       let row: Record<string, unknown> | null;
       try {
         row = object(JSON.parse(line));
@@ -190,8 +194,12 @@ export async function readCodexRollouts(
           break;
         }
         case "response_item":
-          counters.boundary();
-          firstPrompt ??= userItemPrompt(p);
+          // Nested content can contain `"role":"user"` without this row being a user message.
+          // Clearing the pending pair on those rows drops the following token count.
+          if (p.type === "message" && p.role === "user") {
+            counters.boundary();
+            firstPrompt ??= userItemPrompt(p);
+          }
           break;
         case "event_msg":
           if (p.type === "task_started") {
@@ -343,7 +351,9 @@ export function createCodexUsageStatistics(
       // Do not cache a parse or prefix proof spanning an append/replacement.
       for (const file of group.files)
         if ((await stamp(file.file)) !== file.fingerprint)
-          throw new Error("Codex rollout changed while reading; refresh to retry");
+          throw new HarnessUsageSourceChangedError(
+            "Codex rollout changed while reading; refresh to retry",
+          );
       const named = options.sessionId ? undefined : (await threadNames(signal)).get(group.thread);
       return named
         ? entries.map((entry) =>

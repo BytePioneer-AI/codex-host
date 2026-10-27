@@ -195,6 +195,30 @@ describe("Renderer draft prewarm policy", () => {
     ).toBeNull();
   });
 
+  it("reads a Host from a registry without waitForManagerForHostId", () => {
+    const manager = fiberRequestManagerFixture();
+    expect(
+      requestManagerFromHookState(
+        { addManager: () => undefined, getForHostId: () => manager },
+        "remote",
+      ),
+    ).toBe(manager);
+  });
+
+  it("returns null when a registry getForHostId throws", () => {
+    expect(
+      requestManagerFromHookState(
+        {
+          addManager: () => undefined,
+          getForHostId: () => {
+            throw new Error("host registry unavailable");
+          },
+        },
+        "remote",
+      ),
+    ).toBeNull();
+  });
+
   it("retries while the current Renderer request manager is mounting", async () => {
     const evaluate = vi
       .fn<() => Promise<unknown>>()

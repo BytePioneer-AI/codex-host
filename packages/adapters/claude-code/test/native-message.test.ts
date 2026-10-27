@@ -1000,6 +1000,7 @@ describe("Claude native Turn interpretation", () => {
       {
         type: "message.completed",
         messageId: "recap-output",
+        localCommand: true,
         checkpointId: "recap-output",
       },
     ]);
@@ -1115,7 +1116,13 @@ describe("Claude native Turn interpretation", () => {
       result({
         total_cost_usd: 1.373,
         modelUsage: {
-          "claude-opus": { inputTokens: 100, outputTokens: 40 },
+          "claude-opus": {
+            inputTokens: 100,
+            outputTokens: 40,
+            cacheReadInputTokens: 900,
+            cacheCreationInputTokens: 50,
+            contextWindow: 1_000_000,
+          },
           "claude-sonnet": { inputTokens: 20, outputTokens: 5 },
         },
         usage: {
@@ -1131,8 +1138,14 @@ describe("Claude native Turn interpretation", () => {
         type: "usage.result",
         totalCostUsd: 1.373,
         modelUsage: [
-          { inputTokens: 100, outputTokens: 40 },
-          { inputTokens: 20, outputTokens: 5 },
+          {
+            model: "claude-opus",
+            inputTokens: 100,
+            outputTokens: 40,
+            promptTokens: 1_050,
+            contextWindowTokens: 1_000_000,
+          },
+          { model: "claude-sonnet", inputTokens: 20, outputTokens: 5, promptTokens: 20 },
         ],
         lastRequestUsage: {
           inputTokens: 10,

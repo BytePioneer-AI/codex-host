@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,11 +9,14 @@ import type {
   HarnessUsageStatisticsCapability,
 } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
+import { HarnessUsageSourceChangedError } from "@codexhost/harness-adapter/usage-statistics";
+import { createUsageStatisticsAdapter } from "@codexhost/adapter-codex-usage/plugin";
 import {
   harnessIdSchema,
   hostThreadIdSchema,
   nativeSessionRefSchema,
   USAGE_STATISTICS_METHOD,
+  usageStatisticsResultSchema,
 } from "@codexhost/shared-contracts";
 
 import { ModelPriceCatalog } from "../src/model-prices.js";
@@ -91,6 +94,122 @@ async function settledGet(stats: UsageStatistics, range: "today" | "7d" | "all" 
 }
 
 describe("UsageStatistics", () => {
+  it("retries an appended Codex rollout on first load and caches its fresh fingerprint", async () => {
+    let now = NOW;
+    const home = path.join(directory, "codex");
+    const sessions = path.join(home, "sessions");
+    await mkdir(sessions, { recursive: true });
+    const thread = "00000000-0000-4000-8000-000000000001";
+    const rollout = path.join(sessions, `rollout-2026-10-05T00-00-00-${thread}.jsonl`);
+    const row = (type: string, payload: unknown) =>
+      `${JSON.stringify({ timestamp: new Date(NOW).toISOString(), type, payload })}\n`;
+    await writeFile(
+      rollout,
+      row("session_meta", { id: thread }) +
+        row("turn_context", { model: "priced-model" }) +
+        row("token_usage_record", {
+          response_id: "first",
+          usage: { input_tokens: 100, output_tokens: 10 },
+        }),
+    );
+    const adapter = createUsageStatisticsAdapter({
+      environment: { CODEX_HOME: home },
+      platform: process.platform,
+      managedRemoteHost: false,
+    });
+    const native = adapter.usageStatistics;
+    let appended = false;
+    const readSource = vi.fn(async (id: string, signal: AbortSignal) => {
+      if (!appended) {
+        appended = true;
+        await appendFile(
+          rollout,
+          row("token_usage_record", {
+            response_id: "second",
+            usage: { input_tokens: 150, output_tokens: 20 },
+          }),
+        );
+      }
+      return native.readSource(id, signal);
+    });
+    const stats = new UsageStatistics({
+      directory: path.join(directory, "usage-statistics"),
+      prices: new ModelPriceCatalog({ directory }),
+      now: () => now,
+    });
+    stats.attach(() => [{ harness: "codex-usage", capability: { ...native, readSource } }]);
+    try {
+      const result = await settledGet(stats);
+      expect(result.failures).toEqual([]);
+      expect(result.reading).toEqual({ complete: true, sources: 1, read: 1 });
+      expect(result.totals).toMatchObject({ requests: 2, inputTokens: 250, outputTokens: 30 });
+      expect(readSource).toHaveBeenCalledTimes(2);
+      now += 11_000;
+      expect((await settledGet(stats)).failures).toEqual([]);
+      expect(readSource).toHaveBeenCalledTimes(2);
+    } finally {
+      stats.close();
+      await adapter.close();
+    }
+  });
+
+  it("bounds changed-source retries, retains prior entries, and reads stable sources once", async () => {
+    let now = NOW;
+    const storage = new FakeStorage(
+      new Map([
+        ["growing", { fingerprint: "1", entries: [entry("old")] }],
+        ["stable", { fingerprint: "1", entries: [entry("stable")] }],
+      ]),
+    );
+    const stats = new UsageStatistics({
+      directory,
+      prices: new ModelPriceCatalog({ directory }),
+      now: () => now,
+    });
+    stats.attach(() => [{ harness: "codex-usage", capability: storage }]);
+    await settledGet(stats);
+    storage.sources.set("growing", { fingerprint: "2", entries: [] });
+    // Installed plugins bundle separate copies of the public error class.
+    const changed = Object.assign(new Error("source keeps changing"), {
+      code: "HARNESS_USAGE_SOURCE_CHANGED",
+    });
+    const reads = vi.spyOn(storage, "readSource").mockImplementation(async () => {
+      throw changed;
+    });
+    const lists = vi.spyOn(storage, "listSources");
+    now += 11_000;
+    try {
+      const result = await settledGet(stats);
+      expect(reads.mock.calls.map(([id]) => id)).toEqual(["growing", "growing", "growing"]);
+      expect(lists).toHaveBeenCalledTimes(3);
+      expect(result.failures).toEqual([
+        { harness: "codex-usage", message: "source keeps changing" },
+      ]);
+      expect(result.totals.requests).toBe(2);
+      expect(result.reading).toEqual({ complete: true, sources: 2, read: 2 });
+    } finally {
+      stats.close();
+    }
+  });
+
+  it("cancels a pending changed-source retry when closed", async () => {
+    const storage = new FakeStorage(new Map([["one", { fingerprint: "1", entries: [] }]]));
+    const started = Promise.withResolvers<undefined>();
+    const read = vi.spyOn(storage, "readSource").mockImplementation(async () => {
+      started.resolve(undefined);
+      throw new HarnessUsageSourceChangedError("changed");
+    });
+    const listed = vi.spyOn(storage, "listSources");
+    const stats = statistics();
+    stats.attach(() => [{ harness: "codex-usage", capability: storage }]);
+    await stats.get("all");
+    await started.promise;
+    stats.close();
+    await stats.settled();
+    expect(listed).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledOnce();
+  });
+
   it("reports a subsequent scan as incomplete until it settles", async () => {
     let now = NOW;
     const storage = new FakeStorage(new Map());
@@ -660,11 +779,77 @@ it("serves statistics through the Host from Adapters that expose local usage", a
     expect(
       await fixture.host.handleConsoleRequest(USAGE_STATISTICS_METHOD, { range: "1y" }),
     ).toMatchObject({ error: { code: -32602 } });
+    expect(
+      await fixture.host.handleConsoleRequest(USAGE_STATISTICS_METHOD, {
+        range: "today",
+        timeZone: "invalid/zone",
+      }),
+    ).toMatchObject({ error: { code: -32602 } });
+    await fixture.ready;
+    const params = { range: "today" as const, timeZone: "Asia/Shanghai" };
+    writeRequest(fixture.desktopInput, { id: 92, method: USAGE_STATISTICS_METHOD, params });
+    expect(await fixture.collector.waitFor((message) => message.id === 92)).toMatchObject({
+      result: await usageStatistics.get(params),
+    });
   } finally {
     usageStatistics.close();
     await stopFixture(fixture);
   }
 });
+
+it.each(["native", "Desktop"])(
+  "returns schema-valid statistics for a long %s emoji title",
+  async (source) => {
+    const title = `${"a".repeat(199)}😀`;
+    const storage = new FakeStorage(
+      new Map([
+        [
+          "one",
+          {
+            fingerprint: "1",
+            entries: [
+              entry("r", {
+                sessionId: "s",
+                sessionTitle: source === "native" ? title : "Native title",
+              }),
+            ],
+          },
+        ],
+      ]),
+    );
+    const records: UsageSessionTitleRecord[] =
+      source === "Desktop"
+        ? [
+            {
+              harnessId: harnessIdSchema.parse("pi"),
+              nativeSessionRef: nativeSessionRefSchema.parse({
+                harnessId: "pi",
+                nativeSessionId: "s",
+                formatVersion: 1,
+              }),
+              state: "ready",
+              title,
+              updatedAt: new Date(NOW).toISOString(),
+            },
+          ]
+        : [];
+    const stats = statistics();
+    stats.attach(
+      () => [{ harness: "pi", capability: storage }],
+      async () => records,
+    );
+    try {
+      const result = await settledGet(stats);
+      expect(usageStatisticsResultSchema.safeParse(result).success).toBe(true);
+      expect(result.sessions[0]?.title).toBe(`${"a".repeat(199)}…`);
+      expect(result.recentSessions?.[0]?.title).toBe(`${"a".repeat(199)}…`);
+      expect(result.totals.requests).toBe(1);
+      if (source === "Desktop") expect(records[0]?.title).toBe(title);
+    } finally {
+      stats.close();
+    }
+  },
+);
 
 it("selects the latest named ready mapping and never borrows titles for a fork", async () => {
   const storage = new FakeStorage(

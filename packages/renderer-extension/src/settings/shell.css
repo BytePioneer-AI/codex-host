@@ -766,6 +766,20 @@
   gap: 18px;
 }
 
+.settings-connections-content {
+  container: settings-connections / inline-size;
+}
+
+@container settings-connections (max-width: 780px) {
+  .settings-connections-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-connection-inspector {
+    position: static;
+  }
+}
+
 .settings-connection-list,
 .settings-connection-inspector {
   overflow: hidden;
@@ -774,14 +788,36 @@
   border-radius: 10px;
 }
 
+.settings-connection-host-header {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-bottom: 1px solid var(--settings-divider);
+}
+
+.settings-connection-update-all {
+  flex: none;
+  margin-right: 10px;
+  white-space: nowrap;
+}
+
+.settings-connection-update-result {
+  margin: 0;
+  padding: 7px 10px;
+  color: var(--settings-muted);
+  font-size: 11px;
+  line-height: 18px;
+  border-bottom: 1px solid var(--settings-divider);
+}
+
 .settings-connection-host-strip {
   display: grid;
+  flex: 1;
   grid-template-columns: 30px minmax(0, 1fr) 30px;
   align-items: center;
   min-width: 0;
   gap: 5px;
   padding: 9px 10px;
-  border-bottom: 1px solid var(--settings-divider);
 }
 
 .settings-connection-host-scroll {
@@ -878,7 +914,7 @@
 .settings-connection-table-header,
 .settings-connection-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(92px, auto) 108px;
+  grid-template-columns: minmax(160px, 1fr) minmax(92px, auto) minmax(108px, max-content);
   align-items: center;
   min-width: 0;
   gap: 10px;
@@ -971,6 +1007,14 @@
   line-height: 18px;
 }
 
+.settings-connection-version-available {
+  flex: none;
+  color: var(--settings-muted);
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
 .settings-connection-row__status::before {
   width: 6px;
   height: 6px;
@@ -1007,6 +1051,7 @@
   justify-content: flex-end;
   min-width: 0;
   gap: 4px;
+  white-space: nowrap;
 }
 
 .settings-connection-row__handle {

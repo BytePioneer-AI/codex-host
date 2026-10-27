@@ -489,7 +489,7 @@ export function renderRendererCreditsControl(
       }),
     );
   }
-  if (label) label.textContent = percent;
+  if (label) label.textContent = `${Math.round(remaining)}%`;
   control.root.style.display = "inline-flex";
   control.trigger.setAttribute("aria-label", title);
   control.trigger.title = title;

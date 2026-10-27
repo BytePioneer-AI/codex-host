@@ -66,11 +66,13 @@ async function runPackagedHost(host, directory, requests) {
   Object.assign(environment, {
     HOME: directory,
     USERPROFILE: directory,
+    CODEX_HOME: path.join(directory, ".codex"),
     CODEXHOST_DATA_DIR: path.join(directory, "data"),
     CODEXHOST_PLUGIN_DIRECTORY: path.join(directory, "user-plugins"),
     CODEXHOST_STOCK_CODEX_PATH: process.execPath,
     CODEXHOST_CLAUDE_COMMAND: path.join(directory, "missing-claude"),
     CODEXHOST_ANTIGRAVITY_COMMAND: path.join(directory, "missing-antigravity"),
+    CODEXHOST_COPILOT_COMMAND: path.join(directory, "missing-copilot"),
   });
   const child = spawn(process.execPath, [host, "app-server"], {
     cwd: directory,

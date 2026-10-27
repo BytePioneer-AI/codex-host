@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -199,6 +199,33 @@ class FakePiTransport implements PiTurnTransport {
 
   autonomous(turn: PiAutonomousTurn): void {
     if (!this.autonomousHandler) throw new Error("No autonomous Pi Turn handler");
+    if (!turn.nativeTurnKey) throw new Error("Fake autonomous Turn has no native Entry");
+    this.history.entries.push(
+      {
+        id: turn.nativeTurnKey,
+        parentId: this.history.leafId,
+        type: "custom_message",
+        customType: "intercom_message",
+        content: "background result",
+        display: false,
+      },
+      {
+        id: `${turn.nativeTurnKey}-answer`,
+        parentId: turn.nativeTurnKey,
+        type: "message",
+        message: {
+          role: "assistant",
+          content: turn.result.text,
+          stopReason:
+            turn.result.status === "cancelled"
+              ? "aborted"
+              : turn.result.status === "failed"
+                ? "error"
+                : "stop",
+        },
+      },
+    );
+    this.history.leafId = `${turn.nativeTurnKey}-answer`;
     this.autonomousHandler(turn);
   }
 
@@ -660,32 +687,25 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
-  it.each([false, true])("supports alias Fast (uncached cwd: %s)", async (liveSelection) => {
+  it.each(
+    ["openai-codex-responses", "openai-responses"].flatMap((api) =>
+      [false, true].map((liveSelection) => ({ api, liveSelection })),
+    ),
+  )("supports Fast ($api, uncached: $liveSelection)", async ({ api, liveSelection }) => {
     const home = await mkdtemp(path.join(os.tmpdir(), "pi-fast-adapter-"));
-    await mkdir(path.join(home, ".pi/agent"), { recursive: true });
-    await mkdir(path.join(home, ".codex"));
-    const claims = Buffer.from(
-      JSON.stringify({ iss: "https://auth.openai.com", client_id: "app_EMoamEEZ73f0CkXaXp7hrann" }),
-    ).toString("base64url");
-    await writeFile(
-      path.join(home, ".pi/agent/auth.json"),
-      JSON.stringify({
-        "synthetic-provider": { type: "oauth", access: `header.${claims}.signature` },
-      }),
-    );
-    await writeFile(
-      path.join(home, ".codex/models_cache.json"),
-      JSON.stringify({
-        models: [{ slug: "synthetic-model", service_tiers: [{ id: "priority" }] }],
-      }),
-    );
+    let fastAvailable = true;
     const transports: FakePiTransport[] = [];
     const adapter = new PiAdapter(
       { environment: { HOME: home } },
       {
         createTransport: () => {
           const transport = new FakePiTransport();
-          transport.supportsFastMode.mockResolvedValue(true);
+          transport.state.modelId = "synthetic-GPT-model";
+          transport.getAvailableModels.mockResolvedValue([
+            { provider: "synthetic-provider", id: "synthetic-GPT-model", reasoning: true, api },
+            { provider: "synthetic-provider", id: "alternate-model", reasoning: false, api },
+          ]);
+          transport.supportsFastMode.mockImplementation(async () => fastAvailable);
           transport.getCommands.mockResolvedValue([
             {
               name: "codexhost-fast-mode",
@@ -701,7 +721,10 @@ describe("Pi HarnessAdapter Session", () => {
     try {
       const inspection = await adapter.inspect({ cwd: home });
       if (inspection.status !== "ready") throw new Error("Inspection failed");
-      const base = encodePiModelRef({ provider: "synthetic-provider", id: "synthetic-model" });
+      const base = encodePiModelRef({
+        provider: "synthetic-provider",
+        id: "synthetic-GPT-model",
+      });
       const fast = inspection.catalog.models.find((model) => model.ref.id === base.id)?.fastModel;
       if (!fast) throw new Error("Missing Fast choice");
       expect(
@@ -807,7 +830,7 @@ describe("Pi HarnessAdapter Session", () => {
         ok: true,
         value: { initialState: { effectiveModel: fast } },
       });
-      await rm(path.join(home, ".codex/models_cache.json"));
+      fastAvailable = false;
       await adapter.inspect({ cwd: home, refresh: true });
       const restoredWithoutSupport = await adapter.open({
         kind: "resume",
@@ -1115,6 +1138,106 @@ describe("Pi HarnessAdapter Session", () => {
     }
   });
 
+  it.each([
+    { operation: "fork" as const, key: "source-user-1", nextHuman: false, ok: false },
+    { operation: "fork" as const, key: "custom-1", nextHuman: false, ok: true },
+    { operation: "fork" as const, key: "custom-1", nextHuman: true, ok: true },
+    { operation: "rollbackLastTurn" as const, key: "custom-1", nextHuman: false, ok: false },
+    { operation: "rollbackLastTurn" as const, key: "custom-1", nextHuman: true, ok: true },
+  ])(
+    "uses only exact native boundaries: $operation $key, following human=$nextHuman",
+    async ({ operation, key, nextHuman, ok }) => {
+      const { adapter, dependencies, transports } = fixture();
+      const history = sourceHistory(1);
+      history.entries.push(
+        {
+          id: "custom-1",
+          parentId: history.leafId,
+          type: "custom_message",
+          customType: "intercom_message",
+          content: "background result",
+          display: false,
+        },
+        {
+          id: "custom-answer",
+          parentId: "custom-1",
+          type: "message",
+          message: { role: "assistant", content: "follow-up", stopReason: "stop" },
+        },
+      );
+      history.leafId = "custom-answer";
+      if (nextHuman) {
+        history.entries.push(
+          {
+            id: "next-user",
+            parentId: history.leafId,
+            type: "message",
+            message: { role: "user", content: "next" },
+          },
+          {
+            id: "next-answer",
+            parentId: "next-user",
+            type: "message",
+            message: { role: "assistant", content: "next answer", stopReason: "stop" },
+          },
+        );
+        history.leafId = "next-answer";
+      }
+      const original = structuredClone(history);
+      vi.mocked(dependencies.createTransport).mockImplementationOnce(() => {
+        const transport = new FakePiTransport();
+        transport.state = { ...transport.state, sessionId: "startup-copy" };
+        transport.history = structuredClone(history);
+        transports.push(transport);
+        return transport;
+      });
+      const sourceRef = nativeSessionRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "source-session",
+        locator: { sessionFile: "/synthetic/source.jsonl" },
+        formatVersion: 1,
+      });
+      const opened = await adapter.open(
+        operation === "fork"
+          ? {
+              kind: "fork",
+              cwd: "/synthetic",
+              sourceRef,
+              checkpoint: nativeCheckpointRefSchema.parse({
+                harnessId: "pi",
+                nativeSessionId: "source-session",
+                checkpointId: key,
+                formatVersion: 1,
+              }),
+            }
+          : { kind: "rollbackLastTurn", cwd: "/synthetic", sourceRef },
+      );
+      expect(opened.ok).toBe(ok);
+      const transport = transports[0];
+      if (opened.ok) {
+        const snapshot = await opened.value.readSnapshot();
+        expect(snapshot).toMatchObject({
+          ok: true,
+          value: {
+            turns: [
+              { nativeTurnRef: { nativeTurnKey: "source-user-1" } },
+              { nativeTurnRef: { nativeTurnKey: "custom-1" } },
+            ],
+          },
+        });
+        if (nextHuman) expect(transport?.fork).toHaveBeenCalledWith("next-user");
+        else expect(transport?.fork).not.toHaveBeenCalled();
+        await opened.value.close();
+      } else {
+        expect(opened.error.code).toBe(operation === "fork" ? "checkpointNotFound" : "unsupported");
+        expect(transport?.fork).not.toHaveBeenCalled();
+        expect(transport?.close).toHaveBeenCalled();
+      }
+      expect(history).toEqual(original);
+      await adapter.close();
+    },
+  );
+
   it("rolls back the last Pi Turn and restores current Model and Thinking", async () => {
     const { adapter, dependencies, transports } = fixture();
     const inputHistory = sourceHistory(2);
@@ -1416,7 +1539,7 @@ describe("Pi HarnessAdapter Session", () => {
     await session.close();
   });
 
-  it("projects a lazy-transport autonomous Turn with native identity and no Checkpoint", async () => {
+  it("projects an autonomous Turn with the same identity and Checkpoint as history", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -1475,7 +1598,22 @@ describe("Pi HarnessAdapter Session", () => {
       },
       outcome: { status: "succeeded" },
     });
-    expect(completed).not.toHaveProperty("outcome.checkpoint");
+    expect(completed).toHaveProperty("outcome.checkpoint.checkpointId", "pi-autonomous-response");
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          { nativeTurnRef: { nativeTurnKey: "synthetic-user-1" } },
+          {
+            nativeTurnRef: { nativeTurnKey: "pi-autonomous-response" },
+            input: [],
+            checkpoint: { checkpointId: "pi-autonomous-response" },
+          },
+        ],
+      },
+    });
+    if (snapshot.ok) expect(snapshot.value.turns[0]).not.toHaveProperty("checkpoint");
     await session.close();
   });
 
@@ -1510,7 +1648,7 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
-  it("projects autonomous cancellation and failure without manufacturing Checkpoints", async () => {
+  it("uses persisted autonomous boundaries for cancellation and failure", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -1549,7 +1687,7 @@ describe("Pi HarnessAdapter Session", () => {
         nativeTurnRef: { nativeTurnKey: key },
         outcome: { status: expectedStatus },
       });
-      expect(completed).not.toHaveProperty("outcome.checkpoint");
+      expect(completed).toHaveProperty("outcome.checkpoint.checkpointId", key);
     }
     await session.close();
   });

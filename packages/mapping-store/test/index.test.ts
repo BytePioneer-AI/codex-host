@@ -306,7 +306,7 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
-  it("rejects content fields and cross-Session Checkpoints", () => {
+  it("retains unknown fields but rejects cross-Session Checkpoints", () => {
     const base = {
       formatVersion: 1,
       revision: 1,
@@ -325,9 +325,9 @@ describe("mapping-store package", () => {
       createdAt: new Date(0).toISOString(),
       updatedAt: new Date(0).toISOString(),
     };
-    expect(storedThreadRecordV1Schema.safeParse({ ...base, transcript: "secret" }).success).toBe(
-      false,
-    );
+    expect(storedThreadRecordV1Schema.parse({ ...base, futureField: "opaque" })).toMatchObject({
+      futureField: "opaque",
+    });
     expect(
       storedThreadRecordV1Schema.safeParse({
         ...base,
@@ -759,12 +759,14 @@ describe("mapping-store package", () => {
     await first.updateMetadata(threadId, { gitInfo: { sha: "abc123" } });
     await first.close();
 
-    // storedThreadCoreV1Schema is the strict record shape older releases accept.
     for (const file of ["threads", "backups"].map((name) =>
       path.join(directory, name, `${threadId}.json`),
     )) {
       const onDisk = JSON.parse(await readFile(file, "utf8"));
       expect(storedThreadCoreV1Schema.safeParse(onDisk).success).toBe(true);
+      for (const field of ["projectId", "daybreakEnabled", "gitInfo"]) {
+        expect(onDisk).not.toHaveProperty(field);
+      }
     }
 
     const second = new MappingStore({ directory });

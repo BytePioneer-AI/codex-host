@@ -72,6 +72,9 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   readonly cancel = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   readonly setModel = vi.fn(async () => undefined);
+  readonly setPermissionMode = vi.fn<GrokAcpTransportLike["setPermissionMode"]>(
+    async () => undefined,
+  );
   readonly deleteSession = vi.fn(async (sessionId: string) => {
     this.histories.delete(sessionId);
   });
@@ -355,7 +358,7 @@ describe("Grok Adapter ACP projection", () => {
         configuration: {
           selectModel: true,
           selectPermissionMode: true,
-          permissionModeScope: "atCreate",
+          permissionModeScope: "live",
         },
       },
     });
@@ -410,18 +413,21 @@ describe("Grok Adapter ACP projection", () => {
 
     expect(transport.openCalls).toContainEqual({ kind: "create", permissionModeId: auto });
     expect(opened.value.initialState.effectivePermissionModeId).toBe(auto);
-    expect(opened.value.capabilities.configuration.permissionModeScope).toBe("atCreate");
+    expect(opened.value.capabilities.configuration.permissionModeScope).toBe("live");
+    expect(transport.setPermissionMode).toHaveBeenCalledWith(auto);
     await expect(
       opened.value.execute({ type: "permissionMode.select", permissionModeId: alwaysApprove }),
     ).resolves.toEqual({
-      ok: false,
-      error: {
-        code: "invalidRequest",
-        message: "Grok Permission Mode is fixed at Session creation",
-        retryable: false,
-      },
+      ok: true,
+      value: { completed: true },
     });
+    expect(transport.setPermissionMode).toHaveBeenLastCalledWith(alwaysApprove);
     expect(opened.value.initialState.effectivePermissionModeId).toBe(auto);
+    const snapshot = await opened.value.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: { state: { effectivePermissionModeId: alwaysApprove } },
+    });
 
     await adapter.close();
   });
@@ -457,10 +463,139 @@ describe("Grok Adapter ACP projection", () => {
         permissionModeId,
       });
       expect(opened.value.initialState.effectivePermissionModeId).toBe(permissionModeId);
+      expect(transport.setPermissionMode).toHaveBeenCalledWith(permissionModeId);
 
       await adapter.close();
     },
   );
+
+  it("publishes permission state only after native confirmation and serializes configuration", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const confirmation = Promise.withResolvers<undefined>();
+    transport.setPermissionMode.mockReturnValueOnce(confirmation.promise);
+    const events: HostEvent[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs)
+        if (output.kind === "event") events.push(output.event);
+    })();
+    const auto = harnessPermissionModeIdSchema.parse("auto");
+    try {
+      const selection = session.execute({ type: "permissionMode.select", permissionModeId: auto });
+      await Promise.resolve();
+      expect(events.filter((e) => e.type === "session.state.changed")).toEqual([]);
+      await expect(
+        session.execute({ type: "permissionMode.select", permissionModeId: auto }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      await expect(
+        session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("permission-pending"),
+          input: [{ type: "text", text: "wait" }],
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      confirmation.resolve(undefined);
+      await expect(selection).resolves.toEqual({ ok: true, value: { completed: true } });
+      expect(events.filter((e) => e.type === "session.state.changed")).toMatchObject([
+        { state: { effectivePermissionModeId: auto } },
+      ]);
+    } finally {
+      confirmation.resolve(undefined);
+      await adapter.close();
+      await collecting;
+    }
+  });
+
+  it("does not publish unconfirmed permissions or accept invalid modes", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    try {
+      transport.setPermissionMode.mockRejectedValueOnce(new Error("confirmation failed"));
+      await expect(
+        session.execute({
+          type: "permissionMode.select",
+          permissionModeId: harnessPermissionModeIdSchema.parse("auto"),
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { message: "confirmation failed" } });
+      expect(await session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { state: { effectivePermissionModeId: "ask" } },
+      });
+      const calls = transport.setPermissionMode.mock.calls.length;
+      await expect(
+        session.execute({
+          type: "permissionMode.select",
+          permissionModeId: harnessPermissionModeIdSchema.parse("foreign"),
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      expect(transport.setPermissionMode).toHaveBeenCalledTimes(calls);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("does not open a Session when its startup permissions cannot be confirmed", async () => {
+    const transport = new FakeGrokTransport();
+    transport.setPermissionMode.mockRejectedValue(
+      new GrokTransportError("protocolError", "not confirmed"),
+    );
+    const adapter = new GrokAdapter(
+      {},
+      {
+        createTransport: () => transport,
+        randomUUID: () => "grok-id",
+        fetchCredits: async () => null,
+      },
+    );
+    await expect(adapter.open({ kind: "create", cwd: "/synthetic" })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "protocolError" },
+    });
+    expect(transport.close).toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("rejects permission changes during a Turn and does not publish after close", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const mode = harnessPermissionModeIdSchema.parse("auto");
+    const events: HostEvent[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs)
+        if (output.kind === "event") events.push(output.event);
+    })();
+    try {
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("permission-busy"),
+        input: [{ type: "text", text: "work" }],
+      });
+      await expect(
+        session.execute({ type: "permissionMode.select", permissionModeId: mode }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      expect(transport.setPermissionMode).toHaveBeenCalledTimes(1);
+      transport.finish();
+      await vi.waitFor(() => expect(events.some((e) => e.type === "turn.completed")).toBe(true));
+      const confirmation = Promise.withResolvers<undefined>();
+      transport.setPermissionMode.mockReturnValueOnce(confirmation.promise);
+      const selection = session.execute({ type: "permissionMode.select", permissionModeId: mode });
+      await session.close();
+      confirmation.resolve(undefined);
+      await expect(selection).resolves.toMatchObject({
+        ok: false,
+        error: { code: "invalidState" },
+      });
+      expect(
+        events.some(
+          (e) => e.type === "session.state.changed" && e.state.effectivePermissionModeId === mode,
+        ),
+      ).toBe(false);
+    } finally {
+      transport.finish();
+      await adapter.close();
+      await collecting;
+    }
+  });
 
   it("passes the requested Model into Grok Session creation", async () => {
     const transport = new FakeGrokTransport();
@@ -2107,9 +2242,14 @@ describe("Grok Adapter ACP projection", () => {
     const source = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
-      permissionModeId: alwaysApprove,
     });
     if (!source.ok) throw new Error(source.error.message);
+    expect(
+      await source.value.execute({
+        type: "permissionMode.select",
+        permissionModeId: alwaysApprove,
+      }),
+    ).toEqual({ ok: true, value: { completed: true } });
     const sourceRef = source.value.initialState.nativeRef;
     if (!sourceRef) throw new Error("Created Session is missing its Native reference");
     const sourceHistory: GrokTransportEvent[] = [
@@ -2137,6 +2277,7 @@ describe("Grok Adapter ACP projection", () => {
     if (!forked.ok) throw new Error(forked.error.message);
 
     expect(forked.value.initialState.effectivePermissionModeId).toBe(alwaysApprove);
+    expect(transport.setPermissionMode).toHaveBeenLastCalledWith(alwaysApprove);
     await source.value.close();
     await forked.value.close();
   });
@@ -2438,6 +2579,7 @@ describe("Grok Adapter ACP projection", () => {
     expect(transport.rewindCalls).toEqual([
       { kind: "rewind", sessionId: "source-session", targetPromptIndex: 1 },
     ]);
+    expect(transport.setPermissionMode).toHaveBeenLastCalledWith("ask");
     await opened.value.close();
   });
 

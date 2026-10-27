@@ -2,6 +2,7 @@ import type { CdpClient } from "./cdp-client.js";
 import { committedReactAncestors } from "./renderer-react-ownership.js";
 import { retainRendererHostResponses } from "./renderer-host-response-ownership.js";
 import { createDraftPrewarmPolicyBridge } from "./renderer-draft-prewarm-runtime.js";
+import { isolateRendererPrewarmConsumption } from "./renderer-prewarm-consumption.js";
 import {
   discoverRendererHosts,
   requestManagerFromHookState,
@@ -31,12 +32,14 @@ function directRendererInstaller(): string {
     const resolveRendererHostManager = ${resolveRendererHostManager.toString()};
     const retainRendererHostResponses = ${retainRendererHostResponses.toString()};
     const createDraftPrewarmPolicyBridge = ${createDraftPrewarmPolicyBridge.toString()};
+    const isolateRendererPrewarmConsumption = ${isolateRendererPrewarmConsumption.toString()};
     const routing = (${installRendererHostRouting.toString()})(
       document, window,
       (root) => discoverRendererHosts(root, committedReactAncestors, requestManagerFromHookState),
       (discovery, hostId) => resolveRendererHostManager(discovery, hostId, requestManagerFromHookState),
       (manager, bridge, hostId, target, prewarmed, isCurrent) => createDraftPrewarmPolicyBridge(
         manager, bridge, hostId, target, prewarmed, isCurrent, retainRendererHostResponses,
+        isolateRendererPrewarmConsumption,
       ),
     );
     // Publish a default draft policy only when its Host is unambiguous. Host

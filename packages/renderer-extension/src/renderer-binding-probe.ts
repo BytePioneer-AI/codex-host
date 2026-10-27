@@ -816,6 +816,14 @@ export function installRendererBindingProbe(
     disposed: () => disposed,
   });
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
+    harnessSchedules: {
+      getModelClient: () => modelClientForHost("local"),
+      connect: () => {
+        const routing = window.__codexhostHostRoutingV1;
+        if (!routing) return Promise.reject(new Error("Desktop local connection is unavailable"));
+        return connectDesktopHarnessSchedules(window.document, routing);
+      },
+    },
     getRemoteConnections: () => remoteConnections,
     getUpdateClient: () => modelControl,
     getAccountClient: () => modelControl,
@@ -3350,3 +3358,4 @@ export function installRendererBindingProbe(
   scan();
   return api;
 }
+import { connectDesktopHarnessSchedules } from "@codexhost/desktop-control/renderer-bindings";

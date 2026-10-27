@@ -232,7 +232,7 @@ it("keeps selections per Host rather than copying a carrier to the newly active 
     await fixture.remote.requestClient.sendRequest("thread/start", { model: "native-model" });
     expect(remoteSend).toHaveBeenCalledWith("thread/start", { model: "native-model" });
     await fixture.local.requestClient.sendRequest("thread/start", { model: "native-model" });
-    expect(localSend).toHaveBeenCalledWith("thread/start", { model: "codexhost/pi-native" });
+    expect(localSend).toHaveBeenCalledWith("thread/start", { model: "native-model" });
   } finally {
     routing.dispose();
   }

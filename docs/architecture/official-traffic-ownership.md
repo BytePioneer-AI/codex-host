@@ -13,6 +13,14 @@ Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和
 
 只有确认归属后才做严格校验并返回 `-32602` 等错误。带 codexhost 前缀但格式非法的标记或游标直接报错，不回落官方。
 
+## Desktop 创建入口
+
+Renderer 请求桥不使用 Host 上最后一次选择覆盖 `thread/start`。普通外部草稿通过当前 `client-new-thread` 身份绑定的原生草稿 setter 携带 transport Model，设置 `modelSettingsPersistAsDefault: false`，不修改官方默认 Model；切回 Codex 时恢复该草稿的原始设置。无法验证草稿 setter 或原生创建接入时，外部草稿不可提交。已有 Thread 继续依据持久化归属，不写入草稿设置。
+
+Desktop 26.1021 的原生预热池按工作目录匹配。每次创建使用独立的消费检查：官方创建不能消费外部预热，外部创建只能消费与本次 transport Model 一致的预热。检查读取本次创建参数，异步准备期间不依赖全局选择。错配的外部预热通过既有未提交预热释放接口清理；普通草稿的配置失效和预热接管规则保持不变。显式任务创建使用独立创建操作跳过普通草稿预热，正文不在创建时执行。
+
+官方定时任务入口没有外部草稿配置，保留原生 Codex Model 和创建路径。官方列表中已有外部任务仍按原 Thread 的持久化 Harness 归属执行。固定聊天任务的接入限制见[外部 Harness 定时任务](../product/harness-schedules.md)。
+
 ## 共同参与的请求
 
 - `thread/list`：Host 能完整解码时合并外部 Thread；解码失败且不带 Host 游标时整条转发官方，此页只显示官方结果。

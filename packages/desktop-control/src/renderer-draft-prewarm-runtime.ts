@@ -1,4 +1,5 @@
 import { retainRendererHostResponses } from "./renderer-host-response-ownership.js";
+import { isolateRendererPrewarmConsumption } from "./renderer-prewarm-consumption.js";
 
 export interface DraftPrewarmPolicyTarget {
   [key: string]: unknown;
@@ -39,6 +40,7 @@ export function createDraftPrewarmPolicyBridge(
   prewarmedThreadManager: RendererPrewarmedThreadManager,
   isCurrentManager?: () => boolean,
   retainResponses: typeof retainRendererHostResponses = retainRendererHostResponses,
+  isolateConsumption: typeof isolateRendererPrewarmConsumption = isolateRendererPrewarmConsumption,
 ) {
   let disposed = false;
   const originalSend = bridge.sendRequest;
@@ -490,15 +492,6 @@ export function createDraftPrewarmPolicyBridge(
       (method.startsWith("thread/") || method.startsWith("turn/") || method.startsWith("review/"))
     );
   };
-  const routeThreadStart = (parameters: unknown): unknown => {
-    if (!isRecord(parameters) || parameters.ephemeral === true) {
-      return parameters;
-    }
-    return {
-      ...parameters,
-      ...(selectedModel === null ? {} : { model: selectedModel }),
-    };
-  };
   const routedSend = (method: string, parameters: unknown, options?: unknown): unknown => {
     if (
       method === "turn/start" ||
@@ -508,7 +501,7 @@ export function createDraftPrewarmPolicyBridge(
       const threadId = threadIdFromParameters(parameters);
       if (threadId) externalPrewarms.delete(threadId);
     }
-    const routedParameters = method === "thread/start" ? routeThreadStart(parameters) : parameters;
+    const routedParameters = parameters;
     const sendBridged = (): Promise<unknown> =>
       initializeBridge().then(
         () => enqueueBridgeRequest(method, routedParameters, options) as Promise<unknown>,
@@ -581,8 +574,9 @@ export function createDraftPrewarmPolicyBridge(
   const discardExternalPrewarms = (): void => {
     for (const threadId of externalPrewarms) discardExternalPrewarm(threadId);
   };
+  const restoreConsumption = isolateConsumption(manager, discardExternalPrewarm);
   const routedPrewarm = (parameters: unknown, options?: unknown): unknown => {
-    const routed = routeThreadStart(parameters);
+    const routed = parameters;
     const external =
       isRecord(routed) &&
       routed.ephemeral !== true &&
@@ -668,6 +662,15 @@ export function createDraftPrewarmPolicyBridge(
   const policy = Object.freeze({
     state: "ready" as const,
     hostId,
+    scopedCreation: restoreConsumption !== null,
+    createScheduledConversation(
+      input: Record<string, unknown>,
+      readThreadCreationInputs: unknown,
+    ): Promise<unknown> {
+      if (disposed || !restoreConsumption || (isCurrentManager && !isCurrentManager()))
+        return Promise.reject(new Error("Native empty chat creation is unavailable"));
+      return restoreConsumption.createScheduledConversation(input, readThreadCreationInputs);
+    },
     owns(
       candidateManager: RendererHostRequestManager,
       candidate: RendererHostRequestBridge,
@@ -715,6 +718,7 @@ export function createDraftPrewarmPolicyBridge(
       disposed = true;
       prewarmGeneration += 1;
       retireResponses();
+      restoreConsumption?.dispose();
       if (bridge.sendRequest === routedSend) bridge.sendRequest = originalSend;
       if (bridge.prewarmThreadStart === routedPrewarm) {
         bridge.prewarmThreadStart = originalPrewarm;

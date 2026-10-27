@@ -30,6 +30,10 @@ const { outputFiles } = await build({
           };
           return {
             calls, requestClient,
+            threadCreation: {
+              params: { prewarmedThreadManager: { hasPrewarmedThread: () => false, consumePrewarmedThread: async () => null, deletePrewarmedThread: () => undefined } },
+              createConversation: async () => undefined,
+            },
             getHostId: () => hostId,
             sendRequest(method, params) { return this.requestClient.sendRequest(method, params); },
             prewarmedThreadManager: { discardAllPrewarmedThreads: () => undefined },
@@ -54,11 +58,17 @@ const { outputFiles } = await build({
           memoizedState: { memoizedState: registry, next: { memoizedState: local, next: null } },
           return: null,
         };
+        let draft = { modelSettings: { model: "native-model", reasoningEffort: "high" }, isManuallyChanged: false };
+        const updateDraft = (update) => { draft = update(draft); };
+        const row = Array(14).fill(null);
+        Object.assign(row, { 6: "client-new-thread:fixture", 7: "client-new-thread:fixture", 9: updateDraft,
+          10: draft, 11: true, 12: updateDraft, 13: { draftSettings: draft, isNewThreadDraft: true, updateDraftSettings: updateDraft } });
+        fiber.updateQueue = { memoCache: { data: [row] } };
         Object.defineProperty(editor, "__reactFiber$host", { value: fiber });
         document.body.replaceChildren(editor);
         await installRendererDraftPrewarmPolicyDirect({ evaluate: (source) => (0, eval)(source) });
         const adapter = installCurrentRendererAdapter();
-        globalThis.hostRoutes = { adapter, fiber, local, remote, managers, createManager, editor };
+        globalThis.hostRoutes = { adapter, fiber, local, remote, managers, createManager, editor, readDraft: () => draft };
       };
     `,
     resolveDir: path.resolve(import.meta.dirname, "../.."),
@@ -164,14 +174,16 @@ test("switching Hosts does not send a local external carrier to stock remote Cod
   await setup(page, "local");
   const result = await page.evaluate(async () => {
     const state = Reflect.get(globalThis, "hostRoutes");
-    state.adapter.applyAgent("pi");
+    state.adapter.applyAgent("pi", undefined, undefined, undefined, state.editor);
     state.fiber.memoizedProps.executionTargetHostId = state.remote.getHostId();
     state.adapter.modelControl.currentHostId();
+    state.adapter.applyAgent("codex", undefined, undefined, undefined, state.editor);
     await state.remote.requestClient.sendRequest("thread/start", { model: "native-model" });
     await state.local.requestClient.sendRequest("thread/start", { model: "native-model" });
     state.adapter.dispose();
     await state.local.requestClient.sendRequest("thread/start", { model: "native-model" });
     return {
+      restoredDraft: state.readDraft().modelSettings.model,
       remote: state.remote.calls
         .filter((call: RecordedRequest) => call.method === "thread/start")
         .map((call: RecordedRequest) => call.params.model),
@@ -181,7 +193,44 @@ test("switching Hosts does not send a local external carrier to stock remote Cod
     };
   });
   expect(result).toEqual({
+    restoredDraft: "native-model",
     remote: ["native-model"],
-    local: ["codexhost/pi-native", "native-model"],
+    local: ["native-model", "native-model"],
   });
+});
+
+test("only the identified external draft carries its selection into native creation", async ({
+  page,
+}) => {
+  await setup(page, "local");
+  const result = await page.evaluate(async () => {
+    const state = Reflect.get(globalThis, "hostRoutes");
+    const selected = state.adapter.applyAgent(
+      "pi",
+      { id: "pi-test" },
+      undefined,
+      undefined,
+      state.editor,
+    );
+    const draft = state.readDraft();
+    await Promise.all([
+      state.local.requestClient.sendRequest("thread/start", { model: "official-task-model" }),
+      state.local.requestClient.sendRequest("thread/start", { model: draft.modelSettings.model }),
+    ]);
+    state.adapter.applyAgent("codex", undefined, undefined, undefined, state.editor);
+    return {
+      selected,
+      persist: draft.modelSettingsPersistAsDefault,
+      external: draft.modelSettings.model,
+      requests: state.local.calls
+        .filter((call: RecordedRequest) => call.method === "thread/start")
+        .map((call: RecordedRequest) => call.params.model),
+      restored: state.readDraft().modelSettings.model,
+    };
+  });
+  expect(result.selected).toBe(true);
+  expect(result.persist).toBe(false);
+  expect(result.external).toMatch(/^codexhost\//u);
+  expect(result.requests).toEqual(["official-task-model", result.external]);
+  expect(result.restored).toBe("native-model");
 });

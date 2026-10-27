@@ -3,6 +3,8 @@ import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js"
 import { getSharedAgentGroupPreferenceStore } from "./agent-group-preference.js";
 import {
   committedReactAncestors,
+  createScopedDraftModelWriter,
+  findScopedDraftUpdater,
   REACT_FIBER_WALK_LIMIT_EVENT,
   type RendererHostRoute,
   type RendererHostRouting,
@@ -1052,6 +1054,7 @@ export function installCurrentRendererAdapter(): {
   });
 
   const selectedPolicies = new Map<string, RendererDraftPrewarmPolicy>();
+  const draftModels = createScopedDraftModelWriter();
   const handleRoutingPolicyChange = (): void => {
     currentRequestRoute();
   };
@@ -1079,6 +1082,15 @@ export function installCurrentRendererAdapter(): {
     const route = window.__codexhostHostRoutingV1?.forComposer(composer);
     if (!route) return false;
     try {
+      const target = composer ? findComposerModelTarget(composer) : null;
+      if (target?.[0] === "conversation") return true;
+      if (target?.[0] !== "default" || typeof target[1] !== "string" || !composer)
+        return agent === "codex";
+      const update = findScopedDraftUpdater(composer, target[1]);
+      const draftKey = target[1];
+      if (!update || !route.policy.scopedCreation)
+        return agent === "codex" && !draftModels.has(draftKey);
+      draftModels.apply(draftKey, update, carrier ?? null);
       if (route.policy.select(carrier ?? null)) {
         modelUpdates += 1;
         liveStatus.modelUpdates = modelUpdates;
@@ -1097,6 +1109,7 @@ export function installCurrentRendererAdapter(): {
     dispose() {
       if (disposed) return;
       disposed = true;
+      draftModels.dispose();
       window.removeEventListener(
         "codexhost:draft-prewarm-policy-changed",
         handleRoutingPolicyChange,

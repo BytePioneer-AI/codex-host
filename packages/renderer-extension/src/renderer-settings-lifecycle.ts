@@ -2,6 +2,7 @@ import type { RendererUsageStatisticsRequest } from "./console/pages/usage-stati
 import type { RendererUsageStatisticsHostsProvider } from "./console/usage/usage-hosts.js";
 import type { RemoteConnectionsControl } from "./remote-connections-control.js";
 import type { LoadedSessionsClient } from "./settings/loaded-sessions-table.js";
+import type { HarnessSchedulesPageOptions } from "./settings/harness-schedules-page.js";
 import { readCodexLocaleSettings, type CodexLocaleSettings } from "./codex-locale-adapter.js";
 import {
   rendererSettingsMessages,
@@ -28,6 +29,7 @@ const UPDATE_CHECK_TIMEOUT_MS = 5_000;
 const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
 
 export interface RendererSettingsLifecycleOptions {
+  harnessSchedules?: HarnessSchedulesPageOptions;
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
   getAccountClient?(): RendererCodexAccountClient | null;
@@ -87,6 +89,7 @@ export function installRendererSettingsLifecycle(
       options.getRemoteConnections ?? (() => null),
       options.requestUsageStatistics,
       options.usageStatisticsHosts,
+      options.harnessSchedules,
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
       onOpenChange(open) {

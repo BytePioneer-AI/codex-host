@@ -38,6 +38,10 @@ import { createAppearanceSettingsPage } from "./appearance-page.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
+import {
+  createHarnessSchedulesPage,
+  type HarnessSchedulesPageOptions,
+} from "./harness-schedules-page.js";
 
 export type {
   RendererConnectionAgentSnapshot,
@@ -698,11 +702,15 @@ export function createDefaultRendererSettingsPages(
   requestUsageStatistics: RendererUsageStatisticsRequest = () =>
     Promise.reject(new Error("Local Host connection is unavailable")),
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
+  harnessSchedules?: HarnessSchedulesPageOptions,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
     createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
+    ...(harnessSchedules
+      ? [createHarnessSchedulesPage(messages, harnessSchedules, openImportedThread)]
+      : []),
     createSessionImportSettingsPage(
       messages,
       getSessionImportClient,

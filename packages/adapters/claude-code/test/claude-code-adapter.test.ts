@@ -17,6 +17,7 @@ import {
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/index.js";
 import {
+  filterUnexpiredPlanLimit,
   planLimitFromAccountCredits,
   projectClaudePlanLimitToCredits,
 } from "../src/claude-code-adapter.js";
@@ -897,6 +898,13 @@ describe("planLimitFromAccountCredits", () => {
         scope: { id: "Opus", label: "Opus" },
       }),
     ).toBeNull();
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 25,
+        periodType: "five_hour",
+        scope: { id: "Custom", label: "Custom" },
+      }),
+    ).toBeNull();
   });
 
   it("rejects invalid or out-of-range percentages", () => {
@@ -927,6 +935,39 @@ describe("planLimitFromAccountCredits", () => {
     };
     const projected = projectClaudePlanLimitToCredits(original);
     expect(planLimitFromAccountCredits(projected)).toEqual(original);
+  });
+});
+
+describe("filterUnexpiredPlanLimit", () => {
+  it("returns null when plan limit is null or empty", () => {
+    expect(filterUnexpiredPlanLimit(null)).toBeNull();
+    expect(filterUnexpiredPlanLimit({})).toBeNull();
+  });
+
+  it("filters out windows whose resetsAtUnix is in the past", () => {
+    const expired: ClaudePlanLimitEvent = {
+      fiveHour: { utilizationPercent: 80, resetsAtUnix: 1_000 },
+      sevenDay: { utilizationPercent: 20, resetsAtUnix: 5_000 },
+    };
+    expect(filterUnexpiredPlanLimit(expired, 2_000)).toEqual({
+      sevenDay: { utilizationPercent: 20, resetsAtUnix: 5_000 },
+    });
+  });
+
+  it("keeps windows with resetsAtUnix undefined or in the future", () => {
+    const mixed: ClaudePlanLimitEvent = {
+      fiveHour: { utilizationPercent: 50 },
+      sevenDay: { utilizationPercent: 20, resetsAtUnix: 5_000 },
+    };
+    expect(filterUnexpiredPlanLimit(mixed, 2_000)).toEqual(mixed);
+  });
+
+  it("returns null when all windows are expired", () => {
+    const allExpired: ClaudePlanLimitEvent = {
+      fiveHour: { utilizationPercent: 100, resetsAtUnix: 1_000 },
+      sevenDay: { utilizationPercent: 90, resetsAtUnix: 1_500 },
+    };
+    expect(filterUnexpiredPlanLimit(allExpired, 2_000)).toBeNull();
   });
 });
 
@@ -6954,6 +6995,173 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     await session.close();
+  });
+
+  it("enforces cooldown on refreshCredits: skips query within cooldown and re-queries after expiration (#600)", async () => {
+    vi.useFakeTimers();
+    try {
+      let inspections = 0;
+      const { adapter, dependencies } = fixture({ creditsRefreshCooldownMs: 1_000 });
+      vi.mocked(dependencies.createInspector).mockImplementation(() => ({
+        close: vi.fn(async () => undefined),
+        inspect: vi.fn(async () => ({
+          models: [],
+          canSelectModel: false,
+          canSelectPermissionMode: false,
+        })),
+        inspectAccount: vi.fn(async () => {
+          inspections += 1;
+          return {
+            credits: { usedPercent: inspections * 10, periodType: "five_hour" as const },
+          };
+        }),
+      }));
+
+      // 1. Initial refresh executes immediately:
+      const first = await adapter.refreshCredits();
+      expect(first).toEqual({ usedPercent: 10, periodType: "five_hour" });
+      expect(inspections).toBe(1);
+
+      // 2. Call within cooldown (500ms): no query started, returns cached credits
+      vi.advanceTimersByTime(500);
+      const cached = await adapter.refreshCredits();
+      expect(cached).toEqual({ usedPercent: 10, periodType: "five_hour" });
+      expect(inspections).toBe(1);
+
+      // 3. Call after cooldown expires (+600ms, total 1100ms > 1000ms): queries again
+      vi.advanceTimersByTime(600);
+      const refreshed = await adapter.refreshCredits();
+      expect(refreshed).toEqual({ usedPercent: 20, periodType: "five_hour" });
+      expect(inspections).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cooldown applies to failed queries, while inspectAccount is never throttled (#600)", async () => {
+    vi.useFakeTimers();
+    try {
+      let inspections = 0;
+      const { adapter, dependencies } = fixture({ creditsRefreshCooldownMs: 5_000 });
+      vi.mocked(dependencies.createInspector).mockImplementation(() => ({
+        close: vi.fn(async () => undefined),
+        inspect: vi.fn(async () => ({
+          models: [],
+          canSelectModel: false,
+          canSelectPermissionMode: false,
+        })),
+        inspectAccount: vi.fn(async () => {
+          inspections += 1;
+          throw new Error("offline");
+        }),
+      }));
+
+      // 1. First refresh fails, but enters cooldown:
+      const first = await adapter.refreshCredits();
+      expect(first).toBeNull();
+      expect(inspections).toBe(1);
+
+      // 2. Subsequent refresh within cooldown does not retry query:
+      vi.advanceTimersByTime(2_000);
+      const second = await adapter.refreshCredits();
+      expect(second).toBeNull();
+      expect(inspections).toBe(1);
+
+      // 3. Explicit inspectAccount is never throttled by cooldown:
+      const explicit = await adapter.inspectAccount();
+      expect(explicit).toBeNull();
+      expect(inspections).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("accepts a newer query value for the same window when query begins after real-time push (#600)", async () => {
+    const { adapter, dependencies, transports } = fixture({ creditsRefreshCooldownMs: 0 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("turn-prior-push"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    // 1. Live real-time push sets 5-hour window to 30%:
+    transport.planLimit({ fiveHour: { utilizationPercent: 30 } });
+    await nextEvent(iterator);
+    expect(adapter.credits()).toEqual({ usedPercent: 30, periodType: "five_hour" });
+
+    // 2. Query is initiated AFTER the real-time push:
+    vi.mocked(dependencies.createInspector).mockReturnValueOnce({
+      close: vi.fn(async () => undefined),
+      inspect: vi.fn(async () => ({
+        models: [],
+        canSelectModel: false,
+        canSelectPermissionMode: false,
+      })),
+      inspectAccount: vi.fn(async () => ({
+        credits: { usedPercent: 45, periodType: "five_hour" as const },
+      })),
+    });
+
+    const refreshed = await adapter.refreshCredits();
+    // 3. New value 45% must be accepted:
+    expect(refreshed).toEqual({ usedPercent: 45, periodType: "five_hour" });
+    expect(adapter.credits()).toEqual({ usedPercent: 45, periodType: "five_hour" });
+
+    const event = await nextEvent(iterator);
+    expect(event).toMatchObject({
+      type: "session.usage.changed",
+      usage: { planFiveHourUsedPercent: 45 },
+    });
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("filters expired windows before broadcasting cached plan limit to newly opened sessions (#600)", async () => {
+    const { adapter, transports } = fixture();
+    const session1 = await openSession(adapter);
+    const iterator1 = session1.outputs[Symbol.asyncIterator]();
+
+    await session1.execute(textTurn("turn-seed"));
+    await nextEvent(iterator1);
+    await nextEvent(iterator1);
+    await nextEvent(iterator1);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    // Seed adapter with one expired 5-hour window (resets in past) and one valid 7-day window (resets in future)
+    const nowUnix = Math.floor(Date.now() / 1000);
+    transport.planLimit({
+      fiveHour: { utilizationPercent: 90, resetsAtUnix: nowUnix - 60 },
+      sevenDay: { utilizationPercent: 40, resetsAtUnix: nowUnix + 3600 },
+    });
+    await nextEvent(iterator1);
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator1);
+    await nextEvent(iterator1);
+    await session1.close();
+
+    // Now open a new session: expired 5-hour window must not be broadcasted; only valid 7-day window is broadcasted:
+    const session2 = await openSession(adapter);
+    const iterator2 = session2.outputs[Symbol.asyncIterator]();
+
+    const event = await nextEvent(iterator2);
+    if (event.type !== "session.usage.changed" || !event.usage) {
+      throw new Error("Expected session.usage.changed with usage");
+    }
+    expect(event.usage).toMatchObject({
+      planSevenDayUsedPercent: 40,
+      planSevenDayResetsAtUnix: nowUnix + 3600,
+    });
+    expect(event.usage.planFiveHourUsedPercent).toBeUndefined();
+
+    await session2.close();
   });
 
   it("reuses one Transport and Native Session for sequential Turns", async () => {

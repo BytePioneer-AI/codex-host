@@ -147,6 +147,7 @@ export interface ClaudeCodeAdapterOptions {
   cancelTimeoutMs?: number;
   toolOutputLimit?: number;
   continuationQuiescenceMs?: number;
+  creditsRefreshCooldownMs?: number;
 }
 
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
@@ -323,6 +324,7 @@ function parseClaudeHarnessCommand(
 const DEFAULT_CLOSE_TIMEOUT_MS = 7_000;
 const DEFAULT_CANCEL_TIMEOUT_MS = 2_000;
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
+const DEFAULT_CREDITS_REFRESH_COOLDOWN_MS = 30_000;
 const CONTEXT_USAGE_RETRY_DELAYS_MS = [0, 1_000, 2_000] as const;
 const CONTEXT_USAGE_TTL_MS = 10_000;
 const CONTEXT_USAGE_FAILURE_COOLDOWN_MS = 5_000;
@@ -604,7 +606,7 @@ export function planLimitFromAccountCredits(
   let fiveHour: ClaudePlanLimitWindow | undefined;
   let sevenDay: ClaudePlanLimitWindow | undefined;
 
-  if (credits.periodType === "five_hour") {
+  if (credits.periodType === "five_hour" && !credits.scope && !credits.label) {
     fiveHour = parsePlanLimitWindowFromCredits(credits.usedPercent, credits.resetsAt);
   } else if (credits.periodType === "seven_day" && !credits.scope && !credits.label) {
     sevenDay = parsePlanLimitWindowFromCredits(credits.usedPercent, credits.resetsAt);
@@ -624,6 +626,25 @@ export function planLimitFromAccountCredits(
     }
   }
 
+  if (!fiveHour && !sevenDay) return null;
+  return {
+    ...(fiveHour ? { fiveHour } : {}),
+    ...(sevenDay ? { sevenDay } : {}),
+  };
+}
+
+export function filterUnexpiredPlanLimit(
+  planLimit: ClaudePlanLimitEvent | null,
+  nowUnixSeconds: number = Math.floor(Date.now() / 1000),
+): ClaudePlanLimitEvent | null {
+  if (!planLimit) return null;
+  const isWindowUnexpired = (window: ClaudePlanLimitWindow | undefined): boolean => {
+    if (!window) return false;
+    if (window.resetsAtUnix === undefined) return true;
+    return window.resetsAtUnix > nowUnixSeconds;
+  };
+  const fiveHour = isWindowUnexpired(planLimit.fiveHour) ? planLimit.fiveHour : undefined;
+  const sevenDay = isWindowUnexpired(planLimit.sevenDay) ? planLimit.sevenDay : undefined;
   if (!fiveHour && !sevenDay) return null;
   return {
     ...(fiveHour ? { fiveHour } : {}),
@@ -3181,6 +3202,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   #planLimitSequence = 0;
   #fiveHourSeq = 0;
   #sevenDaySeq = 0;
+  readonly #creditsRefreshCooldownMs: number;
+  #creditsRefreshCooldownUntilMs = 0;
   #accountInspection: Promise<HarnessAccountSnapshot | null> | null = null;
   #accountCreditsSupported = false;
 
@@ -3191,6 +3214,16 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     this.usageStatistics = createClaudeUsageStatistics(environment);
     this.#pendingSessions = new ClaudePendingSessions(environment);
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+    this.#creditsRefreshCooldownMs =
+      options.creditsRefreshCooldownMs ?? DEFAULT_CREDITS_REFRESH_COOLDOWN_MS;
+    if (
+      !Number.isSafeInteger(this.#creditsRefreshCooldownMs) ||
+      this.#creditsRefreshCooldownMs < 0
+    ) {
+      throw new RangeError(
+        "Claude Code credits refresh cooldown must be a non-negative safe integer",
+      );
+    }
     this.#cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.#cancelTimeoutMs) || this.#cancelTimeoutMs <= 0) {
       throw new RangeError("Claude Code cancel timeout must be a positive safe integer");
@@ -3296,6 +3329,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     if (this.#closePromise) return Promise.resolve(null);
     if (this.#accountInspection) return this.#accountInspection;
     this.#accountInspection = this.#readAccount().finally(() => {
+      this.#creditsRefreshCooldownUntilMs = Date.now() + this.#creditsRefreshCooldownMs;
       this.#accountInspection = null;
     });
     return this.#accountInspection;
@@ -3639,8 +3673,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       },
     );
     this.#sessions.add(session);
-    if (this.#latestPlanLimit) {
-      session.publishPlanLimit(this.#latestPlanLimit);
+    const unexpiredPlanLimit = filterUnexpiredPlanLimit(this.#latestPlanLimit);
+    if (unexpiredPlanLimit) {
+      session.publishPlanLimit(unexpiredPlanLimit);
     }
     return { ok: true, value: session };
   }
@@ -3712,6 +3747,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   refreshCredits(): Promise<AccountCreditsSnapshot | null> {
     if (this.#closePromise) return Promise.resolve(this.credits());
+    if (this.#accountInspection) {
+      return this.#accountInspection.then(() => this.credits());
+    }
+    if (Date.now() < this.#creditsRefreshCooldownUntilMs) {
+      return Promise.resolve(this.credits());
+    }
     return this.inspectAccount().then(() => this.credits());
   }
 

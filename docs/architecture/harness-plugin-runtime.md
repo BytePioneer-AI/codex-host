@@ -277,7 +277,7 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 额度主窗口及 `productUsage` 可提供原生 `scope: { id, label, localizations? }`；每个附加窗口可提供自己的 `periodType`。客户端按 scope 的稳定 ID 分组，通过 `accountCreditsWindowLabel` 展示本地化范围与公共周期，不解析产品名称中的 `7-day` 等字符串。缺少新元数据的旧插件仍显示原文和数值，不猜周期；未知或自定义的主窗口标签不会被公共周期覆盖。Grok 账号概览由插件只提供共享套餐额度，产品细分仍保留在会话额度浮窗，不再由 Renderer 根据 Grok ID 过滤。
 
-`HarnessAdapter.credits?()` / `refreshCredits?()` 是正式可选接口：前者无 I/O 地同步读取账号级缓存，后者异步刷新同一缓存，原生认证、有效期、并发合并及失效策略仍归插件。Host 不等待刷新，读取后校验公开结构，隔离同步读取异常与刷新拒绝；旧缓存的私有 `fetchedAt` 不传给客户端。`inspectAccount(s)` 继续负责设置页的新鲜账号查询，不用当前账号额度替代历史 Thread 的实际计费事实。Claude Code 等插件在 `inspectAccount()` 与 `refreshCredits()` 时主动读取额度并填充共享的 plan-limit 缓存，并向活动会话广播；同时通过观察序号排序，避免滞后查询覆盖 Turn 中更及时的实时 `rate_limit_event` 推送。
+`HarnessAdapter.credits?()` / `refreshCredits?()` 是正式可选接口：前者无 I/O 地同步读取账号级缓存，后者异步刷新同一缓存，原生认证、有效期、并发合并及失效策略仍归插件。Host 不等待刷新，读取后校验公开结构，隔离同步读取异常与刷新拒绝；旧缓存的私有 `fetchedAt` 不传给客户端。`inspectAccount(s)` 继续负责设置页的新鲜账号查询，不用当前账号额度替代历史 Thread 的实际计费事实。Claude Code 插件在 `inspectAccount()` 与 `refreshCredits()` 时主动读取额度并填充共享的 plan-limit 缓存，并向活动会话广播；同时通过观察序号排序，避免滞后查询覆盖 Turn 中更及时的实时 `rate_limit_event` 推送；`refreshCredits()` 设置最小冷却间隔（成功与失败均进入冷却，冷却期内直接复用缓存，`inspectAccount()` 不受限），避免客户端未获额度时的持续重试无限制拉起原生子进程。
 
 `thread/usage/inspect` 的结果通过可选 `accountCreditsSupported` 告诉客户端是否应在会话用量已到达后继续等待额度；无需 Harness 名单。旧 Host 未给此字段时不额外等待账号额度。Broker 插件通过构造选项 `accountCredits` 声明是否暴露缓存能力，不支持的 CodeBuddy/WorkBuddy/Cursor 路径不会假报可用；为兼容既有调用方该选项默认 true。Broker 的 Credits 转发保留刷新合并、无数据清空、失败保留最近值的既有行为，不等于其他可选能力已经全部转发。
 

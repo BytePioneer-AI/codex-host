@@ -9,6 +9,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { pluginResourcePath, readPluginConfiguration, readPluginFile } from "./plugin-files.js";
+import { readClaudeCodeProfiles, readProfileIcon } from "./claude-profiles.js";
 
 export interface InstalledHarnessPlugin {
   /** Resolved plugin directory. */
@@ -19,7 +20,7 @@ export interface InstalledHarnessPlugin {
 }
 
 export type HarnessPluginDiscoveryDiagnosticCode =
-  "invalidRoot" | "invalidConfiguration" | "invalidManifest";
+  "invalidRoot" | "invalidConfiguration" | "invalidManifest" | "duplicateId";
 
 export interface HarnessPluginDiscovery {
   plugins: InstalledHarnessPlugin[];
@@ -38,6 +39,7 @@ function missingFile(error: unknown): boolean {
 export async function discoverHarnessPlugins(
   configuredRoots: readonly string[],
   diagnose: (code: HarnessPluginDiscoveryDiagnosticCode) => void = () => undefined,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Promise<HarnessPluginDiscovery> {
   const plugins: InstalledHarnessPlugin[] = [];
   const enabledIds = new Set<string>();
@@ -90,6 +92,51 @@ export async function discoverHarnessPlugins(
       }
     } catch {
       diagnose("invalidRoot");
+    }
+  }
+  const claudePlugin = plugins.find((p) => p.manifest.id === "claude-code" && p.enabled);
+  if (claudePlugin) {
+    try {
+      const profiles = await readClaudeCodeProfiles(undefined, environment);
+      for (const profile of profiles) {
+        if (plugins.some((p) => p.manifest.id === profile.id)) {
+          diagnose("duplicateId");
+          continue;
+        }
+        try {
+          const profileIcon = profile.icon
+            ? await readProfileIcon(profile.icon).catch(() => undefined)
+            : undefined;
+          const icon = profileIcon ?? claudePlugin.manifest.icon;
+          const iconStyle = profile.iconStyle
+            ? profile.iconStyle
+            : profile.icon
+              ? undefined
+              : claudePlugin.manifest.iconStyle;
+          const manifest: HarnessPluginManifest = harnessPluginManifestSchema.parse({
+            manifestVersion: 1,
+            id: profile.id,
+            name: profile.name,
+            version: claudePlugin.manifest.version,
+            adapterApiVersion: claudePlugin.manifest.adapterApiVersion,
+            entry: claudePlugin.manifest.entry,
+            launchCommand: true,
+            ...(profile.description ? { notice: { en: profile.description } } : {}),
+            ...(icon ? { icon } : {}),
+            ...(iconStyle ? { iconStyle } : {}),
+            ...(claudePlugin.manifest.links ? { links: claudePlugin.manifest.links } : {}),
+            ...(claudePlugin.manifest.installation
+              ? { installation: claudePlugin.manifest.installation }
+              : {}),
+          });
+          plugins.push({ root: claudePlugin.root, manifest, enabled: true });
+          enabledIds.add(profile.id);
+        } catch {
+          diagnose("invalidManifest");
+        }
+      }
+    } catch {
+      /* Invalid profiles file cannot fail base plugin discovery */
     }
   }
   return { plugins, enabledIds };

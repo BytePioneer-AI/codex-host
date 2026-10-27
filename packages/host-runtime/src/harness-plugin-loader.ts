@@ -176,7 +176,11 @@ async function loadAdapter(
     ) {
       throw new Error("Plugin entry has no Adapter factory");
     }
-    const input = { ...context, environment: Object.freeze({ ...context.environment }) };
+    const input = {
+      ...context,
+      harnessId: manifest.id,
+      environment: Object.freeze({ ...context.environment }),
+    };
     const value =
       manifest.kind === "usage"
         ? await (module as HarnessUsageStatisticsPluginModule).createUsageStatisticsAdapter(input)
@@ -248,8 +252,10 @@ export async function loadHarnessPlugins(
       /* Diagnostics cannot change loading. */
     }
   };
-  const { plugins: candidates, enabledIds } = await discoverHarnessPlugins(options.roots, (code) =>
-    diagnose({ code }),
+  const { plugins: candidates, enabledIds } = await discoverHarnessPlugins(
+    options.roots,
+    (code) => diagnose({ code }),
+    options.context.environment,
   );
   const counts = new Map<string, number>();
   for (const { manifest } of candidates)

@@ -1,9 +1,10 @@
 import path from "node:path";
 import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { harnessIdSchema } from "@codexhost/shared-contracts";
 import type { HarnessInspection } from "@codexhost/harness-adapter";
 import { warmup as warmupClaude } from "@codexhost/adapter-claude-code/plugin";
@@ -42,7 +43,8 @@ function load(environment: NodeJS.ProcessEnv = {}) {
   return loadHarnessPlugins({
     roots: [pluginRoot],
     context: {
-      environment: { PATH: "", ...environment },
+      // Isolate profile discovery from the developer's real ~/.codexhost configuration.
+      environment: { PATH: "", CODEXHOST_DATA_DIR: emptyDataDirectory(), ...environment },
       platform: process.platform,
       managedRemoteHost: false,
     },
@@ -50,6 +52,19 @@ function load(environment: NodeJS.ProcessEnv = {}) {
     warmup: false,
   });
 }
+
+const dataDirectories: string[] = [];
+
+/** A per-run empty Host data directory, so no local profiles file joins the preinstalled set. */
+function emptyDataDirectory(): string {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codexhost-installed-data-"));
+  dataDirectories.push(directory);
+  return directory;
+}
+
+afterAll(() => {
+  for (const directory of dataDirectories) rmSync(directory, { recursive: true, force: true });
+});
 
 describe("installed Harness composition", () => {
   it.each([
@@ -188,7 +203,11 @@ describe("installed Harness composition", () => {
     const registry = await loadHarnessPlugins({
       roots: [pluginRoot],
       context: {
-        environment: { PATH: "", CODEXHOST_CLAUDE_COMMAND: "/must/not/spawn/in/background" },
+        environment: {
+          PATH: "",
+          CODEXHOST_CLAUDE_COMMAND: "/must/not/spawn/in/background",
+          CODEXHOST_DATA_DIR: emptyDataDirectory(),
+        },
         platform: "darwin",
         managedRemoteHost: true,
         brokerDescriptorPath: path.resolve(".missing-fixture", "broker.json"),

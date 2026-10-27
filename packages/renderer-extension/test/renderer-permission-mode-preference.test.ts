@@ -39,6 +39,16 @@ describe("Claude Permission Mode preference", () => {
     expect(readClaudePermissionModePreference(catalog, storage)).toBe(plan);
   });
 
+  it("persists and reads mode for custom harnessId", () => {
+    const storage = memoryStorage();
+    const plan = harnessPermissionModeIdSchema.parse("plan");
+
+    writeClaudePermissionModePreference(plan, storage, "mcc");
+
+    expect(storage.values.get("codexhost.mcc.permission-mode.v1")).toBe("plan");
+    expect(readClaudePermissionModePreference(catalog, storage, "mcc")).toBe(plan);
+  });
+
   it("ignores a stored mode that is absent from the current catalog", () => {
     const storage = memoryStorage();
     storage.values.set(CLAUDE_PERMISSION_MODE_PREFERENCE_KEY, "removed-mode");

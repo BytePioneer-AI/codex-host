@@ -12,7 +12,11 @@ import {
   sessionImportCandidate,
   sessionImportTitle,
 } from "@codexhost/harness-adapter/session-import";
-import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  nativeSessionRefSchema,
+  type HarnessId,
+} from "@codexhost/shared-contracts";
 import { z } from "zod";
 
 const CLAUDE_SESSION_IMPORT_TITLE_MAX_LENGTH = 120;
@@ -88,6 +92,7 @@ async function sessionFiles(directory: string, signal: AbortSignal): Promise<str
 async function readCandidate(
   file: string,
   signal: AbortSignal,
+  harnessId: HarnessId,
 ): Promise<HarnessSessionImportSource | null> {
   const nativeSessionId = path.basename(file, ".jsonl");
   if (!z.uuid().safeParse(nativeSessionId).success) return null;
@@ -144,7 +149,7 @@ async function readCandidate(
     cwd: resolvedCwd,
   });
   const nativeRef = nativeSessionRefSchema.safeParse({
-    harnessId: "claude-code",
+    harnessId,
     nativeSessionId,
     formatVersion: 1,
   });
@@ -154,11 +159,13 @@ async function readCandidate(
 /** Cached read-only index over Claude Code's native main-session transcripts. */
 export class ClaudeSessionImportIndex {
   readonly #directory: string;
+  readonly #harnessId: HarnessId;
   #cache = new Map<string, { fingerprint: Stats; source: HarnessSessionImportSource }>();
   #listing: Promise<HarnessSessionImportSource[]> | undefined;
 
-  constructor(environment: NodeJS.ProcessEnv) {
+  constructor(environment: NodeJS.ProcessEnv, harnessId: string = "claude-code") {
     this.#directory = claudeProjectsDirectory(environment);
+    this.#harnessId = harnessIdSchema.parse(harnessId);
   }
 
   list(signal: AbortSignal): Promise<HarnessSessionImportSource[]> {
@@ -180,7 +187,7 @@ export class ClaudeSessionImportIndex {
         const source =
           cached && sameFileFingerprint(cached.fingerprint, fingerprint)
             ? cached.source
-            : await readCandidate(file, signal);
+            : await readCandidate(file, signal, this.#harnessId);
         if (!source) continue;
         if (!(await stat(source.candidate.cwd)).isDirectory()) continue;
         if (identities.has(source.candidate.nativeSessionId)) {
@@ -217,7 +224,7 @@ export class ClaudeSessionImportIndex {
     try {
       // Re-read the chosen Transcript at the mapping boundary; cached browser metadata is not
       // trusted as a resumable identity.
-      const source = await readCandidate(selected, signal);
+      const source = await readCandidate(selected, signal, this.#harnessId);
       return source?.candidate.nativeSessionId === nativeSessionId ? source : null;
     } catch (error) {
       if (isMissingFileError(error)) return null;

@@ -1584,8 +1584,8 @@ export function installRendererBindingProbe(
             : undefined;
         const preferredPermissionModeId =
           preferredConfiguration?.permissionModeId ??
-          (agent === "claude-code" && mounted.hostId === "local"
-            ? readClaudePermissionModePreference(permissionModes)
+          (mounted.hostId === "local"
+            ? readClaudePermissionModePreference(permissionModes, undefined, agent)
             : undefined);
         selectedPermissionModeId = draftPermissionMode(
           permissionModes,

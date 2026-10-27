@@ -5,6 +5,7 @@ import {
   lastClaudeAssistantResponseUnix,
 } from "./claude-prompt-cache.js";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import {
@@ -123,6 +124,11 @@ import { ClaudeBackgroundCommandItems } from "./background-command-items.js";
 import { ClaudeToolLifecycle } from "./tool-lifecycle.js";
 import { estimateClaudeRequestCostUsd } from "./usage-estimate.js";
 import { ClaudeSteerMissedTurnError } from "./transport.js";
+import {
+  inheritsNestedClaudeSession,
+  isClaudeToolchainVariable,
+  stripNestedSessionEnvironment,
+} from "./user-shell-environment.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
@@ -140,8 +146,16 @@ import type {
 } from "./transport.js";
 
 export interface ClaudeCodeAdapterOptions {
+  harnessId?: string;
   command?: string;
   environment?: NodeJS.ProcessEnv;
+  /**
+   * Variables this instance owns: a Profile's declared environment plus its config
+   * directory. They win over Host-supplied per-open overrides so a Host that inherited
+   * another session's routing cannot swap the gateway, credentials, or storage of a
+   * Profile that declares them explicitly.
+   */
+  pinnedEnvironment?: NodeJS.ProcessEnv;
   closeTimeoutMs?: number;
   cancelTimeoutMs?: number;
   toolOutputLimit?: number;
@@ -572,7 +586,7 @@ export function projectClaudePlanLimitToCredits(
 }
 
 class ClaudeHarnessSession implements HarnessSession {
-  readonly harnessId: HarnessId = claudeCodeHarnessId;
+  readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities = ((session) => ({
     configuration: {
       selectModel: true,
@@ -661,6 +675,7 @@ class ClaudeHarnessSession implements HarnessSession {
     onClosed: () => void,
     onPlanLimitObserved: (planLimit: ClaudePlanLimitEvent) => ClaudePlanLimitEvent | null,
     options: {
+      harnessId?: HarnessId;
       environment?: NodeJS.ProcessEnv;
       bypassPermissionsAvailable: boolean;
       openMode: "create" | "resume";
@@ -683,6 +698,7 @@ class ClaudeHarnessSession implements HarnessSession {
       accountCreditsSupported: boolean;
     },
   ) {
+    this.harnessId = options.harnessId ?? claudeCodeHarnessId;
     this.#cwd = cwd;
     this.#lastAssistantResponseAtUnix = options.usageHistory.lastResponseAtUnix;
     this.#accountCreditsSupported = options.accountCreditsSupported;
@@ -839,7 +855,10 @@ class ClaudeHarnessSession implements HarnessSession {
       try {
         return {
           ok: true,
-          value: { ...mapClaudeSnapshot(messages, this.#sessionId), state: this.#state },
+          value: {
+            ...mapClaudeSnapshot(messages, this.#sessionId, this.harnessId),
+            state: this.#state,
+          },
         };
       } catch {
         return {
@@ -3034,10 +3053,79 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 }
 
+let sdkStorageLock: Promise<void> = Promise.resolve();
+
+/**
+ * Effective child environment for one Session. Nested-session variables never survive;
+ * the instance's own storage root wins over the Host's, and Profile-declared variables win
+ * over per-open overrides while still replacing any nested-session leftovers.
+ */
+export function mergeSessionEnvironment(input: {
+  base: NodeJS.ProcessEnv;
+  override: NodeJS.ProcessEnv;
+  pinned: NodeJS.ProcessEnv;
+  configDirectory: string | undefined;
+}): NodeJS.ProcessEnv {
+  const contaminated = inheritsNestedClaudeSession(input.override);
+  const cleanOverride = Object.fromEntries(
+    Object.entries(input.override).filter(
+      ([name, value]) =>
+        value !== undefined &&
+        !(
+          contaminated &&
+          (isClaudeToolchainVariable(name) ||
+            name === "CLAUDE_CONFIG_DIR" ||
+            name === "CLAUDE_SECURESTORAGE_CONFIG_DIR")
+        ),
+    ),
+  );
+  return stripNestedSessionEnvironment({
+    ...input.base,
+    ...cleanOverride,
+    ...input.pinned,
+    ...(input.configDirectory ? { CLAUDE_CONFIG_DIR: input.configDirectory } : {}),
+  });
+}
+
+async function withSdkConfigDirectory<T>(
+  configDir: string | undefined,
+  action: () => Promise<T>,
+): Promise<T> {
+  const previousLock = sdkStorageLock;
+  let release: () => void = () => undefined;
+  sdkStorageLock = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previousLock;
+  const prior = process.env.CLAUDE_CONFIG_DIR;
+  if (configDir === prior) {
+    try {
+      return await action();
+    } finally {
+      release();
+    }
+  }
+  if (configDir !== undefined) {
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+  } else {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  }
+  try {
+    return await action();
+  } finally {
+    if (prior !== undefined) {
+      process.env.CLAUDE_CONFIG_DIR = prior;
+    } else {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    }
+    release();
+  }
+}
+
 export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly commandCatalog = claudeCommandCatalog;
   readonly liveCommandCatalog = true;
-  readonly harnessId: HarnessId = claudeCodeHarnessId;
+  readonly harnessId: HarnessId;
   readonly sessionImport = Object.freeze({
     listCandidates: async (): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> => {
       const result = await this.#importScope.read((signal) => this.#importIndex.list(signal));
@@ -3084,6 +3172,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             input.parent.nativeSessionId,
             input.nativeSubagentId,
             parentMessages ?? [],
+            this.harnessId,
           ),
         };
       } catch {
@@ -3102,6 +3191,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
   readonly #environment: NodeJS.ProcessEnv;
+  readonly #pinnedEnvironment: NodeJS.ProcessEnv;
+  readonly #configDirectory: string | undefined;
+  readonly #sdkStorageDirectory: string;
+  get environment(): NodeJS.ProcessEnv {
+    return this.#environment;
+  }
   readonly #importIndex: ClaudeSessionImportIndex;
   readonly #importScope = new SessionImportScope({
     closedMessage: "Claude Code Adapter is closed",
@@ -3122,11 +3217,19 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   #accountCreditsSupported = false;
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
+    this.harnessId = harnessIdSchema.parse(options.harnessId ?? "claude-code");
     const environment = options.environment ?? process.env;
     this.#environment = environment;
-    this.#importIndex = new ClaudeSessionImportIndex(environment);
+    this.#pinnedEnvironment = { ...options.pinnedEnvironment };
+    this.#configDirectory = environment.CLAUDE_CONFIG_DIR;
+    // SDK storage operations require a concrete directory to avoid reading an ambient or
+    // concurrently modified process.env; defaults to ~/.claude while keeping the child
+    // process environment clean (no synthetic CLAUDE_CONFIG_DIR) for the default instance.
+    this.#sdkStorageDirectory =
+      environment.CLAUDE_CONFIG_DIR ?? path.join(environment.HOME || homedir(), ".claude");
+    this.#importIndex = new ClaudeSessionImportIndex(environment, this.harnessId);
     this.usageStatistics = createClaudeUsageStatistics(environment);
-    this.#pendingSessions = new ClaudePendingSessions(environment);
+    this.#pendingSessions = new ClaudePendingSessions(environment, this.harnessId);
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.#cancelTimeoutMs) || this.#cancelTimeoutMs <= 0) {
@@ -3169,36 +3272,43 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           closeTimeoutMs: this.#closeTimeoutMs,
           abortTimeoutMs: this.#cancelTimeoutMs,
         }),
-      deleteSession: ({ cwd, sessionId }) => deleteClaudeSession(sessionId, { dir: cwd }),
-      forkSession: async ({ checkpointId, cwd, sourceSessionId }) => {
-        const forked = await forkClaudeNativeSession(sourceSessionId, {
-          dir: cwd,
-          upToMessageId: checkpointId,
-        });
-        // An unresolved reference costs only prompt cache, never history, so a failure here
-        // must not fail the Fork.
-        await remapForkedSessionReferences({
-          cwd,
-          environment: options.environment ?? process.env,
-          sessionId: forked.sessionId,
-        }).catch(() => undefined);
-        return forked;
-      },
-      getSessionInfo: async ({ sessionId }) => {
-        const info = await getClaudeSessionInfo(sessionId);
-        if (!info) return undefined;
-        return info.cwd ? { cwd: info.cwd } : {};
-      },
-      readSessionMessages: async ({ cwd, sessionId }) => {
-        const transcript = await readClaudeTranscript({
-          cwd,
-          environment: options.environment ?? process.env,
-          sessionId,
-        });
-        return transcript;
-      },
+      deleteSession: ({ cwd, sessionId }) =>
+        withSdkConfigDirectory(this.#sdkStorageDirectory, () =>
+          deleteClaudeSession(sessionId, { dir: cwd }),
+        ),
+      forkSession: async ({ checkpointId, cwd, sourceSessionId }) =>
+        withSdkConfigDirectory(this.#sdkStorageDirectory, async () => {
+          const forked = await forkClaudeNativeSession(sourceSessionId, {
+            dir: cwd,
+            upToMessageId: checkpointId,
+          });
+          // An unresolved reference costs only prompt cache, never history, so a failure here
+          // must not fail the Fork.
+          await remapForkedSessionReferences({
+            cwd,
+            environment: this.#environment,
+            sessionId: forked.sessionId,
+          }).catch(() => undefined);
+          return forked;
+        }),
+      getSessionInfo: async ({ sessionId }) =>
+        withSdkConfigDirectory(this.#sdkStorageDirectory, async () => {
+          const info = await getClaudeSessionInfo(sessionId);
+          if (!info) return undefined;
+          return info.cwd ? { cwd: info.cwd } : {};
+        }),
+      readSessionMessages: async ({ cwd, sessionId }) =>
+        withSdkConfigDirectory(this.#sdkStorageDirectory, () =>
+          readClaudeTranscript({
+            cwd,
+            environment: this.#environment,
+            sessionId,
+          }),
+        ),
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
-        getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
+        withSdkConfigDirectory(this.#sdkStorageDirectory, () =>
+          getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
+        ),
     };
   }
 
@@ -3424,9 +3534,15 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       };
     }
     // Permission prerequisites and the native process must observe the same environment.
-    const environment = input.environment
-      ? { ...this.#environment, ...input.environment }
-      : undefined;
+    // Host-supplied overrides can carry nested-session variables and another session's
+    // routing, so the merge strips the former and re-applies this instance's own
+    // configuration (Profile environment and config directory) last.
+    const environment = mergeSessionEnvironment({
+      base: this.#environment,
+      override: input.environment ?? {},
+      pinned: this.#pinnedEnvironment,
+      configDirectory: this.#configDirectory,
+    });
     const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(environment);
     if (!bypassPermissionsAvailable && requestedPermissionModeId === "bypassPermissions") {
       // Claude Code exits at startup for this request. An explicit create fails visibly, while a
@@ -3548,6 +3664,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       () => this.#sessions.delete(session),
       (planLimit) => this.#recordPlanLimit(session, planLimit),
       {
+        harnessId: this.harnessId,
         ...(environment ? { environment } : {}),
         bypassPermissionsAvailable,
         openMode,

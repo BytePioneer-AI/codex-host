@@ -79,13 +79,24 @@ export {
   harnessPluginListParamsSchema,
   harnessPluginListResultSchema,
   harnessPluginManifestSchema,
+  pluginIconStyleSchema,
 } from "./harness-plugins.js";
 export type {
   HarnessPluginConfiguration,
   HarnessPluginDescriptor,
   HarnessPluginListResult,
   HarnessPluginManifest,
+  PluginIconStyle,
 } from "./harness-plugins.js";
+export {
+  CLAUDE_PROFILE_LIMIT,
+  claudeCodeProfileSchema,
+  claudeCodeProfilesFileSchema,
+  claudeCodeProfilesListSchema,
+  collectClaudeCodeProfiles,
+  parseClaudeCodeProfiles,
+} from "./claude-profiles.js";
+export type { ClaudeCodeProfile, ClaudeCodeProfilesFile } from "./claude-profiles.js";
 export * from "./harness-launch-settings.js";
 export * from "./harness-installation.js";
 export { codexhostErrorSchema } from "./errors.js";

@@ -170,6 +170,7 @@ export type {
 } from "./contract-audit.js";
 export {
   CLAUDE_PERMISSION_MODE_PREFERENCE_KEY,
+  claudePermissionModeStorageKey,
   readClaudePermissionModePreference,
   writeClaudePermissionModePreference,
 } from "./renderer-permission-mode-preference.js";

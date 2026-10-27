@@ -407,6 +407,36 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const DIAGNOSTIC_REASON_MAX_LENGTH = 200;
+// Order matters: credentials first (they may contain path-like text), then paths.
+// Handles JSON keys/values, hyphenated keys (api-key-id, access-token-id), quoted strings with spaces, and standard auth headers.
+const DIAGNOSTIC_SECRET =
+  /(?:sk-[A-Za-z0-9_-]{8,}|(?:Authorization:\s*)?(?:Bearer|Basic)\s+\S+|["']?[\w.-]*(?:token|secret|key|password|credential)[\w.-]*["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;)\]}>]+))/giu;
+// Quoted or bracketed runs that start like an absolute path (`C:\`, UNC, POSIX) are
+// replaced wholesale up to a message delimiter, so a space-bearing path cannot leave a
+// trailing file name behind.
+const DIAGNOSTIC_PATH = /(?:^|[\s"'(=:])(?:[A-Za-z]:[\\/]|\\\\|~?\/)[^,;)\]"']*/gu;
+const DIAGNOSTIC_PATH_PREFIX = /^[\s"'(=:]/u;
+
+/**
+ * Keep diagnostics quotable: credentials, absolute paths and control characters are
+ * removed, and the remainder is bounded. Two independent call sites rely on this to log
+ * native error text the Host does not control.
+ */
+function redactDiagnosticReason(reason: string): string {
+  const redacted = reason
+    .replace(DIAGNOSTIC_SECRET, "[redacted]")
+    .replace(DIAGNOSTIC_PATH, (match) => {
+      const prefix = match.match(DIAGNOSTIC_PATH_PREFIX)?.[0] ?? "";
+      return `${prefix}[path]`;
+    })
+    .replace(/[\u0000-\u001f\u007f]+/gu, " ")
+    .trim();
+  return redacted.length > DIAGNOSTIC_REASON_MAX_LENGTH
+    ? `${redacted.slice(0, DIAGNOSTIC_REASON_MAX_LENGTH)}…`
+    : redacted;
+}
+
 /**
  * Codex app-server reports an unknown Thread with these messages. Any other
  * error from a Thread read is a failure to read, not proof that it is missing.
@@ -648,6 +678,11 @@ export class AppServerHost {
   /** Active reply guards by request ID; each records whether its request was answered. */
   readonly #replyGuards = new Map<unknown, Set<{ answered: boolean }>>();
   #pendingOfficialTurnStarts = new Map<unknown, string>();
+  /** In-flight official requests whose failure should be logged by lifecycle method. */
+  readonly #threadLifecycleRequests = new Map<
+    JsonRpcId,
+    { method: string; threadId: string | undefined }
+  >();
   #activeWorkDrainWaiters = new Set<() => void>();
   #pendingOfficialDelegationThreads = new Set<string>();
   #pendingOfficialTerminalStatuses = new Map<string, DelegationStartResult["status"]>();
@@ -743,6 +778,8 @@ export class AppServerHost {
       onBackendStopped: () => {
         this.#pendingOfficialTurnStarts.clear();
         this.#activeOfficialTurns.clear();
+        // A retired generation never answers its in-flight requests.
+        this.#threadLifecycleRequests.clear();
         this.#signalActiveWorkChanged();
       },
       output: async (output) =>
@@ -1799,7 +1836,7 @@ export class AppServerHost {
           : ({ kind: "official" } as const);
       if (await this.#writeResolutionError(request, location)) return;
       if (location.kind === "official") {
-        await this.#forwardOfficialRequest(request, frame);
+        await this.#forwardOfficialRequest(request, frame, { method: request.method });
         return;
       }
       if (location.kind === "external") {
@@ -2182,6 +2219,7 @@ export class AppServerHost {
   async #forwardOfficialRequest(
     request: JsonRpcRequest,
     frame: Buffer<ArrayBufferLike>,
+    diagnostic?: { method: string },
   ): Promise<void> {
     if (this.#options.externalOnly) {
       await this.#writer.json(
@@ -2203,12 +2241,28 @@ export class AppServerHost {
             params: { ...(isRecord(original.params) ? original.params : {}), ...options },
           });
       }
+      if (diagnostic) {
+        this.#threadLifecycleRequests.set(request.id, {
+          method: diagnostic.method,
+          threadId: this.#requestThreadId(request),
+        });
+      }
       await this.#officialRuntime.sendFrame(frame);
       this.#markDesktopRequestAnswered(request.id);
     } catch {
       if (request.method === "turn/start") {
         this.#pendingOfficialTurnStarts.delete(request.id);
         this.#signalActiveWorkChanged();
+      }
+      if (diagnostic) {
+        this.#diagnoseThreadLifecycle(
+          diagnostic.method,
+          this.#threadLifecycleRequests.get(request.id)?.threadId,
+          "official",
+          -32001,
+          "Official request failed; retry explicitly",
+        );
+        this.#threadLifecycleRequests.delete(request.id);
       }
       await this.#writer.json(
         rpcError(request, -32001, "Official request failed; retry explicitly"),
@@ -2230,6 +2284,7 @@ export class AppServerHost {
     const parsed = input.value;
     const observedAtMs = Date.now();
     this.#observeOfficialTurnStartResponse(parsed);
+    this.#observeThreadLifecycleResponse(parsed);
     let forwarded: JsonValue = parsed;
     if (isRecord(parsed) && typeof parsed.method === "string" && "id" in parsed) {
       const originalId = parsed.id;
@@ -3035,6 +3090,8 @@ export class AppServerHost {
       location,
       (hostThreadId) => this.#repository.setArchived(hostThreadId, archived),
       "External Thread archive state could not be persisted",
+      false,
+      archived ? "thread/archive" : "thread/unarchive",
     );
     if (!updated) return;
     await this.#writer.json(
@@ -3141,12 +3198,22 @@ export class AppServerHost {
     write: (hostThreadId: StoredThreadRecordV1["hostThreadId"]) => Promise<StoredThreadRecordV1>,
     failureMessage: string,
     allowProvisional = false,
+    lifecycleMethod?: string,
   ): Promise<{ record: StoredThreadRecordV1; thread: JsonObject } | null> {
     const hasNativeSession =
       location.record.state === "ready" && location.record.nativeSessionRef !== undefined;
     // Host metadata may precede a Harness's deferred native Session, but only
     // while the loaded Thread still owns the provisional record.
     if (!hasNativeSession && !(allowProvisional && location.thread)) {
+      if (lifecycleMethod) {
+        this.#diagnoseThreadLifecycle(
+          lifecycleMethod,
+          this.#requestThreadId(request),
+          location.record.harnessId,
+          -32079,
+          "External Native Session is unavailable",
+        );
+      }
       await this.#writer.json(rpcError(request, -32079, "External Native Session is unavailable"));
       return null;
     }
@@ -3154,6 +3221,15 @@ export class AppServerHost {
       location.thread?.sessionId ??
       (await this.#repository.sessionTreeId(location.record).catch(() => null));
     if (!sessionId) {
+      if (lifecycleMethod) {
+        this.#diagnoseThreadLifecycle(
+          lifecycleMethod,
+          this.#requestThreadId(request),
+          location.record.harnessId,
+          -32081,
+          "External Thread metadata could not be projected",
+        );
+      }
       await this.#writer.json(
         rpcError(request, -32081, "External Thread metadata could not be projected"),
       );
@@ -3163,6 +3239,15 @@ export class AppServerHost {
     try {
       record = await write(location.record.hostThreadId);
     } catch {
+      if (lifecycleMethod) {
+        this.#diagnoseThreadLifecycle(
+          lifecycleMethod,
+          this.#requestThreadId(request),
+          location.record.harnessId,
+          -32081,
+          failureMessage,
+        );
+      }
       await this.#writer.json(rpcError(request, -32081, failureMessage));
       return null;
     }
@@ -5883,5 +5968,56 @@ export class AppServerHost {
 
   #diagnose(error: unknown): void {
     this.#options.diagnosticOutput.write(`codexhost Host Runtime: ${errorMessage(error)}\n`);
+  }
+
+  #requestThreadId(request: JsonRpcRequest): string | undefined {
+    if (!isRecord(request.params)) return undefined;
+    if (typeof request.params.threadId === "string") return request.params.threadId;
+    // Older native shapes nest the identity as `thread: { id }`.
+    const thread = request.params.thread;
+    return isRecord(thread) && typeof thread.id === "string" ? thread.id : undefined;
+  }
+
+  /** Official error replies to tracked lifecycle requests are failures the Desktop sees. */
+  #observeThreadLifecycleResponse(value: JsonValue): void {
+    if (!isRecord(value) || !("id" in value) || "method" in value) return;
+    const id = value.id;
+    if (typeof id !== "string" && typeof id !== "number") return;
+    const tracked = this.#threadLifecycleRequests.get(id);
+    if (!tracked) return;
+    this.#threadLifecycleRequests.delete(id);
+    if (!("error" in value) || !isRecord(value.error)) return;
+    const code =
+      typeof value.error.code === "number"
+        ? value.error.code
+        : Number.isFinite(Number(value.error.code))
+          ? Number(value.error.code)
+          : -32603;
+    this.#diagnoseThreadLifecycle(
+      tracked.method,
+      tracked.threadId,
+      "official",
+      code,
+      typeof value.error.message === "string" ? value.error.message : "unknown",
+    );
+  }
+
+  /**
+   * One-line lifecycle diagnostic: method, Thread, owner, code and a short reason. The
+   * Thread identity and reason both pass through the redactor because both can carry
+   * native or Desktop text; the log line itself stays a single record.
+   */
+  #diagnoseThreadLifecycle(
+    method: string,
+    threadId: string | undefined,
+    owner: string,
+    code: number,
+    reason: string,
+  ): void {
+    const thread = threadId ? redactDiagnosticReason(threadId) : "(unidentified)";
+    const shortReason = redactDiagnosticReason(reason);
+    this.#options.diagnosticOutput.write(
+      `codexhost Host Runtime: ${method} failed thread=${thread} owner=${redactDiagnosticReason(owner)} code=${code} reason=${shortReason}\n`,
+    );
   }
 }

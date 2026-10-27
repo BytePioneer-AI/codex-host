@@ -55,6 +55,47 @@ export const harnessInstallationGuideSchema = z
   .strict();
 export type HarnessInstallationGuide = z.infer<typeof harnessInstallationGuideSchema>;
 
+export const pluginIconStyleSchema = z
+  .object({
+    vector: z
+      .object({
+        viewBox: z
+          .string()
+          .max(128)
+          .regex(/^-?\d+(?:\.\d+)?(?: +-?\d+(?:\.\d+)?){3}$/u),
+        color: z.string().regex(/^(?:currentColor|#[a-f0-9]{6})$/iu),
+        paths: z
+          .array(
+            z
+              .object({
+                d: z
+                  .string()
+                  .min(1)
+                  .max(32768)
+                  .regex(/^[MmLlHhVvCcSsQqTtAaZz\d.,+eE\s-]+$/u),
+                fillRule: z.enum(["evenodd", "nonzero"]).optional(),
+                fill: z
+                  .string()
+                  .regex(/^(?:currentColor|#[a-f0-9]{6})$/iu)
+                  .optional(),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(32),
+      })
+      .strict()
+      .optional(),
+    background: z
+      .string()
+      .regex(/^#[a-f0-9]{6}$/iu)
+      .optional(),
+    borderRadius: z.number().min(0).max(50).optional(),
+    paddingRatio: z.number().min(0).max(0.25).optional(),
+  })
+  .strict();
+export type PluginIconStyle = z.infer<typeof pluginIconStyleSchema>;
+
 const pluginPresentationShape = {
   id: harnessPluginIdSchema,
   name: z.string().trim().min(1).max(128),
@@ -62,46 +103,7 @@ const pluginPresentationShape = {
   /** Capability-only plugin; omitted for existing session-capable plugins. */
   kind: z.literal("usage").optional(),
   /** Original image styling or bounded vector paths; never arbitrary CSS/SVG markup. */
-  iconStyle: z
-    .object({
-      vector: z
-        .object({
-          viewBox: z
-            .string()
-            .max(128)
-            .regex(/^-?\d+(?:\.\d+)?(?: +-?\d+(?:\.\d+)?){3}$/u),
-          color: z.string().regex(/^(?:currentColor|#[a-f0-9]{6})$/iu),
-          paths: z
-            .array(
-              z
-                .object({
-                  d: z
-                    .string()
-                    .min(1)
-                    .max(32768)
-                    .regex(/^[MmLlHhVvCcSsQqTtAaZz\d.,+eE\s-]+$/u),
-                  fillRule: z.enum(["evenodd", "nonzero"]).optional(),
-                  fill: z
-                    .string()
-                    .regex(/^(?:currentColor|#[a-f0-9]{6})$/iu)
-                    .optional(),
-                })
-                .strict(),
-            )
-            .min(1)
-            .max(32),
-        })
-        .strict()
-        .optional(),
-      background: z
-        .string()
-        .regex(/^#[a-f0-9]{6}$/iu)
-        .optional(),
-      borderRadius: z.number().min(0).max(50).optional(),
-      paddingRatio: z.number().min(0).max(0.25).optional(),
-    })
-    .strict()
-    .optional(),
+  iconStyle: pluginIconStyleSchema.optional(),
   installation: harnessInstallationGuideSchema.optional(),
   notice: localizedTextSchema.optional(),
   /** The factory accepts a persisted local entrypoint through its construction context. */
@@ -116,6 +118,12 @@ const pluginPresentationShape = {
     .optional(),
 };
 
+/** Image resources are presentation data, never HTML/SVG markup to inject. */
+export const harnessPluginIconSchema = z
+  .string()
+  .max(Math.ceil(HARNESS_PLUGIN_ICON_MAX_BYTES / 3) * 4 + 64)
+  .regex(/^data:image\/(?:png|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/]+={0,2}$/u);
+
 /** A manifest is data only. It must be validated before importing any plugin code. */
 export const harnessPluginManifestSchema = z
   .object({
@@ -123,16 +131,10 @@ export const harnessPluginManifestSchema = z
     ...pluginPresentationShape,
     adapterApiVersion: z.number().int().positive(),
     entry: relativeResourceSchema,
-    icon: relativeResourceSchema.optional(),
+    icon: relativeResourceSchema.or(harnessPluginIconSchema).optional(),
   })
   .strict();
 export type HarnessPluginManifest = z.infer<typeof harnessPluginManifestSchema>;
-
-/** Image resources are presentation data, never HTML/SVG markup to inject. */
-export const harnessPluginIconSchema = z
-  .string()
-  .max(Math.ceil(HARNESS_PLUGIN_ICON_MAX_BYTES / 3) * 4 + 64)
-  .regex(/^data:image\/(?:png|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/]+={0,2}$/u);
 
 export const harnessPluginDescriptorSchema = z
   .object({

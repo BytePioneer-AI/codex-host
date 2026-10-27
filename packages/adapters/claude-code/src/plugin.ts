@@ -1,3 +1,6 @@
+import os from "node:os";
+import path from "node:path";
+
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
@@ -5,6 +8,7 @@ import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 import { ClaudeCodeAdapter, claudeCommandCatalog } from "./claude-code-adapter.js";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { createClaudeInstallation } from "./installation.js";
+import { configDirectoryIdentity, loadClaudeCodeProfile } from "./profiles.js";
 
 import { createHarnessInstaller } from "@codexhost/harness-discovery";
 import { withUserShellEnvironment } from "./user-shell-environment.js";
@@ -12,9 +16,47 @@ import { withUserShellEnvironment } from "./user-shell-environment.js";
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 
 export async function createHarnessAdapter(context: HarnessPluginContext): Promise<HarnessAdapter> {
-  const environment = await withUserShellEnvironment({ ...context.environment });
+  const harnessId = context.harnessId ?? "claude-code";
+  const profile =
+    harnessId !== "claude-code"
+      ? await loadClaudeCodeProfile(harnessId, context.environment)
+      : undefined;
+
+  if (harnessId !== "claude-code" && !profile) {
+    throw new Error(`Claude Code profile '${harnessId}' configuration is unavailable`);
+  }
+
+  const baseEnvironment = await withUserShellEnvironment({ ...context.environment });
+  if (profile) {
+    const home = baseEnvironment.HOME || os.homedir();
+    const defaultRoots = [
+      await configDirectoryIdentity(path.join(home, ".claude")),
+      ...(baseEnvironment.CLAUDE_CONFIG_DIR
+        ? [await configDirectoryIdentity(baseEnvironment.CLAUDE_CONFIG_DIR)]
+        : []),
+    ];
+    const profileIdentity = await configDirectoryIdentity(profile.configDir);
+    if (defaultRoots.includes(profileIdentity)) {
+      throw new Error(
+        `Claude Code profile '${harnessId}' cannot share the default instance configuration directory`,
+      );
+    }
+  }
+  const profileEnvironment: NodeJS.ProcessEnv = { ...(profile?.environment ?? {}) };
+  // configDir is the schema-validated authority; profile.environment cannot silently override it.
+  if (profile?.configDir) profileEnvironment.CLAUDE_CONFIG_DIR = profile.configDir;
+  const environment: NodeJS.ProcessEnv = {
+    ...baseEnvironment,
+    ...profileEnvironment,
+  };
+  const command =
+    context.launchCommand ??
+    profile?.command ??
+    (harnessId === "claude-code" ? environment[CLAUDE_CODE_COMMAND_ENV] : undefined);
+
   if (context.platform === "darwin" && context.managedRemoteHost) {
     return new BrokeredHarnessAdapter({
+      harnessId,
       forwardDelegationEnvironment: true,
       commandCatalog: claudeCommandCatalog,
       liveCommandCatalog: true,
@@ -22,9 +64,7 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
       isInstalled: () => {
         try {
           resolveClaudeCodeExecutable({
-            ...(environment[CLAUDE_CODE_COMMAND_ENV]
-              ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
-              : {}),
+            ...(command ? { command } : {}),
             environment,
           });
           return true;
@@ -37,13 +77,13 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
   }
   return Object.assign(
     new ClaudeCodeAdapter({
-      ...(environment[CLAUDE_CODE_COMMAND_ENV]
-        ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
-        : {}),
+      harnessId,
+      ...(command ? { command } : {}),
       environment,
+      ...(profile ? { pinnedEnvironment: profileEnvironment } : {}),
     }),
     {
-      installation: createClaudeInstallation(environment, environment[CLAUDE_CODE_COMMAND_ENV]),
+      installation: createClaudeInstallation(environment, command),
       install: createHarnessInstaller(environment, {
         posix: "https://claude.ai/install.sh",
         windows: "https://claude.ai/install.ps1",

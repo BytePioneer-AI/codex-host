@@ -18,6 +18,9 @@ import { startDelegationControlServer } from "./delegation-control-server.js";
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import { readRemoteDelegationThread } from "./remote-delegation-read.js";
+import { loadHostIdentity, hostDataDirectory } from "./host-identity.js";
+import { ThreadSendReceipts } from "./thread-send-receipts.js";
+import { ThreadBridge } from "./thread-bridge.js";
 import {
   DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_CLI_PATH_ENV,
@@ -149,7 +152,24 @@ async function prepareDelegationRuntime(input: {
     registry: DelegationControlRegistry,
   ): Promise<number>;
 }): Promise<number> {
+  const threadBridge = await loadHostIdentity(input.environment)
+    .then(
+      (machineId) =>
+        new ThreadBridge(
+          machineId,
+          new ThreadSendReceipts(
+            path.join(hostDataDirectory(input.environment), "thread-send-receipts"),
+          ),
+        ),
+    )
+    .catch((error: unknown) => {
+      process.stderr.write(
+        `codexhost cross-machine links unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      return undefined;
+    });
   const registry = new DelegationControlRegistry({
+    ...(threadBridge ? { threadBridge } : {}),
     remoteRead: (request) => readRemoteDelegationThread(input.environment, request),
     diagnose: (error) =>
       process.stderr.write(
@@ -284,6 +304,7 @@ export async function runHostRuntime(input: {
         if (!remoteControlPlan) {
           try {
             const host = new AppServerHost({
+              threadBridge: registry.threadBridge,
               ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
               modelPrices,
               usageStatistics,
@@ -320,6 +341,7 @@ export async function runHostRuntime(input: {
         try {
           await mappingStore.initialize();
           const common = {
+            threadBridge: registry.threadBridge,
             stockCodexPath,
             environment: delegationEnvironment,
             ...shared,
@@ -416,6 +438,7 @@ export async function runHostRuntime(input: {
       const sharedOwner = new SharedThreadOwner();
       let sharedDelegation: DelegationControlRegistration | undefined;
       const externalHost = new AppServerHost({
+        threadBridge: registry.threadBridge,
         ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
         modelPrices,
         usageStatistics,
@@ -447,6 +470,7 @@ export async function runHostRuntime(input: {
         diagnosticOutput: process.stderr,
         createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
           return new AppServerHost({
+            threadBridge: registry.threadBridge,
             ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
             modelPrices,
             usageStatistics,

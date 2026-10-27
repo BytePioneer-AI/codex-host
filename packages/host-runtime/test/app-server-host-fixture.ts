@@ -268,6 +268,7 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 
 export function createFixture(
   options: {
+    externalOnly?: boolean;
     sharedThreads?: SharedThreadBridge;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
@@ -282,6 +283,7 @@ export function createFixture(
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
     runtimeMaintenance?: RuntimeMaintenance;
+    threadBridge?: AppServerHostOptions["threadBridge"];
     consoleOpener?: HostConsoleOpener;
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
@@ -323,8 +325,10 @@ export function createFixture(
     return official as unknown as ChildProcessWithoutNullStreams;
   });
   const createOfficialConnection = options.createOfficialConnection;
-  if (options.officialRuntimeScope) startup.resolve(undefined);
+  if (options.officialRuntimeScope || options.externalOnly) startup.resolve(undefined);
   const host = new AppServerHost({
+    ...(options.externalOnly !== undefined ? { externalOnly: options.externalOnly } : {}),
+    threadBridge: options.threadBridge,
     ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],

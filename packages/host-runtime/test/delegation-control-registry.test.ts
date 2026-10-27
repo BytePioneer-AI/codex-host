@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { ThreadSendReceipts } from "../src/thread-send-receipts.js";
 
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
+import { ThreadBridge } from "../src/thread-bridge.js";
 
 function registration(threadId: string): DelegationControlRegistration {
   return {
@@ -72,6 +78,118 @@ function registration(threadId: string): DelegationControlRegistration {
 }
 
 describe("DelegationControlRegistry", () => {
+  it("adds the source identity before local or remote dispatch and binds retries to it", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "registry-sender-"));
+    const machineId = randomUUID();
+    const bridge = new ThreadBridge(machineId, new ThreadSendReceipts(directory));
+    const registry = new DelegationControlRegistry({ threadBridge: bridge });
+    const target = registration("target");
+    registry.register(target);
+    const input = {
+      callerThreadId: "sender",
+      threadId: "target",
+      machineId,
+      requestId: randomUUID(),
+      message: "Please return the result",
+    };
+    try {
+      await registry.send(input);
+      await registry.send(input);
+      expect(target.send).toHaveBeenCalledOnce();
+      const message = vi.mocked(target.send).mock.calls[0]?.[0].message ?? "";
+      expect(message).toContain(
+        JSON.stringify({
+          machineId,
+          threadId: "sender",
+          replyTo: `thread://sender?machineId=${machineId}`,
+        }),
+      );
+      expect(message).toMatch(/\n\nPlease return the result$/u);
+      await expect(registry.send({ ...input, callerThreadId: "different" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      const remote = vi
+        .spyOn(bridge, "send")
+        .mockResolvedValue(await target.send({ threadId: "target", message: "fixture" }));
+      await registry.send({ ...input, machineId: randomUUID() });
+      expect(remote.mock.calls[0]?.[0].message).toBe(message);
+      expect(remote.mock.calls[0]?.[0]).not.toHaveProperty("callerThreadId");
+      await expect(registry.send({ ...input, message: " " })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      await expect(
+        registry.send({ ...input, callerThreadId: "bad\nidentity" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    } finally {
+      registry.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it("routes machine-qualified sends without trusting host hints and keeps the request receipt", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "registry-send-"));
+    const machineId = randomUUID();
+    const bridge = new ThreadBridge(machineId, new ThreadSendReceipts(directory));
+    const registry = new DelegationControlRegistry({ threadBridge: bridge });
+    const target = registration("target");
+    registry.register(target);
+    try {
+      const input = {
+        threadId: "target",
+        machineId,
+        hostId: "foreign-alias",
+        message: "continue",
+        requestId: randomUUID(),
+      };
+      const result = await registry.send(input);
+      expect(result).toMatchObject({
+        threadId: input.threadId,
+        machineId,
+        requestId: input.requestId,
+      });
+      expect(result.next.read).toContain(machineId);
+      expect(await registry.send(input)).toEqual(result);
+      expect(target.send).toHaveBeenCalledExactlyOnceWith({
+        threadId: "target",
+        message: "continue",
+      });
+      await expect(
+        registry.send({ ...input, machineId: randomUUID(), hostId: "local" }),
+      ).rejects.toMatchObject({ code: "RUNTIME_UNREACHABLE" });
+      await expect(
+        registry.send({ threadId: "target", hostId: "foreign-alias", message: "continue" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      expect(target.send).toHaveBeenCalledOnce();
+    } finally {
+      registry.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it("uses machine identity over a foreign Desktop's local hint, with no local fallback", async () => {
+    const machineId = "12345678-1234-4123-8123-123456789abc";
+    const bridge = new ThreadBridge(machineId);
+    const registry = new DelegationControlRegistry({ threadBridge: bridge });
+    const target = registration("target");
+    registry.register(target);
+    expect(
+      await registry.read({
+        threadId: "target",
+        view: "result",
+        machineId,
+        hostId: "foreign-alias",
+      }),
+    ).toMatchObject({ machineId });
+    expect(target.read).toHaveBeenCalledExactlyOnceWith({ threadId: "target", view: "result" });
+    await expect(
+      registry.read({
+        threadId: "target",
+        view: "result",
+        hostId: "local",
+        machineId: "22345678-1234-4123-8123-123456789abc",
+      }),
+    ).rejects.toMatchObject({ code: "RUNTIME_UNREACHABLE" });
+    expect(target.read).toHaveBeenCalledOnce();
+    registry.close();
+  });
   it("uses only the calling Thread's execution identity for same-Host reads", async () => {
     const caller = registration("caller");
     caller.executionHostId = (id) => (id === "caller" ? "ssh:mac" : undefined);

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
 
@@ -139,6 +140,21 @@ describe("delegation control server", () => {
       await fetch(`${server.endpoint}/v1/thread/cancel`, authorized({ threadId: "thread-1" }));
       expect(send).toHaveBeenCalledWith({ threadId: "thread-1", message: "continue" });
       expect(cancel).toHaveBeenCalledWith({ threadId: "thread-1" });
+      const scoped = {
+        threadId: "thread-1",
+        message: "continue",
+        machineId: randomUUID(),
+        requestId: randomUUID(),
+      };
+      const receipt = await fetch(`${server.endpoint}/v1/thread/send-scoped`, authorized(scoped));
+      expect(receipt.status).toBe(200);
+      expect(send).toHaveBeenLastCalledWith(scoped);
+      const invalid = await fetch(
+        `${server.endpoint}/v1/thread/send-scoped`,
+        authorized({ threadId: "thread-1", message: "continue" }),
+      );
+      expect(invalid.status).toBe(400);
+      expect(send).toHaveBeenCalledTimes(2);
     } finally {
       await server.close();
     }

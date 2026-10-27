@@ -1,4 +1,20 @@
 import {
+  THREAD_MANAGE_METHOD,
+  THREAD_BRIDGE_MANAGE_METHOD,
+  threadManagementParamsSchema,
+  type ThreadManagementOperation,
+} from "@codexhost/shared-contracts";
+import { manageThread } from "./thread-management.js";
+import {
+  HOST_IDENTITY_METHOD,
+  DELEGATION_SEND_METHOD,
+  THREAD_BRIDGE_SEND_METHOD,
+  delegationSendParamsSchema,
+  THREAD_BRIDGE_ATTACH_METHOD,
+  THREAD_BRIDGE_READ_METHOD,
+  THREAD_BRIDGE_REPLY_METHOD,
+  threadBridgeAttachSchema,
+  threadBridgeReplySchema,
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
@@ -13,6 +29,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
+import type { ThreadBridge } from "./thread-bridge.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
@@ -324,6 +341,7 @@ import {
 } from "@codexhost/protocol-core";
 
 export interface AppServerHostOptions {
+  threadBridge?: ThreadBridge | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
   /** GUI connection to the single external-session owner. */
@@ -830,6 +848,7 @@ export class AppServerHost {
     const maintenanceOperation = <T>(run: () => Promise<T>): Promise<T> =>
       options.runtimeMaintenance ? options.runtimeMaintenance.operation(run) : run();
     const unregisterDelegationApi = options.onDelegationApi?.({
+      manageLocal: (action) => maintenanceOperation(() => this.#manageLocalThread(action)),
       listHarnesses: () =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
       inspect: (input) =>
@@ -868,6 +887,7 @@ export class AppServerHost {
   }
 
   close(): void {
+    this.#options.threadBridge?.detach(this);
     if (this.#closeRequested) return;
     this.#closeRequested = true;
     this.#options.sharedThreads?.close();
@@ -888,6 +908,7 @@ export class AppServerHost {
   }
 
   disconnect(): void {
+    this.#options.threadBridge?.detach(this);
     if (this.#closeRequested || this.#desktopInputEnded || this.#drainActiveWorkOnInputEnd) return;
     this.#drainActiveWorkOnInputEnd = true;
     this.#externalSteering.close();
@@ -1012,6 +1033,7 @@ export class AppServerHost {
       return this.#closeRequested ? 0 : 1;
     } finally {
       this.#options.sharedThreads?.close();
+      this.#options.threadBridge?.detach(this);
       this.#pluginLoadAbort.abort();
       // Stop replacement waiters before waiting for their tracked Host operations.
       this.#externalSteering.close();
@@ -1090,7 +1112,7 @@ export class AppServerHost {
   #takeConsoleReply(value: JsonValue): boolean {
     if (!isRecord(value) || typeof value.id !== "string") return false;
     const reply = this.#consoleReplies.get(value.id);
-    if (!reply) return false;
+    if (!reply) return value.id.startsWith(this.#consoleRequestPrefix);
     this.#consoleReplies.delete(value.id);
     reply(value);
     return true;
@@ -1115,6 +1137,45 @@ export class AppServerHost {
       return requestDesktopRemoteConnections(this.#options.environment ?? process.env, params);
     }
     if (method === REMOTE_SSH_SETUP_METHOD) timeoutMs = Math.max(timeoutMs, 330_000);
+    return this.#handleInternalRequest(method, params, timeoutMs);
+  }
+
+  #manageLocalThread(action: ThreadManagementOperation) {
+    return manageThread(action, async (method, params) => {
+      // The shared owner has a native management connection but no Desktop output stream.
+      const native =
+        this.#options.externalOnly &&
+        (action.operation === "create"
+          ? action.harnessId === "codex"
+          : (await this.#locateExternalThread(action.threadId)).kind === "official");
+      if (native) {
+        const response = await this.#requestOfficial(method, params as JsonObject);
+        if (isRecord(response.error))
+          return {
+            error: {
+              code: typeof response.error.code === "number" ? response.error.code : -32603,
+              message:
+                typeof response.error.message === "string"
+                  ? response.error.message
+                  : "Native Thread operation failed",
+            },
+          };
+        if (!("result" in response))
+          return { error: { code: -32603, message: "Native Thread operation returned no result" } };
+        return { result: response.result ?? null };
+      }
+      return this.#handleInternalRequest(method, params, 30_000);
+    });
+  }
+
+  /** Local callers share Desktop routing without publishing private response IDs to the UI. */
+  async #handleInternalRequest(
+    method: string,
+    params: unknown,
+    timeoutMs: number,
+  ): Promise<ConsoleHostReply> {
+    if (this.#closeRequested || this.#desktopInputEnded)
+      return { error: { code: -32090, message: "Host is closing" } };
     const parsed = jsonRpcRequestSchema.safeParse({
       id: `${this.#consoleRequestPrefix}${++this.#nextConsoleRequest}`,
       method,
@@ -1131,9 +1192,17 @@ export class AppServerHost {
         timeoutMs,
       );
     });
+    const threadId =
+      isRecord(request.params) && typeof request.params.threadId === "string"
+        ? request.params.threadId
+        : undefined;
     this.#dispatchDesktopRequest(() =>
-      this.#guardReply(request, () =>
-        this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+      this.#desktopRequests.run(threadId, () =>
+        this.#externalRuntime.idleRelease.runOperation(threadId, () =>
+          this.#guardReply(request, () =>
+            this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+          ),
+        ),
       ),
     );
     try {
@@ -1220,6 +1289,7 @@ export class AppServerHost {
       );
     }
     this.#desktopInputEnded = true;
+    this.#options.threadBridge?.detach(this);
     this.#externalRuntime.idleRelease.disable();
     // Cancel loading before draining requests that may be waiting for it.
     this.#pluginLoadAbort.abort();
@@ -1282,6 +1352,54 @@ export class AppServerHost {
   ): Promise<void> {
     if (this.#closeRequested) return;
     if (
+      [HOST_IDENTITY_METHOD, THREAD_BRIDGE_ATTACH_METHOD, THREAD_BRIDGE_REPLY_METHOD].includes(
+        request.method,
+      )
+    ) {
+      const bridge = this.#options.threadBridge;
+      if (!bridge) {
+        await this.#writer.json(
+          rpcError(request, -32601, "Cross-machine Thread access is unavailable"),
+        );
+        return;
+      }
+      try {
+        if (request.method === THREAD_BRIDGE_ATTACH_METHOD) {
+          if (this.#desktopInputEnded || this.#drainActiveWorkOnInputEnd)
+            throw new Error("Desktop connection is closed");
+          const params = threadBridgeAttachSchema.parse(request.params);
+          bridge.attach(this, {
+            ...params,
+            send: async (read) => {
+              await this.#writer.json({
+                method:
+                  "operation" in read
+                    ? read.operation === "manage"
+                      ? THREAD_BRIDGE_MANAGE_METHOD
+                      : THREAD_BRIDGE_SEND_METHOD
+                    : THREAD_BRIDGE_READ_METHOD,
+                params: jsonValueSchema.parse(read),
+              });
+            },
+          });
+        } else if (request.method === THREAD_BRIDGE_REPLY_METHOD) {
+          bridge.reply(this, threadBridgeReplySchema.parse(request.params));
+        }
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              machineId: bridge.machineId,
+              sendSupported: bridge.receipts !== undefined,
+              manageSupported: bridge.receipts !== undefined,
+            },
+          }),
+        );
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+      }
+      return;
+    }
+    if (
       request.method === RUNTIME_STATUS_METHOD ||
       request.method === REMOTE_UPDATE_METHOD ||
       request.method === REMOTE_SSH_SETUP_METHOD
@@ -1308,10 +1426,111 @@ export class AppServerHost {
       );
       return;
     }
+    if (request.method === THREAD_MANAGE_METHOD) {
+      const parsed = threadManagementParamsSchema.safeParse(request.params);
+      const bridge = this.#options.threadBridge;
+      if (
+        !parsed.success ||
+        !bridge?.receipts ||
+        parsed.data.expectedMachineId !== bridge.machineId
+      ) {
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              error: {
+                code: "INVALID_ARGUMENT",
+                message: "Invalid operation, unsupported Host, or wrong destination machine",
+              },
+            },
+          }),
+        );
+        return;
+      }
+      try {
+        const outcome = await bridge.executeManagement(parsed.data, () =>
+          this.#manageLocalThread(parsed.data.action),
+        );
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(outcome) }));
+      } catch {
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              error: {
+                code: "OUTCOME_UNKNOWN",
+                message: "Management outcome is unknown; repeat the same request ID",
+              },
+            },
+          }),
+        );
+      }
+      return;
+    }
+    if (request.method === DELEGATION_SEND_METHOD) {
+      const parsed = delegationSendParamsSchema.safeParse(request.params);
+      const bridge = this.#options.threadBridge;
+      if (
+        !parsed.success ||
+        !bridge?.receipts ||
+        parsed.data.expectedMachineId !== bridge.machineId
+      ) {
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              error: {
+                code: "INVALID_ARGUMENT",
+                message: "Invalid send request, unsupported Host, or wrong destination machine",
+              },
+            },
+          }),
+        );
+        return;
+      }
+      try {
+        const shared = await this.#options.sharedThreads?.route(request);
+        if (shared) {
+          await this.#writer.json(shared);
+          return;
+        }
+        const outcome = await bridge.executeSend(parsed.data, async () => {
+          await this.#waitForPlugins();
+          return this.#delegationCoordinator.send({
+            threadId: parsed.data.threadId,
+            message: parsed.data.message,
+          });
+        });
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(outcome) }));
+      } catch {
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              error: {
+                code: "OUTCOME_UNKNOWN",
+                message:
+                  "Send outcome is unknown; read the Thread or retry the same request ID after reconnecting",
+              },
+            },
+          }),
+        );
+      }
+      return;
+    }
     if (request.method === DELEGATION_READ_METHOD) {
       const parsed = delegationReadParamsSchema.safeParse(request.params);
       if (!parsed.success) {
         await this.#writer.json(rpcError(request, -32602, "Invalid Thread read request"));
+        return;
+      }
+      if (
+        parsed.data.expectedMachineId !== undefined &&
+        parsed.data.expectedMachineId !== this.#options.threadBridge?.machineId
+      ) {
+        await this.#writer.json(
+          rpcError(
+            request,
+            -32602,
+            "Thread link belongs to a different machine; reconnect the Host",
+          ),
+        );
         return;
       }
       const shared = await this.#options.sharedThreads?.route(request);
@@ -2260,7 +2479,7 @@ export class AppServerHost {
       typeof parsed.method === "string" &&
       !("id" in parsed) &&
       !this.#observedSessionUsage.shouldForwardNotification(parsed);
-    if (!privateTelemetry) {
+    if (!privateTelemetry && !this.#takeConsoleReply(forwarded)) {
       if (forwarded === parsed) await this.#writer.frame(input.frame);
       else await this.#writer.json(forwarded);
     }
@@ -2682,24 +2901,20 @@ export class AppServerHost {
     if (this.#activeOfficialTurns.has(input.threadId)) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }
-    const current = await this.#requestOfficial("thread/read", {
-      threadId: input.threadId,
-      includeTurns: true,
-    });
-    if (isRecord(current.error)) throw officialThreadReadError(current.error);
-    if (!isRecord(current.result)) {
-      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no result");
-    }
-    const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
+    const { thread: currentThread, unmaterialized } = await this.#readOfficialThreadHistory(
+      input.threadId,
+    );
     if (officialThreadBusy(currentThread)) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }
     // Read stays idle after unsubscribe and does not resubscribe. Resume does, and
     // excludeTurns keeps paginated history out of the response without replacing config.
-    const resumed = await this.#requestOfficial("thread/resume", {
-      threadId: input.threadId,
-      excludeTurns: true,
-    });
+    const resumed: JsonObject = unmaterialized
+      ? { result: { thread: currentThread } }
+      : await this.#requestOfficial("thread/resume", {
+          threadId: input.threadId,
+          excludeTurns: true,
+        });
     if (isRecord(resumed.error) || !isRecord(resumed.result)) {
       throw new DelegationControlError(
         "DELEGATION_FAILED",
@@ -2795,15 +3010,7 @@ export class AppServerHost {
   }
 
   async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
-    const response = await this.#requestOfficial("thread/read", {
-      threadId: input.threadId,
-      includeTurns: true,
-    });
-    if (isRecord(response.error)) throw officialThreadReadError(response.error);
-    const result = isRecord(response.result) ? response.result : null;
-    const thread = result && isRecord(result.thread) ? result.thread : null;
-    if (!thread)
-      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no Thread");
+    const { thread } = await this.#readOfficialThreadHistory(input.threadId);
     const turns = Array.isArray(thread.turns)
       ? thread.turns.filter((turn): turn is JsonObject => isRecord(turn))
       : [];
@@ -2827,6 +3034,30 @@ export class AppServerHost {
       await this.#repository.setDelegationStatus(delegation.delegationId, snapshot.status);
     }
     return snapshot;
+  }
+
+  async #readOfficialThreadHistory(threadId: string) {
+    let response = await this.#requestOfficial("thread/read", { threadId, includeTurns: true });
+    // Native Codex keeps a new Thread loaded but has no rollout to read or resume
+    // until its first user message. Only that explicit error permits metadata-only access.
+    const unmaterialized =
+      isRecord(response.error) &&
+      response.error.code === -32600 &&
+      typeof response.error.message === "string" &&
+      /not materialized yet; includeTurns is unavailable before first user message/u.test(
+        response.error.message,
+      );
+    if (unmaterialized)
+      response = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
+    if (isRecord(response.error)) throw officialThreadReadError(response.error);
+    const result = isRecord(response.result) ? response.result : null;
+    const thread = result && isRecord(result.thread) ? result.thread : null;
+    if (!thread || thread.id !== threadId)
+      throw new DelegationControlError(
+        "INTERNAL_ERROR",
+        "Official Thread read returned no matching Thread",
+      );
+    return { thread, unmaterialized };
   }
 
   async #listDelegationThreads(input: ThreadListInput): Promise<DelegationThreadListResult> {

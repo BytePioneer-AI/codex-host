@@ -59,9 +59,12 @@ describe("delegation Skill installation", () => {
   });
 
   it.each([
+    ["v12 Skill without sender reply guidance", "codexhost-delegation-v12.md"],
+    ["v11 Skill without Thread lifecycle commands", "codexhost-delegation-v11.md"],
     ["v4 Skill shipped in v0.4.0-v0.6.0", "codexhost-delegation-v4.md"],
     ["v8 Skill that ran codexhost from PATH", "codexhost-delegation-v8.md"],
     ["v9 Skill without child-session name guidance", "codexhost-delegation-v9.md"],
+    ["v10 Skill without cross-machine link guidance", "codexhost-delegation-v10.md"],
   ])("updates the %s", async (_name, fixture) => {
     const root = await home();
     const shipped = await readFile(new URL(`./fixtures/${fixture}`, import.meta.url), "utf8");
@@ -84,10 +87,12 @@ describe("delegation Skill installation", () => {
     await import("node:fs/promises").then(({ mkdir }) =>
       mkdir(path.dirname(agents), { recursive: true }),
     );
-    await writeFile(agents, "user content\n", "utf8");
+    const userContent = `${CODEXHOST_DELEGATION_SKILL}\nUser instructions\n`;
+    await writeFile(agents, userContent, "utf8");
     const results = await installDelegationSkills({ homeDirectory: root });
     expect(results.map((result) => result.status)).toEqual(["conflict", "installed"]);
-    await expect(readFile(agents, "utf8")).resolves.toBe("user content\n");
+    expect(results[0]?.version).toBe(13);
+    await expect(readFile(agents, "utf8")).resolves.toBe(userContent);
   });
 
   it("uses existing Threads directly and keeps viewing requests read-only", () => {
@@ -99,7 +104,7 @@ describe("delegation Skill installation", () => {
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 10");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 13");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");

@@ -10,6 +10,8 @@ export const DELEGATION_READ_METHOD = "codexhost/thread/delegation-read";
 /** Per-submission Desktop connection identity; never a machine-global Host alias. */
 export const THREAD_REFERENCE_SOURCE_HOST_PARAM = "codexhostSourceHostId";
 export const delegationReadParamsSchema = z.strictObject({
+  /** Assert ownership without forwarding; rejects a reused Desktop connection to another machine. */
+  expectedMachineId: z.uuid().optional(),
   threadId: z.string().min(1).max(1024),
   view: z.enum(["result", "messages"]),
   cursor: z.string().min(1).max(8192).optional(),

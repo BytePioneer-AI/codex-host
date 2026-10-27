@@ -21,6 +21,29 @@ function successfulFetch(body: unknown): typeof fetch {
 }
 
 describe("delegation CLI", () => {
+  it.each([DELEGATION_THREAD_ID_ENV, NATIVE_CODEX_THREAD_ID_ENV])(
+    "includes the sender from %s in send requests",
+    async (key) => {
+      const fetchImpl = successfulFetch({});
+      expect(
+        await runDelegationCli({
+          arguments: ["thread", "send", "target", "--message", "result"],
+          environment: {
+            [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+            [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+            [key]: "sender",
+          },
+          output: new PassThrough(),
+          fetchImpl,
+        }),
+      ).toBe(0);
+      const body = vi.mocked(fetchImpl).mock.calls[0]?.[1]?.body;
+      expect(JSON.parse(String(body))).toMatchObject({
+        callerThreadId: "sender",
+        message: "result",
+      });
+    },
+  );
   it.each([
     ["harness", "list", "--help"],
     ["harness", "inspect", "--help"],

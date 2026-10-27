@@ -1,11 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
-import { harnessIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, DELEGATION_SEND_METHOD } from "@codexhost/shared-contracts";
+import { ThreadBridge } from "../src/thread-bridge.js";
+import { ThreadSendReceipts } from "../src/thread-send-receipts.js";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { AppServerHost } from "../src/app-server-host.js";
 import { SharedThreadOwner } from "../src/shared-thread-owner.js";
@@ -45,7 +48,12 @@ function setup() {
   const open = vi.spyOn(adapter, "open");
   const diagnosticOutput = new PassThrough();
   const store = new MappingStore({ directory });
+  const threadBridge = new ThreadBridge(
+    randomUUID(),
+    new ThreadSendReceipts(path.join(directory, "receipts")),
+  );
   const host = new AppServerHost({
+    threadBridge,
     stockCodexPath: "/unused",
     arguments: [],
     externalOnly: true,
@@ -65,7 +73,7 @@ function setup() {
   });
   function front(delegateCreates: boolean, connect = async () => owner.connect()) {
     const bridge = new SharedThreadBridge({ connect, delegateCreates, diagnose: () => undefined });
-    const fixture = createFixture({ sharedThreads: bridge });
+    const fixture = createFixture({ sharedThreads: bridge, threadBridge });
     const official = new JsonLineCollector(fixture.official.stdin);
     fixture.official.stdin.on("data", () => {
       for (const request of official.messages.splice(0)) {
@@ -84,7 +92,7 @@ function setup() {
     });
     return fixture;
   }
-  return { owner, adapter, open, front, host, directory, diagnosticOutput };
+  return { owner, adapter, open, front, host, directory, diagnosticOutput, threadBridge };
 }
 
 async function rpc(
@@ -98,6 +106,33 @@ async function rpc(
 }
 
 describe("shared external Threads", () => {
+  it("routes cross-machine sends to the shared owner and returns one receipt across viewers", async () => {
+    const { front, adapter, threadBridge } = setup();
+    const first = front(true);
+    const second = front(false);
+    const threadId = await startPiThread(first);
+    const execute = vi.spyOn(session(adapter), "execute");
+    const params = {
+      threadId,
+      message: "continue shared work",
+      requestId: randomUUID(),
+      expectedMachineId: threadBridge.machineId,
+    };
+    const reply = await rpc(first, 101, DELEGATION_SEND_METHOD, params);
+    expect(reply).toMatchObject({
+      result: { result: { threadId, status: "running", harnessId: "pi" } },
+    });
+    expect(await rpc(second, 102, DELEGATION_SEND_METHOD, params)).toMatchObject({
+      result: reply.result,
+    });
+    expect(
+      execute.mock.calls.filter(([command]) => (command as { type: string }).type === "turn.start"),
+    ).toHaveLength(1);
+    expect(
+      await rpc(second, 103, DELEGATION_SEND_METHOD, { ...params, requestId: randomUUID() }),
+    ).toMatchObject({ result: { error: { code: "THREAD_BUSY" } } });
+    session(adapter).succeedTurn();
+  });
   it.each(["submit", "discard"])(
     "keeps SSH prewarms out of every viewer's history until used (%s)",
     async (action) => {

@@ -1,4 +1,19 @@
+const MANAGEMENT_HELP = `Use an existing machine-qualified link to select its owning machine. The source Thread is not changed by create.
+Operations use the native Desktop lifecycle handlers. Create returns an idle Thread; use thread send to start a task. Runtime defaults apply; no permissions are elevated.
+All operations return a requestId and machine-qualified thread link. On OUTCOME_UNKNOWN, repeat exactly the same operation with --request-id; never use a new ID to retry an uncertain create or delete.
+Permanent deletion requires explicit user authorization; --confirm permanent records that intent. Archive is reversible. Both Hosts and Desktop must support Thread management.`;
 const COMMAND_HELP = {
+  "thread create": `codexhost thread create --cwd <absolute-target-path> [--on <thread-link> | --machine <uuid>] [--harness <id>] [--request-id <uuid>] [--format json|compact]
+Create an independent idle Thread on the selected machine (default: calling machine). Harness defaults to codex.
+${MANAGEMENT_HELP}`,
+  "thread rename": `codexhost thread rename <thread-link> --name <name> [--request-id <uuid>] [--format json|compact]
+${MANAGEMENT_HELP}`,
+  "thread archive": `codexhost thread archive <thread-link> [--request-id <uuid>] [--format json|compact]
+${MANAGEMENT_HELP}`,
+  "thread unarchive": `codexhost thread unarchive <thread-link> [--request-id <uuid>] [--format json|compact]
+${MANAGEMENT_HELP}`,
+  "thread delete": `codexhost thread delete <thread-link> --confirm permanent [--request-id <uuid>] [--format json|compact]
+${MANAGEMENT_HELP}`,
   "harness list": `codexhost harness list [--format json|compact]
 List Harnesses available in the active Runtime.`,
   "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact]
@@ -14,15 +29,17 @@ Omit --model and --thinking to use the Harness native defaults.
 Reuse --request-id for an idempotent retry. Identical recent parent/target/task/configuration requests are also deduplicated briefly.
 --watch true also registers thread watch on the child with the resolved parent as the notified Thread; the response's watch field reports whether it was registered.
 The response confirms cwd and parent. Use its Thread reference with thread read, wait, send, cancel, or watch.`,
-  "thread send": `codexhost thread send <thread> --message <text> [--format json|compact]
+  "thread send": `codexhost thread send <thread> --message <text> [--request-id <uuid>] [--format json|compact]
 Start a new Turn in an idle writable Thread and return immediately.
+When CODEXHOST_THREAD_ID or CODEX_THREAD_ID identifies the caller, the source Runtime prefixes the message with its machine ID, Thread ID and a portable replyTo link. Use thread send with that link to reply when requested; receiving a message alone does not require an acknowledgement. Calls outside a Thread have no inferred sender.
 THREAD_BUSY means the current Turn is still active: wait or cancel before sending. Messages are not queued.
-To be notified when that Turn ends, run thread watch after sending.`,
+Machine-qualified links work in either direction through a Desktop connected to both updated Hosts. Cross-machine sends return a requestId; repeat the same link/message with --request-id to recover its receipt without starting another Turn. OUTCOME_UNKNOWN means read the target before submitting a new request ID. A successful receipt confirms Turn submission, not task completion. Remote wait/watch/cancel are unavailable; read the full copied link to check progress.
+For local Threads, run thread watch after sending to be notified when the Turn ends.`,
   "thread cancel": `codexhost thread cancel <thread> [--format json|compact]
 Request cancellation of the active Turn while preserving the Thread and history.
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
   "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
-Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
+Read immediately without starting a Turn. Accepts copied thread://<id>?hostId=<encoded-host-id>&machineId=<uuid> links, codex://threads/<id> links, or --host with a bare ID. Machine-qualified links work in either direction through a Desktop connected to both Hosts; machineId takes precedence over the Desktop-specific hostId hint. Both Hosts and the Desktop extension must be updated and connected. Legacy hostId-only links use the originating Desktop connection. No local fallback on remote failure. Use thread send with a machine-qualified link to continue its task; remote wait/watch/cancel are not supported.
 The default result view reports the latest Turn's status and result.
 The messages view pages visible user/Agent messages, oldest first. Default limit 25, maximum 100; --cursor and --limit require --view messages.
 hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.
@@ -61,6 +78,11 @@ export const DELEGATION_HELP = `usage:
   codexhost harness list
   codexhost harness inspect <harness>
   codexhost delegate start --harness <id> --task <text>
+  codexhost thread create --on <thread-link> --cwd <target-path>
+  codexhost thread rename <thread-link> --name <name>
+  codexhost thread archive <thread-link>
+  codexhost thread unarchive <thread-link>
+  codexhost thread delete <thread-link> --confirm permanent
   codexhost thread send <thread> --message <text>
   codexhost thread cancel <thread>
   codexhost thread read <thread>

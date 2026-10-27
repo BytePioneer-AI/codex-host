@@ -8,6 +8,7 @@ import {
   type RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { createRendererHostClients } from "./renderer-host-clients.js";
+import { installRendererThreadLinks } from "./renderer-thread-links.js";
 import { installIdleReleasePreferenceSync } from "./renderer-idle-release-preference.js";
 import {
   encodeHarnessPluginRoute,
@@ -880,6 +881,7 @@ export function installCurrentRendererAdapter(): {
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const idleReleaseSync = installIdleReleasePreferenceSync(window);
   const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1, window);
+  const stopThreadLinks = installRendererThreadLinks(() => window.__codexhostHostRoutingV1);
   const stopGroupSync = startAgentGroupSync(
     getSharedAgentGroupPreferenceStore(),
     () => (disposed ? null : clients.forHost("local")),
@@ -1107,6 +1109,7 @@ export function installCurrentRendererAdapter(): {
         () => forkControl.dispose(),
         () => stopGroupSync(),
         () => clients.dispose(),
+        () => stopThreadLinks(),
         () => usageSubscription.dispose(),
         () => idleReleaseSync.dispose(),
       ];

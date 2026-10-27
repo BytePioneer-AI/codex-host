@@ -50,12 +50,22 @@ export async function readRemoteDelegationThread(
       reply.error.code === -32094 ? "RESPONSE_TOO_LARGE" : "RUNTIME_UNREACHABLE",
       reply.error.message,
     );
-  const parsed = snapshot.safeParse(reply.result);
-  if (!parsed.success || parsed.data.threadId !== input.threadId)
+  return {
+    ...validateRemoteThreadSnapshot(reply.result, input.threadId),
+    ...(hostId ? { hostId } : {}),
+  };
+}
+
+export function validateRemoteThreadSnapshot(
+  value: unknown,
+  threadId: string,
+): DelegationThreadSnapshot {
+  const parsed = snapshot.safeParse(value);
+  if (!parsed.success || parsed.data.threadId !== threadId)
     throw new DelegationControlError(
       "INTERNAL_ERROR",
       "Remote Host returned an invalid Thread snapshot",
     );
   // JSON transport omits undefined properties; the schema validates every snapshot field.
-  return { ...parsed.data, hostId } as DelegationThreadSnapshot;
+  return parsed.data as DelegationThreadSnapshot;
 }

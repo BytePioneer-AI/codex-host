@@ -1,4 +1,5 @@
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
+import { formatThreadReference } from "@codexhost/shared-contracts";
 import {
   DelegationControlError,
   type DelegationStartResult,
@@ -56,9 +57,10 @@ function snapshotOutput(
   view: "result" | "messages",
 ): unknown {
   const common = {
-    thread: snapshot.hostId
-      ? `thread://${snapshot.threadId}?hostId=${encodeURIComponent(snapshot.hostId)}`
-      : threadLink(snapshot.threadId),
+    thread:
+      snapshot.hostId || snapshot.machineId
+        ? formatThreadReference(snapshot)
+        : threadLink(snapshot.threadId),
     harnessId: snapshot.harnessId,
     status: snapshot.status,
     ...(snapshot.timedOut !== undefined ? { timedOut: snapshot.timedOut } : {}),
@@ -98,6 +100,11 @@ export function compactDelegationOutput(
   view: "result" | "messages" = "result",
 ): unknown {
   switch (command) {
+    case "thread create":
+    case "thread rename":
+    case "thread archive":
+    case "thread unarchive":
+    case "thread delete":
     case "harness list":
       return body;
     case "harness inspect":
@@ -121,7 +128,8 @@ export function compactDelegationOutput(
     case "thread send": {
       const result = body as ThreadSendResult;
       return {
-        thread: threadLink(result.threadId),
+        thread: result.machineId ? formatThreadReference(result) : threadLink(result.threadId),
+        ...(result.requestId ? { requestId: result.requestId, turnId: result.turnId } : {}),
         harnessId: result.harnessId,
         status: result.status,
       };

@@ -1,4 +1,7 @@
+import { parseThreadManagementCommand } from "./thread-management-cli.js";
 import type { Writable } from "node:stream";
+import { randomUUID } from "node:crypto";
+import { parseThreadReference, machineIdSchema } from "@codexhost/shared-contracts";
 
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
@@ -28,15 +31,14 @@ function normalizeThreadId(value: string): string {
   return normalized;
 }
 
-function readThreadReference(value: string): { threadId: string; hostId?: string } {
-  if (!value.startsWith("thread://")) return { threadId: normalizeThreadId(value) };
-  const match = /^thread:\/\/([^/?#]+)(?:\?hostId=([^&#]+))?$/u.exec(value);
-  if (!match?.[1])
+function readThreadReference(value: string) {
+  if (!value.startsWith("thread://") && !value.startsWith("codex://threads/"))
+    return { threadId: normalizeThreadId(value) };
+  try {
+    return parseThreadReference(value);
+  } catch {
     throw new DelegationControlError("INVALID_ARGUMENT", "Thread reference is invalid");
-  return {
-    threadId: normalizeThreadId(match[1]),
-    ...(match[2] ? { hostId: decodeURIComponent(match[2]) } : {}),
-  };
+  }
 }
 
 function positiveInteger(value: string | undefined, name: string, maximum?: number): number {
@@ -116,6 +118,15 @@ async function requestRuntime(input: {
     );
   }
   let response: Response;
+  const sendDetails =
+    ["/v1/thread/send-scoped", "/v1/thread/manage"].includes(input.path) && input.body.requestId
+      ? {
+          requestId: input.body.requestId,
+          threadId: input.body.threadId,
+          machineId: input.body.machineId,
+          hostId: input.body.hostId,
+        }
+      : undefined;
   try {
     response = await (input.fetchImpl ?? fetch)(new URL(input.path, endpoint), {
       method: "POST",
@@ -123,24 +134,37 @@ async function requestRuntime(input: {
       body: JSON.stringify(input.body),
     });
   } catch (error) {
+    if (sendDetails)
+      throw new DelegationControlError(
+        "OUTCOME_UNKNOWN",
+        "Operation outcome is unknown. Inspect the target or repeat the same operation with --request-id; do not submit a new request ID yet.",
+        sendDetails,
+      );
     throw new DelegationControlError(
       "RUNTIME_UNREACHABLE",
       "Host Runtime could not be reached. If this command runs inside native Codex, use a session sandbox that permits local Runtime connections or run the command explicitly outside the sandbox.",
       { cause: error instanceof Error ? error.message : String(error) },
     );
   }
-  const body = (await response.json()) as {
+  const body = (await response.json().catch((error: unknown) => {
+    if (sendDetails)
+      throw new DelegationControlError(
+        "OUTCOME_UNKNOWN",
+        "Operation receipt was lost. Inspect the target or repeat the same request ID.",
+        sendDetails,
+      );
+    throw error;
+  })) as {
     error?: { code?: unknown; message?: unknown; details?: unknown };
   };
   if (!response.ok || body.error) {
     const code = typeof body.error?.code === "string" ? body.error.code : "INTERNAL_ERROR";
     const message =
       typeof body.error?.message === "string" ? body.error.message : "Runtime request failed";
-    throw new DelegationControlError(
-      code as DelegationControlErrorCode,
-      message,
-      body.error?.details as Record<string, unknown> | undefined,
-    );
+    throw new DelegationControlError(code as DelegationControlErrorCode, message, {
+      ...sendDetails,
+      ...(body.error?.details as Record<string, unknown> | undefined),
+    });
   }
   return body;
 }
@@ -184,6 +208,19 @@ export async function runDelegationCli(input: {
       view: "result" | "messages" = "result",
     ): void =>
       writeJson(output, format === "json" ? body : compactDelegationOutput(name, body, view));
+    const management = group === "thread" ? parseThreadManagementCommand(command, parsed) : null;
+    if (management) {
+      writeJson(
+        output,
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/manage",
+          body: management,
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
     if (group === "harness" && command === "list") {
       rejectUnknown(parsed, []);
       if (parsed.positionals.length > 0) {
@@ -297,7 +334,7 @@ export async function runDelegationCli(input: {
       return 0;
     }
     if (group === "thread" && command === "send") {
-      rejectUnknown(parsed, ["--message"]);
+      rejectUnknown(parsed, ["--message", "--request-id"]);
       if (parsed.positionals.length !== 1) {
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
@@ -312,12 +349,28 @@ export async function runDelegationCli(input: {
           "Thread identifier and --message are required",
         );
       }
+      const reference = readThreadReference(threadId);
+      const requestId =
+        value(parsed, "--request-id") ?? (reference.machineId ? randomUUID() : undefined);
+      if (requestId && !machineIdSchema.safeParse(requestId).success)
+        throw new DelegationControlError("INVALID_ARGUMENT", "--request-id must be a UUID");
+      if (reference.hostId && reference.hostId !== "local" && !reference.machineId)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "Copy a machine-qualified link to send to another Host",
+        );
+      const caller = callerThreadId(environment);
       writeResult(
         "thread send",
         await requestRuntime({
           environment,
-          path: "/v1/thread/send",
-          body: { threadId: normalizeThreadId(threadId), message },
+          path: requestId ? "/v1/thread/send-scoped" : "/v1/thread/send",
+          body: {
+            ...reference,
+            message,
+            ...(caller ? { callerThreadId: normalizeThreadId(caller) } : {}),
+            ...(requestId ? { requestId } : {}),
+          },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),
       );
@@ -407,7 +460,11 @@ export async function runDelegationCli(input: {
         command === "read" ? "thread read" : "thread wait",
         await requestRuntime({
           environment,
-          path: command === "read" ? "/v1/thread/read" : "/v1/thread/wait",
+          path: reference.machineId
+            ? "/v1/thread/read-scoped"
+            : command === "read"
+              ? "/v1/thread/read"
+              : "/v1/thread/wait",
           body,
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),

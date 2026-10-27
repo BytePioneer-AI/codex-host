@@ -1,3 +1,9 @@
+import type {
+  ThreadManagementInput,
+  ThreadManagementReply,
+  ThreadManagementOperation,
+  ThreadManagementResult,
+} from "@codexhost/shared-contracts";
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
 import type {
   HarnessInspection,
@@ -41,6 +47,7 @@ export interface DelegationProgress {
 
 export interface DelegationThreadSnapshot {
   hostId?: string;
+  machineId?: string;
   threadId: string;
   harnessId: RoutedHarnessId;
   status: DelegationThreadStatus;
@@ -107,16 +114,24 @@ export interface DelegationStartResult {
 }
 
 export interface ThreadSendInput {
+  /** Calling Thread on the source Runtime; used to include a portable reply address. */
+  callerThreadId?: string;
+  machineId?: string;
+  hostId?: string;
+  requestId?: string;
   threadId: string;
   message: string;
 }
 
 export interface ThreadSendResult {
+  machineId?: string;
+  hostId?: string;
+  requestId?: string;
   threadId: string;
   turnId: string;
   harnessId: RoutedHarnessId;
   status: "running";
-  next: { read: string; wait: string };
+  next: { read: string; wait?: string };
 }
 
 export interface ThreadCancelInput {
@@ -131,6 +146,7 @@ export interface ThreadCancelResult {
 }
 
 export interface ThreadReadInput {
+  machineId?: string;
   /** Internal caller context from the CLI; not forwarded to another Host. */
   callerThreadId?: string;
   /** Explicit Desktop Host identity; never inferred from the Thread ID. */
@@ -229,6 +245,7 @@ export interface DelegationWatchApi {
 }
 
 export interface DelegationControlApi {
+  manage?(input: ThreadManagementInput): Promise<ThreadManagementReply>;
   listHarnesses(): Promise<HarnessListResult>;
   inspect(input: HarnessInspectInput): Promise<HarnessInspectResult>;
   start(input: DelegationStartInput): Promise<DelegationStartResult>;
@@ -240,12 +257,14 @@ export interface DelegationControlApi {
 }
 
 export interface DelegationControlRegistration extends DelegationControlApi {
+  manageLocal?(action: ThreadManagementOperation): Promise<ThreadManagementResult>;
   executionHostId?(threadId: string): string | undefined;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;
 }
 
 export type DelegationControlErrorCode =
+  | "OUTCOME_UNKNOWN"
   | "INVALID_ARGUMENT"
   | "HARNESS_NOT_FOUND"
   | "THREAD_NOT_FOUND"

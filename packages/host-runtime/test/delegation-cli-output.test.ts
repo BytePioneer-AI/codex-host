@@ -3,6 +3,31 @@ import { describe, expect, it } from "vitest";
 import { compactDelegationOutput } from "../src/delegation-cli-output.js";
 
 describe("compact delegation output", () => {
+  it("keeps the owning machine in links returned with another message page", () => {
+    expect(
+      compactDelegationOutput(
+        "thread read",
+        {
+          threadId: "thread",
+          hostId: "local",
+          machineId: "12345678-1234-4123-8123-123456789abc",
+          harnessId: "pi",
+          status: "completed",
+          turn: null,
+          progress: [],
+          result: { availability: "available", text: "result" },
+          messages: [],
+          hasMore: true,
+          nextCursor: "next-page",
+        },
+        "messages",
+      ),
+    ).toMatchObject({
+      thread: "thread://thread?hostId=local&machineId=12345678-1234-4123-8123-123456789abc",
+      nextCursor: "next-page",
+      hasMore: true,
+    });
+  });
   it.each([
     ["running", { availability: "pending" }],
     ["failed", { availability: "unavailable", message: "Provider rejected the request" }],

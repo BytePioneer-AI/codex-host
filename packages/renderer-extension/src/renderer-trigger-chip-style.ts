@@ -80,19 +80,17 @@ export function applyRendererTriggerChipSqueezeTrigger(trigger: HTMLElement): vo
 
 /** Follow the Composer width, which also changes when a sidebar opens. */
 export function observeRendererCompactComposer(composer: Element): () => void {
-  const update = (width: number): void => {
+  const update = (): void => {
+    const width = composer.getBoundingClientRect().width;
     if (width > 0) {
       composer.toggleAttribute(COMPACT_COMPOSER_ATTRIBUTE, width <= COMPACT_COMPOSER_WIDTH);
     }
   };
-  update(composer.getBoundingClientRect().width);
+  update();
   if (typeof ResizeObserver === "undefined")
     return () => composer.removeAttribute(COMPACT_COMPOSER_ATTRIBUTE);
-  const observer = new ResizeObserver((entries) => {
-    const entry = entries[0];
-    if (entry) update(entry.contentRect.width);
-  });
-  observer.observe(composer);
+  const observer = new ResizeObserver(update);
+  observer.observe(composer, { box: "border-box" });
   return () => {
     observer.disconnect();
     composer.removeAttribute(COMPACT_COMPOSER_ATTRIBUTE);

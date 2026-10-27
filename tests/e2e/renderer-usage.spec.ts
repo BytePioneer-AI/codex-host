@@ -284,6 +284,50 @@ test("keeps Usage usable while the composer shrinks and expands", async ({ page 
   await expect(icon).not.toBeVisible();
 });
 
+test("uses a consistent padded border box at the compact width boundary", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.setContent('<!doctype html><body style="margin:12px;padding-top:280px"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  const initialCompact = await page.evaluate(() => {
+    Reflect.get(globalThis, "setupRendererUsage")();
+    Reflect.get(globalThis, "updateRendererUsage")();
+    const toolbar = document.querySelector("[data-codexhost-usage-control]")?.parentElement;
+    if (!toolbar) throw new Error("Usage toolbar is unavailable");
+    toolbar.style.cssText += ";box-sizing:content-box;width:420px;padding:16px;border:1px solid";
+    Reflect.get(globalThis, "observeRendererUsageWidth")();
+    return toolbar.hasAttribute("data-codexhost-compact-composer");
+  });
+  expect(initialCompact).toBe(false);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  const label = usage.locator("[data-codexhost-usage-label]");
+  await expect(label).toBeVisible();
+
+  await usage.evaluate((element) => {
+    const toolbar = element.parentElement;
+    if (!toolbar) throw new Error("Usage toolbar is unavailable");
+    toolbar.style.width = "386px";
+  });
+  await expect(label).not.toBeVisible();
+  await usage.evaluate((element) => {
+    const toolbar = element.parentElement;
+    if (!toolbar) throw new Error("Usage toolbar is unavailable");
+    toolbar.style.width = "387px";
+  });
+  await expect(label).toBeVisible();
+  await usage.evaluate((element) => {
+    const toolbar = element.parentElement;
+    if (!toolbar) throw new Error("Usage toolbar is unavailable");
+    toolbar.style.paddingInline = "15px";
+  });
+  await expect(label).not.toBeVisible();
+});
+
 test("renders Usage immediately to the left of the model control", async ({ page }) => {
   await page.setContent('<!doctype html><body style="margin:0"></body>');
   await page.addScriptTag({ content: browserBundle });

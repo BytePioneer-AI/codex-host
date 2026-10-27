@@ -105,6 +105,7 @@ import { PiSessionImportIndex } from "./pi-session-import.js";
 import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import {
   PiRpcFaultError,
+  PiRpcBusyError,
   PiRpcSession,
   PiRpcUnsupportedCommandError,
   type PiInteractionRequest,
@@ -112,6 +113,7 @@ import {
   type PiRpcSessionOptions,
   type PiSessionState,
   type PiAutonomousTurn,
+  type PiAutonomousTurnLifecycle,
   type PiCompactResult,
   type PiTurnEvent,
   type PiTurnResult,
@@ -144,12 +146,14 @@ export interface PiAdapterOptions {
 export interface PiTurnTransport {
   readonly state: PiSessionState;
   readonly stderrTail?: string;
+  readonly isBusy?: boolean;
   setGotgenesStatusHandler?(
     handler: (records: GotgenesRecord[], owner: GotgenesObservationOwner) => void,
   ): void;
   setSubagentStatusHandler?(handler: (runs: PiSubagentNode[]) => void): void;
   inspectSubagent?(id: string): Promise<PiSubagentInspection>;
   setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void;
+  setAutonomousTurnLifecycleHandler?(handler: (update: PiAutonomousTurnLifecycle) => void): void;
   /** Finished assistant messages, for Host usage metering; absent on transports without it. */
   setUsageHandler?(handler: (observation: PiUsageObservation) => void): void;
   start(): Promise<unknown>;
@@ -193,6 +197,7 @@ interface ActiveInteraction {
 
 interface ActiveTurn {
   command: TurnStartCommand;
+  autonomousRunId?: string;
   agentItem: HostAgentMessageItem | null;
   agentMessageId: string | null;
   compactionItem: HostContextCompactionItem | null;
@@ -242,6 +247,8 @@ class PiAdapterFaultError extends Error {
 }
 
 function normalizedError(error: unknown, fallbackCode: HarnessError["code"]): HarnessError {
+  if (error instanceof PiRpcBusyError)
+    return { code: "sessionBusy", message: error.message, retryable: true };
   if (isRecord(error) && error.code === "ENOENT") {
     return { code: "notInstalled", message: errorMessage(error), retryable: false };
   }
@@ -407,6 +414,12 @@ class PiHarnessSession implements HarnessSession {
   #configuring = false;
   #phase: SessionPhase = "open";
   #pendingAutonomousTurns: Array<{ transport: PiTurnTransport; turn: PiAutonomousTurn }> = [];
+  #pendingAutonomousLifecycle: Array<{
+    transport: PiTurnTransport;
+    update: PiAutonomousTurnLifecycle;
+    bytes: number;
+  }> = [];
+  #pendingAutonomousLifecycleBytes = 0;
   #starting: Promise<PiTurnTransport> | null = null;
   #state: HarnessSessionState = {};
   #transport: PiTurnTransport | null = null;
@@ -589,7 +602,7 @@ class PiHarnessSession implements HarnessSession {
         },
       };
     }
-    if (this.#acceptingTurn || this.#active || this.#configuring) {
+    if (this.#acceptingTurn || this.#active || this.#configuring || this.#transport?.isBusy) {
       return {
         ok: false,
         error: {
@@ -631,6 +644,17 @@ class PiHarnessSession implements HarnessSession {
         });
       } catch (error) {
         return { ok: false, error: normalizedError(error, "protocolError") };
+      }
+
+      // A native autonomous run can begin while startup/history preflight is awaiting RPC.
+      // Reject before publishing acceptance; do not resend the user's input behind that run.
+      if (
+        this.#active ||
+        transport.isBusy ||
+        this.#pendingAutonomousLifecycle.length > 0 ||
+        this.#pendingAutonomousTurns.length > 0
+      ) {
+        return { ok: false, error: normalizedError(new PiRpcBusyError(), "sessionBusy") };
       }
 
       let resolveCompletion = (): void => undefined;
@@ -939,6 +963,15 @@ class PiHarnessSession implements HarnessSession {
         error: invalidState("Pi Turn Cancel must reference the active Turn"),
       };
     }
+    if (active.settling) {
+      // Native execution has ended; abort may now target a deferred autonomous successor.
+      return {
+        ok: false,
+        error: invalidState(
+          "Pi Turn has finished native execution and is recording its completion",
+        ),
+      };
+    }
     if (active.cancellationRequested) {
       return { ok: true, value: { cancellationRequested: true } };
     }
@@ -1160,6 +1193,13 @@ class PiHarnessSession implements HarnessSession {
         this.#pendingAutonomousTurns = this.#pendingAutonomousTurns.filter(
           (pending) => pending.transport !== transport,
         );
+        this.#pendingAutonomousLifecycle = this.#pendingAutonomousLifecycle.filter(
+          (pending) => pending.transport !== transport,
+        );
+        this.#pendingAutonomousLifecycleBytes = this.#pendingAutonomousLifecycle.reduce(
+          (total, pending) => total + pending.bytes,
+          0,
+        );
         await transport.close().catch(() => undefined);
         if (this.#phase === "open") this.#fault(error);
         throw error;
@@ -1193,6 +1233,12 @@ class PiHarnessSession implements HarnessSession {
         this.#event({ type: "usage.request", request: record.request });
       else if (record?.kind === "missing") this.#event({ type: "usage.history", complete: false });
     });
+    if (transport.setAutonomousTurnLifecycleHandler) {
+      transport.setAutonomousTurnLifecycleHandler((update) =>
+        this.#handleAutonomousLifecycle(transport, update),
+      );
+      return;
+    }
     transport.setAutonomousTurnHandler((turn) => {
       if (this.#phase !== "open") return;
       if (this.#transport !== transport) {
@@ -1204,7 +1250,21 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #drainPendingAutonomousTurns(transport: PiTurnTransport): void {
-    if (this.#phase !== "open" || this.#active || this.#acceptingTurn || this.#configuring) return;
+    if (this.#phase !== "open" || this.#acceptingTurn || this.#configuring) return;
+    for (;;) {
+      const pending = this.#pendingAutonomousLifecycle[0];
+      if (
+        !pending ||
+        pending.transport !== transport ||
+        (this.#active && this.#active.autonomousRunId !== pending.update.runId)
+      )
+        break;
+      this.#pendingAutonomousLifecycle.shift();
+      this.#pendingAutonomousLifecycleBytes -= pending.bytes;
+      this.#applyAutonomousLifecycle(transport, pending.update);
+      if (this.#phase !== "open") return;
+    }
+    if (this.#active) return;
     if (this.#pendingSubagentStatus) {
       this.#subagents.observe(this.#pendingSubagentStatus);
       this.#pendingSubagentStatus = null;
@@ -1218,6 +1278,67 @@ class PiHarnessSession implements HarnessSession {
     for (const candidate of pending) {
       if (this.#phase !== "open") return;
       this.#handleAutonomousTurn(transport, candidate.turn);
+    }
+  }
+
+  #handleAutonomousLifecycle(transport: PiTurnTransport, update: PiAutonomousTurnLifecycle): void {
+    if (
+      this.#phase === "closing" &&
+      this.#transport === transport &&
+      update.type !== "started" &&
+      this.#active?.autonomousRunId === update.runId
+    ) {
+      // Closing stops admission, but the current native run still owes its cancellation terminal.
+      this.#applyAutonomousLifecycle(transport, update);
+      return;
+    }
+    if (this.#phase !== "open") return;
+    if (
+      this.#transport !== transport ||
+      this.#acceptingTurn ||
+      this.#configuring ||
+      this.#pendingAutonomousLifecycle.length > 0 ||
+      (this.#active && this.#active.autonomousRunId !== update.runId)
+    ) {
+      const bytes = Buffer.byteLength(JSON.stringify(update));
+      if (this.#pendingAutonomousLifecycleBytes + bytes > 8 * 1024 * 1024) {
+        this.#fault(
+          new PiAdapterFaultError({
+            code: "protocolError",
+            message: "Pi autonomous lifecycle exceeded its ordered event buffer bound",
+            retryable: false,
+          }),
+        );
+        return;
+      }
+      this.#pendingAutonomousLifecycle.push({ transport, update, bytes });
+      this.#pendingAutonomousLifecycleBytes += bytes;
+      if (this.#transport === transport) this.#drainPendingAutonomousTurns(transport);
+      return;
+    }
+    this.#applyAutonomousLifecycle(transport, update);
+  }
+
+  #applyAutonomousLifecycle(transport: PiTurnTransport, update: PiAutonomousTurnLifecycle): void {
+    if (update.type === "started" && !this.#active) {
+      this.#startAutonomousHostTurn(update.runId);
+      return;
+    }
+    const active = this.#active;
+    if (!active || active.autonomousRunId !== update.runId || update.type === "started") {
+      this.#fault(
+        new PiAdapterFaultError({
+          code: "protocolError",
+          message: "Pi autonomous event has no matching active run",
+          retryable: false,
+        }),
+      );
+      return;
+    }
+    if (update.type === "event") this.#handleTurnEvent(active, update.event);
+    else {
+      active.settling = true;
+      this.#finishAutonomousHostTurn(transport, active, update.turn);
     }
   }
 
@@ -1258,6 +1379,11 @@ class PiHarnessSession implements HarnessSession {
       return;
     }
 
+    const active = this.#startAutonomousHostTurn();
+    this.#finishAutonomousHostTurn(transport, active, turn);
+  }
+
+  #startAutonomousHostTurn(runId?: string): ActiveTurn {
     const turnId = hostTurnIdSchema.parse(randomUUID());
     let resolveCompletion = (): void => undefined;
     const completion = new Promise<void>((resolve) => {
@@ -1270,6 +1396,7 @@ class PiHarnessSession implements HarnessSession {
     };
     const active: ActiveTurn = {
       command: { type: "turn.start", turnId, input: [] },
+      ...(runId ? { autonomousRunId: runId } : {}),
       agentItem: item,
       agentMessageId: null,
       compactionItem: null,
@@ -1285,6 +1412,19 @@ class PiHarnessSession implements HarnessSession {
       completion,
       resolveCompletion,
     };
+    this.#active = active;
+    this.#event({ type: "turn.autonomous.started", turnId, input: [] });
+    this.#event({ type: "turn.started", turnId });
+    this.#event({ type: "item.started", turnId, item });
+
+    return active;
+  }
+
+  #finishAutonomousHostTurn(
+    transport: PiTurnTransport,
+    active: ActiveTurn,
+    turn: PiAutonomousTurn,
+  ): void {
     const nativeTurnRef = turn.nativeTurnKey
       ? nativeTurnRefSchema.parse({
           harnessId: this.harnessId,
@@ -1301,10 +1441,6 @@ class PiHarnessSession implements HarnessSession {
           formatVersion: 1,
         })
       : undefined;
-    this.#active = active;
-    this.#event({ type: "turn.autonomous.started", turnId, input: [] });
-    this.#event({ type: "turn.started", turnId });
-    this.#event({ type: "item.started", turnId, item });
 
     try {
       for (const event of turn.events) this.#handleTurnEvent(active, event);
@@ -1882,6 +2018,8 @@ class PiHarnessSession implements HarnessSession {
     if (this.#phase === "closed" || this.#phase === "faulted") return;
     const normalized = normalizedError(error, "internalError");
     this.#pendingAutonomousTurns = [];
+    this.#pendingAutonomousLifecycle = [];
+    this.#pendingAutonomousLifecycleBytes = 0;
     if (this.#active) {
       this.#completeTurn(this.#active, { status: "failed", error: normalized });
     }
@@ -1892,6 +2030,8 @@ class PiHarnessSession implements HarnessSession {
 
   async #close(): Promise<void> {
     this.#pendingAutonomousTurns = [];
+    this.#pendingAutonomousLifecycle = [];
+    this.#pendingAutonomousLifecycleBytes = 0;
     if (this.#phase === "closed") return;
     const wasFaulted = this.#phase === "faulted";
     if (!wasFaulted) this.#phase = "closing";

@@ -5,6 +5,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { harnessThinkingOptionIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import type { HostEvent } from "@codexhost/harness-adapter";
 import { describe, expect, it, vi } from "vitest";
 import { mapPiSnapshot, type PiSessionHistory } from "../src/pi-history.js";
 import { piMessageItemId } from "../src/pi-message-item-id.js";
@@ -1102,6 +1103,387 @@ function appendDeferredRun(fake: FakePiRpcProcess, key: string, text: string, se
   fake.emitFrame({ type: "message_end", message });
   if (settle) fake.emitAgentSettled();
 }
+
+async function liveAutonomousHarness() {
+  let fake: FakePiRpcProcess | undefined;
+  const adapter = new PiAdapter(
+    { closeTimeoutMs: 100 },
+    {
+      createTransport: (options) =>
+        new PiRpcSession(
+          { ...options, commandTimeoutMs: 500, cancelTimeoutMs: 100, closeTimeoutMs: 50 },
+          {
+            spawn: () => {
+              fake = new FakePiRpcProcess("manual-run");
+              fake.autonomousHistory = { entries: [], leafId: null };
+              return fake as unknown as ChildProcessWithoutNullStreams;
+            },
+          },
+        ),
+    },
+  );
+  const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+  if (!opened.ok) throw new Error(opened.error.message);
+  const session = opened.value;
+  const events: HostEvent[] = [];
+  const consumed = (async () => {
+    for await (const output of session.outputs)
+      if (output.kind === "event") events.push(output.event);
+  })();
+  const snapshot = await session.readSnapshot();
+  if (!snapshot.ok || !fake) throw new Error("Fake native Session failed to start");
+  const native = fake;
+  return {
+    session,
+    events,
+    native,
+    async close() {
+      await session.close();
+      await adapter.close();
+      await consumed;
+    },
+  };
+}
+
+function userTurn(id: string) {
+  return {
+    type: "turn.start" as const,
+    turnId: hostTurnIdSchema.parse(id),
+    input: [{ type: "text" as const, text: id }],
+  };
+}
+
+function persistFakeRun(
+  fake: FakePiRpcProcess,
+  key: string,
+  responseId: string,
+  text: string,
+  autonomous: boolean,
+) {
+  const history = fake.autonomousHistory ?? { entries: [], leafId: null };
+  const message = {
+    role: "assistant",
+    responseId,
+    content: [{ type: "text", text }],
+    stopReason: "stop",
+  };
+  history.entries.push(
+    autonomous
+      ? {
+          id: key,
+          parentId: history.leafId,
+          type: "custom_message",
+          customType: "subagent:notification",
+          display: false,
+          content: "Background update",
+        }
+      : {
+          id: key,
+          parentId: history.leafId,
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: key }] },
+        },
+    { id: `${key}-answer`, parentId: key, type: "message", message },
+  );
+  history.leafId = `${key}-answer`;
+  fake.autonomousHistory = history;
+  return message;
+}
+
+describe("Pi autonomous live admission", () => {
+  it.each(["agent_start", "message_start"] as const)(
+    "announces autonomous %s immediately and rejects overlapping user input before dispatch",
+    async (start) => {
+      const harness = await liveAutonomousHarness();
+      try {
+        if (start === "agent_start") harness.native.emitAgentStart();
+        else harness.native.emitAutonomousStart("active-autonomous");
+        await waitFor(() =>
+          harness.events.some((event) => event.type === "turn.autonomous.started"),
+        );
+        if (start === "message_start")
+          expect(
+            harness.events.some(
+              (event) =>
+                event.type === "item.updated" &&
+                event.update.type === "text.append" &&
+                event.update.text === "partial",
+            ),
+          ).toBe(true);
+        expect(harness.events.filter((event) => event.type === "turn.completed")).toHaveLength(0);
+        await expect(harness.session.execute(userTurn("overlap"))).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy", retryable: true },
+        });
+        expect(harness.native.commands.filter((command) => command === "prompt")).toHaveLength(0);
+        expect(
+          harness.events.some(
+            (event) => event.type === "turn.started" && event.turnId === "overlap",
+          ),
+        ).toBe(false);
+        const message = persistFakeRun(
+          harness.native,
+          "native-notice",
+          "active-autonomous",
+          "partial done",
+          true,
+        );
+        if (start === "agent_start") harness.native.emitFrame({ type: "message_start", message });
+        harness.native.emitFrame({ type: "message_end", message });
+        harness.native.emitAgentSettled();
+        await waitFor(() => harness.events.some((event) => event.type === "turn.completed"));
+        expect(
+          harness.events.filter((event) => event.type === "turn.autonomous.started"),
+        ).toHaveLength(1);
+        expect(harness.events.find((event) => event.type === "turn.completed")).toMatchObject({
+          outcome: { status: "succeeded" },
+          nativeTurnRef: { nativeTurnKey: "native-notice" },
+        });
+        await expect(
+          harness.session.execute(userTurn("explicit-user-retry")),
+        ).resolves.toMatchObject({ ok: true });
+        expect(harness.native.commands.filter((command) => command === "prompt")).toHaveLength(1);
+        const requested = persistFakeRun(
+          harness.native,
+          "next-user",
+          "requested",
+          "user answer",
+          false,
+        );
+        harness.native.emitFrame({ type: "message_start", message: requested });
+        harness.native.emitFrame({ type: "message_end", message: requested });
+        harness.native.emitAgentSettled();
+        await waitFor(
+          () => harness.events.filter((event) => event.type === "turn.completed").length === 2,
+        );
+        expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+      } finally {
+        await harness.close();
+      }
+    },
+  );
+
+  it("arbitrates autonomous work arriving during the user history preflight", async () => {
+    const harness = await liveAutonomousHarness();
+    try {
+      const reads = harness.native.commands.filter((command) => command === "get_entries").length;
+      harness.native.holdEntries = true;
+      const accepted = harness.session.execute(userTurn("race-preflight"));
+      await waitFor(
+        () => harness.native.commands.filter((command) => command === "get_entries").length > reads,
+      );
+      harness.native.emitAgentStart();
+      harness.native.emitAutonomousStart("racing-autonomous");
+      harness.native.releaseEntries();
+      await expect(accepted).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy", retryable: true },
+      });
+      await waitFor(() => harness.events.some((event) => event.type === "turn.autonomous.started"));
+      expect(harness.native.commands.filter((command) => command === "prompt")).toHaveLength(0);
+      expect(
+        harness.events.some(
+          (event) => event.type === "turn.started" && event.turnId === "race-preflight",
+        ),
+      ).toBe(false);
+      const message = persistFakeRun(
+        harness.native,
+        "racing-notice",
+        "racing-autonomous",
+        "partial done",
+        true,
+      );
+      harness.native.emitFrame({ type: "message_end", message });
+      harness.native.emitAgentSettled();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.completed"));
+      expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("streams the next deferred native run after the prior requested Host terminal without admitting another user prompt", async () => {
+    const harness = await liveAutonomousHarness();
+    try {
+      await expect(harness.session.execute(userTurn("first-request"))).resolves.toMatchObject({
+        ok: true,
+      });
+      const first = persistFakeRun(
+        harness.native,
+        "first-user",
+        "first-response",
+        "first complete",
+        false,
+      );
+      harness.native.emitFrame({ type: "message_start", message: first });
+      harness.native.emitFrame({ type: "message_end", message: first });
+      harness.native.holdStates = true;
+      harness.native.emitAgentSettled();
+      appendDeferredRun(harness.native, "deferred-notice", "NEXT_AUTONOMOUS_PROGRESS", false);
+      const reads = harness.native.commands.filter((command) => command === "get_entries").length;
+      harness.native.holdEntries = true;
+      harness.native.releaseStates();
+      await waitFor(
+        () => harness.native.commands.filter((command) => command === "get_entries").length > reads,
+      );
+      await expect(
+        harness.session.execute({
+          type: "turn.cancel",
+          turnId: hostTurnIdSchema.parse("first-request"),
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(harness.native.commands.filter((command) => command === "abort")).toHaveLength(0);
+      harness.native.releaseEntries();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.autonomous.started"));
+      const previousEnd = harness.events.findIndex(
+        (event) => event.type === "turn.completed" && event.turnId === "first-request",
+      );
+      const nextStart = harness.events.findIndex(
+        (event) => event.type === "turn.autonomous.started",
+      );
+      expect(previousEnd).toBeGreaterThanOrEqual(0);
+      expect(nextStart).toBeGreaterThan(previousEnd);
+      expect(
+        harness.events.some(
+          (event) =>
+            event.type === "item.updated" &&
+            event.update.type === "text.append" &&
+            event.update.text === "NEXT_AUTONOMOUS_PROGRESS",
+        ),
+      ).toBe(true);
+      await expect(harness.session.execute(userTurn("must-not-send"))).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      expect(harness.native.commands.filter((command) => command === "prompt")).toHaveLength(1);
+      harness.native.emitAgentSettled();
+      await waitFor(
+        () => harness.events.filter((event) => event.type === "turn.completed").length === 2,
+      );
+      expect(harness.events.filter((event) => event.type === "turn.completed")).toMatchObject([
+        { turnId: "first-request", outcome: { status: "succeeded" } },
+        { nativeTurnRef: { nativeTurnKey: "deferred-notice" }, outcome: { status: "succeeded" } },
+      ]);
+      expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("cancels a visible autonomous run before its first Assistant message without faulting the Session", async () => {
+    const harness = await liveAutonomousHarness();
+    try {
+      harness.native.emitAgentStart();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.autonomous.started"));
+      const started = harness.events.find((event) => event.type === "turn.autonomous.started");
+      if (!started || started.type !== "turn.autonomous.started")
+        throw new Error("Missing autonomous start");
+      await expect(
+        harness.session.execute({ type: "turn.cancel", turnId: started.turnId }),
+      ).resolves.toMatchObject({ ok: true });
+      await expect(
+        harness.session.execute(userTurn("before-cancel-settles")),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      harness.native.emitAgentSettled();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.completed"));
+      expect(harness.events.filter((event) => event.type === "turn.completed")).toMatchObject([
+        { turnId: started.turnId, outcome: { status: "cancelled" } },
+      ]);
+      expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+      expect(harness.native.commands.filter((command) => command === "abort")).toHaveLength(1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("keeps retry attempts inside one visible autonomous lifecycle", async () => {
+    const harness = await liveAutonomousHarness();
+    try {
+      harness.native.emitAgentStart();
+      const failure = {
+        role: "assistant",
+        responseId: "failed-attempt",
+        content: [],
+        stopReason: "error",
+        errorMessage: "503",
+      };
+      harness.native.emitFrame({ type: "message_start", message: failure });
+      harness.native.emitFrame({ type: "message_end", message: failure });
+      harness.native.emitFrame({
+        type: "auto_retry_start",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 100,
+        errorMessage: "503",
+      });
+      harness.native.emitAgentStart();
+      await waitFor(() =>
+        harness.events.some(
+          (event) =>
+            event.type === "item.started" &&
+            event.item.type === "agentMessage" &&
+            event.item.text.includes("Pi retry 1/3"),
+        ),
+      );
+      await expect(harness.session.execute(userTurn("during-retry"))).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      const recovered = persistFakeRun(
+        harness.native,
+        "retry-notice",
+        "recovered-attempt",
+        "recovered",
+        true,
+      );
+      const history = harness.native.autonomousHistory;
+      if (!history) throw new Error("Missing history");
+      history.entries.splice(1, 0, {
+        id: "failed-attempt-entry",
+        parentId: "retry-notice",
+        type: "message",
+        message: failure,
+      });
+      const answer = history.entries.at(-1);
+      if (!answer) throw new Error("Missing answer");
+      answer.parentId = "failed-attempt-entry";
+      harness.native.emitFrame({ type: "message_start", message: recovered });
+      harness.native.emitFrame({ type: "message_end", message: recovered });
+      harness.native.emitFrame({ type: "auto_retry_end", attempt: 1, success: true });
+      harness.native.emitAgentSettled();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.completed"));
+      expect(
+        harness.events.filter((event) => event.type === "turn.autonomous.started"),
+      ).toHaveLength(1);
+      expect(harness.events.filter((event) => event.type === "turn.completed")).toMatchObject([
+        { outcome: { status: "succeeded" } },
+      ]);
+      expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+      expect(harness.native.commands.filter((command) => command === "prompt")).toHaveLength(0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("records the current autonomous cancellation terminal while closing instead of waiting for a false timeout", async () => {
+    const harness = await liveAutonomousHarness();
+    try {
+      harness.native.emitAgentStart();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.autonomous.started"));
+      const closing = harness.session.close();
+      await waitFor(() => harness.native.commands.includes("abort"));
+      harness.native.emitAgentSettled();
+      await closing;
+      expect(harness.events.filter((event) => event.type === "turn.completed")).toMatchObject([
+        { outcome: { status: "cancelled" } },
+      ]);
+      expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+      expect(harness.native.exitCode).toBe(0);
+    } finally {
+      await harness.close();
+    }
+  });
+});
 
 describe("Pi RPC Turn aggregation", () => {
   it.each([

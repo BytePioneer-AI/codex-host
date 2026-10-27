@@ -153,6 +153,21 @@ export interface PiAutonomousTurn {
   result: PiAutonomousTurnResult;
 }
 
+/** A native run is busy from agent_start, before its persisted Turn identity is available. */
+export type PiAutonomousTurnLifecycle =
+  | { type: "started"; runId: string }
+  | { type: "event"; runId: string; event: PiTurnEvent }
+  | { type: "completed"; runId: string; turn: PiAutonomousTurn };
+
+export class PiRpcBusyError extends Error {
+  constructor() {
+    super(
+      "Pi is still running a native Turn; wait for completion or use the active Turn's stop/steer action",
+    );
+    this.name = "PiRpcBusyError";
+  }
+}
+
 export interface PiCompactResult {
   outcome: "succeeded" | "cancelled" | "failed";
   errorMessage?: string;
@@ -223,6 +238,7 @@ interface ManualCompaction {
 
 interface ActiveTurn {
   origin: "requested" | "autonomous";
+  autonomousRunId: string | null;
   runGeneration: number;
   autonomousEvents: PiTurnEvent[] | null;
   autonomousMessage?: Record<string, unknown>;
@@ -548,6 +564,7 @@ export class PiRpcSession {
   readonly #runWaiters = new Set<{ check(): void; reject(error: Error): void }>();
   #messageTimestampCounts = new Map<number, number>();
   #autonomousTurnHandler: ((turn: PiAutonomousTurn) => void) | null = null;
+  #autonomousLifecycleHandler: ((update: PiAutonomousTurnLifecycle) => void) | null = null;
   #usageHandler: ((observation: PiUsageObservation) => void) | null = null;
   #usageRequestStartedAtMs: number | null = null;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
@@ -614,6 +631,15 @@ export class PiRpcSession {
     return this.#stderrTail;
   }
 
+  get isBusy(): boolean {
+    return (
+      this.#activeTurn !== null ||
+      this.#manualCompaction !== null ||
+      this.#compactionActive ||
+      this.#deferredRunFrames.length > 0
+    );
+  }
+
   setSubagentStatusHandler(handler: (runs: PiSubagentNode[]) => void): void {
     this.#subagents.setHandler(handler);
   }
@@ -669,6 +695,12 @@ export class PiRpcSession {
 
   setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void {
     this.#autonomousTurnHandler = handler;
+    this.#autonomousLifecycleHandler = null;
+  }
+
+  setAutonomousTurnLifecycleHandler(handler: (update: PiAutonomousTurnLifecycle) => void): void {
+    this.#autonomousLifecycleHandler = handler;
+    this.#autonomousTurnHandler = null;
   }
 
   async start(): Promise<this> {
@@ -958,12 +990,13 @@ export class PiRpcSession {
     if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Pi RPC Session is unavailable");
     }
-    if (this.#activeTurn) throw new Error("Pi RPC Session already has an active Turn");
+    if (this.isBusy) throw new PiRpcBusyError();
     if (text.length === 0) throw new Error("Pi text Turn must not be empty");
 
     const settled = new Promise<PiTurnResult>((resolve, reject) => {
       this.#activeTurn = {
         origin: "requested",
+        autonomousRunId: null,
         runGeneration: this.#runGeneration,
         autonomousEvents: null,
         nativeTurnKey: null,
@@ -1177,6 +1210,12 @@ export class PiRpcSession {
     }
     if (value.type === "agent_start") {
       if (this.#activeTurn) this.#activeTurn.runGeneration = generation;
+      else if (
+        !this.#manualCompaction &&
+        !this.#compactionActive &&
+        (this.#autonomousTurnHandler || this.#autonomousLifecycleHandler)
+      )
+        this.#startAutonomousTurn(undefined, generation);
       return;
     }
     if (
@@ -1238,7 +1277,7 @@ export class PiRpcSession {
       !active &&
       !this.#manualCompaction &&
       !this.#compactionActive &&
-      this.#autonomousTurnHandler &&
+      (this.#autonomousTurnHandler || this.#autonomousLifecycleHandler) &&
       value.type === "message_start" &&
       assistantText(value.message) !== null
     ) {
@@ -1353,8 +1392,10 @@ export class PiRpcSession {
 
   #startAutonomousTurn(value: unknown, generation: number): ActiveTurn {
     const events: PiTurnEvent[] = [];
+    const runId = randomUUID();
     const active: ActiveTurn = {
       origin: "autonomous",
+      autonomousRunId: runId,
       runGeneration: generation,
       autonomousEvents: events,
       ...(isRecord(value) ? { autonomousMessage: value } : {}),
@@ -1370,7 +1411,11 @@ export class PiRpcSession {
       lastFinalizedMessageText: null,
       lastFinalizedMessageReasoning: null,
       reasoningMessageOpen: false,
-      onEvent: (event) => events.push(event),
+      onEvent: (event) => {
+        if (this.#autonomousLifecycleHandler)
+          this.#autonomousLifecycleHandler({ type: "event", runId, event });
+        else events.push(event);
+      },
       resolve: () => undefined,
       reject: () => undefined,
       failure: null,
@@ -1383,6 +1428,7 @@ export class PiRpcSession {
       abortPromise: null,
     };
     this.#activeTurn = active;
+    this.#autonomousLifecycleHandler?.({ type: "started", runId });
     this.#drainProgress(active.onEvent);
     return active;
   }
@@ -1482,15 +1528,22 @@ export class PiRpcSession {
 
   #emitAutonomousTurn(active: ActiveTurn, result: PiAutonomousTurnResult): void {
     const handler = this.#autonomousTurnHandler;
-    if (active.origin !== "autonomous" || !active.autonomousEvents || !handler) {
+    if (active.origin !== "autonomous" || !active.autonomousEvents || !active.autonomousRunId) {
       return;
     }
     try {
-      handler({
+      const turn: PiAutonomousTurn = {
         nativeTurnKey: active.nativeTurnKey,
         events: [...active.autonomousEvents],
         result,
-      });
+      };
+      if (this.#autonomousLifecycleHandler)
+        this.#autonomousLifecycleHandler({
+          type: "completed",
+          runId: active.autonomousRunId,
+          turn,
+        });
+      else handler?.(turn);
     } catch (error) {
       this.#fail(
         new PiRpcFaultError(
@@ -1733,7 +1786,7 @@ export class PiRpcSession {
       // Require its ordered agent_start fence; a bare Streaming disagreement still faults.
       if (parseSessionStreaming(response)) await this.#waitForNextRun(generation);
       if (!this.#isSettlementCurrent(active, generation)) return;
-      if (active.origin === "autonomous") {
+      if (active.origin === "autonomous" && active.autonomousMessage) {
         const history = await this.getEntries();
         const snapshot = mapPiSnapshot(history, { sessionId: state.sessionId, model: null });
         if (!this.#isSettlementCurrent(active, generation)) return;
@@ -1802,7 +1855,13 @@ export class PiRpcSession {
     }
     this.#activeTurn = null;
     if (active.origin === "autonomous") {
-      if (active.failure) {
+      if (active.cancellation === "accepted") {
+        this.#emitAutonomousTurn(active, {
+          status: "cancelled",
+          text: active.text,
+          reason: "Cancelled by user",
+        });
+      } else if (active.failure) {
         this.#emitAutonomousTurn(
           active,
           active.nativeCancellationObserved
@@ -1857,6 +1916,8 @@ export class PiRpcSession {
   }
 
   #startAssistantMessage(active: ActiveTurn, value: unknown): string {
+    if (active.origin === "autonomous" && !active.autonomousMessage && isRecord(value))
+      active.autonomousMessage = value;
     if (active.assistantMessageId !== null && active.reasoningMessageOpen) {
       active.onEvent({ type: "reasoning.completed", messageId: active.assistantMessageId });
     }

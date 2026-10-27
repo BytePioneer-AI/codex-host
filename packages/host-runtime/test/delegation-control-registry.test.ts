@@ -126,6 +126,108 @@ describe("DelegationControlRegistry", () => {
     }
   });
 
+  it.each(["local", "desktop"] as const)(
+    "reads an unowned Thread from %s with multiple registrations and no shared catalog",
+    async (source) => {
+      const registry = new DelegationControlRegistry();
+      const first = registration("first");
+      const second = registration("second");
+      const snapshot = await registration("target").read({ threadId: "target", view: "result" });
+      const missing = new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
+      vi.mocked(first.read).mockRejectedValue(missing);
+      if (source === "local") vi.mocked(second.read).mockResolvedValue(snapshot);
+      else vi.mocked(second.read).mockRejectedValue(missing);
+      first.readConnectedDesktop = vi.fn().mockResolvedValue(snapshot);
+      second.readConnectedDesktop = vi.fn();
+      registry.register(first);
+      registry.register(second);
+      const input = { threadId: "target", hostId: "local", view: "result" as const };
+      try {
+        const result = await registry.read(input);
+        expect(result).toMatchObject({ threadId: "target" });
+        expect(first.read).toHaveBeenCalledExactlyOnceWith(input);
+        expect(second.read).toHaveBeenCalledExactlyOnceWith(input);
+        if (source === "desktop") {
+          expect(result).toMatchObject({ hostId: "local", readSource: "connected-desktop" });
+          expect(first.readConnectedDesktop).toHaveBeenCalledExactlyOnceWith({
+            threadId: "target",
+            view: "result",
+          });
+          const desktopReadOrder = vi.mocked(first.readConnectedDesktop).mock
+            .invocationCallOrder[0];
+          if (desktopReadOrder === undefined) throw new Error("Desktop read did not run");
+          expect(vi.mocked(second.read).mock.invocationCallOrder[0]).toBeLessThan(desktopReadOrder);
+        } else {
+          expect(first.readConnectedDesktop).not.toHaveBeenCalled();
+        }
+        expect(second.readConnectedDesktop).not.toHaveBeenCalled();
+      } finally {
+        registry.close();
+      }
+    },
+  );
+
+  it.each([undefined, "local"])("keeps ambiguous owners closed for host %s", async (hostId) => {
+    const registry = new DelegationControlRegistry();
+    const first = registration("target");
+    const second = registration("target");
+    first.readConnectedDesktop = vi.fn();
+    registry.register(first);
+    registry.register(second);
+    try {
+      await expect(
+        registry.read({ threadId: "target", view: "result", ...(hostId ? { hostId } : {}) }),
+      ).rejects.toMatchObject({ code: "PARENT_THREAD_AMBIGUOUS" });
+      expect(first.read).not.toHaveBeenCalled();
+      expect(second.read).not.toHaveBeenCalled();
+      expect(first.readConnectedDesktop).not.toHaveBeenCalled();
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("does not probe unowned bare IDs across registrations", async () => {
+    const registry = new DelegationControlRegistry();
+    const first = registration("first");
+    const second = registration("second");
+    first.readConnectedDesktop = vi.fn();
+    registry.register(first);
+    registry.register(second);
+    try {
+      await expect(registry.read({ threadId: "target", view: "result" })).rejects.toMatchObject({
+        code: "PARENT_THREAD_AMBIGUOUS",
+      });
+      expect(first.read).not.toHaveBeenCalled();
+      expect(second.read).not.toHaveBeenCalled();
+      expect(first.readConnectedDesktop).not.toHaveBeenCalled();
+    } finally {
+      registry.close();
+    }
+  });
+
+  it.each(["Permission denied", "Storage unavailable"])(
+    "stops unowned local probing on %s",
+    async (message) => {
+      const registry = new DelegationControlRegistry();
+      const first = registration("first");
+      const second = registration("second");
+      const failure = new DelegationControlError("INTERNAL_ERROR", message);
+      vi.mocked(first.read).mockRejectedValue(failure);
+      first.readConnectedDesktop = vi.fn();
+      registry.register(first);
+      registry.register(second);
+      try {
+        await expect(
+          registry.read({ threadId: "target", hostId: "local", view: "result" }),
+        ).rejects.toBe(failure);
+        expect(second.read).not.toHaveBeenCalled();
+        expect(first.readConnectedDesktop).not.toHaveBeenCalled();
+      } finally {
+        registry.close();
+      }
+    },
+  );
+
   it.each([
     [undefined, "THREAD_NOT_FOUND", "Thread was not found"],
     ["local", "INTERNAL_ERROR", "Permission denied"],

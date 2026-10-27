@@ -76,7 +76,7 @@ export function isDelegationThreadReadMiss(error: unknown): boolean {
   return (
     "message" in error &&
     typeof error.message === "string" &&
-    /^(?:Official Thread read failed: )?(?:thread (?:was )?not (?:loaded|found)|no rollout found for thread id)(?:\b|:)/iu.test(
+    /^(?:Official Thread read failed: )?(?:thread (?:was )?not (?:loaded|found)|no rollout found for thread id|invalid thread id)(?:\b|:)/iu.test(
       error.message,
     )
   );

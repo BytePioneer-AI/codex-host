@@ -58,10 +58,14 @@ not cancel an already dispatched native read and never triggers a retry.
 ## Desktop-local references from a remote Agent
 
 An explicit `hostId=local` reference (including `--host local`) first reads the
-executing Runtime's local history. Only a not-found or not-loaded error triggers
-fallback: the Runtime tries its currently attached Desktop connections in
-registration order and returns the first successful read of that Desktop's local
-Host. Bare IDs remain machine-local; explicit non-local Host IDs keep their
+executing Runtime's local history. If no registration claims the Thread and there
+is no shared catalog, explicit local reads try the registered Runtime sessions in
+order before any Desktop. Multiple registrations claiming the same Thread remain
+an ambiguity error; bare IDs and write operations do not gain this probing behavior.
+Only a not-found or not-loaded error (including the official `invalid thread id`
+response) triggers fallback: the Runtime tries its currently attached Desktop
+connections in registration order and returns the first successful read of that
+Desktop's local Host. Bare IDs remain machine-local; explicit non-local Host IDs keep their
 existing routing. Permission, storage, invalid-reply and size errors do not
 trigger further probing. Missing Threads, disconnected Desktops and unanswered
 callbacks allow the next connection to be tried.

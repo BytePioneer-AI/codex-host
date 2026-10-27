@@ -93,6 +93,8 @@ it("reads only Desktop-local history and replies on the requesting connection wi
 it.each([
   ["Official Thread read failed: thread not loaded: target", "THREAD_NOT_FOUND"],
   ["Thread was not found", "THREAD_NOT_FOUND"],
+  ["invalid thread id: target", "THREAD_NOT_FOUND"],
+  ["Official Thread read failed: invalid thread id: target", "THREAD_NOT_FOUND"],
   ["Permission denied", "INTERNAL_ERROR"],
 ])("preserves %s as %s", async (message, code) => {
   const f = fixture();

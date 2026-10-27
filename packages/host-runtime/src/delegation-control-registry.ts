@@ -112,7 +112,20 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       return this.#remoteRead(read);
     }
     try {
-      return await (await this.#registrationForThread(read.threadId)).read(read);
+      const registrations = await this.#registrationsForThread(
+        read.threadId,
+        read.hostId === "local",
+      );
+      let lastError: unknown;
+      for (const registration of registrations) {
+        try {
+          return await registration.read(read);
+        } catch (error) {
+          if (read.hostId !== "local" || !isDelegationThreadReadMiss(error)) throw error;
+          lastError = error;
+        }
+      }
+      throw lastError;
     } catch (error) {
       // Bare IDs stay machine-local. Only an explicit Desktop-local reference opts in.
       if (read.hostId !== "local" || !isDelegationThreadReadMiss(error)) throw error;
@@ -192,9 +205,17 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async #registrationForThread(threadId: string): Promise<DelegationControlRegistration> {
+    return (await this.#registrationsForThread(threadId))[0] as DelegationControlRegistration;
+  }
+
+  /** Always returns at least one candidate; multiple known owners remain an error. */
+  async #registrationsForThread(
+    threadId: string,
+    readUnowned = false,
+  ): Promise<DelegationControlRegistration[]> {
     const registrations = [...this.#registrations];
     const matches = await this.#matching((registration) => registration.ownsThread(threadId));
-    if (matches.length === 1) return matches[0] as DelegationControlRegistration;
+    if (matches.length === 1) return matches;
     if (matches.length > 1) {
       throw new DelegationControlError(
         "PARENT_THREAD_AMBIGUOUS",
@@ -202,7 +223,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         { matchingRuntimeCount: matches.length },
       );
     }
-    if (this.#harnessCatalog) return this.#harnessCatalog;
+    if (this.#harnessCatalog) return [this.#harnessCatalog];
     if (registrations.length === 0) {
       throw new DelegationControlError(
         "PARENT_THREAD_AMBIGUOUS",
@@ -210,8 +231,9 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         { matchingRuntimeCount: 0 },
       );
     }
-    // When only one runtime session exists, forward unknown thread IDs to it so it can attempt official fallback (or return THREAD_NOT_FOUND).
-    if (registrations.length === 1) return registrations[0] as DelegationControlRegistration;
+    // Unknown official Threads may exist locally without a registered owner. Explicit local
+    // reads try each Runtime before any Desktop; other operations still require one session.
+    if (registrations.length === 1 || readUnowned) return registrations;
     throw new DelegationControlError(
       "PARENT_THREAD_AMBIGUOUS",
       "Thread is not owned by exactly one active Host Runtime session",

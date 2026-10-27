@@ -19,15 +19,24 @@ import {
   requestId,
 } from "./app-server-host-fixture.js";
 
-it.each(["codex", "pi"])(
-  "falls back from CLI local-not-loaded over a live Desktop connection to %s history",
-  async (harnessId) => {
+it.each([
+  ["codex", 1],
+  ["pi", 1],
+  ["codex", 2],
+  ["pi", 2],
+] as const)(
+  "falls back from CLI local-not-loaded to %s history with %i registered connections",
+  async (harnessId, connectionCount) => {
     const registry = new DelegationControlRegistry();
-    const remote = createFixture({ onDelegationApi: (api) => registry.register(api) });
+    const remotes = Array.from({ length: connectionCount }, () =>
+      createFixture({ onDelegationApi: (api) => registry.register(api) }),
+    );
+    const remote = remotes[0];
+    if (!remote) throw new Error("Remote fixture is missing");
     const desktop = createFixture();
     const server = await startDelegationControlServer({ api: registry, token: "fixture" });
     try {
-      await Promise.all([remote.ready, desktop.ready]);
+      await Promise.all([...remotes.map((session) => session.ready), desktop.ready]);
       const target = harnessId === "pi" ? await startPiThread(desktop) : "native-target";
       if (harnessId === "pi") await completePiTurn(desktop, target, 2);
       const output = new PassThrough();
@@ -51,12 +60,14 @@ it.each(["codex", "pi"])(
         output,
         diagnosticOutput: diagnostics,
       });
-      const nativeRead = await readJsonLine(remote.official.stdin);
-      expect(nativeRead).toMatchObject({ method: "thread/read", params: { threadId: target } });
-      writeRequest(remote.official.stdout, {
-        id: nativeRead.id ?? null,
-        error: { code: -32603, message: `thread not loaded: ${target}` },
-      });
+      for (const session of remotes) {
+        const nativeRead = await readJsonLine(session.official.stdin);
+        expect(nativeRead).toMatchObject({ method: "thread/read", params: { threadId: target } });
+        writeRequest(session.official.stdout, {
+          id: nativeRead.id ?? null,
+          error: { code: -32603, message: `thread not loaded: ${target}` },
+        });
+      }
       const callback = await remote.collector.waitFor(
         (message) => message.method === DESKTOP_THREAD_READ_METHOD,
       );
@@ -112,7 +123,7 @@ it.each(["codex", "pi"])(
     } finally {
       await server.close();
       registry.close();
-      await stopFixture(remote);
+      await Promise.all(remotes.map((session) => stopFixture(session)));
       await stopFixture(desktop);
     }
   },

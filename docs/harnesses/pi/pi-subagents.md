@@ -36,6 +36,8 @@ Adapter 优先复用正在运行的父 Pi RPC Session；父 Session 不在内存
 
 前一条 Assistant 已终结后，原生 custom 消息触发的独立执行单独成轮，输入为空；实时完成和历史读取均使用该 custom Entry ID，不使用 Provider 的 response ID 或随机身份。process 插件的 custom 通知后若紧接完全空文本 user 唤醒，仍归属该 custom 边界；非空 user 或图片输入保持真实用户轮。执行中的 custom 注入、没有后续执行的状态消息不单独成轮。RPC 在稳定完成后读取原生 Entry，并核对该轮首条 Assistant 的响应身份或原生时间戳；后续原生轮已追加时按实际身份定位，不只取最后一轮。无法匹配时报告故障，不把旧历史认作本轮。
 
+自主回合的忙状态从原生 `agent_start` 起公布，工具和正文按到达顺序实时转发，不等稳定完成才显示。活动 run 使用临时关联 ID 隔离事件；它不替代完成时确认的 Native Turn 身份。用户输入在异步预检之后重新检查原生占用，未接纳的输入返回可重试 busy，不会先显示接纳后因内部 active Turn 冲突失败。详见 [可见进度与流式内容](pi-progress.md)。
+
 Pi 1.4 可以在 `agent_settled` 后立即执行 deferred action，再次开始模型运行。Adapter 用 `agent_start` 代际隔离确认期间的新轮帧（最多 8 MiB），旧轮确认和取消应答完成后顺序处理。gotgenes 状态帧也经过同一代际边界，并携带原生请求轮／自主轮归属；自主快照不能因同步回放早于旧 Host 收尾而在旧轮创建子卡，子卡由对应自主轮的工具事件建立。若 `get_state` 已是 Streaming，则在 RPC 命令时限内等待实际新 run 的事件证据，没有证据仍报错。新轮的 `agent_settled` 不被旧确认吞掉，关闭和故障回收缓冲与等待器。已进入收尾的父请求读取身份时，自主轮完成回执可以排队，但不会混入用户正文；真实同时运行的 Host 操作仍被拒绝。
 
 用户轮后立即跟随 custom 自主轮时，用户轮保留自己的 Native Turn 身份，不伪造可回滚 checkpoint。Pi 1.4 的 Codex provider 有时将 AbortSignal 记录为 `stopReason: error` 与确切 `errorMessage: This operation was aborted`；该原生形状与 `stopReason: aborted` 一样映射为中断，其他模型错误仍是失败。

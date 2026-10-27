@@ -476,43 +476,15 @@ fn parse_manifest_version(content: &str) -> Option<String> {
 /// Best-effort read of the "version" field from a `package.json` file.
 #[cfg(any(target_os = "windows", test))]
 fn parse_package_json_version(content: &str) -> Option<String> {
-    let mut search = content;
-    while let Some(index) = search.find("\"version\"") {
-        let rest = &search[index + "\"version\"".len()..];
-        let trimmed = rest.trim_start();
-        if let Some(after_colon) = trimmed.strip_prefix(':') {
-            let trimmed_val = after_colon.trim_start();
-            if let Some(after_quote) = trimmed_val.strip_prefix('"') {
-                if let Some(end_quote) = after_quote.find('"') {
-                    let raw = &after_quote[..end_quote];
-                    if let Some(valid) = validate_desktop_version(raw) {
-                        return Some(valid);
-                    }
-                }
-            }
-        }
-        search = rest;
-    }
-    None
+    let pkg: serde_json::Value = serde_json::from_str(content).ok()?;
+    let raw = pkg.get("version")?.as_str()?;
+    validate_desktop_version(raw)
 }
 
-#[cfg(any(target_os = "windows", test))]
-fn parse_json_number_or_string_u64(content: &str, field_name: &str) -> Option<u64> {
-    let key = format!("\"{field_name}\"");
-    let index = content.find(&key)?;
-    let after_key = &content[index + key.len()..];
-    let after_colon = after_key.trim_start().strip_prefix(':')?;
-    let trimmed = after_colon.trim_start();
-    if let Some(after_quote) = trimmed.strip_prefix('"') {
-        let end_quote = after_quote.find('"')?;
-        after_quote[..end_quote].parse().ok()
-    } else {
-        let num_str: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
-        num_str.parse().ok()
-    }
-}
-
-/// Best-effort read of `package.json` version from an Electron `app.asar` archive.
+/// Best-effort read of root `package.json` version from an Electron `app.asar` archive.
+///
+/// Electron ASAR headers contain a directory tree where root files reside strictly under
+/// `header["files"]`. Sub-dependencies in `node_modules` must not be matched.
 #[cfg(any(target_os = "windows", test))]
 fn parse_asar_package_json_version(asar_path: &Path) -> Option<String> {
     let mut file = File::open(asar_path).ok()?;
@@ -537,14 +509,14 @@ fn parse_asar_package_json_version(asar_path: &Path) -> Option<String> {
     file.read_exact(&mut json_buf).ok()?;
     let header_json = std::str::from_utf8(&json_buf).ok()?;
 
-    let pkg_entry = header_json.find("\"package.json\"")?;
-    let rest = &header_json[pkg_entry + "\"package.json\"".len()..];
-    let open_brace = rest.find('{')?;
-    let close_brace = rest[open_brace + 1..].find('}')?;
-    let entry_body = &rest[open_brace + 1..open_brace + 1 + close_brace];
-
-    let size = parse_json_number_or_string_u64(entry_body, "size")?;
-    let offset = parse_json_number_or_string_u64(entry_body, "offset")?;
+    let header: serde_json::Value = serde_json::from_str(header_json).ok()?;
+    let pkg_entry = header.get("files")?.get("package.json")?;
+    let size = pkg_entry.get("size")?.as_u64()?;
+    let offset = match pkg_entry.get("offset")? {
+        serde_json::Value::Number(num) => num.as_u64()?,
+        serde_json::Value::String(s) => s.parse::<u64>().ok()?,
+        _ => return None,
+    };
 
     if size == 0 || size > 1024 * 1024 {
         return None;
@@ -605,13 +577,6 @@ fn portable_desktop_version(
     }
 
     None
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn portable_package_version(package_root: &Path) -> Option<String> {
-    let app_root = package_root.join("app");
-    let asar_path = app_root.join("resources/app.asar");
-    portable_desktop_version(package_root, &app_root, &asar_path)
 }
 
 /// Discover Codex Desktop from an explicitly supplied installation directory.
@@ -952,18 +917,26 @@ mod windows_tests {
     #[test]
     fn portable_version_parsing_is_best_effort() {
         let root = temporary_directory("codexhost-version-parse");
-        assert_eq!(super::portable_package_version(&root), None);
+        let app_root = root.join("app");
+        let asar_path = app_root.join("resources/app.asar");
+        assert_eq!(
+            super::portable_desktop_version(&root, &app_root, &asar_path),
+            None
+        );
         fs::write(
             root.join("AppxManifest.xml"),
             b"<Package><Identity Name=\"OpenAI.Codex\" Version=\"1.2.3.4\"/></Package>",
         )
         .expect("write versioned manifest");
         assert_eq!(
-            super::portable_package_version(&root).as_deref(),
+            super::portable_desktop_version(&root, &app_root, &asar_path).as_deref(),
             Some("1.2.3.4")
         );
         fs::write(root.join("AppxManifest.xml"), b"not xml").expect("write invalid manifest");
-        assert_eq!(super::portable_package_version(&root), None);
+        assert_eq!(
+            super::portable_desktop_version(&root, &app_root, &asar_path),
+            None
+        );
         fs::remove_dir_all(root).expect("remove version fixture");
     }
 
@@ -1078,6 +1051,71 @@ mod portable_version_tests {
         // Corrupt / truncated asar
         fs::write(&asar_path, b"not an asar file").expect("write corrupt asar");
         assert_eq!(parse_asar_package_json_version(&asar_path), None);
+
+        fs::remove_dir_all(root).expect("remove asar fixture");
+    }
+
+    #[test]
+    fn parses_asar_root_package_json_and_ignores_nested_node_modules() {
+        let root = temporary_directory("codexhost-asar-node-modules-test");
+        let asar_path = root.join("app.asar");
+
+        // Construct an ASAR with node_modules/atob-lite/package.json (v2.0.0)
+        // and root package.json (v26.1023.50603)
+        let dep_pkg = r#"{"name":"atob-lite","version":"2.0.0"}"#;
+        let root_pkg = r#"{"name":"ChatGPT","version":"26.1023.50603"}"#;
+
+        let header_obj = serde_json::json!({
+            "files": {
+                "node_modules": {
+                    "files": {
+                        "atob-lite": {
+                            "files": {
+                                "package.json": {
+                                    "size": dep_pkg.len(),
+                                    "offset": "0",
+                                    "integrity": {
+                                        "algorithm": "SHA256",
+                                        "hash": "somehash"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "package.json": {
+                    "integrity": {
+                        "algorithm": "SHA256",
+                        "hash": "rootpkgjsonhash"
+                    },
+                    "size": root_pkg.len(),
+                    "offset": format!("{}", dep_pkg.len())
+                }
+            }
+        });
+
+        let json_str = serde_json::to_string(&header_obj).unwrap();
+        let json_bytes = json_str.as_bytes();
+        let json_len = json_bytes.len() as u32;
+        let pad = (4 - (json_len % 4)) % 4;
+        let header_size = 4 + 4 + json_len + pad;
+
+        let mut asar = Vec::new();
+        asar.extend_from_slice(&4_u32.to_le_bytes());
+        asar.extend_from_slice(&header_size.to_le_bytes());
+        asar.extend_from_slice(&(json_len + pad + 4).to_le_bytes());
+        asar.extend_from_slice(&json_len.to_le_bytes());
+        asar.extend_from_slice(json_bytes);
+        asar.extend(std::iter::repeat(0).take(pad as usize));
+        asar.extend_from_slice(dep_pkg.as_bytes());
+        asar.extend_from_slice(root_pkg.as_bytes());
+
+        fs::write(&asar_path, asar).expect("write asar with node_modules");
+
+        assert_eq!(
+            parse_asar_package_json_version(&asar_path).as_deref(),
+            Some("26.1023.50603")
+        );
 
         fs::remove_dir_all(root).expect("remove asar fixture");
     }

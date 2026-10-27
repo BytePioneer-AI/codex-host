@@ -11,7 +11,12 @@ import {
   type ThreadWatchInput,
 } from "./delegation-types.js";
 import { DelegationWatchService } from "./delegation-watch.js";
-import { machineIdSchema, delegationSendParamsSchema } from "@codexhost/shared-contracts";
+import {
+  machineIdSchema,
+  delegationSendParamsSchema,
+  threadManagementInputSchema,
+  type ThreadManagementInput,
+} from "@codexhost/shared-contracts";
 import type { ThreadBridge } from "./thread-bridge.js";
 
 function only<T>(values: readonly T[], message: string): T {
@@ -130,6 +135,51 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         "Copy a machine-qualified link to send to another Host",
       );
     return (await this.#registrationForThread(input.threadId)).send(input);
+  }
+
+  async manage(raw: ThreadManagementInput) {
+    const parsed = threadManagementInputSchema.safeParse(raw);
+    if (!parsed.success)
+      throw new DelegationControlError("INVALID_ARGUMENT", "Invalid Thread management request");
+    const input = parsed.data;
+    const bridge = this.threadBridge;
+    if (!bridge)
+      throw new DelegationControlError(
+        "RUNTIME_UNREACHABLE",
+        "Thread management requires an updated Host",
+      );
+    if (!input.machineId && input.hostId && input.hostId !== "local")
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "A machine-qualified target is required",
+      );
+    const machineId = input.machineId ?? bridge.machineId;
+    if (machineId !== bridge.machineId) return bridge.manage({ ...input, machineId });
+    const outcome = await bridge.executeManagement(
+      { expectedMachineId: machineId, requestId: input.requestId, action: input.action },
+      async () => {
+        const registration =
+          input.action.operation === "create"
+            ? (this.#harnessCatalog ??
+              only(
+                [...this.#registrations],
+                "Thread creation requires exactly one active Host Runtime session",
+              ))
+            : await this.#registrationForThread(input.action.threadId);
+        if (!registration.manageLocal)
+          throw new DelegationControlError(
+            "RUNTIME_UNREACHABLE",
+            "Update the target Host to manage Threads",
+          );
+        return registration.manageLocal(input.action);
+      },
+    );
+    if ("error" in outcome)
+      throw new DelegationControlError(outcome.error.code, outcome.error.message, {
+        requestId: input.requestId,
+        machineId,
+      });
+    return bridge.qualifyManagement(outcome.result, { ...input, machineId });
   }
 
   async cancel(input: Parameters<DelegationControlApi["cancel"]>[0]) {

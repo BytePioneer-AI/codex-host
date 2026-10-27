@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  THREAD_MANAGE_METHOD,
+  THREAD_BRIDGE_MANAGE_METHOD,
+  threadManagementParamsSchema,
+  type ThreadManagementOperation,
   HOST_IDENTITY_METHOD,
   THREAD_BRIDGE_ATTACH_METHOD,
   THREAD_BRIDGE_READ_METHOD,
@@ -75,8 +79,13 @@ async function fixture() {
       status: "running" as const,
       next: { read: "read", wait: "wait" },
     }));
+    const manage = vi.fn(async (action: ThreadManagementOperation) => ({
+      operation: action.operation,
+      threadId: action.operation === "create" ? "new-thread" : action.threadId,
+    }));
     const sendRequest = vi.fn(async (method: string, input: unknown): Promise<unknown> => {
-      if (method === HOST_IDENTITY_METHOD) return { machineId, sendSupported: true };
+      if (method === HOST_IDENTITY_METHOD)
+        return { machineId, sendSupported: true, manageSupported: true };
       if (method === THREAD_BRIDGE_ATTACH_METHOD) {
         broker.attach(owner, {
           ...threadBridgeAttachSchema.parse(input),
@@ -88,17 +97,25 @@ async function fixture() {
                   type: "mcp-notification",
                   hostId,
                   method:
-                    "operation" in params ? THREAD_BRIDGE_SEND_METHOD : THREAD_BRIDGE_READ_METHOD,
+                    "operation" in params
+                      ? params.operation === "manage"
+                        ? THREAD_BRIDGE_MANAGE_METHOD
+                        : THREAD_BRIDGE_SEND_METHOD
+                      : THREAD_BRIDGE_READ_METHOD,
                   params,
                 },
               });
           },
         });
-        return { machineId, sendSupported: true };
+        return { machineId, sendSupported: true, manageSupported: true };
       }
       if (method === THREAD_BRIDGE_REPLY_METHOD) {
         broker.reply(owner, threadBridgeReplySchema.parse(input));
-        return { machineId, sendSupported: true };
+        return { machineId, sendSupported: true, manageSupported: true };
+      }
+      if (method === THREAD_MANAGE_METHOD) {
+        const params = threadManagementParamsSchema.parse(input);
+        return broker.executeManagement(params, () => manage(params.action));
       }
       if (method === DELEGATION_READ_METHOD) return read(input as { threadId: string });
       if (method === DELEGATION_SEND_METHOD) {
@@ -109,7 +126,7 @@ async function fixture() {
     });
     const route = { hostId, manager: { sendRequest }, policy: {} } as unknown as RendererHostRoute;
     routes.set(hostId, route);
-    return { broker, owner, read, send, sendRequest, route };
+    return { broker, owner, read, send, manage, sendRequest, route };
   };
   const local = runtime(localId, "local");
   const remote = runtime(remoteId, "ssh:linux");
@@ -314,6 +331,49 @@ it("does not advertise sends to an older read-only Host", async () => {
     expect(
       await f.local.broker.read({ threadId: "t", machineId: remoteId, view: "result" }),
     ).toMatchObject({ machineId: remoteId });
+  } finally {
+    f.renderer.dispose();
+  }
+});
+
+it("manages Threads in both directions, deduplicates creates, and refuses old destinations", async () => {
+  const f = await fixture();
+  try {
+    const input = {
+      machineId: localId,
+      hostId: "local",
+      requestId: randomUUID(),
+      action: { operation: "create", cwd: "/work", harnessId: "codex" } as const,
+    };
+    expect(await f.remote.broker.manage(input)).toMatchObject({
+      operation: "create",
+      machineId: localId,
+      threadId: "new-thread",
+    });
+    await f.remote.broker.manage(input);
+    expect(f.local.manage).toHaveBeenCalledOnce();
+    for (const operation of ["rename", "archive", "unarchive", "delete"] as const) {
+      const action =
+        operation === "rename"
+          ? { operation, threadId: "remote-thread", name: "new name" }
+          : { operation, threadId: "remote-thread" };
+      expect(
+        await f.local.broker.manage({ machineId: remoteId, requestId: randomUUID(), action }),
+      ).toMatchObject({ operation, threadId: "remote-thread", machineId: remoteId });
+    }
+    const original = f.local.sendRequest.getMockImplementation();
+    if (!original) throw new Error("Missing request implementation");
+    f.local.sendRequest.mockImplementation(async (method, params) =>
+      method === HOST_IDENTITY_METHOD
+        ? { machineId: localId, sendSupported: true }
+        : original(method, params),
+    );
+    f.routes.set("local", { ...f.local.route });
+    await f.renderer.refresh();
+    await expect(
+      f.remote.broker.manage({ ...input, requestId: randomUUID() }),
+    ).rejects.toMatchObject({ code: "RUNTIME_UNREACHABLE" });
+    expect(f.local.manage).toHaveBeenCalledOnce();
   } finally {
     f.renderer.dispose();
   }

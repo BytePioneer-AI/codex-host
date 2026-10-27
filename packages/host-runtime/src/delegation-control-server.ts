@@ -1,3 +1,4 @@
+import { threadManagementInputSchema } from "@codexhost/shared-contracts";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { machineIdSchema } from "@codexhost/shared-contracts";
@@ -140,6 +141,21 @@ export async function startDelegationControlServer(input: {
               : await startWithWatch(input.api, watchApi(input.watchApi), body),
           );
           return;
+        case "/v1/thread/manage": {
+          const parsed = threadManagementInputSchema.safeParse(body);
+          if (!parsed.success)
+            throw new DelegationControlError(
+              "INVALID_ARGUMENT",
+              "Invalid Thread management request",
+            );
+          if (!input.api.manage)
+            throw new DelegationControlError(
+              "RUNTIME_UNREACHABLE",
+              "Update the Host to manage Threads",
+            );
+          writeJson(response, 200, await input.api.manage(parsed.data));
+          return;
+        }
         // Scoped routes prevent older Runtimes from interpreting these requests as local.
         case "/v1/thread/send-scoped":
           if (!machineIdSchema.safeParse(body.requestId).success)

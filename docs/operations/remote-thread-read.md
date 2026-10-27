@@ -1,4 +1,4 @@
-# Read and continue a Thread on another Host
+# Read, continue and manage Threads on another Host
 
 ## Portable links and bidirectional access
 
@@ -100,6 +100,46 @@ may leave an incomplete receipt: repeating it returns `OUTCOME_UNKNOWN` and does
 not invoke the Harness again. Inspect the Thread before deciding whether a new
 request is needed. This reservation protocol avoids automatic replay; it cannot
 atomically commit a filesystem receipt together with a native Harness operation.
+
+## Create and manage Threads
+
+Use a link from the destination machine to create an independent Thread there.
+The existing Thread only identifies the destination; it is not modified or used
+as a parent. The working directory must be absolute and exist on the destination:
+
+```sh
+codexhost thread create --on 'thread://EXISTING_ID?hostId=local&machineId=MACHINE_UUID' --cwd /absolute/target/workspace
+```
+
+Alternatively select the destination with `--machine MACHINE_UUID`. Omitting
+both selectors creates on the calling machine. `--harness` defaults to `codex`;
+installed external Harnesses use their existing Desktop creation path. Creation
+returns an idle Thread and a machine-qualified `thread` link. Use `thread send`
+with that link to submit its first task. Native creation defaults apply; the Host
+does not raise permissions or start an implicit Turn.
+
+Use the returned link for the remaining lifecycle operations:
+
+```sh
+codexhost thread rename 'THREAD_LINK' --name 'New name'
+codexhost thread archive 'THREAD_LINK'
+codexhost thread unarchive 'THREAD_LINK'
+codexhost thread delete 'THREAD_LINK' --confirm permanent
+```
+
+Archive is reversible. Delete is permanent and requires explicit user intent;
+the CLI requires `--confirm permanent`. All operations reuse the target Host's
+Desktop handlers, including external Thread ownership, native errors and
+notifications. Unknown methods and extra parameters cannot be forwarded.
+
+Every operation returns `requestId`. Repeating the identical command with
+`--request-id` recovers the original receipt, including its created Thread ID,
+without creating another Thread or repeating a deletion. Changed arguments with
+the same ID are rejected. Lost replies and incomplete receipts return
+`OUTCOME_UNKNOWN`; do not retry with a fresh ID. Creating and sending are separate
+operations, so a failed first message never repeats creation. Both Hosts and the
+Desktop extension must advertise management support; older or disconnected
+destinations fail without a local fallback.
 
 ## Legacy Desktop connection links
 

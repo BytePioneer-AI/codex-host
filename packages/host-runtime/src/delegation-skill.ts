@@ -3,10 +3,11 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 11;
+const SKILL_VERSION = 12;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+  "5c6e6a5753986b49f78d2b5886116810d5749a3d8f288732a88931550ab14bf3",
   "242a07e7521949e5d651102f6b353c48e7575a679e3403c5c5db295abad9896b",
   "9d2f491850fb0b4084a31ba9b5e4a550b5e833747af322090d8ed0ff80b88c30",
   "2bb0aebb9b06febbc6c0c0bcdb0b32506c7cdbf8dc3b734cc6b2a86621270e4e",
@@ -32,8 +33,9 @@ description: >
   agent sessions, including local or remote Threads identified by a codexhost
   cross-machine link. Use when the user asks another agent (including
   @agent) to independently perform a task, or asks to view a specified
-  session's content, progress, or results, send follow-up messages, wait, or
-  cancel a task. Not for recapping the current conversation, discussing or
+  session's content, progress, or results, send follow-up messages, create,
+  rename, archive, restore or delete Threads, wait, or cancel a task.
+  Not for recapping the current conversation, discussing or
   configuring agents, or role-playing.
 ---
 
@@ -80,6 +82,20 @@ request ID to blindly retry an uncertain send. A send receipt confirms submissio
 not task completion. THREAD_BUSY means read again later; do not interrupt the
 current Turn without instruction. Cross-machine cancel, wait and watch are not
 supported. A link alone is not an instruction to send a message.
+
+To create an independent Thread on another machine, use thread create --on
+with a complete copied link from that machine and --cwd with an absolute path
+on that machine. The link selects the destination; its source Thread is unchanged.
+Alternatively use --machine with a known machine identity. Omit both for the
+calling machine. Choose --harness only when requested; the default is codex.
+Create returns an idle Thread link: use thread send to submit its first task.
+Use thread rename --name, thread archive, thread unarchive, and thread delete
+with the complete target link. Permanent deletion requires explicit user intent
+and --confirm permanent; never interpret a request to archive as permission to
+delete. Operate only on the identified target. Lifecycle commands return a
+requestId; recover uncertain outcomes by repeating exactly the same command
+with that ID, never by issuing a fresh create or delete. Native permissions and
+busy-session restrictions apply; these commands do not grant network access.
 
 For a new or existing task, choose the appropriate next action based on the
 user’s request and the task:

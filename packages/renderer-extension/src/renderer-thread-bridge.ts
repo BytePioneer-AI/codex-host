@@ -3,6 +3,10 @@ import type {
   RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
 import {
+  THREAD_MANAGE_METHOD,
+  THREAD_BRIDGE_MANAGE_METHOD,
+  threadBridgeManageSchema,
+  threadManagementOutcomeSchema,
   DELEGATION_READ_METHOD,
   DELEGATION_SEND_METHOD,
   HOST_IDENTITY_METHOD,
@@ -24,7 +28,12 @@ import {
 import type { RendererMessageTarget } from "./renderer-manual-compaction.js";
 import { isUnsupportedMethod } from "./renderer-request-sender.js";
 
-type Entry = { route: RendererHostRoute; machineId: string; sendSupported: boolean };
+type Entry = {
+  route: RendererHostRoute;
+  machineId: string;
+  sendSupported: boolean;
+  manageSupported: boolean;
+};
 
 /** One bridge per window; every dispatch revalidates its native connection. */
 export function createRendererThreadBridge(options: {
@@ -46,11 +55,17 @@ export function createRendererThreadBridge(options: {
     if (!current(entry)) throw new Error("Host connection is no longer available");
     return entry.route.manager.sendRequest(method, params, {
       priority:
-        method === DELEGATION_READ_METHOD || method === DELEGATION_SEND_METHOD
+        method === DELEGATION_READ_METHOD ||
+        method === DELEGATION_SEND_METHOD ||
+        method === THREAD_MANAGE_METHOD
           ? "interactive"
           : "background",
       timeoutMs:
-        method === DELEGATION_READ_METHOD || method === DELEGATION_SEND_METHOD ? 30_000 : 8_000,
+        method === DELEGATION_READ_METHOD ||
+        method === DELEGATION_SEND_METHOD ||
+        method === THREAD_MANAGE_METHOD
+          ? 30_000
+          : 8_000,
     });
   };
   const refresh = (): Promise<void> => {
@@ -82,6 +97,7 @@ export function createRendererThreadBridge(options: {
                 route,
                 machineId: identity.machineId,
                 sendSupported: identity.sendSupported === true,
+                manageSupported: identity.manageSupported === true,
               });
           } catch (error) {
             if (isUnsupportedMethod(error, HOST_IDENTITY_METHOD)) unsupported.add(route);
@@ -99,6 +115,22 @@ export function createRendererThreadBridge(options: {
               await request(entry, THREAD_BRIDGE_ATTACH_METHOD, {
                 clientId,
                 machineIds: machineIds.filter((id) => id !== entry.machineId),
+                ...(entry.manageSupported
+                  ? {
+                      manageMachineIds: [
+                        ...new Set(
+                          [...entries.values()]
+                            .filter(
+                              (target) =>
+                                current(target) &&
+                                target.manageSupported &&
+                                target.machineId !== entry.machineId,
+                            )
+                            .map((target) => target.machineId),
+                        ),
+                      ],
+                    }
+                  : {}),
                 ...(entry.sendSupported
                   ? {
                       sendMachineIds: [
@@ -139,14 +171,18 @@ export function createRendererThreadBridge(options: {
     if (
       message?.type !== "mcp-notification" ||
       (message.method !== THREAD_BRIDGE_READ_METHOD &&
-        message.method !== THREAD_BRIDGE_SEND_METHOD) ||
+        message.method !== THREAD_BRIDGE_SEND_METHOD &&
+        message.method !== THREAD_BRIDGE_MANAGE_METHOD) ||
       typeof message.hostId !== "string"
     )
       return;
-    const mutation = message.method === THREAD_BRIDGE_SEND_METHOD;
-    const parsed = mutation
-      ? threadBridgeSendSchema.safeParse(message.params)
-      : threadBridgeReadSchema.safeParse(message.params);
+    const management = message.method === THREAD_BRIDGE_MANAGE_METHOD;
+    const mutation = management || message.method === THREAD_BRIDGE_SEND_METHOD;
+    const parsed = management
+      ? threadBridgeManageSchema.safeParse(message.params)
+      : mutation
+        ? threadBridgeSendSchema.safeParse(message.params)
+        : threadBridgeReadSchema.safeParse(message.params);
     const source = entries.get(message.hostId);
     if (!parsed.success || parsed.data.clientId !== clientId || !source || !current(source)) return;
     const read = parsed.data;
@@ -162,15 +198,23 @@ export function createRendererThreadBridge(options: {
           (entry) => entry.machineId === read.machineId && current(entry),
         );
         if (!target) throw new Error("Target machine is disconnected; reconnect it in Desktop");
-        if (mutation && !target.sendSupported)
+        if (mutation && !(management ? target.manageSupported : target.sendSupported))
           throw new Error("Update the target Host before sending cross-machine messages");
         // Fixed target methods cannot forward again or form a loop.
         dispatched = true;
         const result = await Promise.race([
-          request(target, mutation ? DELEGATION_SEND_METHOD : DELEGATION_READ_METHOD, {
-            ...read.input,
-            expectedMachineId: read.machineId,
-          }),
+          request(
+            target,
+            management
+              ? THREAD_MANAGE_METHOD
+              : mutation
+                ? DELEGATION_SEND_METHOD
+                : DELEGATION_READ_METHOD,
+            {
+              ...read.input,
+              expectedMachineId: read.machineId,
+            },
+          ),
           new Promise<never>((_, reject) => {
             timer = setTimeout(
               () => reject(new Error("Thread request timed out")),
@@ -189,7 +233,11 @@ export function createRendererThreadBridge(options: {
             { code: "RESPONSE_TOO_LARGE" },
           );
         // The Host validates the snapshot; JSON RPC has already serialized this value.
-        const outcome = mutation ? threadSendOutcomeSchema.parse(result) : { result };
+        const outcome = management
+          ? threadManagementOutcomeSchema.parse(result)
+          : mutation
+            ? threadSendOutcomeSchema.parse(result)
+            : { result };
         reply = "error" in outcome ? outcome : { result: jsonValueSchema.parse(outcome.result) };
       } catch (error) {
         reply = {

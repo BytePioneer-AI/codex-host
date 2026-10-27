@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
+  threadManagementParamsSchema,
+  threadManagementResultSchema,
+  type ThreadManagementInput,
+  type ThreadManagementParams,
+  type ThreadManagementReply,
+  type ThreadManagementResult,
+  type ThreadBridgeManage,
   REMOTE_THREAD_CONTROL_TIMEOUT_MS,
   REMOTE_THREAD_REPLY_MAX_BYTES,
   delegationReadParamsSchema,
@@ -27,8 +34,9 @@ type Connection = {
   clientId: string;
   machineIds: readonly string[];
   sendMachineIds?: readonly string[] | undefined;
+  manageMachineIds?: readonly string[] | undefined;
   expires: number;
-  send(request: ThreadBridgeRead | ThreadBridgeSend): Promise<void>;
+  send(request: ThreadBridgeRead | ThreadBridgeSend | ThreadBridgeManage): Promise<void>;
 };
 
 /** Fixed Thread operations travel over an attached Desktop connection, never a public listener. */
@@ -65,6 +73,71 @@ export class ThreadBridge {
         "Cross-machine sending is unavailable on this Host",
       );
     return this.receipts.execute(input, send);
+  }
+
+  executeManagement(input: ThreadManagementParams, run: () => Promise<ThreadManagementResult>) {
+    if (input.expectedMachineId !== this.machineId)
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Thread operation belongs to a different machine",
+      );
+    if (!this.receipts)
+      throw new DelegationControlError(
+        "RUNTIME_UNREACHABLE",
+        "Thread management is unavailable on this Host",
+      );
+    return this.receipts.manage(input, run);
+  }
+
+  qualifyManagement(
+    result: ThreadManagementResult,
+    input: ThreadManagementInput,
+  ): ThreadManagementReply {
+    const machineId = input.machineId ?? this.machineId;
+    return {
+      ...result,
+      machineId,
+      requestId: input.requestId,
+      thread: formatThreadReference({
+        threadId: result.threadId,
+        machineId,
+        ...(input.hostId ? { hostId: input.hostId } : {}),
+      }),
+    };
+  }
+
+  async manage(input: ThreadManagementInput): Promise<ThreadManagementReply> {
+    const params = threadManagementParamsSchema.parse({
+      expectedMachineId: input.machineId,
+      requestId: input.requestId,
+      action: input.action,
+    });
+    try {
+      const reply = await this.#exchange({
+        machineId: params.expectedMachineId,
+        operation: "manage",
+        input: params,
+      });
+      const result = threadManagementResultSchema.safeParse(reply);
+      if (
+        !result.success ||
+        result.data.operation !== input.action.operation ||
+        ("threadId" in input.action && result.data.threadId !== input.action.threadId)
+      )
+        throw new DelegationControlError(
+          "OUTCOME_UNKNOWN",
+          "Invalid management receipt; repeat the same request ID",
+        );
+      return this.qualifyManagement(result.data, input);
+    } catch (error) {
+      if (error instanceof DelegationControlError)
+        throw new DelegationControlError(error.code, error.message, {
+          ...error.details,
+          requestId: input.requestId,
+          machineId: input.machineId,
+        });
+      throw error;
+    }
   }
 
   qualifySend(result: ThreadSendResult, input: ThreadSendInput): ThreadSendResult {
@@ -133,7 +206,7 @@ export class ThreadBridge {
           new DelegationControlError(
             pending.mutation ? "OUTCOME_UNKNOWN" : "RUNTIME_UNREACHABLE",
             pending.mutation
-              ? "Desktop connection closed; a dispatched send may have started"
+              ? "Desktop connection closed; a dispatched operation may have started"
               : "Desktop connection closed",
           ),
         );
@@ -172,7 +245,8 @@ export class ThreadBridge {
   async #exchange(
     input:
       | { machineId: string; input: DelegationReadParams }
-      | { machineId: string; operation: "send"; input: DelegationSendParams },
+      | { machineId: string; operation: "send"; input: DelegationSendParams }
+      | { machineId: string; operation: "manage"; input: ThreadManagementParams },
   ) {
     const mutation = "operation" in input;
     const { machineId } = input;
@@ -183,7 +257,12 @@ export class ThreadBridge {
       .find(
         ([, entry]) =>
           entry.expires > Date.now() &&
-          (mutation ? (entry.sendMachineIds ?? []) : entry.machineIds).includes(machineId),
+          (mutation
+            ? input.operation === "manage"
+              ? (entry.manageMachineIds ?? [])
+              : (entry.sendMachineIds ?? [])
+            : entry.machineIds
+          ).includes(machineId),
       );
     if (!connection)
       throw new DelegationControlError(
@@ -205,7 +284,7 @@ export class ThreadBridge {
           new DelegationControlError(
             mutation ? "OUTCOME_UNKNOWN" : "RUNTIME_UNREACHABLE",
             mutation
-              ? "Cross-machine request timed out; a dispatched send may have started"
+              ? "Cross-machine request timed out; a dispatched operation may have started"
               : "Cross-machine read timed out",
           ),
         ),
@@ -218,7 +297,7 @@ export class ThreadBridge {
           deferred.reject(
             new DelegationControlError(
               mutation ? "OUTCOME_UNKNOWN" : "RUNTIME_UNREACHABLE",
-              "Desktop dispatch failed; a send may have started",
+              "Desktop dispatch failed; an operation may have started",
             ),
           ),
         );

@@ -11,11 +11,13 @@ export const machineIdSchema = z.uuid();
 export const hostIdentitySchema = z.strictObject({
   machineId: machineIdSchema,
   sendSupported: z.boolean().optional(),
+  manageSupported: z.boolean().optional(),
 });
 export const threadBridgeAttachSchema = z.strictObject({
   clientId: z.uuid(),
   machineIds: z.array(machineIdSchema).max(128),
   sendMachineIds: z.array(machineIdSchema).max(128).optional(),
+  manageMachineIds: z.array(machineIdSchema).max(128).optional(),
 });
 export const threadBridgeReadSchema = z.strictObject({
   clientId: z.uuid(),

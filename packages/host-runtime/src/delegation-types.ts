@@ -1,3 +1,9 @@
+import type {
+  ThreadManagementInput,
+  ThreadManagementReply,
+  ThreadManagementOperation,
+  ThreadManagementResult,
+} from "@codexhost/shared-contracts";
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
 import type {
   HarnessInspection,
@@ -237,6 +243,7 @@ export interface DelegationWatchApi {
 }
 
 export interface DelegationControlApi {
+  manage?(input: ThreadManagementInput): Promise<ThreadManagementReply>;
   listHarnesses(): Promise<HarnessListResult>;
   inspect(input: HarnessInspectInput): Promise<HarnessInspectResult>;
   start(input: DelegationStartInput): Promise<DelegationStartResult>;
@@ -248,6 +255,7 @@ export interface DelegationControlApi {
 }
 
 export interface DelegationControlRegistration extends DelegationControlApi {
+  manageLocal?(action: ThreadManagementOperation): Promise<ThreadManagementResult>;
   executionHostId?(threadId: string): string | undefined;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;

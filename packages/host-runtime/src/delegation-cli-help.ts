@@ -1,4 +1,19 @@
+const MANAGEMENT_HELP = `Use an existing machine-qualified link to select its owning machine. The source Thread is not changed by create.
+Operations use the native Desktop lifecycle handlers. Create returns an idle Thread; use thread send to start a task. Runtime defaults apply; no permissions are elevated.
+All operations return a requestId and machine-qualified thread link. On OUTCOME_UNKNOWN, repeat exactly the same operation with --request-id; never use a new ID to retry an uncertain create or delete.
+Permanent deletion requires explicit user authorization; --confirm permanent records that intent. Archive is reversible. Both Hosts and Desktop must support Thread management.`;
 const COMMAND_HELP = {
+  "thread create": `codexhost thread create --cwd <absolute-target-path> [--on <thread-link> | --machine <uuid>] [--harness <id>] [--request-id <uuid>] [--format json|compact]
+Create an independent idle Thread on the selected machine (default: calling machine). Harness defaults to codex.
+${MANAGEMENT_HELP}`,
+  "thread rename": `codexhost thread rename <thread-link> --name <name> [--request-id <uuid>] [--format json|compact]
+${MANAGEMENT_HELP}`,
+  "thread archive": `codexhost thread archive <thread-link> [--request-id <uuid>] [--format json|compact]
+${MANAGEMENT_HELP}`,
+  "thread unarchive": `codexhost thread unarchive <thread-link> [--request-id <uuid>] [--format json|compact]
+${MANAGEMENT_HELP}`,
+  "thread delete": `codexhost thread delete <thread-link> --confirm permanent [--request-id <uuid>] [--format json|compact]
+${MANAGEMENT_HELP}`,
   "harness list": `codexhost harness list [--format json|compact]
 List Harnesses available in the active Runtime.`,
   "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact]
@@ -62,6 +77,11 @@ export const DELEGATION_HELP = `usage:
   codexhost harness list
   codexhost harness inspect <harness>
   codexhost delegate start --harness <id> --task <text>
+  codexhost thread create --on <thread-link> --cwd <target-path>
+  codexhost thread rename <thread-link> --name <name>
+  codexhost thread archive <thread-link>
+  codexhost thread unarchive <thread-link>
+  codexhost thread delete <thread-link> --confirm permanent
   codexhost thread send <thread> --message <text>
   codexhost thread cancel <thread>
   codexhost thread read <thread>

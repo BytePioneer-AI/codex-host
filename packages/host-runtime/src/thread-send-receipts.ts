@@ -4,6 +4,12 @@ import path from "node:path";
 import { z } from "zod";
 import {
   delegationSendParamsSchema,
+  threadManagementParamsSchema,
+  threadManagementOutcomeSchema,
+  threadManagementResultSchema,
+  type ThreadManagementParams,
+  type ThreadManagementResult,
+  type ThreadManagementOutcome,
   threadSendOutcomeSchema,
   threadSendResultSchema,
   type DelegationSendParams,
@@ -11,15 +17,17 @@ import {
 } from "@codexhost/shared-contracts";
 import { DelegationControlError, type ThreadSendResult } from "./delegation-types.js";
 
+type Outcome = ThreadSendOutcome | ThreadManagementOutcome;
+const outcomeSchema = z.union([threadSendOutcomeSchema, threadManagementOutcomeSchema]);
 const receiptSchema = z.strictObject({
   fingerprint: z.string(),
-  outcome: threadSendOutcomeSchema.optional(),
+  outcome: outcomeSchema.optional(),
 });
 const unknownOutcome = (): ThreadSendOutcome => ({
   error: {
     code: "OUTCOME_UNKNOWN",
     message:
-      "The send may have started. Read the target Thread before submitting a new request ID; repeating this ID never starts another Turn.",
+      "The operation may have started. Inspect the target or repeat the same request ID to recover its receipt; repeating this ID never re-executes it.",
   },
 });
 
@@ -39,10 +47,7 @@ function failed(error: unknown): ThreadSendOutcome {
 
 /** Reserve before dispatch. Incomplete receipts survive Runtime restarts and never re-execute. */
 export class ThreadSendReceipts {
-  readonly #pending = new Map<
-    string,
-    { fingerprint: string; result: Promise<ThreadSendOutcome> }
-  >();
+  readonly #pending = new Map<string, { fingerprint: string; result: Promise<Outcome> }>();
   readonly #starting = new Set<string>();
   constructor(readonly directory: string) {}
 
@@ -54,14 +59,52 @@ export class ThreadSendReceipts {
     const fingerprint = createHash("sha256")
       .update(JSON.stringify([input.expectedMachineId, input.threadId, input.message]))
       .digest("hex");
-    const pending = this.#pending.get(input.requestId);
+    return threadSendOutcomeSchema.parse(
+      await this.#reserve(input.requestId, input.threadId, fingerprint, async () => {
+        const result = threadSendResultSchema.parse(await send());
+        return result.threadId === input.threadId ? { result } : unknownOutcome();
+      }),
+    );
+  }
+
+  async manage(
+    raw: ThreadManagementParams,
+    run: () => Promise<ThreadManagementResult>,
+  ): Promise<ThreadManagementOutcome> {
+    const input = threadManagementParamsSchema.parse(raw);
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify(["manage", input.expectedMachineId, input.action]))
+      .digest("hex");
+    return threadManagementOutcomeSchema.parse(
+      await this.#reserve(
+        input.requestId,
+        "threadId" in input.action ? input.action.threadId : undefined,
+        fingerprint,
+        async () => {
+          const result = threadManagementResultSchema.parse(await run());
+          return result.operation === input.action.operation &&
+            (!("threadId" in input.action) || result.threadId === input.action.threadId)
+            ? { result }
+            : unknownOutcome();
+        },
+      ),
+    );
+  }
+
+  async #reserve(
+    requestId: string,
+    threadId: string | undefined,
+    fingerprint: string,
+    run: () => Promise<Outcome>,
+  ): Promise<Outcome> {
+    const pending = this.#pending.get(requestId);
     if (pending) return pending.fingerprint === fingerprint ? pending.result : this.#conflict();
-    const result = this.#execute(input, fingerprint, send);
-    this.#pending.set(input.requestId, { fingerprint, result });
+    const result = this.#execute({ requestId, threadId }, fingerprint, run);
+    this.#pending.set(requestId, { fingerprint, result });
     try {
       return await result;
     } finally {
-      this.#pending.delete(input.requestId);
+      this.#pending.delete(requestId);
     }
   }
 
@@ -69,16 +112,16 @@ export class ThreadSendReceipts {
     return {
       error: {
         code: "INVALID_ARGUMENT",
-        message: "Request ID was already used for a different Thread or message",
+        message: "Request ID was already used for a different Thread, message, or operation",
       },
     };
   }
 
   async #execute(
-    input: DelegationSendParams,
+    input: { requestId: string; threadId: string | undefined },
     fingerprint: string,
-    send: () => Promise<ThreadSendResult>,
-  ): Promise<ThreadSendOutcome> {
+    run: () => Promise<Outcome>,
+  ): Promise<Outcome> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const filename = path.join(this.directory, `${input.requestId}.json`);
     const handle = await open(filename, "wx", 0o600).catch((error: NodeJS.ErrnoException) => {
@@ -101,20 +144,19 @@ export class ThreadSendReceipts {
     } finally {
       await handle.close();
     }
-    let outcome: ThreadSendOutcome;
-    if (this.#starting.has(input.threadId)) {
+    let outcome: Outcome;
+    if (input.threadId && this.#starting.has(input.threadId)) {
       outcome = {
         error: { code: "THREAD_BUSY", message: "Another send is starting on this Thread" },
       };
     } else {
-      this.#starting.add(input.threadId);
+      if (input.threadId) this.#starting.add(input.threadId);
       try {
-        const result = threadSendResultSchema.parse(await send());
-        outcome = result.threadId === input.threadId ? { result } : unknownOutcome();
+        outcome = await run();
       } catch (error) {
         outcome = failed(error);
       } finally {
-        this.#starting.delete(input.threadId);
+        if (input.threadId) this.#starting.delete(input.threadId);
       }
     }
     const temporary = `${filename}.${randomUUID()}.tmp`;

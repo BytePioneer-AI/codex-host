@@ -1,4 +1,11 @@
 import {
+  THREAD_MANAGE_METHOD,
+  THREAD_BRIDGE_MANAGE_METHOD,
+  threadManagementParamsSchema,
+  type ThreadManagementOperation,
+} from "@codexhost/shared-contracts";
+import { manageThread } from "./thread-management.js";
+import {
   HOST_IDENTITY_METHOD,
   DELEGATION_SEND_METHOD,
   THREAD_BRIDGE_SEND_METHOD,
@@ -841,6 +848,7 @@ export class AppServerHost {
     const maintenanceOperation = <T>(run: () => Promise<T>): Promise<T> =>
       options.runtimeMaintenance ? options.runtimeMaintenance.operation(run) : run();
     const unregisterDelegationApi = options.onDelegationApi?.({
+      manageLocal: (action) => maintenanceOperation(() => this.#manageLocalThread(action)),
       listHarnesses: () =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
       inspect: (input) =>
@@ -1104,7 +1112,7 @@ export class AppServerHost {
   #takeConsoleReply(value: JsonValue): boolean {
     if (!isRecord(value) || typeof value.id !== "string") return false;
     const reply = this.#consoleReplies.get(value.id);
-    if (!reply) return false;
+    if (!reply) return value.id.startsWith(this.#consoleRequestPrefix);
     this.#consoleReplies.delete(value.id);
     reply(value);
     return true;
@@ -1129,6 +1137,45 @@ export class AppServerHost {
       return requestDesktopRemoteConnections(this.#options.environment ?? process.env, params);
     }
     if (method === REMOTE_SSH_SETUP_METHOD) timeoutMs = Math.max(timeoutMs, 330_000);
+    return this.#handleInternalRequest(method, params, timeoutMs);
+  }
+
+  #manageLocalThread(action: ThreadManagementOperation) {
+    return manageThread(action, async (method, params) => {
+      // The shared owner has a native management connection but no Desktop output stream.
+      const native =
+        this.#options.externalOnly &&
+        (action.operation === "create"
+          ? action.harnessId === "codex"
+          : (await this.#locateExternalThread(action.threadId)).kind === "official");
+      if (native) {
+        const response = await this.#requestOfficial(method, params as JsonObject);
+        if (isRecord(response.error))
+          return {
+            error: {
+              code: typeof response.error.code === "number" ? response.error.code : -32603,
+              message:
+                typeof response.error.message === "string"
+                  ? response.error.message
+                  : "Native Thread operation failed",
+            },
+          };
+        if (!("result" in response))
+          return { error: { code: -32603, message: "Native Thread operation returned no result" } };
+        return { result: response.result ?? null };
+      }
+      return this.#handleInternalRequest(method, params, 30_000);
+    });
+  }
+
+  /** Local callers share Desktop routing without publishing private response IDs to the UI. */
+  async #handleInternalRequest(
+    method: string,
+    params: unknown,
+    timeoutMs: number,
+  ): Promise<ConsoleHostReply> {
+    if (this.#closeRequested || this.#desktopInputEnded)
+      return { error: { code: -32090, message: "Host is closing" } };
     const parsed = jsonRpcRequestSchema.safeParse({
       id: `${this.#consoleRequestPrefix}${++this.#nextConsoleRequest}`,
       method,
@@ -1145,9 +1192,17 @@ export class AppServerHost {
         timeoutMs,
       );
     });
+    const threadId =
+      isRecord(request.params) && typeof request.params.threadId === "string"
+        ? request.params.threadId
+        : undefined;
     this.#dispatchDesktopRequest(() =>
-      this.#guardReply(request, () =>
-        this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+      this.#desktopRequests.run(threadId, () =>
+        this.#externalRuntime.idleRelease.runOperation(threadId, () =>
+          this.#guardReply(request, () =>
+            this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+          ),
+        ),
       ),
     );
     try {
@@ -1317,7 +1372,12 @@ export class AppServerHost {
             ...params,
             send: async (read) => {
               await this.#writer.json({
-                method: "operation" in read ? THREAD_BRIDGE_SEND_METHOD : THREAD_BRIDGE_READ_METHOD,
+                method:
+                  "operation" in read
+                    ? read.operation === "manage"
+                      ? THREAD_BRIDGE_MANAGE_METHOD
+                      : THREAD_BRIDGE_SEND_METHOD
+                    : THREAD_BRIDGE_READ_METHOD,
                 params: jsonValueSchema.parse(read),
               });
             },
@@ -1327,7 +1387,11 @@ export class AppServerHost {
         }
         await this.#writer.json(
           rpcEnvelope(request, {
-            result: { machineId: bridge.machineId, sendSupported: bridge.receipts !== undefined },
+            result: {
+              machineId: bridge.machineId,
+              sendSupported: bridge.receipts !== undefined,
+              manageSupported: bridge.receipts !== undefined,
+            },
           }),
         );
       } catch (error) {
@@ -1360,6 +1424,45 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(request, -32090, "Remote service is updating; reconnect shortly"),
       );
+      return;
+    }
+    if (request.method === THREAD_MANAGE_METHOD) {
+      const parsed = threadManagementParamsSchema.safeParse(request.params);
+      const bridge = this.#options.threadBridge;
+      if (
+        !parsed.success ||
+        !bridge?.receipts ||
+        parsed.data.expectedMachineId !== bridge.machineId
+      ) {
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              error: {
+                code: "INVALID_ARGUMENT",
+                message: "Invalid operation, unsupported Host, or wrong destination machine",
+              },
+            },
+          }),
+        );
+        return;
+      }
+      try {
+        const outcome = await bridge.executeManagement(parsed.data, () =>
+          this.#manageLocalThread(parsed.data.action),
+        );
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(outcome) }));
+      } catch {
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              error: {
+                code: "OUTCOME_UNKNOWN",
+                message: "Management outcome is unknown; repeat the same request ID",
+              },
+            },
+          }),
+        );
+      }
       return;
     }
     if (request.method === DELEGATION_SEND_METHOD) {
@@ -2376,7 +2479,7 @@ export class AppServerHost {
       typeof parsed.method === "string" &&
       !("id" in parsed) &&
       !this.#observedSessionUsage.shouldForwardNotification(parsed);
-    if (!privateTelemetry) {
+    if (!privateTelemetry && !this.#takeConsoleReply(forwarded)) {
       if (forwarded === parsed) await this.#writer.frame(input.frame);
       else await this.#writer.json(forwarded);
     }

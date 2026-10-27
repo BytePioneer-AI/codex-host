@@ -1,3 +1,4 @@
+import { parseThreadManagementCommand } from "./thread-management-cli.js";
 import type { Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { parseThreadReference, machineIdSchema } from "@codexhost/shared-contracts";
@@ -118,7 +119,7 @@ async function requestRuntime(input: {
   }
   let response: Response;
   const sendDetails =
-    input.path === "/v1/thread/send-scoped" && input.body.requestId
+    ["/v1/thread/send-scoped", "/v1/thread/manage"].includes(input.path) && input.body.requestId
       ? {
           requestId: input.body.requestId,
           threadId: input.body.threadId,
@@ -136,7 +137,7 @@ async function requestRuntime(input: {
     if (sendDetails)
       throw new DelegationControlError(
         "OUTCOME_UNKNOWN",
-        "Send outcome is unknown. Read the target Thread or repeat the same message with --request-id; do not submit a new request ID yet.",
+        "Operation outcome is unknown. Inspect the target or repeat the same operation with --request-id; do not submit a new request ID yet.",
         sendDetails,
       );
     throw new DelegationControlError(
@@ -149,7 +150,7 @@ async function requestRuntime(input: {
     if (sendDetails)
       throw new DelegationControlError(
         "OUTCOME_UNKNOWN",
-        "Send receipt was lost. Read the target Thread or repeat the same request ID.",
+        "Operation receipt was lost. Inspect the target or repeat the same request ID.",
         sendDetails,
       );
     throw error;
@@ -207,6 +208,19 @@ export async function runDelegationCli(input: {
       view: "result" | "messages" = "result",
     ): void =>
       writeJson(output, format === "json" ? body : compactDelegationOutput(name, body, view));
+    const management = group === "thread" ? parseThreadManagementCommand(command, parsed) : null;
+    if (management) {
+      writeJson(
+        output,
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/manage",
+          body: management,
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
     if (group === "harness" && command === "list") {
       rejectUnknown(parsed, []);
       if (parsed.positionals.length > 0) {

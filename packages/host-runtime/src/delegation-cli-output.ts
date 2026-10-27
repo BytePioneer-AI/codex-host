@@ -100,6 +100,11 @@ export function compactDelegationOutput(
   view: "result" | "messages" = "result",
 ): unknown {
   switch (command) {
+    case "thread create":
+    case "thread rename":
+    case "thread archive":
+    case "thread unarchive":
+    case "thread delete":
     case "harness list":
       return body;
     case "harness inspect":

@@ -87,11 +87,12 @@ export function isolateRendererPrewarmConsumption(
       if (!external(expected) && !external(response.model)) return warmed;
       if (external(expected) && expected === response.model) return warmed;
       if (record(response.thread) && typeof response.thread.id === "string") {
-        if (external(response.model)) discardExternal(response.thread.id);
+        const threadId = response.thread.id;
+        if (external(response.model)) discardExternal(threadId);
         else
-          void Promise.resolve(
-            (pool.deletePrewarmedThread as (id: string) => unknown)(response.thread.id),
-          ).catch(() => undefined);
+          void Promise.resolve()
+            .then(() => (pool.deletePrewarmedThread as (id: string) => unknown)(threadId))
+            .catch(() => undefined);
       }
       return null;
     };

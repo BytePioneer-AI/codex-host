@@ -18,12 +18,14 @@ import { createRendererSettingsIcon } from "./icons.js";
 export interface HarnessSchedulesPageOptions {
   connect(): Promise<DesktopHarnessSchedules>;
   getModelClient(): RendererModelClient | null;
+  openThread?: RendererImportedThreadOpener;
 }
 export function createHarnessSchedulesPage(
   messages: RendererSettingsMessages,
   options: HarnessSchedulesPageOptions,
   openThread: RendererImportedThreadOpener | null,
 ): RendererSettingsPageDefinition {
+  const openChat = options.openThread ?? openThread;
   const t = (zh: string, en: string) => (messages.locale === "zh-CN" ? zh : en);
   return {
     id: "harness-schedules",
@@ -66,7 +68,7 @@ export function createHarnessSchedulesPage(
             onDone: (message) => showList(connection, message),
             onBack: () => showList(connection),
           },
-          openThread,
+          openChat,
         );
       };
       const showList = (connection: DesktopHarnessSchedules, message = "") => {
@@ -256,11 +258,11 @@ export function createHarnessSchedulesPage(
                 actions.append(button);
                 return button;
               };
-              if (openThread)
+              if (openChat)
                 action(
                   t("打开聊天", "Open chat"),
                   () => {
-                    void openThread(item.targetThreadId, view.signal).catch(() => {
+                    void openChat(item.targetThreadId, view.signal).catch(() => {
                       if (!view.signal.aborted) {
                         status.hidden = false;
                         status.textContent = t(

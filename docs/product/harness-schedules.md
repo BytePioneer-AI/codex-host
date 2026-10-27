@@ -34,7 +34,7 @@ Renderer 复用原生服务加载器，从当前页面同源 `modulepreload` 模
 
 空输入原生创建后，只接受 manager 中已注册、resumed、带有效 collaboration mode/权限且无 Turn、无待处理请求的空聊天。此检查限于本页新建的空聊天，后续 eligibility 和权限变化仍由 Desktop 原生 heartbeat 观察器维护，不维护另一份状态。
 
-原生预热池按 cwd 共享。普通创建按本次 Model 检查消费结果，官方入口不能消费外部预热；显式任务创建跳过普通草稿预热。普通外部草稿只使用身份绑定的原生草稿设置，且不保存为官方默认值。细节见[官方流量归属](../architecture/official-traffic-ownership.md)。
+原生预热池按 cwd 共享。普通创建按本次 Model 检查消费结果，官方入口不能消费外部预热；显式任务创建跳过普通草稿预热。不匹配的预热结果不参与本次创建，清理失败不会阻止新聊天创建。普通外部草稿只使用身份绑定的原生草稿设置，且不保存为官方默认值。细节见[官方流量归属](../architecture/official-traffic-ownership.md)。
 
 创建后刷新官方任务列表查询，由 Desktop 的既有后台观察器维护 heartbeat 模式及就绪状态；页面不手工发送 eligibility 消息或维护另一套模式/权限状态。
 

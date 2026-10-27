@@ -72,24 +72,32 @@ export function installRendererSettingsLifecycle(
     trigger: RendererSettingsRailTriggerControl;
   } => {
     const messages = rendererSettingsMessages(locale);
+    const closeAfterNavigation =
+      (openThread: RendererImportedThreadOpener | undefined): RendererImportedThreadOpener =>
+      async (threadId, signal) => {
+        if (!openThread) throw new Error("Chat navigation is unavailable");
+        await openThread(threadId, signal);
+        if (!disposed && !signal.aborted) shell?.close();
+      };
     const definitions = createDefaultRendererSettingsPages(
       messages,
       options.getUpdateClient ?? (() => null),
       options.getConnectionDiagnostics ?? (() => null),
       options.getAccountClient ?? (() => null),
       options.getSessionImportClient ?? (() => null),
-      async (threadId, signal) => {
-        if (!options.openImportedThread) {
-          throw new Error("Imported Thread navigation is unavailable");
-        }
-        await options.openImportedThread(threadId, signal);
-        if (!disposed && !signal.aborted) shell?.close();
-      },
+      closeAfterNavigation(options.openImportedThread),
       options.getLoadedSessionsClient ?? (() => null),
       options.getRemoteConnections ?? (() => null),
       options.requestUsageStatistics,
       options.usageStatisticsHosts,
-      options.harnessSchedules,
+      options.harnessSchedules
+        ? {
+            ...options.harnessSchedules,
+            openThread: closeAfterNavigation(
+              options.harnessSchedules.openThread ?? options.openImportedThread,
+            ),
+          }
+        : undefined,
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
       onOpenChange(open) {

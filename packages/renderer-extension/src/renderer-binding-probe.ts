@@ -105,6 +105,7 @@ import {
 } from "./renderer-delegation-mention.js";
 import { compatibleRendererPluginPresentation, rendererAgentLabel } from "./renderer-agent-icon.js";
 import { openCodexLocalThread } from "./codex-thread-navigation.js";
+import { openRendererThread } from "./renderer-fork-control.js";
 import type {
   RendererConnectionDiagnostics,
   RendererConnectionSnapshot,
@@ -818,6 +819,7 @@ export function installRendererBindingProbe(
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     harnessSchedules: {
       getModelClient: () => modelClientForHost("local"),
+      openThread: (threadId, signal) => openCodexLocalThread(threadId, signal),
       connect: async () => {
         const routing = window.__codexhostHostRoutingV1;
         if (!routing) return Promise.reject(new Error("Desktop local connection is unavailable"));
@@ -851,7 +853,8 @@ export function installRendererBindingProbe(
         importHarnessSession: (input) => importSession(input),
       };
     },
-    openImportedThread: (threadId, signal) => openCodexLocalThread(threadId, signal),
+    openImportedThread: (threadId, signal) =>
+      openRendererThread(threadId, { hostId: "local", signal }),
     onLocaleChange() {
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },

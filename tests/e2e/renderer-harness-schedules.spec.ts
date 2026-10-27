@@ -84,8 +84,9 @@ const { outputFiles } = await build({
         preload.href = "/assets/native-navigation.js";
         document.head.append(preload);
         installRendererSettingsLifecycle(window, {
-          harnessSchedules: { getModelClient: () => client, connect: async () => connection },
-          openImportedThread: (id, signal) => openCodexLocalThread(id, signal),
+          harnessSchedules: { getModelClient: () => client, connect: async () => connection,
+            openThread: (id, signal) => openCodexLocalThread(id, signal) },
+          openImportedThread: async () => { throw Error("Session import navigation must remain separate"); },
         });
         shell = window.__codexhostSettingsShellV1;
       } else {

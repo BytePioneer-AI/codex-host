@@ -107,6 +107,19 @@ describe("native prewarm consumption isolation", () => {
     expect(f.creation.params.prewarmedThreadManager.consumePrewarmedThread).toBe(f.consume);
     expect(isolateRendererPrewarmConsumption({}, vi.fn())).toBeNull();
   });
+  it.each(["throw", "reject"])(
+    "rejects an incompatible prewarm even when its cleanup fails by %s",
+    async (failure) => {
+      const f = fixture();
+      f.consume.mockResolvedValue(warmed("official", "gpt-5"));
+      f.deleted.mockImplementation(() => {
+        if (failure === "throw") throw new Error("Cleanup unavailable");
+        return Promise.reject(new Error("Cleanup unavailable"));
+      });
+      await expect(f.creation.createConversation(mode("codexhost/pi-native"))).resolves.toBeNull();
+      expect(f.deleted).toHaveBeenCalledExactlyOnceWith("official");
+    },
+  );
 });
 
 it("binds the reviewed draft setter tuple to its exact client identity", () => {

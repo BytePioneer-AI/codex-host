@@ -468,3 +468,63 @@ test("background Send retains its originating external draft in reserve mode", a
     .poll(() => page.evaluate(() => Reflect.get(globalThis, "hostRoutes").local.created[0]?.model))
     .toBe(encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") }));
 });
+
+for (const usesAccountPreferences of [false, true]) {
+  for (const background of [false, true]) {
+    test(`switching an external draft back to Codex retains native reserve with account preferences ${usesAccountPreferences} and background ${background}`, async ({
+      page,
+    }) => {
+      await setup(page, "local", {
+        emptyDraft: true,
+        reserveActive: true,
+        usesAccountPreferences,
+        background,
+      });
+      const result = await page.evaluate(() => {
+        const state = Reflect.get(globalThis, "hostRoutes");
+        const before = structuredClone(state.readDraft());
+        const external = state.adapter.applyAgent(
+          "pi",
+          { id: "external-model" },
+          undefined,
+          undefined,
+          state.editor,
+        );
+        const official = state.adapter.applyAgent(
+          "codex",
+          undefined,
+          undefined,
+          undefined,
+          state.editor,
+        );
+        return { external, official, before, after: state.readDraft() };
+      });
+      expect(result.external).toBe(true);
+      expect(result.official).toBe(true);
+      expect(result.after).toMatchObject(result.before);
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              Reflect.get(globalThis, "hostRoutes").local.calls.filter(
+                (call: RecordedRequest) => call.method === "turn/start",
+              ).length,
+          ),
+        )
+        .toBe(1);
+      const calls = await page.evaluate(() =>
+        Reflect.get(globalThis, "hostRoutes").local.calls.filter((call: RecordedRequest) =>
+          ["thread/start", "turn/start"].includes(call.method),
+        ),
+      );
+      expect(calls).toMatchObject([
+        { method: "thread/start", params: { model: "gpt-reserve" } },
+        {
+          method: "turn/start",
+          params: { collaborationMode: { settings: { model: "gpt-reserve" } } },
+        },
+      ]);
+    });
+  }
+}

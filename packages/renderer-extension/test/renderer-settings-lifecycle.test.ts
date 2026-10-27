@@ -237,4 +237,45 @@ describe("Renderer Settings lifecycle", () => {
     expect(events).toEqual(["opened", "closed"]);
     lifecycle.dispose();
   });
+
+  it("keeps Session import navigation independent from the schedules router", async () => {
+    const openImportedThread = vi.fn(async () => undefined);
+    const openScheduledThread = vi.fn(async (): Promise<void> => {
+      throw new Error("Native schedule navigation is unavailable");
+    });
+    const lifecycle = installRendererSettingsLifecycle(
+      {
+        navigator: { languages: ["en"] },
+        document: {},
+        setTimeout,
+        clearTimeout,
+      } as unknown as Window,
+      {
+        openImportedThread,
+        harnessSchedules: {
+          connect: vi.fn(),
+          getModelClient: () => null,
+          openThread: openScheduledThread,
+        },
+      },
+    );
+    const call = vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1);
+    const importOpen = call?.[5];
+    const scheduleOpen = call?.[10]?.openThread;
+    if (!importOpen || !scheduleOpen) throw new Error("Settings navigation was not installed");
+    const signal = new AbortController().signal;
+    await expect(
+      scheduleOpen(hostThreadIdSchema.parse("scheduled-thread"), signal),
+    ).rejects.toThrow("Native schedule navigation is unavailable");
+    expect(shellClose).not.toHaveBeenCalled();
+    expect(openImportedThread).not.toHaveBeenCalled();
+    openScheduledThread.mockResolvedValueOnce(undefined);
+    await scheduleOpen(hostThreadIdSchema.parse("scheduled-thread"), signal);
+    expect(shellClose).toHaveBeenCalledOnce();
+    await importOpen(hostThreadIdSchema.parse("imported-thread"), signal);
+    expect(openImportedThread).toHaveBeenCalledExactlyOnceWith("imported-thread", signal);
+    expect(openScheduledThread).toHaveBeenCalledTimes(2);
+    expect(shellClose).toHaveBeenCalledTimes(2);
+    lifecycle.dispose();
+  });
 });

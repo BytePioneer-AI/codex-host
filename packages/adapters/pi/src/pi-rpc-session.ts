@@ -18,7 +18,11 @@ import {
   type PiMessageIdentity,
 } from "./pi-message-item-id.js";
 import { parsePiNativeCommands, type PiNativeCommand } from "./pi-slash-commands.js";
-import { piAssistantWasAborted } from "./pi-assistant-outcome.js";
+import {
+  piAssistantPhase,
+  piAssistantWasAborted,
+  type PiAssistantPhase,
+} from "./pi-assistant-outcome.js";
 import { ensureGotgenesExtension, GOTGENES_WIDGET } from "./pi-gotgenes-extension.js";
 import {
   parseGotgenesWidget,
@@ -110,7 +114,7 @@ export type PiTurnEvent =
       delta: string;
     }
   | { type: "reasoning.completed"; messageId: string }
-  | { type: "message.completed"; messageId: string }
+  | { type: "message.completed"; messageId: string; phase?: PiAssistantPhase }
   | { type: "compaction.started" }
   | {
       type: "compaction.completed";
@@ -1945,7 +1949,8 @@ export class PiRpcSession {
     active.reasoningMessageOpen = false;
     active.lastFinalizedMessageText = finalText;
     active.lastFinalizedMessageReasoning = finalReasoning;
-    active.onEvent({ type: "message.completed", messageId });
+    const phase = piAssistantPhase(value);
+    active.onEvent({ type: "message.completed", messageId, ...(phase ? { phase } : {}) });
   }
 
   #write(value: Record<string, unknown>): Promise<void> {

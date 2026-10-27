@@ -468,9 +468,20 @@ describe("Pi HarnessAdapter Session", () => {
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
     await session.execute(textTurn("progress-turn"));
+    const projector = new CodexTurnProjector({
+      threadId: "pi-thread",
+      turnId: hostTurnIdSchema.parse("progress-turn"),
+      cwd: "/synthetic",
+      startedAtMs: 0,
+    });
     const transport = transports[0];
     if (!transport) throw new Error("Missing transport");
-    transport.delta("Actual answer");
+    transport.delta("Actual answer", "final-message");
+    transport.event({
+      type: "message.completed",
+      messageId: "final-message",
+      phase: "final_answer",
+    });
     const notice = {
       type: "progress.message" as const,
       itemId: hostItemIdSchema.parse("pi-notice-stable"),
@@ -480,18 +491,43 @@ describe("Pi HarnessAdapter Session", () => {
     transport.event(notice);
     transport.succeed("Actual answer");
     const completed = [];
+    const projectedCompleted: unknown[] = [];
     for (;;) {
       const event = await nextEvent(iterator);
       if (event.type === "item.completed" && event.snapshot.item.type === "agentMessage")
         completed.push(event.snapshot.item);
+      if (
+        [
+          "turn.started",
+          "item.started",
+          "item.updated",
+          "item.completed",
+          "turn.completed",
+        ].includes(event.type)
+      ) {
+        for (const frame of projector.project(event as Parameters<CodexTurnProjector["project"]>[0])
+          .messages) {
+          if (frame.method === "item/completed") projectedCompleted.push(frame.params);
+        }
+      }
       if (event.type === "turn.completed") break;
     }
     expect(completed.filter((item) => item.itemId === notice.itemId)).toEqual([
       { type: "agentMessage", itemId: notice.itemId, text: notice.text, phase: "commentary" },
     ]);
-    expect(completed.find((item) => item.text === "Actual answer")).not.toHaveProperty(
+    expect(completed.find((item) => item.text === "Actual answer")).toHaveProperty(
       "phase",
-      "commentary",
+      "final_answer",
+    );
+    expect(projectedCompleted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          item: expect.objectContaining({ text: "Actual answer", phase: "final_answer" }),
+        }),
+        expect.objectContaining({
+          item: expect.objectContaining({ text: notice.text, phase: "commentary" }),
+        }),
+      ]),
     );
     await session.close();
   });

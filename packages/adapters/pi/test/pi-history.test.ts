@@ -589,7 +589,7 @@ describe("Pi active-branch history", () => {
         phase: "commentary",
         text: "Pi notification (ad-process:notification)\n\nProcess matched",
       },
-      { type: "agentMessage", text: "answer" },
+      { type: "agentMessage", text: "answer", phase: "final_answer" },
       {
         type: "agentMessage",
         phase: "commentary",

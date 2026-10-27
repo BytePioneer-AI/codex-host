@@ -28,7 +28,7 @@ import {
   piMessageItemId,
   type PiMessageIdentity,
 } from "./pi-message-item-id.js";
-import { piAssistantWasAborted } from "./pi-assistant-outcome.js";
+import { piAssistantPhase, piAssistantWasAborted } from "./pi-assistant-outcome.js";
 import { PiSubagents } from "./pi-subagents.js";
 import { encodePiModelRef, type PiNativeModelRef } from "./pi-model-catalog.js";
 import { piHistoryNotices, type PiProgressMessage } from "./pi-progress.js";
@@ -254,12 +254,14 @@ function snapshotItems(
           continue;
         }
         if (part.type === "text" && !projectedText && text.length > 0) {
+          const phase = piAssistantPhase(nativeMessage);
           const item: HostAgentMessageItem = {
             type: "agentMessage",
             itemId:
               piMessageItemId(messageIdentities.get(entry.id), "assistant") ??
               itemId(entry.id, "assistant", 0),
             text,
+            ...(phase ? { phase } : {}),
           };
           snapshots.push({ item, outcome: itemOutcome(outcome) });
           projectedText = true;

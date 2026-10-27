@@ -1104,6 +1104,47 @@ function appendDeferredRun(fake: FakePiRpcProcess, key: string, text: string, se
 }
 
 describe("Pi RPC Turn aggregation", () => {
+  it.each([
+    { stopReason: "toolUse", phase: undefined, expected: "commentary" },
+    { stopReason: "stop", phase: "final_answer", expected: "final_answer" },
+    { stopReason: "stop", phase: "commentary", expected: "commentary" },
+  ])(
+    "preserves completed text phase before a trailing retry status: $stopReason/$phase",
+    async ({ stopReason, phase, expected }) => {
+      const fake = new FakePiRpcProcess("manual-run");
+      const rpc = new PiRpcSession(
+        { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+        { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+      );
+      await rpc.start();
+      const events: PiTurnEvent[] = [];
+      const pending = rpc.runTurn("synthetic", (event) => events.push(event));
+      const message = {
+        role: "assistant",
+        responseId: "native-phase",
+        content: [
+          {
+            type: "text",
+            text: "visible",
+            ...(phase ? { textSignature: JSON.stringify({ v: 1, id: "message", phase }) } : {}),
+          },
+        ],
+        stopReason,
+      };
+      fake.emitFrame({ type: "message_start", message });
+      fake.emitFrame({ type: "message_end", message });
+      fake.emitFrame({ type: "auto_retry_end", success: true, attempt: 1 });
+      fake.emitAgentSettled();
+      await pending;
+      expect(events).toEqual([
+        expect.objectContaining({ type: "text.delta", delta: "visible" }),
+        { type: "message.completed", messageId: "native-phase", phase: expected },
+        expect.objectContaining({ type: "progress.message", text: "Pi retry succeeded." }),
+      ]);
+      await rpc.close();
+    },
+  );
+
   it("bounds idle progress without faulting, coalesces status and discloses omitted updates", async () => {
     const fake = new FakePiRpcProcess("manual-run");
     const onFault = vi.fn();
@@ -2302,7 +2343,7 @@ describe("Pi RPC Turn aggregation", () => {
         text: expect.stringContaining("Pi retry 1/3."),
       },
       { type: "text.delta", messageId: expect.any(String), delta: "recovered" },
-      { type: "message.completed", messageId: expect.any(String) },
+      { type: "message.completed", messageId: expect.any(String), phase: "final_answer" },
       { type: "progress.message", itemId: expect.any(String), text: "Pi retry succeeded." },
     ]);
     await rpc.close();

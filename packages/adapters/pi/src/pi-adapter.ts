@@ -1430,6 +1430,8 @@ class PiHarnessSession implements HarnessSession {
         this.#completeReasoning(active, { status: "succeeded" });
         return;
       case "message.completed":
+        if (event.phase && active.agentMessageId === event.messageId && active.agentItem)
+          active.agentItem = { ...active.agentItem, phase: event.phase };
         void this.#refreshUsage(active.command.turnId);
         return;
       case "compaction.started":

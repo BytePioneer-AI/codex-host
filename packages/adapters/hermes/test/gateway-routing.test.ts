@@ -38,7 +38,6 @@ describe("Hermes Gateway-only chat routing", () => {
     try {
       expect(request).toHaveBeenCalledWith("session.resume", {
         session_id: "saved",
-        eager_build: true,
         omit_messages: true,
       });
       expect(session.initialState.nativeRef?.nativeSessionId).toBe("saved");

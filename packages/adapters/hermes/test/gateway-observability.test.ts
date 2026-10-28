@@ -57,7 +57,7 @@ function fixture() {
     if (method === "session.usage") return await state.usage;
     if (method === "complete.slash") return { items: state.items };
     if (method === "commands.catalog") return state.catalog;
-    if (method === "prompt.submit") return { status: "streaming" };
+    if (method === "prompt.submit") return { status: "queued" };
     if (method === "slash.exec") return { output: "Native plugin output" };
     if (method === "session.compress") return { status: "compressed", summary: { noop: false } };
     return {};

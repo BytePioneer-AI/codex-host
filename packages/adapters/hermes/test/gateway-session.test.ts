@@ -26,16 +26,32 @@ vi.mock("../src/gateway-configuration.js", () => ({
 function fixture() {
   const raw = new HermesGatewayTransport("unused", process.cwd(), {});
   const info = { model: "test", provider: "custom", yolo: false };
-  const bridge = new HermesGatewaySessionTransport(raw, "runtime", "native", info);
+  // Canonical create receipts carry revision/execution_generation; the session
+  // transport needs them for the revision-fenced session.mutate model switch.
+  const bridge = new HermesGatewaySessionTransport(raw, "runtime", "native", info, {
+    revision: 0,
+    generation: 0,
+  });
   const request = vi.spyOn(raw, "request").mockImplementation(async (method, params) => {
     if (method === "complete.slash") return { items: [] };
     if (method === "commands.catalog")
       return { pairs: [], commands: {}, categories: [], skills: {} };
     if (method === "config.get") return { value: "low" };
-    if (method === "prompt.submit") return { status: "streaming" };
+    if (method === "prompt.submit") return { status: "queued" };
     if (method === "slash.exec") return { output: "Native command output" };
     if (method === "session.compress")
       return { status: "compressed", summary: { noop: true, note: "Nothing to compress" } };
+    if (method === "session.mutate") {
+      const payload = (params.payload ?? {}) as { model?: string; provider?: string };
+      return {
+        session_id: params.session_id,
+        revision: 1,
+        execution_generation: 0,
+        operation: params.operation,
+        model: payload.model ?? "",
+        provider: payload.provider ?? "",
+      };
+    }
     if (method === "config.set") {
       raw.onEvent({
         type: "session.info",
@@ -205,37 +221,44 @@ describe("Hermes gateway native interactions", () => {
     await expect(f.bridge.setThinking("low")).resolves.toBe("low");
     f.request.mockResolvedValue({ value: "different" });
     await expect(f.bridge.setThinking("high")).rejects.toThrow("confirm");
+    // The canonical model switch confirms through the session.mutate receipt;
+    // a receipt that did not carry the requested pick must fail the switch.
+    f.request.mockImplementation(async (method, params) =>
+      method === "session.mutate"
+        ? {
+            session_id: params.session_id,
+            revision: 1,
+            execution_generation: 0,
+            operation: "model",
+            model: "not-the-requested-model",
+            provider: "",
+          }
+        : { value: "different" },
+    );
     await expect(f.bridge.setModel("custom:another")).rejects.toThrow("confirm");
-    f.emit("session.info", { model: "test", provider: "custom", yolo: true });
-    f.request.mockResolvedValue({ value: "0" });
+    // The approval mode is confirmed by the config.set reply; a mismatching
+    // effective value must fail the switch.
+    f.request.mockResolvedValue({ value: "1" });
     await expect(f.bridge.setPermissionMode("default")).rejects.toThrow("effective approval");
   });
   it("passes a named custom provider to the model switch separately", async () => {
     const f = fixture();
-    f.request.mockImplementation(async (method, params) => {
-      if (method !== "config.set") return {};
-      f.emit("session.info", { model: "omni/turbo", provider: "custom:omniroute", yolo: false });
-      return { value: params.value };
-    });
     await expect(f.bridge.setModel("custom:omniroute:omni/turbo")).resolves.toBeUndefined();
-    expect(f.request).toHaveBeenCalledWith("config.set", {
-      key: "model",
-      value: "omni/turbo --provider custom:omniroute",
-      scope: "session",
+    expect(f.request).toHaveBeenCalledWith("session.mutate", {
       session_id: "runtime",
+      request_id: expect.any(String),
+      expected_revision: 0,
+      expected_generation: 0,
+      operation: "model",
+      payload: { model: "omni/turbo", provider: "custom:omniroute" },
     });
   });
   it("keeps a bare model identifier unchanged for the model switch", async () => {
     const f = fixture();
-    f.request.mockImplementation(async (method, params) => {
-      if (method !== "config.set") return {};
-      f.emit("session.info", { model: "gpt-5", provider: "openai", yolo: false });
-      return { value: params.value };
-    });
     await f.bridge.setModel("gpt-5");
     expect(f.request).toHaveBeenCalledWith(
-      "config.set",
-      expect.objectContaining({ value: "gpt-5" }),
+      "session.mutate",
+      expect.objectContaining({ payload: { model: "gpt-5" } }),
     );
   });
 });
@@ -271,7 +294,10 @@ describe("Hermes gateway native turn projection", () => {
         input: [{ type: "text", text }],
       });
       await pause();
-      expect(f.request).toHaveBeenCalledWith("prompt.submit", { session_id: "runtime", text });
+      expect(f.request).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ session_id: "runtime", text }),
+      );
       f.emit("message.complete", { status: "complete", text: "reply" });
       const outputs = await completed;
       expect(

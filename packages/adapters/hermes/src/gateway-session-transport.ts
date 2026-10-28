@@ -31,7 +31,6 @@ import {
   gatewayString,
   type GatewayRecord,
 } from "./gateway-transport.js";
-import { resolveGatewayModel } from "./gateway-configuration.js";
 import { HermesGatewayHistory } from "./gateway-history.js";
 
 export const hermesGatewayThinkingOptions: HarnessThinkingOption[] = [
@@ -266,8 +265,9 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
   async setModel(modelId: string): Promise<void> {
     // Canonical wire: a model pick is the revision-fenced `session.mutate`
     // operation `model` — `config.set key=model` is refused with
-    // `use_session_mutation_model` on this channel.
-    const choice = await resolveGatewayModel(this.transport, modelId);
+    // `use_session_mutation_model` on this channel. The gateway runs Hermes's
+    // own provider-aware resolution (switch_model) on the qualified id, so no
+    // helper interpreter pre-splits it.
     const revision = this.#revision;
     const generation = this.#generation;
     if (revision === null || generation === null)
@@ -278,7 +278,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       expected_revision: revision,
       expected_generation: generation,
       operation: "model",
-      payload: { model: choice.model, ...(choice.provider ? { provider: choice.provider } : {}) },
+      payload: { model: modelId },
     });
     if (typeof result.revision === "number") this.#revision = result.revision;
     if (typeof result.execution_generation === "number")

@@ -10,19 +10,6 @@ import { HermesGatewaySessionTransport } from "../src/gateway-session-transport.
 import { HermesSession } from "../src/hermes-session.js";
 import type { HermesTransportEvent } from "../src/hermes-transport.js";
 
-// Stand-in for Hermes's provider-aware parse_model_input (a configured named
-// custom provider wins over the plain `provider:model` split).
-vi.mock("../src/gateway-configuration.js", () => ({
-  resolveGatewayModel: async (_transport: unknown, modelId: string) => {
-    if (modelId.startsWith("custom:omniroute:"))
-      return { provider: "custom:omniroute", model: modelId.slice("custom:omniroute:".length) };
-    const colon = modelId.indexOf(":");
-    return colon > 0
-      ? { provider: modelId.slice(0, colon), model: modelId.slice(colon + 1) }
-      : { provider: "", model: modelId };
-  },
-}));
-
 function fixture() {
   const raw = new HermesGatewayTransport("unused", process.cwd(), {});
   const info = { model: "test", provider: "custom", yolo: false };
@@ -49,7 +36,6 @@ function fixture() {
         execution_generation: 0,
         operation: params.operation,
         model: payload.model ?? "",
-        provider: payload.provider ?? "",
       };
     }
     if (method === "config.set") {
@@ -252,7 +238,7 @@ describe("Hermes gateway native interactions", () => {
       expected_revision: 0,
       expected_generation: 0,
       operation: "model",
-      payload: { model: "omni/turbo", provider: "custom:omniroute" },
+      payload: { model: "custom:omniroute:omni/turbo" },
     });
   });
   it("keeps a bare model identifier unchanged for the model switch", async () => {

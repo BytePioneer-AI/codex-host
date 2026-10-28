@@ -192,20 +192,6 @@ export class HermesGatewayHistory {
     await this.#run({ operation: "ensure", ...input });
   }
 
-  /** Create-time pair in one interpreter start: persist the row and read the storage identity back. */
-  async ensureCreatedAndResolve(input: {
-    cwd: string;
-    model?: string;
-    provider?: string;
-    reasoningEffort?: string;
-    yolo?: boolean;
-  }): Promise<string> {
-    const data = await this.#run({ operation: "ensure_and_resolve", ...input });
-    if (typeof data.physicalSessionId !== "string")
-      throw new Error("Missing Hermes storage identity");
-    return data.physicalSessionId;
-  }
-
   async derive(
     input: { checkpoint?: NativeCheckpointRef; rollbackLastTurn?: true } = {},
   ): Promise<NativeSessionRef> {

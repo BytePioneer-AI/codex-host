@@ -102,19 +102,6 @@ try:
         try:
             result = ensure_session_row(db)
         finally: db.close()
-    elif p['operation'] == 'ensure_and_resolve':
-        # One interpreter start covers the create-time pair: persist the row,
-        # then read the storage identity back for the caller's reconciliation.
-        db = SessionDB()
-        try:
-            ensured = ensure_session_row(db)
-        finally: db.close()
-        db = SessionDB(read_only=True)
-        try:
-            sid = db.resolve_resume_session_id(public_sid)
-            exported, snapshot = capture(db)
-        finally: db.close()
-        result = {**snapshot, **ensured}
     elif p['operation'] == 'discard':
         child = p['derivedSessionId']
         result = {'deleted': False}

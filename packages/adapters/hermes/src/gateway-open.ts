@@ -116,8 +116,12 @@ export async function openGatewaySession(
   let nativeRef = source;
   let sourceHistory: HermesGatewayHistory | undefined;
   try {
-    await transport.prepareSession();
-    await transport.start();
+    // A warm transport from the pool already prepared (delegation skill) and
+    // started (bridge + capabilities); skip straight to the session RPCs.
+    if (!transport.started) {
+      await transport.prepareSession();
+      await transport.start();
+    }
     if (source && (input.kind === "fork" || input.kind === "rollbackLastTurn")) {
       sourceHistory = new HermesGatewayHistory({
         python: transport.runtime,
@@ -163,14 +167,16 @@ export async function openGatewaySession(
       generation: response.execution_generation,
       subscriptionId: response.subscription_id,
     });
-    if (!nativeRef)
-      await bridge.history.ensureCreated({
-        cwd: input.cwd,
-        model: gatewayString(info.model),
-        provider: gatewayString(info.provider),
-        reasoningEffort: gatewayString(info.reasoning_effort),
-      });
-    const physicalId = await bridge.history.resolvePhysicalSessionId();
+    // Create path folds ensure + identity reconciliation into one interpreter
+    // start; resume/fork paths only resolve.
+    const physicalId = nativeRef
+      ? await bridge.history.resolvePhysicalSessionId()
+      : await bridge.history.ensureCreatedAndResolve({
+          cwd: input.cwd,
+          model: gatewayString(info.model),
+          provider: gatewayString(info.provider),
+          reasoningEffort: gatewayString(info.reasoning_effort),
+        });
     // Canonical lazy info carries no stored_session_id (only the create response
     // top level does); compare against the response-level identity instead.
     if (storedId !== physicalId)

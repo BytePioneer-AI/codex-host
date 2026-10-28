@@ -120,9 +120,11 @@ export function createOverviewPage(
           const platform = desktop.platform;
           const identity = desktop.identity;
           if (platform === "windows" || identity?.packageFamilyName) {
-            return identity?.appxActivation
-              ? messages.desktopSourceMsix
-              : messages.desktopSourcePortable;
+            if (identity?.appxActivation) return messages.desktopSourceMsix;
+            // An explicit null marks a portable root. An older Launcher omits the
+            // field entirely, which leaves the source unknown rather than portable.
+            if (identity?.appxActivation === null) return messages.desktopSourcePortable;
+            return null;
           }
           if (platform === "macos" || identity?.bundleIdentifier) {
             return messages.desktopSourceAppBundle;

@@ -129,6 +129,12 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 - npm 安装需通过 npm 命令启动的控制台（`codexhost`、`codexhost console`，或 Codex 设置页）才能更新，因为更新需要 npm 路径环境变量。
 - 源码构建不支持在控制台更新。
 
+### Windows 安装包覆盖安装
+
+用户点击“安装”后、覆盖文件之前，安装器使用包内提取到临时目录的原生 Updater 自动关闭目标安装的 Launcher、内置 Node（包括独立控制台）、Shim 和 Updater 进程。关闭目标按完整可执行文件路径筛选，以 PID 和创建时间标识进程实例；优先通过 Windows Restart Manager 关闭，不支持该机制的无界面进程按原进程实例终止。运行中的任务可能被中断。
+
+安装界面不增加关闭提示或确认；只打开安装器、在点击“安装”之前取消，都不会关闭进程。其他安装目录或系统 Node 不属于关闭目标。无法完成关闭时停止安装并报告错误，仍保留安装器对其他文件占用的检查。安装器本身不自动重启应用；由更新流程启动的安装仍由外层 Updater 完成重启。
+
 ## 连接页（codexhost 未运行时）
 
 codexhost 未运行时，“连接”页列出已安装的插件（读取 `manifest.json`，不执行插件代码）及是否启用，并可修改接受自定义安装路径的插件的路径。路径与 Codex 设置页共用 `<数据目录>/harness-launch-settings/<插件>.json`；codexhost 运行中修改时，在重新启动 codexhost 后生效。插件目录与 Host Runtime 一致：发布包的 `app/plugins`，以及 `CODEXHOST_PLUGIN_DIRECTORY` 或 `<数据目录>/plugins`。

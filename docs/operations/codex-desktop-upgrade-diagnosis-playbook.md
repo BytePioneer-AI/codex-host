@@ -332,7 +332,7 @@ grok
 
 语言 Adapter 仅使用 Desktop `26.1023.50603` 的原生 `settings.read("localeOverride")`、`settings.write("localeOverride", value)` 与 `appInfo.getLocaleInfo()`，不支持旧 `get-setting`、`set-setting` 或 `locale-info` fetch RPC。读取使用 `effective`，而不是 `configured`：`effective: null` 表示自动模式，`configured: undefined` 可以表示用户没有显式配置。写入限定为 `en-US`、`zh-CN`、`null`，直接等待原生调用完成。
 
-服务发现要求 registry 自有对应服务属性，并验证 callable stub 的方法；transport root 能合成任意属性路径，不是服务 registry，多个不同候选必须 fail-closed。服务缺失、歧义或失败时，读取保留 navigator/default 用户语言降级，写入拒绝，不重试旧 RPC。相关测试统一在 `codex-locale-adapter.test.ts`。
+服务发现要求 registry 自有对应服务属性，并验证 callable stub 的方法；transport root 能合成任意属性路径，不是服务 registry。扫描所有允许的 modulepreload，跨模块按对象身份去重后才接受唯一 registry，多个不同候选必须 fail-closed。服务缺失、歧义或失败时，读取保留 navigator/default 用户语言降级，写入拒绝，不重试旧 RPC。相关测试统一在 `codex-locale-adapter.test.ts`。
 
 发现与原生调用共用单次请求的超时预算；取消或超时后不得发起迟到调用，迟到结果不生效。settings 和 appInfo 的 disposable RPC request 在完成、失败、取消或超时时释放。只读 smoke test 核对 Adapter 的 `status/mode/source`；设置写入需要单独获得授权，不能用读成功替代写入验证。
 

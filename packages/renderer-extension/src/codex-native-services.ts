@@ -18,10 +18,11 @@ export async function loadCodexNativeServices<T>(
     )
       urls.add(url.href);
   }
-  // Prioritize the shared chunk, but validate exports and allow the service to move.
+  // Load shared first, but verify uniqueness across all eligible preloads.
   const candidates = [...urls].sort(
     (a, b) => Number(b.includes("/app-shared-")) - Number(a.includes("/app-shared-")),
   );
+  const matches = new Set<T>();
   for (const url of candidates) {
     let module: Record<string, unknown>;
     try {
@@ -29,9 +30,8 @@ export async function loadCodexNativeServices<T>(
     } catch {
       continue;
     }
-    const matches = new Set(Object.values(module).filter(matchesServices));
+    for (const value of Object.values(module).filter(matchesServices)) matches.add(value);
     if (matches.size > 1) throw new Error("Codex native services are unavailable in this window");
-    if (matches.size === 1) return [...matches][0] ?? null;
   }
-  return null;
+  return [...matches][0] ?? null;
 }

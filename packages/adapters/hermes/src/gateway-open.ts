@@ -10,7 +10,6 @@ import { type HermesGatewayTransport, gatewayString, gatewayRecord } from "./gat
 import { HermesGatewayHistory, HermesGatewayHistoryError } from "./gateway-history.js";
 import { HermesGatewaySessionTransport } from "./gateway-session-transport.js";
 import { decodeHermesModelRefId } from "./hermes-models.js";
-import { resolveGatewayModel } from "./gateway-configuration.js";
 import { HermesSession } from "./hermes-session.js";
 
 async function sameDirectory(left: string, right: string): Promise<boolean> {
@@ -133,7 +132,9 @@ export async function openGatewaySession(
         input.kind === "fork" ? { checkpoint: input.checkpoint } : { rollbackLastTurn: true },
       );
     }
-    const choice = model ? await resolveGatewayModel(transport, model) : null;
+    // Canonical create/mutate run Hermes's own provider-aware model resolution
+    // (switch_model) server-side, so the qualified id goes over the wire as-is
+    // and no helper interpreter is spawned to pre-split it.
     const response = await transport.request(
       nativeRef ? "session.resume" : "session.create",
       // Canonical wire (hermes-gateway-v1, CanonicalCreateParams/CanonicalResumeParams):
@@ -142,7 +143,7 @@ export async function openGatewaySession(
         ? { session_id: nativeRef.nativeSessionId, omit_messages: true }
         : {
             cwd: input.cwd,
-            ...(choice ? choice : {}),
+            ...(model ? { model } : {}),
             ...(input.kind === "create" && input.thinkingOptionId
               ? { reasoning: input.thinkingOptionId }
               : {}),
@@ -167,20 +168,15 @@ export async function openGatewaySession(
       generation: response.execution_generation,
       subscriptionId: response.subscription_id,
     });
-    // Create path folds ensure + identity reconciliation into one interpreter
-    // start; resume/fork paths only resolve.
-    const physicalId = nativeRef
-      ? await bridge.history.resolvePhysicalSessionId()
-      : await bridge.history.ensureCreatedAndResolve({
-          cwd: input.cwd,
-          model: gatewayString(info.model),
-          provider: gatewayString(info.provider),
-          reasoningEffort: gatewayString(info.reasoning_effort),
-        });
-    // Canonical lazy info carries no stored_session_id (only the create response
-    // top level does); compare against the response-level identity instead.
-    if (storedId !== physicalId)
-      throw new Error("Hermes live Session and persisted history identities differ");
+    // Canonical create persists the state.db row itself (source, cwd, frozen
+    // model/reasoning policy), and a fresh session's public id IS its physical
+    // id, so the create path needs no helper interpreter at all; resume/fork
+    // still reconcile through the native reader.
+    if (nativeRef) {
+      const physicalId = await bridge.history.resolvePhysicalSessionId();
+      if (storedId !== physicalId)
+        throw new Error("Hermes live Session and persisted history identities differ");
+    }
     // Every selection is confirmed by the live native agent, including persisted runtime settings.
     if (model) await bridge.setModel(model);
     if (input.kind !== "fork" && input.thinkingOptionId)

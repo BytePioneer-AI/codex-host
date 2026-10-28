@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { HermesGatewayTransport } from "../src/gateway-transport.js";
 import { HermesGatewayHistory } from "../src/gateway-history.js";
-import { resolveGatewayModel } from "../src/gateway-configuration.js";
 import { hermesPythonCommand } from "../src/hermes-runtime.js";
 import { openGatewaySession } from "../src/gateway-open.js";
 import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
@@ -46,10 +45,6 @@ describe.skipIf(!launcher)("Hermes managed runtime history and gateway", () => {
       if (!runtime) throw new Error("Missing native gateway runtime");
       expect(typeof runtime).toBe("object");
       transport = new HermesGatewayTransport(runtime, home, environment);
-      expect(await resolveGatewayModel(transport, "custom:test-model")).toEqual({
-        provider: "custom",
-        model: "test-model",
-      });
       const source = new HermesGatewayHistory({
         python: runtime,
         cwd: home,

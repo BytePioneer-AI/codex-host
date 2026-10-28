@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -19,9 +19,13 @@ export async function prepareGatewayDelegation(environment: NodeJS.ProcessEnv): 
 }> {
   if (!required.every((key) => environment[key]))
     return { environment, bootstrap: "", dispose: async () => {} };
-  const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-hermes-delegation-"));
+  // A stable directory (not mkdtemp) keeps the bootstrap script byte-identical
+  // across opens, which lets the launcher-prefix cache reply without a probe
+  // spawn; concurrent writers rewrite the same immutable content.
+  const directory = path.join(os.tmpdir(), "codexhost-hermes-delegation");
   const file = path.join(directory, "SKILL.md");
   try {
+    await mkdir(directory, { recursive: true });
     await writeFile(
       file,
       `---\nname: delegation\ndescription: Discover authorized codexhost agent collaboration.\n---\n\n${HERMES_DELEGATION_GUIDANCE}\n`,
@@ -46,17 +50,21 @@ export async function prepareGatewayDelegation(environment: NodeJS.ProcessEnv): 
       // do not already carry Hermes's dependencies. ``hermes_bootstrap`` is
       // import-safe here for the same reason entry.py relies on it: stdlib-only
       // at import time, so nothing can shadow it from the launch directory.
-      bootstrap: `import hermes_bootstrap
+      bootstrap: `import sys
+import hermes_bootstrap
+_stdout = sys.stdout  # tui_gateway.server redirects sys.stdout to sys.stderr at import (stdio-entry protection); this bridge owns stdout as its RPC channel to the host
 from tui_gateway import server
+sys.stdout = _stdout
 from pathlib import Path
 from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
 PluginContext(PluginManifest(name="codexhost-runtime"), get_plugin_manager()).register_skill(
     "delegation", Path(${JSON.stringify(file)}))
 `,
-      dispose: () => rm(directory, { recursive: true, force: true }),
+      // The file is intentionally left in place: warm bridge processes keep
+      // serving the registered skill path, and the next open overwrites it.
+      dispose: async () => {},
     };
   } catch (error) {
-    await rm(directory, { recursive: true, force: true });
     throw error;
   }
 }

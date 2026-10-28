@@ -116,8 +116,12 @@ export async function openGatewaySession(
   let nativeRef = source;
   let sourceHistory: HermesGatewayHistory | undefined;
   try {
-    await transport.prepareSession();
-    await transport.start();
+    // A warm transport from the pool already prepared (delegation skill) and
+    // started (bridge + capabilities); skip straight to the session RPCs.
+    if (!transport.started) {
+      await transport.prepareSession();
+      await transport.start();
+    }
     if (source && (input.kind === "fork" || input.kind === "rollbackLastTurn")) {
       sourceHistory = new HermesGatewayHistory({
         python: transport.runtime,
@@ -132,38 +136,50 @@ export async function openGatewaySession(
     const choice = model ? await resolveGatewayModel(transport, model) : null;
     const response = await transport.request(
       nativeRef ? "session.resume" : "session.create",
+      // Canonical wire (hermes-gateway-v1, CanonicalCreateParams/CanonicalResumeParams):
+      // no close_on_disconnect / eager_build keys, and the effort key is "reasoning".
       nativeRef
-        ? { session_id: nativeRef.nativeSessionId, eager_build: true, omit_messages: true }
+        ? { session_id: nativeRef.nativeSessionId, omit_messages: true }
         : {
             cwd: input.cwd,
-            close_on_disconnect: true,
             ...(choice ? choice : {}),
             ...(input.kind === "create" && input.thinkingOptionId
-              ? { reasoning_effort: input.thinkingOptionId }
+              ? { reasoning: input.thinkingOptionId }
               : {}),
           },
     );
     const runtimeId = gatewayString(response.session_id);
     const storedId = nativeRef?.nativeSessionId || gatewayString(response.stored_session_id);
     if (!runtimeId || !storedId) throw new Error("Hermes gateway did not return Session identity");
-    let info = gatewayRecord(response.info);
-    if (info.lazy === true) info = await transport.waitForSession(runtimeId);
+    const info = gatewayRecord(response.info);
+    // Canonical lazy sessions build their agent on the first prompt and never emit
+    // a non-lazy session.info event (the official TUI renders lazy info with
+    // placeholders), so waiting here always times out. The lazy snapshot carries
+    // cwd/model/provider already.
     const nativeCwd = gatewayString(info.cwd);
     if (nativeCwd && !(await sameDirectory(nativeCwd, input.cwd)))
       throw new HermesGatewayHistoryError(
         "unsupported",
         "Hermes resumed a different native working directory",
       );
-    const bridge = new HermesGatewaySessionTransport(transport, runtimeId, storedId, info);
-    if (!nativeRef)
-      await bridge.history.ensureCreated({
-        cwd: input.cwd,
-        model: gatewayString(info.model),
-        provider: gatewayString(info.provider),
-        reasoningEffort: gatewayString(info.reasoning_effort),
-      });
-    const physicalId = await bridge.history.resolvePhysicalSessionId();
-    if (gatewayString(info.stored_session_id) !== physicalId)
+    const bridge = new HermesGatewaySessionTransport(transport, runtimeId, storedId, info, {
+      revision: response.revision,
+      generation: response.execution_generation,
+      subscriptionId: response.subscription_id,
+    });
+    // Create path folds ensure + identity reconciliation into one interpreter
+    // start; resume/fork paths only resolve.
+    const physicalId = nativeRef
+      ? await bridge.history.resolvePhysicalSessionId()
+      : await bridge.history.ensureCreatedAndResolve({
+          cwd: input.cwd,
+          model: gatewayString(info.model),
+          provider: gatewayString(info.provider),
+          reasoningEffort: gatewayString(info.reasoning_effort),
+        });
+    // Canonical lazy info carries no stored_session_id (only the create response
+    // top level does); compare against the response-level identity instead.
+    if (storedId !== physicalId)
       throw new Error("Hermes live Session and persisted history identities differ");
     // Every selection is confirmed by the live native agent, including persisted runtime settings.
     if (model) await bridge.setModel(model);

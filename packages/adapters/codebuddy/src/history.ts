@@ -449,8 +449,27 @@ export function pendingNativeHistoryRewind(contents: string) {
     : undefined;
 }
 
+/** CodeBuddy's cache-expired automatic compaction writes its summary as a new physical root:
+ *  `parentId` is absent while `logicalParentId` points at the last row before it. The row is an
+ *  internal compaction record, not a user prompt. */
+function isNativeCompactionSummary(row: Record<string, unknown>): boolean {
+  const data = record(row.providerData);
+  return row.type === "message" && row.role === "user" && data.isCompactInternal === true;
+}
+
 /** Follow the current native parent chain, not every branch in the append-only file. */
 export function nativeHistoryRows(contents: string) {
+  return collectNativeHistoryRows(contents, false);
+}
+
+/** Display history additionally crosses a cache-expired compaction's logical edge so the
+ *  pre-compaction conversation remains readable. Administrative readers keep the physical
+ *  chain above so existing derived-session provenance stays valid. */
+function nativeDisplayHistoryRows(contents: string) {
+  return collectNativeHistoryRows(contents, true);
+}
+
+function collectNativeHistoryRows(contents: string, followCompactionParent: boolean) {
   const entries = new Map<string, Record<string, unknown>>();
   let leaf = "";
   for (const row of parseRows(contents)) {
@@ -476,6 +495,12 @@ export function nativeHistoryRows(contents: string) {
     if (!row) throw new CodeBuddyError("protocolError", "Native history parent is missing");
     chain.push(row);
     leaf = text(row.parentId);
+    if (!leaf && followCompactionParent && isNativeCompactionSummary(row)) {
+      const logicalParent = text(row.logicalParentId);
+      if (logicalParent && !entries.has(logicalParent))
+        throw new CodeBuddyError("protocolError", "Native compaction parent is missing");
+      leaf = logicalParent;
+    }
   }
   return chain.reverse();
 }
@@ -485,6 +510,7 @@ export function snapshotFromHistory(
   ref: NativeSessionRef,
   cwd: string,
   profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+  options: { includeCompactionHistory?: boolean } = {},
 ): HostThreadSnapshot {
   const supportsNativeCommands = nativeCommandsEnabled(profile);
   const supportsFork = capabilitiesForProfile(profile).history.fork;
@@ -520,7 +546,10 @@ export function snapshotFromHistory(
       snapshot.item.outputTruncated = Boolean(output.truncated);
     }
   };
-  const history = nativeHistoryRows(contents);
+  const includeCompactionHistory = options.includeCompactionHistory !== false;
+  const history = includeCompactionHistory
+    ? nativeDisplayHistoryRows(contents)
+    : nativeHistoryRows(contents);
   // Only manual compaction creates a command Turn. Native automatic compaction
   // also has an internal user prompt, which must not split the current user Turn.
   const manualCompactions = new Set<string>();
@@ -574,6 +603,31 @@ export function snapshotFromHistory(
       !manualCompactions.has(text(row.id))
     )
       continue;
+    // A cache-expired automatic compaction persists its summary as an internal user row.
+    // It is not a user prompt: keep it inside the Turn it compacted and project the
+    // native evidence as a compaction Item instead of a raw <cb_summary> message.
+    if (includeCompactionHistory && isNativeCompactionSummary(row)) {
+      if (supportsNativeCommands && current) {
+        const outcome: HostItemSnapshot["outcome"] =
+          data.isCompacted === true
+            ? { status: "succeeded" }
+            : {
+                status: "failed",
+                error: nativeError(
+                  new CodeBuddyError("nativeFailure", "Native compaction did not complete"),
+                  profile,
+                ),
+              };
+        current.items.push({
+          item: {
+            type: "contextCompaction",
+            itemId: hostItemIdSchema.parse(`compact-${text(row.id)}`),
+          },
+          outcome,
+        });
+      }
+      continue;
+    }
     if (row.type === "message" && row.role === "user") {
       current = {
         nativeTurnRef: nativeTurnRefSchema.parse({

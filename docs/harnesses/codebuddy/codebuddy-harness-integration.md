@@ -40,7 +40,7 @@ CodeBuddy 2.148.0 can retain cancellation state after returning a cancelled prom
 | Model, Thinking, Permission Mode | Live configuration, from the native catalog. At verification ACP exposed `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`, `fullAccess`, and `delegate`. This list is not hardcoded as a catalog. |
 | Unattended execution | Requests the advertised native `fullAccess` mode. `bypassPermissions` is not assumed to bypass CodeBuddy's high-risk checks. Policy acceptance is tested; destructive operations are not used for acceptance. |
 | Usage | Reads native model-request usage once per request, exposes context size/used, and reports CodeBuddy credits as credits, not USD. Account quota is not implemented. |
-| Native history | Read-only JSONL projection follows the current parent chain. Persisted user-message IDs identify Turns. Prompt completion and snapshots must agree on identity. A Tool result written before its call — CodeBuddy records a refused call and its result from separate writers — is applied when its call arrives; a result whose call never appears is dropped instead of failing the read. Missing, ambiguous, corrupt or oversized history produces an explicit error. Incomplete native history remains `unknown`; it is not labeled successful. |
+| Native history | Read-only JSONL projection follows the current parent chain. A cache-expired automatic compaction's summary is reached through `logicalParentId`, so pre-compaction Turns stay visible and the summary projects as a compaction Item. Persisted user-message IDs identify Turns. Prompt completion and snapshots must agree on identity. A Tool result written before its call — CodeBuddy records a refused call and its result from separate writers — is applied when its call arrives; a result whose call never appears is dropped instead of failing the read. Missing, ambiguous, corrupt or oversized history produces an explicit error. Incomplete native history remains `unknown`; it is not labeled successful. |
 | File diffs | Standard ACP diff content is understood when supplied. Native tools still expose their calls/results when no diff is available. This is not a claim that every CodeBuddy Edit/Write supplies a complete historical diff. |
 | Fork / rollback | Native derived Sessions at a Turn boundary, in the same cwd. A model-free CLI copy isolates the source; native `/fork` gives the final Session independent native identities, then `_codebuddy.ai/session/rollback` retains the exact requested prefix. See the version-specific lifecycle below. |
 | Native Agent subagents | Running/completed collaboration cards and read-only child Threads, with real child messages/tools read from the native transcript. Native Agent IDs survive resume. A background launch acknowledgement completes its tool Item but not the child lifecycle; observation continues without mutating that completed Item, and becomes interrupted when the parent exits without a proven native child-completion signal. |
@@ -138,7 +138,11 @@ of fabricating it. CodeBuddy's persisted local-command caveat, command, and stdo
 records project as one command Turn. Its internal compaction prompt, reasoning,
 and summary project as `/compact` and a compaction Item, rather than appearing as
 user instructions or a normal assistant reply. Native automatic compaction does
-not create an extra user Turn. Compaction Items start only from native evidence;
+not create an extra user Turn. A cache-expired pre-message compaction records its
+summary with no `parentId` but a `logicalParentId`; the projection follows that
+logical edge so the pre-compaction Turns remain readable, and projects the
+`<cb_summary>` row as the compaction Item rather than as a user prompt.
+Compaction Items start only from native evidence;
 a successful Item requires a newly persisted `isCompacted` summary, and native
 failure/cancellation preserves the corresponding Item outcome. Ordinary prompts still require
 exactly one persisted Native Turn.

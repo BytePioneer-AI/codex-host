@@ -438,7 +438,9 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     } catch {
       /* Process close still releases ownership. */
     }
-    await this.transport.close();
+    // The bridge process itself is NOT closed here: its lifetime is owned by
+    // the adapter's warm pool (a faulted transport still closes itself in
+    // #fault), so a settled session hands a healthy bridge back for reuse.
   }
   #fault(error: unknown): void {
     if (this.#closed) return;

@@ -25,6 +25,7 @@ import { listHermesSessionCandidates, resolveHermesSessionCandidate } from "./he
 import type { HermesSession } from "./hermes-session.js";
 import { HermesExecutableError, resolveHermesExecutable } from "./command.js";
 import { HermesGatewayTransport } from "./gateway-transport.js";
+import { GatewayTransportPool, startGatewayTransport } from "./gateway-transport-pool.js";
 import type { HermesPythonRuntime } from "./hermes-runtime.js";
 import { HermesGatewayHistoryError } from "./gateway-history.js";
 import { hermesGatewayThinkingOptions } from "./gateway-session-transport.js";
@@ -66,6 +67,7 @@ export class HermesAdapter implements HarnessAdapter {
   #importReads = new Map<AbortController, Promise<void> | null>();
   #closed = false;
   #gatewayTransports = new Set<HermesGatewayTransport>();
+  #gatewayPool = new GatewayTransportPool(2);
   #gatewayProbes = new Map<string, Promise<HermesPythonRuntime | null>>();
   #openingNativeIds = new Set<string>();
   readonly usageStatistics: HarnessUsageStatisticsCapability;
@@ -219,12 +221,16 @@ export class HermesAdapter implements HarnessAdapter {
     if (ref && owned(ref.nativeSessionId))
       return failure("sessionBusy", "This Hermes Session already has an owner", true);
     if (ref) this.#openingNativeIds.add(ref.nativeSessionId);
-    const transport = new HermesGatewayTransport(
-      runtime,
-      input.cwd,
-      environment,
-      this.#options.commandTimeoutMs,
-    );
+    // Warm pool first: a settled session's bridge is a stateless pipe to the
+    // resident gateway and serves the next open without a fresh spawn.
+    let transport = this.#gatewayPool.acquire(runtime);
+    if (transport === null)
+      transport = await startGatewayTransport(
+        runtime,
+        input.cwd,
+        environment,
+        this.#options.commandTimeoutMs,
+      );
     this.#gatewayTransports.add(transport);
     try {
       let inheritedMode: string | undefined;
@@ -241,6 +247,9 @@ export class HermesAdapter implements HarnessAdapter {
         (settled) => {
           this.#sessions.delete(settled);
           this.#gatewayTransports.delete(transport);
+          // The bridge outlives the session: hand it back for the next open
+          // (release discards it when it faulted meanwhile).
+          this.#gatewayPool.release(transport);
         },
         inheritedMode,
       );
@@ -278,6 +287,7 @@ export class HermesAdapter implements HarnessAdapter {
 
     await Promise.all([...this.#gatewayTransports].map((transport) => transport.close()));
     this.#gatewayTransports.clear();
+    await this.#gatewayPool.close();
   }
   #effectiveEnvironment(environment?: Record<string, string | undefined>): NodeJS.ProcessEnv {
     return { ...(this.#options.environment ?? process.env), ...(environment ?? {}) };

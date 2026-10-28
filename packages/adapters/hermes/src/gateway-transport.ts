@@ -136,6 +136,14 @@ export class HermesGatewayTransport {
     readonly environment: NodeJS.ProcessEnv,
     readonly timeoutMs = 30_000,
   ) {}
+  /** Whether start() already ran (a warm transport skips prepare/start on reuse). */
+  get started(): boolean {
+    return this.#startRequested;
+  }
+  /** Whether the bridge child is gone; a closed transport cannot be reused. */
+  get closed(): boolean {
+    return this.#closed;
+  }
 
   static async probe(
     executable: string,

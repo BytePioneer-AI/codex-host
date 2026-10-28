@@ -192,7 +192,9 @@ describe("Hermes gateway native interactions", () => {
     ).toBe(true);
     await s.close();
     f.emit("message.delta", { text: "late" });
-    expect(f.close).toHaveBeenCalledOnce();
+    // The bridge outlives the session (adapter warm pool owns it); a settled
+    // session must not tear the pipe down.
+    expect(f.close).not.toHaveBeenCalled();
   });
   it("preserves all native approval scopes", async () => {
     const f = fixture();

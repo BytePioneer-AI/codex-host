@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { statSync } from "node:fs";
 import { promisify } from "node:util";
 import { commandInvocation } from "@codexhost/harness-discovery";
 
@@ -7,6 +8,40 @@ export type HermesPythonRuntime = string | { launcher: string };
 export interface HermesPythonCommand {
   command: string;
   arguments: string[];
+}
+
+// `--print-runtime-command` answers depend only on the launcher binary and the
+// python-steering environment — not on the embedded script — but each probe is
+// a full interpreter start (~0.3s). Cache the launcher prefix (python + `-I` +
+// `-c` bootstrap) so every later spawn skips the round trip; the passthrough
+// timeit arguments are re-appended by the caller. Keyed on the launcher's stat
+// so a `hermes update` that rewrites it invalidates the entry.
+const launcherPrefixCache = new Map<string, string[]>();
+function launcherCacheKey(launcher: string, environment: NodeJS.ProcessEnv): string | null {
+  let stat: { mtimeMs: number; size: number };
+  try {
+    stat = statSync(launcher);
+  } catch {
+    return null;
+  }
+  return [
+    launcher,
+    stat.mtimeMs,
+    stat.size,
+    environment.HERMES_HOME ?? "",
+    environment.PATH ?? "",
+  ].join("\u0000");
+}
+function timeitPassthrough(script: string): string[] {
+  return [
+    "-n",
+    "1",
+    "-r",
+    "1",
+    "-s",
+    `exec(${JSON.stringify(script)}, {}); import sys, io; sys.stdout = io.StringIO()`,
+    "pass",
+  ];
 }
 
 export function legacyHermesPythonCommand(python: string, script: string): HermesPythonCommand {
@@ -29,24 +64,16 @@ export async function nativeHermesPythonCommand(
   timeoutMs = 20_000,
   platform: NodeJS.Platform = process.platform,
 ): Promise<HermesPythonCommand | null> {
+  const passthrough = timeitPassthrough(script);
+  // Fast path: the launcher prefix (interpreter + `-I` + `-c` bootstrap) is
+  // script-independent, so a cached entry answers without spawning the probe.
+  const cacheKey = launcherCacheKey(launcher, environment);
+  const cached = cacheKey !== null ? launcherPrefixCache.get(cacheKey) : undefined;
+  if (cached !== undefined && cached.length > 0 && cached[0])
+    return { command: cached[0], arguments: [...cached.slice(1), ...passthrough] };
   const invocation = commandInvocation(
     launcher,
-    [
-      "--print-runtime-command",
-      "--module",
-      "timeit",
-      "--",
-      "-n",
-      "1",
-      "-r",
-      "1",
-      "-s",
-      // timeit is a stdlib entry point supported by the native launcher. After
-      // the operation returns, redirect its timing footer, preserving normal
-      // native cleanup and exit status without contaminating JSON/RPC stdout.
-      `exec(${JSON.stringify(script)}, {}); import sys, io; sys.stdout = io.StringIO()`,
-      "pass",
-    ],
+    ["--print-runtime-command", "--module", "timeit", "--", ...passthrough],
     environment,
     platform,
   );
@@ -76,6 +103,15 @@ export async function nativeHermesPythonCommand(
   ) {
     throw new Error("Hermes launcher returned an invalid runtime command");
   }
+  // The launcher echoes the timeit arguments back verbatim; the prefix before
+  // them is what a cache hit replays. Cache only when that shape holds.
+  const passthroughStart = value.length - passthrough.length;
+  if (
+    cacheKey !== null &&
+    passthroughStart >= 1 &&
+    value.slice(passthroughStart).every((arg, index) => arg === passthrough[index])
+  )
+    launcherPrefixCache.set(cacheKey, value.slice(0, passthroughStart));
   return { command: value[0], arguments: value.slice(1) };
 }
 

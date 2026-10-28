@@ -1,129 +1,113 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { readCodexLocaleSettings, setCodexLocaleOverride } from "../src/codex-locale-adapter.js";
+import type * as NativeServices from "../src/codex-native-services.js";
 
-const { loadNativeServices } = vi.hoisted(() => ({ loadNativeServices: vi.fn() }));
-vi.mock("../src/codex-native-services.js", () => ({
-  loadCodexNativeServices: loadNativeServices,
+const { exportsForModule, importModule } = vi.hoisted(() => ({
+  exportsForModule: { current: {} as Record<string, unknown> },
+  importModule: vi.fn<() => Promise<Record<string, unknown>>>(),
 }));
+vi.mock("../src/codex-native-services.js", async (importOriginal) => {
+  const original = await importOriginal<typeof NativeServices>();
+  return {
+    loadCodexNativeServices: (...args: Parameters<typeof original.loadCodexNativeServices>) =>
+      original.loadCodexNativeServices(args[0], args[1], importModule),
+  };
+});
+
+function fixture(response: unknown = { effective: "zh-CN", configured: undefined }) {
+  const ownerWindow = {
+    document: { querySelectorAll: () => [{ getAttribute: () => "/assets/app-shared-fixture.js" }] },
+    location: { href: "app://-/index.html" },
+    navigator: { languages: ["en-US"], language: "en-US" },
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout,
+  } as unknown as Window;
+  const native = {
+    // Native service stubs are callable; the registry owns their named properties.
+    settings: Object.assign(() => {}, {
+      read: vi.fn().mockResolvedValue(response),
+      write: vi.fn().mockResolvedValue(undefined),
+    }),
+    appInfo: Object.assign(() => {}, {
+      getLocaleInfo: vi.fn().mockResolvedValue({ ideLocale: "de-DE", systemLocale: "fr-FR" }),
+    }),
+  };
+  const transport: unknown = new Proxy(() => {}, { get: () => transport });
+  exportsForModule.current = { registry: native, alias: native, transport };
+  return { native, ownerWindow };
+}
+
 beforeEach(() => {
-  loadNativeServices.mockReset().mockResolvedValue(null);
+  importModule.mockReset().mockImplementation(async () => exportsForModule.current);
 });
 afterEach(() => vi.useRealTimers());
 
-const handlerMissing = Symbol("handler not implemented");
-
-interface FetchRequest {
-  type: "fetch";
-  requestId: string;
-  url: string;
-  body?: string;
-}
-
-function localeWindow(
-  responses: Readonly<Record<string, unknown>>,
-  languages: readonly string[] = ["en-US"],
-  sentRequests: FetchRequest[] = [],
-): Window {
-  const events = new EventTarget();
-  let requestOrdinal = 0;
-  const ownerWindow = {
-    addEventListener: events.addEventListener.bind(events),
-    removeEventListener: events.removeEventListener.bind(events),
-    clearTimeout: globalThis.clearTimeout,
-    setTimeout: globalThis.setTimeout,
-    crypto: {
-      randomUUID: () => `00000000-0000-4000-8000-${String(++requestOrdinal).padStart(12, "0")}`,
-    },
-    navigator: { language: languages[0] ?? "", languages },
-  } as unknown as Window & {
-    electronBridge: { sendMessageFromView(message: unknown): Promise<void> };
-  };
-  ownerWindow.electronBridge = {
-    async sendMessageFromView(message: unknown) {
-      const request = message as FetchRequest;
-      sentRequests.push(request);
-      const body = responses[request.url];
-      if (body === undefined) return;
-      queueMicrotask(() => {
-        events.dispatchEvent(
-          new MessageEvent("message", {
-            data: {
-              type: "fetch-response",
-              requestId: request.requestId,
-              responseType: body === handlerMissing ? "error" : "success",
-              status: body === handlerMissing ? 432 : 200,
-              error: body === handlerMissing ? "handler not implemented" : undefined,
-              bodyJsonString: JSON.stringify(body),
-            },
-          }),
-        );
-      });
-    },
-  };
-  return ownerWindow;
-}
-
-describe("Codex locale adapter", () => {
-  function nativeLocale(info: unknown) {
-    const native = { appInfo: { getLocaleInfo: vi.fn().mockResolvedValue(info) } };
-    loadNativeServices.mockImplementation(async (_owner, matches: (value: unknown) => boolean) =>
-      matches(native) ? native : null,
-    );
-    return native;
-  }
+describe("Codex native locale adapter", () => {
+  it("selects the owning registry rather than transport paths and reads effective, not configured", async () => {
+    const { native, ownerWindow } = fixture({ effective: "zh-cn", configured: "en-US" });
+    expect(await readCodexLocaleSettings({ ownerWindow })).toEqual({
+      status: "ready",
+      mode: "explicit",
+      localeOverride: "zh-CN",
+      preferredLocale: "zh-CN",
+      ideLocale: "de-DE",
+      systemLocale: "fr-FR",
+      source: "override",
+    });
+    expect(native.settings.read).toHaveBeenCalledExactlyOnceWith("localeOverride");
+    expect(native.appInfo.getLocaleInfo).toHaveBeenCalledExactlyOnceWith();
+  });
 
   it.each([
-    [{ ideLocale: "zh-cn", systemLocale: "de-DE" }, "zh-CN", "ide"],
-    [{ ideLocale: null, systemLocale: "de-de" }, "de-DE", "system"],
-  ])("reads native locale when the legacy handler is missing: %s", async (info, locale, source) => {
-    const native = nativeLocale(info);
-    const sent: FetchRequest[] = [];
-    const ownerWindow = localeWindow(
-      {
-        "vscode://codex/get-setting": { value: null },
-        "vscode://codex/locale-info": handlerMissing,
-      },
-      ["en-US"],
-      sent,
-    );
-    const result = await readCodexLocaleSettings({ ownerWindow });
-
-    expect(result).toMatchObject({
-      status: "ready",
-      mode: "automatic",
-      preferredLocale: locale,
-      source,
-    });
-    expect(native.appInfo.getLocaleInfo).toHaveBeenCalledWith();
-    expect(sent.map(({ url, body }) => ({ url, body }))).toEqual([
-      { url: "vscode://codex/get-setting", body: JSON.stringify({ key: "localeOverride" }) },
-    ]);
-  });
-
-  it("keeps an explicit override ahead of native IDE/system locales", async () => {
-    nativeLocale({ ideLocale: "zh-CN", systemLocale: "de-DE" });
-    const result = await readCodexLocaleSettings({
-      ownerWindow: localeWindow({ "vscode://codex/get-setting": { value: "en-US" } }),
-    });
-    expect(result).toMatchObject({
-      mode: "explicit",
-      source: "override",
-      preferredLocale: "en-US",
-      ideLocale: "zh-CN",
-      systemLocale: "de-DE",
-    });
-  });
-
-  it.each([null, [], { ideLocale: 42 }, { systemLocale: "invalid_locale" }].map((info) => [info]))(
-    "validates native locale responses before using them: %s",
-    async (info) => {
-      nativeLocale(info);
-      const result = await readCodexLocaleSettings({
-        ownerWindow: localeWindow({ "vscode://codex/get-setting": { value: null } }),
-        timeoutMs: 10,
+    [{ ideLocale: "zh-cn", systemLocale: "de-DE" }, ["en-US"], "zh-CN", "ide"],
+    [{ ideLocale: null, systemLocale: "de-de" }, ["en-US"], "de-DE", "system"],
+    [{}, ["bad_locale", "zh-TW"], "zh-TW", "navigator"],
+    [{}, [], "en-US", "default"],
+  ])(
+    "resolves automatic locale in native priority order: %s",
+    async (info, languages, locale, source) => {
+      const { native, ownerWindow } = fixture({ effective: null, configured: undefined });
+      native.appInfo.getLocaleInfo.mockResolvedValue(info);
+      Object.defineProperty(ownerWindow, "navigator", { value: { languages, language: "" } });
+      expect(await readCodexLocaleSettings({ ownerWindow })).toMatchObject({
+        status: "ready",
+        mode: "automatic",
+        localeOverride: null,
+        preferredLocale: locale,
+        source,
       });
-      expect(result).toMatchObject({
+    },
+  );
+
+  it.each([
+    null,
+    {},
+    { configured: "zh-CN" },
+    { effective: undefined },
+    { effective: "bad_locale" },
+  ])(
+    "keeps malformed overrides unavailable, even with native locale info: %s",
+    async (response) => {
+      const { ownerWindow } = fixture(response);
+      expect(await readCodexLocaleSettings({ ownerWindow })).toMatchObject({
+        status: "fallback",
+        mode: "unavailable",
+        localeOverride: undefined,
+        ideLocale: "de-DE",
+        systemLocale: "fr-FR",
+        source: "navigator",
+        preferredLocale: "en-US",
+      });
+    },
+  );
+
+  it.each([null, [], { ideLocale: 42 }, { systemLocale: "bad_locale" }])(
+    "rejects malformed native locale info: %s",
+    async (info) => {
+      const { native, ownerWindow } = fixture({ effective: null });
+      native.appInfo.getLocaleInfo.mockResolvedValue(info);
+      expect(await readCodexLocaleSettings({ ownerWindow })).toMatchObject({
         mode: "automatic",
         ideLocale: undefined,
         systemLocale: undefined,
@@ -132,263 +116,242 @@ describe("Codex locale adapter", () => {
     },
   );
 
-  it("falls back to navigator if both the service and legacy locale handler are unavailable", async () => {
-    const result = await readCodexLocaleSettings({
-      ownerWindow: localeWindow({
-        "vscode://codex/get-setting": { value: null },
-        "vscode://codex/locale-info": handlerMissing,
-      }),
-    });
-    expect(result).toMatchObject({ mode: "automatic", source: "navigator" });
-  });
-
-  it("does not treat an unavailable override as automatic even when native locale succeeds", async () => {
-    nativeLocale({ ideLocale: "zh-CN", systemLocale: "de-DE" });
-    const result = await readCodexLocaleSettings({ ownerWindow: localeWindow({}), timeoutMs: 10 });
-    expect(result).toMatchObject({
+  it("keeps navigator degradation but rejects writes when native services are absent", async () => {
+    const { ownerWindow } = fixture();
+    exportsForModule.current = {};
+    expect(await readCodexLocaleSettings({ ownerWindow })).toMatchObject({
       status: "fallback",
       mode: "unavailable",
-      ideLocale: "zh-CN",
-      systemLocale: "de-DE",
       source: "navigator",
+    });
+    await expect(setCodexLocaleOverride(null, { ownerWindow })).rejects.toThrow(
+      "services are unavailable",
+    );
+  });
+
+  it("discovers settings and appInfo independently", async () => {
+    const { native, ownerWindow } = fixture({ effective: null });
+    exportsForModule.current = { settingsOnly: { settings: native.settings } };
+    expect(await readCodexLocaleSettings({ ownerWindow })).toMatchObject({
+      mode: "automatic",
+      source: "navigator",
+    });
+    exportsForModule.current = { infoOnly: { appInfo: native.appInfo } };
+    expect(await readCodexLocaleSettings({ ownerWindow })).toMatchObject({
+      mode: "unavailable",
+      source: "navigator",
+      ideLocale: "de-DE",
     });
   });
 
-  it.each(["abort", "timeout"])("does not call a service discovered after %s", async (boundary) => {
-    vi.useFakeTimers();
-    const native = nativeLocale({ ideLocale: "zh-CN" });
-    let ready!: (value: typeof native) => void;
-    loadNativeServices.mockImplementation(async (_owner, matches: (value: unknown) => boolean) =>
-      matches(native)
-        ? new Promise((resolve) => {
-            ready = resolve;
-          })
-        : null,
+  it("fails closed for two distinct owning registries", async () => {
+    const { native, ownerWindow } = fixture();
+    const second = { settings: Object.assign(() => {}, { read: vi.fn(), write: vi.fn() }) };
+    exportsForModule.current.second = second;
+    await expect(setCodexLocaleOverride(null, { ownerWindow })).rejects.toThrow(
+      "Codex native services are unavailable",
     );
-    const controller = new AbortController();
-    const ownerWindow = localeWindow({ "vscode://codex/get-setting": { value: null } });
-    const pending = readCodexLocaleSettings({
-      ownerWindow,
-      signal: controller.signal,
-      timeoutMs: 20,
+    expect(native.settings.write).not.toHaveBeenCalled();
+    expect(second.settings.write).not.toHaveBeenCalled();
+  });
+
+  it.each(["zh-CN", "en-US", null] as const)(
+    "writes only the native bounded override %s",
+    async (value) => {
+      const { native, ownerWindow } = fixture();
+      await setCodexLocaleOverride(value, { ownerWindow });
+      expect(native.settings.write).toHaveBeenCalledExactlyOnceWith("localeOverride", value);
+    },
+  );
+
+  it("handles native failures without losing override/locale distinction", async () => {
+    const { native, ownerWindow } = fixture({ effective: null });
+    native.appInfo.getLocaleInfo.mockRejectedValue(new Error("info denied"));
+    expect(await readCodexLocaleSettings({ ownerWindow })).toMatchObject({
+      mode: "automatic",
+      source: "navigator",
     });
-    if (boundary === "abort") {
-      const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError" });
-      controller.abort();
-      await assertion;
-    } else {
-      await vi.advanceTimersByTimeAsync(20);
-      expect(await pending).toMatchObject({ mode: "automatic", source: "navigator" });
+    native.settings.read.mockRejectedValue(new Error("read denied"));
+    expect(await readCodexLocaleSettings({ ownerWindow })).toMatchObject({
+      mode: "unavailable",
+      source: "navigator",
+    });
+    native.settings.write.mockRejectedValue(new Error("write denied"));
+    await expect(setCodexLocaleOverride(null, { ownerWindow })).rejects.toThrow("write denied");
+  });
+
+  it("validates bounded writes and timeout values before discovery", async () => {
+    const { ownerWindow } = fixture();
+    await expect(setCodexLocaleOverride("fr-FR" as "zh-CN", { ownerWindow })).rejects.toThrow(
+      "Unsupported",
+    );
+    for (const timeoutMs of [0, -1, NaN, Infinity]) {
+      await expect(readCodexLocaleSettings({ ownerWindow, timeoutMs })).rejects.toThrow(
+        "timeout must be positive",
+      );
+      await expect(setCodexLocaleOverride(null, { ownerWindow, timeoutMs })).rejects.toThrow(
+        "timeout must be positive",
+      );
     }
-    ready(native);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(native.appInfo.getLocaleInfo).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+    expect(importModule).not.toHaveBeenCalled();
+  });
+
+  it("does not discover services for already-aborted operations", async () => {
+    const { ownerWindow } = fixture();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      readCodexLocaleSettings({ ownerWindow, signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    await expect(
+      setCodexLocaleOverride(null, { ownerWindow, signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(importModule).not.toHaveBeenCalled();
   });
 
   it.each(["abort", "timeout"])(
-    "ignores native completion after %s and cleans up",
+    "does not invoke services discovered after %s",
     async (boundary) => {
       vi.useFakeTimers();
-      const native = nativeLocale(null);
-      let complete!: (value: unknown) => void;
-      native.appInfo.getLocaleInfo.mockReturnValue(
+      const { native, ownerWindow } = fixture();
+      let ready!: (module: Record<string, unknown>) => void;
+      importModule.mockReturnValue(
         new Promise((resolve) => {
-          complete = resolve;
+          ready = resolve;
         }),
       );
       const controller = new AbortController();
-      const ownerWindow = localeWindow({ "vscode://codex/get-setting": { value: null } });
-      const remove = vi.spyOn(ownerWindow, "removeEventListener");
-      const pending = readCodexLocaleSettings({
-        ownerWindow,
-        signal: controller.signal,
-        timeoutMs: 20,
-      });
+      const options = { ownerWindow, signal: controller.signal, timeoutMs: 20 };
+      const read = readCodexLocaleSettings(options);
+      const write = setCodexLocaleOverride(null, options);
+      const readAssertion =
+        boundary === "abort"
+          ? expect(read).rejects.toMatchObject({ name: "AbortError" })
+          : expect(read).resolves.toMatchObject({ mode: "unavailable" });
+      const writeAssertion = expect(write).rejects.toThrow(
+        boundary === "abort" ? "aborted" : "timed out",
+      );
+      if (boundary === "abort") controller.abort();
+      else await vi.advanceTimersByTimeAsync(20);
+      await Promise.all([readAssertion, writeAssertion]);
+      ready(exportsForModule.current);
       await vi.advanceTimersByTimeAsync(0);
-      expect(native.appInfo.getLocaleInfo).toHaveBeenCalledOnce();
-      if (boundary === "abort") {
-        const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError" });
-        controller.abort();
-        await assertion;
-      } else {
-        await vi.advanceTimersByTimeAsync(20);
-        expect(await pending).toMatchObject({ mode: "automatic", source: "navigator" });
-      }
-      complete({ ideLocale: "zh-CN" });
-      await Promise.resolve();
-      expect(remove.mock.calls.filter(([type]) => type === "message")).toHaveLength(2);
+      expect(native.settings.read).not.toHaveBeenCalled();
+      expect(native.settings.write).not.toHaveBeenCalled();
+      expect(native.appInfo.getLocaleInfo).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
     },
   );
 
-  it("supports callable appInfo RPC stubs without any SSH services", async () => {
-    const native = {
-      appInfo: Object.assign(() => {}, {
-        getLocaleInfo: vi.fn().mockResolvedValue({ systemLocale: "zh-CN" }),
-      }),
-    };
-    loadNativeServices.mockImplementation(async (_owner, matches: (value: unknown) => boolean) =>
-      matches(native) ? native : null,
+  describe.each(["override", "info", "write"] as const)("%s RPC lifetime", (operation) => {
+    function setup() {
+      const { native, ownerWindow } = fixture();
+      const request =
+        operation === "override"
+          ? native.settings.read
+          : operation === "info"
+            ? native.appInfo.getLocaleInfo
+            : native.settings.write;
+      const run = (signal?: AbortSignal) => {
+        const options = { ownerWindow, ...(signal ? { signal } : {}), timeoutMs: 20 };
+        return operation === "write"
+          ? setCodexLocaleOverride(null, options)
+          : readCodexLocaleSettings(options);
+      };
+      return { request, run };
+    }
+
+    it.each([false, true])("releases completed requests (rejected=%s)", async (rejected) => {
+      const { request, run } = setup();
+      const dispose = vi.fn();
+      request.mockReturnValue(
+        Object.assign(
+          rejected
+            ? Promise.reject(new Error("native failed"))
+            : Promise.resolve(
+                operation === "override"
+                  ? { effective: "zh-CN" }
+                  : operation === "info"
+                    ? {}
+                    : undefined,
+              ),
+          { [Symbol.dispose]: dispose },
+        ),
+      );
+      if (operation === "write" && rejected) await expect(run()).rejects.toThrow("native failed");
+      else await run();
+      expect(request).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+    });
+
+    it.each(["abort", "timeout"])(
+      "releases on %s and ignores late completion",
+      async (boundary) => {
+        vi.useFakeTimers();
+        const { request, run } = setup();
+        let complete!: (response: unknown) => void;
+        const dispose = vi.fn();
+        request.mockReturnValue(
+          Object.assign(
+            new Promise((resolve) => {
+              complete = resolve;
+            }),
+            { [Symbol.dispose]: dispose },
+          ),
+        );
+        const controller = new AbortController();
+        const pending = run(controller.signal);
+        const assertion =
+          boundary === "abort"
+            ? expect(pending).rejects.toMatchObject({ name: "AbortError" })
+            : operation === "write"
+              ? expect(pending).rejects.toThrow("timed out")
+              : expect(pending).resolves.toMatchObject({
+                  mode: operation === "info" ? "explicit" : "unavailable",
+                });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request).toHaveBeenCalledOnce();
+        if (boundary === "abort") controller.abort();
+        else await vi.advanceTimersByTimeAsync(20);
+        await assertion;
+        expect(dispose).toHaveBeenCalledOnce();
+        complete({ effective: "zh-CN", ideLocale: "zh-CN" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(dispose).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+      },
     );
-    expect(
-      await readCodexLocaleSettings({
-        ownerWindow: localeWindow({ "vscode://codex/get-setting": { value: null } }),
-      }),
-    ).toMatchObject({ source: "system", preferredLocale: "zh-CN" });
   });
 
-  it.each([{}, { appInfo: null }, { appInfo: { getLocaleInfo: true } }])(
-    "uses legacy locale info when the registry lacks the required service: %s",
-    async (native) => {
-      loadNativeServices.mockImplementation(async (_owner, matches: (value: unknown) => boolean) =>
-        matches(native) ? native : null,
-      );
-      expect(
-        await readCodexLocaleSettings({
-          ownerWindow: localeWindow({
-            "vscode://codex/get-setting": { value: null },
-            "vscode://codex/locale-info": { systemLocale: "zh-CN" },
-          }),
-        }),
-      ).toMatchObject({ source: "system", preferredLocale: "zh-CN" });
-    },
-  );
-
-  it("keeps discovery and legacy fallback within one timeout budget", async () => {
+  it("keeps discovery and invocation within one timeout budget", async () => {
     vi.useFakeTimers();
-    loadNativeServices.mockImplementation(
-      () => new Promise((resolve) => setTimeout(() => resolve(null), 15)),
+    const { native, ownerWindow } = fixture();
+    importModule.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(exportsForModule.current), 15)),
     );
-    const ownerWindow = localeWindow({ "vscode://codex/get-setting": { value: "zh-CN" } });
-    const pending = readCodexLocaleSettings({ ownerWindow, timeoutMs: 20 });
-    await vi.advanceTimersByTimeAsync(20);
-    expect(await pending).toMatchObject({
-      mode: "explicit",
-      preferredLocale: "zh-CN",
-      source: "override",
-    });
+    const dispose = vi.fn();
+    native.settings.write.mockReturnValue(
+      Object.assign(new Promise(() => {}), { [Symbol.dispose]: dispose }),
+    );
+    const pending = setCodexLocaleOverride(null, { ownerWindow, timeoutMs: 20 });
+    const assertion = expect(pending).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(15);
+    expect(native.settings.write).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5);
+    await assertion;
+    expect(dispose).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("handles native rejection without retrying the removed legacy handler", async () => {
-    const native = nativeLocale(null);
-    native.appInfo.getLocaleInfo.mockRejectedValue(new Error("native read failed"));
-    const sent: FetchRequest[] = [];
-    const result = await readCodexLocaleSettings({
-      ownerWindow: localeWindow({ "vscode://codex/get-setting": { value: null } }, ["en-US"], sent),
-      timeoutMs: 20,
-    });
-    expect(result).toMatchObject({ mode: "automatic", source: "navigator" });
-    expect(sent).toHaveLength(1);
-  });
-
-  it("does not discover or call native services for an already-aborted read", async () => {
-    const native = nativeLocale({ ideLocale: "zh-CN" });
-    const controller = new AbortController();
-    controller.abort();
-    await expect(
-      readCodexLocaleSettings({ ownerWindow: localeWindow({}), signal: controller.signal }),
-    ).rejects.toMatchObject({ name: "AbortError" });
-    expect(loadNativeServices).not.toHaveBeenCalled();
-    expect(native.appInfo.getLocaleInfo).not.toHaveBeenCalled();
-  });
-
-  it("uses a validated explicit locale override before automatic locale inputs", async () => {
-    const result = await readCodexLocaleSettings({
-      ownerWindow: localeWindow({
-        "vscode://codex/get-setting": { value: "en-US" },
-        "vscode://codex/locale-info": { ideLocale: "zh-CN", systemLocale: "zh-CN" },
-      }),
-    });
-
-    expect(result).toEqual({
-      status: "ready",
-      mode: "explicit",
-      localeOverride: "en-US",
-      ideLocale: "zh-CN",
-      systemLocale: "zh-CN",
-      preferredLocale: "en-US",
-      source: "override",
-    });
-  });
-
-  it("uses Codex IDE locale when the setting is automatic", async () => {
-    const result = await readCodexLocaleSettings({
-      ownerWindow: localeWindow(
-        {
-          "vscode://codex/get-setting": { value: null },
-          "vscode://codex/locale-info": { ideLocale: "zh-cn", systemLocale: "en-US" },
+  it("rejects disposal failure rather than leaving a write pending", async () => {
+    const { native, ownerWindow } = fixture();
+    native.settings.write.mockReturnValue(
+      Object.assign(Promise.resolve(), {
+        [Symbol.dispose]() {
+          throw new Error("dispose failed");
         },
-        ["en-US"],
-      ),
-    });
-
-    expect(result).toMatchObject({
-      status: "ready",
-      mode: "automatic",
-      localeOverride: null,
-      preferredLocale: "zh-CN",
-      source: "ide",
-    });
-  });
-
-  it("falls back without treating an unavailable setting as automatic", async () => {
-    const ownerWindow = localeWindow({}, ["zh-TW"]);
-    const result = await readCodexLocaleSettings({ ownerWindow, timeoutMs: 5 });
-
-    expect(result).toEqual({
-      status: "fallback",
-      mode: "unavailable",
-      localeOverride: undefined,
-      ideLocale: undefined,
-      systemLocale: undefined,
-      preferredLocale: "zh-TW",
-      source: "navigator",
-    });
-  });
-
-  it("writes only a bounded locale override through the fixed setting endpoint", async () => {
-    const sentRequests: FetchRequest[] = [];
-    const ownerWindow = localeWindow(
-      { "vscode://codex/set-setting": { success: true } },
-      ["en-US"],
-      sentRequests,
+      }),
     );
-
-    await setCodexLocaleOverride("zh-CN", { ownerWindow });
-    await setCodexLocaleOverride(null, { ownerWindow });
-
-    expect(sentRequests.map(({ url, body }) => ({ url, body }))).toEqual([
-      {
-        url: "vscode://codex/set-setting",
-        body: JSON.stringify({ key: "localeOverride", value: "zh-CN" }),
-      },
-      {
-        url: "vscode://codex/set-setting",
-        body: JSON.stringify({ key: "localeOverride", value: null }),
-      },
-    ]);
-    await expect(setCodexLocaleOverride("fr-FR" as "zh-CN", { ownerWindow })).rejects.toThrow(
-      "Unsupported Codex locale override",
-    );
-  });
-
-  it("aborts pending fixed requests and rejects invalid timeouts", async () => {
-    const controller = new AbortController();
-    const ownerWindow = localeWindow({});
-    const pending = readCodexLocaleSettings({
-      ownerWindow,
-      signal: controller.signal,
-      timeoutMs: 1_000,
-    });
-    controller.abort();
-
-    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    await expect(readCodexLocaleSettings({ ownerWindow, timeoutMs: 0 })).rejects.toThrow(
-      "timeout must be positive",
-    );
-    vi.restoreAllMocks();
+    await expect(setCodexLocaleOverride(null, { ownerWindow })).rejects.toThrow("dispose failed");
   });
 });

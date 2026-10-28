@@ -330,11 +330,11 @@ grok
 
 `codex-locale-adapter.ts` 分别读取语言 override 和 IDE/system locale。`appInfo.getLocaleInfo()` 成功不代表 override 已知；override 读取失败时必须保持 `fallback / unavailable`，不能推断为自动模式。
 
-Desktop `26.1023.50603` 的原生设置接口是 `settings.read("localeOverride")` 和 `settings.write("localeOverride", value)`。读取使用 `effective`，而不是 `configured`：`effective: null` 表示自动模式，`configured: undefined` 可以表示用户没有显式配置。写入沿用有界的 `en-US`、`zh-CN`、`null`，原生写入完成不要求返回旧 endpoint 的 `{ success: true }`。
+语言 Adapter 仅使用 Desktop `26.1023.50603` 的原生 `settings.read("localeOverride")`、`settings.write("localeOverride", value)` 与 `appInfo.getLocaleInfo()`，不支持旧 `get-setting`、`set-setting` 或 `locale-info` fetch RPC。读取使用 `effective`，而不是 `configured`：`effective: null` 表示自动模式，`configured: undefined` 可以表示用户没有显式配置。写入限定为 `en-US`、`zh-CN`、`null`，直接等待原生调用完成。
 
-服务发现要求 registry 自有 `settings` 属性，同时验证 callable stub 的 `read/write` 方法。transport root 能合成任意属性路径，不是服务 registry；不能从多个候选中任取一个。缺少服务时才回退到旧版 `get-setting/set-setting`，歧义、原生请求失败或非法结果均不触发旧 endpoint 重试。该 fallback 服务于仍使用旧设置 handler 的 Desktop；只有最低支持版本均提供原生 settings 服务时才可删除，对应用例在 `codex-locale-adapter.test.ts` 与 `codex-locale-native-settings.test.ts`。
+服务发现要求 registry 自有对应服务属性，并验证 callable stub 的方法；transport root 能合成任意属性路径，不是服务 registry，多个不同候选必须 fail-closed。服务缺失、歧义或失败时，读取保留 navigator/default 用户语言降级，写入拒绝，不重试旧 RPC。相关测试统一在 `codex-locale-adapter.test.ts`。
 
-发现、原生调用和旧 endpoint fallback 共用单次请求的超时预算；取消或超时后不得发起迟到的写入。原生 settings RPC 的 disposable request 在完成或取消时释放。只读 smoke test 核对 Adapter 的 `status/mode/source`；设置写入需要单独获得授权，不能用读成功替代写入验证。
+发现与原生调用共用单次请求的超时预算；取消或超时后不得发起迟到调用，迟到结果不生效。settings 和 appInfo 的 disposable RPC request 在完成、失败、取消或超时时释放。只读 smoke test 核对 Adapter 的 `status/mode/source`；设置写入需要单独获得授权，不能用读成功替代写入验证。
 
 ### 检查 Codex 额度门
 

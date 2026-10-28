@@ -181,13 +181,21 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
   #requests = new Map<string, AbortController>();
   #closed = false;
   #info: GatewayRecord;
+  #revision: number | null = null;
+  #generation: number | null = null;
+  #subscriptionId: string | null = null;
   constructor(
     readonly transport: HermesGatewayTransport,
     readonly sessionId: string,
     readonly nativeSessionId: string,
     info: GatewayRecord,
+    bookkeeping: { revision?: unknown; generation?: unknown; subscriptionId?: unknown } = {},
   ) {
     this.#info = info;
+    if (typeof bookkeeping.revision === "number") this.#revision = bookkeeping.revision;
+    if (typeof bookkeeping.generation === "number") this.#generation = bookkeeping.generation;
+    if (typeof bookkeeping.subscriptionId === "string")
+      this.#subscriptionId = bookkeeping.subscriptionId;
     this.history = new HermesGatewayHistory({
       python: transport.runtime,
       cwd: transport.cwd,
@@ -256,38 +264,43 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     return optionId;
   }
   async setModel(modelId: string): Promise<void> {
-    // Split the qualified choice exactly as session.create does. The gateway's
-    // switch path misparses `custom:<name>:<model>`, so the provider goes in
-    // its explicit flag and the confirmation below still compares the choice.
+    // Canonical wire: a model pick is the revision-fenced `session.mutate`
+    // operation `model` — `config.set key=model` is refused with
+    // `use_session_mutation_model` on this channel.
     const choice = await resolveGatewayModel(this.transport, modelId);
-    const result = await this.transport.request("config.set", {
-      key: "model",
-      value: choice.provider ? `${choice.model} --provider ${choice.provider}` : modelId,
-      scope: "session",
+    const revision = this.#revision;
+    const generation = this.#generation;
+    if (revision === null || generation === null)
+      throw new Error("Hermes gateway Session revision is not known yet");
+    const result = await this.transport.request("session.mutate", {
       session_id: this.sessionId,
+      request_id: `codexhost-model-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      expected_revision: revision,
+      expected_generation: generation,
+      operation: "model",
+      payload: { model: choice.model, ...(choice.provider ? { provider: choice.provider } : {}) },
     });
-    if (result.confirm_required === true)
-      throw new Error(
-        gatewayString(result.confirm_message) || "Hermes requires confirmation for this Model",
-      );
-    const actualModel = gatewayString(this.#info.model);
-    const actualProvider = gatewayString(this.#info.provider);
+    if (typeof result.revision === "number") this.#revision = result.revision;
+    if (typeof result.execution_generation === "number")
+      this.#generation = result.execution_generation;
+    // Canonical wire: `config.get key="provider"` does not exist on this channel;
+    // the mutation receipt carries the committed pick.
+    const actualModel = gatewayString(result.model);
+    const actualProvider = gatewayString(result.provider);
     if (modelId !== actualModel && modelId !== `${actualProvider}:${actualModel}`)
       throw new Error("Hermes did not confirm the requested Model");
   }
   async setPermissionMode(modeId: string): Promise<void> {
     if (modeId !== "default" && modeId !== "dont_ask")
       throw new Error("Hermes gateway has no accept_edits mode");
+    // Canonical session-scoped yolo refuses `scope` (only the global variant
+    // takes it); value words are on/off and the reply is "1"/"0".
     const result = await this.transport.request("config.set", {
       key: "yolo",
       value: modeId === "dont_ask" ? "on" : "off",
-      scope: "session",
       session_id: this.sessionId,
     });
-    if (
-      result.value !== (modeId === "dont_ask" ? "1" : "0") ||
-      this.#info.yolo !== (modeId === "dont_ask")
-    )
+    if (result.value !== (modeId === "dont_ask" ? "1" : "0"))
       throw new Error(
         "Hermes effective approval policy differs from the requested mode; check native global approvals policy",
       );
@@ -378,14 +391,16 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
         emit({ type: "agent.text", text: response.output });
         active.resolve({ stopReason: "end_turn" });
       } else {
+        // Canonical wire: prompt.submit requires a caller-chosen submission id
+        // (idempotent retries return the same admission) and answers with an
+        // AdmissionStatus ("queued"/"started"), never "streaming".
         const submitted = await this.transport.request("prompt.submit", {
           session_id: this.sessionId,
           text,
+          submission_id: `codexhost-turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         });
-        if (submitted.status !== "streaming")
-          this.#fault(
-            new Error(`Hermes did not start an exclusive turn (${String(submitted.status)})`),
-          );
+        if (submitted.status !== "queued" && submitted.status !== "started")
+          this.#fault(new Error(`Hermes did not accept the turn (${String(submitted.status)})`));
       }
     } catch (error) {
       active.reject(error instanceof Error ? error : new Error(String(error)));
@@ -399,7 +414,12 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     }
   }
   async cancel(): Promise<void> {
-    await this.transport.request("session.interrupt", { session_id: this.sessionId });
+    // Canonical wire: session.interrupt is generation-fenced.
+    if (this.#generation === null) return;
+    await this.transport.request("session.interrupt", {
+      session_id: this.sessionId,
+      execution_generation: this.#generation,
+    });
   }
   async close(): Promise<void> {
     if (this.#closed) return;
@@ -408,7 +428,13 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     this.#requests.clear();
     this.#active?.reject(new Error("Hermes gateway Session closed"));
     try {
-      await this.transport.request("session.close", { session_id: this.sessionId });
+      // Canonical wire has no session.close; the viewer detaches with the
+      // subscription id the create/resume receipt issued.
+      if (this.#subscriptionId !== null)
+        await this.transport.request("session.detach", {
+          session_id: this.sessionId,
+          subscription_id: this.#subscriptionId,
+        });
     } catch {
       /* Process close still releases ownership. */
     }
@@ -432,6 +458,9 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     const payload = gatewayRecord(event.payload);
     if (event.type === "session.info") {
       this.#info = payload;
+      if (typeof payload.revision === "number") this.#revision = payload.revision;
+      if (typeof payload.execution_generation === "number")
+        this.#generation = payload.execution_generation;
       return;
     }
     if (event.type === "session.usage") {

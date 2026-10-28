@@ -178,6 +178,10 @@ describe("ClaudeSdkTransport context Usage", () => {
       maxTokens: 200,
       model: "runtime-model",
     });
+    expect(value.fakeQuery.getContextUsage).toHaveBeenLastCalledWith({ detail: "full" });
+
+    await value.transport.getContextUsage("summary");
+    expect(value.fakeQuery.getContextUsage).toHaveBeenLastCalledWith({ detail: "summary" });
 
     value.fakeQuery.getContextUsage.mockResolvedValueOnce({
       totalTokens: -1,

@@ -681,10 +681,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
-  async getContextUsage(): Promise<ClaudeTransportContextUsage | null> {
+  async getContextUsage(
+    detail: "summary" | "full" = "full",
+  ): Promise<ClaudeTransportContextUsage | null> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) return null;
-    return parseContextUsage(await activeQuery.getContextUsage());
+    return parseContextUsage(await activeQuery.getContextUsage({ detail }));
   }
 
   getPermissionMode(): ClaudePermissionMode {

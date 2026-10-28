@@ -6034,62 +6034,129 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("projects Context from the Result's context window without an exact refresh", async () => {
+  it.each([500_000, 1_000_000])(
+    "uses the effective %i-token Session window instead of Result capacity",
+    async (maxTokens) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+
+      await session.execute(textTurn("result-context"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+
+      transport.event({
+        type: "message.completed",
+        messageId: "assistant-1",
+        lastRequestUsage: {
+          requestId: "request-1",
+          model: "claude-sonnet-4-6",
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheCreationInputTokens: 20,
+          cacheReadInputTokens: 70_000,
+        },
+      });
+      const estimate = await nextEvent(iterator);
+      expect(estimate).toMatchObject({ type: "session.usage.changed" });
+      expect(estimate).not.toHaveProperty("usage.contextWindowTokens");
+      transport.contextUsage = { usedTokens: 70_000, maxTokens, model: "claude-sonnet-4-6" };
+
+      transport.event({
+        type: "usage.result",
+        modelUsage: [
+          {
+            model: "claude-haiku-4-5",
+            inputTokens: 900_000,
+            outputTokens: 1,
+            promptTokens: 900_000,
+            contextWindowTokens: 200_000,
+          },
+          {
+            model: "claude-sonnet-4-6",
+            inputTokens: 10,
+            outputTokens: 5,
+            promptTokens: 70_030,
+            contextWindowTokens: 1_000_000,
+          },
+        ],
+      });
+      const resultUsage = await nextEvent(iterator);
+      expect(resultUsage).toMatchObject({ type: "session.usage.changed" });
+      expect(resultUsage).not.toHaveProperty("usage.contextWindowTokens");
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "session.usage.changed",
+        usage: { contextUsedTokens: 70_030, contextWindowTokens: maxTokens },
+      });
+      expect(transport.getContextUsage).toHaveBeenCalledExactlyOnceWith("summary");
+
+      // A full refresh is not skipped just because the summary succeeded.
+      transport.contextUsage = { usedTokens: 80_000, maxTokens, model: "claude-sonnet-4-6" };
+      await session.refreshUsage?.();
+      expect(transport.getContextUsage).toHaveBeenLastCalledWith("full");
+      expect(await nextEvent(iterator)).toMatchObject({
+        usage: { contextUsedTokens: 80_000, contextWindowTokens: maxTokens },
+      });
+      transport.finish({ status: "succeeded" });
+      for (;;) {
+        if ((await nextEvent(iterator)).type === "turn.completed") break;
+      }
+      await session.close();
+    },
+  );
+
+  it("does not publish Result capacity when a summary fails or block Turn completion", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
-
-    await session.execute(textTurn("result-context"));
+    await session.execute(textTurn("context-summary-failure"));
     await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
     const transport = transports[0];
     if (!transport) throw new Error("Fake Claude transport was not created");
-
+    const pending = deferred<ClaudeTransportContextUsage | null>();
+    transport.getContextUsage.mockImplementationOnce(() => pending.promise);
     transport.event({
       type: "message.completed",
       messageId: "assistant-1",
       lastRequestUsage: {
-        requestId: "request-1",
-        model: "claude-sonnet-4-6",
         inputTokens: 10,
         outputTokens: 5,
-        cacheCreationInputTokens: 20,
+        cacheCreationInputTokens: 0,
         cacheReadInputTokens: 70_000,
       },
     });
-    const estimate = await nextEvent(iterator);
-    expect(estimate).toMatchObject({ type: "session.usage.changed" });
-    expect(estimate).not.toHaveProperty("usage.contextWindowTokens");
-
+    await nextEvent(iterator);
     transport.event({
       type: "usage.result",
       modelUsage: [
         {
-          model: "claude-haiku-4-5",
-          inputTokens: 900_000,
-          outputTokens: 1,
-          promptTokens: 900_000,
-          contextWindowTokens: 200_000,
-        },
-        {
-          model: "claude-sonnet-4-6",
+          model: "claude-opus-4-6",
           inputTokens: 10,
           outputTokens: 5,
-          promptTokens: 70_030,
           contextWindowTokens: 1_000_000,
         },
       ],
     });
-    expect(await nextEvent(iterator)).toMatchObject({
-      type: "session.usage.changed",
-      usage: { contextUsedTokens: 70_030, contextWindowTokens: 1_000_000 },
-    });
     transport.finish({ status: "succeeded" });
     for (;;) {
-      if ((await nextEvent(iterator)).type === "turn.completed") break;
+      const event = await nextEvent(iterator);
+      expect(event).not.toHaveProperty("usage.contextWindowTokens");
+      if (event.type === "turn.completed") break;
     }
-    expect(transport.getContextUsage).not.toHaveBeenCalled();
+    expect(transport.getContextUsage).toHaveBeenCalledExactlyOnceWith("summary");
+    pending.resolve(null);
+    // A failed summary does not cool down the explicit full refresh.
+    transport.contextUsage = { usedTokens: 80_000, maxTokens: 500_000, model: "claude-opus-4-6" };
+    await session.refreshUsage?.();
+    expect(transport.getContextUsage).toHaveBeenLastCalledWith("full");
+    expect(await nextEvent(iterator)).toMatchObject({
+      usage: { contextUsedTokens: 80_000, contextWindowTokens: 500_000 },
+    });
     await session.close();
   });
 

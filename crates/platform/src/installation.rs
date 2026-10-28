@@ -545,18 +545,18 @@ fn portable_desktop_version(
 ) -> Option<String> {
     // 1. Try AppxManifest.xml from package_root or app_root
     for dir in [package_root, app_root] {
-        if let Ok(content) = std::fs::read_to_string(dir.join("AppxManifest.xml")) {
-            if let Some(version) = parse_manifest_version(&content) {
-                return Some(version);
-            }
+        if let Ok(content) = std::fs::read_to_string(dir.join("AppxManifest.xml"))
+            && let Some(version) = parse_manifest_version(&content)
+        {
+            return Some(version);
         }
     }
 
     // 2. Try app.asar package.json
-    if asar_path.is_file() {
-        if let Some(version) = parse_asar_package_json_version(asar_path) {
-            return Some(version);
-        }
+    if asar_path.is_file()
+        && let Some(version) = parse_asar_package_json_version(asar_path)
+    {
+        return Some(version);
     }
 
     // 3. Try package.json on disk
@@ -567,12 +567,11 @@ fn portable_desktop_version(
         app_root.join("resources/package.json"),
     ];
     for path in &candidates {
-        if path.is_file() {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Some(version) = parse_package_json_version(&content) {
-                    return Some(version);
-                }
-            }
+        if path.is_file()
+            && let Ok(content) = std::fs::read_to_string(path)
+            && let Some(version) = parse_package_json_version(&content)
+        {
+            return Some(version);
         }
     }
 
@@ -951,224 +950,6 @@ mod windows_tests {
                 .then(|| OsString::from(r"C:\CodexPortable"))),
             Some(PathBuf::from(r"C:\CodexPortable"))
         );
-    }
-}
-
-#[cfg(test)]
-mod portable_version_tests {
-    use super::{
-        parse_asar_package_json_version, parse_manifest_version, parse_package_json_version,
-        portable_desktop_version, validate_desktop_version,
-    };
-    use crate::temporary_directory;
-    use std::fs;
-
-    pub(super) fn create_fake_asar(pkg_json: &str) -> Vec<u8> {
-        let pkg_bytes = pkg_json.as_bytes();
-        let header_obj = format!(
-            r#"{{"files":{{"package.json":{{"size":{},"offset":"0"}}}}}}"#,
-            pkg_bytes.len()
-        );
-        let json_bytes = header_obj.as_bytes();
-        let json_len = json_bytes.len() as u32;
-        let pad = (4 - (json_len % 4)) % 4;
-        let header_size = 4 + 4 + json_len + pad;
-
-        let mut asar = Vec::new();
-        asar.extend_from_slice(&4_u32.to_le_bytes());
-        asar.extend_from_slice(&header_size.to_le_bytes());
-        asar.extend_from_slice(&(json_len + pad + 4).to_le_bytes());
-        asar.extend_from_slice(&json_len.to_le_bytes());
-        asar.extend_from_slice(json_bytes);
-        asar.extend(std::iter::repeat(0).take(pad as usize));
-        asar.extend_from_slice(pkg_bytes);
-        asar
-    }
-
-    #[test]
-    fn validates_desktop_version_and_rejects_placeholder_and_invalid() {
-        assert_eq!(
-            validate_desktop_version("26.1021.3705.0").as_deref(),
-            Some("26.1021.3705.0")
-        );
-        assert_eq!(validate_desktop_version("1.2.3").as_deref(), Some("1.2.3"));
-        assert_eq!(
-            validate_desktop_version("1.2.3-beta.1").as_deref(),
-            Some("1.2.3-beta.1")
-        );
-        assert_eq!(validate_desktop_version("0.0.0.0"), None);
-        assert_eq!(validate_desktop_version(""), None);
-        assert_eq!(validate_desktop_version("not_a_version"), None);
-    }
-
-    #[test]
-    fn parses_manifest_version() {
-        let xml = r#"<?xml version="1.0"?><Package><Identity Name="OpenAI.Codex" Version="26.1021.2667.0"/></Package>"#;
-        assert_eq!(
-            parse_manifest_version(xml).as_deref(),
-            Some("26.1021.2667.0")
-        );
-
-        let placeholder_xml =
-            r#"<Package><Identity Name="OpenAI.Codex" Version="0.0.0.0"/></Package>"#;
-        assert_eq!(parse_manifest_version(placeholder_xml), None);
-
-        let invalid = "<Package></Package>";
-        assert_eq!(parse_manifest_version(invalid), None);
-    }
-
-    #[test]
-    fn parses_package_json_version() {
-        let json = r#"{"name": "ChatGPT", "version": "26.1021.3705.0", "main": "app.js"}"#;
-        assert_eq!(
-            parse_package_json_version(json).as_deref(),
-            Some("26.1021.3705.0")
-        );
-
-        let spaces = r#"{"name":"test",  "version"  :  "1.2.3"  }"#;
-        assert_eq!(parse_package_json_version(spaces).as_deref(), Some("1.2.3"));
-
-        let placeholder = r#"{"version": "0.0.0.0"}"#;
-        assert_eq!(parse_package_json_version(placeholder), None);
-
-        let no_version = r#"{"name": "test"}"#;
-        assert_eq!(parse_package_json_version(no_version), None);
-    }
-
-    #[test]
-    fn parses_asar_package_json_version() {
-        let root = temporary_directory("codexhost-asar-test");
-        let asar_path = root.join("app.asar");
-
-        let asar_bytes = create_fake_asar(r#"{"name":"ChatGPT","version":"26.1021.3705.0"}"#);
-        fs::write(&asar_path, asar_bytes).expect("write fake asar");
-
-        assert_eq!(
-            parse_asar_package_json_version(&asar_path).as_deref(),
-            Some("26.1021.3705.0")
-        );
-
-        // Corrupt / truncated asar
-        fs::write(&asar_path, b"not an asar file").expect("write corrupt asar");
-        assert_eq!(parse_asar_package_json_version(&asar_path), None);
-
-        fs::remove_dir_all(root).expect("remove asar fixture");
-    }
-
-    #[test]
-    fn parses_asar_root_package_json_and_ignores_nested_node_modules() {
-        let root = temporary_directory("codexhost-asar-node-modules-test");
-        let asar_path = root.join("app.asar");
-
-        // Construct an ASAR with node_modules/atob-lite/package.json (v2.0.0)
-        // and root package.json (v26.1023.50603)
-        let dep_pkg = r#"{"name":"atob-lite","version":"2.0.0"}"#;
-        let root_pkg = r#"{"name":"ChatGPT","version":"26.1023.50603"}"#;
-
-        let header_obj = serde_json::json!({
-            "files": {
-                "node_modules": {
-                    "files": {
-                        "atob-lite": {
-                            "files": {
-                                "package.json": {
-                                    "size": dep_pkg.len(),
-                                    "offset": "0",
-                                    "integrity": {
-                                        "algorithm": "SHA256",
-                                        "hash": "somehash"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "package.json": {
-                    "integrity": {
-                        "algorithm": "SHA256",
-                        "hash": "rootpkgjsonhash"
-                    },
-                    "size": root_pkg.len(),
-                    "offset": format!("{}", dep_pkg.len())
-                }
-            }
-        });
-
-        let json_str = serde_json::to_string(&header_obj).unwrap();
-        let json_bytes = json_str.as_bytes();
-        let json_len = json_bytes.len() as u32;
-        let pad = (4 - (json_len % 4)) % 4;
-        let header_size = 4 + 4 + json_len + pad;
-
-        let mut asar = Vec::new();
-        asar.extend_from_slice(&4_u32.to_le_bytes());
-        asar.extend_from_slice(&header_size.to_le_bytes());
-        asar.extend_from_slice(&(json_len + pad + 4).to_le_bytes());
-        asar.extend_from_slice(&json_len.to_le_bytes());
-        asar.extend_from_slice(json_bytes);
-        asar.extend(std::iter::repeat(0).take(pad as usize));
-        asar.extend_from_slice(dep_pkg.as_bytes());
-        asar.extend_from_slice(root_pkg.as_bytes());
-
-        fs::write(&asar_path, asar).expect("write asar with node_modules");
-
-        assert_eq!(
-            parse_asar_package_json_version(&asar_path).as_deref(),
-            Some("26.1023.50603")
-        );
-
-        fs::remove_dir_all(root).expect("remove asar fixture");
-    }
-
-    #[test]
-    fn portable_desktop_version_prioritizes_manifest_then_asar_then_package_json() {
-        let root = temporary_directory("codexhost-portable-priority");
-        let package_root = root.join("package");
-        let app_root = package_root.join("app");
-        let resources = app_root.join("resources");
-        fs::create_dir_all(&resources).expect("create layout");
-
-        let asar_path = resources.join("app.asar");
-        let manifest_path = package_root.join("AppxManifest.xml");
-        let pkg_json_path = app_root.join("package.json");
-
-        // 1. When manifest, asar, and package.json are all present, manifest wins
-        fs::write(
-            &manifest_path,
-            b"<Package><Identity Name=\"OpenAI.Codex\" Version=\"26.1021.2667.0\"/></Package>",
-        )
-        .expect("write manifest");
-        let asar_bytes = create_fake_asar(r#"{"version":"26.1021.3705.0"}"#);
-        fs::write(&asar_path, &asar_bytes).expect("write asar");
-        fs::write(&pkg_json_path, b"{\"version\":\"1.0.0\"}").expect("write pkg.json");
-
-        assert_eq!(
-            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
-            Some("26.1021.2667.0")
-        );
-
-        // 2. When manifest is absent, app.asar wins (Issue #599 scenario!)
-        fs::remove_file(&manifest_path).expect("remove manifest");
-        assert_eq!(
-            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
-            Some("26.1021.3705.0")
-        );
-
-        // 3. When asar has no valid version / missing, package.json on disk wins
-        fs::write(&asar_path, b"invalid asar").expect("overwrite with invalid asar");
-        assert_eq!(
-            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
-            Some("1.0.0")
-        );
-
-        // 4. When all metadata is missing or invalid, returns None (which maps to unknown)
-        fs::remove_file(&pkg_json_path).expect("remove pkg.json");
-        assert_eq!(
-            portable_desktop_version(&package_root, &app_root, &asar_path),
-            None
-        );
-
-        fs::remove_dir_all(root).expect("remove priority fixture");
     }
 }
 
@@ -1592,5 +1373,223 @@ mod tests {
             discover_from_candidates([first, second]),
             Err(PlatformError::Invalid(message)) if message.contains("multiple valid")
         ));
+    }
+}
+
+#[cfg(test)]
+mod portable_version_tests {
+    use super::{
+        parse_asar_package_json_version, parse_manifest_version, parse_package_json_version,
+        portable_desktop_version, validate_desktop_version,
+    };
+    use crate::temporary_directory;
+    use std::fs;
+
+    pub(super) fn create_fake_asar(pkg_json: &str) -> Vec<u8> {
+        let pkg_bytes = pkg_json.as_bytes();
+        let header_obj = format!(
+            r#"{{"files":{{"package.json":{{"size":{},"offset":"0"}}}}}}"#,
+            pkg_bytes.len()
+        );
+        let json_bytes = header_obj.as_bytes();
+        let json_len = json_bytes.len() as u32;
+        let pad = (4 - (json_len % 4)) % 4;
+        let header_size = 4 + 4 + json_len + pad;
+
+        let mut asar = Vec::new();
+        asar.extend_from_slice(&4_u32.to_le_bytes());
+        asar.extend_from_slice(&header_size.to_le_bytes());
+        asar.extend_from_slice(&(json_len + pad + 4).to_le_bytes());
+        asar.extend_from_slice(&json_len.to_le_bytes());
+        asar.extend_from_slice(json_bytes);
+        asar.extend(std::iter::repeat_n(0, pad as usize));
+        asar.extend_from_slice(pkg_bytes);
+        asar
+    }
+
+    #[test]
+    fn validates_desktop_version_and_rejects_placeholder_and_invalid() {
+        assert_eq!(
+            validate_desktop_version("26.1021.3705.0").as_deref(),
+            Some("26.1021.3705.0")
+        );
+        assert_eq!(validate_desktop_version("1.2.3").as_deref(), Some("1.2.3"));
+        assert_eq!(
+            validate_desktop_version("1.2.3-beta.1").as_deref(),
+            Some("1.2.3-beta.1")
+        );
+        assert_eq!(validate_desktop_version("0.0.0.0"), None);
+        assert_eq!(validate_desktop_version(""), None);
+        assert_eq!(validate_desktop_version("not_a_version"), None);
+    }
+
+    #[test]
+    fn parses_manifest_version() {
+        let xml = r#"<?xml version="1.0"?><Package><Identity Name="OpenAI.Codex" Version="26.1021.2667.0"/></Package>"#;
+        assert_eq!(
+            parse_manifest_version(xml).as_deref(),
+            Some("26.1021.2667.0")
+        );
+
+        let placeholder_xml =
+            r#"<Package><Identity Name="OpenAI.Codex" Version="0.0.0.0"/></Package>"#;
+        assert_eq!(parse_manifest_version(placeholder_xml), None);
+
+        let invalid = "<Package></Package>";
+        assert_eq!(parse_manifest_version(invalid), None);
+    }
+
+    #[test]
+    fn parses_package_json_version() {
+        let json = r#"{"name": "ChatGPT", "version": "26.1021.3705.0", "main": "app.js"}"#;
+        assert_eq!(
+            parse_package_json_version(json).as_deref(),
+            Some("26.1021.3705.0")
+        );
+
+        let spaces = r#"{"name":"test",  "version"  :  "1.2.3"  }"#;
+        assert_eq!(parse_package_json_version(spaces).as_deref(), Some("1.2.3"));
+
+        let placeholder = r#"{"version": "0.0.0.0"}"#;
+        assert_eq!(parse_package_json_version(placeholder), None);
+
+        let no_version = r#"{"name": "test"}"#;
+        assert_eq!(parse_package_json_version(no_version), None);
+    }
+
+    #[test]
+    fn parses_asar_package_json_version() {
+        let root = temporary_directory("codexhost-asar-test");
+        let asar_path = root.join("app.asar");
+
+        let asar_bytes = create_fake_asar(r#"{"name":"ChatGPT","version":"26.1021.3705.0"}"#);
+        fs::write(&asar_path, asar_bytes).expect("write fake asar");
+
+        assert_eq!(
+            parse_asar_package_json_version(&asar_path).as_deref(),
+            Some("26.1021.3705.0")
+        );
+
+        // Corrupt / truncated asar
+        fs::write(&asar_path, b"not an asar file").expect("write corrupt asar");
+        assert_eq!(parse_asar_package_json_version(&asar_path), None);
+
+        fs::remove_dir_all(root).expect("remove asar fixture");
+    }
+
+    #[test]
+    fn parses_asar_root_package_json_and_ignores_nested_node_modules() {
+        let root = temporary_directory("codexhost-asar-node-modules-test");
+        let asar_path = root.join("app.asar");
+
+        // Construct an ASAR with node_modules/atob-lite/package.json (v2.0.0)
+        // and root package.json (v26.1023.50603)
+        let dep_pkg = r#"{"name":"atob-lite","version":"2.0.0"}"#;
+        let root_pkg = r#"{"name":"ChatGPT","version":"26.1023.50603"}"#;
+
+        let header_obj = serde_json::json!({
+            "files": {
+                "node_modules": {
+                    "files": {
+                        "atob-lite": {
+                            "files": {
+                                "package.json": {
+                                    "size": dep_pkg.len(),
+                                    "offset": "0",
+                                    "integrity": {
+                                        "algorithm": "SHA256",
+                                        "hash": "somehash"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "package.json": {
+                    "integrity": {
+                        "algorithm": "SHA256",
+                        "hash": "rootpkgjsonhash"
+                    },
+                    "size": root_pkg.len(),
+                    "offset": format!("{}", dep_pkg.len())
+                }
+            }
+        });
+
+        let json_str = serde_json::to_string(&header_obj).unwrap();
+        let json_bytes = json_str.as_bytes();
+        let json_len = json_bytes.len() as u32;
+        let pad = (4 - (json_len % 4)) % 4;
+        let header_size = 4 + 4 + json_len + pad;
+
+        let mut asar = Vec::new();
+        asar.extend_from_slice(&4_u32.to_le_bytes());
+        asar.extend_from_slice(&header_size.to_le_bytes());
+        asar.extend_from_slice(&(json_len + pad + 4).to_le_bytes());
+        asar.extend_from_slice(&json_len.to_le_bytes());
+        asar.extend_from_slice(json_bytes);
+        asar.extend(std::iter::repeat_n(0, pad as usize));
+        asar.extend_from_slice(dep_pkg.as_bytes());
+        asar.extend_from_slice(root_pkg.as_bytes());
+
+        fs::write(&asar_path, asar).expect("write asar with node_modules");
+
+        assert_eq!(
+            parse_asar_package_json_version(&asar_path).as_deref(),
+            Some("26.1023.50603")
+        );
+
+        fs::remove_dir_all(root).expect("remove asar fixture");
+    }
+
+    #[test]
+    fn portable_desktop_version_prioritizes_manifest_then_asar_then_package_json() {
+        let root = temporary_directory("codexhost-portable-priority");
+        let package_root = root.join("package");
+        let app_root = package_root.join("app");
+        let resources = app_root.join("resources");
+        fs::create_dir_all(&resources).expect("create layout");
+
+        let asar_path = resources.join("app.asar");
+        let manifest_path = package_root.join("AppxManifest.xml");
+        let pkg_json_path = app_root.join("package.json");
+
+        // 1. When manifest, asar, and package.json are all present, manifest wins
+        fs::write(
+            &manifest_path,
+            b"<Package><Identity Name=\"OpenAI.Codex\" Version=\"26.1021.2667.0\"/></Package>",
+        )
+        .expect("write manifest");
+        let asar_bytes = create_fake_asar(r#"{"version":"26.1021.3705.0"}"#);
+        fs::write(&asar_path, &asar_bytes).expect("write asar");
+        fs::write(&pkg_json_path, b"{\"version\":\"1.0.0\"}").expect("write pkg.json");
+
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
+            Some("26.1021.2667.0")
+        );
+
+        // 2. When manifest is absent, app.asar wins (Issue #599 scenario!)
+        fs::remove_file(&manifest_path).expect("remove manifest");
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
+            Some("26.1021.3705.0")
+        );
+
+        // 3. When asar has no valid version / missing, package.json on disk wins
+        fs::write(&asar_path, b"invalid asar").expect("overwrite with invalid asar");
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
+            Some("1.0.0")
+        );
+
+        // 4. When all metadata is missing or invalid, returns None (which maps to unknown)
+        fs::remove_file(&pkg_json_path).expect("remove pkg.json");
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path),
+            None
+        );
+
+        fs::remove_dir_all(root).expect("remove priority fixture");
     }
 }

@@ -104,7 +104,7 @@ import {
   type RendererDelegationMentionControl,
 } from "./renderer-delegation-mention.js";
 import { compatibleRendererPluginPresentation, rendererAgentLabel } from "./renderer-agent-icon.js";
-import { openCodexLocalThread } from "./codex-thread-navigation.js";
+import { openCodexSchedules } from "./codex-schedule-navigation.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
   RendererConnectionDiagnostics,
@@ -818,21 +818,7 @@ export function installRendererBindingProbe(
   });
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     harnessSchedules: {
-      getModelClient: () => modelClientForHost("local"),
-      openThread: (threadId, signal) => openCodexLocalThread(threadId, signal),
-      connect: async () => {
-        const routing = window.__codexhostHostRoutingV1;
-        if (!routing) return Promise.reject(new Error("Desktop local connection is unavailable"));
-        const native = await loadCodexScheduleServices(window);
-        if (!native)
-          throw new Error(
-            "Native localAutomations list/update/delete registry is unavailable in this window",
-          );
-        const creationInputs = await loadCodexScheduleCreationInputsFactory(window).catch(
-          () => null,
-        );
-        return connectDesktopHarnessSchedules(window.document, routing, native, creationInputs);
-      },
+      openSchedules: (signal) => openCodexSchedules(signal),
     },
     getRemoteConnections: () => remoteConnections,
     getUpdateClient: () => modelControl,
@@ -2677,6 +2663,25 @@ export function installRendererBindingProbe(
     },
   };
 
+  const nativeScheduleControls = installRendererNativeScheduleControls(document, {
+    getClient: () => modelClientForHost("local"),
+    getAvailablePlugins: () => {
+      const client = modelClientForHost("local");
+      const state = hostHarnessAvailabilityState("local");
+      if (!client || state.directoryClient !== client) return [];
+      return (state.plugins ?? [])
+        .filter((plugin) => plugin.kind !== "usage" && state.availability[plugin.id] === "ready")
+        .map((plugin) => pluginForHost("local", plugin.id) ?? plugin);
+    },
+    subscribeAvailability: (listener) => {
+      connectionListeners.add(listener);
+      return () => connectionListeners.delete(listener);
+    },
+    canRouteExternal: () =>
+      window.__codexhostHostRoutingV1?.forHost("local")?.policy.scopedCreation === true,
+    locale: () => settingsLifecycle.locale,
+  });
+
   const mount = (composer: Element): void => {
     if (
       mountedByComposer.has(composer) ||
@@ -3281,6 +3286,7 @@ export function installRendererBindingProbe(
         if (disposed || modelControl !== installedModelControl) return;
         try {
           settingsLifecycle.refresh();
+          nativeScheduleControls.refresh();
         } catch {
           // Auxiliary settings UI must not affect Agent routing compatibility.
         }
@@ -3334,6 +3340,7 @@ export function installRendererBindingProbe(
       disposeReasoningSoftWrap();
       delegationMention?.dispose();
       sidebarAgentIcons.dispose();
+      nativeScheduleControls.dispose();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);
@@ -3368,8 +3375,4 @@ export function installRendererBindingProbe(
   scan();
   return api;
 }
-import { connectDesktopHarnessSchedules } from "@codexhost/desktop-control/renderer-bindings";
-import {
-  loadCodexScheduleServices,
-  loadCodexScheduleCreationInputsFactory,
-} from "./codex-schedule-services.js";
+import { installRendererNativeScheduleControls } from "./renderer-native-schedule-controls.js";

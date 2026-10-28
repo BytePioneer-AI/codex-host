@@ -35,7 +35,6 @@ export function isolateRendererPrewarmConsumption(
     return null;
   const consume = pool.consumePrewarmedThread;
   const hasPrewarm = pool.hasPrewarmedThread;
-  const freshModes = new WeakSet<object>();
   const draftModels = new Map<string, string>();
   const draftIdentity = Symbol("codexhost draft creation");
   const external = (model: unknown): model is string =>
@@ -76,10 +75,8 @@ export function isolateRendererPrewarmConsumption(
     const mode = record(input) && record(input.collaborationMode) ? input.collaborationMode : null;
     const expected = mode && record(mode.settings) ? mode.settings.model : null;
     const scopedPool = Object.create(pool) as Record<string, unknown>;
-    scopedPool.hasPrewarmedThread =
-      mode && freshModes.has(mode)
-        ? () => false
-        : (...parameters: unknown[]) => hasPrewarm.apply(pool, parameters);
+    scopedPool.hasPrewarmedThread = (...parameters: unknown[]) =>
+      hasPrewarm.apply(pool, parameters);
     scopedPool.consumePrewarmedThread = async (...consumeArgs: unknown[]) => {
       const warmed: unknown = await consume.apply(pool, consumeArgs);
       if (!record(warmed) || !record(warmed.response)) return warmed;
@@ -125,31 +122,6 @@ export function isolateRendererPrewarmConsumption(
             enumerable: true,
             value: draftId,
           });
-      }
-    },
-    async createScheduledConversation(
-      input: Record<string, unknown>,
-      readThreadCreationInputs: unknown,
-    ): Promise<unknown> {
-      if (typeof manager.startConversation !== "function" || !record(input.collaborationMode))
-        throw new Error("Native empty chat creation is unavailable");
-      const mode = input.collaborationMode;
-      freshModes.add(mode);
-      try {
-        return await manager.startConversation(
-          {
-            cwd: input.cwd,
-            workspaceRoots: input.workspaceRoots,
-            workspaceKind: input.workspaceKind,
-            initialTitle: input.initialTitle,
-            projectlessOutputDirectory: input.projectlessOutputDirectory,
-            collaborationMode: mode,
-            input: [],
-          },
-          { readThreadCreationInputs },
-        );
-      } finally {
-        freshModes.delete(mode);
       }
     },
     dispose() {

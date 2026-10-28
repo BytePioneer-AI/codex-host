@@ -380,17 +380,3 @@ export {
   type CodexSshConnection,
   type CodexSshDraft,
 } from "./remote-connections.js";
-export {
-  harnessScheduleInputSchema,
-  harnessScheduleTimeSchema,
-  harnessScheduleEditSchema,
-  harnessScheduleRrule,
-  parseHarnessScheduleTime,
-  type HarnessSchedule,
-  type HarnessScheduleTime,
-  type HarnessScheduleEdit,
-  type HarnessScheduleList,
-  type HarnessScheduleReference,
-  type HarnessScheduleInput,
-  type HarnessScheduleResult,
-} from "./harness-schedules.js";

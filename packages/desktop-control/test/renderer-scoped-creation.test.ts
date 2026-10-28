@@ -12,7 +12,7 @@ function fixture() {
   const deleted = vi.fn();
   const discarded = vi.fn();
   const pool = {
-    hasPrewarmedThread: () => true,
+    hasPrewarmedThread: vi.fn(() => true),
     consumePrewarmedThread: consume,
     deletePrewarmedThread: deleted,
   };
@@ -20,6 +20,7 @@ function fixture() {
     params: { prewarmedThreadManager: pool },
     async createConversation(_input: unknown, ready: Promise<void> = Promise.resolve()) {
       await ready;
+      if (!this.params.prewarmedThreadManager.hasPrewarmedThread()) return null;
       return this.params.prewarmedThreadManager.consumePrewarmedThread("/same-cwd");
     },
   };
@@ -27,41 +28,21 @@ function fixture() {
     { threadCreation: creation, startConversation: vi.fn() },
     discarded,
   );
-  return { creation, consume, discarded, deleted, restore };
+  return { creation, pool, consume, discarded, deleted, restore };
 }
 
 describe("native prewarm consumption isolation", () => {
-  it("creates a fresh empty scheduled chat without consuming a matching ordinary draft", async () => {
-    const consume = vi.fn();
-    const pool = {
-      hasPrewarmedThread: () => true,
-      consumePrewarmedThread: consume,
-      deletePrewarmedThread: vi.fn(),
-    };
-    const creation = {
-      params: { prewarmedThreadManager: pool },
-      createConversation(input: unknown) {
-        if (this.params.prewarmedThreadManager.hasPrewarmedThread())
-          return this.params.prewarmedThreadManager.consumePrewarmedThread();
-        return input;
-      },
-    };
-    const manager = {
-      threadCreation: creation,
-      startConversation: vi.fn(async (input) => creation.createConversation(input)),
-    };
-    const control = isolateRendererPrewarmConsumption(manager, vi.fn());
-    if (!control) throw new Error("Fixture binding unavailable");
-    await expect(
-      control.createScheduledConversation(
-        { ...mode("codexhost/pi-native"), input: ["must not run"] },
-        vi.fn(),
-      ),
-    ).resolves.toMatchObject({ input: [] });
-    expect(consume).not.toHaveBeenCalled();
-    creation.createConversation(mode("codexhost/pi-native"));
-    expect(consume).toHaveBeenCalledOnce();
-    control.dispose();
+  it("keeps native pool ownership and allows matching external prewarms", async () => {
+    const f = fixture();
+    f.consume.mockResolvedValue(warmed("pi-draft", "codexhost/pi-native"));
+    await expect(f.creation.createConversation(mode("codexhost/pi-native"))).resolves.toEqual(
+      warmed("pi-draft", "codexhost/pi-native"),
+    );
+    expect(f.pool.hasPrewarmedThread).toHaveBeenCalledOnce();
+    expect(f.pool.hasPrewarmedThread.mock.contexts[0]).toBe(f.pool);
+    expect(f.consume.mock.contexts[0]).toBe(f.pool);
+    expect(f.discarded).not.toHaveBeenCalled();
+    expect(f.deleted).not.toHaveBeenCalled();
   });
   it("does not let the official entry consume an external draft at the same cwd", async () => {
     const f = fixture();

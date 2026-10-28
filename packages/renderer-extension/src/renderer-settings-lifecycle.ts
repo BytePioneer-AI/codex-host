@@ -72,30 +72,30 @@ export function installRendererSettingsLifecycle(
     trigger: RendererSettingsRailTriggerControl;
   } => {
     const messages = rendererSettingsMessages(locale);
-    const closeAfterNavigation =
-      (openThread: RendererImportedThreadOpener | undefined): RendererImportedThreadOpener =>
-      async (threadId, signal) => {
-        if (!openThread) throw new Error("Chat navigation is unavailable");
-        await openThread(threadId, signal);
-        if (!disposed && !signal.aborted) shell?.close();
-      };
+    const schedules = options.harnessSchedules;
     const definitions = createDefaultRendererSettingsPages(
       messages,
       options.getUpdateClient ?? (() => null),
       options.getConnectionDiagnostics ?? (() => null),
       options.getAccountClient ?? (() => null),
       options.getSessionImportClient ?? (() => null),
-      closeAfterNavigation(options.openImportedThread),
+      async (threadId, signal) => {
+        if (!options.openImportedThread) {
+          throw new Error("Imported Thread navigation is unavailable");
+        }
+        await options.openImportedThread(threadId, signal);
+        if (!disposed && !signal.aborted) shell?.close();
+      },
       options.getLoadedSessionsClient ?? (() => null),
       options.getRemoteConnections ?? (() => null),
       options.requestUsageStatistics,
       options.usageStatisticsHosts,
-      options.harnessSchedules
+      schedules
         ? {
-            ...options.harnessSchedules,
-            openThread: closeAfterNavigation(
-              options.harnessSchedules.openThread ?? options.openImportedThread,
-            ),
+            openSchedules: async (signal) => {
+              await schedules.openSchedules(signal);
+              if (!disposed && !signal.aborted) shell?.close();
+            },
           }
         : undefined,
     );

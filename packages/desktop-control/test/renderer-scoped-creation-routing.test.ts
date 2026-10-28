@@ -77,15 +77,16 @@ describe("draft-scoped native creation routing", () => {
       const input = { collaborationMode: mode("gpt-reserve") };
       await expect(f.manager.startConversation(input, options)).resolves.toBe(input);
     }
-    const scheduled = { collaborationMode: mode("codexhost/claude-code-native"), cwd: "/project" };
+    const scheduled = {
+      collaborationMode: mode("codexhost/claude-code-native"),
+      cwd: "/project",
+      input: [],
+    };
     const explicit = { collaborationMode: mode("codexhost/opencode-native") };
     await expect(f.manager.startConversation(explicit, { clientThreadId: draft })).resolves.toBe(
       explicit,
     );
-    await expect(f.control.createScheduledConversation(scheduled, vi.fn())).resolves.toMatchObject({
-      ...scheduled,
-      input: [],
-    });
+    await expect(f.manager.startConversation(scheduled, {})).resolves.toBe(scheduled);
   });
 
   it("preserves background origin through native mode copies without serializing metadata", async () => {

@@ -501,16 +501,15 @@ export function createDraftPrewarmPolicyBridge(
       const threadId = threadIdFromParameters(parameters);
       if (threadId) externalPrewarms.delete(threadId);
     }
-    const routedParameters = parameters;
     const sendBridged = (): Promise<unknown> =>
       initializeBridge().then(
-        () => enqueueBridgeRequest(method, routedParameters, options) as Promise<unknown>,
+        () => enqueueBridgeRequest(method, parameters, options) as Promise<unknown>,
       );
     const sendDirect = (): unknown =>
       options === undefined
-        ? originalSend.call(bridge, method, routedParameters)
-        : originalSend.call(bridge, method, routedParameters, options);
-    const unresolvedThreadId = shouldResolveThreadOwnership(method, routedParameters);
+        ? originalSend.call(bridge, method, parameters)
+        : originalSend.call(bridge, method, parameters, options);
+    const unresolvedThreadId = shouldResolveThreadOwnership(method, parameters);
     if (unresolvedThreadId) {
       return resolveThreadOwnership(unresolvedThreadId).then(
         (owner) => (owner === "external" ? sendBridged() : sendDirect()),
@@ -536,7 +535,7 @@ export function createDraftPrewarmPolicyBridge(
         },
       );
     }
-    return shouldUseBridge(method, routedParameters) ? sendBridged() : sendDirect();
+    return shouldUseBridge(method, parameters) ? sendBridged() : sendDirect();
   };
   // The draft's workspace reaches the Host only through this prewarm. Publish
   // it so the Composer can ask for that workspace's live Harness commands;
@@ -576,13 +575,12 @@ export function createDraftPrewarmPolicyBridge(
   };
   const restoreConsumption = isolateConsumption(manager, discardExternalPrewarm);
   const routedPrewarm = (parameters: unknown, options?: unknown): unknown => {
-    const routed = parameters;
     const external =
-      isRecord(routed) &&
-      routed.ephemeral !== true &&
-      typeof routed.model === "string" &&
-      routed.model.startsWith("codexhost/");
-    const routedParameters = external ? { ...routed, codexhostPrewarm: true } : routed;
+      isRecord(parameters) &&
+      parameters.ephemeral !== true &&
+      typeof parameters.model === "string" &&
+      parameters.model.startsWith("codexhost/");
+    const routedParameters = external ? { ...parameters, codexhostPrewarm: true } : parameters;
     const generation = prewarmGeneration;
     publishDraftWorkspace(routedParameters);
     const pending = shouldUseBridge("thread/start", routedParameters)
@@ -663,14 +661,6 @@ export function createDraftPrewarmPolicyBridge(
     state: "ready" as const,
     hostId,
     scopedCreation: restoreConsumption !== null,
-    createScheduledConversation(
-      input: Record<string, unknown>,
-      readThreadCreationInputs: unknown,
-    ): Promise<unknown> {
-      if (disposed || !restoreConsumption || (isCurrentManager && !isCurrentManager()))
-        return Promise.reject(new Error("Native empty chat creation is unavailable"));
-      return restoreConsumption.createScheduledConversation(input, readThreadCreationInputs);
-    },
     owns(
       candidateManager: RendererHostRequestManager,
       candidate: RendererHostRequestBridge,

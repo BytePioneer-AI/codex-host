@@ -387,26 +387,22 @@ test("ordinary Send, official tasks and explicit external schedules retain indep
     state.local.seedPrewarm({
       response: { thread: { id: "ordinary-prewarm" }, model: ordinaryModel },
     });
-    const route = window.__codexhostHostRoutingV1?.forHost("local");
-    if (!route) throw new Error("Local route unavailable");
-    const policy = route.policy;
-    await policy.createScheduledConversation(
-      {
-        cwd: "/same-cwd",
-        collaborationMode: { mode: "default", settings: { model: "codexhost/claude-code-native" } },
-      },
-      () => ({}),
-    );
-    const retainedOrdinaryPrewarm = state.local.prewarmedThreadManager.hasPrewarmedThread();
-    // An official task must reject the external prewarm and use its own Model.
+    await state.local.startConversation({
+      cwd: "/same-cwd",
+      collaborationMode: { mode: "default", settings: { model: "codexhost/claude-code-native" } },
+      input: [],
+    });
+    state.local.seedPrewarm({
+      response: { thread: { id: "ordinary-prewarm-2" }, model: ordinaryModel },
+    });
+    // Native task creation rejects a mismatched external prewarm and uses its own Model.
     await state.local.startConversation({
       cwd: "/same-cwd",
       collaborationMode: { mode: "default", settings: { model: "official-task-model" } },
       input: [],
     });
-    return { retainedOrdinaryPrewarm, ordinaryModel };
+    return { ordinaryModel };
   });
-  expect(result.retainedOrdinaryPrewarm).toBe(true);
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect
     .poll(() =>
@@ -430,6 +426,7 @@ test("ordinary Send, official tasks and explicit external schedules retain indep
     calls.filter((call: RecordedRequest) => call.method === "codexhost/thread/prewarm/discard"),
   ).toEqual([
     { method: "codexhost/thread/prewarm/discard", params: { threadId: "ordinary-prewarm" } },
+    { method: "codexhost/thread/prewarm/discard", params: { threadId: "ordinary-prewarm-2" } },
   ]);
   expect(calls.find((call: RecordedRequest) => call.method === "turn/start")?.params.input).toEqual(
     [{ type: "text", text: "regression message" }],

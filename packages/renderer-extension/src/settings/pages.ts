@@ -708,9 +708,7 @@ export function createDefaultRendererSettingsPages(
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
     createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
-    ...(harnessSchedules
-      ? [createHarnessSchedulesPage(messages, harnessSchedules, openImportedThread)]
-      : []),
+    ...(harnessSchedules ? [createHarnessSchedulesPage(messages, harnessSchedules)] : []),
     createSessionImportSettingsPage(
       messages,
       getSessionImportClient,

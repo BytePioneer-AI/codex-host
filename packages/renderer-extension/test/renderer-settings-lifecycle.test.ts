@@ -240,7 +240,7 @@ describe("Renderer Settings lifecycle", () => {
 
   it("keeps Session import navigation independent from the schedules router", async () => {
     const openImportedThread = vi.fn(async () => undefined);
-    const openScheduledThread = vi.fn(async (): Promise<void> => {
+    const openSchedules = vi.fn(async (): Promise<void> => {
       throw new Error("Native schedule navigation is unavailable");
     });
     const lifecycle = installRendererSettingsLifecycle(
@@ -253,28 +253,24 @@ describe("Renderer Settings lifecycle", () => {
       {
         openImportedThread,
         harnessSchedules: {
-          connect: vi.fn(),
-          getModelClient: () => null,
-          openThread: openScheduledThread,
+          openSchedules,
         },
       },
     );
     const call = vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1);
     const importOpen = call?.[5];
-    const scheduleOpen = call?.[10]?.openThread;
+    const scheduleOpen = call?.[10]?.openSchedules;
     if (!importOpen || !scheduleOpen) throw new Error("Settings navigation was not installed");
     const signal = new AbortController().signal;
-    await expect(
-      scheduleOpen(hostThreadIdSchema.parse("scheduled-thread"), signal),
-    ).rejects.toThrow("Native schedule navigation is unavailable");
+    await expect(scheduleOpen(signal)).rejects.toThrow("Native schedule navigation is unavailable");
     expect(shellClose).not.toHaveBeenCalled();
     expect(openImportedThread).not.toHaveBeenCalled();
-    openScheduledThread.mockResolvedValueOnce(undefined);
-    await scheduleOpen(hostThreadIdSchema.parse("scheduled-thread"), signal);
+    openSchedules.mockResolvedValueOnce(undefined);
+    await scheduleOpen(signal);
     expect(shellClose).toHaveBeenCalledOnce();
     await importOpen(hostThreadIdSchema.parse("imported-thread"), signal);
     expect(openImportedThread).toHaveBeenCalledExactlyOnceWith("imported-thread", signal);
-    expect(openScheduledThread).toHaveBeenCalledTimes(2);
+    expect(openSchedules).toHaveBeenCalledTimes(2);
     expect(shellClose).toHaveBeenCalledTimes(2);
     lifecycle.dispose();
   });

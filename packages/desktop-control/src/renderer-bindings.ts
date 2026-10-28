@@ -8,10 +8,8 @@ export {
   findScopedDraftModelBinding,
   createScopedDraftModelWriter,
 } from "./renderer-scoped-draft-model.js";
-export { connectDesktopHarnessSchedules } from "./desktop-harness-schedules.js";
-export type {
-  DesktopScheduleNativeServices,
-  DesktopScheduleCreationInputsFactory,
-} from "./desktop-harness-schedules.js";
-export type { DesktopHarnessScheduleSession } from "./desktop-harness-schedule-creation.js";
-export type { DesktopHarnessSchedules } from "./desktop-harness-schedule-management.js";
+export {
+  readNativeScheduleForm,
+  nativeScheduleModelRows,
+} from "./renderer-native-schedule-form.js";
+export type { NativeScheduleForm, NativeScheduleModel } from "./renderer-native-schedule-form.js";

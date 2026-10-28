@@ -23,7 +23,92 @@ export function gatewayString(value: unknown): string {
 }
 
 // Compatibility is determined by native capabilities and RPC results, not version numbers.
-const GATEWAY_LAUNCH = `import runpy\nrunpy.run_module('tui_gateway.entry', run_name='__main__')`;
+//
+// Attach to the resident gateway instead of launching the standalone tui_gateway.entry stdio
+// server. That server must own HERMES_HOME exclusively (its gateway.lock reservation refuses to
+// start beside a running gateway — upstream fix 9595c3f345), so it can never coexist with the
+// messaging gateway. This bridge is a thin pipe: stdin JSON-RPC lines are forwarded to the
+// gateway's canonical WebSocket (official client path: ensure runtime -> control-socket ticket
+// -> WS), and frames flow back to stdout. Same tui_gateway.server.dispatch, same wire protocol,
+// and every attached client (Ink TUI, Desktop, this bridge) coexists with the resident gateway.
+const GATEWAY_LAUNCH = `import asyncio
+import sys
+
+
+async def _bridge():
+    from hermes_constants import get_hermes_home
+    from hermes_cli.gateway_client import _session_ticket, gateway_ws_target
+    from hermes_cli.gateway_runtime import (
+        attachable,
+        ensure_gateway_runtime,
+        gateway_profile_home,
+    )
+    from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
+    from websockets.asyncio.client import connect
+
+    home = gateway_profile_home(get_hermes_home())
+    result = await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)
+    if not attachable(result):
+        detail = f" ({result.detail})" if result.detail else ""
+        raise SystemExit(
+            f"[bridge-exit] gateway not attachable: {result.state} "
+            f"{result.reason_code or 'not ready'}{detail}"
+        )
+    endpoint = result.endpoint
+    ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
+    url, protocols = gateway_ws_target(endpoint, ticket)
+
+    async with connect(
+        url, subprotocols=protocols, open_timeout=10, max_size=8 * 1024 * 1024, proxy=None
+    ) as ws:
+        if protocols and ws.subprotocol != CANONICAL_GATEWAY_PROTOCOL:
+            raise SystemExit("[bridge-exit] gateway protocol mismatch; update/restart required")
+
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader()
+        await loop.connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
+        )
+
+        async def pump_in():
+            async for raw in reader:
+                line = raw.decode("utf-8", "replace").strip()
+                if line:
+                    await ws.send(line)
+
+        async def pump_out():
+            async for raw in ws:
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", "replace")
+                sys.stdout.write(raw + "\\n")
+                sys.stdout.flush()
+
+        pump_out_task = asyncio.create_task(pump_out())
+        pump_in_task = asyncio.create_task(pump_in())
+        # stdin EOF (host closed us) or socket close (gateway went away): end both.
+        done, _pending = await asyncio.wait(
+            {pump_in_task, pump_out_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in (pump_in_task, pump_out_task):
+            task.cancel()
+        for task in done:
+            if task.cancelled():
+                continue
+            exc = task.exception()
+            if exc is not None:
+                raise exc
+
+
+# No __main__ guard: the native launcher spawns this through exec(script, {})
+# whose fresh globals lack __name__; top-level code runs in both the legacy
+# (-c) and native (exec) spawn forms.
+try:
+    asyncio.run(_bridge())
+except SystemExit:
+    raise
+except Exception as exc:
+    raise SystemExit(f"[bridge-exit] bridge failed: {type(exc).__name__}: {exc}")
+`;
 
 export class HermesGatewayTransport {
   onEvent: (event: GatewayRecord) => void = () => undefined;

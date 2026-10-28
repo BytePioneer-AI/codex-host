@@ -46,8 +46,11 @@ export async function prepareGatewayDelegation(environment: NodeJS.ProcessEnv): 
       // do not already carry Hermes's dependencies. ``hermes_bootstrap`` is
       // import-safe here for the same reason entry.py relies on it: stdlib-only
       // at import time, so nothing can shadow it from the launch directory.
-      bootstrap: `import hermes_bootstrap
+      bootstrap: `import sys
+import hermes_bootstrap
+_stdout = sys.stdout  # tui_gateway.server redirects sys.stdout to sys.stderr at import (stdio-entry protection); this bridge owns stdout as its RPC channel to the host
 from tui_gateway import server
+sys.stdout = _stdout
 from pathlib import Path
 from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
 PluginContext(PluginManifest(name="codexhost-runtime"), get_plugin_manager()).register_skill(

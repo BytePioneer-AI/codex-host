@@ -33,9 +33,15 @@ describe("prepareGatewayDelegation bootstrap", () => {
     // to put the selected dependency environment on sys.path. Without it, bare
     // third-party imports (hermes_yaml -> ruamel) fail on interpreters whose
     // site-packages do not carry Hermes's dependencies.
-    expect(prepared.bootstrap.startsWith("import hermes_bootstrap\n")).toBe(true);
+    const bootstrapImport = prepared.bootstrap.indexOf("import hermes_bootstrap\n");
+    expect(bootstrapImport).toBeGreaterThanOrEqual(0);
     const serverImport = prepared.bootstrap.indexOf("from tui_gateway import server");
-    expect(serverImport).toBeGreaterThan("import hermes_bootstrap".length);
+    expect(serverImport).toBeGreaterThan(bootstrapImport);
+    // tui_gateway.server redirects sys.stdout to sys.stderr at import (stdio-entry
+    // protection); this bridge owns stdout as its RPC channel to the host, so the
+    // bootstrap must restore the saved stdout right after that import.
+    const stdoutRestore = prepared.bootstrap.indexOf("sys.stdout = _stdout");
+    expect(stdoutRestore).toBeGreaterThan(serverImport);
     expect(prepared.bootstrap).toContain("register_skill");
     // The registered Skill file exists while the delegation is live.
     const match = /Path\("([^"]+)"\)/.exec(prepared.bootstrap);

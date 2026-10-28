@@ -49,6 +49,8 @@ describe("native custom inference has a separate Billing Source", () => {
     },
     ...[
       "https://api.openai.com/v1",
+      "https://api.openai.com./v1",
+      "https://chatgpt.com./backend-api/codex",
       "https://chatgpt.com/backend-api/codex",
       "https://edge.chatgpt.com",
       "file:///tmp/proxy",

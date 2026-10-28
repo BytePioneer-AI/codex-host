@@ -1057,7 +1057,10 @@ export function installRendererBindingProbe(
       currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
     );
+    const nativeTargetResolved =
+      mounted.modelTarget?.[0] === "default" || mounted.modelTarget?.[0] === "conversation";
     const nativeEligible =
+      nativeTargetResolved &&
       controller.get(mounted.composer).agent === "codex" &&
       mounted.ownershipStatus !== "loading" &&
       mounted.ownershipStatus !== "error" &&

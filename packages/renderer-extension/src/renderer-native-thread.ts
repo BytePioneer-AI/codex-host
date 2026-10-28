@@ -14,9 +14,10 @@ export function usesIndependentNativeInference(value: unknown, modelProvider?: s
   if (!URL.canParse(provider.base_url)) return false;
   const endpoint = new URL(provider.base_url);
   if (!["http:", "https:"].includes(endpoint.protocol)) return false;
+  const hostname = endpoint.hostname.replace(/\.$/u, "");
   if (
     ["openai.com", "chatgpt.com"].some(
-      (domain) => endpoint.hostname === domain || endpoint.hostname.endsWith(`.${domain}`),
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
     )
   ) {
     return false;

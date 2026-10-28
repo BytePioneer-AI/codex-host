@@ -9,7 +9,8 @@ export function installRendererNativeResume(
   isCurrent: () => boolean,
 ): (() => void) | null {
   const original = target.resumeThread;
-  if (!original || !target.updateConversationState) return null;
+  const updateConversationState = target.updateConversationState;
+  if (!original || !updateConversationState) return null;
   let disposed = false;
   const resume = function (params: unknown): Promise<unknown> {
     return original.call(target, params).then((result) => {
@@ -28,7 +29,7 @@ export function installRendererNativeResume(
         // including Sidebar/cold-start paths outside the extension's client.
         const modelProvider = result.modelProvider;
         const model = typeof result.model === "string" ? result.model : null;
-        target.updateConversationState?.(result.thread.id, (conversation) => {
+        updateConversationState(result.thread.id, (conversation) => {
           conversation.modelProvider = modelProvider;
           if (model) {
             conversation.latestModel = model;

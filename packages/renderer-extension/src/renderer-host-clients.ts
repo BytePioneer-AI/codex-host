@@ -58,7 +58,12 @@ export function createRendererHostClients(
           if (disposed || readRouting()?.forHost(route.hostId) !== route) {
             throw new Error(`Renderer request manager is unavailable for Host ${route.hostId}`);
           }
-          if (method === "thread/resume" && options === undefined && target.resumeThread) {
+          if (
+            method === "thread/resume" &&
+            options === undefined &&
+            target.resumeThread &&
+            target.updateConversationState
+          ) {
             return target.resumeThread(params);
           }
           return options === undefined

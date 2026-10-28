@@ -158,10 +158,12 @@ describe("Codex locale adapter", () => {
     vi.useFakeTimers();
     const native = nativeLocale({ ideLocale: "zh-CN" });
     let ready!: (value: typeof native) => void;
-    loadNativeServices.mockReturnValue(
-      new Promise((resolve) => {
-        ready = resolve;
-      }),
+    loadNativeServices.mockImplementation(async (_owner, matches: (value: unknown) => boolean) =>
+      matches(native)
+        ? new Promise((resolve) => {
+            ready = resolve;
+          })
+        : null,
     );
     const controller = new AbortController();
     const ownerWindow = localeWindow({ "vscode://codex/get-setting": { value: null } });

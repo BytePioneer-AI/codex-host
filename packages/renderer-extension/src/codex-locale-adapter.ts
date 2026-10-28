@@ -31,6 +31,21 @@ function isNativeLocaleServices(value: unknown): value is NativeLocaleServices {
   );
 }
 
+interface NativeSettingsServices {
+  settings: {
+    read(key: "localeOverride"): Promise<unknown>;
+    write(key: "localeOverride", value: CodexLocaleOverride): Promise<unknown>;
+  };
+}
+
+function isNativeSettingsServices(value: unknown): value is NativeSettingsServices {
+  // The transport root also synthesizes arbitrary callable paths. Only the
+  // service registry owns settings; its settings stub itself may be callable.
+  if (!isRecord(value) || !Object.hasOwn(value, "settings")) return false;
+  const settings = value.settings as NativeSettingsServices["settings"] | null | undefined;
+  return typeof settings?.read === "function" && typeof settings?.write === "function";
+}
+
 interface LocaleInfoResponse {
   ideLocale: string | undefined;
   systemLocale: string | undefined;
@@ -55,6 +70,7 @@ type FixedLocaleRequest =
       kind: "set-locale-override";
       url: typeof SET_LOCALE_OVERRIDE_URL;
       body: string;
+      value: CodexLocaleOverride;
     };
 
 export type CodexLocaleOverride = "en-US" | "zh-CN" | null;
@@ -145,24 +161,29 @@ function sendFixedLocaleRequest(
   timeoutMs: number,
 ): Promise<unknown> {
   const bridge = (ownerWindow as ElectronLocaleWindow).electronBridge;
-  if (request.kind !== "locale-info" && typeof bridge?.sendMessageFromView !== "function") {
-    return Promise.reject(new Error("Codex locale bridge is unavailable"));
-  }
   if (signal?.aborted) return Promise.reject(abortError());
 
   const requestId = ownerWindow.crypto.randomUUID();
   return new Promise((resolve, reject) => {
     let settled = false;
+    let nativeSettingsRequest: (Promise<unknown> & Partial<Disposable>) | undefined;
     const cleanup = (): void => {
       ownerWindow.clearTimeout(timer);
       ownerWindow.removeEventListener("message", onMessage);
       signal?.removeEventListener("abort", onAbort);
+      const request = nativeSettingsRequest;
+      nativeSettingsRequest = undefined;
+      request?.[Symbol.dispose]?.();
     };
     const settle = (operation: () => void): void => {
       if (settled) return;
       settled = true;
-      cleanup();
-      operation();
+      try {
+        cleanup();
+        operation();
+      } catch (error) {
+        reject(error);
+      }
     };
     const onAbort = (): void => settle(() => reject(abortError()));
     const onMessage = (event: MessageEvent): void => {
@@ -208,6 +229,26 @@ function sendFixedLocaleRequest(
         if (native) {
           const response = await native.appInfo.getLocaleInfo();
           settle(() => resolve(response));
+          return;
+        }
+      } else {
+        const native = await loadCodexNativeServices(ownerWindow, isNativeSettingsServices);
+        if (settled) return;
+        if (native) {
+          if (request.kind === "locale-override") {
+            nativeSettingsRequest = native.settings.read("localeOverride");
+            const response = await nativeSettingsRequest;
+            if (!isRecord(response) || !Object.hasOwn(response, "effective")) {
+              throw new Error("Codex native locale override response is malformed");
+            }
+            // Match Desktop's settings helper: effective includes native defaults
+            // and policy resolution; configured alone is not the active setting.
+            settle(() => resolve({ value: response.effective }));
+          } else {
+            nativeSettingsRequest = native.settings.write("localeOverride", request.value);
+            await nativeSettingsRequest;
+            settle(() => resolve({ success: true }));
+          }
           return;
         }
       }
@@ -268,6 +309,7 @@ export async function setCodexLocaleOverride(
       kind: "set-locale-override",
       url: SET_LOCALE_OVERRIDE_URL,
       body: JSON.stringify({ key: "localeOverride", value: localeOverride }),
+      value: localeOverride,
     },
     ownerWindow,
     options.signal,

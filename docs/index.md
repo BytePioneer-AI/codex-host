@@ -115,7 +115,7 @@
 | [`product/usage-statistics.md`](product/usage-statistics.md) | 控制台与 Desktop 内置设置的全局用量统计：独立 Codex 统计插件、各 Harness 原生会话去重、按模型 ID 读时计价与缓存；新增读取器或修改统计口径时阅读。 |
 | [`product/codex-native-account-switching-design.md`](product/codex-native-account-switching-design.md) | 移除 Codex 多账号切换后的只读边界；修改 Codex 认证或账号路由时阅读。 |
 | [`architecture/renderer-settings-styling.md`](architecture/renderer-settings-styling.md) | 设置页 Tailwind CSS 使用边界、构建方式与编写规则；新增或改版设置页界面时阅读。 |
-| [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常，以及输入性能的诊断流程；兼容性与交互性能回归时阅读。 |
+| [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent、Model、语言设置异常及输入性能的诊断流程；兼容性与交互性能回归时阅读。 |
 
 ## 平台、进程与远程运行
 

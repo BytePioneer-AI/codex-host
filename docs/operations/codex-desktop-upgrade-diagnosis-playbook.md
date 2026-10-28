@@ -326,6 +326,16 @@ grok
 - Model client 是否每次调用重新查找 target
 - 注入的对象是否仍是当前 Fiber 中的同一个对象
 
+### 检查原生语言设置
+
+`codex-locale-adapter.ts` 分别读取语言 override 和 IDE/system locale。`appInfo.getLocaleInfo()` 成功不代表 override 已知；override 读取失败时必须保持 `fallback / unavailable`，不能推断为自动模式。
+
+Desktop `26.1023.50603` 的原生设置接口是 `settings.read("localeOverride")` 和 `settings.write("localeOverride", value)`。读取使用 `effective`，而不是 `configured`：`effective: null` 表示自动模式，`configured: undefined` 可以表示用户没有显式配置。写入沿用有界的 `en-US`、`zh-CN`、`null`，原生写入完成不要求返回旧 endpoint 的 `{ success: true }`。
+
+服务发现要求 registry 自有 `settings` 属性，同时验证 callable stub 的 `read/write` 方法。transport root 能合成任意属性路径，不是服务 registry；不能从多个候选中任取一个。缺少服务时才回退到旧版 `get-setting/set-setting`，歧义、原生请求失败或非法结果均不触发旧 endpoint 重试。该 fallback 服务于仍使用旧设置 handler 的 Desktop；只有最低支持版本均提供原生 settings 服务时才可删除，对应用例在 `codex-locale-adapter.test.ts` 与 `codex-locale-native-settings.test.ts`。
+
+发现、原生调用和旧 endpoint fallback 共用单次请求的超时预算；取消或超时后不得发起迟到的写入。原生 settings RPC 的 disposable request 在完成或取消时释放。只读 smoke test 核对 Adapter 的 `status/mode/source`；设置写入需要单独获得授权，不能用读成功替代写入验证。
+
 ### 检查 Codex 额度门
 
 ChatGPT 登录的 Codex 额度耗尽时，外部 Agent 的发送按钮仍为 disabled，且 Agent 控件悬停提示「无法将此 Harness 与 Codex 额度限制分离」，说明 `renderer-codex-usage-gate.ts` 没有绑定成功。API Key 登录不会触发这道门，不能用来复现。

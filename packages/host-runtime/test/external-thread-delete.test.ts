@@ -10,6 +10,7 @@ import {
   createFixture,
   method,
   requestId,
+  startExternalThread,
   startPiThread,
   startPiTurn,
   stopFixture,
@@ -250,6 +251,66 @@ describe("external Thread local deletion", () => {
         expect(fixture.collector.messages.indexOf(resolved)).toBeLessThan(
           fixture.collector.messages.findIndex((message) => requestId(message, 10)),
         );
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it.each(["approval", "question"])(
+    "does not retire another Thread's %s with the same Harness interaction ID",
+    async (kind) => {
+      const fixture = createFixture();
+      try {
+        const firstId = await startPiThread(fixture);
+        const secondId = await startExternalThread(fixture, "codexhost/pi-native", 3);
+        const first = loadedSession(fixture);
+        const second = fixture.adapter.sessions[1];
+        if (!second) throw new Error("Expected another Harness Session");
+        if (kind === "approval") {
+          first.requestApprovalOnNextTurn("Allow first?");
+          second.requestApprovalOnNextTurn("Allow second?");
+        }
+        await startPiTurn(fixture, firstId, 2);
+        await startPiTurn(fixture, secondId, 4);
+        if (kind === "question") {
+          for (const session of [first, second]) {
+            session.askQuestion({
+              id: "value",
+              type: "text",
+              prompt: "Value?",
+              optional: false,
+              multiline: false,
+              secret: false,
+            });
+          }
+        }
+        const request = await fixture.collector.waitFor(
+          (message) =>
+            method(
+              message,
+              kind === "approval" ? "mcpServer/elicitation/request" : "item/tool/requestUserInput",
+            ) && (message.params as { threadId?: string }).threadId === secondId,
+        );
+        if (typeof request.id !== "number")
+          throw new Error("Expected a numeric Desktop request ID");
+        expect(await deleteThread(fixture, firstId)).toEqual({ id: 10, result: {} });
+        await expectDeleted(fixture, firstId);
+        expect(
+          fixture.collector.messages.some(
+            (message) =>
+              method(message, "serverRequest/resolved") &&
+              (message.params as { requestId?: number }).requestId === request.id,
+          ),
+        ).toBe(false);
+        writeRequest(fixture.desktopInput, {
+          id: request.id,
+          result:
+            kind === "approval"
+              ? { action: "accept", content: {}, _meta: null }
+              : { answers: { value: { answers: ["kept"] } } },
+        });
+        await vi.waitFor(() => expect(second.interactionResponses).toHaveLength(1));
       } finally {
         await stopFixture(fixture);
       }

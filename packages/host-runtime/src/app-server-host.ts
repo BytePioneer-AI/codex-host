@@ -1028,12 +1028,12 @@ export class AppServerHost {
       await this.#closeAdapters();
       await this.#externalRuntime.drain();
       for (const pending of [...this.#pendingDesktopApprovals.values()]) {
-        await this.#resolveDesktopApproval(pending.interaction.interactionId).catch(
+        await this.#resolveDesktopApproval(pending.interaction.interactionId, pending.thread).catch(
           () => undefined,
         );
       }
       for (const pending of [...this.#pendingDesktopQuestions.values()]) {
-        await this.#resolveDesktopQuestion(pending.interaction.interactionId).catch(
+        await this.#resolveDesktopQuestion(pending.interaction.interactionId, pending.thread).catch(
           () => undefined,
         );
       }
@@ -5192,7 +5192,7 @@ export class AppServerHost {
     if (event.type === "session.faulted") {
       for (const pending of [...this.#pendingDesktopQuestions.values()]) {
         if (pending.shared && pending.thread === thread)
-          this.#retireDesktopQuestion(pending.interaction.interactionId);
+          this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
       }
       this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));
@@ -5259,12 +5259,12 @@ export class AppServerHost {
           pending.thread === thread &&
           pending.interaction.turnId === event.turnId
         )
-          this.#retireDesktopQuestion(pending.interaction.interactionId);
+          this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
       }
     }
     if (event.type === "interaction.closed") {
-      await this.#resolveDesktopApproval(event.interactionId);
-      await this.#resolveDesktopQuestion(event.interactionId);
+      await this.#resolveDesktopApproval(event.interactionId, thread);
+      await this.#resolveDesktopQuestion(event.interactionId, thread);
     }
     const ephemeralTurn =
       event.type === "turn.completed" &&
@@ -5574,7 +5574,7 @@ export class AppServerHost {
       )
         return true;
       if (this.#options.externalOnly)
-        await this.#resolveDesktopApproval(pending.interaction.interactionId);
+        await this.#resolveDesktopApproval(pending.interaction.interactionId, pending.thread);
       else this.#pendingDesktopApprovals.delete(requestId);
 
       let response: HostApprovalResponse;
@@ -5637,17 +5637,21 @@ export class AppServerHost {
   async #resolveThreadInteractions(thread: ExternalThread): Promise<void> {
     for (const pending of [...this.#pendingDesktopApprovals.values()]) {
       if (pending.thread === thread)
-        await this.#resolveDesktopApproval(pending.interaction.interactionId);
+        await this.#resolveDesktopApproval(pending.interaction.interactionId, thread);
     }
     for (const pending of [...this.#pendingDesktopQuestions.values()]) {
       if (pending.thread === thread)
-        await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+        await this.#resolveDesktopQuestion(pending.interaction.interactionId, thread);
     }
   }
 
-  async #resolveDesktopApproval(interactionId: HostInteractionId): Promise<void> {
+  async #resolveDesktopApproval(
+    interactionId: HostInteractionId,
+    thread: ExternalThread,
+  ): Promise<void> {
     for (const [requestId, pending] of this.#pendingDesktopApprovals) {
-      if (pending.interaction.interactionId !== interactionId) continue;
+      if (pending.thread !== thread || pending.interaction.interactionId !== interactionId)
+        continue;
       this.#pendingDesktopApprovals.delete(requestId);
       await this.#writer.json({
         method: "serverRequest/resolved",
@@ -5729,16 +5733,16 @@ export class AppServerHost {
           });
         } catch (error) {
           // Delivery is ambiguous; never permit a second write of the same answer.
-          this.#retireDesktopQuestion(pending.interaction.interactionId);
+          this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
           throw error;
         }
         if (!result.ok) {
           pending.responding = false;
           if (result.error.code === "invalidState")
-            this.#retireDesktopQuestion(pending.interaction.interactionId);
+            this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
           throw new Error(result.error.message);
         }
-        this.#retireDesktopQuestion(pending.interaction.interactionId);
+        this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
         await this.#writer.json(rpcEnvelope(request, { result: { accepted: true } }));
       });
     } catch (error) {
@@ -5798,7 +5802,7 @@ export class AppServerHost {
     try {
       await this.#writer.json({ id: requestId, ...result.questionRequest.request });
     } catch (error) {
-      this.#retireDesktopQuestion(interaction.interactionId);
+      this.#retireDesktopQuestion(interaction.interactionId, thread);
       await thread.session
         .execute({
           type: "interaction.respond",
@@ -5822,7 +5826,7 @@ export class AppServerHost {
       )
         return true;
       if (this.#options.externalOnly)
-        await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+        await this.#resolveDesktopQuestion(pending.interaction.interactionId, pending.thread);
       else this.#pendingDesktopQuestions.delete(requestId);
       if (pending.timeout) clearTimeout(pending.timeout);
 
@@ -5857,7 +5861,7 @@ export class AppServerHost {
         this.#externalRuntime.idleRelease.failure(pending.thread)
       )
         return;
-      await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+      await this.#resolveDesktopQuestion(pending.interaction.interactionId, pending.thread);
       if (pending.responding) return;
       const result = await pending.thread.session.execute({
         type: "interaction.respond",
@@ -5870,17 +5874,22 @@ export class AppServerHost {
     });
   }
 
-  #retireDesktopQuestion(interactionId: HostInteractionId): void {
+  #retireDesktopQuestion(interactionId: HostInteractionId, thread: ExternalThread): void {
     for (const [requestId, pending] of this.#pendingDesktopQuestions) {
-      if (pending.interaction.interactionId !== interactionId) continue;
+      if (pending.thread !== thread || pending.interaction.interactionId !== interactionId)
+        continue;
       if (pending.timeout) clearTimeout(pending.timeout);
       this.#pendingDesktopQuestions.delete(requestId);
     }
   }
 
-  async #resolveDesktopQuestion(interactionId: HostInteractionId): Promise<void> {
+  async #resolveDesktopQuestion(
+    interactionId: HostInteractionId,
+    thread: ExternalThread,
+  ): Promise<void> {
     for (const [requestId, pending] of this.#pendingDesktopQuestions) {
-      if (pending.interaction.interactionId !== interactionId) continue;
+      if (pending.thread !== thread || pending.interaction.interactionId !== interactionId)
+        continue;
       if (pending.timeout) clearTimeout(pending.timeout);
       this.#pendingDesktopQuestions.delete(requestId);
       if (pending.shared) continue;

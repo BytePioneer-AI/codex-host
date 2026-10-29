@@ -9,6 +9,7 @@ import {
   method,
   requestId,
   startPiThread,
+  startPiTurn,
   stopFixture,
   writeRequest,
 } from "./app-server-host-fixture.js";
@@ -19,13 +20,13 @@ function loadedSession(fixture: ReturnType<typeof createFixture>) {
   return session;
 }
 
-async function deleteThread(fixture: ReturnType<typeof createFixture>, threadId: string) {
+async function deleteThread(fixture: ReturnType<typeof createFixture>, threadId: string, id = 10) {
   writeRequest(fixture.desktopInput, {
-    id: 10,
+    id,
     method: "thread/delete",
     params: { threadId },
   });
-  return fixture.collector.waitFor((message) => requestId(message, 10));
+  return fixture.collector.waitFor((message) => requestId(message, id));
 }
 
 async function expectDeleted(fixture: ReturnType<typeof createFixture>, threadId: string) {
@@ -112,7 +113,7 @@ describe("external Thread local deletion", () => {
     }
   });
 
-  it("keeps the connection and emits no deletion notification when persistence fails", async () => {
+  it("retains the mapping and emits no deletion notification when persistence fails", async () => {
     const fixture = createFixture();
     try {
       const threadId = await startPiThread(fixture);
@@ -124,7 +125,7 @@ describe("external Thread local deletion", () => {
       expect(
         await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
       ).not.toBeNull();
-      expect(close).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledOnce();
       expect(fixture.collector.messages.some((message) => method(message, "thread/deleted"))).toBe(
         false,
       );
@@ -134,21 +135,59 @@ describe("external Thread local deletion", () => {
     }
   });
 
-  it("still reports committed deletion when closing the detached connection fails", async () => {
+  it("keeps failed cleanup tracked and drains the still-live output before retrying deletion", async () => {
     const fixture = createFixture();
     try {
       const threadId = await startPiThread(fixture);
+      await startPiTurn(fixture, threadId);
       const session = loadedSession(fixture);
-      const close = session.close.bind(session);
-      vi.spyOn(session, "close").mockImplementationOnce(async () => {
-        await close();
-        throw new Error("synthetic close failure");
-      });
-      expect(await deleteThread(fixture, threadId)).toEqual({ id: 10, result: {} });
+      const close = vi
+        .spyOn(session, "close")
+        .mockRejectedValueOnce(new Error("close failed before output ended"));
+      const remove = vi.spyOn(fixture.mappingStore, "removeThread");
+
+      expect(await deleteThread(fixture, threadId)).toMatchObject({ error: { code: -32075 } });
+      expect(remove).not.toHaveBeenCalled();
+      expect(
+        await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+      ).not.toBeNull();
+      expect(fixture.collector.messages.some((message) => method(message, "thread/deleted"))).toBe(
+        false,
+      );
+      session.appendText("output after the failed close");
+      await fixture.collector.waitFor((message) => method(message, "item/agentMessage/delta"));
+
+      expect(await deleteThread(fixture, threadId, 11)).toEqual({ id: 11, result: {} });
       await expectDeleted(fixture, threadId);
-      expect(String(fixture.diagnosticOutput.read())).toContain("synthetic close failure");
+      expect(close).toHaveBeenCalledTimes(2);
+      const completed = fixture.collector.messages.findIndex((message) =>
+        method(message, "turn/completed"),
+      );
+      const deleted = fixture.collector.messages.findIndex((message) =>
+        method(message, "thread/deleted"),
+      );
+      expect(completed).toBeGreaterThanOrEqual(0);
+      expect(completed).toBeLessThan(deleted);
     } finally {
       await stopFixture(fixture);
     }
+  });
+
+  it("retries failed cleanup during Host shutdown without declaring the Thread deleted", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const close = vi
+      .spyOn(loadedSession(fixture), "close")
+      .mockRejectedValueOnce(new Error("close failed"));
+    try {
+      expect(await deleteThread(fixture, threadId)).toMatchObject({ error: { code: -32075 } });
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      await stopFixture(fixture);
+    }
+    expect(close.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(fixture.collector.messages.some((message) => method(message, "thread/deleted"))).toBe(
+      false,
+    );
   });
 });

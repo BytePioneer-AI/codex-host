@@ -183,6 +183,7 @@ import {
   type ExternalThreadLocation,
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
+import { ExternalSessionReleaseError } from "./external-thread-lifecycle.js";
 import {
   ExternalSteerError,
   ExternalTurnSteering,
@@ -4418,25 +4419,17 @@ export class AppServerHost {
     request: JsonRpcRequest,
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
   ): Promise<void> {
-    const thread = location.thread;
     try {
-      await this.#repository.removeThread(location.record.hostThreadId);
-    } catch {
-      await this.#writer.json(rpcError(request, -32081, "External Thread could not be removed"));
+      await this.#externalRuntime.deleteThread(location.record.hostThreadId);
+    } catch (error) {
+      await this.#writer.json(
+        error instanceof ExternalSessionReleaseError
+          ? rpcError(request, -32075, error.message)
+          : rpcError(request, -32081, "External Thread could not be removed"),
+      );
       return;
     }
-    this.#externalRuntime.remove(location.record.hostThreadId);
     this.#routeObservationTracker.forgetThread(location.record.hostThreadId);
-    if (thread) {
-      thread.stateObserver.fault(new Error("External Thread was deleted"));
-      try {
-        await thread.session.close();
-        await thread.outputTask;
-      } catch (error) {
-        // The Host record is already gone; cleanup failure cannot undo this deletion.
-        this.#diagnose(`Deleted External Thread could not close: ${errorMessage(error)}`);
-      }
-    }
     await this.#writer.json(rpcEnvelope(request, { result: {} }));
     await this.#writer.json({
       method: "thread/deleted",

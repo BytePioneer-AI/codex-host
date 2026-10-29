@@ -55,6 +55,16 @@ const { outputFiles } = await build({
           replaceTitle: () => { const title = pi.row.querySelector('[data-thread-title]'); title.replaceWith(title.cloneNode(true)); },
           recycle: () => { pi.owner.memoizedProps = { automation: { id: "replacement", kind: "heartbeat", targetThreadId: "claude-thread" } }; pi.row.setAttribute("aria-labelledby", "pi-title"); },
           unsupported: () => { pi.owner.memoizedProps = { item: { automation: {} } }; pi.row.setAttribute("aria-labelledby", "pi-title"); },
+          measureScheduledReads: () => {
+            const key = "__reactFiber$fixture", fiber = pi.row[key];
+            let reads = 0;
+            Object.defineProperty(pi.row, key, { configurable: true, enumerable: true, get: () => { reads++; return fiber; } });
+            control.refresh();
+            return new Promise(resolve => requestAnimationFrame(() => {
+              Object.defineProperty(pi.row, key, { configurable: true, enumerable: true, writable: true, value: fiber });
+              resolve(reads);
+            }));
+          },
           unresolved: () => add("unknown", "unresolved-thread", "codex"),
         };
       };
@@ -186,6 +196,21 @@ for (const fail of [false, true]) {
     expect(await act(page, "iconState")).toEqual({ connected: true, removals: 0 });
   });
 }
+
+test("reads each native schedule once per scan and rechecks recycled targets", async ({ page }) => {
+  await setup(page);
+  await expect(icons(page, "pi")).toHaveAttribute("data-codexhost-sidebar-agent-icon", "pi");
+  expect(await act(page, "measureScheduledReads")).toBe(1);
+  await act(page, "recycle");
+  await expect(icons(page, "pi")).toHaveAttribute(
+    "data-codexhost-sidebar-agent-icon",
+    "claude-code",
+  );
+  expect(await act(page, "measureScheduledReads")).toBe(1);
+  await act(page, "unsupported");
+  await expect(icons(page, "pi")).toHaveCount(0);
+  expect(await act(page, "measureScheduledReads")).toBe(1);
+});
 
 test("does not label unknown ownership as Codex", async ({ page }) => {
   await setup(page);

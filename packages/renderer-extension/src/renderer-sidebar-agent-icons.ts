@@ -155,6 +155,8 @@ function sidebarAgentIconAnchor(titleTrigger: HTMLElement, title: HTMLElement): 
 }
 
 class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
+  #scheduledThread: string | null | undefined;
+
   constructor(private readonly element: HTMLElement) {}
 
   isConnected(): boolean {
@@ -162,16 +164,19 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
   }
 
   hostId(): string | null {
-    return (
-      sidebarThreadAttributes(this.element)?.hostId ??
-      (readNativeScheduleSidebarThread(this.element) ? "local" : null)
-    );
+    const attributes = sidebarThreadAttributes(this.element);
+    this.#scheduledThread = attributes ? undefined : readNativeScheduleSidebarThread(this.element);
+    return attributes?.hostId ?? (this.#scheduledThread ? "local" : null);
   }
 
   threadId(): string | null {
-    return sidebarThreadAttributes(this.element)
+    const threadId = sidebarThreadAttributes(this.element)
       ? threadIdFromSidebarRowElement(this.element)
-      : readNativeScheduleSidebarThread(this.element);
+      : this.#scheduledThread !== undefined
+        ? this.#scheduledThread
+        : readNativeScheduleSidebarThread(this.element);
+    this.#scheduledThread = undefined;
+    return threadId;
   }
 
   draftId(): string | null {

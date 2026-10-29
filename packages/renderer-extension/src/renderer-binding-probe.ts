@@ -1,9 +1,4 @@
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
-import {
-  createNativeScheduleWorkspaceThread,
-  isNativeProjectThreadCreator,
-} from "@codexhost/desktop-control/renderer-bindings";
-import { loadCodexNativeServices } from "./codex-native-services.js";
 import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
@@ -109,6 +104,11 @@ import {
   type RendererDelegationMentionControl,
 } from "./renderer-delegation-mention.js";
 import { compatibleRendererPluginPresentation, rendererAgentLabel } from "./renderer-agent-icon.js";
+import {
+  createNativeScheduleWorkspaceThread,
+  isNativeProjectThreadCreator,
+} from "@codexhost/desktop-control/renderer-bindings";
+import { loadCodexNativeServices } from "./codex-native-services.js";
 import { openCodexSchedules } from "./codex-schedule-navigation.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {

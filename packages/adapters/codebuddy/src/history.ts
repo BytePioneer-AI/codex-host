@@ -574,6 +574,19 @@ export function snapshotFromHistory(
       !manualCompactions.has(text(row.id))
     )
       continue;
+    // CodeBuddy appends reminders and notifications as internal user rows that stay
+    // inside the active request, so they must not open another Native Turn. Rows of
+    // interrupted or retried requests may carry another request ID; they still never
+    // start a Turn on their own.
+    if (
+      row.type === "message" &&
+      row.role === "user" &&
+      data.isMeta === true &&
+      data.startsNewUserRequest !== true &&
+      !localCommand &&
+      data.agent !== "compact"
+    )
+      continue;
     if (row.type === "message" && row.role === "user") {
       current = {
         nativeTurnRef: nativeTurnRefSchema.parse({

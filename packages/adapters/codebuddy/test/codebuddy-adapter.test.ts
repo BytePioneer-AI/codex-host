@@ -415,4 +415,21 @@ describe("CodeBuddy native Adapter", () => {
     await session.execute(turn("missing"));
     expect(await events.completed()).toMatchObject([{ event: { outcome: { status: "failed" } } }]);
   });
+
+  it("identifies the persisted Native Turn when internal meta rows share its request", async () => {
+    const { adapter, native } = setup();
+    const session = await create(adapter);
+    const events = collect(session);
+    const client = native.clients[0];
+    if (!client) throw Error("No client");
+    client.metaNotification = true;
+    expect(await session.execute(turn("first"))).toMatchObject({ ok: true });
+    await events.completed();
+    expect(await session.execute(turn("second", "again"))).toMatchObject({ ok: true });
+    expect(await events.completed(2)).toMatchObject([
+      { event: { outcome: { status: "succeeded" }, nativeTurnRef: { nativeTurnKey: "user-1" } } },
+      { event: { outcome: { status: "succeeded" }, nativeTurnRef: { nativeTurnKey: "user-2" } } },
+    ]);
+    expect(native.history.filter((row) => row.role === "user")).toHaveLength(4);
+  });
 });

@@ -138,7 +138,11 @@ of fabricating it. CodeBuddy's persisted local-command caveat, command, and stdo
 records project as one command Turn. Its internal compaction prompt, reasoning,
 and summary project as `/compact` and a compaction Item, rather than appearing as
 user instructions or a normal assistant reply. Native automatic compaction does
-not create an extra user Turn. Compaction Items start only from native evidence;
+not create an extra user Turn. Internal user rows that CodeBuddy appends for
+reminders and background task notifications (`isMeta: true` without
+`startsNewUserRequest: true`) stay inside the active request and never open a
+Native Turn, even when an interrupted or retried request leaves them with a
+different `conversationRequestId`. Compaction Items start only from native evidence;
 a successful Item requires a newly persisted `isCompacted` summary, and native
 failure/cancellation preserves the corresponding Item outcome. Ordinary prompts still require
 exactly one persisted Native Turn.

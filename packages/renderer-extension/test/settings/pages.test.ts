@@ -2631,59 +2631,58 @@ describe("Renderer Updates page", () => {
   });
 
   it.each([
-    ["npm" as const, "Windows 暂不支持自动更新。请退出 codexhost，在终端运行以下命令完成更新。"],
-    [
-      "windows-installer" as const,
-      "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
-    ],
-  ])("renders manual Windows updates for %s installations", async (installation, expected) => {
-    const client = {
-      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
-      startUpdate: vi.fn(),
-      readUpdateStatus: vi.fn(async () => ({ status: null })),
-    };
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("zh-CN"),
-      () => client,
-    ).find(({ id }) => id === "updates");
-    if (!page) throw new Error("Updates page is not registered");
+    ["npm" as const, "如需手动更新，请在终端运行以下命令。"],
+    ["windows-installer" as const, "如需手动更新，请下载并运行适用于当前系统的安装包。"],
+  ])(
+    "offers one-click and manual Windows updates for %s installations",
+    async (installation, expected) => {
+      const client = {
+        checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
 
-    const document = new FakeDocument("Win32");
-    const content = document.createElement("main");
-    const scope = new RendererSettingsPageScope();
-    const cleanup = page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-    });
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
 
-    await vi.waitFor(() => {
-      expect(visibleText(content)).toContain(expected);
-      expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
-        "Windows 暂不支持自动更新",
-      );
-    });
-    expect(
-      descendants(elementWithClass(content, "settings-update-panel")).find(
+      await vi.waitFor(() => {
+        expect(visibleText(content)).toContain(expected);
+        expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
+          "有新版本可用",
+        );
+      });
+      expect(visibleText(content)).not.toContain("暂不支持自动更新");
+      const update = descendants(elementWithClass(content, "settings-update-panel")).find(
         ({ tagName }) => tagName === "button",
-      ),
-    ).toBeUndefined();
-    expect(client.startUpdate).not.toHaveBeenCalled();
-    if (installation === "npm") {
-      expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
-    } else {
-      const link = descendants(content).find(
-        ({ tagName, href }) =>
-          tagName === "a" &&
-          href ===
-            "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
       );
-      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
-    }
+      expect(update).toBeDefined();
+      if (installation === "npm") {
+        expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
+      } else {
+        const link = descendants(content).find(
+          ({ tagName, href }) =>
+            tagName === "a" &&
+            href ===
+              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+        );
+        expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+      }
 
-    cleanup?.();
-    scope.dispose();
-  });
+      cleanup?.();
+      scope.dispose();
+    },
+  );
 
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(

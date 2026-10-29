@@ -53,19 +53,21 @@ async function file(filePath: string, contents = "fixture"): Promise<void> {
   await chmod(filePath, 0o700);
 }
 
-async function npmFixture(): Promise<{
+async function npmFixture(platform: "darwin" | "win32" = "darwin"): Promise<{
   root: string;
   hostRuntimePath: string;
   environment: NodeJS.ProcessEnv;
 }> {
+  const windows = platform === "win32";
   const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-host-update-"));
   roots.push(root);
   const packageRoot = path.join(root, "platform");
   const hostRuntimePath = path.join(packageRoot, "app", "host-runtime.mjs");
   const environment = {
     HOME: path.join(root, "home"),
+    LOCALAPPDATA: path.join(root, "local-app-data"),
     CODEXHOST_LAUNCHER_PID: "4321",
-    CODEXHOST_LAUNCHER_EXECUTABLE: path.join(root, "codexhost"),
+    CODEXHOST_LAUNCHER_EXECUTABLE: path.join(root, windows ? "codexhost.exe" : "codexhost"),
     CODEXHOST_RUNTIME_DESCRIPTOR_PATH: path.join(root, "runtime", "desktop-runtime-v1.json"),
     CODEXHOST_CONTROL_PORT: "43124",
     CODEXHOST_CONTROL_NONCE: "0123456789abcdef0123456789abcdef",
@@ -76,7 +78,9 @@ async function npmFixture(): Promise<{
   };
   await Promise.all([
     file(hostRuntimePath),
-    file(path.join(packageRoot, "libexec", "codexhost-updater")),
+    file(
+      path.join(packageRoot, "libexec", windows ? "codexhost-updater.exe" : "codexhost-updater"),
+    ),
     file(environment.CODEXHOST_LAUNCHER_EXECUTABLE),
     file(environment.CODEXHOST_NPM_NODE_PATH),
     file(environment.CODEXHOST_NPM_CLI_PATH),
@@ -87,7 +91,7 @@ async function npmFixture(): Promise<{
         schemaVersion: 1,
         version: "1.2.2",
         distribution: "npm",
-        target: "macos-arm64",
+        target: windows ? "windows-x64" : "macos-arm64",
       }),
     ),
   ]);
@@ -233,6 +237,39 @@ describe("Host update coordinator", () => {
     await vi.waitFor(async () =>
       expect(await readFile(updaterRequestPath, "utf8")).not.toEqual(""),
     );
+    expect(spawnUpdater).not.toHaveBeenCalled();
+  });
+
+  it("hands a Windows update to Launcher instead of starting the Helper in the Host Job", async () => {
+    const fixture = await npmFixture("win32");
+    const spawnUpdater = vi.fn(() => ({ pid: 777 }) as unknown as ChildProcess);
+    const manager = createBackgroundUpdateManager({
+      platform: "win32",
+      randomId: () => "one",
+      spawnUpdater,
+      now: () => 10_000,
+    });
+    const coordinator = createHostUpdateCoordinator({
+      hostRuntimePath: fixture.hostRuntimePath,
+      environment: fixture.environment,
+      platform: "win32",
+      architecture: "x64",
+      manager,
+      fetchLatest: async () => release(),
+    });
+
+    await expect(coordinator.start()).resolves.toMatchObject({
+      status: { version: "1.2.3", installation: "npm", phase: "prepared" },
+    });
+    const localAppData = fixture.environment.LOCALAPPDATA;
+    if (!localAppData) throw new Error("fixture LOCALAPPDATA is missing");
+    const operation = path.join(localAppData, "codexhost", "updates", "update-1.2.3-one");
+    await vi.waitFor(async () =>
+      expect(await readFile(path.join(operation, "request-v1.json"), "utf8")).not.toEqual(""),
+    );
+    await expect(readFile(path.join(operation, "codexhost-updater.exe"))).resolves.toBeDefined();
+    // Preparation finishes after start() resolves; let the background step settle.
+    await new Promise((resolve) => setTimeout(resolve, 100));
     expect(spawnUpdater).not.toHaveBeenCalled();
   });
 

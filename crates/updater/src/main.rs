@@ -199,6 +199,7 @@ mod tests {
                 node_path: wrong_executable.clone(),
                 npm_cli_path: wrong_executable.clone(),
                 npm_launcher_path: wrong_executable,
+                npm_package_root: directory.clone(),
             }),
         };
         let error = wait_for_launcher_exit(&request).unwrap_err();

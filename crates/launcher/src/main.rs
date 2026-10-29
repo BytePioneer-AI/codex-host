@@ -29,7 +29,7 @@ use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
 #[cfg(target_os = "windows")]
@@ -859,8 +859,12 @@ fn supervise_desktop(
     };
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
+    let mut started_update_request = None;
     loop {
-        if should_stop_desktop_for_update(false) {
+        if let Err(error) = start_pending_update(&mut started_update_request) {
+            eprintln!("codexhost launcher: pending update could not be started: {error}");
+        }
+        if should_stop_desktop_for_update(started_update_request.is_some()) {
             if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
                 eprintln!(
                     "codexhost launcher: managed Desktop could not be stopped for update: {error}"

@@ -9,6 +9,7 @@ const EXECUTABLES: &[&str] = &[
     "bin/codexhost-start.exe",
     "runtime/node.exe",
     "libexec/codexhost-shim.exe",
+    "libexec/codexhost-node-repl.exe",
     "libexec/codexhost-updater.exe",
 ];
 

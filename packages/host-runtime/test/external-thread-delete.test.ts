@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { MappingStore } from "@codexhost/mapping-store";
+import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -174,6 +175,68 @@ describe("external Thread local deletion", () => {
       await stopFixture(fixture);
     }
   });
+
+  it.each(["approval", "question"])(
+    "resolves pending Desktop %s even when close omits interaction.closed",
+    async (kind) => {
+      const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+      const open = adapter.open.bind(adapter);
+      let closing = false;
+      vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+        const result = await open(input);
+        if (result.ok) {
+          const outputs = result.value.outputs;
+          const close = result.value.close.bind(result.value);
+          vi.spyOn(result.value, "close").mockImplementation(async () => {
+            closing = true;
+            await close();
+          });
+          Object.defineProperty(result.value, "outputs", {
+            value: (async function* () {
+              for await (const output of outputs) {
+                if (!closing) yield output;
+              }
+            })(),
+          });
+        }
+        return result;
+      });
+      const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+      try {
+        const threadId = await startPiThread(fixture);
+        const session = loadedSession(fixture);
+        if (kind === "approval") session.requestApprovalOnNextTurn("Allow action?");
+        await startPiTurn(fixture, threadId);
+        if (kind === "question") {
+          session.askQuestion({
+            id: "value",
+            type: "text",
+            prompt: "Value?",
+            optional: false,
+            multiline: false,
+            secret: false,
+          });
+        }
+        const request = await fixture.collector.waitFor((message) =>
+          method(
+            message,
+            kind === "approval" ? "mcpServer/elicitation/request" : "item/tool/requestUserInput",
+          ),
+        );
+        expect(await deleteThread(fixture, threadId)).toEqual({ id: 10, result: {} });
+        await expectDeleted(fixture, threadId);
+        const resolved = await fixture.collector.waitFor((message) =>
+          method(message, "serverRequest/resolved"),
+        );
+        expect(resolved).toMatchObject({ params: { requestId: request.id, threadId } });
+        expect(fixture.collector.messages.indexOf(resolved)).toBeLessThan(
+          fixture.collector.messages.findIndex((message) => method(message, "thread/deleted")),
+        );
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("retries failed cleanup during Host shutdown without declaring the Thread deleted", async () => {
     const fixture = createFixture();

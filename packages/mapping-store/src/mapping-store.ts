@@ -987,11 +987,10 @@ export class MappingStore {
 
   async #remove(hostThreadId: HostThreadId): Promise<void> {
     if (!this.#records.has(hostThreadId)) return;
-    await Promise.all([
-      rm(this.#recordPath(hostThreadId), { force: true }),
-      rm(this.#backupPath(hostThreadId), { force: true }),
-      rm(this.#metadataPath(hostThreadId), { force: true }),
-    ]);
+    // Startup discovers Threads by their primary record; keep it until auxiliary cleanup succeeds.
+    await rm(this.#backupPath(hostThreadId), { force: true });
+    await rm(this.#metadataPath(hostThreadId), { force: true });
+    await rm(this.#recordPath(hostThreadId), { force: true });
     this.#records.delete(hostThreadId);
     this.#rebuildIndexes();
   }

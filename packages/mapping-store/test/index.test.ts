@@ -1032,6 +1032,35 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
+  it.each(["backups", "thread-metadata"])(
+    "preserves a discoverable mapping when deletion of %s fails",
+    async (subdirectory) => {
+      const directory = await temporaryStoreDirectory();
+      const store = new MappingStore({ directory });
+      await store.initialize();
+      await createReady(store);
+      const blockedPath = path.join(directory, subdirectory, `${threadId}.json`);
+      await rm(blockedPath, { force: true });
+      await mkdir(blockedPath);
+      try {
+        await expect(store.removeThread(threadId)).rejects.toThrow();
+        await expect(store.getThread(threadId)).resolves.toMatchObject({ state: "ready" });
+      } finally {
+        await store.close();
+      }
+      await rm(blockedPath, { recursive: true });
+      const reopened = new MappingStore({ directory });
+      try {
+        await reopened.initialize();
+        await expect(reopened.getThread(threadId)).resolves.toMatchObject({ state: "ready" });
+        await reopened.removeThread(threadId);
+        await expect(reopened.getThread(threadId)).resolves.toBeNull();
+      } finally {
+        await reopened.close();
+      }
+    },
+  );
+
   it("enumerates 1000 valid startup records without a persistent query index", async () => {
     const directory = await temporaryStoreDirectory();
     const threadsDirectory = path.join(directory, "threads");

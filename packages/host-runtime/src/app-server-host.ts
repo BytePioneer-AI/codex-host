@@ -799,16 +799,7 @@ export class AppServerHost {
       hasRunningDescendants: (threadId) => this.#hasRunningSubagents(threadId),
       idleRelease: {
         queue: this.#desktopRequests,
-        onClosed: async (thread) => {
-          for (const pending of [...this.#pendingDesktopApprovals.values()]) {
-            if (pending.thread === thread)
-              await this.#resolveDesktopApproval(pending.interaction.interactionId);
-          }
-          for (const pending of [...this.#pendingDesktopQuestions.values()]) {
-            if (pending.thread === thread)
-              await this.#resolveDesktopQuestion(pending.interaction.interactionId);
-          }
-        },
+        onClosed: (thread) => this.#resolveThreadInteractions(thread),
         canRelease: (thread) =>
           !this.#hasRunningSubagents(thread.id) &&
           !thread.session.hasBackgroundWork?.() &&
@@ -4429,6 +4420,7 @@ export class AppServerHost {
       );
       return;
     }
+    if (location.thread) await this.#resolveThreadInteractions(location.thread);
     this.#routeObservationTracker.forgetThread(location.record.hostThreadId);
     await this.#writer.json(rpcEnvelope(request, { result: {} }));
     await this.#writer.json({
@@ -5638,6 +5630,17 @@ export class AppServerHost {
       this.#diagnose(`Unsupported Approval denial failed: ${denied.error.message}`);
     }
     return denied.ok;
+  }
+
+  async #resolveThreadInteractions(thread: ExternalThread): Promise<void> {
+    for (const pending of [...this.#pendingDesktopApprovals.values()]) {
+      if (pending.thread === thread)
+        await this.#resolveDesktopApproval(pending.interaction.interactionId);
+    }
+    for (const pending of [...this.#pendingDesktopQuestions.values()]) {
+      if (pending.thread === thread)
+        await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+    }
   }
 
   async #resolveDesktopApproval(interactionId: HostInteractionId): Promise<void> {

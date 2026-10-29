@@ -1,4 +1,8 @@
 import {
+  NATIVE_SCHEDULE_SIDEBAR_ROW_SELECTOR,
+  readNativeScheduleSidebarThread,
+} from "@codexhost/desktop-control/renderer-bindings";
+import {
   THREAD_OWNERSHIP_LIST_MAX_LENGTH,
   hostThreadIdSchema,
   type ThreadOwnership,
@@ -15,6 +19,7 @@ export const SIDEBAR_THREAD_ROW_SELECTOR = `[${SIDEBAR_THREAD_ROW_ATTRIBUTE}]`;
 export const SIDEBAR_THREAD_ID_ATTRIBUTE = "data-app-action-sidebar-thread-id";
 export const SIDEBAR_THREAD_HOST_ID_ATTRIBUTE = "data-app-action-sidebar-thread-host-id";
 export const SIDEBAR_AGENT_ICON_ATTRIBUTE = "data-codexhost-sidebar-agent-icon";
+export const SIDEBAR_AGENT_ICON_ROW_SELECTOR = `${SIDEBAR_THREAD_ROW_SELECTOR}, ${NATIVE_SCHEDULE_SIDEBAR_ROW_SELECTOR}`;
 
 export interface RendererSidebarContractInspection {
   rowCount: number;
@@ -114,7 +119,7 @@ export interface SidebarAgentIconRow {
   hostId(): string | null;
   threadId(): string | null;
   draftId(): string | null;
-  render(agent: Exclude<RendererAgent, "codex">, plugin?: HarnessPluginDescriptor): void;
+  render(agent: RendererAgent, plugin?: HarnessPluginDescriptor): void;
   clear(): void;
 }
 
@@ -130,10 +135,8 @@ export interface RendererSidebarAgentIcons {
   dispose(): void;
 }
 
-export function rendererAgentForThreadOwnership(
-  ownership: ThreadOwnership,
-): Exclude<RendererAgent, "codex"> | null {
-  if (ownership.owner === "codex") return null;
+export function rendererAgentForThreadOwnership(ownership: ThreadOwnership): RendererAgent {
+  if (ownership.owner === "codex") return "codex";
   return ownership.harnessId;
 }
 
@@ -159,21 +162,35 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
   }
 
   hostId(): string | null {
-    return sidebarThreadAttributes(this.element)?.hostId ?? null;
+    return (
+      sidebarThreadAttributes(this.element)?.hostId ??
+      (readNativeScheduleSidebarThread(this.element) ? "local" : null)
+    );
   }
 
   threadId(): string | null {
-    return threadIdFromSidebarRowElement(this.element);
+    return sidebarThreadAttributes(this.element)
+      ? threadIdFromSidebarRowElement(this.element)
+      : readNativeScheduleSidebarThread(this.element);
   }
 
   draftId(): string | null {
     return draftIdFromSidebarRowElement(this.element);
   }
 
-  render(agent: Exclude<RendererAgent, "codex">, plugin?: HarnessPluginDescriptor): void {
+  render(agent: RendererAgent, plugin?: HarnessPluginDescriptor): void {
     const presentation = JSON.stringify([agent, plugin?.name, plugin?.icon, plugin?.iconStyle]);
-    const titleTrigger = this.element.querySelector<HTMLElement>("[data-thread-title-trigger]");
-    const title = titleTrigger?.querySelector<HTMLElement>("[data-thread-title]");
+    const scheduled =
+      !this.element.hasAttribute(SIDEBAR_THREAD_ROW_ATTRIBUTE) &&
+      this.element.matches(NATIVE_SCHEDULE_SIDEBAR_ROW_SELECTOR);
+    const titleTrigger = scheduled
+      ? this.element
+      : this.element.querySelector<HTMLElement>("[data-thread-title-trigger]");
+    const title = scheduled
+      ? [...this.element.querySelectorAll<HTMLElement>("[data-thread-title][id]")].find(
+          (node) => node.id === this.element.getAttribute("aria-labelledby"),
+        )
+      : titleTrigger?.querySelector<HTMLElement>("[data-thread-title]");
     if (!titleTrigger || !title) {
       this.clear();
       return;
@@ -229,7 +246,7 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
       row = new BrowserSidebarAgentIconRow(element);
       this.#rowsByElement.set(element, row);
     }
-    if (element.isConnected && element.matches(SIDEBAR_THREAD_ROW_SELECTOR))
+    if (element.isConnected && element.matches(SIDEBAR_AGENT_ICON_ROW_SELECTOR))
       this.#trackedRows.add(row);
     else this.#trackedRows.delete(row);
     return row;
@@ -239,7 +256,7 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
     for (const row of this.#trackedRows) {
       if (!row.isConnected()) this.#trackedRows.delete(row);
     }
-    return [...this.root.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR)].map(
+    return [...this.root.querySelectorAll<HTMLElement>(SIDEBAR_AGENT_ICON_ROW_SELECTOR)].map(
       (element) => this.#row(element),
     );
   }
@@ -249,14 +266,15 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
       const changed = new Set<SidebarAgentIconRow>();
       const collect = (node: Node): void => {
         if (!(node instanceof Element)) return;
-        if (node.matches(SIDEBAR_THREAD_ROW_SELECTOR)) changed.add(this.#row(node as HTMLElement));
-        for (const element of node.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR))
+        if (node.matches(SIDEBAR_AGENT_ICON_ROW_SELECTOR))
+          changed.add(this.#row(node as HTMLElement));
+        for (const element of node.querySelectorAll<HTMLElement>(SIDEBAR_AGENT_ICON_ROW_SELECTOR))
           changed.add(this.#row(element));
       };
       for (const mutation of mutations) {
         const target =
           mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
-        const row = target?.closest<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR);
+        const row = target?.closest<HTMLElement>(SIDEBAR_AGENT_ICON_ROW_SELECTOR);
         if (row) changed.add(this.#row(row));
         // Removing the row marker must also clear its old decoration and identity.
         else if (target && this.#rowsByElement.has(target as HTMLElement))
@@ -272,6 +290,9 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
         SIDEBAR_THREAD_ROW_ATTRIBUTE,
         SIDEBAR_THREAD_ID_ATTRIBUTE,
         SIDEBAR_THREAD_HOST_ID_ATTRIBUTE,
+        "data-sidebar-cycle-item",
+        "aria-labelledby",
+        "role",
       ],
       childList: true,
       subtree: true,
@@ -296,7 +317,7 @@ export function installRendererSidebarAgentIcons(options: {
   dom?: SidebarAgentIconDom;
 }): RendererSidebarAgentIcons {
   const dom = options.dom ?? new BrowserSidebarAgentIconDom(document);
-  const ownershipByThread = new Map<string, Exclude<RendererAgent, "codex"> | null>();
+  const ownershipByThread = new Map<string, { agent: RendererAgent; stale: boolean }>();
   const pending = new Set<string>();
   const failed = new Set<string>();
   const provisionalCodex = new Set<string>();
@@ -365,7 +386,8 @@ export function installRendererSidebarAgentIcons(options: {
       ownershipRetryTimers.delete(key);
       if (disposed) return;
       failed.delete(key);
-      ownershipByThread.delete(key);
+      const cached = ownershipByThread.get(key);
+      if (cached) cached.stale = true;
       scheduleScan(rowsByThread.get(key) ?? []);
     }, delay);
     ownershipRetryTimers.set(key, timer);
@@ -385,7 +407,10 @@ export function installRendererSidebarAgentIcons(options: {
         if (disposed) return;
         for (const ownership of threads) {
           const key = ownershipKey(hostId, ownership.threadId);
-          ownershipByThread.set(key, rendererAgentForThreadOwnership(ownership));
+          ownershipByThread.set(key, {
+            agent: rendererAgentForThreadOwnership(ownership),
+            stale: false,
+          });
           failed.delete(key);
           if (ownership.owner === "codex") {
             provisionalCodex.add(key);
@@ -423,6 +448,7 @@ export function installRendererSidebarAgentIcons(options: {
     // this synchronous scan, never retain it across frames or connection changes.
     const pluginsByHost = new Map<string, readonly HarnessPluginDescriptor[] | undefined>();
     const getPlugin = (hostId: string, agent: string): HarnessPluginDescriptor | undefined => {
+      if (agent === "codex") return undefined;
       if (!pluginsByHost.has(hostId)) pluginsByHost.set(hostId, options.getPlugins?.(hostId));
       return pluginsByHost.get(hostId)?.find(({ id }) => id === agent);
     };
@@ -448,11 +474,10 @@ export function installRendererSidebarAgentIcons(options: {
       if (localAgent !== null && localAgent !== undefined) {
         if (threadId.success) {
           const key = ownershipKey(hostId, threadId.data);
-          ownershipByThread.set(key, localAgent === "codex" ? null : localAgent);
+          ownershipByThread.set(key, { agent: localAgent, stale: false });
           clearOwnershipRetry(key);
         }
-        if (localAgent === "codex") row.clear();
-        else row.render(localAgent, getPlugin(hostId, localAgent));
+        row.render(localAgent, getPlugin(hostId, localAgent));
         continue;
       }
       if (!threadId.success) {
@@ -460,13 +485,12 @@ export function installRendererSidebarAgentIcons(options: {
         continue;
       }
       const key = ownershipKey(hostId, threadId.data);
-      if (ownershipByThread.has(key)) {
-        const agent = ownershipByThread.get(key);
-        if (agent) row.render(agent, getPlugin(hostId, agent));
-        else row.clear();
-        continue;
-      }
-      row.clear();
+      const cached = ownershipByThread.get(key);
+      if (cached) {
+        // Revalidation must not remove a known icon while its reply is pending.
+        row.render(cached.agent, getPlugin(hostId, cached.agent));
+        if (!cached.stale) continue;
+      } else row.clear();
       if (!pending.has(key) && !failed.has(key)) {
         let unresolved = unresolvedByHost.get(hostId);
         if (!unresolved) {
@@ -508,7 +532,10 @@ export function installRendererSidebarAgentIcons(options: {
       for (const timer of ownershipRetryTimers.values()) clearTimeout(timer);
       ownershipRetryTimers.clear();
       ownershipRetryAttempts.clear();
-      for (const key of provisionalCodex) ownershipByThread.delete(key);
+      for (const key of provisionalCodex) {
+        const cached = ownershipByThread.get(key);
+        if (cached) cached.stale = true;
+      }
       provisionalCodex.clear();
       scheduleScan(dom.rows());
     },

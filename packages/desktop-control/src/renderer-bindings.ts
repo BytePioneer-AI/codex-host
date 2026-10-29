@@ -5,6 +5,10 @@ export {
 } from "./renderer-react-ownership.js";
 export type { RendererHostRoute, RendererHostRouting } from "./renderer-host-routing.js";
 export {
+  NATIVE_SCHEDULE_SIDEBAR_ROW_SELECTOR,
+  readNativeScheduleSidebarThread,
+} from "./renderer-native-schedule-sidebar.js";
+export {
   findScopedDraftModelBinding,
   createScopedDraftModelWriter,
 } from "./renderer-scoped-draft-model.js";

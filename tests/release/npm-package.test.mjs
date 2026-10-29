@@ -17,6 +17,8 @@ import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { buildConsoleServerBundle } from "../../packages/console-server/scripts/build-release.mjs";
+
 import {
   NPM_PACKAGE_NAME,
   NPM_PLATFORM_PACKAGE_NAMES,
@@ -858,6 +860,36 @@ describe("npm package release", () => {
       await writeFile(path.join(root, "runtime/node"), "unexpected");
       await expect(
         validateNpmPackage({ packageRoot: root, target, root: "/repo/source" }),
+      ).rejects.toThrow("non-allowlist files: runtime/node");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts the real shared console bundle but rejects runtime payloads and forbidden references", async () => {
+    const root = await temporaryDirectory();
+    const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+    const target = releaseTarget("linux-x64");
+    try {
+      await createNpmPackageFixture(root, target);
+      const outputPath = path.join(root, "app/console-server.mjs");
+      await buildConsoleServerBundle({ repositoryRoot, outputPath });
+      const source = await readFile(outputPath, "utf8");
+      expect(source).toContain("runtime/node.exe");
+      await expect(
+        validateNpmPackage({ packageRoot: root, target, root: repositoryRoot }),
+      ).resolves.toEqual(expectedNpmPackagePaths(target));
+      for (const forbidden of [repositoryRoot, "@anthropic-ai/fixture"]) {
+        await writeFile(outputPath, `${source}\n// ${forbidden}\n`);
+        await expect(
+          validateNpmPackage({ packageRoot: root, target, root: repositoryRoot }),
+        ).rejects.toThrow("forbidden reference");
+      }
+      await writeFile(outputPath, source);
+      await mkdir(path.join(root, "runtime"));
+      await writeFile(path.join(root, "runtime/node"), "unexpected binary");
+      await expect(
+        validateNpmPackage({ packageRoot: root, target, root: repositoryRoot }),
       ).rejects.toThrow("non-allowlist files: runtime/node");
     } finally {
       await rm(root, { recursive: true, force: true });

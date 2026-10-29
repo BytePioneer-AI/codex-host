@@ -18,8 +18,10 @@ fn orphaned_descendant(parent_exits_before_observation: bool) {
     let release = fixture.root.join("release-intermediate");
     let exited = fixture.root.join("intermediate-exited");
     let intermediate = fixture.root.join("intermediate.cjs");
+    // detached avoids libuv's own kill-on-parent-exit Job on Windows, allowing
+    // B to outlive A. It does not escape an inherited caller-held Windows Job.
     fs::write(&intermediate,r#"const cp=require('node:child_process'),fs=require('node:fs');
-const b=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});b.unref();
+const b=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',detached:true});b.unref();
 fs.writeFileSync(process.argv[2]+'.tmp',JSON.stringify({a:process.pid,b:b.pid}));fs.renameSync(process.argv[2]+'.tmp',process.argv[2]);
 const timer=setInterval(()=>{if(fs.existsSync(process.argv[3]))clearInterval(timer)},10);"#).unwrap();
     let source = format!(

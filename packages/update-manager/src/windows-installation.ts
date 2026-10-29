@@ -99,7 +99,14 @@ export async function validateWindowsNpmInstallation(
   const resolvedManifest = createRequire(options.npmLauncherPath).resolve(
     `${platformName}/package.json`,
   );
-  if (!sameWindowsPath(path.dirname(resolvedManifest), await realpath(options.packageRoot))) {
+  // Node's resolver can retain an 8.3 ancestor while fs.realpath expands it.
+  // Compare filesystem-resolved paths on both sides; ownedPath still rejects links.
+  if (
+    !sameWindowsPath(
+      await realpath(path.dirname(resolvedManifest)),
+      await realpath(options.packageRoot),
+    )
+  ) {
     throw new Error("Windows npm platform package does not belong to this CLI entry");
   }
   for (const file of [

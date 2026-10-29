@@ -205,6 +205,17 @@ describe("installed update context", () => {
     },
   );
 
+  it("rejects a hoisted package when this CLI actually resolves its nested package", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-win-resolution-"));
+    roots.push(root);
+    const hoisted = await windowsNpmFixture(root);
+    const nested = await windowsNpmFixture(root, true);
+    await expect(windowsContext(root, nested)).resolves.toMatchObject({
+      installation: { kind: "npm" },
+    });
+    await expect(windowsContext(root, hoisted)).rejects.toThrow("does not belong");
+  });
+
   it("rejects Windows npm version drift, missing global shim and package links", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-win-ownership-"));
     roots.push(root);

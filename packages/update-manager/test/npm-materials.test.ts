@@ -355,7 +355,7 @@ it("upgrades a normal registry-created nested platform and preserves unrelated o
   const requestCount = fixture.requests.length;
   fixture.state.denyNetwork = true;
   await install(target, prefix, otherPrefix);
-  expect(await resolvePlatform()).toBe(
+  expect(await realpath(await resolvePlatform())).toBe(
     await realpath(path.join(fixture.modules(prefix), fixture.platformName, "package.json")),
   );
   expect(await fixture.packageVersion(prefix, fixture.platformName)).toBe("1.2.3");

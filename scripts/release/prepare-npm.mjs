@@ -979,7 +979,10 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
     ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
     }
-    if (file.relative !== "package.json" && text.includes("runtime/node")) {
+    // Shared app bundles also validate installer layouts: a runtime/node path
+    // literal is not an embedded runtime. The exact payload allowlist above
+    // excludes runtime files; retain this reference check for docs/bootstrap.
+    if (!file.relative.startsWith("app/") && text.includes("runtime/node")) {
       throw new Error(`npm package must not embed a private Node runtime: ${file.relative}`);
     }
     if (forbiddenReferences.some((reference) => text.includes(reference))) {
